@@ -1,0 +1,241 @@
+{
+  "schema": "hvo-timelapse-short-segment-canary-v1",
+  "measuredUtc": "2026-10-05",
+  "host": "home-dev-01",
+  "gpu": "NVIDIA RTX 5070",
+  "scope": "Synthetic packet/timestamp/daily stream-copy correctness; not a sky or performance workload. Qualified production FFmpeg arguments and per-process limits.",
+  "commands": [
+    "python3 mixed_cadence.py <fresh-output-180> --short-segments --compression 180",
+    "python3 mixed_cadence.py <fresh-output-300> --short-segments --compression 300"
+  ],
+  "results": [
+    {
+      "scope": "Synthetic red/green/blue 512x512 protocol correctness canary, not VirtualSky performance",
+      "compression": 180,
+      "shortSegments": true,
+      "results": [
+        {
+          "profile": "Software",
+          "passed": true,
+          "packets": 19,
+          "durationMicroseconds": 683907,
+          "segmentDurations": [
+            1,
+            102,
+            2958,
+            14180,
+            333333,
+            333333
+          ],
+          "stream": {
+            "codec_name": "h264",
+            "profile": "High",
+            "codec_type": "video",
+            "width": 512,
+            "height": 512,
+            "pix_fmt": "yuv420p",
+            "level": 31,
+            "time_base": "1/1000000",
+            "extradata_hash": "SHA256:cf9fe3a9b2d324b3c52d940318f0b19a2159b6da30870c0a7058fcd30ac9de47",
+            "disposition": {
+              "default": 1,
+              "dub": 0,
+              "original": 0,
+              "comment": 0,
+              "lyrics": 0,
+              "karaoke": 0,
+              "forced": 0,
+              "hearing_impaired": 0,
+              "visual_impaired": 0,
+              "clean_effects": 0,
+              "attached_pic": 0,
+              "timed_thumbnails": 0,
+              "non_diegetic": 0,
+              "captions": 0,
+              "descriptions": 0,
+              "metadata": 0,
+              "dependent": 0,
+              "still_image": 0
+            },
+            "tags": {
+              "language": "und",
+              "handler_name": "VideoHandler",
+              "vendor_id": "[0][0][0][0]",
+              "encoder": "Lavc60.31.102 libx264"
+            }
+          },
+          "payloadSha256": "024c799e9b007306d63bb44cbf30d812624aea78308297de162b821432cb89d4"
+        },
+        {
+          "profile": "Nvidia",
+          "passed": true,
+          "packets": 19,
+          "durationMicroseconds": 683907,
+          "segmentDurations": [
+            1,
+            102,
+            2958,
+            14180,
+            333333,
+            333333
+          ],
+          "stream": {
+            "codec_name": "h264",
+            "profile": "Main",
+            "codec_type": "video",
+            "width": 512,
+            "height": 512,
+            "pix_fmt": "yuv420p",
+            "level": 30,
+            "time_base": "1/1000000",
+            "extradata_hash": "SHA256:2b37e127df580febda64c5c1fadd211524260d4490ec6fba969e8846e31c2257",
+            "disposition": {
+              "default": 1,
+              "dub": 0,
+              "original": 0,
+              "comment": 0,
+              "lyrics": 0,
+              "karaoke": 0,
+              "forced": 0,
+              "hearing_impaired": 0,
+              "visual_impaired": 0,
+              "clean_effects": 0,
+              "attached_pic": 0,
+              "timed_thumbnails": 0,
+              "non_diegetic": 0,
+              "captions": 0,
+              "descriptions": 0,
+              "metadata": 0,
+              "dependent": 0,
+              "still_image": 0
+            },
+            "tags": {
+              "language": "und",
+              "handler_name": "VideoHandler",
+              "vendor_id": "[0][0][0][0]",
+              "encoder": "Lavc60.31.102 h264_nvenc"
+            }
+          },
+          "payloadSha256": "2686621fc10d44a9325b6b0553a5ccb779e82325599ac99ec37719fe8c7f81e2"
+        }
+      ]
+    },
+    {
+      "scope": "Synthetic red/green/blue 512x512 protocol correctness canary, not VirtualSky performance",
+      "compression": 300,
+      "shortSegments": true,
+      "results": [
+        {
+          "profile": "Software",
+          "passed": true,
+          "packets": 19,
+          "durationMicroseconds": 410345,
+          "segmentDurations": [
+            1,
+            61,
+            1775,
+            8508,
+            200000,
+            200000
+          ],
+          "stream": {
+            "codec_name": "h264",
+            "profile": "High",
+            "codec_type": "video",
+            "width": 512,
+            "height": 512,
+            "pix_fmt": "yuv420p",
+            "level": 31,
+            "time_base": "1/1000000",
+            "extradata_hash": "SHA256:cf9fe3a9b2d324b3c52d940318f0b19a2159b6da30870c0a7058fcd30ac9de47",
+            "disposition": {
+              "default": 1,
+              "dub": 0,
+              "original": 0,
+              "comment": 0,
+              "lyrics": 0,
+              "karaoke": 0,
+              "forced": 0,
+              "hearing_impaired": 0,
+              "visual_impaired": 0,
+              "clean_effects": 0,
+              "attached_pic": 0,
+              "timed_thumbnails": 0,
+              "non_diegetic": 0,
+              "captions": 0,
+              "descriptions": 0,
+              "metadata": 0,
+              "dependent": 0,
+              "still_image": 0
+            },
+            "tags": {
+              "language": "und",
+              "handler_name": "VideoHandler",
+              "vendor_id": "[0][0][0][0]",
+              "encoder": "Lavc60.31.102 libx264"
+            }
+          },
+          "payloadSha256": "3b858bc855d00975e6a42260c616d0cecc65e3f876f5da0fbe5165f6e48b28f4"
+        },
+        {
+          "profile": "Nvidia",
+          "passed": true,
+          "packets": 19,
+          "durationMicroseconds": 410345,
+          "segmentDurations": [
+            1,
+            61,
+            1775,
+            8508,
+            200000,
+            200000
+          ],
+          "stream": {
+            "codec_name": "h264",
+            "profile": "Main",
+            "codec_type": "video",
+            "width": 512,
+            "height": 512,
+            "pix_fmt": "yuv420p",
+            "level": 30,
+            "time_base": "1/1000000",
+            "extradata_hash": "SHA256:2b37e127df580febda64c5c1fadd211524260d4490ec6fba969e8846e31c2257",
+            "disposition": {
+              "default": 1,
+              "dub": 0,
+              "original": 0,
+              "comment": 0,
+              "lyrics": 0,
+              "karaoke": 0,
+              "forced": 0,
+              "hearing_impaired": 0,
+              "visual_impaired": 0,
+              "clean_effects": 0,
+              "attached_pic": 0,
+              "timed_thumbnails": 0,
+              "non_diegetic": 0,
+              "captions": 0,
+              "descriptions": 0,
+              "metadata": 0,
+              "dependent": 0,
+              "still_image": 0
+            },
+            "tags": {
+              "language": "und",
+              "handler_name": "VideoHandler",
+              "vendor_id": "[0][0][0][0]",
+              "encoder": "Lavc60.31.102 h264_nvenc"
+            }
+          },
+          "payloadSha256": "594c7edaaed56cde5bbe42b4163aac13cb4f970517d0a2b6ac1fff2354703f90"
+        }
+      ]
+    }
+  ],
+  "driverVersion": "580.178.04",
+  "binaryIdentities": {
+    "ffmpeg": "ED16AF623947494A72E284B6EB8FF225F2DA22B38B5D5069C2FD4B4BA3384E41",
+    "ffprobe": "272F6EBC634A63D9C8B4CA68E964119D980F25154E5AA2C35E5487DA48E9A58F"
+  },
+  "harnessSha256": "FC19A048D3E33F6DB9691CB5D51DCAB40499FD9A29905C2AA2444A95996F98C9"
+}

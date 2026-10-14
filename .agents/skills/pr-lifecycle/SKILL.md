@@ -19,6 +19,16 @@ operator pauses it or reserves a decision. Coordinator enrollment is not a
 prerequisite for implementation, review acquisition, finalization, or merge.
 Fleet coordination is an opt-in execution route, not the default ownership model:
 
+The PR target determines the protected-CI profile. For `development/v1`, use
+the two checks in [the v1 contract](../../../docs/development-v1.md):
+Preflight and Build and Unit. The full `ci.yml` matrix is for main/release
+qualification or explicit issue/operator acceptance. Do not manually dispatch it
+for an ordinary v1 PR, even when the classifier selects `complete=true` or a
+base-sync delta includes unrelated upstream changes. Record the profile beside
+classifier evidence. Risk-tier local validation and independent review still
+apply. This target-specific rule governs generic protected-CI references in this
+skill; it does not waive an explicitly required integration/qualification result.
+
 ```text
 local implementation
   -> local candidate evidence
@@ -26,7 +36,7 @@ local implementation
   -> review convergence or documented unavailability waiver
   -> final target-branch synchronization and review if the target advanced
   -> ready for review
-  -> classifier-selected protected CI
+  -> target-branch protected CI
   -> merge, synchronize main, and clean up
 ```
 
@@ -545,8 +555,9 @@ protected CI, or merge.
    is step 2's trigger, and it does not resolve itself. Read the value rather
    than assuming which one applies. Measured on 2026-09-09 across the four open
    drafts, three were `blocked` and one was `behind`.
-5. Mark the PR ready only now. This transition starts the authoritative
-   classifier-selected protected CI plan.
+5. Mark the PR ready only now. This transition starts the target branch's
+   authoritative protected CI profile: Development v1 checks for v1 PRs,
+   classifier-selected full CI for main/release PRs.
 6. Hold the lock through CI and merge.
 
 If the target branch advances during CI, cancel the stale run when possible,

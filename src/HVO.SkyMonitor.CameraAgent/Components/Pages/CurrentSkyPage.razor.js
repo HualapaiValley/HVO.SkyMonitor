@@ -1,9 +1,12 @@
 const bindings = new WeakMap();
+const fullScreenBindings = new WeakMap();
 
 export async function openTechnicalEvidence(root) {
     const evidence = root?.closest('.detail-page')?.querySelector('#technical-evidence');
     if (!evidence) return;
     if (document.fullscreenElement && root.contains(document.fullscreenElement)) {
+        const binding = fullScreenBindings.get(document.fullscreenElement);
+        if (binding) binding.skipFocus = true;
         await document.exitFullscreen();
         // Let the fullscreen-exit listener restore its trigger before focusing the evidence tabs.
         await new Promise(resolve => requestAnimationFrame(resolve));
@@ -26,23 +29,65 @@ export function downloadUrl(url) {
 
 // Mirrors the prototype's figure.requestFullscreen(): the same <figure> (base image, SVG layers, caption) is
 // promoted, so the enlarged view is exactly the inline selection with no second fetch or stretch.
-export async function requestFullScreen(figure) {
+export async function requestFullScreen(figure, reference) {
     if (!figure?.isConnected || !figure.requestFullscreen) return false;
     if (document.fullscreenElement === figure) return true;
     const trigger = figure.querySelector('.image-tool');
+    const exitOnEscape = event => {
+        if (document.fullscreenElement !== figure) return;
+        if (event.key === 'Escape' && document.fullscreenElement === figure) {
+            event.preventDefault();
+            document.exitFullscreen().catch(() => {});
+        } else if (event.key === 'Tab') {
+            const targets = [...figure.querySelectorAll('a[href], button:not(:disabled), input:not(:disabled), [tabindex="0"]')]
+                .filter(element => element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
+            if (!targets.length) { event.preventDefault(); return; }
+            const index = targets.indexOf(document.activeElement);
+            if (index < 0 || (!event.shiftKey && index === targets.length - 1) || (event.shiftKey && index === 0)) {
+                event.preventDefault();
+                targets[event.shiftKey ? targets.length - 1 : 0].focus({ preventScroll: true });
+            }
+        }
+    };
     const restoreFocus = () => {
         if (document.fullscreenElement === figure) return;
         document.removeEventListener('fullscreenchange', restoreFocus);
-        if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+        document.removeEventListener('keydown', exitOnEscape, true);
+        fullScreenBindings.delete(figure);
+        reference.invokeMethodAsync('ViewerClosedAsync').then(() => {
+            if (!binding.skipFocus && trigger?.isConnected) trigger.focus({ preventScroll: true });
+        }).catch(() => {});
     };
+    const binding = { restoreFocus, exitOnEscape, skipFocus: false };
     try {
         document.addEventListener('fullscreenchange', restoreFocus);
+        document.addEventListener('keydown', exitOnEscape, true);
+        fullScreenBindings.set(figure, binding);
         await figure.requestFullscreen();
+        figure.querySelector('.fullscreen-controls button:not(:disabled)')?.focus({ preventScroll: true });
         return true;
     } catch {
         document.removeEventListener('fullscreenchange', restoreFocus);
+        document.removeEventListener('keydown', exitOnEscape, true);
+        fullScreenBindings.delete(figure);
         return false;
     }
+}
+
+export async function exitFullScreen(figure) {
+    if (document.fullscreenElement === figure) await document.exitFullscreen();
+}
+
+export async function disconnect(root, figure) {
+    bindings.get(root)?.abort();
+    bindings.delete(root);
+    const binding = fullScreenBindings.get(figure);
+    if (binding) {
+        document.removeEventListener('fullscreenchange', binding.restoreFocus);
+        document.removeEventListener('keydown', binding.exitOnEscape, true);
+    }
+    fullScreenBindings.delete(figure);
+    await exitFullScreen(figure);
 }
 
 export async function bindLayerToggles(root, width, height) {
@@ -63,6 +108,15 @@ export async function bindLayerToggles(root, width, height) {
     const controller = new AbortController();
     bindings.set(root, controller);
     for (const toggle of root.querySelectorAll("[data-layer-target]")) {
+        const retainedGroup = root.querySelector(`#${CSS.escape(toggle.dataset.layerTarget)}`);
+        const swatch = toggle.closest("label")?.querySelector(".layer-swatch");
+        const labelPath = retainedGroup?.querySelector('path[fill]:not([fill="none"]):not([fill="#000000"])');
+        const glyph = labelPath ?? retainedGroup?.querySelector('[stroke]:not([stroke="#000000"]), [fill]:not([fill="none"]):not([fill="#000000"])');
+        const color = labelPath?.getAttribute("fill") ?? glyph?.getAttribute("stroke") ?? glyph?.getAttribute("fill");
+        if (swatch && /^#[0-9a-f]{6}$/i.test(color ?? "")) {
+            swatch.style.backgroundColor = color;
+            swatch.style.borderColor = color;
+        }
         const apply = () => {
             const group = root.querySelector(`#${CSS.escape(toggle.dataset.layerTarget)}`);
             if (group) {

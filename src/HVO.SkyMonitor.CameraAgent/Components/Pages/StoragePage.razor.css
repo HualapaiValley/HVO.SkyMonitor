@@ -1,0 +1,44 @@
+/* Storage & retention layout. The shared Operations vocabulary (.ops-*, .button, .state-chip, .action-dialog) lives in
+   OperationsLayout.razor.css. The capacity donut and validation list are ported from the prototype's operations-pages.css. */
+
+.storage-empty { margin: 0; color: var(--muted); font-size: .65rem; }
+.storage-links { display: flex; flex-wrap: wrap; gap: .4rem 1rem; margin: .65rem 0 0; font-size: .62rem; }
+.storage-links a { color: #9bcaff; }
+.storage-location + .storage-location { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.storage-location h3 { margin: 0 0 .6rem; color: var(--muted-strong); font-size: .6rem; letter-spacing: .04em; text-transform: uppercase; }
+.storage-lanes { margin-top: 1rem; }
+
+.ops-storage-visual { display: grid; grid-template-columns: 8rem minmax(0, 1fr); gap: 1rem; align-items: center; }
+.ops-donut { --used: 0%; position: relative; display: grid; width: 7.5rem; height: 7.5rem; place-items: center; border-radius: 50%; background: conic-gradient(var(--blue) 0 var(--used), var(--surface-raised) var(--used)); }
+.ops-donut::before { content: ""; width: 5.1rem; height: 5.1rem; border-radius: 50%; background: #0a101a; }
+.ops-donut span { position: absolute; font-size: 1rem; font-weight: 750; }
+.ops-donut.unknown { background: var(--surface-raised); }
+.ops-donut.unknown span { color: var(--muted); }
+
+.ops-validation-list { display: grid; gap: .35rem; margin: 0; padding: 0; list-style: none; }
+.ops-validation-item { display: flex; align-items: center; gap: .5rem; padding: .48rem 0; border-top: 1px solid var(--border); font-size: .57rem; }
+.ops-validation-item:first-child { border-top: 0; }
+.ops-validation-item i { display: grid; flex: 0 0 auto; width: 1rem; height: 1rem; place-items: center; border-radius: 50%; color: #a9ecb1; background: var(--green-soft); font-style: normal; font-size: .55rem; }
+.ops-validation-item.failed i { color: #ffb4ae; background: var(--red-soft); }
+.ops-validation-item.neutral { color: var(--muted-strong); }
+.ops-validation-item.neutral i { color: var(--muted-strong); background: var(--surface-raised); }
+
+.ops-table-wrap .ops-table td small { display: block; margin-top: .15rem; color: var(--muted); font-size: .55rem; overflow-wrap: anywhere; }
+.ops-table-wrap .ops-table.storage-class-table td, .ops-table-wrap .ops-table.storage-lane-table td { white-space: normal; }
+.ops-table-wrap .ops-table.storage-class-table td:first-child, .ops-table-wrap .ops-table.storage-lane-table td:first-child { min-width: 7rem; }
+
+dialog.action-dialog.storage-dialog { width: min(calc(100% - 2rem), 40rem); }
+.storage-dialog-body { max-height: min(60vh, 34rem); padding: 0 1.1rem; overflow-y: auto; }
+.storage-dialog-body h3 { margin: 1rem 0 .45rem; color: var(--muted-strong); font-size: .6rem; letter-spacing: .04em; text-transform: uppercase; }
+.storage-dialog-body h3:first-child { margin-top: 0; }
+
+@media (max-width: 720px) {
+    .ops-storage-visual { grid-template-columns: 1fr; justify-items: center; text-align: center; }
+    .ops-storage-visual .ops-facts { width: 100%; text-align: left; }
+}
+
+@media (max-width: 480px) {
+    dialog.action-dialog.storage-dialog { width: calc(100% - 1rem); }
+    .ops-table-wrap .ops-table.storage-class-table th, .ops-table-wrap .ops-table.storage-lane-table th { padding-inline: .3rem; font-size: .55rem; letter-spacing: 0; }
+    .ops-table-wrap .ops-table.storage-class-table td, .ops-table-wrap .ops-table.storage-lane-table td { padding-inline: .3rem; }
+}

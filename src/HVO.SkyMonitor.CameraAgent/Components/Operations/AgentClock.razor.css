@@ -1,0 +1,3 @@
+/* The ticking clocks keep a fixed width per digit, so the facts beside them do not shift every second. */
+.agent-clock time { font-variant-numeric: tabular-nums; }
+.agent-clock small { display: block; margin-top: .15rem; color: var(--muted); font-size: .55rem; font-weight: 500; }

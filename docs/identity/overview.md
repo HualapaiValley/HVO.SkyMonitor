@@ -17,7 +17,7 @@ linked GitHub issues.
    a unique 256-bit device key, registration token, endpoints, and the
    configured fleet OAuth client. New envelopes also pin the current immutable
    Observatory location version and hash.
-4. The operator imports the envelope at CameraAgent `/devices/bootstrap`.
+4. The operator imports the envelope at CameraAgent `/operations/registration`.
    CameraAgent posts it to LogicHost `/api/device/bootstrap`, decrypts the
    AES-256-GCM response, and writes `device-secrets.dat` with ASP.NET Data
    Protection.

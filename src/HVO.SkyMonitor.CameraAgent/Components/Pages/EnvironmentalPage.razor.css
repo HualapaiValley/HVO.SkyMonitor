@@ -1,20 +1,51 @@
-.environment-page { display: grid; gap: 1.5rem; }
-header, .section-heading, .source-title { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
-h1, h2, p { margin: 0; }
-.eyebrow { color: var(--hvo-accent, #79d9ca); font-size: .76rem; letter-spacing: .12em; text-transform: uppercase; }
-.summary { display: flex; flex-wrap: wrap; gap: .6rem; }
-.summary span, .freshness { border: 1px solid rgba(255,255,255,.16); border-radius: 999px; padding: .35rem .7rem; }
-.source-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: .8rem; }
-article, .state, .attempts { background: rgba(10,20,29,.76); border: 1px solid rgba(255,255,255,.11); border-radius: .8rem; padding: 1rem; }
-.command-card { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(280px,100%),1fr)); gap: 1.25rem; background: linear-gradient(135deg,rgba(15,39,48,.95),rgba(10,20,29,.8)); border: 1px solid rgba(121,217,202,.24); border-radius: .8rem; padding: 1rem; }
-.command-card > *, .command-card form { min-width: 0; }.command-card form { display: grid; gap: .45rem; }.command-actions { margin-top: .4rem; }.command-result { grid-column: 1 / -1; border-left: 3px solid #7de2b8; padding: .8rem 1rem; background: rgba(0,0,0,.18); }.command-result.error { border-left-color: #ffbf7a; }.command-result dl { margin-top: .6rem; }.command-result dd { min-width: 0; overflow-wrap: anywhere; text-align: right; }.refresh-warning { color: #ffcf91; margin-top: .6rem; }
-dl { display: grid; gap: .45rem; margin: .8rem 0 0; }
-dl div, .attempts div { display: flex; justify-content: space-between; gap: .75rem; }
-dt, small, .reason, .empty { color: rgba(236,245,247,.67); }
-.freshness.fresh { color: #7de2b8; }.freshness.stale, .error { color: #ffbf7a; }
-.history { display: grid; gap: .65rem; margin: .8rem 0; }
-.history article { display: grid; grid-template-columns: minmax(140px,1fr) minmax(120px,1fr); gap: .25rem 1rem; }
-.history small { grid-column: 1 / -1; }
-.attempts { display: grid; gap: .55rem; margin-top: .8rem; overflow-x: auto; }
-.attempts div { min-width: 620px; }
-@media (max-width: 680px) { header { align-items: flex-start; flex-direction: column; }.command-card { grid-template-columns: 1fr; }.attempts div { min-width: 520px; } }
+/* Environment layout. The .ops-reading rules are ported from the prototype operations-pages.css; the shared
+   Operations vocabulary (.ops-*, .button, .state-chip, .action-dialog) lives in OperationsLayout.razor.css.
+   Table overrides carry the wrapper and both table classes to outrank .operations-layout ::deep .ops-table. */
+
+.ops-reading-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .5rem; }
+.ops-reading { position: relative; padding: .75rem; border: 1px solid var(--border); border-radius: .42rem; background: rgba(13, 20, 32, .58); overflow: hidden; }
+.ops-reading::after { position: absolute; right: -.5rem; bottom: -.8rem; width: 3rem; height: 3rem; border: 1px solid rgba(88, 166, 255, .14); border-radius: 50%; content: ""; }
+.ops-reading span, .ops-reading strong, .ops-reading small { display: block; }
+.ops-reading span { color: var(--muted); font-size: .49rem; text-transform: uppercase; }
+.ops-reading strong { margin-top: .28rem; font-size: 1.1rem; }
+.ops-reading small { margin-top: .15rem; color: var(--muted); font-size: .5rem; }
+.ops-reading.empty strong { color: var(--muted); }
+
+.environment-disabled, .command-result { margin-bottom: .8rem; }
+.command-result .ops-panel-heading h2 { display: flex; align-items: center; gap: .45rem; }
+.command-result dd { overflow-wrap: anywhere; }
+.command-result.error { border-left: 3px solid var(--red); }
+.command-result.success { border-left: 3px solid var(--green); }
+.refresh-warning, .environment-inline-warning { margin: .6rem 0 0; color: #e6bd62; font-size: .62rem; }
+.environment-empty { margin: 0; color: var(--muted); font-size: .65rem; }
+
+.environment-history, .environment-attempts { margin-top: .8rem; }
+.ops-table-wrap .ops-table td small { display: block; margin-top: .15rem; color: var(--muted); font-size: .55rem; overflow-wrap: anywhere; }
+.ops-table-wrap .ops-table td small.failure { color: #ff9b95; }
+.ops-table-wrap .ops-table td small a { color: #9bcaff; }
+.ops-table-wrap .ops-table.environment-history-table td, .ops-table-wrap .ops-table.environment-attempt-table td { white-space: normal; }
+.ops-table-wrap .ops-table.environment-history-table td:first-child, .ops-table-wrap .ops-table.environment-attempt-table td:first-child { white-space: nowrap; }
+
+.environment-kind-filter { min-width: 10rem; }
+.environment-paging { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .7rem; }
+
+dialog.action-dialog.environment-dialog { width: min(calc(100% - 2rem), 34rem); }
+.environment-dialog fieldset { min-inline-size: 0; }
+.environment-dialog-message { padding: 0 1.1rem; }
+.environment-dialog-message .ops-note-banner { margin-top: .8rem; margin-bottom: 0; }
+
+@media (max-width: 1180px) {
+    .ops-reading-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 720px) {
+    .environment-history .ops-panel-heading { flex-direction: column; align-items: stretch; }
+    .environment-kind-filter { min-width: 0; }
+}
+
+@media (max-width: 480px) {
+    dialog.action-dialog.environment-dialog { width: calc(100% - 1rem); }
+    .ops-table-wrap .ops-table.environment-source-table th, .ops-table-wrap .ops-table.environment-history-table th, .ops-table-wrap .ops-table.environment-attempt-table th { padding-inline: .3rem; font-size: .55rem; letter-spacing: 0; }
+    .ops-table-wrap .ops-table.environment-source-table td, .ops-table-wrap .ops-table.environment-history-table td, .ops-table-wrap .ops-table.environment-attempt-table td { padding-inline: .3rem; }
+    .environment-paging .button { flex: 1; }
+}

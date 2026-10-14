@@ -1,0 +1,765 @@
+{
+  "schema": "hvo-issue-522-stellar-resource-comparison-v1",
+  "issue": 522,
+  "predeclaredPlan": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/522#issuecomment-5927883139",
+  "baselineRevision": "4530276e3f8205c63a654daf790100eb8633a335",
+  "afterRevision": "7186e0b9ae2b03904d5cdacb5f0cc270fca3c418",
+  "method": {
+    "sdk": "10.0.401",
+    "configuration": "Release",
+    "processesPerVersion": 9,
+    "warmupCapturesPerProcess": 5,
+    "measuredCapturesPerProcess": 30,
+    "concurrency": 1,
+    "tieredCompilation": "0",
+    "forcedGc": false,
+    "latencyBoundary": "CaptureAsync return, before payload hashing",
+    "cpuAndAllocations": "Process-wide CPU and allocations; isolated capture process",
+    "workingSet": "Per-capture working set and cumulative process peak, including warmup",
+    "p95": "29th ordered value of 30 measurements",
+    "backlog": "N/A: stateless serial capture, no queue or outage",
+    "io": "Linux /proc/self/io read_bytes/write_bytes deltas; cached catalog can report zero physical I/O",
+    "catalogCandidateCount": "Wrapper count sums global geometry query and midpoint annotation query; stellarCandidateCount is the unique geometry selection",
+    "stageCaveat": "Geometry and reference-scene CPU include query CPU; query CPU is not added again. Baseline stage CPU unavailable. All captures isolated/serial.",
+    "scope": "Resource acceptance only; physical camera detection and end-to-end plate-solving qualification are separate"
+  },
+  "budgets": {
+    "monoP95Milliseconds": 10000,
+    "bayerP95Milliseconds": 40000,
+    "processPeakBytes": 2147483648
+  },
+  "catalog": {
+    "name": "HYG 4.2",
+    "version": "4.2",
+    "rowCount": 119625,
+    "databaseSha256": "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2",
+    "license": "CC BY-SA 4.0",
+    "source": "https://codeberg.org/astronexus/hyg",
+    "identityNote": "The injected snapshot metadata overrides placeholder catalog fields in test configuration; every raw scene records the verified production snapshot identity."
+  },
+  "archives": {
+    "before": {
+      "filename": "baseline-4530276e.tar.gz",
+      "sha256": "8299e92584c05061b2a62f34d54e6a23e96b9290964fbb1ea900c8cf35f16206",
+      "files": 28,
+      "revision": "4530276e3f8205c63a654daf790100eb8633a335",
+      "availability": "Retained on home-dev-01 in the owner evidence cache; not a publicly downloadable artifact."
+    },
+    "after": {
+      "filename": "after-7186e0b9.tar.gz",
+      "sha256": "c186e0fc534d8cffd6420207a03f18ff387b10e3254bfa05c988981596c9c388",
+      "files": 28,
+      "revision": "7186e0b9ae2b03904d5cdacb5f0cc270fca3c418",
+      "availability": "Retained on home-dev-01 in the owner evidence cache; not a publicly downloadable artifact."
+    },
+    "previousAfter": {
+      "filename": "after-bd68f0e6.tar.gz",
+      "sha256": "53945da7215dab6b07780b0fe1e23bd23e427401c78c9788c0d31952c07c3557",
+      "files": 28,
+      "revision": "bd68f0e623f2ee89150699265fc6e1b6146e9ab7",
+      "availability": "Retained on home-dev-01 in the owner evidence cache; not a publicly downloadable artifact."
+    }
+  },
+  "workloads": [
+    {
+      "workload": "mono-short",
+      "before": {
+        "captureMs": 76.90095,
+        "cpuMs": 85.5175,
+        "allocatedBytes": 29674100.0,
+        "queryMilliseconds": 0.3691,
+        "candidateCount": 4466.5,
+        "visibleObjectCount": 300.0,
+        "processWorkingSetBytes": 312561664.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "after": {
+        "captureMs": 173.7878,
+        "cpuMs": 179.36599999999999,
+        "allocatedBytes": 176325172.0,
+        "queryMilliseconds": 0.3685,
+        "candidateCount": 12659.0,
+        "visibleObjectCount": 181.5,
+        "processWorkingSetBytes": 270215168.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "beforeP95Ms": 82.6494,
+      "afterP95Ms": 180.0965,
+      "p95Ratio": 2.179041832124613,
+      "beforePeakBytes": 346476544,
+      "afterPeakBytes": 365805568,
+      "afterStages": {
+        "stellarProjectionProcessCpuMilliseconds": 6.9335,
+        "stellarPredictionProcessCpuMilliseconds": 28.447499999999998,
+        "stellarReferenceSceneProcessCpuMilliseconds": 2.016,
+        "stellarRenderProcessCpuMilliseconds": 76.3315,
+        "stellarCandidateCount": 8435.0,
+        "stellarAdmittedCount": 181.5,
+        "stellarTemporalSamples": 3973.0,
+        "stellarPredictionCellVisits": 508544.0,
+        "stellarRenderCellVisits": 23232.0,
+        "stellarDirectionEvaluations": 33443.0
+      },
+      "afterQueryProcessCpuMedianMs": 0.37,
+      "rawEvidence": {
+        "before": {
+          "pathInArchive": "mono-short/_home-dev-01_2026-10-01_01_47_19/In/c4244857-acd6-439a-a01a-d80fea0b8cf6/home-dev-01/stellar-exposure-before-mono-short.json",
+          "sha256": "e501c57ffc3dc440c4a56fc933d8c54766289548347808df0bbb3fa4cd69889e",
+          "configHash": "05A826F2FDCE40A18DA219DA96EB31292F2B44BE5763B592003494D599743C2C",
+          "binaryRevision": "1.0.0+4530276e3f8205c63a654daf790100eb8633a335",
+          "operationsPerSecond": 12.843623109017315,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        },
+        "after": {
+          "pathInArchive": "mono-short/_home-dev-01_2026-10-01_10_54_05/In/ebc565e2-0f47-4e20-baf0-3b534ed95715/home-dev-01/stellar-exposure-after-mono-short.json",
+          "sha256": "a44fcb95c130321d88048383976dc63ff8af2e0236cb38ecfcc5c3a1e5ba0244",
+          "configHash": "60777386BBDCFEE70B0D78365A03DF99395AD384695F701B505F2D51551F17B4",
+          "binaryRevision": "1.0.0+7186e0b9ae2b03904d5cdacb5f0cc270fca3c418",
+          "operationsPerSecond": 5.77157425036004,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        }
+      },
+      "p95BudgetMilliseconds": 10000,
+      "budgetsPassed": true
+    },
+    {
+      "workload": "mono-long",
+      "before": {
+        "captureMs": 82.44315,
+        "cpuMs": 91.467,
+        "allocatedBytes": 29674796.0,
+        "queryMilliseconds": 0.36855000000000004,
+        "candidateCount": 4466.5,
+        "visibleObjectCount": 300.0,
+        "processWorkingSetBytes": 313821184.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "after": {
+        "captureMs": 280.1932,
+        "cpuMs": 286.4805,
+        "allocatedBytes": 235511496.0,
+        "queryMilliseconds": 0.40425,
+        "candidateCount": 13386.0,
+        "visibleObjectCount": 4169.5,
+        "processWorkingSetBytes": 322406400.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "beforeP95Ms": 87.2767,
+      "afterP95Ms": 288.1281,
+      "p95Ratio": 3.3013175337747644,
+      "beforePeakBytes": 347070464,
+      "afterPeakBytes": 383725568,
+      "afterStages": {
+        "stellarProjectionProcessCpuMilliseconds": 30.758,
+        "stellarPredictionProcessCpuMilliseconds": 57.832,
+        "stellarReferenceSceneProcessCpuMilliseconds": 2.389,
+        "stellarRenderProcessCpuMilliseconds": 125.1265,
+        "stellarCandidateCount": 8920.0,
+        "stellarAdmittedCount": 4183.5,
+        "stellarTemporalSamples": 25202.5,
+        "stellarPredictionCellVisits": 3225920.0,
+        "stellarRenderCellVisits": 3212416.0,
+        "stellarDirectionEvaluations": 191328.5
+      },
+      "afterQueryProcessCpuMedianMs": 0.40599999999999997,
+      "rawEvidence": {
+        "before": {
+          "pathInArchive": "mono-long/_home-dev-01_2026-10-01_01_47_24/In/563799cd-25e2-4bcc-bd87-db078e50dde7/home-dev-01/stellar-exposure-before-mono-long.json",
+          "sha256": "2a6ba1a50427750cfd964e4aa29cfb2e796b5e558563430073b4d10654e12aa7",
+          "configHash": "05A826F2FDCE40A18DA219DA96EB31292F2B44BE5763B592003494D599743C2C",
+          "binaryRevision": "1.0.0+4530276e3f8205c63a654daf790100eb8633a335",
+          "operationsPerSecond": 11.996381891221606,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        },
+        "after": {
+          "pathInArchive": "mono-long/_home-dev-01_2026-10-01_10_54_16/In/8031c38e-a256-47ce-9e7e-b5fc9fd698f0/home-dev-01/stellar-exposure-after-mono-long.json",
+          "sha256": "ef54f7689d9e64dff6786fb342cdfdbfa8703141118c97adc5b4ffc056f4e7d1",
+          "configHash": "60777386BBDCFEE70B0D78365A03DF99395AD384695F701B505F2D51551F17B4",
+          "binaryRevision": "1.0.0+7186e0b9ae2b03904d5cdacb5f0cc270fca3c418",
+          "operationsPerSecond": 3.5835446639210264,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        }
+      },
+      "p95BudgetMilliseconds": 10000,
+      "budgetsPassed": true
+    },
+    {
+      "workload": "mono-day",
+      "before": {
+        "captureMs": 82.61865,
+        "cpuMs": 91.637,
+        "allocatedBytes": 29662056.0,
+        "queryMilliseconds": 0.3664,
+        "candidateCount": 4287.0,
+        "visibleObjectCount": 300.0,
+        "processWorkingSetBytes": 318201856.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "after": {
+        "captureMs": 359.8521,
+        "cpuMs": 364.5195,
+        "allocatedBytes": 214097416.0,
+        "queryMilliseconds": 0.4293,
+        "candidateCount": 13206.0,
+        "visibleObjectCount": 546.0,
+        "processWorkingSetBytes": 306831360.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "beforeP95Ms": 86.9462,
+      "afterP95Ms": 379.3755,
+      "p95Ratio": 4.363336178004329,
+      "beforePeakBytes": 360062976,
+      "afterPeakBytes": 385126400,
+      "afterStages": {
+        "stellarProjectionProcessCpuMilliseconds": 83.70949999999999,
+        "stellarPredictionProcessCpuMilliseconds": 114.273,
+        "stellarReferenceSceneProcessCpuMilliseconds": 2.267,
+        "stellarRenderProcessCpuMilliseconds": 95.814,
+        "stellarCandidateCount": 8920.0,
+        "stellarAdmittedCount": 547.0,
+        "stellarTemporalSamples": 74511.0,
+        "stellarPredictionCellVisits": 9537408.0,
+        "stellarRenderCellVisits": 1260288.0,
+        "stellarDirectionEvaluations": 563569.0
+      },
+      "afterQueryProcessCpuMedianMs": 0.4305,
+      "rawEvidence": {
+        "before": {
+          "pathInArchive": "mono-day/_home-dev-01_2026-10-01_01_47_29/In/e5e1a7b4-daf1-419e-84e2-cdb8d794cdd6/home-dev-01/stellar-exposure-before-mono-day.json",
+          "sha256": "d3ad9a8cd01ff4b871bf601048bf7b01a2f9b425c3dfbb0907c68fb2efa60a88",
+          "configHash": "43E2FD54FF45FFC32479092E1FDFED3334468832FB2A245752CE8102D5ED8DB4",
+          "binaryRevision": "1.0.0+4530276e3f8205c63a654daf790100eb8633a335",
+          "operationsPerSecond": 11.996232223383279,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        },
+        "after": {
+          "pathInArchive": "mono-day/_home-dev-01_2026-10-01_10_54_31/In/e56f990e-73ca-409d-a887-3ef9fc173b16/home-dev-01/stellar-exposure-after-mono-day.json",
+          "sha256": "0e500749e2da8537ad358147e30588dc8e81871b6ddccaa887fedcf46754e2b9",
+          "configHash": "63A66ED414BF59DAD4D60D56E297FFB342EEDEEB73C3831DAC8B1FB4CF7FD7DF",
+          "binaryRevision": "1.0.0+7186e0b9ae2b03904d5cdacb5f0cc270fca3c418",
+          "operationsPerSecond": 2.769814586488056,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        }
+      },
+      "p95BudgetMilliseconds": 10000,
+      "budgetsPassed": true
+    },
+    {
+      "workload": "cfa-short",
+      "before": {
+        "captureMs": 508.971,
+        "cpuMs": 527.1105,
+        "allocatedBytes": 168896708.0,
+        "queryMilliseconds": 0.39765,
+        "candidateCount": 4403.5,
+        "visibleObjectCount": 300.0,
+        "processWorkingSetBytes": 716689408.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "after": {
+        "captureMs": 576.3097,
+        "cpuMs": 588.5505,
+        "allocatedBytes": 335930728.0,
+        "queryMilliseconds": 0.3917,
+        "candidateCount": 13323.5,
+        "visibleObjectCount": 447.0,
+        "processWorkingSetBytes": 936181760.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "beforeP95Ms": 763.0304,
+      "afterP95Ms": 600.0242,
+      "p95Ratio": 0.786369979492298,
+      "beforePeakBytes": 735629312,
+      "afterPeakBytes": 1124442112,
+      "afterStages": {
+        "stellarProjectionProcessCpuMilliseconds": 7.286,
+        "stellarPredictionProcessCpuMilliseconds": 31.788,
+        "stellarReferenceSceneProcessCpuMilliseconds": 2.1784999999999997,
+        "stellarRenderProcessCpuMilliseconds": 488.398,
+        "stellarCandidateCount": 8920.0,
+        "stellarAdmittedCount": 447.0,
+        "stellarTemporalSamples": 4180.0,
+        "stellarPredictionCellVisits": 534528.0,
+        "stellarRenderCellVisits": 171624.0,
+        "stellarDirectionEvaluations": 35345.5
+      },
+      "afterQueryProcessCpuMedianMs": 0.393,
+      "rawEvidence": {
+        "before": {
+          "pathInArchive": "cfa-short/_home-dev-01_2026-10-01_01_47_50/In/8ebc5b4b-96a3-4600-adbc-7c0bdca234a9/home-dev-01/stellar-exposure-before-cfa-short.json",
+          "sha256": "f24765cda91f2c40b242d88ef5d06e1118a670e101b8c3b792e687d01c05b0b1",
+          "configHash": "03DCC8D0421F3EA4F447B1CB4BC997EE805C599680A0AFA5D0EDBD5CA054BA1B",
+          "binaryRevision": "1.0.0+4530276e3f8205c63a654daf790100eb8633a335",
+          "operationsPerSecond": 1.8126055623716908,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        },
+        "after": {
+          "pathInArchive": "cfa-short/_home-dev-01_2026-10-01_10_54_54/In/de4bf849-34bf-46c0-922b-06a8dbd3edbd/home-dev-01/stellar-exposure-after-cfa-short.json",
+          "sha256": "28e1f50af02eee5ebd7edda1027fe0c3e05667194bfb20570b3e72b87c40fc0b",
+          "configHash": "609EE0C372F92A2F8701CC39FF958D8A7B6A07B2375C0152BD60D735FAACD620",
+          "binaryRevision": "1.0.0+7186e0b9ae2b03904d5cdacb5f0cc270fca3c418",
+          "operationsPerSecond": 1.7231504964778546,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        }
+      },
+      "p95BudgetMilliseconds": 40000,
+      "budgetsPassed": true
+    },
+    {
+      "workload": "cfa-long",
+      "before": {
+        "captureMs": 557.3384000000001,
+        "cpuMs": 573.5005,
+        "allocatedBytes": 168897108.0,
+        "queryMilliseconds": 0.37695,
+        "candidateCount": 4403.5,
+        "visibleObjectCount": 300.0,
+        "processWorkingSetBytes": 719462400.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "after": {
+        "captureMs": 936.6031499999999,
+        "cpuMs": 938.5640000000001,
+        "allocatedBytes": 475508260.0,
+        "queryMilliseconds": 0.40595000000000003,
+        "candidateCount": 13324.5,
+        "visibleObjectCount": 4165.5,
+        "processWorkingSetBytes": 900251648.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "beforeP95Ms": 906.9414,
+      "afterP95Ms": 977.8065,
+      "p95Ratio": 1.0781363602984713,
+      "beforePeakBytes": 734629888,
+      "afterPeakBytes": 1146732544,
+      "afterStages": {
+        "stellarProjectionProcessCpuMilliseconds": 58.087,
+        "stellarPredictionProcessCpuMilliseconds": 84.704,
+        "stellarReferenceSceneProcessCpuMilliseconds": 2.482,
+        "stellarRenderProcessCpuMilliseconds": 734.629,
+        "stellarCandidateCount": 8920.0,
+        "stellarAdmittedCount": 4173.5,
+        "stellarTemporalSamples": 50159.0,
+        "stellarPredictionCellVisits": 6414044.0,
+        "stellarRenderCellVisits": 19219764.0,
+        "stellarDirectionEvaluations": 378298.0
+      },
+      "afterQueryProcessCpuMedianMs": 0.408,
+      "rawEvidence": {
+        "before": {
+          "pathInArchive": "cfa-long/_home-dev-01_2026-10-01_01_48_13/In/2709616a-85c0-4c43-a0a9-9f8e2f916188/home-dev-01/stellar-exposure-before-cfa-long.json",
+          "sha256": "4dcb0604580d8c37f91fcb4817bc5ae8d8a78833d903c0b007ab3373183802a1",
+          "configHash": "03DCC8D0421F3EA4F447B1CB4BC997EE805C599680A0AFA5D0EDBD5CA054BA1B",
+          "binaryRevision": "1.0.0+4530276e3f8205c63a654daf790100eb8633a335",
+          "operationsPerSecond": 1.6862110613186096,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        },
+        "after": {
+          "pathInArchive": "cfa-long/_home-dev-01_2026-10-01_10_55_29/In/668bed62-ee93-41b0-96bf-22687d789f7f/home-dev-01/stellar-exposure-after-cfa-long.json",
+          "sha256": "27e336add84ddb37ab11dbf56ddaf6308e195203b51e2ca8418b62494bf82120",
+          "configHash": "609EE0C372F92A2F8701CC39FF958D8A7B6A07B2375C0152BD60D735FAACD620",
+          "binaryRevision": "1.0.0+7186e0b9ae2b03904d5cdacb5f0cc270fca3c418",
+          "operationsPerSecond": 1.0627472397319082,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        }
+      },
+      "p95BudgetMilliseconds": 40000,
+      "budgetsPassed": true
+    },
+    {
+      "workload": "cfa-day",
+      "before": {
+        "captureMs": 550.952,
+        "cpuMs": 561.8215,
+        "allocatedBytes": 168813540.0,
+        "queryMilliseconds": 0.3609,
+        "candidateCount": 4287.0,
+        "visibleObjectCount": 300.0,
+        "processWorkingSetBytes": 716406784.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "after": {
+        "captureMs": 1090.7909,
+        "cpuMs": 1101.7245,
+        "allocatedBytes": 431278828.0,
+        "queryMilliseconds": 0.41945,
+        "candidateCount": 13207.0,
+        "visibleObjectCount": 1197.5,
+        "processWorkingSetBytes": 620587008.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "beforeP95Ms": 557.5059,
+      "afterP95Ms": 1122.718,
+      "p95Ratio": 2.013822633984681,
+      "beforePeakBytes": 732114944,
+      "afterPeakBytes": 789667840,
+      "afterStages": {
+        "stellarProjectionProcessCpuMilliseconds": 157.30849999999998,
+        "stellarPredictionProcessCpuMilliseconds": 185.5435,
+        "stellarReferenceSceneProcessCpuMilliseconds": 2.3155,
+        "stellarRenderProcessCpuMilliseconds": 697.86,
+        "stellarCandidateCount": 8920.0,
+        "stellarAdmittedCount": 1199.0,
+        "stellarTemporalSamples": 143698.5,
+        "stellarPredictionCellVisits": 18376708.0,
+        "stellarRenderCellVisits": 16105092.0,
+        "stellarDirectionEvaluations": 1091358.0
+      },
+      "afterQueryProcessCpuMedianMs": 0.422,
+      "rawEvidence": {
+        "before": {
+          "pathInArchive": "cfa-day/_home-dev-01_2026-10-01_01_48_34/In/d68ae38c-709e-4f5d-9ff4-4d58cd4e68b4/home-dev-01/stellar-exposure-before-cfa-day.json",
+          "sha256": "1d63a9f5956ce4a93efd5f67dd7abbec21856bda0d9d2c4e7437e1f218771557",
+          "configHash": "59A0D16D5A74C90FF09C561DC2C8A40EA5BEF20ECA6643EEA9719F8C970943DE",
+          "binaryRevision": "1.0.0+4530276e3f8205c63a654daf790100eb8633a335",
+          "operationsPerSecond": 1.81382393578657,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        },
+        "after": {
+          "pathInArchive": "cfa-day/_home-dev-01_2026-10-01_10_56_09/In/0f793746-cf49-44b4-b0cd-3734847142f3/home-dev-01/stellar-exposure-after-cfa-day.json",
+          "sha256": "e29c6151230e10e674d62e6fd413d3b7666bc3a590b0a84bada5cb55585b831b",
+          "configHash": "F2D5FC4A413DB4E705852C0505BA99D11A4E08AF6AEB62D5692513061DCE15D8",
+          "binaryRevision": "1.0.0+7186e0b9ae2b03904d5cdacb5f0cc270fca3c418",
+          "operationsPerSecond": 0.9162882113831456,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        }
+      },
+      "p95BudgetMilliseconds": 40000,
+      "budgetsPassed": true
+    },
+    {
+      "workload": "asi676-short",
+      "before": {
+        "captureMs": 907.11735,
+        "cpuMs": 920.5545,
+        "allocatedBytes": 329376736.0,
+        "queryMilliseconds": 0.3791,
+        "candidateCount": 3949.0,
+        "visibleObjectCount": 300.0,
+        "processWorkingSetBytes": 1214902272.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "after": {
+        "captureMs": 1030.3944000000001,
+        "cpuMs": 1045.974,
+        "allocatedBytes": 486982792.0,
+        "queryMilliseconds": 0.39195,
+        "candidateCount": 12869.0,
+        "visibleObjectCount": 399.0,
+        "processWorkingSetBytes": 1472718848.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "beforeP95Ms": 920.0851,
+      "afterP95Ms": 1066.9141,
+      "p95Ratio": 1.1595819777974885,
+      "beforePeakBytes": 1221185536,
+      "afterPeakBytes": 1922260992,
+      "afterStages": {
+        "stellarProjectionProcessCpuMilliseconds": 7.5865,
+        "stellarPredictionProcessCpuMilliseconds": 30.2975,
+        "stellarReferenceSceneProcessCpuMilliseconds": 1.994,
+        "stellarRenderProcessCpuMilliseconds": 941.9780000000001,
+        "stellarCandidateCount": 8920.0,
+        "stellarAdmittedCount": 399.5,
+        "stellarTemporalSamples": 3967.5,
+        "stellarPredictionCellVisits": 507840.0,
+        "stellarRenderCellVisits": 153408.0,
+        "stellarDirectionEvaluations": 35135.0
+      },
+      "afterQueryProcessCpuMedianMs": 0.39399999999999996,
+      "rawEvidence": {
+        "before": {
+          "pathInArchive": "asi676-short/_home-dev-01_2026-10-01_01_49_08/In/ae52552d-279f-4fda-86bb-6df01d28f3e5/home-dev-01/stellar-exposure-before-asi676-short.json",
+          "sha256": "f3510581d6b8bd4bc43720678f4e94b2b1e3c1327d4fcd2d6ad1a61c91852739",
+          "configHash": "434A46ED2A9142FE0D8F08A9A1851D739ECB0D42C0159D71F384537A4E68B51F",
+          "binaryRevision": "1.0.0+4530276e3f8205c63a654daf790100eb8633a335",
+          "operationsPerSecond": 1.10031952362033,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        },
+        "after": {
+          "pathInArchive": "asi676-short/_home-dev-01_2026-10-01_10_56_48/In/7bcb2608-5fb1-429d-bb9a-8b343d43917f/home-dev-01/stellar-exposure-after-asi676-short.json",
+          "sha256": "ef3424295ab055a298321e4b2ed7985a8eaa8ae5f10157073a462d8684d8b902",
+          "configHash": "83F8FBAE54B787DB7DBFB85A2DEBC4AEB672340E20FE8DAC893C885C174D05F5",
+          "binaryRevision": "1.0.0+7186e0b9ae2b03904d5cdacb5f0cc270fca3c418",
+          "operationsPerSecond": 0.969226590522158,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        }
+      },
+      "p95BudgetMilliseconds": 40000,
+      "budgetsPassed": true
+    },
+    {
+      "workload": "asi676-long",
+      "before": {
+        "captureMs": 1082.6799,
+        "cpuMs": 1098.7935,
+        "allocatedBytes": 329376852.0,
+        "queryMilliseconds": 0.3789,
+        "candidateCount": 3949.0,
+        "visibleObjectCount": 300.0,
+        "processWorkingSetBytes": 1215258624.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "after": {
+        "captureMs": 1514.97165,
+        "cpuMs": 1518.487,
+        "allocatedBytes": 628455604.0,
+        "queryMilliseconds": 0.41075,
+        "candidateCount": 12868.5,
+        "visibleObjectCount": 3948.5,
+        "processWorkingSetBytes": 1506308096.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "beforeP95Ms": 1150.6602,
+      "afterP95Ms": 1556.7423,
+      "p95Ratio": 1.3529122672358007,
+      "beforePeakBytes": 1220009984,
+      "afterPeakBytes": 1544978432,
+      "afterStages": {
+        "stellarProjectionProcessCpuMilliseconds": 75.66550000000001,
+        "stellarPredictionProcessCpuMilliseconds": 99.60900000000001,
+        "stellarReferenceSceneProcessCpuMilliseconds": 2.2960000000000003,
+        "stellarRenderProcessCpuMilliseconds": 1282.977,
+        "stellarCandidateCount": 8920.0,
+        "stellarAdmittedCount": 3959.0,
+        "stellarTemporalSamples": 63476.5,
+        "stellarPredictionCellVisits": 8124992.0,
+        "stellarRenderCellVisits": 24324096.0,
+        "stellarDirectionEvaluations": 502733.5
+      },
+      "afterQueryProcessCpuMedianMs": 0.414,
+      "rawEvidence": {
+        "before": {
+          "pathInArchive": "asi676-long/_home-dev-01_2026-10-01_01_49_49/In/99cf92e5-60c6-4a72-bc89-ebb871b76362/home-dev-01/stellar-exposure-before-asi676-long.json",
+          "sha256": "cf4f51768b5c9370e95d8e075b8dcf2b2ccb90433bc91cf70783fcbe916a427e",
+          "configHash": "434A46ED2A9142FE0D8F08A9A1851D739ECB0D42C0159D71F384537A4E68B51F",
+          "binaryRevision": "1.0.0+4530276e3f8205c63a654daf790100eb8633a335",
+          "operationsPerSecond": 0.9179069800593245,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        },
+        "after": {
+          "pathInArchive": "asi676-long/_home-dev-01_2026-10-01_10_57_44/In/4f62fa21-7ace-4cad-a99f-16f69cb0f3b5/home-dev-01/stellar-exposure-after-asi676-long.json",
+          "sha256": "0c471c28d45c6c7cb5296581096bc6ca7e4fa5403bf2f704bef19c267def457b",
+          "configHash": "83F8FBAE54B787DB7DBFB85A2DEBC4AEB672340E20FE8DAC893C885C174D05F5",
+          "binaryRevision": "1.0.0+7186e0b9ae2b03904d5cdacb5f0cc270fca3c418",
+          "operationsPerSecond": 0.658987531819707,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        }
+      },
+      "p95BudgetMilliseconds": 40000,
+      "budgetsPassed": true
+    },
+    {
+      "workload": "asi676-day",
+      "before": {
+        "captureMs": 1090.3025499999999,
+        "cpuMs": 1102.589,
+        "allocatedBytes": 329366712.0,
+        "queryMilliseconds": 0.40435,
+        "candidateCount": 3908.0,
+        "visibleObjectCount": 300.0,
+        "processWorkingSetBytes": 1113464832.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "after": {
+        "captureMs": 1876.1106,
+        "cpuMs": 1888.384,
+        "allocatedBytes": 628771944.0,
+        "queryMilliseconds": 0.4194,
+        "candidateCount": 12829.0,
+        "visibleObjectCount": 1525.5,
+        "processWorkingSetBytes": 910159872.0,
+        "readBytes": 0.0,
+        "writeBytes": 0.0
+      },
+      "beforeP95Ms": 1099.1419,
+      "afterP95Ms": 1915.7048,
+      "p95Ratio": 1.7429094459960082,
+      "beforePeakBytes": 1190916096,
+      "afterPeakBytes": 1283342336,
+      "afterStages": {
+        "stellarProjectionProcessCpuMilliseconds": 212.2215,
+        "stellarPredictionProcessCpuMilliseconds": 237.7055,
+        "stellarReferenceSceneProcessCpuMilliseconds": 2.206,
+        "stellarRenderProcessCpuMilliseconds": 1377.301,
+        "stellarCandidateCount": 8920.0,
+        "stellarAdmittedCount": 1526.5,
+        "stellarTemporalSamples": 188454.5,
+        "stellarPredictionCellVisits": 24122176.0,
+        "stellarRenderCellVisits": 28136448.0,
+        "stellarDirectionEvaluations": 1494803.0
+      },
+      "afterQueryProcessCpuMedianMs": 0.421,
+      "rawEvidence": {
+        "before": {
+          "pathInArchive": "asi676-day/_home-dev-01_2026-10-01_01_50_29/In/cbdaa35d-3750-4c2b-af74-0a26b60aca66/home-dev-01/stellar-exposure-before-asi676-day.json",
+          "sha256": "2044f084a0b872d76d5197fddf077c1e10d0428cabade0197abd11685981648b",
+          "configHash": "BDA4BD6B56952EBC40DCEFE6199F6F7122A437A3519D916498E02944016B9E38",
+          "binaryRevision": "1.0.0+4530276e3f8205c63a654daf790100eb8633a335",
+          "operationsPerSecond": 0.9161805277904077,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        },
+        "after": {
+          "pathInArchive": "asi676-day/_home-dev-01_2026-10-01_10_58_52/In/813e8917-acc2-43ed-ad39-1f759d0f3457/home-dev-01/stellar-exposure-after-asi676-day.json",
+          "sha256": "5a0d0175b2a7e27782b139f367825e517627e874d60d7bdc525011fa86ca7045",
+          "configHash": "60FECF85275423D7B2FAFEFFC715A76B0CE201D1C8B25781668D5BD98197AB0A",
+          "binaryRevision": "1.0.0+7186e0b9ae2b03904d5cdacb5f0cc270fca3c418",
+          "operationsPerSecond": 0.5332849906934036,
+          "os": "Ubuntu 24.04.5 LTS",
+          "runtime": "10.0.12",
+          "processors": 12
+        }
+      },
+      "p95BudgetMilliseconds": 40000,
+      "budgetsPassed": true
+    }
+  ],
+  "reproduction": {
+    "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+    "filter": "FullyQualifiedName~VirtualStellarExposureResourceTests.ConfiguredStellarExposureResources",
+    "command": "dotnet test <project> --no-build --no-restore --configuration Release --filter <filter> --results-directory <fresh-workload-directory> --logger trx;LogFileName=resource.trx",
+    "environment": {
+      "DOTNET_TieredCompilation": "0",
+      "HVO_EVIDENCE_REVISION": "Exact built Git SHA (assembly InformationalVersion must match)",
+      "HVO_ASTROMETRY_CATALOG_ROOT": "Installed verified hyg-v42-production snapshot root",
+      "HVO_EXPOSURE_LABEL": "before or after; before requires baseline revision",
+      "HVO_EXPOSURE_WORKLOAD": "One of the nine names in workloads"
+    },
+    "baselineProduction": "4530276e adds only the measurement harness to fceb1000; production source unchanged",
+    "comparisonChanges": "Same physical inputs; legacy cap300/stationary rendering versus safety cap32768/complete selection, expected-SNR admission and bounded motion integration"
+  },
+  "interpretation": [
+    "Mono long-exposure p95 rises from 87.28ms to 288.13ms (3.30x). The baseline retained300 sources; the corrected path retains a median 4169.5 sources over 25202.5 temporal samples from 8920.0 candidates. Median CPU is 91.47ms before/286.48ms after; allocations 29674796/235511496 bytes. Additional complete-catalog evaluation and temporal source work explains the change in workload.",
+    "Short Mono renders fewer admitted sources but evaluates thousands of complete candidates and aperture predictions before rejection. All Mono cases allocate more than the legacy300-object route; raw results report that cost. Capture timing varies between the original and correction measurements; identical pixels do not imply identical timings or a performance gain caused by the correction.",
+    "All nine unchanged predeclared resource budgets pass on corrected production head7186e0b9. Maximum measured p95 is 1915.7048ms; maximum cumulative process peak 1922260992 bytes (1.790GiB). Before and corrected-after each retain270 observations in fresh serial processes. No ARM runtime or physical-camera qualification is claimed."
+  ],
+  "correctionPayloadComparison": {
+    "comparedWith": "bd68f0e623f2ee89150699265fc6e1b6146e9ab7 (same production source as initial reviewed b380badd)",
+    "meaning": "All270 default-profile measured payload hashes are identical. New saturation/narrow-PSF/capture-location boundary behavior is qualified separately by regression/reference tests; this comparison does not qualify every supported parameter combination.",
+    "workloads": [
+      {
+        "workload": "mono-short",
+        "matchingPayloads": 30,
+        "oldRawSha256": "6f4feb54143cc4c3409effc00f5e7e3037ca039fbbc5659528f3b6aeafe79c61",
+        "newRawSha256": "a44fcb95c130321d88048383976dc63ff8af2e0236cb38ecfcc5c3a1e5ba0244",
+        "oldRevision": "bd68f0e623f2ee89150699265fc6e1b6146e9ab7",
+        "newRevision": "7186e0b9ae2b03904d5cdacb5f0cc270fca3c418"
+      },
+      {
+        "workload": "mono-long",
+        "matchingPayloads": 30,
+        "oldRawSha256": "3cf358839b10d73325cd72cbc2d1e038e3c6a071cb40dafe50a7f257de0d0024",
+        "newRawSha256": "ef54f7689d9e64dff6786fb342cdfdbfa8703141118c97adc5b4ffc056f4e7d1",
+        "oldRevision": "bd68f0e623f2ee89150699265fc6e1b6146e9ab7",
+        "newRevision": "7186e0b9ae2b03904d5cdacb5f0cc270fca3c418"
+      },
+      {
+        "workload": "mono-day",
+        "matchingPayloads": 30,
+        "oldRawSha256": "4cba7330773d20becc2512b2fba535e4228df94643fafd87850c09e99194fcfd",
+        "newRawSha256": "0e500749e2da8537ad358147e30588dc8e81871b6ddccaa887fedcf46754e2b9",
+        "oldRevision": "bd68f0e623f2ee89150699265fc6e1b6146e9ab7",
+        "newRevision": "7186e0b9ae2b03904d5cdacb5f0cc270fca3c418"
+      },
+      {
+        "workload": "cfa-short",
+        "matchingPayloads": 30,
+        "oldRawSha256": "686676c505cd6e94f5084dc6f66232995b3a41ec3406d1c5b88a4935b4814e9e",
+        "newRawSha256": "28e1f50af02eee5ebd7edda1027fe0c3e05667194bfb20570b3e72b87c40fc0b",
+        "oldRevision": "bd68f0e623f2ee89150699265fc6e1b6146e9ab7",
+        "newRevision": "7186e0b9ae2b03904d5cdacb5f0cc270fca3c418"
+      },
+      {
+        "workload": "cfa-long",
+        "matchingPayloads": 30,
+        "oldRawSha256": "edbed2915f39225f9e7d4bf80fbf75fdd6f5049e344641720eefe556e04f62cb",
+        "newRawSha256": "27e336add84ddb37ab11dbf56ddaf6308e195203b51e2ca8418b62494bf82120",
+        "oldRevision": "bd68f0e623f2ee89150699265fc6e1b6146e9ab7",
+        "newRevision": "7186e0b9ae2b03904d5cdacb5f0cc270fca3c418"
+      },
+      {
+        "workload": "cfa-day",
+        "matchingPayloads": 30,
+        "oldRawSha256": "1a7602d71cca2e063137602206b984acfd0f412aa9efb74c101e6ec8a03ecc22",
+        "newRawSha256": "e29c6151230e10e674d62e6fd413d3b7666bc3a590b0a84bada5cb55585b831b",
+        "oldRevision": "bd68f0e623f2ee89150699265fc6e1b6146e9ab7",
+        "newRevision": "7186e0b9ae2b03904d5cdacb5f0cc270fca3c418"
+      },
+      {
+        "workload": "asi676-short",
+        "matchingPayloads": 30,
+        "oldRawSha256": "b6a9d02fbd349b1a639f9a90facc2143ac007d59bc9d7eecc93a97a51b888df0",
+        "newRawSha256": "ef3424295ab055a298321e4b2ed7985a8eaa8ae5f10157073a462d8684d8b902",
+        "oldRevision": "bd68f0e623f2ee89150699265fc6e1b6146e9ab7",
+        "newRevision": "7186e0b9ae2b03904d5cdacb5f0cc270fca3c418"
+      },
+      {
+        "workload": "asi676-long",
+        "matchingPayloads": 30,
+        "oldRawSha256": "ec75b0871453eec6099257ddbc92d523c95bad7845cc316000c6e617c5269bad",
+        "newRawSha256": "0c471c28d45c6c7cb5296581096bc6ca7e4fa5403bf2f704bef19c267def457b",
+        "oldRevision": "bd68f0e623f2ee89150699265fc6e1b6146e9ab7",
+        "newRevision": "7186e0b9ae2b03904d5cdacb5f0cc270fca3c418"
+      },
+      {
+        "workload": "asi676-day",
+        "matchingPayloads": 30,
+        "oldRawSha256": "b8214c7e2dd8ebc9f4c0bb151a0927f9c222c26c3ae912d39413201712539205",
+        "newRawSha256": "5a0d0175b2a7e27782b139f367825e517627e874d60d7bdc525011fa86ca7045",
+        "oldRevision": "bd68f0e623f2ee89150699265fc6e1b6146e9ab7",
+        "newRevision": "7186e0b9ae2b03904d5cdacb5f0cc270fca3c418"
+      }
+    ]
+  }
+}

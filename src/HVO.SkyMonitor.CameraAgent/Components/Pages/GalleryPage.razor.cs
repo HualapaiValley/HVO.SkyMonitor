@@ -9,11 +9,12 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
+public sealed partial class GalleryPage : SiteTimeComponent, IAsyncDisposable
 {
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentGalleryPage? _page;
     private string? _errorMessage;
+    private string? _draftZone;
     private string? _draftFrom;
     private string? _draftTo;
     private string? _draftOrigin;
@@ -33,9 +34,12 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
     private IReadOnlyList<CameraAgentGalleryCapture>? _visibleCache;
     private CameraAgentGalleryPage? _visibleCachePage;
     private string? _visibleCacheSearch;
+    private Dictionary<Guid, CameraAgentArchiveCardLinks> _cardLinks = [];
+    private Dictionary<Guid, CameraAgentProduct> _cardProducts = [];
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
     [Inject] internal ICameraAgentCapturePresentationProjector CapturePresentation { get; set; } = default!;
+    [Inject] internal ICameraAgentArchiveCardUiService ArchiveCards { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
 
     [Parameter, SupplyParameterFromQuery(Name = "from")] public string? From { get; set; }
@@ -102,6 +106,23 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
 
     private int ArtifactCount => VisibleItems.Sum(static capture => capture.Artifacts.Count);
 
+    private int LinkedCandidateCount => VisibleItems.SelectMany(capture =>
+        _cardLinks.TryGetValue(capture.CaptureId, out var links) ? links.CandidateIds : []).Distinct().Count();
+
+    private bool CandidateLinksAvailable => VisibleItems.All(capture =>
+        _cardLinks.TryGetValue(capture.CaptureId, out var links) && links.CandidateLinksAvailable);
+
+    private CameraAgentArchiveCardLinks? CardLinks(Guid captureId)
+        => _cardLinks.TryGetValue(captureId, out var links) ? links : null;
+
+    private CameraAgentProduct? CardProduct(Guid captureId)
+        => _cardProducts.TryGetValue(captureId, out var product) ? product : null;
+
+    private Uri? RunUrl(Guid captureId)
+        => CardLinks(captureId)?.ExecutionId is { } id
+            ? new Uri(FormattableString.Invariant($"/operations/pipeline/executions/{id:D}"), UriKind.Relative)
+            : null;
+
     private async Task LoadAsync()
     {
         var generation = Interlocked.Increment(ref _generation);
@@ -132,12 +153,50 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
             }
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
-                _page = null;
-                _errorMessage = null;
-                NavigationManager.NavigateTo("/Account/AccessDenied");
+                AccessDenied();
             }
             else if (result.IsSuccess && result.Value is not null)
             {
+                var links = new Dictionary<Guid, CameraAgentArchiveCardLinks>();
+                var products = new Dictionary<Guid, CameraAgentProduct>();
+                foreach (var capture in result.Value.Items)
+                {
+                    cancellation.Token.ThrowIfCancellationRequested();
+                    links[capture.CaptureId] = await ArchiveCards.GetLinksAsync(capture.CaptureId, cancellation.Token);
+                    if (generation != Volatile.Read(ref _generation))
+                    {
+                        return;
+                    }
+                    if (links[capture.CaptureId].AuthorizationDenied)
+                    {
+                        AccessDenied();
+                        return;
+                    }
+                    if (ArchiveCardFacts.DisplayArtifact(capture, CardPresentation(capture)) is { } artifact)
+                    {
+                        var product = await OperatorService.GetProductDetailAsync(artifact.ArtifactId, cancellation.Token);
+                        if (generation != Volatile.Read(ref _generation))
+                        {
+                            return;
+                        }
+                        if (product.Kind == OperatorUiResultKind.Unauthorized)
+                        {
+                            AccessDenied();
+                            return;
+                        }
+                        if (product.IsSuccess && product.Value?.Product is { } retained &&
+                            retained.CaptureId == capture.CaptureId && retained.ArtifactId == artifact.ArtifactId)
+                        {
+                            products[capture.CaptureId] = retained;
+                        }
+                    }
+                }
+                if (generation != Volatile.Read(ref _generation))
+                {
+                    return;
+                }
+                _cardLinks = links;
+                _cardProducts = products;
                 _page = result.Value;
             }
             else
@@ -156,6 +215,15 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
                 _isLoading = false;
             }
         }
+    }
+
+    private void AccessDenied()
+    {
+        _page = null;
+        _cardLinks = [];
+        _cardProducts = [];
+        _errorMessage = null;
+        NavigationManager.NavigateTo("/Account/AccessDenied");
     }
 
     private bool TryBuildQuery(out CameraAgentGalleryQuery? query, out string? validationMessage)
@@ -209,6 +277,18 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
 
     private Task ApplyFiltersAsync()
     {
+        if (!string.Equals(_draftZone, SiteTime.Label, StringComparison.Ordinal))
+        {
+            _errorMessage = "The site time zone changed while these filters were open. Reload before entering times.";
+            return Task.CompletedTask;
+        }
+        var fromValid = TryFilterInput(_draftFrom, From, out var fromUtc, out var fromError);
+        var toValid = TryFilterInput(_draftTo, To, out var toUtc, out var toError);
+        if (!fromValid || !toValid)
+        {
+            _errorMessage = fromError ?? toError;
+            return Task.CompletedTask;
+        }
         // The primary product/outcome selects and the advanced role/status selects address the same query fields.
         // Clear the advanced value when the primary one is set so no visible control is silently ignored.
         if (_draftProduct != "all")
@@ -221,8 +301,8 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
         }
         var values = new Dictionary<string, object?>
         {
-            ["from"] = EmptyToNull(_draftFrom),
-            ["to"] = EmptyToNull(_draftTo),
+            ["from"] = fromUtc?.ToString("O", CultureInfo.InvariantCulture),
+            ["to"] = toUtc?.ToString("O", CultureInfo.InvariantCulture),
             ["origin"] = EmptyToNull(_draftOrigin),
             ["role"] = EmptyToNull(_draftRole),
             ["recipe"] = EmptyToNull(_draftRecipe),
@@ -239,6 +319,19 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
         };
         NavigationManager.NavigateTo(NavigationManager.GetUriWithQueryParameters("/gallery", values));
         return Task.CompletedTask;
+    }
+
+    private bool TryFilterInput(string? entered, string? recorded, out DateTimeOffset? utc, out string? error)
+    {
+        // An unchanged URL instant already identifies one occurrence of a repeated local hour.
+        if (TryDate(recorded, out var original) && original is { } value &&
+            string.Equals(entered, SiteTime.Input(value), StringComparison.Ordinal))
+        {
+            utc = value;
+            error = null;
+            return true;
+        }
+        return SiteTime.TryInput(entered, out utc, out error);
     }
 
     private void ClearFilters() => NavigationManager.NavigateTo("/gallery");
@@ -265,8 +358,9 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
 
     private void CopyParametersToDraft()
     {
-        _draftFrom = From;
-        _draftTo = To;
+        _draftZone = SiteTime.Label;
+        _draftFrom = TryDate(From, out var from) && from is { } first ? SiteTime.Input(first) : From;
+        _draftTo = TryDate(To, out var to) && to is { } last ? SiteTime.Input(last) : To;
         _draftOrigin = Origin;
         _draftRole = Role;
         _draftRecipe = Recipe;
@@ -317,9 +411,6 @@ public sealed partial class GalleryPage : ComponentBase, IAsyncDisposable
             "returnUrl",
             returnUrl), UriKind.Relative);
     }
-
-    internal static string FormatCaptureTime(DateTimeOffset value) =>
-        value.ToLocalTime().ToString("MMM d, yyyy HH:mm:ss", CultureInfo.InvariantCulture);
 
     private static bool TryDate(string? value, out DateTimeOffset? parsed)
     {

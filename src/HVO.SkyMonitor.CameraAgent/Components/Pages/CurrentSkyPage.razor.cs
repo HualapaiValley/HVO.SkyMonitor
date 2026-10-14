@@ -6,7 +6,7 @@ using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
+public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 {
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(5);
@@ -16,7 +16,12 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private Task? _pollTask;
     private CameraAgentCurrentImagePresentation? _presentation;
     private CameraAgentCurrentSkyFacts? _facts;
+    private CameraAgentCurrentSkyOperations? _operations;
+    private CameraAgentCaptureTransientView? _transient;
+    private string? _transientMessage;
+    private long _transientGeneration;
     private CameraAgentProductDetail? _combinedProduct;
+    private TimeSpan? _combinedObservationSpan;
     private string? _lineageMessage;
     private readonly HashSet<Guid> _failedSourcePreviews = [];
     private Guid? _lineageArtifactId;
@@ -51,6 +56,10 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     }
     private ElementReference _layerRoot;
     private ElementReference _figure;
+    private bool _viewerOpen;
+    private DotNetObjectReference<CurrentSkyPage>? _viewerReference;
+    private string? _viewerError;
+    private (Guid CaptureId, long Generation, OperatorUiResult<CameraAgentLayeredPresentation> Result)? _deferredLayers;
     private string? _layerMessage;
     private string? _saveMessage;
     private string? _saveError;
@@ -105,10 +114,14 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             new(CameraAgentPresentationSystemState.Standby, "Retained capture evidence, not current camera health.", capture.DurableIngressUtc),
             display, display, false, archive.Presentation.SelectedStage, archive.Presentation.Stages, false, false);
         _facts = archive.Facts?.CaptureId == capture.CaptureId ? archive.Facts : null;
+        _operations = null;
+        _transient = null;
+        _transientMessage = null;
         _initialLoading = false;
         _selectedStage = ResolveSelection(_presentation, sameCapture ? _selectedStage : null);
         _liveExecutionId = null;
         _combinedProduct = null;
+        _combinedObservationSpan = null;
         _lineageArtifactId = _facts?.CombinedLineage?.ArtifactId;
         _lineageMessage = null;
         _failedSourcePreviews.Clear();
@@ -117,6 +130,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         if (_lineageArtifactId is { } artifactId)
             _ = LoadLineageAsync(artifactId, capture.CaptureId, _lifetime.Token);
         _ = LoadLiveRunLinkAsync(capture.CaptureId, _lifetime.Token);
+        _ = LoadTransientAsync(capture.CaptureId, _lifetime.Token);
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -185,7 +199,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
 
     private async Task RequestRefreshAsync(CancellationToken cancellationToken)
     {
-        if (IsArchived || _accessDenied || _disposeStarted != 0) return;
+        if (IsArchived || _accessDenied || _disposeStarted != 0 || _viewerOpen) return;
         Interlocked.Exchange(ref _refreshRequested, 1);
         await _refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -211,24 +225,28 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             var result = await OperatorService.GetCurrentSkyViewAsync(timeout.Token).ConfigureAwait(false);
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
-                _accessDenied = true;
-                await InvokeAsync(() => NavigationManager.NavigateTo("/Account/AccessDenied")).ConfigureAwait(false);
+                await InvokeAsync(RevokeAccess).ConfigureAwait(false);
                 return;
             }
             var displayCaptureId = result.IsSuccess ? result.Value?.Presentation.DisplayCapture?.CaptureId : null;
             await InvokeAsync(() =>
             {
+                if (_accessDenied || _disposeStarted != 0 || _viewerOpen) { _refreshing = false; return; }
                 if (result.IsSuccess && result.Value is not null)
                 {
                     var wasLayered = ShowLayeredHero;
                     var previousBaseUrl = ProcessedBaseSlot?.PreviewUrl;
                     _presentation = result.Value.Presentation;
                     _facts = result.Value.Facts;
+                    _operations = result.Value.Operations;
                     if (_runCaptureId != displayCaptureId)
                     {
+                        _transient = null;
+                        _transientMessage = null;
                         _liveExecutionId = null;
                         _runCaptureId = displayCaptureId;
                         _combinedProduct = null;
+                        _combinedObservationSpan = null;
                         _lineageArtifactId = null;
                         _lineageMessage = null;
                         ResetLayers(displayCaptureId, cancellationToken);
@@ -237,6 +255,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                     if (_lineageArtifactId != combinedId)
                     {
                         _combinedProduct = null;
+                        _combinedObservationSpan = null;
                         _lineageMessage = null;
                         _lineageArtifactId = combinedId;
                         if (combinedId is { } artifactId)
@@ -263,17 +282,19 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
                 _refreshing = false;
                 StateHasChanged();
             }).ConfigureAwait(false);
-            if (displayCaptureId is { } captureId)
+            if (!_accessDenied && _disposeStarted == 0 && displayCaptureId is { } captureId)
             {
                 // The image is already visible. A slow optional run-link lookup cannot make
                 // the five-second current-sky refresh appear to have failed.
                 _ = LoadLiveRunLinkAsync(captureId, cancellationToken);
+                _ = LoadTransientAsync(captureId, cancellationToken);
             }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             await InvokeAsync(() =>
             {
+                if (_accessDenied || _disposeStarted != 0) return;
                 _errorMessage = "The current image refresh exceeded its five-second deadline.";
                 _initialLoading = false;
                 _refreshing = false;
@@ -287,22 +308,61 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional lineage does not interrupt the current image.")]
     private async Task LoadLineageAsync(Guid artifactId, Guid? captureId, CancellationToken cancellationToken)
     {
+        if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || cancellationToken.IsCancellationRequested) return;
+        var lineage = _facts?.CombinedLineage;
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(3));
             var result = await OperatorService.GetProductDetailAsync(artifactId, timeout.Token).ConfigureAwait(false);
+            if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || timeout.IsCancellationRequested) return;
+            if (result.Kind == OperatorUiResultKind.Unauthorized)
+            {
+                await InvokeAsync(RevokeAccess).ConfigureAwait(false);
+                return;
+            }
+            TimeSpan? span = null;
+            if (result.IsSuccess && result.Value is { } product && product.Product.ArtifactId == artifactId &&
+                product.Product.CaptureId == captureId && lineage?.ArtifactId == artifactId &&
+                !product.SourcesTruncated && product.Sources.Count == lineage.SourceCount && lineage.SourceCount is > 0 and <= 8 &&
+                product.Product.SourceCount == lineage.SourceCount &&
+                product.Sources.Select(static source => source.ArtifactId).SequenceEqual(lineage.SourceArtifactIds))
+            {
+                var sources = new List<CameraAgentGalleryCapture>(lineage.SourceCount);
+                try
+                {
+                    foreach (var source in product.Sources)
+                    {
+                        if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || timeout.IsCancellationRequested) return;
+                        if (source.CaptureId is not { } sourceCaptureId) break;
+                        var read = await OperatorService.GetSourceCaptureAsync(sourceCaptureId, timeout.Token).ConfigureAwait(false);
+                        if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || timeout.IsCancellationRequested) return;
+                        if (read.Kind == OperatorUiResultKind.Unauthorized)
+                        {
+                            await InvokeAsync(RevokeAccess).ConfigureAwait(false);
+                            return;
+                        }
+                        if (!read.IsSuccess || read.Value is not { } capture) break;
+                        sources.Add(capture);
+                    }
+                    span = CameraAgentCombinedSpanProjector.Project(lineage, product, sources, captureId!.Value);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception) { /* Optional source timing never hides a successfully read product. */ }
+            }
             await InvokeAsync(() =>
             {
-                if (_accessDenied || _disposeStarted != 0 || _runCaptureId != captureId || _lineageArtifactId != artifactId) return;
+                if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || _runCaptureId != captureId || _lineageArtifactId != artifactId) return;
                 if (result.Kind == OperatorUiResultKind.Unauthorized)
                 {
-                    _accessDenied = true;
-                    NavigationManager.NavigateTo("/Account/AccessDenied");
+                    RevokeAccess();
                     return;
                 }
                 if (result.IsSuccess && result.Value is { } detail && detail.Product.ArtifactId == artifactId && detail.Product.CaptureId == captureId)
+                {
                     _combinedProduct = detail;
+                    _combinedObservationSpan = span;
+                }
                 else
                     _lineageMessage = "Source details are unavailable; the recorded source artifact IDs remain visible.";
                 StateHasChanged();
@@ -313,11 +373,32 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         {
             await InvokeAsync(() =>
             {
-                if (_disposeStarted != 0 || _runCaptureId != captureId || _lineageArtifactId != artifactId) return;
+                if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || _runCaptureId != captureId || _lineageArtifactId != artifactId) return;
                 _lineageMessage = "Source details are unavailable; the recorded source artifact IDs remain visible.";
                 StateHasChanged();
             }).ConfigureAwait(false);
         }
+    }
+
+    private void RevokeAccess()
+    {
+        if (_disposeStarted != 0) return;
+        _deferredLayers = null;
+        _accessDenied = true;
+        _lifetime?.Cancel();
+        _layerCancellation?.Cancel();
+        _viewerOpen = false;
+        _presentation = null;
+        _facts = null;
+        _operations = null;
+        _transient = null;
+        _transientMessage = null;
+        _layers = null;
+        _combinedProduct = null;
+        _combinedObservationSpan = null;
+        _selectedLayers.Clear();
+        StateHasChanged();
+        NavigationManager.NavigateTo("/Account/AccessDenied");
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed", Justification = "The optional read only uses the captured cancellation token; its generation guard discards late results.")]
@@ -333,6 +414,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
             previous.Dispose();
         }
         _layers = null;
+        _deferredLayers = null;
         _layerMessage = null;
         _saveMessage = null;
         _saveError = null;
@@ -355,7 +437,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
 
     private void TryLoadLayers(Guid? captureId)
     {
-        if (captureId is not { } id || _layers is not null || _layerLoading || _accessDenied ||
+        if (captureId is not { } id || _layers is not null || _layerLoading || _accessDenied || _viewerOpen ||
             _layerCancellation is not { IsCancellationRequested: false } cancellation) return;
         _layerLoading = true;
         _ = LoadLayersAsync(id, Volatile.Read(ref _layerGeneration), cancellation.Token);
@@ -364,59 +446,59 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional layers must never break current-image refresh.")]
     private async Task LoadLayersAsync(Guid captureId, long generation, CancellationToken cancellation)
     {
+        OperatorUiResult<CameraAgentLayeredPresentation> result;
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
             timeout.CancelAfter(TimeSpan.FromSeconds(5));
-            var result = await OperatorService.GetLayeredPresentationAsync(captureId, timeout.Token).ConfigureAwait(false);
-            await InvokeAsync(() =>
-            {
-                if (generation != Volatile.Read(ref _layerGeneration) || _runCaptureId != captureId || cancellation.IsCancellationRequested || _accessDenied) return;
-                if (result.Kind == OperatorUiResultKind.Unauthorized)
-                {
-                    _accessDenied = true;
-                    NavigationManager.NavigateTo("/Account/AccessDenied");
-                }
-                else if (result.IsSuccess && result.Value is { } value && value.CaptureId == captureId)
-                {
-                    _layers = value;
-                    _layersNotRetained = false;
-                    _layerMessage = null;
-                    _selectedLayers = value.Layers.Where(static layer => layer.EnabledByDefault)
-                        .Select(static layer => layer.IdentitySha256).ToHashSet(StringComparer.Ordinal);
-                    _bindLayers = true;
-                    StateHasChanged();
-                }
-                else
-                {
-                    _layersNotRetained = result.Kind == OperatorUiResultKind.NotFound;
-                    _layerMessage = result.Message ?? "Structured layers are unavailable for this capture.";
-                    StateHasChanged();
-                }
-            }).ConfigureAwait(false);
+            result = await OperatorService.GetLayeredPresentationAsync(captureId, timeout.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
-            // A newer capture, disposal, or the optional deadline superseded this read.
+            return;
         }
         catch (Exception)
         {
-            await InvokeAsync(() =>
-            {
-                if (generation != Volatile.Read(ref _layerGeneration) || cancellation.IsCancellationRequested || _accessDenied) return;
-                _layerMessage = "Structured layers are temporarily unavailable.";
-                StateHasChanged();
-            }).ConfigureAwait(false);
+            result = OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable,
+                "Structured layers are temporarily unavailable.");
         }
-        finally
+        if (cancellation.IsCancellationRequested || Volatile.Read(ref _disposeStarted) != 0) return;
+        await InvokeAsync(() => ApplyLayerResult(captureId, generation, result)).ConfigureAwait(false);
+    }
+
+    private void ApplyLayerResult(Guid captureId, long generation, OperatorUiResult<CameraAgentLayeredPresentation> result)
+    {
+        if (generation != _layerGeneration || _runCaptureId != captureId || _disposeStarted != 0 || _accessDenied ||
+            _layerCancellation?.IsCancellationRequested != false) return;
+        if (result.Kind == OperatorUiResultKind.Unauthorized)
         {
-            await InvokeAsync(() =>
-            {
-                if (generation != Volatile.Read(ref _layerGeneration) || cancellation.IsCancellationRequested) return;
-                _layerLoading = false;
-                StateHasChanged();
-            }).ConfigureAwait(false);
+            RevokeAccess();
+            return;
         }
+        // Keep the actual displayed base and controls frozen, including terminal absence/failure.
+        // Retain one completed result, not a waiting task or its timeout/cancellation resources.
+        if (_viewerOpen)
+        {
+            _deferredLayers = (captureId, generation, result);
+            StateHasChanged();
+            return;
+        }
+        _layerLoading = false;
+        if (result.IsSuccess && result.Value is { } value && value.CaptureId == captureId)
+        {
+            _layers = value;
+            _layersNotRetained = false;
+            _layerMessage = null;
+            _selectedLayers = value.Layers.Where(static layer => layer.EnabledByDefault)
+                .Select(static layer => layer.IdentitySha256).ToHashSet(StringComparer.Ordinal);
+            _bindLayers = true;
+        }
+        else
+        {
+            _layersNotRetained = result.Kind == OperatorUiResultKind.NotFound;
+            _layerMessage = result.Message ?? "Structured layers are unavailable for this capture.";
+        }
+        StateHasChanged();
     }
 
     private MarkupString LayerSvg => new(_layers is null ? string.Empty : Encoding.UTF8.GetString(_layers.Svg.Span));
@@ -607,14 +689,47 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
 
     private string ProductBadgeClass => _selectedStage is CameraAgentPresentationStage.Calibrated or CameraAgentPresentationStage.Raw ? "source" : "current";
 
+    private string CentralStatusLabel => IsArchived ? "Historical capture" : _operations switch
+    {
+        { CentralIntegrationEnabled: false } => "Disabled",
+        { ArtifactUploadEnabled: false } => "Uploads disabled",
+        { ArtifactUploadEnabled: true } => "Delivery configured",
+        _ => "Unavailable"
+    };
+
+    private string CentralStatusReason => IsArchived
+        ? "Current LogicHost connectivity is not a historical capture fact."
+        : _operations switch
+        {
+            { CentralIntegrationEnabled: false } => "Standalone mode; no central delivery is configured.",
+            { ArtifactUploadEnabled: false } => "Central integration is configured, but artifact upload is disabled.",
+            { ArtifactUploadEnabled: true } => "Open Delivery for retained acknowledgements; configuration alone does not prove connectivity.",
+            _ => "The current delivery configuration could not be read."
+        };
+
+    private string StorageStatusLabel => IsArchived ? "Retained evidence" : _operations switch
+    {
+        { ProductReconciliation.Succeeded: false } => "Recovery failed",
+        { RawReconciliation: { } raw } when raw.MissingEvidence > 0 || raw.IndexProjectionFailures > 0 => "Evidence missing",
+        { RawReconciliation.Quarantined: > 0 } => "Review required",
+        { ProductReconciliation: { } products } when products.Missing > 0 || products.Quarantined > 0 => "Review required",
+        { RawReconciliation: not null, ProductReconciliation: not null } => "Recovery verified",
+        _ => "Not verified yet"
+    };
+
+    private string StorageStatusReason => IsArchived
+        ? "Available retained artifacts are identified below; current free space is not a capture fact."
+        : _operations is { RawReconciliation: { } raw, ProductReconciliation: { } products }
+            ? $"Last recovery checks: raw {SiteTime.Format(raw.CompletedUtc)}; derived {SiteTime.Format(products.CompletedUtc)}. This is recovery evidence, not a free-space measurement."
+            : "A complete local recovery check is not available. Open Storage for its recorded results.";
+
     private string StageFactLabel => ShowLayeredHero && _layerInteractive
         ? "Processed base + selected overlays"
         : ProcessedBaseFallback
             ? ProcessedBaseSlot is null ? "Processed base unavailable" : "Unannotated Combined base (processed layers pending or unavailable)"
             : SelectedSlot?.Label ?? "Unavailable";
 
-    // The prototype caption names an event outcome; no transient detection exists yet (#1005), so the caption
-    // reports the capture's own processing state instead of a fixture event.
+    // Image-stage availability and retained detector outcomes remain separate facts.
     private string CaptureOutcomeIconClass => _presentation?.DisplayCapture is null
         ? "pending"
         : UnavailableStageCount > 0 ? "warning" : "success";
@@ -626,8 +741,70 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private string CaptureOutcomeSubtitle => _presentation?.DisplayCapture is null
         ? "Waiting for the first displayable capture"
         : UnavailableStageCount > 0
-            ? $"{UnavailableStageCount} of {_presentation.Stages.Count} stages unavailable / transient detection arrives with #1005"
-            : "Transient detection arrives with #1005; no event is claimed for this capture";
+            ? $"{UnavailableStageCount} of {_presentation.Stages.Count} stages unavailable / {TransientOutcomeLabel}"
+            : TransientOutcomeLabel;
+
+    private string TransientOutcomeLabel => _transient?.Run switch
+    {
+        { WorkState: "quarantined" } or { FrameState: "quarantined" } => "Detector failed",
+        { WorkState: "abandoned" } or { FrameState: "abandoned" } => "Detector work abandoned",
+        { FrameState: "retry_wait" } => "Detector retrying",
+        { CandidateCount: > 0 } run => $"{run.CandidateCount} causal candidate{(run.CandidateCount == 1 ? "" : "s")}",
+        { CausalSucceeded: true } => "No causal candidates",
+        { FrameState: null or "queued" } => "Waiting for detector",
+        not null => "Not assessed",
+        _ when _transientMessage is not null => "Outcome unavailable",
+        _ when _transient is not null => "No retained outcome",
+        _ => "Outcome not loaded"
+    };
+
+    private string TransientOutcomeReason => _transient?.Run switch
+    {
+        { WorkState: "quarantined" } or { FrameState: "quarantined" } =>
+            "The recorded detector work is quarantined. Open Operations for its retained evidence.",
+        { WorkState: "abandoned" } or { FrameState: "abandoned" } => "The recorded detector work was abandoned.",
+        { FrameState: "retry_wait" } run => $"Recorded attempt {run.FrameAttempts}; the detector is waiting to retry.",
+        { CandidateCount: > 0 } run => $"{run.CompletedCandidates} complete / {run.QuarantinedCandidates} quarantined. Candidates are not confirmed events.",
+        { CausalSucceeded: true } => "The recorded causal pass completed without candidates.",
+        not null => "No successful causal pass is recorded for this capture.",
+        _ => _transientMessage ?? (_transient?.CurrentMode switch
+        {
+            HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Off => "Detection is off now; this capture has no retained local outcome.",
+            HVO.SkyMonitor.CameraAgent.Common.Options.TransientOperatingMode.Central => "Central detection is configured now; no local outcome is retained for this capture.",
+            not null => "This capture has no retained local detector outcome.",
+            _ => "Reading this capture's retained detector outcome."
+        })
+    };
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "An optional detector read must not fail or hide the image.")]
+    private async Task LoadTransientAsync(Guid captureId, CancellationToken cancellationToken)
+    {
+        if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || cancellationToken.IsCancellationRequested) return;
+        var generation = Interlocked.Increment(ref _transientGeneration);
+        OperatorUiResult<CameraAgentCaptureTransientView> result;
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(2));
+            result = await OperatorService.GetCaptureTransientAsync(captureId, timeout.Token).AsTask()
+                .WaitAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
+        catch (Exception)
+        {
+            result = OperatorUiResult<CameraAgentCaptureTransientView>.Failure(
+                OperatorUiResultKind.Unavailable, "The retained transient outcome is temporarily unavailable.");
+        }
+        await InvokeAsync(() =>
+        {
+            if (Volatile.Read(ref _disposeStarted) != 0 || _accessDenied || _runCaptureId != captureId ||
+                generation != Volatile.Read(ref _transientGeneration)) return;
+            if (result.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
+            _transient = result.IsSuccess && result.Value?.CaptureId == captureId ? result.Value : null;
+            _transientMessage = _transient is null ? "The retained transient outcome is temporarily unavailable." : null;
+            StateHasChanged();
+        }).ConfigureAwait(false);
+    }
 
     private string LiveIndicatorLabel => _presentation?.ImageFreshness switch
     {
@@ -657,6 +834,32 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     private string ProcessingStripLabel => _presentation is null
         ? "Loading"
         : $"{_presentation.Stages.Count(static slot => slot.Availability == CameraAgentPresentationSlotAvailability.Available)} of {_presentation.Stages.Count} stages";
+
+    private string CaptureCadenceLabel => _facts?.CaptureProfile is not { } profile
+        ? "Not retained for this capture"
+        : profile.CadenceMode == HVO.SkyMonitor.AgentCore.CaptureCadenceMode.Continuous
+            ? "Continuous at capture time"
+            : FormattableString.Invariant($"{profile.EffectiveInterval.TotalSeconds:0.###} s recorded interval");
+
+    private string SensorSampleLabel => _facts?.CaptureProfile?.PixelSizeMicrons is { } pixelSize
+        ? FormattableString.Invariant($"{pixelSize:0.###} µm")
+        : "Not retained for this capture";
+
+    private string OpticsLabel => _facts?.CaptureProfile is { } profile
+        ? $"{(profile.FocalLengthMillimeters is { } focal ? FormattableString.Invariant($"{focal:0.###} mm") : "Focal length not retained")} · {(profile.FieldOfViewDegrees is { } fieldAngle ? FormattableString.Invariant($"{fieldAngle:0.###}° field") : "Field angle not retained")}"
+        : "Not retained for this capture";
+
+    private string ProjectionLabel => _facts?.CaptureProfile is { } profile
+        ? $"{profile.ProjectionModel} (configured; no measured fit)"
+        : "No retained model or measured fit";
+
+    private string SiteLabel => _facts?.Location switch
+    {
+        { Availability: "Available", LatitudeDegrees: { } latitude, LongitudeDegrees: { } longitude, ElevationMeters: { } elevation } =>
+            FormattableString.Invariant($"{latitude:0.###}°, {longitude:0.###}° / {elevation:0.#} m"),
+        { Availability: "NotRetained" } => "Location not retained for this capture",
+        _ => "Historical location unavailable"
+    };
 
     private string IncludedFramesLabel(CameraAgentCombinedLineage lineage) =>
         _combinedProduct is { } product && product.Product.ArtifactId == lineage.ArtifactId && !product.SourcesTruncated
@@ -773,25 +976,25 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "This optional link read must not fail the current sky image.")]
     private async Task LoadLiveRunLinkAsync(Guid captureId, CancellationToken cancellationToken)
     {
+        if (_accessDenied || Volatile.Read(ref _disposeStarted) != 0 || cancellationToken.IsCancellationRequested) return;
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(2));
             var run = await GraphService.GetLiveExecutionIdAsync(captureId, timeout.Token).ConfigureAwait(false);
-            if (run.Kind == OperatorUiResultKind.Unauthorized && _runCaptureId == captureId && _disposeStarted == 0)
+            if (run.Kind == OperatorUiResultKind.Unauthorized && _runCaptureId == captureId && Volatile.Read(ref _disposeStarted) == 0)
             {
                 await InvokeAsync(() =>
                 {
-                    if (_runCaptureId != captureId || _disposeStarted != 0) return;
-                    _accessDenied = true;
-                    NavigationManager.NavigateTo("/Account/AccessDenied");
+                    if (_runCaptureId != captureId || Volatile.Read(ref _disposeStarted) != 0) return;
+                    RevokeAccess();
                 });
             }
-            else if (run.IsSuccess && _runCaptureId == captureId && _disposeStarted == 0)
+            else if (run.IsSuccess && _runCaptureId == captureId && Volatile.Read(ref _disposeStarted) == 0)
             {
                 await InvokeAsync(() =>
                 {
-                    if (_runCaptureId != captureId || _disposeStarted != 0 || _accessDenied) return;
+                    if (_runCaptureId != captureId || Volatile.Read(ref _disposeStarted) != 0 || _accessDenied) return;
                     _liveExecutionId = run.Value?.ExecutionId;
                     StateHasChanged();
                 }).ConfigureAwait(false);
@@ -838,21 +1041,50 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         }
     }
 
-    // Full screen is the prototype's native figure.requestFullscreen(): the exact selected base and SVG layers
-    // scale together and nothing is re-fetched or re-stretched.
+    // Pin the exact figure before interop: an optional read may complete while the browser is entering full screen.
     private async Task OpenFullScreenAsync()
     {
-        if (DisplaySlot is null || _disposeStarted != 0) return;
+        if (_viewerOpen || DisplaySlot is null || _disposeStarted != 0) return;
+        _viewerOpen = true;
+        _viewerError = null;
         try
         {
             var module = _layerModule ?? await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./Components/Pages/CurrentSkyPage.razor.js");
             if (Volatile.Read(ref _disposeStarted) != 0) return;
             _layerModule = module;
-            await module.InvokeVoidAsync("requestFullScreen", _figure);
+            _viewerReference ??= DotNetObjectReference.Create(this);
+            if (await module.InvokeAsync<bool>("requestFullScreen", _figure, _viewerReference)) return;
         }
         catch (Exception exception) when (exception is JSException or JSDisconnectedException or OperationCanceledException)
         {
-            // The browser refused full screen; the inline figure remains the same image.
+            // A rejected request restores inline updates below.
+        }
+        await ViewerClosedAsync();
+        if (_disposeStarted == 0)
+            _viewerError = "The browser could not open full screen. The selected image remains available here; please retry.";
+    }
+
+    [JSInvokable]
+    public Task ViewerClosedAsync()
+    {
+        if (_disposeStarted != 0) return Task.CompletedTask;
+        return InvokeAsync(() =>
+        {
+            _viewerOpen = false;
+            var pending = _deferredLayers;
+            _deferredLayers = null;
+            if (pending is { } result) ApplyLayerResult(result.CaptureId, result.Generation, result.Result);
+            StateHasChanged();
+        });
+    }
+
+    private async Task CloseFullScreenAsync()
+    {
+        if (_layerModule is null || !_viewerOpen) return;
+        try { await _layerModule.InvokeVoidAsync("exitFullScreen", _figure); }
+        catch (Exception exception) when (exception is JSException or JSDisconnectedException or OperationCanceledException)
+        {
+            await ViewerClosedAsync();
         }
     }
 
@@ -891,7 +1123,7 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
     }
 
     private string ImageAlt => _presentation?.DisplayCapture is { } capture && DisplaySlot is { } slot
-        ? $"{slot.Label} sky capture from {capture.ExposureStartedUtc.ToLocalTime():g}"
+        ? $"{slot.Label} sky capture from {SiteTime.Format(capture.ExposureStartedUtc)}"
         : "Current sky capture";
 
     private string FreshnessLabel => _presentation?.ImageFreshness switch
@@ -947,11 +1179,11 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         return presentation.SelectedStage;
     }
 
-    private string ObservingNightLabel => _facts is { } facts
-        ? facts.ObservingDay.TimeZoneFallback
-            ? $"{facts.ObservingDay.Date:yyyy-MM-dd} (UTC day; no deployment time zone)"
-            : $"{facts.ObservingDay.Date:yyyy-MM-dd} ({facts.ObservingDay.TimeZoneId})"
-        : "Unavailable";
+    private string ObservingNightLabel => _facts?.ObservingDay is { } day
+        ? day.SunrisePeriod is not null
+            ? $"{day.Date:yyyy-MM-dd} (sunrise to sunrise, {day.TimeZoneId})"
+            : $"{day.Date:yyyy-MM-dd} (legacy noon, {(day.TimeZoneFallback ? "UTC fallback" : day.TimeZoneId)})"
+        : "Reporting period unavailable";
 
     private static string FormatExposure(double? milliseconds) => milliseconds switch
     {
@@ -1017,10 +1249,16 @@ public sealed partial class CurrentSkyPage : ComponentBase, IAsyncDisposable
         _refreshGate.Release();
         _lifetime.Dispose();
         _refreshGate.Dispose();
+        _deferredLayers = null;
+        _viewerReference?.Dispose();
         if (_layerModule is not null)
         {
-            try { await _layerModule.DisposeAsync().ConfigureAwait(false); }
-            catch (JSDisconnectedException) { }
+            try
+            {
+                await _layerModule.InvokeVoidAsync("disconnect", _layerRoot, _figure).ConfigureAwait(false);
+                await _layerModule.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is JSException or JSDisconnectedException or OperationCanceledException) { }
         }
     }
 }

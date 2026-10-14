@@ -19,6 +19,10 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
     internal DbSet<DeviceHeartbeatRecord> DeviceHeartbeatRecords => Set<DeviceHeartbeatRecord>();
     internal DbSet<CentralFrame> CentralFrames => Set<CentralFrame>();
     internal DbSet<CentralArtifact> CentralArtifacts => Set<CentralArtifact>();
+    internal DbSet<CentralTimeLapseJob> CentralTimeLapseJobs => Set<CentralTimeLapseJob>();
+    internal DbSet<CentralTimeLapseInput> CentralTimeLapseInputs => Set<CentralTimeLapseInput>();
+    internal DbSet<CentralTimeLapseDependency> CentralTimeLapseDependencies => Set<CentralTimeLapseDependency>();
+    internal DbSet<CentralTimeLapseVideo> CentralTimeLapseVideos => Set<CentralTimeLapseVideo>();
     internal DbSet<CentralArtifactDownloadAuthorization> CentralArtifactDownloadAuthorizations =>
         Set<CentralArtifactDownloadAuthorization>();
     internal DbSet<CentralProcessingOverrideVersion> CentralProcessingOverrideVersions =>
@@ -153,6 +157,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         CentralDerivativeWindowConfiguration.Configure(builder);
         CentralCloudProcessingConfiguration.Configure(builder);
         CentralReconstructionConfiguration.Configure(builder);
+        CentralTimeLapseConfiguration.Configure(builder);
         CentralRecoveryConfiguration.Configure(builder);
         EnvironmentalObservationConfiguration.Configure(builder);
         CentralTransientValidationConfiguration.Configure(builder);
@@ -248,6 +253,18 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
                 entry.State is EntityState.Modified or EntityState.Deleted)
             || ChangeTracker.Entries<CentralDerivativeJobDependency>().Any(entry =>
                 entry.State is EntityState.Modified or EntityState.Deleted)
+            || ChangeTracker.Entries<CentralTimeLapseVideo>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted)
+            || ChangeTracker.Entries<CentralTimeLapseInput>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted)
+            || ChangeTracker.Entries<CentralTimeLapseDependency>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted)
+            || ChangeTracker.Entries<CentralTimeLapseJob>().Any(entry => entry.State == EntityState.Deleted ||
+                entry.State == EntityState.Modified && entry.Properties.Any(property => property.IsModified && property.Metadata.Name is
+                    nameof(CentralTimeLapseJob.RequestJson) or nameof(CentralTimeLapseJob.RequestSha256) or
+                    nameof(CentralTimeLapseJob.DevicePublicId) or nameof(CentralTimeLapseJob.ObservatoryId) or
+                    nameof(CentralTimeLapseJob.ReportDate) or nameof(CentralTimeLapseJob.StartUtc) or
+                    nameof(CentralTimeLapseJob.EndUtc) or nameof(CentralTimeLapseJob.IsDaily) or nameof(CentralTimeLapseJob.CreatedUtc)))
             || ChangeTracker.Entries<LogicalCamera>().Any(entry => entry.State == EntityState.Deleted);
         if (immutableMutation)
         {

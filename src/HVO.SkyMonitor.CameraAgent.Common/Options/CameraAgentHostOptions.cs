@@ -66,6 +66,14 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     [Required]
     public LocalAutomationOptions Automation { get; init; } = new();
 
+    [Required]
+    public NightlyProductOptions NightlyProducts { get; init; } = new();
+
+    public TimeLapseOptions TimeLapses { get; init; } = new();
+
+    [Required]
+    public TimeLapseSampleOptions TimeLapseSample { get; init; } = new();
+
     [Range(1, 60)]
     public int OperationsReferenceLifetimeMinutes { get; init; } = 15;
 
@@ -274,6 +282,29 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             artifactReadResults,
             validateAllProperties: true);
         foreach (var result in artifactReadResults)
+        {
+            yield return result;
+        }
+
+        var nightlyResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            NightlyProducts,
+            new ValidationContext(NightlyProducts),
+            nightlyResults,
+            validateAllProperties: true);
+        foreach (var result in nightlyResults)
+        {
+            yield return result;
+        }
+
+        var sampleResults = new List<ValidationResult>();
+        Validator.TryValidateObject(TimeLapses, new ValidationContext(TimeLapses), sampleResults, validateAllProperties: true);
+        Validator.TryValidateObject(
+            TimeLapseSample,
+            new ValidationContext(TimeLapseSample),
+            sampleResults,
+            validateAllProperties: true);
+        foreach (var result in sampleResults)
         {
             yield return result;
         }
@@ -652,6 +683,9 @@ public sealed class TransientDetectionOptions : IValidatableObject
     [Range(0.5, 256)]
     public double StarSupportRadiusSourcePixels { get; init; } = 5;
 
+    /// <summary>Selects catalog-only exposure support for a new declared virtual detector profile.</summary>
+    public bool ExposureIntegratedStarMask { get; init; }
+
     [Required]
     public TransientCandidateAssociationOptions Association { get; init; } = new();
 
@@ -662,6 +696,11 @@ public sealed class TransientDetectionOptions : IValidatableObject
             yield return new ValidationResult(
                 "Transient detection mode is not supported.",
                 [nameof(Mode)]);
+        }
+        if (ExposureIntegratedStarMask && StarSupportRadiusSourcePixels > 64)
+        {
+            yield return new ValidationResult("Exposure-integrated star support must be at most 64 source pixels.",
+                [nameof(StarSupportRadiusSourcePixels)]);
         }
         if (Required && Mode is not (TransientOperatingMode.Edge or TransientOperatingMode.Hybrid))
         {
@@ -752,6 +791,143 @@ public sealed class EnvironmentalObservationDeliveryOptions : IValidatableObject
                 [nameof(RequestTimeoutSeconds), nameof(LeaseSeconds)]);
         }
     }
+}
+
+/// <summary>
+/// Host settings for scheduled nightly keogram and star-trail generation. The schedule itself is a local automation
+/// definition naming the product kind; these settings bound what one scheduled run may select, admit, and compose.
+/// </summary>
+public sealed class NightlyProductOptions : IValidatableObject
+{
+    /// <summary>Whether the nightly product task is offered to automation definitions.</summary>
+    public bool Enabled { get; init; }
+
+    /// <summary>
+    /// The processing graph node whose published Preview outputs are the nightly sources. It is a deployment fact,
+    /// because node identifiers are chosen by the configured pipeline graph.
+    /// </summary>
+    [StringLength(128)]
+    public string? SourceNodeId { get; init; }
+
+    /// <summary>The exact fixed-preview recipe identity permitted as source; changed transfers require a new preset.</summary>
+    [StringLength(64, MinimumLength = 64)]
+    public string? SourceRecipeIdentitySha256 { get; init; }
+
+    /// <summary>The configured rig fingerprint whose geometry and captures this preset owns.</summary>
+    [StringLength(64, MinimumLength = 64)]
+    public string? RigProfileSha256 { get; init; }
+
+    /// <summary>The full planned keogram axis uses fixed UTC bins; the earliest actual frame in each bin is shown.</summary>
+    [Range(1, 3600)]
+    public int KeogramColumnSeconds { get; init; } = 60;
+
+    /// <summary>
+    /// The most sources one segment part composes, and the fan-in of star-trail rollups. A busier window is split
+    /// into ordered parts. Every source of a part is resident at once, so this bounds a run's working set.
+    /// </summary>
+    [Range(1, NightlyProductLimits.MaximumRecipeSources)]
+    public int MaximumSegmentSources { get; init; } = 32;
+
+    /// <summary>The maximum recipe executions for one occurrence, including parts, rollups and final assembly.
+    /// A larger occurrence is rejected before restoring sources or publishing partial results.</summary>
+    [Range(1, 256)]
+    public int MaximumSegmentsPerRun { get; init; } = 256;
+
+    /// <summary>The longest interval between consecutive keogram frames that is not rendered as a gap.</summary>
+    [Range(1, 86_400)]
+    public int KeogramMaximumGapSeconds { get; init; } = 300;
+
+    /// <summary>The most patterned columns one keogram gap may occupy.</summary>
+    [Range(1, 65_536)]
+    public int KeogramMaximumGapColumnCount { get; init; } = 64;
+
+    /// <summary>The widest keogram part or full planned final axis a run may produce.</summary>
+    [Range(2, 65_536)]
+    public int KeogramMaximumColumnCount { get; init; } = 16_384;
+
+    /// <summary>The JPEG quality of the browser rendition published beside each packed product.</summary>
+    [Range(1, 100)]
+    public int RenditionJpegQuality { get; init; } = 90;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (Enabled && (SourceRecipeIdentitySha256 is not { Length: 64 } recipe || !recipe.All(Uri.IsHexDigit) ||
+                        RigProfileSha256 is not { Length: 64 } rig || !rig.All(Uri.IsHexDigit)))
+        {
+            yield return new ValidationResult("Enabled still products require exact source-recipe and rig SHA-256 identities.",
+                [nameof(SourceRecipeIdentitySha256), nameof(RigProfileSha256)]);
+        }
+        if (Enabled && (string.IsNullOrWhiteSpace(SourceNodeId) ||
+                        !string.Equals(SourceNodeId, SourceNodeId.Trim(), StringComparison.Ordinal) ||
+                        SourceNodeId.Any(char.IsControl)))
+        {
+            yield return new ValidationResult(
+                "NightlyProducts:SourceNodeId must name the Preview-producing pipeline node when nightly products are enabled.",
+                [nameof(SourceNodeId)]);
+        }
+        if (KeogramMaximumGapColumnCount > KeogramMaximumColumnCount)
+        {
+            yield return new ValidationResult(
+                "NightlyProducts:KeogramMaximumGapColumnCount must not exceed KeogramMaximumColumnCount.",
+                [nameof(KeogramMaximumGapColumnCount), nameof(KeogramMaximumColumnCount)]);
+        }
+    }
+}
+
+/// <summary>
+/// An operator-supplied video shown in the time-lapse slot of an observing day while no time-lapse is generated.
+/// It is a development stand-in only: it is never attributed to a night, never counted as a product and never makes a
+/// time-lapse appear available. Generated time-lapse output is owned by issue #1130.
+/// </summary>
+public sealed class TimeLapseSampleOptions : IValidatableObject
+{
+    /// <summary>The media types a sample may declare. Browsers decide which of them they can play.</summary>
+    public static readonly IReadOnlySet<string> SupportedMediaTypes = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "video/mp4", "video/webm", "image/gif", "image/webp", "video/x-ms-wmv"
+    };
+
+    /// <summary>Whether the sample is offered. It is off unless an operator opts in.</summary>
+    public bool Enabled { get; init; }
+
+    /// <summary>The fully qualified path of the sample file; it is read only, and served only to operations readers.</summary>
+    [StringLength(4096)]
+    public string? FilePath { get; init; }
+
+    /// <summary>The declared media type of the sample, one of <see cref="SupportedMediaTypes"/>.</summary>
+    [StringLength(64)]
+    public string MediaType { get; init; } = "video/mp4";
+
+    /// <summary>The declared frame width, used to reserve the player's aspect ratio before metadata loads.</summary>
+    [Range(1, 8192)]
+    public int Width { get; init; } = 1280;
+
+    /// <summary>The declared frame height, used to reserve the player's aspect ratio before metadata loads.</summary>
+    [Range(1, 8192)]
+    public int Height { get; init; } = 1280;
+
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        if (Enabled && (string.IsNullOrWhiteSpace(FilePath) || !Path.IsPathFullyQualified(FilePath) ||
+                        FilePath.Any(char.IsControl)))
+        {
+            yield return new ValidationResult(
+                "TimeLapseSample:FilePath must be a fully qualified file path when the sample is enabled.", [nameof(FilePath)]);
+        }
+        if (!SupportedMediaTypes.Contains(MediaType))
+        {
+            yield return new ValidationResult(
+                "TimeLapseSample:MediaType must be one of " + string.Join(", ", SupportedMediaTypes.Order(StringComparer.Ordinal)) + ".",
+                [nameof(MediaType)]);
+        }
+    }
+}
+
+/// <summary>Fixed bounds shared by nightly product options and generation.</summary>
+public static class NightlyProductLimits
+{
+    /// <summary>The source bound of one keogram, star-trail, or assembly recipe execution.</summary>
+    public const int MaximumRecipeSources = NightlyProductRecipeLimits.MaximumSourceCount;
 }
 
 /// <summary>

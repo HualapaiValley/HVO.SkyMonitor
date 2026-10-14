@@ -1,6 +1,8 @@
+@using HVO.SkyMonitor.Astronomy
 @page "/archive/calendar"
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Gallery
+@using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts
 @using HVO.SkyMonitor.CameraAgent.Components.Shared
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
@@ -10,15 +12,20 @@
 
 <div class="calendar-page">
     <header class="calendar-heading">
-        <div><p class="eyebrow">Archive / observing days</p><h1>Observing calendar</h1><p>Browse retained night sessions and local detection candidates. Product and schedule coverage are shown only when verified.</p></div>
-        <a class="btn btn-outline-light" href="@DayUrl(LatestObservingDay)">Latest observing day</a>
+        <div><p class="eyebrow">Archive / observing days</p><h1>Observing calendar</h1><p>Browse retained night sessions, nightly products and local detection candidates. Products and schedule coverage are shown only when recorded.</p></div>
+        @if (HasCurrentReportingPeriod)
+        {
+            <a class="btn btn-outline-light" href="@SelectedDayUrl(LatestObservingDay)">Latest observing day</a>
+        }
+        <a class="btn btn-outline-light" href="@SunriseCalendarUrl">Sunrise periods</a>
+        <a class="btn btn-outline-light" href="@LegacyCalendarUrl">Legacy noon view</a>
     </header>
 
     <nav class="month-nav" aria-label="Calendar month">
         <a class="btn btn-outline-light btn-sm month-nav__step" href="@MonthUrl(-1)" aria-label="Previous month">‹</a>
         <div class="month-nav__label">
             <strong>@MonthLabel</strong>
-            <small>Local observing day / noon-to-noon</small>
+            <small>@PeriodLabel</small>
         </div>
         <a class="btn btn-outline-light btn-sm month-nav__step" href="@MonthUrl(1)" aria-label="Next month">›</a>
         <a class="btn btn-outline-light btn-sm month-nav__today" href="@MonthUrl(0, today: true)">Today</a>
@@ -38,7 +45,17 @@
     {
         @if (_calendar.TimeZoneFallback)
         {
-            <PageStateNotice Kind="PageStateNotice.PageStateKind.Stale" Title="Observing nights use UTC days" Message="No deployment time zone is configured, so nights are bounded at 12:00 UTC instead of local noon." />
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Stale" Title="Legacy noon view uses UTC" Message="No deployment time zone is configured. This explicitly selected legacy view uses noon-to-noon UTC; it does not qualify sunrise products." />
+        }
+        @if (!ShowsNightlyProducts)
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Info" Title="Nightly products hidden" Message="Nightly products belong to sunrise-to-sunrise periods, so this view does not show their badges.">
+                <a class="btn btn-outline-light btn-sm" href="@SunriseCalendarUrl">Switch to sunrise periods</a>
+            </PageStateNotice>
+        }
+        else if (_nightlyUnavailable)
+        {
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Stale" Title="Nightly product status unavailable" Message="Captures are shown, but nightly product badges could not be read. They are marked unavailable, not missing." />
         }
 
         <section class="observing-calendar" aria-label="Observing days">
@@ -55,7 +72,7 @@
                     var hasSession = day is { CaptureCount: > 0 };
                     var missingThumbnail = hasSession && (day!.RepresentativeCaptureId is not { } id || _failedThumbnails.Contains(id));
                     <li class="@CellClass(cell)" aria-current="@(cell.IsToday ? "date" : null)">
-                        <a class="calendar-day__link" href="@DayUrl(cell.Date)" aria-label="@CellAriaLabel(cell, missingThumbnail)">
+                        <a class="calendar-day__link" href="@SelectedDayUrl(cell.Date)" aria-label="@CellAriaLabel(cell, missingThumbnail)">
                             <header class="calendar-day__date">
                                 <strong><time datetime="@cell.Date.ToString("yyyy-MM-dd")">@CellDayLabel(cell)</time></strong>
                                 @if (day is { CandidateCount: > 0 })
@@ -83,13 +100,22 @@
                                 <span class="calendar-thumb calendar-thumb--missing" aria-hidden="true"></span>
                             }
                             <span class="calendar-day__details"><small>@CellSummary(cell)@(missingThumbnail ? " / preview unavailable" : string.Empty)</small>
-                                @if (hasSession)
+                                @if (hasSession || ShowsBadges(cell))
                                 {
                                     <span class="calendar-products" aria-hidden="true">
-                                        <i class="unavailable" title="Time-lapse availability not projected">T</i>
-                                        <i class="unavailable" title="Star-trail availability not projected">S</i>
-                                        <i class="unavailable" title="Keogram availability not projected">K</i>
-                                        <i class="@(day!.CandidateCount > 0 ? "event" : "unavailable")" title="@(day.CandidateCount > 0 ? $"{day.CandidateCount} local detection candidates; authoritative event status unavailable" : "Authoritative event status unavailable")">!</i>
+                                        @if (ShowsNightlyProducts)
+                                        {
+                                            var videoBadge = VideoBadge(cell.Date);
+                                            <i class="@videoBadge.CssClass" title="@videoBadge.Description" data-video-state="@videoBadge.State">T</i>
+                                            @foreach (var badge in Badges(cell))
+                                            {
+                                                <i class="@badge.CssClass" title="@badge.Description" data-nightly-state="@badge.State">@badge.Letter</i>
+                                            }
+                                        }
+                                        @if (hasSession)
+                                        {
+                                            <i class="@(day!.CandidateCount > 0 ? "event" : "unavailable")" title="@(day.CandidateCount > 0 ? $"{day.CandidateCount} local detection candidates; authoritative event status unavailable" : "Authoritative event status unavailable")">!</i>
+                                        }
                                     </span>
                                 }
                             </span>
@@ -101,15 +127,33 @@
         <div class="calendar-legend" aria-label="Calendar key">
             <span><i class="calendar-legend__session" aria-hidden="true"></i>Retained captures</span>
             <span><i class="calendar-legend__event" aria-hidden="true"></i>Local detection candidate</span>
-            <span><i class="calendar-legend__unavailable" aria-hidden="true"></i>Coverage and nightly products unavailable</span>
-            <span class="calendar-legend__badges">T time-lapse · S star trail · K keogram · ! local candidate; muted badges are unavailable, not produced</span>
-            <span>Observing day: 12:00 to 12:00 @(_calendar.TimeZoneFallback ? "UTC" : "local")</span>
+            <span><i class="calendar-legend__unavailable" aria-hidden="true"></i>Not generated or unavailable</span>
+            @if (ShowsNightlyProducts)
+            {
+                <span class="calendar-legend__badges">T time-lapse · S star trail · K keogram · ! local candidate. <i class="calendar-legend__produced" aria-hidden="true"></i> nightly product · <i class="calendar-legend__partial" aria-hidden="true"></i> hourly only · struck through: evaluated, not produced. Badges count only the sunrise period each date resolves to now.</span>
+            }
+            else
+            {
+                <span class="calendar-legend__badges">! local candidate; nightly product badges appear in the sunrise-period view</span>
+            }
+            <span>@(_calendar.CalendarVersion == SunriseReportingPeriod.CurrentVersion ? "Report date names the starting sunrise; the period ends at the following sunrise." : "Legacy noon association: 12:00 to 12:00") @(_calendar.TimeZoneFallback ? "UTC" : _calendar.TimeZoneId)</span>
         </div>
 
         <section class="calendar-summary" aria-label="Month summary">
             <article><p class="eyebrow">Nights with captures</p><strong>@ObservedNights</strong><small>@(DateTime.DaysInMonth(MonthStart.Year, MonthStart.Month) - ObservedNights) without retained captures</small></article>
             <article><p class="eyebrow">Capture coverage</p><strong>Unavailable</strong><small>Expected schedule not projected</small></article>
-            <article><p class="eyebrow">Generated products</p><strong>—</strong><small>Nightly products are not yet generated</small></article>
+            @if (!ShowsNightlyProducts)
+            {
+                <article><p class="eyebrow">Nightly products</p><strong>—</strong><small>Shown in the sunrise-period view</small></article>
+            }
+            else if (_nightlyUnavailable)
+            {
+                <article><p class="eyebrow">Nightly products</p><strong>Unavailable</strong><small>Nightly product status could not be read</small></article>
+            }
+            else
+            {
+                <article><p class="eyebrow">Nights with nightly products</p><strong>@NightlyProductNights</strong><small>@NightlyProductCount(NightlyProductKind.StarTrail) star trail · @NightlyProductCount(NightlyProductKind.Keogram) keogram; @(VideoNights == 0 ? "time-lapse not yet generated" : $"{VideoNights} time-lapse")@(OtherPeriodNights > 0 ? FormattableString.Invariant($". {OtherPeriodNights} {(OtherPeriodNights == 1 ? "night has" : "nights have")} evaluations under another source period, not counted") : "")</small></article>
+            }
             <article><p class="eyebrow">Detected candidates</p><strong>@TotalCandidates.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</strong><small>durable local candidates</small></article>
         </section>
     }

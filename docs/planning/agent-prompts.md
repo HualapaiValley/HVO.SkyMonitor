@@ -89,8 +89,11 @@ Validate produced bytes, checksums, numerical results, provenance, lineage, and
 durable state. Inspect logs, metrics, traces, and health behavior.
 
 Use the execution protocol's validation ladder: focused inner-loop tests, one
-stable-candidate local gate, affected correction gates, and classifier-selected
-protected CI on the final reviewed head. Before changing PR state, read and
+stable-candidate local gate, affected correction gates, and target-branch
+protected CI on the final reviewed head. For `development/v1`, use Preflight
+and Build and Unit; a classifier `complete=true` result or broad base-sync
+delta does not request a manual full-matrix run. Additional qualification needs
+explicit issue/operator acceptance scope. Before changing PR state, read and
 follow `.agents/skills/pr-lifecycle/SKILL.md`. Open a draft PR, review the full
 initial diff, and limit rereviews to each correction delta plus verification of
 prior findings. Require each correction report to identify the exact range and

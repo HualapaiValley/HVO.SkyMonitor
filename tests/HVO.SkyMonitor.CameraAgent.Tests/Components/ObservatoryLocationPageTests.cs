@@ -566,7 +566,7 @@ public sealed class ObservatoryLocationPageTests
     [TestMethod]
     [DataRow("candidate", "Central review pending.", "LogicHost has not yet acknowledged location version 4. Local geometry version 3 remains active")]
     [DataRow("staged", "Acknowledged version staged.", "Location version 4 was acknowledged by LogicHost and activates at the next CameraAgent start. Version 3 governs")]
-    [DataRow("restart", "Local draft awaiting restart.", "Location version 4 was recorded 2026-03-01 04:00:00 UTC and activates at the next CameraAgent start. Version 3 governs")]
+    [DataRow("restart", "Local draft awaiting restart.", "Location version 4 was recorded 1 Mar 2026 04:00:00 +00:00 (UTC (site time zone unavailable)) and activates at the next CameraAgent start. Version 3 governs")]
     [DataRow("outside", "Outside the effective window.", "Location version 1 did not govern at the chosen instant")]
     [DataRow("active", "Location version 1 is active.", "It governs schedules, the sky projection, and capture evidence")]
     public void Render_StatesWhichLocationVersionGovernsTruthfully(string scenario, string title, string text)
@@ -646,7 +646,7 @@ public sealed class ObservatoryLocationPageTests
 
         Assert.AreEqual("Not registered", assignment.QuerySelector(".state-chip")!.TextContent);
         Assert.Contains("has not completed device registration", assignment.TextContent, StringComparison.Ordinal);
-        Assert.AreEqual("/devices/bootstrap", assignment.QuerySelector("a")!.GetAttribute("href"));
+        Assert.AreEqual("/operations/registration", assignment.QuerySelector("a")!.GetAttribute("href"));
 
         service.Site = SiteView(assignment: Assignment(
             CameraAgentSiteAssignmentState.Registered,
@@ -663,7 +663,7 @@ public sealed class ObservatoryLocationPageTests
         Assert.AreEqual("Acknowledged by LogicHost", facts["Location review"]);
         Assert.AreEqual("Not reported to this camera", facts["Observatory membership"]);
         Assert.AreEqual("3", facts["Acknowledged version"]);
-        Assert.AreEqual("2026-03-01 04:00:00 UTC", facts["Last check"]);
+        Assert.AreEqual("1 Mar 2026 04:00:00 +00:00 (UTC (site time zone unavailable))", facts["Last check"]);
         Assert.DoesNotContain("Assigned", assignment.TextContent, StringComparison.Ordinal);
         Assert.DoesNotContain("Active", assignment.TextContent, StringComparison.Ordinal);
 
@@ -739,7 +739,7 @@ public sealed class ObservatoryLocationPageTests
 
         var notes = cut.FindAll("dialog.site-dialog .dialog-note strong").Select(static note => note.TextContent).ToArray();
         CollectionAssert.AreEqual(ExpectedDialogNotes, notes);
-        Assert.Contains("changed at 2026-02-28 04:00:00 UTC", cut.Find("dialog.site-dialog").TextContent, StringComparison.Ordinal);
+        Assert.Contains("changed at 28 Feb 2026 04:00:00 +00:00 (UTC (site time zone unavailable))", cut.Find("dialog.site-dialog").TextContent, StringComparison.Ordinal);
     }
 
     [TestMethod]

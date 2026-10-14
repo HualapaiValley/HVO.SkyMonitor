@@ -6,7 +6,7 @@
       "seed": 211,
       "rigProfileVersion": "virtual-asi174mm-mono8-roi-bin4-w6-control-v1",
       "maximumMagnitude": 6.5,
-      "maximumResults": 300,
+      "maximumResults": 32768,
       "magnitudeZeroElectronsPerSecond": 1000.0,
       "bortleClass": 3,
       "shotNoiseEnabled": false,
@@ -105,6 +105,7 @@
     "schemaVersion": "cameraagent-capture-pipeline-v2",
     "dependencyPolicy": "reject-enabled-dependent-v1",
     "steps": [
+      { "id": "ProjectedScene", "type": "ProjectedScene", "order": 15, "dependsOn": ["$raw"] },
       {
         "id": "preview",
         "type": "Preview",
@@ -122,8 +123,9 @@
         "id": "annotation",
         "type": "Annotation",
         "order": 20,
-        "dependsOn": [ "preview" ],
+        "dependsOn": ["preview", "ProjectedScene"],
         "options": {
+            "requireProjectedSceneDependency": true,
           "drawLabels": true,
           "maximumLabelMagnitude": 2.5,
           "drawConstellationLines": false,
@@ -138,7 +140,7 @@
         "id": "storage",
         "type": "Storage",
         "order": 30,
-        "dependsOn": [ "$raw", "preview", "annotation" ],
+        "dependsOn": ["$raw", "preview", "annotation", "ProjectedScene"],
         "options": {
           "storageRoot": "/var/lib/hvo/data/agent",
           "retentionDays": 1,

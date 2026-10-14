@@ -80,7 +80,8 @@ public enum LifecycleOperationKind
     CatalogInstall,
     CatalogSelect,
     CatalogRollback,
-    CatalogGarbageCollect
+    CatalogGarbageCollect,
+    CatalogCheck
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<LifecycleOperationPhase>))]

@@ -450,6 +450,10 @@ public sealed class OutboxOperationsEndpointTests
             string root, string recordKey, CancellationToken cancellationToken)
             => ValueTask.FromResult<ArtifactOutboxOperationsRecord?>(recordKey == RecordKey ? Record : null);
 
+        public ValueTask<IReadOnlyList<ArtifactOutboxDeliveryRecord>> ReadRecentDeliveryAsync(
+            string root, int limit, CancellationToken cancellationToken)
+            => ValueTask.FromResult<IReadOnlyList<ArtifactOutboxDeliveryRecord>>([]);
+
         public ValueTask<OutboxOperationsAuditPage> ReadOperationsAuditAsync(
             string root, string recordKey, int pageSize, OutboxOperationsAuditCursor? cursor,
             CancellationToken cancellationToken)

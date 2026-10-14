@@ -1,12 +1,12 @@
 name: Promote to main
 
 # Nightly promotion of development/v1 to main, option (b): this workflow opens or
-# refreshes the promotion pull request as hvo-agentcontrol[bot] and lets the legacy
-# pipeline on main gate it; merging stays with the operator. It never pushes to
+# refreshes a draft promotion pull request as hvo-agentcontrol[bot]. Full CI starts
+# when the reviewed promotion is marked ready; merging stays with the operator. It never pushes to
 # main and never merges. The App token it mints is pull-requests write only.
 #
 # It refuses to promote a head that has not passed its own Development v1 CI, so
-# the 20-minute main pipeline is only ever spent on a green v1 head, and it keeps
+# the main pipeline is only ever spent on a green v1 head, and it keeps
 # one promotion PR open at a time, moving that PR forward rather than stacking.
 
 on:
@@ -133,6 +133,7 @@ jobs:
 
       - name: Open or refresh the promotion pull request
         if: steps.compare.outputs.nothing_to_promote != 'true'
+        shell: bash
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           REPOSITORY: ${{ github.repository }}
@@ -146,7 +147,9 @@ jobs:
           title="Promote $SOURCE to $TARGET ($today)"
           commits="$(gh api "repos/$REPOSITORY/compare/$TARGET_SHA...$SOURCE_SHA" --paginate \
             --jq '.commits[]|"- \(.sha[0:8]) \(.commit.message|split("\n")[0])"')"
-          issues="$(printf '%s\n' "$commits" | grep -oE '#[0-9]+' | sort -u | tr '\n' ' ')"
+          # No issue references is valid; only grep's no-match status is tolerated.
+          issues="$(printf '%s\n' "$commits" |
+            { grep -oE '#[0-9]+' || [[ "$?" == 1 ]]; } | sort -u | tr '\n' ' ')"
           body="$(cat <<BODY
           ## Promotion
 
@@ -155,8 +158,11 @@ jobs:
           Commits: $AHEAD
           Source head Development v1 CI: green (checked by this run)
 
-          This pull request is opened by the nightly promotion workflow ($TRIGGER). The
-          legacy pipeline on \`$TARGET\` (\`Required CI\`) is the qualification gate; merge
+          This draft is prepared by the nightly promotion workflow ($TRIGGER). Mark it
+          ready after review for a planned qualification/merge window; full CI then
+          starts. Return it to draft if that window is deferred or the reviewed source
+          changes, so feature merges do not repeatedly launch premature full CI. The
+          pipeline on \`$TARGET\` (\`Required CI\`) is the qualification gate; merge
           with a **merge commit** so every \`$SOURCE\` commit keeps its SHA on \`$TARGET\`.
           Merging is the operator's decision. If \`$SOURCE\` moves before this is merged,
           the next nightly run refreshes this pull request rather than opening another.
@@ -174,5 +180,5 @@ jobs:
           if [[ -n "$existing" ]]; then
             gh api -X PATCH "repos/$REPOSITORY/pulls/$existing" -f title="$title" -f body="$body" --jq .html_url | sed 's/^/refreshed: /' | tee -a "$GITHUB_STEP_SUMMARY"
           else
-            gh api -X POST "repos/$REPOSITORY/pulls" -f title="$title" -f head="$SOURCE" -f base="$TARGET" -f body="$body" -F draft=false --jq .html_url | sed 's/^/opened: /' | tee -a "$GITHUB_STEP_SUMMARY"
+            gh api -X POST "repos/$REPOSITORY/pulls" -f title="$title" -f head="$SOURCE" -f base="$TARGET" -f body="$body" -F draft=true --jq .html_url | sed 's/^/opened: /' | tee -a "$GITHUB_STEP_SUMMARY"
           fi

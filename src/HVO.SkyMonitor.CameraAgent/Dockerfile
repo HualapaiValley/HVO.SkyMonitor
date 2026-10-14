@@ -82,7 +82,7 @@ LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.raw-ingress-migration="canonical-v13-to-v14" \
       io.hvo.skymonitor.catalog-manifest-version="2" \
       io.hvo.skymonitor.configuration-contract="cameraagent-install-v1" \
-      io.hvo.skymonitor.catalog-contract="hyg-v42-production-p3-s2" \
+      io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v1" \
       io.hvo.skymonitor.replay-runner-contract="local-replay-runner-v1" \
       org.opencontainers.image.revision="${HVO_SOURCE_REVISION}"
 

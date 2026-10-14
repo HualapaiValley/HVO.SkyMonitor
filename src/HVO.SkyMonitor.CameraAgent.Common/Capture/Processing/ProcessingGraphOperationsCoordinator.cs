@@ -42,6 +42,9 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     private readonly SemaphoreSlim _configurationGate = new(1, 1);
     private CameraModuleConfig? _baseConfiguration;
     private string? _configuredPipelineIdentity;
+    private bool _configuredPipelineRetained;
+    private SupersessionCheck? _supersessionCheck;
+    private string? _configuredModuleType;
 
     public ProcessingGraphOperationsCoordinator(
         ICaptureProcessingPipelineFactory pipelineFactory,
@@ -60,8 +63,14 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     public ProcessingGraphAgentCapabilities Capabilities =>
         ProcessingGraphAgentCapabilities.Create(_pipelineFactory.StableStepAliases);
 
-    internal async ValueTask<ProcessingGraphRegistryState> EnsureConfiguredBasicAsync(
+    internal ValueTask<ProcessingGraphRegistryState> EnsureConfiguredBasicAsync(
         CameraModuleConfig configuration,
+        CancellationToken cancellationToken)
+        => EnsureConfiguredBasicAsync(configuration, retainedCapture: false, cancellationToken);
+
+    private async ValueTask<ProcessingGraphRegistryState> EnsureConfiguredBasicAsync(
+        CameraModuleConfig configuration,
+        bool retainedCapture,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -71,7 +80,9 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         {
             Volatile.Write(ref _baseConfiguration, configuration);
             var pipelineIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(configuration.Pipeline);
-            if (string.Equals(_configuredPipelineIdentity, pipelineIdentity, StringComparison.Ordinal))
+            if (string.Equals(_configuredPipelineIdentity, pipelineIdentity, StringComparison.Ordinal) &&
+                _configuredPipelineRetained == retainedCapture &&
+                string.Equals(_configuredModuleType, configuration.ModuleType, StringComparison.OrdinalIgnoreCase))
             {
                 return await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -81,7 +92,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
                 ConfiguredGraphName,
                 revisionName,
                 _timeProvider.GetUtcNow(),
-                ProcessingGraphRevisionLifecycle.Validated);
+                ProcessingGraphRevisionLifecycle.Validated, retainedCapture: retainedCapture);
             var occupant = await _store.ReadRevisionIdByNameAsync(ConfiguredGraphName, revisionName, cancellationToken)
                 .ConfigureAwait(false);
             if (occupant is not null && !string.Equals(occupant, revision.State.RevisionId, StringComparison.Ordinal))
@@ -95,11 +106,13 @@ internal sealed class ProcessingGraphOperationsCoordinator :
                     ConfiguredGraphName,
                     SupersededRevisionName(revisionName, revision.State),
                     _timeProvider.GetUtcNow(),
-                    ProcessingGraphRevisionLifecycle.Validated);
+                    ProcessingGraphRevisionLifecycle.Validated, retainedCapture: retainedCapture);
             }
             EnsureLiveEligible(revision);
             var state = await _store.UpsertConfiguredBasicRevisionAsync(revision, cancellationToken).ConfigureAwait(false);
             _configuredPipelineIdentity = pipelineIdentity;
+            _configuredPipelineRetained = retainedCapture;
+            _configuredModuleType = configuration.ModuleType;
             return state;
         }
         finally
@@ -108,14 +121,31 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         }
     }
 
-    internal async ValueTask<(ProcessingLiveExecutionSeed Seed, CameraModuleConfig Configuration)> PrepareLiveExecutionAsync(
+    internal ValueTask<(ProcessingLiveExecutionSeed Seed, CameraModuleConfig Configuration)> PrepareLiveExecutionAsync(
         CameraModuleConfig configuration,
         Guid captureId,
         Guid artifactId,
         DateTimeOffset acceptedUtc,
         CancellationToken cancellationToken)
+        => PrepareLiveExecutionAsync(configuration, captureId, artifactId, acceptedUtc, retainedCapture: false, cancellationToken);
+
+    internal ValueTask<(ProcessingLiveExecutionSeed Seed, CameraModuleConfig Configuration)> PrepareRecoveredLiveExecutionAsync(
+        CameraModuleConfig configuration,
+        Guid captureId,
+        Guid artifactId,
+        DateTimeOffset acceptedUtc,
+        CancellationToken cancellationToken)
+        => PrepareLiveExecutionAsync(configuration, captureId, artifactId, acceptedUtc, retainedCapture: true, cancellationToken);
+
+    private async ValueTask<(ProcessingLiveExecutionSeed Seed, CameraModuleConfig Configuration)> PrepareLiveExecutionAsync(
+        CameraModuleConfig configuration,
+        Guid captureId,
+        Guid artifactId,
+        DateTimeOffset acceptedUtc,
+        bool retainedCapture,
+        CancellationToken cancellationToken)
     {
-        _ = await EnsureConfiguredBasicAsync(configuration, cancellationToken).ConfigureAwait(false);
+        _ = await EnsureConfiguredBasicAsync(configuration, retainedCapture, cancellationToken).ConfigureAwait(false);
         var revision = await _store.ReadActiveRevisionAsync(cancellationToken).ConfigureAwait(false);
         var effectiveConfiguration = configuration with { Pipeline = revision.Pipeline };
         var executionId = StableExecutionId(new
@@ -145,6 +175,48 @@ internal sealed class ProcessingGraphOperationsCoordinator :
 
     public ValueTask<ProcessingGraphRegistryState> GetRegistryAsync(CancellationToken cancellationToken)
         => _store.ReadRegistryAsync(cancellationToken);
+
+    /// <summary>
+    /// Reports a Named active revision whose stored node plans no longer match what this build compiles from the same
+    /// pipeline, typically a revision compiled before an upgrade. Live work bound to it can never run, so the standard
+    /// lane abandons each capture until an operator activates a compatible revision or rolls back to configured-basic.
+    /// Configured-basic is recompiled from configuration at startup and is never reported. The comparison is the one the
+    /// standard lane applies to each execution, and its result is cached per revision and base configuration.
+    /// </summary>
+    internal async ValueTask<ProcessingActiveRevisionSupersession?> FindSupersededActiveRevisionAsync(
+        CancellationToken cancellationToken)
+    {
+        var baseConfiguration = Volatile.Read(ref _baseConfiguration);
+        if (baseConfiguration is null) return null;
+        var registry = await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
+        if (registry.Mode != ProcessingGraphRegistryMode.Named) return null;
+        var cached = Volatile.Read(ref _supersessionCheck);
+        if (cached is not null &&
+            string.Equals(cached.RevisionId, registry.ActiveRevisionId, StringComparison.Ordinal) &&
+            ReferenceEquals(cached.BaseConfiguration, baseConfiguration))
+        {
+            return cached.Result;
+        }
+        var revision = await _store.ReadRevisionAsync(registry.ActiveRevisionId, cancellationToken).ConfigureAwait(false);
+        var stored = revision.Nodes.ToDictionary(static node => node.NodeId, StringComparer.Ordinal);
+        ProcessingActiveRevisionSupersession? result = null;
+        using (var graph = new DisposableProcessingGraph(
+            _pipelineFactory.CreateRetainedGraph(baseConfiguration with { Pipeline = revision.Pipeline })))
+        {
+            foreach (var node in graph.Value.Nodes)
+            {
+                if (stored.TryGetValue(node.Id, out var storedNode) &&
+                    !string.Equals(storedNode.PlanSha256, node.PlanSha256, StringComparison.Ordinal))
+                {
+                    result = new ProcessingActiveRevisionSupersession(
+                        revision.State.RevisionId, node.Id, storedNode.PlanSha256, node.PlanSha256);
+                    break;
+                }
+            }
+        }
+        Volatile.Write(ref _supersessionCheck, new SupersessionCheck(registry.ActiveRevisionId, baseConfiguration, result));
+        return result;
+    }
 
     internal void NotifyLiveWorkAccepted() => _replayWakeup.SignalLiveWork();
 
@@ -539,10 +611,11 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         string revision,
         DateTimeOffset createdUtc,
         ProcessingGraphRevisionLifecycle lifecycle = ProcessingGraphRevisionLifecycle.Draft,
-        ProcessingGraphDefinition? sourceDefinition = null)
+        ProcessingGraphDefinition? sourceDefinition = null,
+        bool retainedCapture = false)
     {
         using var graph = new DisposableProcessingGraph(sourceDefinition is null
-            ? _pipelineFactory.CreateGraph(configuration)
+            ? retainedCapture ? _pipelineFactory.CreateRetainedGraph(configuration) : _pipelineFactory.CreateGraph(configuration)
             : _pipelineFactory.CreateGraph(configuration, sourceDefinition.Name, sourceDefinition.Revision));
         var sharedPlan = graph.Value.SharedPlan
             ?? throw new InvalidOperationException("Processing graph revisions require explicit pipeline v2 compilation.");
@@ -776,6 +849,11 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         }
     }
 
+    private sealed record SupersessionCheck(
+        string RevisionId,
+        CameraModuleConfig BaseConfiguration,
+        ProcessingActiveRevisionSupersession? Result);
+
     private sealed class DisposableProcessingGraph(CaptureProcessingGraph value) : IDisposable
     {
         internal CaptureProcessingGraph Value { get; } = value;
@@ -785,3 +863,10 @@ internal sealed class ProcessingGraphOperationsCoordinator :
 
     public void Dispose() => _configurationGate.Dispose();
 }
+
+/// <summary>A Named active revision compiled under a node plan this build no longer produces.</summary>
+internal sealed record ProcessingActiveRevisionSupersession(
+    string RevisionId,
+    string NodeId,
+    string StoredPlanSha256,
+    string CurrentPlanSha256);

@@ -78,6 +78,25 @@ derivation are documented in `tests/fixtures/catalog/SOURCE.md` and
 `docs/catalog/hyg-v42.md`. Modifications and redistributions of the catalog data
 remain subject to the same attribution and ShareAlike terms.
 
+## OpenNGC
+
+HVO.SkyMonitor's tests include a small derived excerpt of OpenNGC v20260501,
+composed with HYG 4.4 stars, to exercise the deep-sky catalog collection.
+
+Copyright (c) 2023 Mattia Verga and the OpenNGC contributors.
+
+Licensed under the Creative Commons Attribution-ShareAlike 4.0 International
+License: https://creativecommons.org/licenses/by-sa/4.0/
+
+Source: https://github.com/mattiaverga/OpenNGC at commit
+`36cb178a0f69dba8bfc03a99c10512831edf1c6b`
+
+The excerpt, its source rows, checksums, and reproducible derivation are
+documented in `tests/fixtures/catalog/SOURCE-v44-openngc.md`, and the complete
+upstream acknowledgements in `docs/catalog/hyg-v44-openngc-attribution.md`.
+Modifications and redistributions of the catalog data remain subject to the same
+attribution and ShareAlike terms.
+
 ## ZWO ASI Camera SDK
 
 The optional `HVO.SkyMonitor.CameraAgent.Modules.Zwo` adapter contains C ABI

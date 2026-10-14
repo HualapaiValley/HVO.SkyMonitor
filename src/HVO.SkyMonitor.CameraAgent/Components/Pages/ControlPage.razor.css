@@ -1,0 +1,14 @@
+/* System control layout. The shared Operations vocabulary (.ops-*, .button, .state-chip, .action-dialog) lives in
+   OperationsLayout.razor.css; this file only adds the receipt table detail and the reason dialog width. */
+
+div.ops-note-banner.compact.control-message { margin: 0 0 .8rem; }
+.control-empty { margin: 0; color: var(--muted); font-size: .65rem; }
+
+.ops-table-wrap .ops-table.control-receipts td { white-space: normal; }
+.ops-table-wrap .ops-table.control-receipts td:first-child { white-space: nowrap; }
+.ops-table-wrap .ops-table.control-receipts td small { display: block; margin-top: .15rem; color: var(--muted); font-size: .55rem; }
+.ops-table-wrap .ops-table.control-receipts td:nth-child(4) { min-width: 9rem; overflow-wrap: anywhere; }
+
+dialog.action-dialog.control-dialog { width: min(calc(100% - 2rem), 34rem); }
+dialog.action-dialog.control-dialog fieldset { min-inline-size: 0; }
+dialog.action-dialog.control-dialog .ops-field input { min-height: 44px; }

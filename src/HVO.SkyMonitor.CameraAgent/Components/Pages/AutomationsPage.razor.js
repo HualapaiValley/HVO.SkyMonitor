@@ -12,6 +12,12 @@ export function showModal(dialog) {
 }
 
 export function focusById(id, fallbackId) {
-  const target = document.getElementById(id) ?? document.getElementById(fallbackId);
-  target?.focus();
+  const target = document.getElementById(id);
+  if (target && !target.disabled) {
+    target.focus();
+    if (document.activeElement === target) {
+      return;
+    }
+  }
+  document.getElementById(fallbackId)?.focus();
 }

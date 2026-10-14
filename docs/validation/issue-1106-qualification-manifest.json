@@ -1,0 +1,106 @@
+{
+  "schema": "virtual-astrometry-final-qualification-manifest-v1",
+  "issue": 1106,
+  "epic": 1098,
+  "declaredBeforeMeasurement": true,
+  "rules": [
+    "Every run executes at one committed, clean development/v1-based revision built in Release; HVO_EVIDENCE_REVISION must equal that revision and each harness that checks the assembly InformationalVersion must accept it.",
+    "Only final/held-out partitions run. Tuning partitions are closed: their methods are not executed and never count as final evidence.",
+    "Seeds, sky times, profiles, readouts, partitions and numerical tolerances are those compiled into each harness at the measured revision. This manifest pins the harness set; the harness sources at that revision are the predeclared workload. Each source blob id is recorded in the evidence index.",
+    "Every run must execute exactly expectedPassed tests, with zero failed and zero not-executed tests, in a fresh results directory, and must attach exactly one file named like each listed report (MSTest stores attachments without the partition directory shown in the path). A run that executes fewer tests, or that matches no test, fails the qualification. It is never treated as a skip.",
+    "Runs are sequential on an otherwise idle host so that resource figures are not perturbed by concurrent heavy work. Docker is not required.",
+    "A harness failure is retained and reported. Tolerances are not changed after measurement. Changing an acceptance threshold requires a documented scientific reason and fresh held-out evidence on a later revision."
+  ],
+  "environment": {
+    "configuration": "Release",
+    "DOTNET_TieredCompilation": "0",
+    "HVO_ASTROMETRY_CATALOG_ROOT": "Installed, verified hyg-v42-production snapshot root (HYG 4.2, 119,625 rows, database SHA-256 B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2)"
+  },
+  "runs": [
+    {
+      "id": "catalog-selection",
+      "criteria": [2, 7, 8],
+      "owner": 1101,
+      "project": "tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj",
+      "filter": "FullyQualifiedName~AstrometricCatalogQualificationTests.FullSnapshotSelectionResources",
+      "expectedPassed": 1,
+      "reports": ["astrometric-catalog-resources.json"],
+      "acceptance": "docs/astronomy/shared-astrometry-validation.md (bounded HYG selection)"
+    },
+    {
+      "id": "shared-solver-full-frame",
+      "criteria": [8],
+      "owner": 1088,
+      "project": "tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj",
+      "filter": "FullyQualifiedName~AstrometricPerformanceTests.FullFrame_DetectionColdWarmResourcesAreMeasured",
+      "expectedPassed": 2,
+      "reports": ["astrometry-1936x1216-mono.json", "astrometry-3096x2080-color.json"],
+      "acceptance": "docs/astronomy/shared-astrometry-validation.md (shared solver resources). Supplementary: synthetic fixture rather than emulator pixels."
+    },
+    {
+      "id": "actual-pixels-blind-warm-readouts",
+      "criteria": [3, 7],
+      "owner": 1102,
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualAstrometryQualificationTests.ActualPixelsBlindWarmReadouts",
+      "expectedPassed": 1,
+      "reports": ["held-out-stationary-baseline/virtual-astrometry-pixels.json"],
+      "acceptance": "docs/astronomy/virtual-camera-astrometry-baseline.md"
+    },
+    {
+      "id": "actual-configured-resolution-resources",
+      "criteria": [3, 8],
+      "owner": 1102,
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualAstrometryResourceTests.ActualConfiguredResolutionResources",
+      "expectedPassed": 1,
+      "reports": ["virtual-astrometry-resources.json"],
+      "acceptance": "docs/astronomy/virtual-camera-astrometry-baseline.md (resources)"
+    },
+    {
+      "id": "stellar-exposure",
+      "criteria": [2, 4, 8],
+      "owner": 522,
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualStellarExposureResourceTests.ConfiguredStellarExposureResources",
+      "expectedPassed": 1,
+      "perProcess": {
+        "variable": "HVO_EXPOSURE_WORKLOAD",
+        "values": ["mono-short", "mono-long", "mono-day", "cfa-short", "cfa-long", "cfa-day", "asi676-short", "asi676-long", "asi676-day"],
+        "fixed": { "HVO_EXPOSURE_LABEL": "after" }
+      },
+      "reports": ["stellar-exposure-after-{value}.json"],
+      "acceptance": "docs/virtual-camera.md and docs/validation/issue-522-stellar-resources.json budgets (mono p95 10 s, Bayer p95 40 s, process peak 2 GiB)"
+    },
+    {
+      "id": "measured-stars-held-out",
+      "criteria": [6, 7, 8],
+      "owner": 1103,
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualMeasuredStarQualificationTests.HeldOutMeasuredStars",
+      "expectedPassed": 1,
+      "reports": ["measured-stars-held-out/virtual-measured-stars.json"],
+      "acceptance": "docs/astronomy/measured-star-diagnostics-v1.md"
+    },
+    {
+      "id": "optical-calibration-held-out",
+      "criteria": [5, 7, 8],
+      "owner": 1104,
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualOpticalCalibrationQualificationTests.HeldOutOpticalCalibration",
+      "expectedPassed": 1,
+      "reports": ["optical-calibration-held-out/virtual-optical-calibration.json"],
+      "acceptance": "docs/astronomy/session-optical-calibration-v1.md"
+    },
+    {
+      "id": "astrometric-uncertainty-held-out",
+      "criteria": [6, 7, 8],
+      "owner": 1105,
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualAstrometricUncertaintyQualificationTests.HeldOutAstrometricUncertainty",
+      "expectedPassed": 1,
+      "reports": ["uncertainty-held-out/virtual-astrometric-uncertainty.json"],
+      "acceptance": "docs/astronomy/astrometric-uncertainty-v1.md"
+    }
+  ]
+}

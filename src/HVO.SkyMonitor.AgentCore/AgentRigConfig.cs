@@ -207,7 +207,8 @@ public sealed record OpticsProfile(
     double? VerticalFieldOfViewDegrees = null,
     bool HorizontalFlip = false,
     SensorCrop? Crop = null,
-    string CalibrationVersion = "unspecified");
+    string CalibrationVersion = "unspecified",
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] double RadialDistortionK1 = 0);
 
 /// <summary>Physical optical family used to select a shared projection implementation.</summary>
 public enum LensKind

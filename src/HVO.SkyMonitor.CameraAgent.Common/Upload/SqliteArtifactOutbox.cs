@@ -499,6 +499,43 @@ public sealed class SqliteArtifactOutbox(
             hasMore && records.Count > 0 ? records[^1].Cursor : null);
     }
 
+    public const int MaximumRecentDeliveryRecords = 25;
+
+    public async ValueTask<IReadOnlyList<ArtifactOutboxDeliveryRecord>> ReadRecentDeliveryAsync(
+        string root,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, MaximumRecentDeliveryRecords);
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        // One statement reads one consistent snapshot. Each arm is bounded by the (status, record_id)
+        // index, so the read never scans the acknowledged history however long it grows.
+        command.CommandText = string.Join(
+            " UNION ALL ",
+            DeliveryStatuses.Select(static status => string.Concat(
+                "SELECT * FROM (", DeliverySelectColumns, " WHERE status = '", status,
+                "' ORDER BY record_id DESC LIMIT $limit)"))) + ";";
+        command.Parameters.AddWithValue("$limit", limit);
+        var unfinished = new List<(long RecordId, ArtifactOutboxDeliveryRecord Record)>();
+        var finished = new List<(long RecordId, ArtifactOutboxDeliveryRecord Record)>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var record = ReadDeliveryRecord(reader);
+            (record.Status is ArtifactOutboxStatus.Acknowledged or ArtifactOutboxStatus.Abandoned ? finished : unfinished)
+                .Add((reader.GetInt64(0), record));
+        }
+        return unfinished.OrderByDescending(static item => item.RecordId)
+            .Concat(finished.OrderByDescending(static item => item.RecordId))
+            .Take(limit)
+            .Select(static item => item.Record)
+            .ToArray();
+    }
+
     public async ValueTask<ArtifactOutboxOperationsRecord?> ReadOperationsDetailAsync(
         string root,
         string recordKey,
@@ -1202,6 +1239,28 @@ public sealed class SqliteArtifactOutbox(
             new ArtifactOutboxOperationsCursor(reader.GetInt64(0)));
     }
 
+    private static ArtifactOutboxDeliveryRecord ReadDeliveryRecord(SqliteDataReader reader)
+    {
+        FrameArtifactRole? role = null;
+        if (!reader.IsDBNull(1) && Enum.TryParse<FrameArtifactRole>(reader.GetString(1), out var parsedRole))
+        {
+            role = parsedRole;
+        }
+        long? captureSequence = reader.IsDBNull(11) || reader.GetFieldType(11) != typeof(long) ? null : reader.GetInt64(11);
+        return new ArtifactOutboxDeliveryRecord(
+            captureSequence is > 0 ? captureSequence : null,
+            role,
+            reader.IsDBNull(3) ? null : BoundOutput(reader.GetString(3), 128),
+            reader.IsDBNull(2) ? null : reader.GetInt64(2),
+            ParseStatus(reader.GetString(4)),
+            reader.GetInt32(5),
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(7)),
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(8)),
+            DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6)),
+            reader.IsDBNull(9) ? null : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(9)),
+            reader.IsDBNull(10) ? null : OutboxOperationsReasonCodes.Sanitize(reader.GetString(10)));
+    }
+
     private static string FormatAction(OutboxOperationAction action) => action switch
     {
         OutboxOperationAction.Replay => "replay",
@@ -1765,6 +1824,19 @@ public sealed class SqliteArtifactOutbox(
         string Action,
         string ActorKind,
         string ReasonCode);
+
+    private static readonly string[] DeliveryStatuses = ["pending", "leased", "retry", "quarantined", "acknowledged", "abandoned"];
+
+    // A v2 manifest carries its capture at descriptor.capture; a structured product at
+    // descriptor.sourceCapture.capture. A row that is not valid JSON reads as no capture.
+    private const string DeliverySelectColumns = """
+        SELECT record_id, role, payload_length, media_type, status, attempt_count,
+               next_attempt_unix_ms, created_unix_ms, updated_unix_ms, acknowledged_unix_ms, last_reason,
+               CASE WHEN json_valid(CAST(manifest_bytes AS TEXT)) THEN COALESCE(
+                   json_extract(CAST(manifest_bytes AS TEXT), '$.descriptor.capture.captureSequence'),
+                   json_extract(CAST(manifest_bytes AS TEXT), '$.descriptor.sourceCapture.capture.captureSequence')) END
+        FROM artifact_outbox_records
+        """;
 
     private const string OperationsSelectColumns = """
         SELECT record_id, idempotency_key, manifest_kind, role, payload_length, media_type,

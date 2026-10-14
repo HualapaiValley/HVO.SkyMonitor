@@ -28,23 +28,40 @@ public sealed class TransientStarMaskStrategyTests
         }
 
         var root = GetRepositoryRoot();
-        var outputDirectory = Path.Combine(root, "TestResults", "issue-115");
+        var outputDirectory = Path.Combine(root, "TestResults", "issue-522", "star-mask");
         Directory.CreateDirectory(outputDirectory);
         var outputPath = Path.Combine(outputDirectory, "star-mask-strategy.json");
         var evidence = new
         {
-            SchemaVersion = "issue-115-star-mask-strategy-v1",
+            SchemaVersion = "issue-522-exposure-swept-star-mask-strategy-v2",
             RecordedUtc = DateTimeOffset.UtcNow,
             Revision = ReadGit(root, "rev-parse HEAD"),
             DirtyState = ReadGit(root, "status --short"),
             FixtureUtc,
             Window = new { Offsets = new[] { -2, -1, 0, 1, 2 }, CadenceSeconds = 25, ExposureSeconds = 20 },
             Control = "Matched empty-catalog VirtualSky captures derive max(8 * 1.4826 * MAD, absolute residual p99.9999).",
-            Strategy = "Union of catalog-projected PSF support over actual N-2..N+2 timestamps in detector coordinates.",
+            Strategy = "Independent complete catalog geometry over each exact exposure; renderer references are scoring-only.",
+            HistoricalInstantaneousReferences = new[] { Workload.W1, Workload.W2 },
             Results = results
         };
         await File.WriteAllTextAsync(outputPath, JsonSerializer.Serialize(evidence, EvidenceJson)).ConfigureAwait(false);
-        TestContext.WriteLine($"Issue #115 star-mask evidence: {outputPath}");
+        TestContext.WriteLine($"Exposure-swept star-mask evidence: {outputPath}");
+        var referencePath = Path.Combine(root, "tests", "fixtures", "virtual-sky", "star-mask-strategy-v2.json");
+        Assert.IsTrue(File.Exists(referencePath), "The v2 regression reference must be qualified separately after retaining observed evidence.");
+        using var reference = JsonDocument.Parse(await File.ReadAllTextAsync(referencePath).ConfigureAwait(false));
+        Assert.AreEqual("exposure-swept-star-mask-regression-v2", reference.RootElement.GetProperty("schemaVersion").GetString());
+        foreach (var result in results)
+        {
+            var expected = reference.RootElement.GetProperty("workloads").GetProperty(result.Workload);
+            Assert.AreEqual(expected.GetProperty("threshold").GetInt32(), result.NoiseThresholdAdu);
+            Assert.AreEqual(expected.GetProperty("baselineCount").GetInt64(), result.Baseline.StarAssociatedCount);
+            Assert.AreEqual(expected.GetProperty("baselineEnergy").GetInt64(), result.Baseline.StarAssociatedEnergy);
+            Assert.AreEqual(expected.GetProperty("maskedPixels").GetInt32(), result.MaskedPixels);
+            Assert.AreEqual(expected.GetProperty("maskChecksum").GetString(), result.MaskChecksumSha256);
+            Assert.AreEqual(expected.GetProperty("causalThreshold").GetInt32(), result.Causal.NoiseThresholdAdu);
+            Assert.AreEqual(expected.GetProperty("causalMaskedPixels").GetInt32(), result.Causal.MaskedPixels);
+            Assert.AreEqual(expected.GetProperty("causalMaskChecksum").GetString(), result.Causal.MaskChecksumSha256);
+        }
     }
 
     public TestContext TestContext { get; set; } = null!;
@@ -63,6 +80,7 @@ public sealed class TransientStarMaskStrategyTests
         var frames = new DetectorFrame[5];
         var controls = new DetectorFrame[5];
         var scenes = new VisibleScene[5];
+        var masks = new Linear16PixelMask[5];
         for (var index = 0; index < frames.Length; index++)
         {
             var started = FixtureUtc.AddSeconds((index - 2) * 25);
@@ -79,25 +97,23 @@ public sealed class TransientStarMaskStrategyTests
             Assert.IsTrue(starStore.TryGet(sceneId, out var scene));
             Assert.IsNotNull(scene);
             scenes[index] = scene;
+            var projection = RigProjectionContextFactory.Create(config.Rig);
+            var sourceSupport = workload.MaskRadius / workload.DetectorScale;
+            var metadata = new CatalogMetadata("synthetic-spherical-fixture", "v2", new("https://example.invalid/catalog"),
+                new string('A', 64), "test fixture", "2");
+            var geometry = await new StellarExposureGeometryBuilder(catalog).BuildAsync(
+                new VisibleSceneRequest(request.RequestedStartUtc.AddSeconds(10),
+                    new ObserverLocation(config.Observatory.LatitudeDegrees, config.Observatory.LongitudeDegrees, config.Observatory.ElevationMeters),
+                    projection, new(6.5, workload.MaximumResults * 2), metadata,
+                    horizonPolicy: HorizonPolicy.GeometricHorizon), request.RequestedStartUtc, TimeSpan.FromSeconds(20),
+                new(MaximumCandidates: workload.MaximumResults * 2, PsfSupportRadiusPixels: sourceSupport)).ConfigureAwait(false);
+            masks[index] = StellarExposureMask.Create(geometry, frames[index].Layout.Width, frames[index].Layout.Height,
+                workload.DetectorScale, workload.DetectorScale, options: new(sourceSupport)).Mask;
         }
 
         var layout = frames[0].Layout;
-        var supports = scenes
-            .SelectMany(static scene => scene.Objects)
-            .Select(item => new Linear16CircularMaskRegion(
-                item.Pixel.X * workload.DetectorScale,
-                item.Pixel.Y * workload.DetectorScale,
-                workload.MaskRadius))
-            .ToArray();
-        var mask = Linear16MaskOperations.CreateCircularSupportMask(layout.Width, layout.Height, supports);
-        var causalSupports = scenes.Take(3)
-            .SelectMany(static scene => scene.Objects)
-            .Select(item => new Linear16CircularMaskRegion(
-                item.Pixel.X * workload.DetectorScale,
-                item.Pixel.Y * workload.DetectorScale,
-                workload.MaskRadius))
-            .ToArray();
-        var causalMask = Linear16MaskOperations.CreateCircularSupportMask(layout.Width, layout.Height, causalSupports);
+        var mask = Linear16MaskOperations.Combine(masks);
+        var causalMask = Linear16MaskOperations.Combine(masks.Take(3).ToArray());
         var empty = Linear16MaskOperations.Empty(layout.Width, layout.Height);
         var starBackground = Background(frames, empty, 0, 1, 3, 4);
         var controlBackground = Background(controls, empty, 0, 1, 3, 4);
@@ -121,7 +137,7 @@ public sealed class TransientStarMaskStrategyTests
                 64,
                 8,
                 64,
-                Linear16TransientExtraction.MaximumDetectorPixels,
+                checked(layout.Width * layout.Height),
                 0,
                 0.9));
         var validPixels = CountValidPixels(workload, layout);
@@ -143,14 +159,6 @@ public sealed class TransientStarMaskStrategyTests
         var causalMasked = Evaluate(workload, frames[2], causalStarBackground, causalMask, causalThreshold, applyMask: true);
         var causalMaskedPixels = causalMask.Bits.Span.ToArray().Sum(static value => System.Numerics.BitOperations.PopCount(value));
 
-        Assert.AreEqual(workload.ExpectedThreshold, threshold);
-        Assert.AreEqual(workload.ExpectedBaselineCount, baseline.StarAssociatedCount);
-        Assert.AreEqual(workload.ExpectedBaselineEnergy, baseline.StarAssociatedEnergy);
-        Assert.AreEqual(workload.ExpectedMaskedPixels, maskedPixels);
-        Assert.AreEqual(workload.ExpectedMaskChecksum, Convert.ToHexString(SHA256.HashData(mask.Bits.Span)));
-        Assert.AreEqual(workload.ExpectedCausalThreshold, causalThreshold);
-        Assert.AreEqual(workload.ExpectedCausalMaskedPixels, causalMaskedPixels);
-        Assert.AreEqual(workload.ExpectedCausalMaskChecksum, Convert.ToHexString(SHA256.HashData(causalMask.Bits.Span)));
         Assert.IsGreaterThanOrEqualTo(99, countSuppression);
         Assert.IsGreaterThanOrEqualTo(99, energySuppression);
         Assert.IsGreaterThanOrEqualTo(99, absoluteCountSuppression);
@@ -365,7 +373,7 @@ public sealed class TransientStarMaskStrategyTests
         {
             seed = 2025,
             maximumMagnitude = 6.5,
-            maximumResults = workload.MaximumResults,
+            maximumResults = workload.MaximumResults * 2,
             magnitudeZeroElectronsPerSecond = workload.Id == "W1" ? 300d : 18_000d,
             backgroundElectronsPerSecond = 2d,
             shotNoiseEnabled = true,

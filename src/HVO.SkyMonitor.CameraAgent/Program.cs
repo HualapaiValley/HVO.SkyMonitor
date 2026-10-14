@@ -31,6 +31,7 @@ using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Common.Observability;
 using HVO.SkyMonitor.Common.Configuration;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Components.Server.Circuits;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Http;
@@ -296,12 +297,22 @@ public class Program
         builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();
         builder.Services.AddScoped<ICameraAgentNamedRigUiService, CameraAgentNamedRigUiService>();
         builder.Services.AddScoped<ICameraAgentCalibrationUiService, CameraAgentCalibrationUiService>();
+        builder.Services.AddScoped<ICameraAgentFocusUiService, CameraAgentFocusUiService>();
+        builder.Services.AddScoped<CircuitConnectionState>();
+        builder.Services.AddScoped<CircuitHandler>(services => services.GetRequiredService<CircuitConnectionState>());
         builder.Services.AddScoped<ICameraAgentEnvironmentalUiService, CameraAgentEnvironmentalUiService>();
         builder.Services.AddScoped<ICameraAgentAutomationUiService, CameraAgentAutomationUiService>();
         builder.Services.AddScoped<ICameraAgentTransientUiService, CameraAgentTransientUiService>();
+        builder.Services.AddScoped<ICameraAgentArchiveCardUiService, CameraAgentArchiveCardUiService>();
+        builder.Services.AddScoped<ICameraAgentEventEvidenceUiService, CameraAgentEventEvidenceUiService>();
+        builder.Services.AddScoped<ICameraAgentTransientOperationsUiService, CameraAgentTransientOperationsUiService>();
         builder.Services.AddScoped<ICameraAgentObservingDayUiService, CameraAgentObservingDayUiService>();
+        builder.Services.AddScoped<ICameraAgentNightlyProductUiService, CameraAgentNightlyProductUiService>();
         builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();
         builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
+        builder.Services.AddScoped<ICameraAgentSystemUiService, CameraAgentSystemUiService>();
+        builder.Services.AddScoped<ICameraAgentTimeSyncUiService, CameraAgentTimeSyncUiService>();
+        builder.Services.AddScoped<ICameraAgentRegistrationUiService, CameraAgentRegistrationUiService>();
         builder.Services.AddCameraAgentReplayFlow();
 
         builder.Services.AddOptions<CapturePreviewOptions>()
@@ -328,6 +339,7 @@ public class Program
             "transient-candidate-delivery", tags: ["dependency"]);
         healthChecks.AddCheck<CaptureAdmissionHealthCheck>("capture-admission", tags: ["dependency"]);
         healthChecks.AddCheck<CalibrationLibraryHealthCheck>("calibration-library", tags: ["dependency"]);
+        healthChecks.AddCheck<ClockHealthCheck>("clock", tags: ["dependency"]);
         AddCameraModules(builder.Services);
 
         var app = builder.Build();
@@ -407,6 +419,9 @@ public class Program
         app.MapControllers();
         app.MapCameraAgentGalleryEndpoints();
         app.MapCameraAgentArtifactEndpoints();
+        app.MapCameraAgentStillProductEndpoints();
+        app.MapCameraAgentTimeLapseSampleEndpoints();
+        app.MapCameraAgentTimeLapseEndpoints();
         app.MapCameraAgentOperationsEndpoints();
         app.MapCameraAgentSkyMapEndpoints();
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
@@ -416,6 +431,7 @@ public class Program
         app.MapCameraAgentPipelineOperationsEndpoints();
         app.MapCameraAgentProcessingGraphOperationsEndpoints();
         app.MapCameraAgentCalibrationOperationsEndpoints();
+        app.MapCameraAgentFocusSessionEndpoints();
         app.MapCameraAgentOutboxOperationsEndpoints();
         app.MapCameraAgentEnvironmentalOperationsEndpoints();
         app.MapCameraAgentDeploymentEndpoints();

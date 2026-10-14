@@ -18,6 +18,24 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 public sealed class ArtifactIngestGraphInvalidationTests
 {
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void SceneCompatibilityAcceptsCompactAndFullArrivalOrdersWithoutAcceptingChangedFacts(bool compactFirst)
+    {
+        var full = new SceneProvenance("scene", "rig", "catalog", "1", new string('A', 64),
+            "Perspective", "projection", "astronomy", "sensor",
+            Objects: [new("star", "Star", 1, 2, 3)], Segments: [],
+            SceneUtc: DateTimeOffset.UnixEpoch);
+        var compact = full.WithoutProjectedGeometry();
+        Assert.IsTrue(ArtifactIngestService.SceneProvenanceMatches(
+            compactFirst ? compact : full, compactFirst ? full : compact));
+        Assert.IsFalse(ArtifactIngestService.SceneProvenanceMatches(full, compact with { SceneId = "different" }));
+        Assert.IsFalse(ArtifactIngestService.SceneProvenanceMatches(full, compact with { SceneUtc = DateTimeOffset.UnixEpoch.AddSeconds(1) }));
+        Assert.IsFalse(ArtifactIngestService.SceneProvenanceMatches(full, compact with { CatalogChecksumSha256 = new string('B', 64) }));
+        Assert.IsFalse(ArtifactIngestService.SceneProvenanceMatches(full, full with { Objects = [new("star", "Star", 2, 2, 3)] }));
+    }
+
+    [TestMethod]
     public async Task InvalidatingAnchorOfCompletedExecutionLeavesGraphUntouchedAndReopensLegacyDependent()
     {
         await using var context = CreateContext();

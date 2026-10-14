@@ -26,6 +26,15 @@ Read these sources in order before implementation:
 If sources conflict, stop implementation long enough to resolve the conflict in
 the issue or authoritative plan. Do not silently choose a convenient behavior.
 
+For PRs targeting `development/v1`, the protected-CI profile in
+[Development v1](../development-v1.md) takes precedence over generic
+full-matrix wording in this protocol. Run its Preflight and Build and Unit
+checks after review convergence. The main/release classifier remains useful
+for local scope and full qualification; `complete=true`, including from a
+base-sync delta, does not authorize dispatching `ci.yml` for an ordinary v1 PR.
+Additional qualification must be explicitly required by issue acceptance or
+the operator. Keep risk-tier local validation and independent review.
+
 ## 2. Starting an Issue
 
 ### Technical Readiness
@@ -50,7 +59,8 @@ Before changing files:
 2. Confirm every required dependency is merged or explicitly coordinated.
 3. Inspect `git status`, recent commits, current branch, and related PRs.
 4. Preserve unrelated worktree changes.
-5. Create one issue-focused branch from current `main`.
+5. Create one issue-focused branch from the freshly fetched target
+   (`development/v1` for ordinary feature work).
 6. Map existing implementation, tests, migrations, configuration, and docs.
 7. Post the plain-language synopsis defined below before implementation.
 8. Record unresolved product or architecture decisions in the issue.
@@ -454,8 +464,8 @@ downgrade a durable or measured-path change to avoid its affected gate.
    local candidate evidence once per unchanged candidate before the first push.
    Tier C/M includes the complete standard local validation block, canonical
    coverage, output/observability review, and applicable performance harness.
-   Tier A/B uses focused and affected local gates and lets protected CI provide
-   the complete matrix. Correct a failed gate and rerun every failed or
+   Tier A/B uses focused and affected local gates plus the target branch's
+   protected CI profile. Correct a failed gate and rerun every failed or
    invalidated portion; preserve unaffected evidence only when its recorded
    boundary did not change.
    Choose the gate set with `scripts/ci:classify` on the review range, not by
@@ -474,7 +484,7 @@ downgrade a durable or measured-path change to avoid its affected gate.
 4. **Review correction:** run the reproducer, focused regression, and full
    affected gate, with the affected set taken from the classifier whenever it
    classifies the delta successfully. Review the correction delta before final CI. Let protected CI
-   provide the complete classifier-selected plan unless the
+   provide the target branch's selected profile unless the
    correction changes shared contracts, migrations, test infrastructure,
    category/coverage logic, or another cross-cutting boundary with uncertain
    blast radius. For those exceptions, rerun the complete local candidate gate
@@ -483,8 +493,8 @@ downgrade a durable or measured-path change to avoid its affected gate.
    configuration, fixtures, workload parameters, or measurement logic on the
    measured path changed. Documentation-only and unrelated test changes do not
    invalidate it.
-6. **Current-head CI:** every tier requires one successful classifier-selected
-   protected CI run for the latest PR head after review convergence and the final
+6. **Current-head CI:** every tier requires the target branch's successful
+   protected CI profile for the latest PR head after review convergence and the final
    head-changing update. A stale green run never satisfies the merge gate; an
    unchanged successful latest-head run must not be repeated merely because a
    review or administrative step completed later.
@@ -626,7 +636,7 @@ The positive Unit filter must pass with an invalid Docker endpoint. Integration
 is a separate required gate and requires Docker for the Testcontainers
 assemblies. This complete block is the tier C/M local candidate gate, not the
 default inner loop. Tier A/B uses its recorded focused/affected local evidence
-and relies on the same complete protected CI before merge. Follow the correction
+and relies on the target branch's protected CI before merge. Follow the correction
 rules in section 4 after review feedback.
 
 The four script lines are the CI-control guards plus the shell syntax check.
@@ -722,7 +732,7 @@ The invariant sequence is:
 ```text
 local candidate evidence -> draft PR -> review convergence or waiver
   -> final target-branch synchronization and base-sync review when it advanced
-  -> ready -> classifier-selected protected CI -> merge and cleanup
+  -> ready -> target-branch protected CI -> merge and cleanup
 ```
 
 Draft pushes intentionally do not run protected CI. Do not mark a PR ready while

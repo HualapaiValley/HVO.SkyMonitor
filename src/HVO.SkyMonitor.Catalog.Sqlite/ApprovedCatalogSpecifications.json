@@ -1,0 +1,373 @@
+{
+  "registryVersion": 2,
+  "specifications": [
+    {
+      "catalogId": "hyg-v42-production",
+      "packageLineage": "hyg-v42-production-p3-s2",
+      "packageVersionPrefix": "hyg-v4.2-p3-s2-r",
+      "manifestVersion": 2,
+      "catalog": {
+        "name": "HYG 4.2",
+        "version": "4.2"
+      },
+      "source": {
+        "projectUrl": "https://codeberg.org/astronexus/hyg",
+        "downloadUrl": "https://codeberg.org/astronexus/hyg.git/info/lfs/objects/5ca9431ff364c8002a4a3efa91b2b9296746aea1543374db4cb6b4fab049d601",
+        "oid": "5ca9431ff364c8002a4a3efa91b2b9296746aea1543374db4cb6b4fab049d601",
+        "compressed": {
+          "sha256": "5ca9431ff364c8002a4a3efa91b2b9296746aea1543374db4cb6b4fab049d601",
+          "length": 13636976
+        },
+        "decompressed": {
+          "sha256": "b2983a8d934e4f031cdb67bdd6c3437f8c5143cd6606a9573a9a9ac4b6375fd2",
+          "length": 33932800
+        }
+      },
+      "schemaVersion": "2",
+      "preprocessingVersion": "3",
+      "serializer": {
+        "name": "sqlite3",
+        "version": "3.45.1"
+      },
+      "database": {
+        "relativePath": "hyg_v42.sqlite",
+        "sha256": "b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2",
+        "length": 9302016,
+        "rowCount": 119625,
+        "solCount": 0,
+        "requiredColumn": "hipparcos_id"
+      },
+      "license": {
+        "identifier": "CC BY-SA 4.0",
+        "url": "https://creativecommons.org/licenses/by-sa/4.0/",
+        "file": {
+          "relativePath": "LICENSE-HYG.md",
+          "sha256": "9ab0956d22d8390b54456c2afb3b47281b4a5a0313c6871f0af4489ed8395f05",
+          "length": 423
+        },
+        "attribution": {
+          "relativePath": "ATTRIBUTION-HYG.md",
+          "sha256": "e3addc3480a0d0f07129f332b0dea592fa315373f21111d54ac8e2aebd03b5f1",
+          "length": 1361
+        }
+      },
+      "topology": {
+        "identity": "d3-celestial-v0.7.32-hip-coordinate-map-v1",
+        "sha256": "70c253a00e0909ae0236dec0411afe837ebf8e493b2be7f84373b63c95c91621",
+        "constellationCount": 88,
+        "segmentCount": 743,
+        "unresolvedEndpoints": [
+          "55203"
+        ]
+      }
+    },
+    {
+      "catalogId": "hyg-v44-production",
+      "packageLineage": "hyg-v44-production-p4-s3",
+      "packageVersionPrefix": "hyg-v4.4-p4-s3-r",
+      "manifestVersion": 2,
+      "catalog": {
+        "name": "HYG 4.4",
+        "version": "4.4"
+      },
+      "source": {
+        "projectUrl": "https://codeberg.org/astronexus/hyg",
+        "downloadUrl": "https://codeberg.org/astronexus/hyg.git/info/lfs/objects/00b349893b9a53106dd488d8371e8d2fa586043e500bb3cdb8bff3931682197d",
+        "oid": "00b349893b9a53106dd488d8371e8d2fa586043e500bb3cdb8bff3931682197d",
+        "compressed": {
+          "sha256": "00b349893b9a53106dd488d8371e8d2fa586043e500bb3cdb8bff3931682197d",
+          "length": 13636362
+        },
+        "decompressed": {
+          "sha256": "ea0e1699a1e7d48daa197b5fe567fcf447420e367f37619862ee1d6f077599cd",
+          "length": 33929696
+        }
+      },
+      "schemaVersion": "3",
+      "preprocessingVersion": "4",
+      "serializer": {
+        "name": "sqlite3",
+        "version": "3.45.1"
+      },
+      "database": {
+        "relativePath": "hyg_v44.sqlite",
+        "sha256": "2cc06890de1d4168f1eb91ca4ef5cde1c4923f275a52a1aedfec002df42a3321",
+        "length": 16166912,
+        "rowCount": 119613,
+        "solCount": 0,
+        "requiredColumn": "hipparcos_id"
+      },
+      "license": {
+        "identifier": "CC BY-SA 4.0",
+        "url": "https://creativecommons.org/licenses/by-sa/4.0/",
+        "file": {
+          "relativePath": "LICENSE-HYG.md",
+          "sha256": "9ab0956d22d8390b54456c2afb3b47281b4a5a0313c6871f0af4489ed8395f05",
+          "length": 423
+        },
+        "attribution": {
+          "relativePath": "ATTRIBUTION-HYG.md",
+          "sha256": "98f4eaaeb9458b58b5aab1d019d7d6d62c52dd9a3ef5ee29cbc7037d3d44152c",
+          "length": 1748
+        }
+      },
+      "topology": {
+        "identity": "d3-celestial-v0.7.32-hip-coordinate-map-v1",
+        "sha256": "70c253a00e0909ae0236dec0411afe837ebf8e493b2be7f84373b63c95c91621",
+        "constellationCount": 88,
+        "segmentCount": 743,
+        "unresolvedEndpoints": [
+          "55203"
+        ]
+      }
+    },
+    {
+      "catalogId": "hyg-v44-openngc-production",
+      "packageLineage": "hyg-v44-openngc-production-p5-s4",
+      "packageVersionPrefix": "hyg-v4.4-openngc-v20260501-p5-s4-r",
+      "manifestVersion": 3,
+      "catalog": {
+        "name": "HYG 4.4 + OpenNGC v20260501",
+        "version": "4.4+openngc-v20260501"
+      },
+      "source": {
+        "projectUrl": "https://codeberg.org/astronexus/hyg",
+        "downloadUrl": "https://codeberg.org/astronexus/hyg.git/info/lfs/objects/00b349893b9a53106dd488d8371e8d2fa586043e500bb3cdb8bff3931682197d",
+        "oid": "00b349893b9a53106dd488d8371e8d2fa586043e500bb3cdb8bff3931682197d",
+        "compressed": {
+          "sha256": "00b349893b9a53106dd488d8371e8d2fa586043e500bb3cdb8bff3931682197d",
+          "length": 13636362
+        },
+        "decompressed": {
+          "sha256": "ea0e1699a1e7d48daa197b5fe567fcf447420e367f37619862ee1d6f077599cd",
+          "length": 33929696
+        }
+      },
+      "schemaVersion": "4",
+      "preprocessingVersion": "5",
+      "serializer": {
+        "name": "sqlite3",
+        "version": "3.45.1"
+      },
+      "database": {
+        "relativePath": "hyg_v44_openngc.sqlite",
+        "sha256": "eea1181ffae1dca2935aeed2c7790305b28045061f38ca6dda5eaf19694a8f1f",
+        "length": 23244800,
+        "rowCount": 119613,
+        "solCount": 0,
+        "requiredColumn": "hipparcos_id",
+        "deepSky": {
+          "objectCount": 13371,
+          "aliasCount": 65822,
+          "tombstoneCount": 10,
+          "outlineObjectCount": 182,
+          "outlineSetCount": 359,
+          "outlineRingCount": 441,
+          "outlinePointCount": 90861
+        }
+      },
+      "license": {
+        "identifier": "CC BY-SA 4.0",
+        "url": "https://creativecommons.org/licenses/by-sa/4.0/",
+        "file": {
+          "relativePath": "LICENSE-HYG-OPENNGC.md",
+          "sha256": "35e3828ef35eb0d4bbaf5d9b4e88e7e235f502d60ecdb8b98e1b721f7a33b49e",
+          "length": 1273
+        },
+        "attribution": {
+          "relativePath": "ATTRIBUTION-HYG-OPENNGC.md",
+          "sha256": "15a3ce6129d61310bc6405734f0cdc18dc59d5e237519669244436a6cd0a19d2",
+          "length": 5647
+        }
+      },
+      "topology": {
+        "identity": "d3-celestial-v0.7.32-hip-coordinate-map-v1",
+        "sha256": "70c253a00e0909ae0236dec0411afe837ebf8e493b2be7f84373b63c95c91621",
+        "constellationCount": 88,
+        "segmentCount": 743,
+        "unresolvedEndpoints": [
+          "55203"
+        ]
+      },
+      "components": [
+        {
+          "role": "stars",
+          "name": "HYG",
+          "catalogId": "hyg-v44-production",
+          "packageVersion": "hyg-v4.4-p4-s3-r1",
+          "database": {
+            "sha256": "2cc06890de1d4168f1eb91ca4ef5cde1c4923f275a52a1aedfec002df42a3321",
+            "length": 16166912,
+            "rowCount": 119613
+          }
+        },
+        {
+          "role": "deep-sky",
+          "name": "OpenNGC",
+          "version": "v20260501",
+          "commit": "36cb178a0f69dba8bfc03a99c10512831edf1c6b",
+          "projectUrl": "https://github.com/mattiaverga/OpenNGC",
+          "license": "CC BY-SA 4.0",
+          "inputs": [
+            {
+              "relativePath": "database_files/NGC.csv",
+              "sha256": "840fe0c9ee1332e551b2e722a0e92726cd7b157914a3d2177602832aadd3aa9e",
+              "length": 3876288,
+              "rowCount": 13969
+            },
+            {
+              "relativePath": "database_files/addendum.csv",
+              "sha256": "1d8f0914e643ada325a5a94d88d8fefad6a4937a2f77cc34f21483af22b11983",
+              "length": 17484,
+              "rowCount": 64
+            }
+          ],
+          "outlines": {
+            "relativePath": "outlines/objects",
+            "fileCount": 379,
+            "listingSha256": "f8db977ecb1ecd2f7c9156f570bacddce5316b601c3a92e4a530ab6bc0d5de1f",
+            "pointCount": 102239
+          }
+        }
+      ],
+      "transformations": [
+        {
+          "id": "position-angle-180-to-0",
+          "count": 44,
+          "subjects": []
+        },
+        {
+          "id": "duplicate-resolved",
+          "count": 651,
+          "subjects": []
+        },
+        {
+          "id": "duplicate-disputed",
+          "count": 1,
+          "subjects": [
+            "M102->NGC5457"
+          ]
+        },
+        {
+          "id": "duplicate-tombstoned",
+          "count": 0,
+          "subjects": []
+        },
+        {
+          "id": "nonexistent-tombstoned",
+          "count": 10,
+          "subjects": [
+            "IC0067",
+            "IC0068",
+            "IC1064",
+            "IC1326",
+            "IC1642",
+            "IC2688",
+            "IC2915",
+            "IC3398",
+            "IC5112",
+            "NGC0412"
+          ]
+        },
+        {
+          "id": "caldwell-identifier-normalised",
+          "count": 105,
+          "subjects": []
+        },
+        {
+          "id": "hipparcos-identifier-normalised",
+          "count": 23,
+          "subjects": []
+        },
+        {
+          "id": "sh2-identifier-dropped",
+          "count": 1,
+          "subjects": [
+            "C009:SH 2-155"
+          ]
+        },
+        {
+          "id": "live-cross-reference-skipped",
+          "count": 6,
+          "subjects": [
+            "NGC0554A->NGC0554",
+            "NGC0704B->NGC0704",
+            "NGC0755->NGC0764",
+            "NGC6838->NGC6839",
+            "NGC7368->IC1459",
+            "NGC7418->IC1459"
+          ]
+        },
+        {
+          "id": "list-token-trimmed",
+          "count": 16,
+          "subjects": []
+        },
+        {
+          "id": "empty-list-token-dropped",
+          "count": 1,
+          "subjects": [
+            "UGC04305:identifiers"
+          ]
+        },
+        {
+          "id": "bare-prefix-identifier-dropped",
+          "count": 3,
+          "subjects": [
+            "NGC0234:HD",
+            "NGC7437:HD",
+            "NGC7659:HD"
+          ]
+        },
+        {
+          "id": "duplicate-row-identifier-dropped",
+          "count": 1,
+          "subjects": [
+            "IC0117:TYC 4682-651-1"
+          ]
+        },
+        {
+          "id": "alias-precedence-collapsed",
+          "count": 14,
+          "subjects": []
+        },
+        {
+          "id": "outline-stem-caldwell-padding",
+          "count": 1,
+          "subjects": [
+            "C9->C009"
+          ]
+        },
+        {
+          "id": "outline-stem-messier",
+          "count": 1,
+          "subjects": [
+            "M045->Mel022"
+          ]
+        },
+        {
+          "id": "outline-regional-stem-dropped",
+          "count": 11,
+          "subjects": [
+            "Antlia",
+            "Cepheus",
+            "CoronaAustralis",
+            "Cygnus",
+            "LBN1032",
+            "LBN1037",
+            "LMC",
+            "Orion",
+            "Puppis",
+            "Scorpion",
+            "Vela"
+          ]
+        },
+        {
+          "id": "outline-consecutive-duplicate-removed",
+          "count": 588,
+          "subjects": []
+        }
+      ]
+    }
+  ]
+}

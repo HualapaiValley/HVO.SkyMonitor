@@ -30,6 +30,8 @@ internal sealed class StubAutomationTaskRegistry : ILocalAutomationTaskRegistry
 
     public Exception? Throw { get; set; }
 
+    public Action? BeforeExecution { get; set; }
+
     public bool Available { get; set; } = true;
 
     public IReadOnlyList<LocalAutomationTaskDescriptor> Describe() =>
@@ -63,6 +65,7 @@ internal sealed class StubAutomationTaskRegistry : ILocalAutomationTaskRegistry
         CancellationToken cancellationToken)
     {
         ExecutedRunKeys.Add(runKey);
+        BeforeExecution?.Invoke();
         return Throw is null ? ValueTask.FromResult(Result) : ValueTask.FromException<LocalAutomationExecution>(Throw);
     }
 }

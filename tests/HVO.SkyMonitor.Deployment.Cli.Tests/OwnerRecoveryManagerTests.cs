@@ -21,7 +21,7 @@ public sealed class OwnerRecoveryManagerTests
             fixture.Request(),
             socketPath =>
             {
-                var paths = InstallationPaths.Create(fixture.Root, fixture.InstanceId, ProductionCatalog.CatalogId);
+                var paths = InstallationPaths.Create(fixture.Root, fixture.InstanceId, HygV42.CatalogId);
                 Assert.AreEqual(OwnerRecoverySocket.PathFor(paths), socketPath);
                 return recoveryClient;
             },
@@ -79,7 +79,7 @@ public sealed class OwnerRecoveryManagerTests
             fixture.Uid,
             fixture.Gid,
             CancellationToken.None)).ConfigureAwait(false);
-        var paths = InstallationPaths.Create(fixture.Root, fixture.InstanceId, ProductionCatalog.CatalogId);
+        var paths = InstallationPaths.Create(fixture.Root, fixture.InstanceId, HygV42.CatalogId);
         var stagedCredential = Path.Combine(
             paths.OperationsRoot,
             "owner-recovery",
@@ -210,7 +210,7 @@ public sealed class OwnerRecoveryManagerTests
     public async Task Execute_CorruptRetainedStateReturnsBoundedError()
     {
         using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
-        var paths = InstallationPaths.Create(fixture.Root, fixture.InstanceId, ProductionCatalog.CatalogId);
+        var paths = InstallationPaths.Create(fixture.Root, fixture.InstanceId, HygV42.CatalogId);
         var statePath = Path.Combine(paths.OperationsRoot, $"cameraagent-{fixture.InstanceId:D}.owner-recovery.json");
         SafeFileSystem.WriteTextAtomic(statePath, "{ invalid retained state");
 
@@ -283,14 +283,14 @@ public sealed class OwnerRecoveryManagerTests
         {
             _recoverySocket.Dispose();
             File.Delete(OwnerRecoverySocket.PathFor(
-                InstallationPaths.Create(Root, InstanceId, ProductionCatalog.CatalogId)));
+                InstallationPaths.Create(Root, InstanceId, HygV42.CatalogId)));
         }
 
         internal static async Task<RecoveryFixture> CreateAsync()
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-or-{Guid.NewGuid():N}"[..15]);
             var instanceId = Guid.NewGuid();
-            var paths = InstallationPaths.Create(root, instanceId, ProductionCatalog.CatalogId);
+            var paths = InstallationPaths.Create(root, instanceId, HygV42.CatalogId);
             foreach (var directory in new[]
             {
                 paths.ProductRoot,
@@ -310,13 +310,13 @@ public sealed class OwnerRecoveryManagerTests
             var gid = NativeLinux.getgid();
             var daemon = new DockerDaemonIdentity("daemon", "host", "amd64", "29.7.2");
             var catalog = new CatalogInstallationIdentity(
-                ProductionCatalog.CatalogId,
-                ProductionCatalog.PackageVersion,
+                HygV42.CatalogId,
+                HygV42.PackageVersion,
                 "2",
                 "3",
-                ProductionCatalog.DatabaseSha256,
-                ProductionCatalog.DatabaseLength,
-                ProductionCatalog.RowCount,
+                HygV42.DatabaseSha256,
+                HygV42.DatabaseLength,
+                HygV42.RowCount,
                 paths.CatalogRoot,
                 new string('a', 64),
                 "local-offline");

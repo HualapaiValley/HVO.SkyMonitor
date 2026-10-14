@@ -2,7 +2,18 @@
 
 <PageTitle>Access denied</PageTitle>
 
-<header>
-    <h1 class="text-danger">Access denied</h1>
-    <p class="text-danger">You do not have access to this resource.</p>
-</header>
+<AccountShell Class="single">
+    <header class="ops-page-heading">
+        <div>
+            <p class="eyebrow">Local owner</p>
+            <h1>Access denied</h1>
+        </div>
+    </header>
+    <div class="ops-note-banner failure">
+        <span class="status-icon failure" aria-hidden="true"></span>
+        <span>You do not have access to this resource.</span>
+    </div>
+    <div class="account-form-actions">
+        <a class="button secondary" href="Account/Login">Return to login</a>
+    </div>
+</AccountShell>

@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -18,6 +19,9 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 [TestCategory("Unit")]
 public sealed class StandaloneW6ProfileTests
 {
+    private static readonly string[] ScenePresentationDependencies = ["projected-scene"];
+    private static readonly string[] EnvironmentPresentationDependencies = ["projected-scene", "combined-preview"];
+    private static readonly string[] CloudPresentationSchemas = ["cloud-assessment-v1"];
     private static readonly ObservatoryLocation Location = new(
         35.5599378,
         -113.9119818,
@@ -56,15 +60,19 @@ public sealed class StandaloneW6ProfileTests
         var localProfileSha256 = LocalCaptureProfileContract.ComputeSha256(
             LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!));
         Assert.AreEqual(
-            "6081518D9D7349F2333671C28AFAB11AF7ACEA63276AA990F54250632BCD54E3",
+            "CB42AAEE50DD957AAC7330AA65391814C7AC415CAA4D535230B16BDDA04709B8",
             localProfileSha256,
             localProfileSha256);
+        Assert.AreEqual(32768, configuration.Module.Options!.Value.GetProperty("maximumResults").GetInt32());
+        Assert.AreEqual(
+            "6081518D9D7349F2333671C28AFAB11AF7ACEA63276AA990F54250632BCD54E3",
+            HistoricalCatalogCapProfileSha256(configuration));
         Assert.AreEqual(
             "9B21B31E30070315093EE6F53727813840CDF3F75008838342B5446A4F488069",
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "DC29C83638C695CBAF379FF6F387A2661F109462DE0931D25FC1BCC63484110D",
+            "EFBD0878A83C8CA8182FC577BA43AB716A78340DA1C192A6AD07AD44BDC8BDFE",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);
@@ -95,6 +103,7 @@ public sealed class StandaloneW6ProfileTests
         try
         {
             var shared = graph.SharedPlan!;
+            AssertExpandedSceneCapabilitiesExplainEffectiveIdentity(configuration, graph, preview);
             var scene = shared.Nodes.Single(static node => node.Definition.Id == "scene-presentation").Definition;
             Assert.AreEqual(PresentationLayerProducers.SceneProducerVersion, scene.StepVersion);
             Assert.IsTrue(scene.Outputs.All(static output =>
@@ -140,24 +149,28 @@ public sealed class StandaloneW6ProfileTests
             CameraRigProfileIdentity.ComputeSha256(configuration.Rig));
         var processingSha256 = RawCaptureDescriptorFactory.CreateProcessingProfile(configuration).Sha256;
         Assert.AreEqual(
-            "2F106F303DE1CD41AE1E1B8B001B15BD521A6121A9595BD3BB0D38B00DE30631",
+            "4C8ECBAB017F1EDBF0C008ADA5D31EDEAA2B816C2C3B468F426FB83497553106",
             processingSha256,
             processingSha256);
         Assert.AreEqual(
             "99892B9195FDAF6800CB1B8D914B39A610A989B2775B2BD980E50EE8C15CCD80",
             CaptureScheduleContract.ComputeSha256(configuration.Schedule!));
         Assert.AreEqual(
-            "72473832303887743861B9C82F1F11A55147254E34948C628EE1FBE77DF42B7D",
+            "D59FA049B7A525571C3DB244C4BED80F7D6D4F4AD9AB15839F1F25A1962044BD",
             LocalCaptureProfileContract.ComputeSha256(
                 LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!)));
+        Assert.AreEqual(32768, configuration.Module.Options!.Value.GetProperty("maximumResults").GetInt32());
         Assert.AreEqual(
-            "2538EB75560857DA6319DD4F20533C6F6B768E7DB47F95B661150B85D6ECFBAB",
+            "EEED95D733FB1DA82DAB7D0AEBE692BCD6C95703EC4EDADD98C3453E65BBB38B",
+            HistoricalCatalogCapProfileSha256(configuration));
+        Assert.AreEqual(
+            "75717D0AF614FCABA0E482BB968DFE1B2DC9CED9FF85843D1CE1275CB65A6F90",
             preview.DesiredSha256);
         Assert.AreEqual(
-            "44A1253961E3BE879BF69C27DC57F24DD492FE4416232913EEB99E6273D7A7E5",
+            "A7C84CBE5B6BCA51537F52E378C9327ACB17D360B20A8DFA00D7C6D29B3D8192",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
-        Assert.HasCount(4, preview.EffectiveNodes);
+        Assert.HasCount(5, preview.EffectiveNodes);
         Assert.IsFalse(preview.EffectiveNodes.Any(static node =>
             node.Alias is "Calibration" or "RollingCombination"));
         CollectionAssert.Contains(
@@ -370,6 +383,103 @@ public sealed class StandaloneW6ProfileTests
         var exception = Assert.ThrowsExactly<InvalidOperationException>(() =>
             factory.CreateGraph(WithSecondaryPolicy(queueForUpload: true)));
         StringAssert.Contains(exception.Message, "w6-constellation-layer", StringComparison.Ordinal);
+    }
+
+    private static void AssertExpandedSceneCapabilitiesExplainEffectiveIdentity(
+        CameraModuleConfig configuration, CaptureProcessingGraph graph, CaptureProcessingPlanPreview preview)
+    {
+        string[] accepted = ["projected-scene-v1", "projected-scene-v2", "projected-scene-v3"];
+        foreach (var id in new[] { "scene-presentation", "environment-presentation" })
+        {
+            var node = graph.Nodes.Single(item => item.Id == id);
+            var requirements = ((IRequiredCaptureProcessingDependencies)node.Step).DependencyRequirements;
+            var scene = requirements.Single(static item => item.RecipeNames?.Contains(BuiltInProcessingRecipes.ProjectedScene) == true);
+            CollectionAssert.AreEqual(accepted, scene.SchemaVersions!.Order(StringComparer.Ordinal).ToArray());
+            CollectionAssert.AreEqual(new[] { FrameArtifactRole.Metadata }, scene.Roles.ToArray());
+            Assert.IsTrue(scene.Required);
+            CollectionAssert.AreEqual(new[] { BuiltInProcessingRecipes.ProjectedScene }, scene.RecipeNames!.ToArray());
+            CollectionAssert.AreEqual(id == "scene-presentation" ? ScenePresentationDependencies :
+                EnvironmentPresentationDependencies, node.DeclaredDependencies!.ToArray());
+            var sharedInput = graph.SharedPlan!.Nodes.Single(item => item.Definition.Id == id).Definition.Inputs
+                .Single(static input => input.RecipeNames.Contains(BuiltInProcessingRecipes.ProjectedScene));
+            CollectionAssert.AreEqual(accepted, sharedInput.SchemaVersions.Order(StringComparer.Ordinal).ToArray());
+            Assert.IsTrue(sharedInput.Required);
+            Assert.AreEqual(node.PlanSha256, ReconstructSceneConsumerHash(node, removeV3: false));
+        }
+        var producer = (ICaptureProcessingGraphStep)graph.Nodes.Single(static node => node.Id == "projected-scene").Step;
+        Assert.AreEqual("projected-scene-v1", producer.OutputSchemaVersion);
+        var cloud = ((IRequiredCaptureProcessingDependencies)graph.Nodes.Single(static node => node.Id == "cloud-presentation").Step)
+            .DependencyRequirements.Single();
+        CollectionAssert.AreEqual(CloudPresentationSchemas, cloud.SchemaVersions!.ToArray());
+
+        string Aggregate(bool removeV3) => CaptureContractJson.ComputeCanonicalJsonSha256(CaptureContractJson.SerializeToElement(new
+        {
+            SchemaVersion = configuration.Pipeline.SchemaVersion,
+            configuration.Pipeline.DependencyPolicy,
+            Nodes = graph.Nodes.Select(node => removeV3 && (node.Id is "scene-presentation" or "environment-presentation")
+                ? ReconstructSceneConsumerHash(node, removeV3: true) : node.PlanSha256).ToArray()
+        }));
+        Assert.AreEqual(preview.EffectiveSha256, Aggregate(removeV3: false));
+        Assert.AreEqual("9C37FFDBD6F120EE0D56C02B284B1413AC2A305A117922B84E2C4A31CB671ED2", Aggregate(removeV3: true),
+            "Only removal of v3 from these two consumer requirements must recover the historical effective graph.");
+    }
+
+    // Reconstruct only the two published consumer preimages, independently of the factory's private hasher.
+    private static string ReconstructSceneConsumerHash(CaptureProcessingGraphNode node, bool removeV3)
+    {
+        Assert.IsNotNull(node.Publication);
+        var step = (ICaptureProcessingGraphStep)node.Step;
+        var outputs = ((IMultiOutputCaptureProcessingGraphStep)node.Step).Outputs.Select(static output => new
+        {
+            output.Role,
+            output.Variant,
+            output.RecipeName,
+            output.SchemaVersion
+        }).ToArray();
+        var dependencyRequirements = ((IRequiredCaptureProcessingDependencies)node.Step).DependencyRequirements.Select(requirement => new
+        {
+            Roles = requirement.Roles.Order().ToArray(),
+            RecipeNames = requirement.RecipeNames?.Order(StringComparer.Ordinal).ToArray(),
+            SchemaVersions = requirement.SchemaVersions?.Where(schema => !removeV3 || schema != "projected-scene-v3")
+                .Order(StringComparer.Ordinal).ToArray(),
+            requirement.Variant,
+            requirement.Required
+        }).ToArray();
+        var preimage = CaptureContractJson.SerializeToElement(new
+        {
+            Type = node.Alias,
+            id = node.Step.Name,
+            order = node.Step.Order,
+            dependencies = node.DeclaredDependencies ?? node.Dependencies,
+            node.Required,
+            Options = node.EffectiveOptions,
+            recipe = step.RecipeName,
+            recipeIdentitySchema = ProcessingIdentity.BoundInputSchemaVersion,
+            outputRole = step.OutputRole,
+            outputVariant = step.OutputVariant,
+            outputSchemaVersion = step.OutputSchemaVersion,
+            outputs,
+            dependencyRequirements,
+            node.Publication
+        });
+        return CaptureContractJson.ComputeCanonicalJsonSha256(preimage);
+    }
+
+    private static string HistoricalCatalogCapProfileSha256(CameraModuleConfig configuration)
+    {
+        // Only the explicitly enlarged safety cap may change these pinned profile identities.
+        var options = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(
+            configuration.Module.Options!.Value.GetRawText())!;
+        options["maximumResults"] = System.Text.Json.JsonSerializer.SerializeToElement(300);
+        var historical = configuration with
+        {
+            Module = configuration.Module with
+            {
+                Options = System.Text.Json.JsonSerializer.SerializeToElement(options)
+            }
+        };
+        return LocalCaptureProfileContract.ComputeSha256(
+            LocalCaptureProfileDefinition.CreateForConfiguration(historical, historical.Schedule!));
     }
 
     private static async Task<CameraModuleConfig> LoadAsync(string fileName)

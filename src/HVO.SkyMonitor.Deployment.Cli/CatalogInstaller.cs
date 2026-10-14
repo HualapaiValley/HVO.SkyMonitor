@@ -2,27 +2,24 @@ using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Deployment.Contracts;
 using System.Security.Cryptography;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 
 namespace HVO.SkyMonitor.Deployment;
 
 internal static class CatalogInstaller
 {
-    private static readonly HashSet<string> ExpectedFiles = new(StringComparer.Ordinal)
-    {
-        "manifest.json", "hyg_v42.sqlite", "LICENSE-HYG.md", "ATTRIBUTION-HYG.md"
-    };
-
     public static CatalogInstallationIdentity Install(string bundlePath, string installRoot, Guid installationId)
     {
-        ValidateBundleEntries(bundlePath);
-        var packageVersion = ReadPackageVersion(bundlePath);
+        // The bundle only names its specification; the registry supplies the file set, lineage and pinned bytes, and
+        // the per-root lineage binding below refuses to mix two specifications in one catalog root.
+        var specification = ProductionCatalog.ReadBundleSpecification(bundlePath);
+        ValidateBundleEntries(bundlePath, specification);
+        var packageVersion = ReadPackageVersion(bundlePath, specification);
         SafeFileSystem.EnsureSafeExistingAncestors(installRoot);
         SafeFileSystem.CreateOwnerDirectory(installRoot);
         var versionsRoot = Path.Combine(installRoot, "versions");
         SafeFileSystem.CreateOwnerDirectory(versionsRoot);
         using var catalogLock = OperationLock.Acquire(Path.Combine(installRoot, ".catalog.lock"));
-        EnsureLineage(installRoot, versionsRoot);
+        EnsureLineage(installRoot, versionsRoot, specification);
 
         var candidateRoot = Path.Combine(installRoot, $".candidate-{installationId:N}");
         if (Directory.Exists(candidateRoot))
@@ -33,13 +30,14 @@ internal static class CatalogInstaller
         try
         {
             var candidateVersion = Path.Combine(candidateRoot, "versions", packageVersion);
-            CopyBundle(bundlePath, candidateVersion);
-            var candidate = CatalogSnapshotResolver.Resolve(ProductionCatalog.ResolverOptions(candidateRoot, packageVersion));
+            CopyBundle(bundlePath, candidateVersion, specification);
+            var candidate = CatalogSnapshotResolver.Resolve(
+                ProductionCatalog.ResolverOptions(candidateRoot, specification.CatalogId, packageVersion));
 
             var installedVersion = Path.Combine(versionsRoot, packageVersion);
             if (Directory.Exists(installedVersion))
             {
-                ValidateInstalledVersion(installedVersion, candidateVersion);
+                ValidateInstalledVersion(installedVersion, candidateVersion, specification);
                 Directory.Delete(candidateVersion, recursive: true);
             }
             else
@@ -51,7 +49,8 @@ internal static class CatalogInstaller
 
             EnsureLegacyCurrentPointer(installRoot, packageVersion);
             NativeLinux.FlushDirectory(installRoot);
-            var installed = CatalogSnapshotResolver.Resolve(ProductionCatalog.ResolverOptions(installRoot, packageVersion));
+            var installed = CatalogSnapshotResolver.Resolve(
+                ProductionCatalog.ResolverOptions(installRoot, specification.CatalogId, packageVersion));
             return ProductionCatalog.ToIdentity(installed, installRoot);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
@@ -69,27 +68,30 @@ internal static class CatalogInstaller
 
     public static CatalogInstallationIdentity ValidateExisting(string bundlePath, string installRoot)
     {
-        ValidateBundleEntries(bundlePath);
-        var packageVersion = ReadPackageVersion(bundlePath);
+        var specification = ProductionCatalog.ReadBundleSpecification(bundlePath);
+        ValidateBundleEntries(bundlePath, specification);
+        var packageVersion = ReadPackageVersion(bundlePath, specification);
         var lineagePath = Path.Combine(installRoot, ".catalog-lineage.json");
         using (var stream = SafeFileSystem.OpenOwnerFileRead(lineagePath))
         {
             var lineage = JsonSerializer.Deserialize(stream, CatalogLineageJsonContext.Default.CatalogLineage)
                 ?? throw new InstallerException("The catalog lineage binding is empty.");
-            if (lineage != ExpectedLineage())
+            if (lineage != ExpectedLineage(specification))
             {
                 throw new InstallerException("The catalog lineage binding does not match the production catalog.");
             }
         }
 
         var installedVersion = Path.Combine(installRoot, "versions", packageVersion);
-        ValidateInstalledVersion(installedVersion, bundlePath);
-        var installed = CatalogSnapshotResolver.Resolve(ProductionCatalog.ResolverOptions(installRoot, packageVersion));
+        ValidateInstalledVersion(installedVersion, bundlePath, specification);
+        var installed = CatalogSnapshotResolver.Resolve(
+            ProductionCatalog.ResolverOptions(installRoot, specification.CatalogId, packageVersion));
         return ProductionCatalog.ToIdentity(installed, installRoot);
     }
 
-    private static void ValidateBundleEntries(string bundlePath)
+    private static void ValidateBundleEntries(string bundlePath, ApprovedCatalogContract specification)
     {
+        var expectedFiles = specification.RetainedFileNames;
         var directory = new DirectoryInfo(bundlePath);
         directory.Refresh();
         if (!directory.Exists || directory.LinkTarget is not null)
@@ -98,7 +100,7 @@ internal static class CatalogInstaller
         }
 
         var entries = directory.EnumerateFileSystemInfos().ToArray();
-        if (entries.Length != ExpectedFiles.Count || entries.Any(entry => !ExpectedFiles.Contains(entry.Name)))
+        if (entries.Length != expectedFiles.Count || entries.Any(entry => !expectedFiles.Contains(entry.Name, StringComparer.Ordinal)))
         {
             throw new InstallerException("The catalog bundle does not contain the exact production file set.");
         }
@@ -113,11 +115,11 @@ internal static class CatalogInstaller
         }
     }
 
-    private static void CopyBundle(string sourceRoot, string destinationRoot)
+    private static void CopyBundle(string sourceRoot, string destinationRoot, ApprovedCatalogContract specification)
     {
         Directory.CreateDirectory(destinationRoot);
         File.SetUnixFileMode(destinationRoot, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        foreach (var name in ExpectedFiles)
+        foreach (var name in specification.RetainedFileNames)
         {
             var destination = Path.Combine(destinationRoot, name);
             using var source = SafeFileSystem.OpenRegularFileRead(Path.Combine(sourceRoot, name));
@@ -131,10 +133,11 @@ internal static class CatalogInstaller
         NativeLinux.FlushDirectory(destinationRoot);
     }
 
-    private static void ValidateInstalledVersion(string installedVersion, string candidateVersion)
+    private static void ValidateInstalledVersion(
+        string installedVersion, string candidateVersion, ApprovedCatalogContract specification)
     {
-        ValidateBundleEntries(installedVersion);
-        foreach (var name in ExpectedFiles)
+        ValidateBundleEntries(installedVersion, specification);
+        foreach (var name in specification.RetainedFileNames)
         {
             var installedPath = Path.Combine(installedVersion, name);
             var candidatePath = Path.Combine(candidateVersion, name);
@@ -179,7 +182,7 @@ internal static class CatalogInstaller
             UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
     }
 
-    private static void EnsureLineage(string installRoot, string versionsRoot)
+    private static void EnsureLineage(string installRoot, string versionsRoot, ApprovedCatalogContract specification)
     {
         var path = Path.Combine(installRoot, ".catalog-lineage.json");
         if (File.Exists(path))
@@ -187,7 +190,7 @@ internal static class CatalogInstaller
             using var stream = SafeFileSystem.OpenOwnerFileRead(path);
             var lineage = JsonSerializer.Deserialize(stream, CatalogLineageJsonContext.Default.CatalogLineage)
                 ?? throw new InstallerException("The catalog lineage binding is empty.");
-            if (lineage != ExpectedLineage())
+            if (lineage != ExpectedLineage(specification))
             {
                 throw new InstallerException("The catalog lineage binding does not match the production catalog.");
             }
@@ -204,7 +207,7 @@ internal static class CatalogInstaller
         using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
         {
             File.SetUnixFileMode(temporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-            JsonSerializer.Serialize(stream, ExpectedLineage(), CatalogLineageJsonContext.Default.CatalogLineage);
+            JsonSerializer.Serialize(stream, ExpectedLineage(specification), CatalogLineageJsonContext.Default.CatalogLineage);
 #pragma warning disable CA1849 // A lineage publication requires a flush-to-disk boundary.
             stream.Flush(flushToDisk: true);
 #pragma warning restore CA1849
@@ -212,10 +215,10 @@ internal static class CatalogInstaller
         File.Move(temporary, path);
     }
 
-    private static CatalogLineage ExpectedLineage()
-        => new(1, ProductionCatalog.CatalogId, "production", "hyg-v42-production-p3-s2");
+    internal static CatalogLineage ExpectedLineage(ApprovedCatalogContract specification)
+        => new(1, specification.CatalogId, "production", specification.PackageLineage);
 
-    private static string ReadPackageVersion(string bundlePath)
+    private static string ReadPackageVersion(string bundlePath, ApprovedCatalogContract specification)
     {
         using var stream = SafeFileSystem.OpenRegularFileRead(Path.Combine(bundlePath, "manifest.json"));
         JsonDocument document;
@@ -245,7 +248,7 @@ internal static class CatalogInstaller
             }
 
             var version = versionElement.GetString();
-            if (version is null || !Regex.IsMatch(version, "^hyg-v4\\.2-p3-s2-r[1-9][0-9]*$", RegexOptions.CultureInvariant))
+            if (!specification.IsPackageVersion(version))
             {
                 throw new InstallerException("The catalog bundle package version is invalid.");
             }

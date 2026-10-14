@@ -61,6 +61,14 @@ public interface IArtifactOutbox
         int pageSize,
         ArtifactOutboxOperationsCursor? cursor,
         CancellationToken cancellationToken);
+    /// <summary>
+    /// Reads at most <paramref name="limit"/> (1-25) records for the Delivery workspace: unfinished
+    /// work (pending, leased, retrying, quarantined) newest first, then the newest finished records.
+    /// </summary>
+    ValueTask<IReadOnlyList<ArtifactOutboxDeliveryRecord>> ReadRecentDeliveryAsync(
+        string root,
+        int limit,
+        CancellationToken cancellationToken);
     ValueTask<ArtifactOutboxOperationsRecord?> ReadOperationsDetailAsync(
         string root,
         string recordKey,

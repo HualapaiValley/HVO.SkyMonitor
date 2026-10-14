@@ -22,18 +22,17 @@ public sealed class VirtualSkyTransientScenarioTests
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
     private static readonly Dictionary<CameraPixelFormat, (string First, string Later)> ExpectedChecksums =
-        new Dictionary<CameraPixelFormat, (string First, string Later)>
-        {
-            [CameraPixelFormat.Mono16] = (
-                "F703A678B0F2D6C4133D216E1AED8F06DD57E287A6A06F4DC17DC890788AF77A",
-                "FFC5B7A47D26EBE277FCC8F6C23389615EEB31845459E499CB7A4390B544DCE4"),
-            [CameraPixelFormat.Rgb24] = (
-                "3BD387EDC357C1C5B19129EA8DAB1329103D620DE20794D8600C1ABACDD9D22A",
-                "1035AB2C2CFA287BDC71D8F14F591027F0B6A4026517A7F6018BF74C44AB1265"),
-            [CameraPixelFormat.BayerRggb16] = (
-                "34DA48AE39F31F5F1549E5BA86654E48F973295B75992A48989C40752DA6E8C3",
-                "B5E0939AF4B4122FFCA4C892DC9AC492179B65D01483589CB141893DB323813A")
-        };
+        LoadExposureChecksums();
+
+    private static Dictionary<CameraPixelFormat, (string First, string Later)> LoadExposureChecksums()
+    {
+        using var manifest = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory,
+            "Fixtures", "transient-camera-exposure-v2.json")));
+        return manifest.RootElement.GetProperty("checksums").EnumerateObject().ToDictionary(
+            property => Enum.Parse<CameraPixelFormat>(property.Name),
+            property => (property.Value.GetProperty("first").GetString()!,
+                property.Value.GetProperty("later").GetString()!));
+    }
     private const string FixtureFileName = "transient-scenarios-v1.json";
     private const string OracleFileName = "transient-detection-oracle-v1.json";
     private static readonly string[] ExpectedSupplementalCoverage =
@@ -351,10 +350,10 @@ public sealed class VirtualSkyTransientScenarioTests
         Assert.IsFalse(provenance.Parameters.GetRawText().Contains("aircraft", StringComparison.OrdinalIgnoreCase));
         var firstChecksum = Convert.ToHexString(SHA256.HashData(first.Frame.PixelData.Span));
         var laterChecksum = Convert.ToHexString(SHA256.HashData(later.Frame.PixelData.Span));
-        Assert.AreEqual(ExpectedChecksums[format].First, firstChecksum);
-        Assert.AreEqual(ExpectedChecksums[format].Later, laterChecksum);
         TestContext.WriteLine(
             $"{format}: first={firstChecksum}, later={laterChecksum}");
+        Assert.AreEqual(ExpectedChecksums[format].First, firstChecksum);
+        Assert.AreEqual(ExpectedChecksums[format].Later, laterChecksum);
     }
 
     [TestMethod]

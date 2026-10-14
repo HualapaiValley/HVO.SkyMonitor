@@ -19,7 +19,7 @@ public sealed class RealCameraAnnotationPipelineTests
     private static readonly string[] ExpectedConstellationIds = ["TST"];
 
     [TestMethod]
-    public async Task ConfiguredPipeline_AnnotatesOnlyRealFrameDerivativeWithClippedConstellationGeometry()
+    public async Task RetainedPipeline_AnnotatesOnlyRealFrameDerivativeWithClippedConstellationGeometry()
     {
         var catalog = CreateCatalog();
         var topology = new InMemoryConstellationTopology([
@@ -30,7 +30,11 @@ public sealed class RealCameraAnnotationPipelineTests
             new string('A', 64), "CC0", "fixture-v1"));
         var config = CreateConfig();
         using var provider = CreateServices(catalog, topology);
-        var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(config).Nodes
+        // This legacy-v1 retained graph preserves its inline geometry behavior. New acquisition is covered
+        // by PhysicalStageProjectedProductAndAnnotationCalculateSceneExactlyOnceWithExactLineage.
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(config));
+        var pipeline = factory.CreateRetainedGraph(config).Nodes
             .Select(static node => node.Step).ToArray();
         var rawBytes = new byte[checked(200 * 200 * 2)];
         var expectedRawBytes = rawBytes.ToArray();
@@ -101,7 +105,7 @@ public sealed class RealCameraAnnotationPipelineTests
     }
 
     [TestMethod]
-    public async Task ConfiguredPipeline_AnnotatesBayerPreviewWithoutChangingRawPhotosites()
+    public async Task RetainedPipeline_AnnotatesBayerPreviewWithoutChangingRawPhotosites()
     {
         var catalog = CreateCatalog();
         var topology = new InMemoryConstellationTopology([
@@ -109,7 +113,9 @@ public sealed class RealCameraAnnotationPipelineTests
         ]);
         var config = CreateConfig(pixelFormat: CameraPixelFormat.BayerRggb16);
         using var provider = CreateServices(catalog, topology);
-        var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(config).Nodes
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+        Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(config));
+        var pipeline = factory.CreateRetainedGraph(config).Nodes
             .Select(static node => node.Step).ToArray();
         var rawBytes = new byte[200 * 200 * 2];
         var expectedRawBytes = rawBytes.ToArray();
@@ -178,6 +184,52 @@ public sealed class RealCameraAnnotationPipelineTests
         Assert.AreEqual(0, scene.Scene.Request.Observer.LatitudeDegrees, 1e-12);
         Assert.AreEqual(0, scene.Scene.Request.Observer.LongitudeDegrees, 1e-12);
         Assert.AreEqual(captureLocation.ToProvenance(), locationStore.Resolved);
+    }
+
+    [TestMethod]
+    public async Task AnnotationSceneProvider_InstalledHygV42RetryKeepsPreLineageProvenanceBytes()
+    {
+        // An installed schema-2 (HYG 4.2) package reports its catalog ID and package version, but provenance
+        // regenerated for a retained capture must stay byte-identical to the evidence recorded before #521.
+        var catalog = CreateCatalog(schemaVersion: "2", catalogId: "hyg-v42-production", packageVersion: "hyg-v4.2-p3-s2-r1");
+        var provider = new AnnotationSceneProvider(() => catalog, new InMemoryConstellationTopology([]), () => null);
+
+        var first = await BuildCapturedSceneAsync(provider).ConfigureAwait(false);
+        var retry = await BuildCapturedSceneAsync(provider).ConfigureAwait(false);
+
+        Assert.IsNull(retry.Provenance.CatalogId);
+        Assert.IsNull(retry.Provenance.CatalogPackageVersion);
+        var json = JsonSerializer.SerializeToUtf8Bytes(retry.Provenance);
+        using var document = JsonDocument.Parse(json);
+        Assert.IsFalse(document.RootElement.EnumerateObject().Any(static property =>
+            property.Name.StartsWith("catalogId", StringComparison.OrdinalIgnoreCase) ||
+            property.Name.StartsWith("catalogPackage", StringComparison.OrdinalIgnoreCase)),
+            "Schema-2 provenance must not gain package-identity properties.");
+        CollectionAssert.AreEqual(JsonSerializer.SerializeToUtf8Bytes(first.Provenance), json);
+    }
+
+    [TestMethod]
+    public async Task AnnotationSceneProvider_SchemaThreeLineageRecordsCatalogIdentity()
+    {
+        var catalog = CreateCatalog(schemaVersion: "3", catalogId: "hyg-v44-production", packageVersion: "hyg-v4.4-p4-s3-r1");
+        var provider = new AnnotationSceneProvider(() => catalog, new InMemoryConstellationTopology([]), () => null);
+
+        var scene = await BuildCapturedSceneAsync(provider).ConfigureAwait(false);
+
+        Assert.AreEqual("hyg-v44-production", scene.Provenance.CatalogId);
+        Assert.AreEqual("hyg-v4.4-p4-s3-r1", scene.Provenance.CatalogPackageVersion);
+    }
+
+    private static async Task<AnnotationSceneResult> BuildCapturedSceneAsync(AnnotationSceneProvider provider)
+    {
+        var captureLocation = DeploymentLocationSnapshot.Create(
+            "capture-location", 1, "test", null, DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC");
+        var config = CreateConfig() with { DeploymentLocation = captureLocation };
+        var raw = new CameraFrame(
+            Utc, 200, 200, CameraPixelFormat.Mono16, new byte[200 * 200 * 2],
+            new FrameMetadata(TimeSpan.FromSeconds(20), 150, -10), 400);
+        return await provider.BuildAsync(config, null, raw, ExpectedConstellationIds, CancellationToken.None)
+            .ConfigureAwait(false);
     }
 
     private static ServiceProvider CreateServices(
@@ -264,7 +316,10 @@ public sealed class RealCameraAnnotationPipelineTests
                 DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC")
         };
 
-    private static TestCatalog CreateCatalog()
+    private static TestCatalog CreateCatalog(
+        string schemaVersion = "1",
+        string? catalogId = null,
+        string? packageVersion = null)
     {
         CelestialCatalogObject Create(string id, string hip, AltAzPoint horizontal)
         {
@@ -277,20 +332,30 @@ public sealed class RealCameraAnnotationPipelineTests
         return new TestCatalog([
             Create("from", "1", new AltAzPoint(60, 90)),
             Create("to", "2", new AltAzPoint(60, 270))
-        ]);
+        ], schemaVersion, catalogId, packageVersion);
     }
 
     private sealed class TestCatalog : ICelestialCatalog, IHipparcosCatalog, ICelestialCatalogMetadataSource
     {
         private readonly InMemoryCelestialCatalog _inner;
 
-        public TestCatalog(IEnumerable<CelestialCatalogObject> objects)
+        public TestCatalog(
+            IEnumerable<CelestialCatalogObject> objects,
+            string schemaVersion,
+            string? catalogId,
+            string? packageVersion)
         {
             _inner = new InMemoryCelestialCatalog(objects);
+            Metadata = new("test-catalog", "1", new Uri("https://example.test/catalog"), new string('B', 64), "CC0", schemaVersion);
+            CatalogId = catalogId;
+            CatalogPackageVersion = packageVersion;
         }
 
-        public CatalogMetadata Metadata { get; } = new(
-            "test-catalog", "1", new Uri("https://example.test/catalog"), new string('B', 64), "CC0", "1");
+        public CatalogMetadata Metadata { get; }
+
+        public string? CatalogId { get; }
+
+        public string? CatalogPackageVersion { get; }
 
         public string PreprocessingVersion => "fixture-v1";
 

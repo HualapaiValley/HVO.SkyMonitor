@@ -40,14 +40,7 @@ public static class SolarAltitudeClassifier
                 "The night altitude threshold must be below the day altitude threshold.");
         }
 
-        var normalizedUtc = utc.ToUniversalTime();
-        var sunJ2000 = ephemeris.GetPosition(SolarSystemBody.Sun, normalizedUtc).EquatorialJ2000;
-        var sunOfDate = EquatorialPrecession.PrecessJ2000(sunJ2000, normalizedUtc);
-        var altitude = CoordinateTransforms.EquatorialToHorizontal(
-            sunOfDate,
-            normalizedUtc,
-            observerLatitudeDegrees,
-            observerLongitudeDegrees).AltitudeDegrees;
+        var altitude = DirectionAt(ephemeris, utc, observerLatitudeDegrees, observerLongitudeDegrees).AltitudeDegrees;
         var regime = altitude >= dayAltitudeThresholdDegrees
             ? SolarAltitudeRegime.Day
             : altitude <= nightAltitudeThresholdDegrees
@@ -55,6 +48,20 @@ public static class SolarAltitudeClassifier
                 : SolarAltitudeRegime.Twilight;
 
         return new SolarAltitudeClassification(regime, altitude);
+    }
+
+    /// <summary>Returns the same geometric Sun direction used by the altitude classifier.</summary>
+    public static AltAzPoint DirectionAt(IPlanetEphemeris ephemeris, DateTimeOffset utc,
+        double observerLatitudeDegrees, double observerLongitudeDegrees)
+    {
+        ArgumentNullException.ThrowIfNull(ephemeris);
+        ValidateRange(observerLatitudeDegrees, -90, 90, nameof(observerLatitudeDegrees));
+        ValidateRange(observerLongitudeDegrees, -180, 180, nameof(observerLongitudeDegrees));
+        var normalizedUtc = utc.ToUniversalTime();
+        var sunJ2000 = ephemeris.GetPosition(SolarSystemBody.Sun, normalizedUtc).EquatorialJ2000;
+        var sunOfDate = EquatorialPrecession.PrecessJ2000(sunJ2000, normalizedUtc);
+        return CoordinateTransforms.EquatorialToHorizontal(sunOfDate, normalizedUtc,
+            observerLatitudeDegrees, observerLongitudeDegrees);
     }
 
     private static void ValidateRange(double value, double minimum, double maximum, string parameterName)

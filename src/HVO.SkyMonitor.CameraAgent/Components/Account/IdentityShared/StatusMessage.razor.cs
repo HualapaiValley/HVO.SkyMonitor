@@ -18,7 +18,7 @@ public sealed partial class StatusMessage : ComponentBase
     private string? DisplayMessage => Message ?? messageFromCookie;
 
     private string StatusMessageClass => DisplayMessage?.StartsWith("Error", StringComparison.OrdinalIgnoreCase) == true
-        ? "danger"
+        ? "failure"
         : "success";
 
     protected override void OnInitialized()

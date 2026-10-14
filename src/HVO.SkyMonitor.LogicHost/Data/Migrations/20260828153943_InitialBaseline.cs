@@ -5619,6 +5619,148 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 table: "CentralProcessingUsageRecords",
                 column: "RecordedAtUtc");
 
+            migrationBuilder.CreateTable(
+                name: "CentralTimeLapseJobs",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    DevicePublicId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ObservatoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ReportDate = table.Column<DateOnly>(type: "date", nullable: false),
+                    StartUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    EndUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    IsDaily = table.Column<bool>(type: "bit", nullable: false),
+                    DiscoveryIdentity = table.Column<string>(type: "nchar(64)", fixedLength: true, maxLength: 64, nullable: true),
+                    RequestJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    RequestSha256 = table.Column<string>(type: "nchar(64)", fixedLength: true, maxLength: 64, nullable: false),
+                    State = table.Column<string>(type: "nvarchar(24)", maxLength: 24, nullable: false),
+                    ReasonCode = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
+                    ExclusionsJson = table.Column<string>(type: "nvarchar(max)", nullable: true),
+                    ExclusionsSha256 = table.Column<string>(type: "nchar(64)", fixedLength: true, maxLength: 64, nullable: true),
+                    ProductId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    LeaseToken = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    LeaseExpiresUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
+                    AttemptCount = table.Column<int>(type: "int", nullable: false),
+                    CreatedUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    UpdatedUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    RowVersion = table.Column<byte[]>(type: "rowversion", rowVersion: true, nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralTimeLapseJobs", x => x.Id);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralTimeLapseDependencies",
+                columns: table => new
+                {
+                    JobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    HourlyJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralTimeLapseDependencies", x => new { x.JobId, x.HourlyJobId });
+                    table.ForeignKey(
+                        name: "FK_CentralTimeLapseDependencies_CentralTimeLapseJobs_HourlyJobId",
+                        column: x => x.HourlyJobId,
+                        principalTable: "CentralTimeLapseJobs",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CentralTimeLapseDependencies_CentralTimeLapseJobs_JobId",
+                        column: x => x.JobId,
+                        principalTable: "CentralTimeLapseJobs",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralTimeLapseInputs",
+                columns: table => new
+                {
+                    JobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    CentralArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralTimeLapseInputs", x => new { x.JobId, x.CentralArtifactId });
+                    table.ForeignKey(
+                        name: "FK_CentralTimeLapseInputs_CentralArtifacts_CentralArtifactId",
+                        column: x => x.CentralArtifactId,
+                        principalTable: "CentralArtifacts",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CentralTimeLapseInputs_CentralTimeLapseJobs_JobId",
+                        column: x => x.JobId,
+                        principalTable: "CentralTimeLapseJobs",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralTimeLapseVideos",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    JobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    DevicePublicId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ObservatoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ReportDate = table.Column<DateOnly>(type: "date", nullable: false),
+                    IsDaily = table.Column<bool>(type: "bit", nullable: false),
+                    IsGapFiller = table.Column<bool>(type: "bit", nullable: false),
+                    ProductJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    ProductSha256 = table.Column<string>(type: "nchar(64)", fixedLength: true, maxLength: 64, nullable: false),
+                    PayloadBytes = table.Column<long>(type: "bigint", nullable: false),
+                    CreatedUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralTimeLapseVideos", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_CentralTimeLapseVideos_CentralTimeLapseJobs_JobId",
+                        column: x => x.JobId,
+                        principalTable: "CentralTimeLapseJobs",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralTimeLapseDependencies_HourlyJobId",
+                table: "CentralTimeLapseDependencies",
+                column: "HourlyJobId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralTimeLapseInputs_CentralArtifactId",
+                table: "CentralTimeLapseInputs",
+                column: "CentralArtifactId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralTimeLapseJobs_DevicePublicId_ReportDate_CreatedUtc",
+                table: "CentralTimeLapseJobs",
+                columns: new[] { "DevicePublicId", "ReportDate", "CreatedUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralTimeLapseJobs_DevicePublicId_ReportDate_DiscoveryIdentity_CreatedUtc",
+                table: "CentralTimeLapseJobs",
+                columns: new[] { "DevicePublicId", "ReportDate", "DiscoveryIdentity", "CreatedUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralTimeLapseJobs_State_IsDaily_CreatedUtc",
+                table: "CentralTimeLapseJobs",
+                columns: new[] { "State", "IsDaily", "CreatedUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralTimeLapseVideos_DevicePublicId_ReportDate_CreatedUtc",
+                table: "CentralTimeLapseVideos",
+                columns: new[] { "DevicePublicId", "ReportDate", "CreatedUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralTimeLapseVideos_JobId",
+                table: "CentralTimeLapseVideos",
+                column: "JobId",
+                unique: true);
+
             BaselineTriggerSql.CreateAll(migrationBuilder);
         }
 
@@ -5626,6 +5768,17 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             ArgumentNullException.ThrowIfNull(migrationBuilder);
+            migrationBuilder.DropTable(
+                name: "CentralTimeLapseDependencies");
+
+            migrationBuilder.DropTable(
+                name: "CentralTimeLapseInputs");
+
+            migrationBuilder.DropTable(
+                name: "CentralTimeLapseVideos");
+
+            migrationBuilder.DropTable(
+                name: "CentralTimeLapseJobs");
 
             migrationBuilder.DropTable(
                 name: "CentralProcessingUsageRecords");

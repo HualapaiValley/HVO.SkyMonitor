@@ -13,6 +13,10 @@ public record LinearSceneRenderOptions
     public double Gain { get; init; } = 1;
     public double MagnitudeZeroElectronsPerSecond { get; init; } = 10_000;
     public double BackgroundElectronsPerSecond { get; init; }
+    /// <summary>Optional incident sky color/gradient; null preserves scalar-background fixtures.</summary>
+    public SolarSkyIllumination? SkyIllumination { get; init; }
+    /// <summary>Optional resolved Sun/Moon light, integrated through the same sensor path.</summary>
+    public SolarDiskRenderPlan? SolarDisks { get; init; }
     public double PsfSigmaPixels { get; init; } = 1;
     public double PsfRadiusPixels { get; init; } = 4;
     public double VignettingStrength { get; init; }
@@ -25,6 +29,26 @@ public record LinearSceneRenderOptions
     public IReadOnlyList<SensorDefect> Defects { get; init; } = Array.Empty<SensorDefect>();
     public VirtualCloudRenderContext? Cloud { get; init; }
     public VirtualTransientRenderContext? Transient { get; init; }
+    /// <summary>Optional camera-aware temporal stellar admission; null retains instantaneous legacy rendering.</summary>
+    public StellarExposureRenderPlan? StellarExposure { get; init; }
+
+    internal double BackgroundRate(int x, int y, int channel)
+    {
+        if (SkyIllumination is null) return BackgroundElectronsPerSecond;
+        var response = this is BayerRggb16RenderOptions bayer
+            ? StellarExposureRenderPlan.Channel(bayer.ChannelResponse, channel) : 1;
+        return BackgroundElectronsPerSecond *
+            (SkyIllumination.IsUniformNight ? 1 : SkyIllumination.Multiplier(x, y, channel)) * response;
+    }
+
+    internal double DiskRate(int x, int y, int channel) => SolarDisks is null ? 0 : SolarDisks.ElectronRate(x, y) *
+        (this is BayerRggb16RenderOptions bayer ? StellarExposureRenderPlan.Channel(bayer.ChannelResponse, channel) : 1);
+
+    private double MaximumChannelResponse => this is BayerRggb16RenderOptions bayer
+        ? Math.Max(bayer.ChannelResponse.Red, Math.Max(bayer.ChannelResponse.Green, bayer.ChannelResponse.Blue)) : 1;
+    internal double MaximumBackgroundRate => MaximumSkyRate + (SolarDisks?.MaximumElectronRate ?? 0) * MaximumChannelResponse;
+    private double MaximumSkyRate => BackgroundElectronsPerSecond *
+        (SkyIllumination is null ? 1 : SolarSkyIllumination.MaximumMultiplier * MaximumChannelResponse);
 
     /// <summary>Validates finite, non-negative sensor parameters and bounded optical settings.</summary>
     public virtual void Validate()
@@ -59,6 +83,9 @@ public record LinearSceneRenderOptions
 
         Cloud?.Validate();
         Transient?.Validate();
+        if ((SkyIllumination is not null || SolarDisks is not null) && (!double.IsFinite(MaximumBackgroundRate) || MaximumSkyRate > 1e12 ||
+            !double.IsFinite(MaximumBackgroundRate * ExposureSeconds * Gain)))
+            throw new ArgumentOutOfRangeException(nameof(BackgroundElectronsPerSecond));
         if (Transient is not null && MagnitudeZeroElectronsPerSecond > 1_000_000_000_000)
         {
             throw new ArgumentOutOfRangeException(nameof(MagnitudeZeroElectronsPerSecond),
@@ -344,7 +371,16 @@ public sealed record SceneRenderResult(
     string AlgorithmVersion,
     string CompatibilityLabel,
     RenderStatistics Statistics,
-    IReadOnlyList<RenderedObjectGeometry> Objects);
+    IReadOnlyList<RenderedObjectGeometry> Objects)
+{
+    /// <summary>Gets actual temporal-stellar work when camera-aware rendering is enabled.</summary>
+    public StellarRenderStatistics? StellarStatistics { get; init; }
+    /// <summary>
+    /// Gets conditional source evidence in the native projection used for integration,
+    /// before digital readout and noise. It must not be treated as image detections.
+    /// </summary>
+    public IReadOnlyList<StellarExposurePrediction>? StellarPredictions { get; init; }
+}
 
 /// <summary>Deterministic linear Mono16 rendering from frozen visible-scene geometry.</summary>
 public static class Mono16SceneRenderer
@@ -377,7 +413,7 @@ public static class Mono16SceneRenderer
         Validate(scene, layout, CameraPixelFormat.Mono16, options ??= new());
         var transient = CreateTransientSignal(scene, layout, options, cancellationToken);
         var plane = RenderCore(
-            scene, layout, options, static _ => 1d, out var geometry,
+            scene, layout, options, static _ => 1d, out var geometry, out var stellarVisits,
             transient: transient,
             transientChannel: -1,
             cancellationToken: cancellationToken);
@@ -390,7 +426,11 @@ public static class Mono16SceneRenderer
             AppendScenarioVersions(algorithmVersion, options),
             options.SensorResponse is null ? "Mono16 linear sensor" : options.SensorResponse.CompatibilityLabel,
             statistics,
-            geometry);
+            geometry)
+        {
+            StellarStatistics = options.StellarExposure?.Statistics(1, stellarVisits),
+            StellarPredictions = options.StellarExposure?.Predictions
+        };
     }
 
     internal static double[] RenderCore(
@@ -399,16 +439,21 @@ public static class Mono16SceneRenderer
         LinearSceneRenderOptions options,
         Func<ProjectedCelestialObject, double> objectScale,
         out IReadOnlyList<RenderedObjectGeometry> geometry,
+        out long stellarCellVisits,
         CloudPixelEffect[]? cloudEffects = null,
         VirtualTransientFrameSignal? transient = null,
         int transientChannel = 1,
         double transientSkyScale = 1,
+        Func<CelestialCatalogObject, double>? stellarScale = null,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        stellarCellVisits = 0;
+        options.StellarExposure?.ValidateFor(scene, layout, options);
         var length = checked(layout.Width * layout.Height);
         var rates = new double[length];
         var projection = scene.Request.Projection;
+        var skyChannel = options is Mono16SceneRenderOptions ? -1 : transientChannel;
         for (var y = 0; y < layout.Height; y++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -416,7 +461,7 @@ public static class Mono16SceneRenderer
             {
                 if (InsideAperture(x, y, projection))
                 {
-                    rates[y * layout.Width + x] = options.BackgroundElectronsPerSecond;
+                    rates[y * layout.Width + x] = options.BackgroundRate(x, y, skyChannel) + options.DiskRate(x, y, skyChannel);
                 }
             }
         }
@@ -425,6 +470,8 @@ public static class Mono16SceneRenderer
         foreach (var item in scene.Objects)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (options.StellarExposure is not null && item.Kind == CelestialObjectKind.Star) continue;
+            if (options.SolarDisks is { } disks && disks.Disks.Any(disk => item.Id == $"solar-system:{disk.Body}")) continue;
             var flux = RelativeFlux(item.Magnitude) * options.MagnitudeZeroElectronsPerSecond * objectScale(item);
             if (!double.IsFinite(item.Pixel.X) || !double.IsFinite(item.Pixel.Y) || !double.IsFinite(flux) || flux < 0)
             {
@@ -434,9 +481,45 @@ public static class Mono16SceneRenderer
             footprints.Add(AddPsf(rates, layout.Width, layout.Height, projection, item, flux, options));
         }
 
+        if (options.StellarExposure is { } stellar)
+        {
+            // Background and instantaneous non-stellar objects use the existing exposure-average
+            // cloud field. Temporal stars carry their own matched source-time transmission.
+            if (options.Cloud?.RequiresEvaluation == true)
+            {
+                var projector = cloudEffects is null ? ProjectorFactory.Create(projection) : null;
+                for (var y = 0; y < layout.Height; y++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    for (var x = 0; x < layout.Width; x++)
+                    {
+                        if (!InsideAperture(x, y, projection)) continue;
+                        var index = y * layout.Width + x;
+                        var effect = cloudEffects is null ? EvaluateCloud(projector!, options.Cloud, x, y) : cloudEffects[index];
+                        rates[index] = rates[index] * effect.Transmission + options.BackgroundRate(x, y, skyChannel) * effect.Scatter;
+                    }
+                }
+            }
+            var visits = 0L;
+            foreach (var source in stellar.Sources)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var raster = TemporalPointSpreadRaster.Rasterize(source.Samples, projection,
+                    options.PsfSigmaPixels, options.PsfRadiusPixels,
+                    StellarExposureRenderPlan.Remaining(stellar.Settings, visits),
+                    stellar.Settings.MaximumSparsePixels, cancellationToken);
+                visits += raster.KernelCellVisits;
+                stellarCellVisits += raster.KernelCellVisits;
+                var flux = RelativeFlux(source.Source.Source.Magnitude) * options.MagnitudeZeroElectronsPerSecond *
+                    (stellarScale?.Invoke(source.Source.Source) ?? 1);
+                foreach (var pixel in raster.Pixels) rates[pixel.Index] += flux * pixel.AfterTransmission;
+                footprints.Add(source.Prediction.Footprint);
+            }
+        }
+
         if (transient is null)
         {
-            RenderSensorPlane(scene, layout, options, rates, cloudEffects, cancellationToken);
+            RenderSensorPlane(scene, layout, options, rates, cloudEffects, skyChannel, cancellationToken);
         }
         else
         {
@@ -456,13 +539,14 @@ public static class Mono16SceneRenderer
         LinearSceneRenderOptions options,
         double[] rates,
         CloudPixelEffect[]? cloudEffects,
+        int skyChannel,
         CancellationToken cancellationToken)
     {
         var projection = scene.Request.Projection;
         var random = new StableRandom(options.Seed);
         var darkExpected = options.DarkCurrentElectronsPerSecond * options.ExposureSeconds;
         var cloud = options.Cloud;
-        var requiresCloudEvaluation = cloud?.RequiresEvaluation == true;
+        var requiresCloudEvaluation = options.StellarExposure is null && cloud?.RequiresEvaluation == true;
         var cloudProjector = !requiresCloudEvaluation || cloudEffects is not null
             ? null
             : ProjectorFactory.Create(projection);
@@ -483,7 +567,7 @@ public static class Mono16SceneRenderer
                     var effect = cloudEffects is null
                         ? EvaluateCloud(cloudProjector!, cloud!, x, y)
                         : cloudEffects[index];
-                    rates[index] = rates[index] * effect.Transmission + options.BackgroundElectronsPerSecond * effect.Scatter;
+                    rates[index] = rates[index] * effect.Transmission + options.BackgroundRate(x, y, skyChannel) * effect.Scatter;
                 }
 
                 var vignetting = 1 - options.VignettingStrength * projection.NormalizedRadiusSquared(x + 0.5, y + 0.5);
@@ -528,7 +612,7 @@ public static class Mono16SceneRenderer
         var random = new StableRandom(options.Seed);
         var darkExpected = options.DarkCurrentElectronsPerSecond * options.ExposureSeconds;
         var cloud = options.Cloud;
-        var requiresCloudEvaluation = cloud?.RequiresEvaluation == true;
+        var requiresCloudEvaluation = options.StellarExposure is null && cloud?.RequiresEvaluation == true;
         var cloudProjector = !requiresCloudEvaluation || cloudEffects is not null
             ? null
             : ProjectorFactory.Create(projection);
@@ -551,7 +635,8 @@ public static class Mono16SceneRenderer
                     var effect = cloudEffects is null
                         ? EvaluateCloud(cloudProjector!, cloud!, x, y)
                         : cloudEffects[index];
-                    rates[index] = rates[index] * effect.Transmission + options.BackgroundElectronsPerSecond * effect.Scatter;
+                    rates[index] = rates[index] * effect.Transmission + options.BackgroundRate(x, y,
+                        options is Mono16SceneRenderOptions ? -1 : transientChannel) * effect.Scatter;
                 }
 
                 var vignetting = insideAperture
@@ -774,6 +859,14 @@ public static class Mono16SceneRenderer
         {
             throw new ArgumentException("The image layout must match the frozen scene projection dimensions.", nameof(layout));
         }
+        if (options.SkyIllumination is { } sky && sky.Projection != projection)
+            throw new ArgumentException("Sky illumination must bind the rendered projection.", nameof(options));
+        if (options.SolarDisks is { } disks && disks.Projection != projection)
+            throw new ArgumentException("Solar disks must bind the rendered projection.", nameof(options));
+        if (options.SolarDisks is { } bound && (bound.Settings.PsfSigmaPixels != options.PsfSigmaPixels ||
+            bound.Settings.PsfRadiusPixels != options.PsfRadiusPixels ||
+            bound.Settings.HorizonPolicy != scene.Request.HorizonPolicy || bound.Settings.Refraction != scene.Request.Refraction))
+            throw new ArgumentException("Solar disks must bind the rendered PSF, horizon policy and refraction.", nameof(options));
     }
 
     internal static bool InsideAperture(int x, int y, ProjectionContext projection)
@@ -781,6 +874,9 @@ public static class Mono16SceneRenderer
 
     internal static string AppendScenarioVersions(string algorithmVersion, LinearSceneRenderOptions options)
     {
+        if (options.SkyIllumination is not null) algorithmVersion += "+" + SolarSkyIllumination.AlgorithmVersion;
+        if (options.SolarDisks is not null) algorithmVersion += "+" + SolarDiskRenderPlan.AlgorithmVersion;
+        if (options.StellarExposure is not null) algorithmVersion += "+" + StellarExposureRenderPlan.AlgorithmVersion;
         if (options.Cloud is not null)
         {
             algorithmVersion += CloudAlgorithmSuffix;
@@ -819,13 +915,16 @@ public static class Rgb24CompatibilityRenderer
             : Mono16SceneRenderer.CreateCloudEffects(scene, layout, options.Cloud, cancellationToken);
         var transient = Mono16SceneRenderer.CreateTransientSignal(scene, layout, options, cancellationToken);
         IReadOnlyList<RenderedObjectGeometry>? geometry = null;
+        var stellarVisits = 0L;
         for (var channel = 0; channel < channels.Length; channel++)
         {
             var selected = channel;
             channels[channel] = Mono16SceneRenderer.RenderCore(scene, layout, options with { Seed = unchecked(options.Seed + channel * 104729) },
-                item => ColorFactors(item.ColorIndex ?? options.FallbackColorIndex)[selected], out var currentGeometry,
-                cloudEffects, transient, selected, cancellationToken: cancellationToken);
+                item => ColorFactors(item.ColorIndex ?? options.FallbackColorIndex)[selected], out var currentGeometry, out var channelVisits,
+                cloudEffects, transient, selected, cancellationToken: cancellationToken,
+                stellarScale: item => ColorFactors(item.ColorIndex ?? options.FallbackColorIndex)[selected]);
             geometry ??= currentGeometry;
+            stellarVisits += channelVisits;
         }
 
         var response = new[]
@@ -864,7 +963,11 @@ public static class Rgb24CompatibilityRenderer
 
         var algorithmVersion = Mono16SceneRenderer.AppendScenarioVersions(
             Mono16SceneRenderer.AlgorithmVersion, options);
-        return new SceneRenderResult(pixels, algorithmVersion, CompatibilityLabel, statistics.Create(), geometry!);
+        return new SceneRenderResult(pixels, algorithmVersion, CompatibilityLabel, statistics.Create(), geometry!)
+        {
+            StellarStatistics = options.StellarExposure?.Statistics(3, stellarVisits),
+            StellarPredictions = options.StellarExposure?.Predictions
+        };
     }
 
     // Smooth bounded approximation suitable for compatibility previews, normalized to green.
@@ -914,6 +1017,7 @@ public static class BayerRggb16Renderer
             : Mono16SceneRenderer.CreateCloudEffects(scene, layout, options.Cloud, cancellationToken);
         var transient = Mono16SceneRenderer.CreateTransientSignal(scene, layout, options, cancellationToken);
         IReadOnlyList<RenderedObjectGeometry>? geometry = null;
+        var stellarVisits = 0L;
         for (var channel = 0; channel < channels.Length; channel++)
         {
             var selected = channel;
@@ -924,12 +1028,16 @@ public static class BayerRggb16Renderer
                 item => Rgb24CompatibilityRenderer.ColorFactors(item.ColorIndex ?? options.FallbackColorIndex)[selected] *
                     responses[selected],
                 out var currentGeometry,
+                out var channelVisits,
                 cloudEffects,
                 transient,
                 selected,
                 responses[selected],
-                cancellationToken);
+                stellarScale: item => Rgb24CompatibilityRenderer.ColorFactors(item.ColorIndex ?? options.FallbackColorIndex)[selected] *
+                    responses[selected],
+                cancellationToken: cancellationToken);
             geometry ??= currentGeometry;
+            stellarVisits += channelVisits;
         }
 
         var pixels = new byte[layout.RequiredByteLength];
@@ -977,7 +1085,11 @@ public static class BayerRggb16Renderer
         {
             algorithmVersion += "+right-aligned-v1";
         }
-        return new SceneRenderResult(pixels, algorithmVersion, CompatibilityLabel, statistics.Create(), geometry!);
+        return new SceneRenderResult(pixels, algorithmVersion, CompatibilityLabel, statistics.Create(), geometry!)
+        {
+            StellarStatistics = options.StellarExposure?.Statistics(3, stellarVisits),
+            StellarPredictions = options.StellarExposure?.Predictions
+        };
     }
 }
 

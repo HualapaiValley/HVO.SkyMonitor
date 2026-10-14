@@ -3,13 +3,13 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Metrics;
 using System.Data.Common;
-using System.Net;
 using System.Runtime;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.IntegrationTests.Infrastructure;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
@@ -24,8 +24,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Minio;
-using Minio.DataModel.Args;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -195,7 +193,8 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         foreach (var concurrency in BacklogConcurrencyLevels)
         {
             p5.Add(await MeasureBacklogRecoveryAsync(
-                fixture, telemetry, w2, $"{runId}-P5-C{concurrency}", concurrency, scale)
+                fixture, telemetry, w2, $"{runId}-P5-C{concurrency}", concurrency, scale,
+                canonicalHistory: true, priorP5: p5)
                 .ConfigureAwait(false));
         }
 
@@ -256,7 +255,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                     PixelFormat = w0.PixelFormat.ToString(),
                     w0.ByteLength,
                     Recipe = BuiltInProcessingRecipes.ImageQuality,
-                    Dependency = "worker-facing MinIO",
+                    Dependency = "worker-facing filesystem IObjectStore",
                     Measurement = p4
                 },
                 P5 = new
@@ -272,15 +271,15 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             },
             Method = new
             {
-                Boundary = "Derivative phases measure durable claim start through executor completion, including SQL claim, verified MinIO load, recipe execution, output publication/verification, lineage persistence, and durable completion. Queue phases measure claim through durable skip.",
+                Boundary = "Derivative phases measure durable claim start through executor completion, including SQL claim, verified filesystem object load, recipe execution, output publication/verification, lineage persistence, and durable completion. Queue phases measure claim through durable skip.",
                 Latency = "Nearest-rank median/p95/maximum over independent measured operations after the declared warmups.",
                 Throughput = "Closed-loop completed operations divided by measured wall time at the declared maximum concurrency.",
                 StageTelemetry = "Production derivative-worker Meter histograms/counters and ActivitySource stages are captured after warmups. Harness-driven claims call the same telemetry methods used by the disabled hosted worker.",
                 Resources = "Process.TotalProcessorTime, GC.GetTotalAllocatedBytes(false), and 10 ms Process.WorkingSet64 observations cover the in-process LogicHost/test runner only.",
-                StorageEconomy = "All unique durable raw artifacts for a workload reference one immutable checksum-verified MinIO source object; output identities remain unique because every source artifact identity is unique.",
+                StorageEconomy = "All unique durable raw artifacts for a workload reference one immutable checksum-verified filesystem source object; output identities remain unique because every source artifact identity is unique.",
                 QueueAge = "Initial and final unresolved counts and oldest durable queue age are read from SQL for each scenario.",
                 Correctness = "Every derivative job is checked for exactly one unique result, processing identity, checksum, immediate source lineage, completed attempt, and zero final backlog; every result object is streamed and SHA-256 checked. Queue jobs verify reclaim attempt history and zero final backlog.",
-                P4Recovery = "Jobs arrive on a fixed monotonic schedule while the worker is disabled. A fresh worker then observes a worker-facing MinIO outage for the declared duration; recovery starts with a fresh clean worker and ends at durable zero backlog.",
+                P4Recovery = "Jobs arrive on a fixed monotonic schedule while the worker is disabled. A fresh worker then observes a worker-facing IObjectStore outage for the declared duration; recovery starts with a fresh clean worker and ends at durable zero backlog.",
                 P5Recovery = $"Thirty initial W2 jobs plus declared arrivals accumulate while disabled. Recovery includes continued arrivals, and ends only after arrivals stop and durable backlog returns to zero. Drain rate is (restart backlog + enabled arrivals) / enabled recovery duration. RSS plateau compares middle-third and final-third medians with a concurrency-plus-harness full-frame envelope and {RssSamplingToleranceBytes} bytes of declared sampling tolerance.",
                 FiveTrialStatistics = "P4/P5 aggregate recovery values report median/minimum/maximum over five independent canonical trials; no p95 is inferred from five trials."
             },
@@ -293,14 +292,15 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 ServerGarbageCollection = GCSettings.IsServerGC,
                 TotalAvailableMemoryBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
                 SqlServer = DescribeSqlEndpoint(fixture.SqlServerConnectionString),
-                IntegrationTestFixture.ExternalS3Endpoint
+                ExternalS3Endpoint = "N/A: filesystem provider",
+                ObjectStore = "Filesystem; fixture-owned local root"
             },
             UnavailableEvidence = new
             {
                 SqlWireBytes = "N/A: Microsoft.Data.SqlClient and EF Core do not expose authoritative SQL wire-byte counters; no estimate is reported.",
                 ContainerResources = "N/A: IntegrationTestFixture does not expose portable per-container CPU, allocation, or RSS counters; process resources intentionally cover only the in-process host/test runner.",
                 QueueOutputs = "N/A for P2: W3M isolates durable claim/reclaim behavior and drains jobs with the production SkipAsync transition, so no derivative object is expected.",
-                NetworkTransport = "ASP.NET Core is in-process and MinIO/SQL run in Testcontainers; transport framing and kernel TCP/TLS costs are not separately attributed.",
+                NetworkTransport = "ASP.NET Core and filesystem storage are in-process; SQL runs in Testcontainers. Legacy Minio protocol fields stay zero because no S3 requests occur. Additive ObjectStore fields contain provider operation/outcome and logical payload-byte telemetry, excluding validation reads. Payload bytes are not physical filesystem I/O; historical S3 timings are not directly comparable.",
                 PublicationCrashMatrix = "Each of the five canonical P4 trials uses an in-process fail-stop surrogate at a different boundary: intent commit, staging write, canonical publication, completion pre-commit, or completion post-commit. Staging/canonical trials suppress normal cleanup and verify time-shifted production reconciliation. Metadata availability and job completion share one atomic SQL transaction, so pre/post commit are the honest sides of that boundary. A literal operating-system process kill remains outside this in-process harness."
             },
             HarnessElapsedMilliseconds = Stopwatch.GetElapsedTime(harnessStarted).TotalMilliseconds,
@@ -414,13 +414,13 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         var resourceEvidence = await resources.StopAsync().ConfigureAwait(false);
         var finalBacklog = await ReadBacklogAsync(jobIds).ConfigureAwait(false);
         Assert.AreEqual(0, finalBacklog.Count);
+        var protocolEvidence = protocol.Snapshot();
         var correctness = await ValidateDerivativeResultsAsync(fixture, jobIds).ConfigureAwait(false);
         var sorted = latencies.Order().ToArray();
         Assert.AreEqual(measurements, sorted.Length);
-        var protocolEvidence = protocol.Snapshot();
         Assert.IsGreaterThan(0, protocolEvidence.SqlCommands);
-        Assert.IsGreaterThan(0, protocolEvidence.Minio.Get);
-        Assert.IsGreaterThan(0, protocolEvidence.Minio.Put);
+        Assert.IsGreaterThan(0, protocolEvidence.ObjectStore.GetValueOrDefault("operations.read.success"));
+        Assert.IsGreaterThan(0, protocolEvidence.ObjectStore.GetValueOrDefault("operations.put.success"));
         return new DerivativeMeasurement(
             scenario,
             workload.Id,
@@ -570,6 +570,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         var sortedOperations = operationLatencies.Order().ToArray();
         var protocolEvidence = protocol.Snapshot();
         Assert.IsGreaterThan(0, protocolEvidence.SqlCommands);
+        Assert.AreEqual(0, protocolEvidence.ObjectStore.Count);
         Assert.AreEqual(0, protocolEvidence.Minio.Requests);
         return new QueueMeasurement(
             scenario,
@@ -629,8 +630,8 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             var initialBacklog = await ReadBacklogAsync(ids).ConfigureAwait(false);
             Assert.AreEqual(scale.FaultJobs, initialBacklog.Count);
 
-            using var outage = new TimedMinioOutageHandler { InnerHandler = new SocketsHttpHandler() };
-            using var outageFactory = CreateMinioFaultFactory(fixture, outage);
+            var outage = new TimedObjectStoreOutage(fixture.Factory.Services.GetRequiredService<IObjectStore>());
+            using var outageFactory = CreateObjectStoreFaultFactory(fixture, outage);
             _ = outageFactory.Services;
             outage.Arm();
             var outageStarted = Stopwatch.GetTimestamp();
@@ -758,6 +759,10 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             observed = exception;
         }
         Assert.IsNotNull(observed, $"The {boundary} publication fault was not observed.");
+        if (publicationFault is not null)
+        {
+            Assert.IsTrue(publicationFault.Injected, $"The {boundary} object-store boundary was not reached.");
+        }
 
         await using var assertionScope = fixture.Factory.Services.CreateAsyncScope();
         var db = assertionScope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
@@ -836,12 +841,12 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
     {
         try
         {
-            await fixture.Factory.Services.GetRequiredService<IMinioClient>()
-                .StatObjectAsync(new StatObjectArgs().WithBucket(ArtifactBucket).WithObject(objectKey))
+            await fixture.Factory.Services.GetRequiredService<IObjectStore>()
+                .StatAsync(ArtifactBucket, objectKey, CancellationToken.None)
                 .ConfigureAwait(false);
             return true;
         }
-        catch (Minio.Exceptions.MinioException exception) when (ObjectStoreTestClient.IsNotFound(exception))
+        catch (ObjectStoreException exception) when (exception.Kind == ObjectStoreFailureKind.MissingObject)
         {
             return false;
         }
@@ -855,7 +860,9 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         int concurrency,
         HarnessScale scale,
         bool assertRssPlateau = true,
-        bool retainRssDiagnostics = false)
+        bool retainRssDiagnostics = false,
+        bool canonicalHistory = false,
+        IReadOnlyList<BacklogRecoveryMeasurement>? priorP5 = null)
     {
         var trials = new List<BacklogRecoveryTrialMeasurement>();
         for (var trial = 1; trial <= scale.RecoveryTrials; trial++)
@@ -886,83 +893,183 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             var disabledBacklog = await ReadBacklogAsync(allIds.ToArray()).ConfigureAwait(false);
             Assert.AreEqual(scale.BacklogInitialJobs + scale.BacklogDisabledArrivals, disabledBacklog.Count);
 
+            var diagnosticDirectory = Path.Combine(GetRepositoryRoot(), "tests",
+                "HVO.SkyMonitor.LogicHost.IntegrationTests", "TestResults", "p5-diagnostics");
+            var diagnosticFileName = $"p5-c{concurrency}-t{trial}-{Guid.NewGuid():N}.json";
             telemetry.Clear();
             StabilizeGc();
-            using var resources = new ResourceSampler(retainRssDiagnostics);
+            using var resources = new ResourceSampler(retainRssDiagnostics, retainFailureEndpoints: true);
             var recoveryStarted = Stopwatch.GetTimestamp();
             var initialDrain = new TaskCompletionSource<double>(TaskCreationOptions.RunContinuationsAsynchronously);
             using var monitoringCancellation = new CancellationTokenSource();
             var monitor = MonitorInitialDrainAsync(initialIds, recoveryStarted, initialDrain, monitoringCancellation.Token);
+            ResourceEvidence? resourceEvidence = null;
+            BacklogSnapshot? finalBacklog = null;
+            DerivativeCorrectness? correctness = null;
+            var recoveryElapsed = TimeSpan.Zero;
+            double? arrivalAdjustedDrainRate = null;
+            var retentionAttempted = false;
+
+            async Task<object> CreateDiagnosticAsync(string outcome)
+            {
+                resourceEvidence ??= await resources.StopAsync().ConfigureAwait(false);
+                var repositoryRoot = GetRepositoryRoot();
+                var assembly = typeof(LogicHostDerivativeWorkerPerformanceTests).Assembly;
+                using var assemblyStream = File.OpenRead(assembly.Location);
+                return new
+                {
+                    Schema = "hvo-logichost-p5-trial-diagnostic-v1",
+                    Issue = 1151,
+                    Outcome = outcome,
+                    Trial = trial,
+                    Concurrency = concurrency,
+                    Scenario = trialScenario,
+                    Method = canonicalHistory
+                        ? nameof(CentralDerivativeWorker_CanonicalWorkloads_RecordPerformanceEvidence)
+                        : nameof(CentralDerivativeWorker_P5C1FreshProcess_RecordsDiagnosticEvidence),
+                    Identity = new
+                    {
+                        Git = ReadGitEvidence(repositoryRoot),
+                        AssemblySha256 = Convert.ToHexStringLower(SHA256.HashData(assemblyStream)),
+                        assembly.ManifestModule.ModuleVersionId
+                    },
+                    Workload = new
+                    {
+                        workload.Id,
+                        workload.Width,
+                        workload.Height,
+                        workload.StrideBytes,
+                        PixelFormat = workload.PixelFormat.ToString(),
+                        workload.ByteLength,
+                        workload.ChecksumSha256,
+                        Seed = 2025,
+                        Recipe = BuiltInProcessingRecipes.ImageQuality
+                    },
+                    Scale = scale,
+                    History = new
+                    {
+                        PrecedingPhases = canonicalHistory ? "P1/P2/P3/P4" : "fresh-process-P5-only",
+                        CompletedConcurrencyLevels = priorP5?.Select(level => new { level.Concurrency, level.Trials }).ToArray(),
+                        CompletedTrialsAtThisConcurrency = trials.Count
+                    },
+                    SubmittedJobs = allIds.Count,
+                    DisabledBacklog = disabledBacklog,
+                    FinalBacklog = finalBacklog,
+                    Correctness = correctness,
+                    InitialDrainObserved = initialDrain.Task.IsCompletedSuccessfully,
+                    InitialBacklogDrainMilliseconds = initialDrain.Task.IsCompletedSuccessfully ? initialDrain.Task.Result : (double?)null,
+                    RecoveryMilliseconds = recoveryElapsed == TimeSpan.Zero ? (double?)null : recoveryElapsed.TotalMilliseconds,
+                    ArrivalAdjustedDrainRate = arrivalAdjustedDrainRate,
+                    Resources = resourceEvidence with { Diagnostic = null },
+                    Diagnostic = resources.CreateFailureDiagnostic(),
+                    AllowedGrowthBytes = checked((concurrency + 1L) * workload.ByteLength + RssSamplingToleranceBytes),
+                    Runtime = new
+                    {
+                        RuntimeInformation.FrameworkDescription,
+                        RuntimeVersion = Environment.Version.ToString(),
+                        RuntimeInformation.OSDescription,
+                        ProcessArchitecture = RuntimeInformation.ProcessArchitecture.ToString(),
+                        Environment.ProcessorCount,
+                        GCSettings.IsServerGC,
+                        LatencyModeAfterSampling = GCSettings.LatencyMode.ToString()
+                    },
+                    Unavailable = "Heap/commit/GC are endpoints, not trajectories; exact sampling UTC, live buffers and observer neutrality are unqualified. Partial trials do not establish a plateau result.",
+                    RecordedAtUtc = DateTimeOffset.UtcNow
+                };
+            }
+
             try
             {
-                await using var worker = CreateWorker(
-                    fixture.Factory.Services,
-                    $"issue-100-P5-C{concurrency}-T{trial}",
+                try
+                {
+                    await using var worker = CreateWorker(
+                        fixture.Factory.Services,
+                        $"issue-100-P5-C{concurrency}-T{trial}",
+                        concurrency,
+                        leaseDuration: TimeSpan.FromSeconds(10));
+                    await worker.StartAsync().ConfigureAwait(false);
+                    await SubmitAtFixedRateAsync(
+                            scale.BacklogEnabledArrivals,
+                            scale.BacklogArrivalInterval,
+                            async submittedAtUtc =>
+                            {
+                                var ids = await SeedExecutableJobsAsync(
+                                    fixture,
+                                    workload,
+                                    BuiltInProcessingRecipes.ImageQuality,
+                                    $"{trialScenario}-enabled-{allIds.Count:D3}",
+                                    1,
+                                    submittedAtUtc).ConfigureAwait(false);
+                                allIds.Add(ids[0]);
+                            })
+                        .ConfigureAwait(false);
+                    await WaitForCompletionAsync(allIds.ToArray(), scale.RecoveryTimeout).ConfigureAwait(false);
+                }
+                finally
+                {
+                    await monitoringCancellation.CancelAsync().ConfigureAwait(false);
+                    await monitor.ConfigureAwait(false);
+                }
+                recoveryElapsed = Stopwatch.GetElapsedTime(recoveryStarted);
+                resourceEvidence = await resources.StopAsync().ConfigureAwait(false);
+                var ids = allIds.ToArray();
+                finalBacklog = await ReadBacklogAsync(ids).ConfigureAwait(false);
+                Assert.AreEqual(0, finalBacklog.Count);
+                correctness = await ValidateDerivativeResultsAsync(fixture, ids).ConfigureAwait(false);
+                arrivalAdjustedDrainRate = ids.Length / recoveryElapsed.TotalSeconds;
+                Assert.IsGreaterThan(0.1, arrivalAdjustedDrainRate.Value);
+                var rssGrowth = Math.Max(0, resourceEvidence.RssFinalThirdMedianBytes
+                    - resourceEvidence.RssMiddleThirdMedianBytes);
+                var allowedRssGrowth = checked((concurrency + 1L) * workload.ByteLength
+                    + RssSamplingToleranceBytes);
+                var rssPlateauPassed = rssGrowth <= allowedRssGrowth;
+                if (!scale.Smoke && assertRssPlateau)
+                {
+                    retentionAttempted = !rssPlateauPassed;
+                    await P5TrialDiagnostics.AssertPlateauAsync(rssPlateauPassed,
+                        $"P5 RSS median growth {rssGrowth} exceeded the {allowedRssGrowth}-byte full-frame envelope.",
+                        () => CreateDiagnosticAsync("rss-plateau-failed"), diagnosticDirectory, diagnosticFileName)
+                        .ConfigureAwait(false);
+                }
+                trials.Add(new BacklogRecoveryTrialMeasurement(
+                    trial,
                     concurrency,
-                    leaseDuration: TimeSpan.FromSeconds(10));
-                await worker.StartAsync().ConfigureAwait(false);
-                await SubmitAtFixedRateAsync(
-                        scale.BacklogEnabledArrivals,
-                        scale.BacklogArrivalInterval,
-                        async submittedAtUtc =>
-                        {
-                            var ids = await SeedExecutableJobsAsync(
-                                fixture,
-                                workload,
-                                BuiltInProcessingRecipes.ImageQuality,
-                                $"{trialScenario}-enabled-{allIds.Count:D3}",
-                                1,
-                                submittedAtUtc).ConfigureAwait(false);
-                            allIds.Add(ids[0]);
-                        })
-                    .ConfigureAwait(false);
-                await WaitForCompletionAsync(allIds.ToArray(), scale.RecoveryTimeout).ConfigureAwait(false);
+                    ids.Length,
+                    scale.BacklogInitialJobs,
+                    scale.BacklogDisabledArrivals,
+                    scale.BacklogEnabledArrivals,
+                    initialDrain.Task.IsCompletedSuccessfully ? initialDrain.Task.Result : recoveryElapsed.TotalMilliseconds,
+                    recoveryElapsed.TotalMilliseconds,
+                    arrivalAdjustedDrainRate.Value,
+                    disabledBacklog,
+                    finalBacklog,
+                    resourceEvidence,
+                    new RssPlateauEvidence(
+                        resourceEvidence.RssSamples,
+                        resourceEvidence.RssMiddleThirdMedianBytes,
+                        resourceEvidence.RssFinalThirdMedianBytes,
+                        allowedRssGrowth,
+                        rssGrowth,
+                        rssPlateauPassed),
+                    telemetry.Snapshot(),
+                    correctness));
             }
-            finally
+            catch (Exception failure)
             {
-                await monitoringCancellation.CancelAsync().ConfigureAwait(false);
-                await monitor.ConfigureAwait(false);
+                if (!retentionAttempted)
+                {
+                    // Sampling is stopped before any record construction or publication, even for a canceled trial.
+                    var retentionFailure = await P5TrialDiagnostics.TryRecordAsync(
+                        () => CreateDiagnosticAsync(failure is OperationCanceledException ? "canceled" : "trial-failed"),
+                        diagnosticDirectory, diagnosticFileName).ConfigureAwait(false);
+                    if (retentionFailure is not null)
+                    {
+                        failure.Data["P5DiagnosticRetentionFailureType"] = retentionFailure.GetType().FullName;
+                        Console.Error.WriteLine($"P5 diagnostic retention failed ({retentionFailure.GetType().Name}); original trial failure preserved.");
+                    }
+                }
+                throw;
             }
-            var recoveryElapsed = Stopwatch.GetElapsedTime(recoveryStarted);
-            var resourceEvidence = await resources.StopAsync().ConfigureAwait(false);
-            var ids = allIds.ToArray();
-            var finalBacklog = await ReadBacklogAsync(ids).ConfigureAwait(false);
-            Assert.AreEqual(0, finalBacklog.Count);
-            var correctness = await ValidateDerivativeResultsAsync(fixture, ids).ConfigureAwait(false);
-            var arrivalAdjustedDrainRate = ids.Length / recoveryElapsed.TotalSeconds;
-            Assert.IsGreaterThan(0.1, arrivalAdjustedDrainRate);
-            var rssGrowth = Math.Max(0, resourceEvidence.RssFinalThirdMedianBytes
-                - resourceEvidence.RssMiddleThirdMedianBytes);
-            var allowedRssGrowth = checked((concurrency + 1L) * workload.ByteLength
-                + RssSamplingToleranceBytes);
-            var rssPlateauPassed = rssGrowth <= allowedRssGrowth;
-            if (!scale.Smoke && assertRssPlateau)
-            {
-                Assert.IsTrue(rssPlateauPassed,
-                    $"P5 RSS median growth {rssGrowth} exceeded the {allowedRssGrowth}-byte full-frame envelope.");
-            }
-            trials.Add(new BacklogRecoveryTrialMeasurement(
-                trial,
-                concurrency,
-                ids.Length,
-                scale.BacklogInitialJobs,
-                scale.BacklogDisabledArrivals,
-                scale.BacklogEnabledArrivals,
-                initialDrain.Task.IsCompletedSuccessfully ? initialDrain.Task.Result : recoveryElapsed.TotalMilliseconds,
-                recoveryElapsed.TotalMilliseconds,
-                arrivalAdjustedDrainRate,
-                disabledBacklog,
-                finalBacklog,
-                resourceEvidence,
-                new RssPlateauEvidence(
-                    resourceEvidence.RssSamples,
-                    resourceEvidence.RssMiddleThirdMedianBytes,
-                    resourceEvidence.RssFinalThirdMedianBytes,
-                    allowedRssGrowth,
-                    rssGrowth,
-                    rssPlateauPassed),
-                telemetry.Snapshot(),
-                correctness));
         }
 
         return new BacklogRecoveryMeasurement(
@@ -1104,7 +1211,17 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 RigProfileVersion = 1,
                 RigId = $"issue-100-{workload.Id}",
                 CaptureSequence = index + 1L,
-                SceneProvenanceJson = sceneJson
+                SceneProvenanceJson = sceneJson,
+                // This harness seeds frames directly, so it must supply the resolved
+                // capture-location provenance normally persisted by ingest.
+                LocationEvidenceState = CentralCaptureLocationEvidenceState.ReportedResolved,
+                Location = new CentralCaptureLocation
+                {
+                    LocationId = "issue-100-performance-location",
+                    Version = 1,
+                    Source = "issue-100-performance",
+                    EffectiveFromUtc = now.AddDays(-1)
+                }
             };
             frame.Timing = new CentralCaptureTiming
             {
@@ -1210,14 +1327,9 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         await using (var objectScope = fixture.Factory.Services.CreateAsyncScope())
         {
             await using var stream = new MemoryStream(queuePayload, writable: false);
-            await objectScope.ServiceProvider.GetRequiredService<IMinioClient>()
-                .PutObjectAsync(new PutObjectArgs()
-                    .WithBucket(ArtifactBucket)
-                    .WithObject(queueObjectKey)
-                    .WithStreamData(stream)
-                    .WithObjectSize(queuePayload.LongLength)
-                    .WithContentType("application/octet-stream"))
-                .ConfigureAwait(false);
+            await objectScope.ServiceProvider.GetRequiredService<IObjectStore>()
+                .PutAsync(ArtifactBucket, queueObjectKey, stream, queuePayload.LongLength,
+                    "application/octet-stream", CancellationToken.None).ConfigureAwait(false);
         }
         await using (var sourceScope = fixture.Factory.Services.CreateAsyncScope())
         {
@@ -1238,7 +1350,15 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                     RigId = "issue-100-queue",
                     CaptureSequence = index + 1,
                     CapturedAtUtc = captured,
-                    FirstReceivedAtUtc = captured
+                    FirstReceivedAtUtc = captured,
+                    LocationEvidenceState = CentralCaptureLocationEvidenceState.ReportedResolved,
+                    Location = new CentralCaptureLocation
+                    {
+                        LocationId = "issue-100-queue-location",
+                        Version = 1,
+                        Source = "issue-100-performance",
+                        EffectiveFromUtc = now.AddDays(-1)
+                    }
                 };
                 frame.Timing = new CentralCaptureTiming
                 {
@@ -1521,7 +1641,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
 
         long outputBytes = 0;
         await using var validationScope = fixture.Factory.Services.CreateAsyncScope();
-        var minio = validationScope.ServiceProvider.GetRequiredService<IMinioClient>();
+        var objectStore = validationScope.ServiceProvider.GetRequiredService<IObjectStore>();
         foreach (var job in jobs)
         {
             Assert.AreEqual(CentralDerivativeJobStatus.Completed, job.Status);
@@ -1571,11 +1691,13 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             Assert.AreEqual(CentralReconstructionState.Complete, artifact.ReconstructionState);
             string? checksum = null;
             var objectKey = artifact.StorageReference[$"object://{ArtifactBucket}/".Length..];
-            await minio.GetObjectAsync(new GetObjectArgs()
-                .WithBucket(ArtifactBucket)
-                .WithObject(objectKey)
-                .WithCallbackStream(stream => checksum = Convert.ToHexString(SHA256.HashData(stream))))
-                .ConfigureAwait(false);
+            var metadata = await objectStore.StatAsync(ArtifactBucket, objectKey, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(artifact.ByteLength, metadata.ContentLength);
+            await objectStore.ReadAsync(ArtifactBucket, objectKey, metadata.Generation, (stream, _) =>
+            {
+                checksum = Convert.ToHexString(SHA256.HashData(stream));
+                return Task.CompletedTask;
+            }, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(artifact.ChecksumSha256, checksum, ignoreCase: true);
             outputBytes += artifact.ByteLength;
         }
@@ -1731,32 +1853,20 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
     {
         workload.ObjectKey = $"performance/central-derivative-worker/{runId}/{workload.Id}.raw";
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
-        var minio = scope.ServiceProvider.GetRequiredService<IMinioClient>();
-        if (!await minio.BucketExistsAsync(new BucketExistsArgs().WithBucket(ArtifactBucket)).ConfigureAwait(false))
-        {
-            await minio.MakeBucketAsync(new MakeBucketArgs().WithBucket(ArtifactBucket)).ConfigureAwait(false);
-        }
+        var objectStore = scope.ServiceProvider.GetRequiredService<IObjectStore>();
+        Assert.IsTrue(await objectStore.BucketExistsAsync(ArtifactBucket, CancellationToken.None).ConfigureAwait(false));
         await using var stream = new MemoryStream(workload.Payload, writable: false);
-        await minio.PutObjectAsync(new PutObjectArgs()
-            .WithBucket(ArtifactBucket)
-            .WithObject(workload.ObjectKey)
-            .WithStreamData(stream)
-            .WithObjectSize(workload.Payload.LongLength)
-                .WithContentType("application/octet-stream")).ConfigureAwait(false);
+        await objectStore.PutAsync(ArtifactBucket, workload.ObjectKey, stream, workload.Payload.LongLength,
+            "application/octet-stream", CancellationToken.None).ConfigureAwait(false);
     }
 
-    private static WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> CreateMinioFaultFactory(
+    private static WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> CreateObjectStoreFaultFactory(
         IntegrationTestFixture fixture,
-        TimedMinioOutageHandler outage)
+        TimedObjectStoreOutage outage)
         => fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
-            services.RemoveAll<IMinioClient>();
-            services.AddSingleton<IMinioClient>(_ => new MinioClient()
-                .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
-                .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
-                .WithHttpClient(new HttpClient(outage, disposeHandler: false), disposeHttpClient: true)
-                .Build());
-            ObjectStoreTestClient.Replace(services);
+            services.RemoveAll<IObjectStore>();
+            services.AddSingleton<IObjectStore>(outage);
         }));
 
     private static WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> CreateProtocolFactory(
@@ -1773,13 +1883,7 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 options.EnableSensitiveDataLogging();
                 options.EnableDetailedErrors();
             });
-            services.RemoveAll<IMinioClient>();
-            services.AddSingleton<IMinioClient>(_ => new MinioClient()
-                .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
-                .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
-                .WithHttpClient(new HttpClient(protocol.Http, disposeHandler: false), disposeHttpClient: true)
-                .Build());
-            ObjectStoreTestClient.Replace(services);
+
         }));
 
     private static WebApplicationFactory<HVO.SkyMonitor.LogicHost.Program> CreatePublicationFaultFactory(
@@ -1791,17 +1895,10 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 or PublicationBoundary.StagingWritten
                 or PublicationBoundary.CanonicalPublished)
             {
-                var handler = new PublicationFaultHandler(boundary) { InnerHandler = new SocketsHttpHandler() };
+                var handler = new PublicationFaultHandler(fixture.Factory.Services.GetRequiredService<IObjectStore>(), boundary);
                 services.AddSingleton(handler);
-                services.RemoveAll<IMinioClient>();
-                services.AddSingleton<IMinioClient>(provider => new MinioClient()
-                    .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
-                    .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
-                    .WithHttpClient(
-                        new HttpClient(provider.GetRequiredService<PublicationFaultHandler>(), disposeHandler: false),
-                        disposeHttpClient: true)
-                    .Build());
-                ObjectStoreTestClient.Replace(services);
+                services.RemoveAll<IObjectStore>();
+                services.AddSingleton<IObjectStore>(handler);
             }
             if (boundary == PublicationBoundary.CompletionPreCommit)
             {
@@ -1895,59 +1992,40 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         }
     }
 
-    private sealed class TimedMinioOutageHandler : DelegatingHandler
+    private sealed class TimedObjectStoreOutage(IObjectStore inner) : PerformanceObjectStoreDecorator(inner)
     {
         private int _armed;
         private long _injectedFailures;
-
         public long InjectedFailures => Interlocked.Read(ref _injectedFailures);
-
         public void Arm() => Volatile.Write(ref _armed, 1);
-
         public void Disarm() => Volatile.Write(ref _armed, 0);
 
-        protected override async Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken)
+        protected override async ValueTask BeforeOperationAsync(string operation, string key, CancellationToken cancellationToken)
         {
             if (Volatile.Read(ref _armed) == 1)
             {
                 await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
                 Interlocked.Increment(ref _injectedFailures);
-                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
-                {
-                    RequestMessage = request,
-                    Content = new StringContent(
-                        "<Error><Code>ServiceUnavailable</Code><Message>Injected worker-facing outage</Message></Error>",
-                        Encoding.UTF8,
-                        "application/xml")
-                };
+                throw new ObjectStoreException(ObjectStoreFailureKind.Transient, operation);
             }
-            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
         }
     }
 
     private sealed class WorkerProtocolCounter : IDisposable
     {
-        public WorkerProtocolCounter()
-        {
-            Http = new CountingHttpHandler { InnerHandler = new SocketsHttpHandler() };
-            Database = new CountingDbCommandInterceptor();
-        }
-
-        public CountingHttpHandler Http { get; }
-
-        public CountingDbCommandInterceptor Database { get; }
+        private readonly PerformanceObjectStoreMeasurements _objectStore = new();
+        public CountingDbCommandInterceptor Database { get; } = new();
 
         public void Clear()
         {
-            Http.Clear();
+            _objectStore.Start();
             Database.Clear();
         }
 
-        public ProtocolSnapshot Snapshot() => new(Database.Commands, Http.Snapshot());
+        public ProtocolSnapshot Snapshot()
+            => new(Database.Commands, new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0), _objectStore.Stop());
 
-        public void Dispose() => Http.Dispose();
+        public void Dispose() => _objectStore.Dispose();
     }
 
     private sealed class CountingDbCommandInterceptor : DbCommandInterceptor
@@ -1989,90 +2067,6 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         }
     }
 
-    private sealed class CountingHttpHandler : DelegatingHandler
-    {
-        private long _requests;
-        private long _head;
-        private long _get;
-        private long _put;
-        private long _copy;
-        private long _delete;
-        private long _requestBytes;
-        private long _responseBytes;
-        private long _unknownRequestLengths;
-        private long _unknownResponseLengths;
-
-        public void Clear()
-        {
-            Interlocked.Exchange(ref _requests, 0);
-            Interlocked.Exchange(ref _head, 0);
-            Interlocked.Exchange(ref _get, 0);
-            Interlocked.Exchange(ref _put, 0);
-            Interlocked.Exchange(ref _copy, 0);
-            Interlocked.Exchange(ref _delete, 0);
-            Interlocked.Exchange(ref _requestBytes, 0);
-            Interlocked.Exchange(ref _responseBytes, 0);
-            Interlocked.Exchange(ref _unknownRequestLengths, 0);
-            Interlocked.Exchange(ref _unknownResponseLengths, 0);
-        }
-
-        public ObjectProtocolSnapshot Snapshot()
-            => new(
-                Interlocked.Read(ref _requests),
-                Interlocked.Read(ref _head),
-                Interlocked.Read(ref _get),
-                Interlocked.Read(ref _put),
-                Interlocked.Read(ref _copy),
-                Interlocked.Read(ref _delete),
-                Interlocked.Read(ref _requestBytes),
-                Interlocked.Read(ref _responseBytes),
-                Interlocked.Read(ref _unknownRequestLengths),
-                Interlocked.Read(ref _unknownResponseLengths));
-
-        protected override async Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken)
-        {
-            Interlocked.Increment(ref _requests);
-            if (request.Method == HttpMethod.Head)
-            {
-                Interlocked.Increment(ref _head);
-            }
-            else if (request.Method == HttpMethod.Get)
-            {
-                Interlocked.Increment(ref _get);
-            }
-            else if (request.Method == HttpMethod.Put)
-            {
-                Interlocked.Increment(ref _put);
-                if (request.Headers.Contains("x-amz-copy-source"))
-                {
-                    Interlocked.Increment(ref _copy);
-                }
-            }
-            else if (request.Method == HttpMethod.Delete)
-            {
-                Interlocked.Increment(ref _delete);
-            }
-            RecordLength(request.Content?.Headers.ContentLength, ref _requestBytes, ref _unknownRequestLengths);
-            var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            RecordLength(response.Content.Headers.ContentLength, ref _responseBytes, ref _unknownResponseLengths);
-            return response;
-        }
-
-        private static void RecordLength(long? length, ref long bytes, ref long unknown)
-        {
-            if (length.HasValue)
-            {
-                Interlocked.Add(ref bytes, length.Value);
-            }
-            else
-            {
-                Interlocked.Increment(ref unknown);
-            }
-        }
-    }
-
     private enum PublicationBoundary
     {
         IntentCommitted,
@@ -2082,62 +2076,39 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         CompletionPostCommit
     }
 
-    private sealed class PublicationFaultHandler(PublicationBoundary boundary) : DelegatingHandler
+    private sealed class PublicationFaultHandler(IObjectStore inner, PublicationBoundary boundary) : PerformanceObjectStoreDecorator(inner)
     {
         private int _canonicalReads;
         private int _injected;
         private int _stagingCleanupSuppressed;
-
+        public bool Injected => Volatile.Read(ref _injected) == 1;
         public bool StagingCleanupSuppressed => Volatile.Read(ref _stagingCleanupSuppressed) == 1;
-
         public string? StagingObjectKey { get; private set; }
 
-        protected override Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken)
+        protected override ValueTask BeforeOperationAsync(string operation, string key, CancellationToken cancellationToken)
         {
-            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
-            var stagingPut = request.Method == HttpMethod.Put
-                && path.Contains("/staging/derivatives/", StringComparison.Ordinal)
-                && !request.Headers.Contains("x-amz-copy-source");
-            if (stagingPut)
-            {
-                StagingObjectKey = Uri.UnescapeDataString(path[(path.IndexOf("/staging/", StringComparison.Ordinal) + 1)..]);
-            }
-            var copy = request.Method == HttpMethod.Put && request.Headers.Contains("x-amz-copy-source");
-            var canonicalRead = (request.Method == HttpMethod.Head || request.Method == HttpMethod.Get)
-                && path.Contains("/derivatives/", StringComparison.Ordinal);
+            var stagingPut = operation == "put" && key.StartsWith("staging/derivatives/", StringComparison.Ordinal);
+            if (stagingPut) StagingObjectKey = key;
+            var canonicalRead = operation is "stat" or "read" && key.StartsWith("derivatives/", StringComparison.Ordinal);
             var shouldFail = boundary switch
             {
                 PublicationBoundary.IntentCommitted => stagingPut,
-                PublicationBoundary.StagingWritten => copy,
-                PublicationBoundary.CanonicalPublished => canonicalRead
-                    && Interlocked.Increment(ref _canonicalReads) >= 2,
+                PublicationBoundary.StagingWritten => operation == "copy",
+                PublicationBoundary.CanonicalPublished => canonicalRead && Interlocked.Increment(ref _canonicalReads) >= 2,
                 _ => false
             };
             if (boundary is PublicationBoundary.StagingWritten or PublicationBoundary.CanonicalPublished
-                && request.Method == HttpMethod.Delete
-                && path.Contains("/staging/derivatives/", StringComparison.Ordinal))
+                && operation == "delete" && key.StartsWith("staging/derivatives/", StringComparison.Ordinal))
             {
                 Volatile.Write(ref _stagingCleanupSuppressed, 1);
-                return Task.FromResult(CreateFailure(request));
+                throw new ObjectStoreException(ObjectStoreFailureKind.Transient, operation);
             }
             if (shouldFail && Interlocked.Exchange(ref _injected, 1) == 0)
             {
-                return Task.FromResult(CreateFailure(request));
+                throw new ObjectStoreException(ObjectStoreFailureKind.Transient, operation);
             }
-            return base.SendAsync(request, cancellationToken);
+            return ValueTask.CompletedTask;
         }
-
-        private static HttpResponseMessage CreateFailure(HttpRequestMessage request)
-            => new(HttpStatusCode.ServiceUnavailable)
-            {
-                RequestMessage = request,
-                Content = new StringContent(
-                    "<Error><Code>ServiceUnavailable</Code><Message>Injected publication fail-stop</Message></Error>",
-                    Encoding.UTF8,
-                    "application/xml")
-            };
     }
 
     private sealed class OffsetTimeProvider(TimeSpan offset) : TimeProvider
@@ -2392,10 +2363,20 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         private readonly long _managedHeapStart;
         private readonly long _gcCommittedStart;
         private readonly bool _retainRssDiagnostics;
+        private readonly bool _retainFailureEndpoints;
+        private readonly int _generation0Start;
+        private readonly int _generation1Start;
+        private readonly int _generation2Start;
         private readonly RssSampler _rss;
+        private ResourceEvidence? _evidence;
+        private long _managedHeapEnd;
+        private long _gcCommittedEnd;
+        private int _generation0End;
+        private int _generation1End;
+        private int _generation2End;
         private bool _stopped;
 
-        public ResourceSampler(bool retainRssDiagnostics = false)
+        public ResourceSampler(bool retainRssDiagnostics = false, bool retainFailureEndpoints = false)
         {
             _process.Refresh();
             _cpuStart = _process.TotalProcessorTime;
@@ -2403,11 +2384,19 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             _managedHeapStart = GC.GetTotalMemory(forceFullCollection: false);
             _gcCommittedStart = GC.GetGCMemoryInfo().TotalCommittedBytes;
             _retainRssDiagnostics = retainRssDiagnostics;
+            _retainFailureEndpoints = retainFailureEndpoints;
+            _generation0Start = retainFailureEndpoints ? GC.CollectionCount(0) : 0;
+            _generation1Start = retainFailureEndpoints ? GC.CollectionCount(1) : 0;
+            _generation2Start = retainFailureEndpoints ? GC.CollectionCount(2) : 0;
             _rss = new RssSampler(_process.WorkingSet64);
         }
 
         public async Task<ResourceEvidence> StopAsync()
         {
+            if (_evidence is not null)
+            {
+                return _evidence;
+            }
             _stopped = true;
             var peak = await _rss.StopAsync().ConfigureAwait(false);
             var timedRssSamples = _rss.Snapshot();
@@ -2427,7 +2416,12 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
             }
             _process.Refresh();
             var gcInfo = GC.GetGCMemoryInfo();
-            return new ResourceEvidence(
+            _managedHeapEnd = _retainRssDiagnostics || _retainFailureEndpoints ? GC.GetTotalMemory(forceFullCollection: false) : 0;
+            _gcCommittedEnd = gcInfo.TotalCommittedBytes;
+            _generation0End = _retainFailureEndpoints ? GC.CollectionCount(0) : 0;
+            _generation1End = _retainFailureEndpoints ? GC.CollectionCount(1) : 0;
+            _generation2End = _retainFailureEndpoints ? GC.CollectionCount(2) : 0;
+            _evidence = new ResourceEvidence(
                 (_process.TotalProcessorTime - _cpuStart).TotalMilliseconds,
                 Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - _allocatedStart),
                 _rss.Initial,
@@ -2439,11 +2433,46 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
                 _retainRssDiagnostics
                     ? new ResourceDiagnosticEvidence(
                         _managedHeapStart,
-                        GC.GetTotalMemory(forceFullCollection: false),
+                        _managedHeapEnd,
                         _gcCommittedStart,
-                        gcInfo.TotalCommittedBytes,
+                        _gcCommittedEnd,
                         timedRssSamples)
                     : null);
+            return _evidence;
+        }
+
+        public object CreateFailureDiagnostic()
+        {
+            if (_evidence is null)
+            {
+                throw new InvalidOperationException("Diagnostics require stopped sampling.");
+            }
+            var retained = _rss.DiagnosticSnapshot();
+            return new
+            {
+                ManagedHeapStartBytes = _managedHeapStart,
+                ManagedHeapEndBytes = _managedHeapEnd,
+                GcCommittedStartBytes = _gcCommittedStart,
+                GcCommittedEndBytes = _gcCommittedEnd,
+                Generation0Collections = _generation0End - _generation0Start,
+                Generation1Collections = _generation1End - _generation1Start,
+                Generation2Collections = _generation2End - _generation2Start,
+                Sampling = new
+                {
+                    IntervalMilliseconds = 10,
+                    Scope = "whole-current-testhost-process-WorkingSet64",
+                    Thirds = "sample-count-thirds-lower-median",
+                    _rss.StartedTimestamp,
+                    Stopwatch.Frequency,
+                    ObservedSamples = _evidence.RssSamples,
+                    RetainedSamples = retained.Length,
+                    Truncated = retained.Length != _evidence.RssSamples,
+                    Retention = "first-samples-in-original-order; no-resampling; medians-use-all-observed-samples",
+                    P5TrialDiagnostics.MaximumSamples,
+                    P5TrialDiagnostics.MaximumBytes
+                },
+                RssSamples = retained
+            };
         }
 
         public void Dispose()
@@ -2475,8 +2504,10 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
         }
 
         public long Initial { get; }
+        public long StartedTimestamp => _started;
 
         public RssSample[] Snapshot() => _samples.ToArray();
+        public RssSample[] DiagnosticSnapshot() => _samples.Take(P5TrialDiagnostics.MaximumSamples).ToArray();
 
         public async Task<long> StopAsync()
         {
@@ -2689,7 +2720,8 @@ public sealed class LogicHostDerivativeWorkerPerformanceTests
 
     private sealed record ProtocolSnapshot(
         long SqlCommands,
-        ObjectProtocolSnapshot Minio);
+        ObjectProtocolSnapshot Minio,
+        IReadOnlyDictionary<string, long> ObjectStore);
 
     private sealed record ObjectProtocolSnapshot(
         long Requests,

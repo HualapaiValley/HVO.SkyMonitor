@@ -1,0 +1,2927 @@
+{
+  "schema": "virtual-astrometry-final-qualification-evidence-v1",
+  "issue": 1106,
+  "epic": 1098,
+  "archive": {
+    "name": "issue-1106-evidence-9061c8f7.tar.zst",
+    "sha256": "f59e561d97c8b9d20fe9f28e843161a911514b67a77de8d199560b0d53588459",
+    "bytes": 174409964,
+    "note": "Complete pack (index, TRX, test logs, build log, reports). Retained by the operator outside the repository; not committed because of size."
+  },
+  "indexSha256": "33e7f977128b79cc4df5299dcbe344b06a659baa15b2d11a21c02873e8dc9aa0",
+  "index": {
+    "schema": "virtual-astrometry-final-qualification-index-v1",
+    "issue": 1106,
+    "revision": "9061c8f7906bebc214268f59c79773f01c46a129",
+    "manifestSha256": "b56fa6d045aa72f99b5e4c7256c8138298fb8a073018b4534670f06ff19db76a",
+    "status": "passed",
+    "host": {
+      "kernel": "Linux 6.8.0-142-generic",
+      "cpu": "Intel(R) Core(TM) i9-14900K",
+      "logicalProcessors": 12,
+      "memTotal": "49159136 kB",
+      "sdk": "10.0.401"
+    },
+    "runs": [
+      {
+        "id": "catalog-selection",
+        "name": "catalog-selection",
+        "workload": null,
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:04:14Z",
+        "finishedUtc": "2026-10-02T08:04:16Z",
+        "elapsedSeconds": 2,
+        "exitCode": 0,
+        "expectedPassed": 1,
+        "trx": {
+          "sha256": "8b92d1478aff0ffdec687e2842fc0e51c5239ed29f2fccff1755213eac75ed67",
+          "total": "1",
+          "executed": "1",
+          "passed": "1",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "astrometric-catalog-resources.json",
+            "sha256": "ecc5a6324c387ba03b251df8f1368a64f6abe8524943dea97456c5de561b4b43",
+            "bytes": 24283
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/AstrometricCatalogQualificationTests.cs",
+            "blob": "2f73b973422bf4df7a9f1b25abfa9e71480111d2"
+          }
+        ]
+      },
+      {
+        "id": "shared-solver-full-frame",
+        "name": "shared-solver-full-frame",
+        "workload": null,
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:04:16Z",
+        "finishedUtc": "2026-10-02T08:04:33Z",
+        "elapsedSeconds": 17,
+        "exitCode": 0,
+        "expectedPassed": 2,
+        "trx": {
+          "sha256": "2aebbbb19d96b4e282b73a4bdce51a85778e8c74620794783a7acecb050fc3ec",
+          "total": "2",
+          "executed": "2",
+          "passed": "2",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "astrometry-1936x1216-mono.json",
+            "sha256": "6657cdb335c6ea9e44ac252e4583dda1a15d38db280087754898c0636f20b2e7",
+            "bytes": 21909
+          },
+          {
+            "report": "astrometry-3096x2080-color.json",
+            "sha256": "e4103180969d3de2ed9e47ca7cb6a0b73d5e2ee42e4bba472359c748a2de103f",
+            "bytes": 22030
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.Astronomy.Tests/AstrometricPerformanceTests.cs",
+            "blob": "c678000279c9af04c65437286de3ddd700f91533"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          }
+        ]
+      },
+      {
+        "id": "actual-pixels-blind-warm-readouts",
+        "name": "actual-pixels-blind-warm-readouts",
+        "workload": null,
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:04:33Z",
+        "finishedUtc": "2026-10-02T08:06:54Z",
+        "elapsedSeconds": 141,
+        "exitCode": 0,
+        "expectedPassed": 1,
+        "trx": {
+          "sha256": "12b1a4efa6845d2b8a01d00e2f9d23bf82823359855625f435c450cd3c490a49",
+          "total": "1",
+          "executed": "1",
+          "passed": "1",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "held-out-stationary-baseline/virtual-astrometry-pixels.json",
+            "sha256": "dcd3363428c6ce99a5f8243197b403075b10c1bd99aa2cbf83f6a4be647d14b4",
+            "bytes": 59197032
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryQualificationTests.cs",
+            "blob": "1f5cb58bf8913f29835e56905bdf6db6d5048da4"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          }
+        ]
+      },
+      {
+        "id": "actual-configured-resolution-resources",
+        "name": "actual-configured-resolution-resources",
+        "workload": null,
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:06:54Z",
+        "finishedUtc": "2026-10-02T08:07:50Z",
+        "elapsedSeconds": 56,
+        "exitCode": 0,
+        "expectedPassed": 1,
+        "trx": {
+          "sha256": "5d4a7e2469d7902c6cf4753960c3b3bd31089d19562d18459e2f31f52e079b85",
+          "total": "1",
+          "executed": "1",
+          "passed": "1",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "virtual-astrometry-resources.json",
+            "sha256": "4e15293c656048d50da96ba7fe869e115cbcd38fa3c8a93070c4725c6f0fa501",
+            "bytes": 160152
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryResourceTests.cs",
+            "blob": "edd0d9dd4b45fe920ccdcaa786dfd43f4bca2541"
+          }
+        ]
+      },
+      {
+        "id": "stellar-exposure",
+        "name": "stellar-exposure-mono-short",
+        "workload": "mono-short",
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:07:50Z",
+        "finishedUtc": "2026-10-02T08:07:59Z",
+        "elapsedSeconds": 9,
+        "exitCode": 0,
+        "expectedPassed": 1,
+        "trx": {
+          "sha256": "8211ce543927990cf5499ddd34304b44c678db9a879146ca000f06c8859effe3",
+          "total": "1",
+          "executed": "1",
+          "passed": "1",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "stellar-exposure-after-mono-short.json",
+            "sha256": "657510257efede319615668dabee0bb249d32911c8fa94eb6ef2239e8455987f",
+            "bytes": 1281106
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualStellarExposureResourceTests.cs",
+            "blob": "dafa64ed6af16ff9b08b46176316960dddd5faab"
+          }
+        ]
+      },
+      {
+        "id": "stellar-exposure",
+        "name": "stellar-exposure-mono-long",
+        "workload": "mono-long",
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:07:59Z",
+        "finishedUtc": "2026-10-02T08:08:12Z",
+        "elapsedSeconds": 13,
+        "exitCode": 0,
+        "expectedPassed": 1,
+        "trx": {
+          "sha256": "10654de4d02496ec8f716992b423eeacf74b5f3bb71e6a3f5cec2f56e809fdf8",
+          "total": "1",
+          "executed": "1",
+          "passed": "1",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "stellar-exposure-after-mono-long.json",
+            "sha256": "0c331f2cd4d7d7eb434a9bafc97d6ad9aece6e812ef9e16817a39f91da5026ce",
+            "bytes": 25260705
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualStellarExposureResourceTests.cs",
+            "blob": "dafa64ed6af16ff9b08b46176316960dddd5faab"
+          }
+        ]
+      },
+      {
+        "id": "stellar-exposure",
+        "name": "stellar-exposure-mono-day",
+        "workload": "mono-day",
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:08:12Z",
+        "finishedUtc": "2026-10-02T08:08:28Z",
+        "elapsedSeconds": 16,
+        "exitCode": 0,
+        "expectedPassed": 1,
+        "trx": {
+          "sha256": "1e01552b82c46b19b42b61e4175d2e004a3112022fedafe04218d35a204ba9b5",
+          "total": "1",
+          "executed": "1",
+          "passed": "1",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "stellar-exposure-after-mono-day.json",
+            "sha256": "e7d21aabf928588e7d4f2e3dfb2f135116dc9e64f71f9a1995ff183635e02fc9",
+            "bytes": 3477566
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualStellarExposureResourceTests.cs",
+            "blob": "dafa64ed6af16ff9b08b46176316960dddd5faab"
+          }
+        ]
+      },
+      {
+        "id": "stellar-exposure",
+        "name": "stellar-exposure-cfa-short",
+        "workload": "cfa-short",
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:08:28Z",
+        "finishedUtc": "2026-10-02T08:08:52Z",
+        "elapsedSeconds": 24,
+        "exitCode": 0,
+        "expectedPassed": 1,
+        "trx": {
+          "sha256": "d4a565504d574ee0e6ec9436ab9d330379025536774ccd93c7f65ed80be61679",
+          "total": "1",
+          "executed": "1",
+          "passed": "1",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "stellar-exposure-after-cfa-short.json",
+            "sha256": "e15494dd0b5cb6ad1aabf8a5783f4bf52b9410e1da1a3d3a12b32ac27d3ad524",
+            "bytes": 2890711
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualStellarExposureResourceTests.cs",
+            "blob": "dafa64ed6af16ff9b08b46176316960dddd5faab"
+          }
+        ]
+      },
+      {
+        "id": "stellar-exposure",
+        "name": "stellar-exposure-cfa-long",
+        "workload": "cfa-long",
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:08:52Z",
+        "finishedUtc": "2026-10-02T08:09:30Z",
+        "elapsedSeconds": 38,
+        "exitCode": 0,
+        "expectedPassed": 1,
+        "trx": {
+          "sha256": "6e78dce9fc0a63d5271dce9cf033c0ef347b8d7619644b767704f13e29628190",
+          "total": "1",
+          "executed": "1",
+          "passed": "1",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "stellar-exposure-after-cfa-long.json",
+            "sha256": "8b3e1b933513821c93aaf31c4aac0755e5a4fa34e766a1ec627ea64b11476f1a",
+            "bytes": 25251979
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualStellarExposureResourceTests.cs",
+            "blob": "dafa64ed6af16ff9b08b46176316960dddd5faab"
+          }
+        ]
+      },
+      {
+        "id": "stellar-exposure",
+        "name": "stellar-exposure-cfa-day",
+        "workload": "cfa-day",
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:09:30Z",
+        "finishedUtc": "2026-10-02T08:10:14Z",
+        "elapsedSeconds": 44,
+        "exitCode": 0,
+        "expectedPassed": 1,
+        "trx": {
+          "sha256": "35257005318620dc39c4cd7a22b87aeefbb30797a4acde5ee92a201c06e5b13b",
+          "total": "1",
+          "executed": "1",
+          "passed": "1",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "stellar-exposure-after-cfa-day.json",
+            "sha256": "5ada1c3209ec8aa79b13bc938058a351cc07eabb5d2db5c3b2c9713ae94aac1d",
+            "bytes": 7422592
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualStellarExposureResourceTests.cs",
+            "blob": "dafa64ed6af16ff9b08b46176316960dddd5faab"
+          }
+        ]
+      },
+      {
+        "id": "stellar-exposure",
+        "name": "stellar-exposure-asi676-short",
+        "workload": "asi676-short",
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:10:14Z",
+        "finishedUtc": "2026-10-02T08:10:54Z",
+        "elapsedSeconds": 40,
+        "exitCode": 0,
+        "expectedPassed": 1,
+        "trx": {
+          "sha256": "6c459594492fb8cd638b734ed6ddda228486b2e9f015fb1fd65a9a1080a0c9a1",
+          "total": "1",
+          "executed": "1",
+          "passed": "1",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "stellar-exposure-after-asi676-short.json",
+            "sha256": "16b05769b09694a2905f6c6b1850f39457d3009026d4fc050b3e12fcd2174f20",
+            "bytes": 2609838
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualStellarExposureResourceTests.cs",
+            "blob": "dafa64ed6af16ff9b08b46176316960dddd5faab"
+          }
+        ]
+      },
+      {
+        "id": "stellar-exposure",
+        "name": "stellar-exposure-asi676-long",
+        "workload": "asi676-long",
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:10:54Z",
+        "finishedUtc": "2026-10-02T08:11:57Z",
+        "elapsedSeconds": 63,
+        "exitCode": 0,
+        "expectedPassed": 1,
+        "trx": {
+          "sha256": "ca10434f80ef705c66a0808728fca3d991d828431dddf6fa71930aebdfd231a2",
+          "total": "1",
+          "executed": "1",
+          "passed": "1",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "stellar-exposure-after-asi676-long.json",
+            "sha256": "8ef2c0ef9adffaa0fd7040a7766f571a0ed7c1e207c71f61d684a104ceb547d6",
+            "bytes": 23963496
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualStellarExposureResourceTests.cs",
+            "blob": "dafa64ed6af16ff9b08b46176316960dddd5faab"
+          }
+        ]
+      },
+      {
+        "id": "stellar-exposure",
+        "name": "stellar-exposure-asi676-day",
+        "workload": "asi676-day",
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:11:57Z",
+        "finishedUtc": "2026-10-02T08:13:09Z",
+        "elapsedSeconds": 72,
+        "exitCode": 0,
+        "expectedPassed": 1,
+        "trx": {
+          "sha256": "3fd56a94b6b6ae910f371ef4a7c39264550ada4b6c683c792e53b26ead3d0d9d",
+          "total": "1",
+          "executed": "1",
+          "passed": "1",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "stellar-exposure-after-asi676-day.json",
+            "sha256": "43e2b80809e8a6daebaa08d607b8eda8f756e86771dc5b761aceb692e71f0bf0",
+            "bytes": 9403876
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualStellarExposureResourceTests.cs",
+            "blob": "dafa64ed6af16ff9b08b46176316960dddd5faab"
+          }
+        ]
+      },
+      {
+        "id": "measured-stars-held-out",
+        "name": "measured-stars-held-out",
+        "workload": null,
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:13:09Z",
+        "finishedUtc": "2026-10-02T08:14:56Z",
+        "elapsedSeconds": 107,
+        "exitCode": 0,
+        "expectedPassed": 1,
+        "trx": {
+          "sha256": "b67a9ef2c07815d8f961df383df0a40d8e6170cddf78f267c984e6f70ac8f800",
+          "total": "1",
+          "executed": "1",
+          "passed": "1",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "measured-stars-held-out/virtual-measured-stars.json",
+            "sha256": "bcdc63f1ef7b72cdfbfb8c006bbe94635e96a23f5edc0e293569f3d11a375925",
+            "bytes": 244381
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualMeasuredStarQualificationTests.cs",
+            "blob": "12c21caa4601087f3027472d84d8d49d292a27a2"
+          }
+        ]
+      },
+      {
+        "id": "optical-calibration-held-out",
+        "name": "optical-calibration-held-out",
+        "workload": null,
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:14:56Z",
+        "finishedUtc": "2026-10-02T08:16:59Z",
+        "elapsedSeconds": 123,
+        "exitCode": 0,
+        "expectedPassed": 1,
+        "trx": {
+          "sha256": "8946db7100728f38480d8718e053ea7fa5732bca6225beaf8864f0cbb949568b",
+          "total": "1",
+          "executed": "1",
+          "passed": "1",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "optical-calibration-held-out/virtual-optical-calibration.json",
+            "sha256": "b14da57453362b484fc20eff17cb1be8ba59fb1254cac6ed4dc661ae58dbe319",
+            "bytes": 2090216
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualOpticalCalibrationQualificationTests.cs",
+            "blob": "65f6650842737294f1d8a41ae1c9fd3bcbc7af54"
+          }
+        ]
+      },
+      {
+        "id": "astrometric-uncertainty-held-out",
+        "name": "astrometric-uncertainty-held-out",
+        "workload": null,
+        "status": "passed",
+        "startedUtc": "2026-10-02T08:16:59Z",
+        "finishedUtc": "2026-10-02T08:22:30Z",
+        "elapsedSeconds": 331,
+        "exitCode": 0,
+        "expectedPassed": 1,
+        "trx": {
+          "sha256": "adf0ba3799f33616f6e5ee65e867175160e4e53c1ce6270091483ec55dc40bf7",
+          "total": "1",
+          "executed": "1",
+          "passed": "1",
+          "failed": "0"
+        },
+        "reports": [
+          {
+            "report": "uncertainty-held-out/virtual-astrometric-uncertainty.json",
+            "sha256": "0af875ae6fe59609ae9b3e4091cb162c2c16cc19d80eb41e5821138a29a9044a",
+            "bytes": 672415
+          }
+        ],
+        "harnessSources": [
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometricUncertaintyQualificationTests.cs",
+            "blob": "7781527fe2d9247130a93d5910a8a5acd3084702"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryFixture.cs",
+            "blob": "372b51d75fa61747937ebd7f4c5ea81d25316144"
+          },
+          {
+            "path": "tests/HVO.SkyMonitor.CameraAgent.Tests/VirtualAstrometryReference.cs",
+            "blob": "8299d1fc56ab0246cb02c94af019b8d91c3ca0b1"
+          }
+        ]
+      }
+    ]
+  },
+  "metricsExtractor": "docs/validation/issue-1106-metrics.sh",
+  "metrics": {
+    "schema": "issue-1106-extracted-metrics-v1",
+    "index": {
+      "revision": "9061c8f7906bebc214268f59c79773f01c46a129",
+      "manifestSha256": "b56fa6d045aa72f99b5e4c7256c8138298fb8a073018b4534670f06ff19db76a",
+      "status": "passed",
+      "host": {
+        "kernel": "Linux 6.8.0-142-generic",
+        "cpu": "Intel(R) Core(TM) i9-14900K",
+        "logicalProcessors": 12,
+        "memTotal": "49159136 kB",
+        "sdk": "10.0.401"
+      },
+      "runs": [
+        {
+          "id": "catalog-selection",
+          "workload": null,
+          "status": "passed",
+          "elapsedSeconds": 2,
+          "trx": {
+            "total": "1",
+            "passed": "1",
+            "failed": "0"
+          }
+        },
+        {
+          "id": "shared-solver-full-frame",
+          "workload": null,
+          "status": "passed",
+          "elapsedSeconds": 17,
+          "trx": {
+            "total": "2",
+            "passed": "2",
+            "failed": "0"
+          }
+        },
+        {
+          "id": "actual-pixels-blind-warm-readouts",
+          "workload": null,
+          "status": "passed",
+          "elapsedSeconds": 141,
+          "trx": {
+            "total": "1",
+            "passed": "1",
+            "failed": "0"
+          }
+        },
+        {
+          "id": "actual-configured-resolution-resources",
+          "workload": null,
+          "status": "passed",
+          "elapsedSeconds": 56,
+          "trx": {
+            "total": "1",
+            "passed": "1",
+            "failed": "0"
+          }
+        },
+        {
+          "id": "stellar-exposure",
+          "workload": "mono-short",
+          "status": "passed",
+          "elapsedSeconds": 9,
+          "trx": {
+            "total": "1",
+            "passed": "1",
+            "failed": "0"
+          }
+        },
+        {
+          "id": "stellar-exposure",
+          "workload": "mono-long",
+          "status": "passed",
+          "elapsedSeconds": 13,
+          "trx": {
+            "total": "1",
+            "passed": "1",
+            "failed": "0"
+          }
+        },
+        {
+          "id": "stellar-exposure",
+          "workload": "mono-day",
+          "status": "passed",
+          "elapsedSeconds": 16,
+          "trx": {
+            "total": "1",
+            "passed": "1",
+            "failed": "0"
+          }
+        },
+        {
+          "id": "stellar-exposure",
+          "workload": "cfa-short",
+          "status": "passed",
+          "elapsedSeconds": 24,
+          "trx": {
+            "total": "1",
+            "passed": "1",
+            "failed": "0"
+          }
+        },
+        {
+          "id": "stellar-exposure",
+          "workload": "cfa-long",
+          "status": "passed",
+          "elapsedSeconds": 38,
+          "trx": {
+            "total": "1",
+            "passed": "1",
+            "failed": "0"
+          }
+        },
+        {
+          "id": "stellar-exposure",
+          "workload": "cfa-day",
+          "status": "passed",
+          "elapsedSeconds": 44,
+          "trx": {
+            "total": "1",
+            "passed": "1",
+            "failed": "0"
+          }
+        },
+        {
+          "id": "stellar-exposure",
+          "workload": "asi676-short",
+          "status": "passed",
+          "elapsedSeconds": 40,
+          "trx": {
+            "total": "1",
+            "passed": "1",
+            "failed": "0"
+          }
+        },
+        {
+          "id": "stellar-exposure",
+          "workload": "asi676-long",
+          "status": "passed",
+          "elapsedSeconds": 63,
+          "trx": {
+            "total": "1",
+            "passed": "1",
+            "failed": "0"
+          }
+        },
+        {
+          "id": "stellar-exposure",
+          "workload": "asi676-day",
+          "status": "passed",
+          "elapsedSeconds": 72,
+          "trx": {
+            "total": "1",
+            "passed": "1",
+            "failed": "0"
+          }
+        },
+        {
+          "id": "measured-stars-held-out",
+          "workload": null,
+          "status": "passed",
+          "elapsedSeconds": 107,
+          "trx": {
+            "total": "1",
+            "passed": "1",
+            "failed": "0"
+          }
+        },
+        {
+          "id": "optical-calibration-held-out",
+          "workload": null,
+          "status": "passed",
+          "elapsedSeconds": 123,
+          "trx": {
+            "total": "1",
+            "passed": "1",
+            "failed": "0"
+          }
+        },
+        {
+          "id": "astrometric-uncertainty-held-out",
+          "workload": null,
+          "status": "passed",
+          "elapsedSeconds": 331,
+          "trx": {
+            "total": "1",
+            "passed": "1",
+            "failed": "0"
+          }
+        }
+      ]
+    },
+    "catalog-selection": {
+      "reportSha256": "ecc5a6324c387ba03b251df8f1368a64f6abe8524943dea97456c5de561b4b43",
+      "schema": "astrometric-catalog-resources-v1",
+      "revision": "9061c8f7906bebc214268f59c79773f01c46a129",
+      "CatalogId": "hyg-v42-production",
+      "SnapshotVersion": "hyg-v4.2-p3-s2-r1",
+      "DatabaseSha256": "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2",
+      "SchemaVersion": "2",
+      "PreprocessingVersion": "3",
+      "RowCount": 119625,
+      "startupMs": 357.3007,
+      "startupAllocatedBytes": 44577032,
+      "warmup": 5,
+      "measured": 30,
+      "concurrency": 1,
+      "maximumEntries": 2500,
+      "tieredCompilation": "0",
+      "runtime": "10.0.12",
+      "host": "home-dev-01",
+      "os": "Ubuntu 24.04.5 LTS",
+      "reports": [
+        {
+          "route": "baseline-full-query",
+          "magnitude": 5,
+          "entriesReturned": 1637,
+          "complete": true,
+          "SelectionIdentitySha256": "ce81fa2e7cc859725cb105bc1b2167cf6fd286de2419c5aa1d282c19fa274cb8",
+          "medianMs": 1.3202,
+          "p95Ms": 2.7111,
+          "sampleMaxMs": 8.0843,
+          "medianAllocatedBytes": 433320,
+          "cpuMs": 67.229,
+          "operationsPerSecond": 558.502172,
+          "processPeakWorkingSetBytes": 144556032
+        },
+        {
+          "route": "bounded-adapter",
+          "magnitude": 5,
+          "entriesReturned": 1637,
+          "complete": true,
+          "SelectionIdentitySha256": "ce81fa2e7cc859725cb105bc1b2167cf6fd286de2419c5aa1d282c19fa274cb8",
+          "medianMs": 1.2654,
+          "p95Ms": 1.3236,
+          "sampleMaxMs": 2.318,
+          "medianAllocatedBytes": 420304,
+          "cpuMs": 39.388,
+          "operationsPerSecond": 767.012334,
+          "processPeakWorkingSetBytes": 151678976
+        },
+        {
+          "route": "baseline-full-query",
+          "magnitude": 5.5,
+          "entriesReturned": 2865,
+          "complete": false,
+          "SelectionIdentitySha256": "6c03f47a460e6a5228a01c54b7e1f5610319ae06b9b1fbb1d635bf9bd3314920",
+          "medianMs": 1.9499,
+          "p95Ms": 2.0227,
+          "sampleMaxMs": 2.6319,
+          "medianAllocatedBytes": 708264,
+          "cpuMs": 59.435,
+          "operationsPerSecond": 508.556462,
+          "processPeakWorkingSetBytes": 153198592
+        },
+        {
+          "route": "bounded-adapter",
+          "magnitude": 5.5,
+          "entriesReturned": 2865,
+          "complete": false,
+          "SelectionIdentitySha256": "6c03f47a460e6a5228a01c54b7e1f5610319ae06b9b1fbb1d635bf9bd3314920",
+          "medianMs": 2.3663,
+          "p95Ms": 3.4909,
+          "sampleMaxMs": 3.5396,
+          "medianAllocatedBytes": 682504,
+          "cpuMs": 90.969,
+          "operationsPerSecond": 384.219343,
+          "processPeakWorkingSetBytes": 155926528
+        },
+        {
+          "route": "baseline-full-query",
+          "magnitude": 7,
+          "entriesReturned": 15598,
+          "complete": false,
+          "SelectionIdentitySha256": "72bfb5f901743a11375aa85767023d0f5bde6c38c8f1fb3cba528dfbc3a87723",
+          "medianMs": 2.01365,
+          "p95Ms": 2.3965,
+          "sampleMaxMs": 2.6615,
+          "medianAllocatedBytes": 911992,
+          "cpuMs": 70.103,
+          "operationsPerSecond": 481.0915,
+          "processPeakWorkingSetBytes": 155258880
+        },
+        {
+          "route": "bounded-adapter",
+          "magnitude": 7,
+          "entriesReturned": 15598,
+          "complete": false,
+          "SelectionIdentitySha256": "72bfb5f901743a11375aa85767023d0f5bde6c38c8f1fb3cba528dfbc3a87723",
+          "medianMs": 1.9188,
+          "p95Ms": 2.4695,
+          "sampleMaxMs": 2.5222,
+          "medianAllocatedBytes": 682504,
+          "cpuMs": 62.999,
+          "operationsPerSecond": 510.840025,
+          "processPeakWorkingSetBytes": 156205056
+        }
+      ],
+      "peakWorkingSetBytes": 156205056
+    },
+    "shared-solver-full-frame": [
+      {
+        "file": "astrometry-1936x1216-mono.json",
+        "reportSha256": "6657cdb335c6ea9e44ac252e4583dda1a15d38db280087754898c0636f20b2e7",
+        "schema": "shared-astrometry-resource-v1",
+        "width": 1936,
+        "height": 1216,
+        "color": false,
+        "seconds": 20,
+        "warmup": 5,
+        "measured": 30,
+        "concurrency": 1,
+        "runtime": "10.0.12",
+        "os": "Ubuntu 24.04.5 LTS",
+        "coldTotalMs": 1005.4962,
+        "coldDetectionMs": 46.0547,
+        "coldFitMs": 914.3674,
+        "coldAllocatedBytes": 870369344,
+        "warmTotalMedianMs": 38.8017,
+        "warmTotalP95Ms": 52.2558,
+        "warmDetectionMedianMs": 37.3935,
+        "warmDetectionP95Ms": 49.7954,
+        "warmFitMedianMs": 1.1278,
+        "warmFitP95Ms": 2.1732,
+        "warmAllocatedMedianBytes": 8914952,
+        "processPeakWorkingSetBytes": 503234560,
+        "cpuMilliseconds": 1214.247,
+        "processedFramesPerSecond": 24.880687,
+        "warmTotalMaxMs": 52.4437,
+        "quality": {
+          "scoreMin": 95.5,
+          "fittingRmsMax": 0.016908,
+          "verificationRmsMax": 0.016668,
+          "inlierMin": 173
+        }
+      },
+      {
+        "file": "astrometry-3096x2080-color.json",
+        "reportSha256": "e4103180969d3de2ed9e47ca7cb6a0b73d5e2ee42e4bba472359c748a2de103f",
+        "schema": "shared-astrometry-resource-v1",
+        "width": 3096,
+        "height": 2080,
+        "color": true,
+        "seconds": 60,
+        "warmup": 5,
+        "measured": 30,
+        "concurrency": 1,
+        "runtime": "10.0.12",
+        "os": "Ubuntu 24.04.5 LTS",
+        "coldTotalMs": 1119.7177,
+        "coldDetectionMs": 314.2857,
+        "coldFitMs": 805.2127,
+        "coldAllocatedBytes": 837007720,
+        "warmTotalMedianMs": 304.5495,
+        "warmTotalP95Ms": 415.8598,
+        "warmDetectionMedianMs": 303.1043,
+        "warmDetectionP95Ms": 414.4348,
+        "warmFitMedianMs": 1.1806,
+        "warmFitP95Ms": 2.2585,
+        "warmAllocatedMedianBytes": 34427632,
+        "processPeakWorkingSetBytes": 1160044544,
+        "cpuMilliseconds": 9659.37,
+        "processedFramesPerSecond": 3.116719,
+        "warmTotalMaxMs": 438.3674,
+        "quality": {
+          "scoreMin": 99.9,
+          "fittingRmsMax": 0.015063,
+          "verificationRmsMax": 0.013227,
+          "inlierMin": 201
+        }
+      }
+    ],
+    "actual-pixels-blind-warm-readouts": {
+      "reportSha256": "dcd3363428c6ce99a5f8243197b403075b10c1bd99aa2cbf83f6a4be647d14b4",
+      "schema": "virtual-astrometry-pixels-v2",
+      "partition": "held-out-stationary-baseline",
+      "revision": "9061c8f7906bebc214268f59c79773f01c46a129",
+      "databaseSha256": "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2",
+      "rowCount": 119625,
+      "identitySha256": "e29a02ef8239eff08716fef1a30510f326e4a526cfbb5c2a1cd81065ef25b60b",
+      "selectionIdentitySha256": "ce81fa2e7cc859725cb105bc1b2167cf6fd286de2419c5aa1d282c19fa274cb8",
+      "finalExposureQualification": "pending-522-1106",
+      "logicalExposurePolicy": "requested-start-plus-applied-exposure-v1; reported callbacks retained separately",
+      "detectorValidity": "stored saturation and declared nominal aperture, no projected-star mask",
+      "mappingInteriorMarginPixels": 12,
+      "reportRows": 90,
+      "failures": 0,
+      "byMode": {
+        "Blind": {
+          "n": 30,
+          "status": {
+            "Accepted": 30
+          },
+          "elapsedMs": {
+            "n": 30,
+            "median": 2303.4781,
+            "p95": 3025.1284,
+            "max": 3539.9753
+          },
+          "hypothesesMax": 21065,
+          "budgetExhausted": 0,
+          "precisionMin": 1,
+          "missingMappingsSum": 0,
+          "poseErrorDegMax": 0.010275,
+          "focalRelativeErrorMax": 0.00008029293089961698,
+          "withheldRmsPxMax": 0.029942,
+          "withheldP95PxMax": 0.03672,
+          "withheldCountMin": 96,
+          "fittingRmsPxMax": 0.18915,
+          "verificationRmsPxMax": 0.183331,
+          "qualityScoreMin": 77.3,
+          "widthCoverageMin": 0.555057,
+          "heightCoverageMin": 0.888081
+        },
+        "Warm": {
+          "n": 60,
+          "status": {
+            "Accepted": 60
+          },
+          "elapsedMs": {
+            "n": 60,
+            "median": 5.9775,
+            "p95": 10.3974,
+            "max": 12.9496
+          },
+          "hypothesesMax": 0,
+          "budgetExhausted": 0,
+          "precisionMin": 1,
+          "missingMappingsSum": 0,
+          "poseErrorDegMax": 0.009844,
+          "focalRelativeErrorMax": 0.00012067204164778467,
+          "withheldRmsPxMax": 0.033038,
+          "withheldP95PxMax": 0.055577,
+          "withheldCountMin": 97,
+          "fittingRmsPxMax": 0.210932,
+          "verificationRmsPxMax": 0.193662,
+          "qualityScoreMin": 76.6,
+          "widthCoverageMin": 0.555347,
+          "heightCoverageMin": 0.888511
+        }
+      },
+      "byName": {
+        "cfa-derived-phase-01": {
+          "n": 9,
+          "captureMs": {
+            "n": 9,
+            "median": 753.1475,
+            "p95": 997.8295,
+            "max": 997.8295
+          },
+          "measurementMs": {
+            "n": 9,
+            "median": 677.1161,
+            "p95": 718.0718,
+            "max": 718.0718
+          },
+          "detectedMin": 690,
+          "candidateMax": 904,
+          "configHashCount": 3
+        },
+        "cfa-derived-phase-10": {
+          "n": 9,
+          "captureMs": {
+            "n": 9,
+            "median": 753.1475,
+            "p95": 997.8295,
+            "max": 997.8295
+          },
+          "measurementMs": {
+            "n": 9,
+            "median": 685.9535,
+            "p95": 742.4111,
+            "max": 742.4111
+          },
+          "detectedMin": 690,
+          "candidateMax": 905,
+          "configHashCount": 3
+        },
+        "cfa-derived-phase-11": {
+          "n": 9,
+          "captureMs": {
+            "n": 9,
+            "median": 753.1475,
+            "p95": 997.8295,
+            "max": 997.8295
+          },
+          "measurementMs": {
+            "n": 9,
+            "median": 654.1975,
+            "p95": 803.6967,
+            "max": 803.6967
+          },
+          "detectedMin": 690,
+          "candidateMax": 904,
+          "configHashCount": 3
+        },
+        "cfa-native": {
+          "n": 9,
+          "captureMs": {
+            "n": 9,
+            "median": 753.1475,
+            "p95": 997.8295,
+            "max": 997.8295
+          },
+          "measurementMs": {
+            "n": 9,
+            "median": 685.8337,
+            "p95": 811.1095,
+            "max": 811.1095
+          },
+          "detectedMin": 690,
+          "candidateMax": 905,
+          "configHashCount": 3
+        },
+        "mono-bin2": {
+          "n": 9,
+          "captureMs": {
+            "n": 9,
+            "median": 116.1194,
+            "p95": 193.8418,
+            "max": 193.8418
+          },
+          "measurementMs": {
+            "n": 9,
+            "median": 12.7588,
+            "p95": 20.7215,
+            "max": 20.7215
+          },
+          "detectedMin": 406,
+          "candidateMax": 700,
+          "configHashCount": 3
+        },
+        "mono-mirror": {
+          "n": 9,
+          "captureMs": {
+            "n": 9,
+            "median": 131.5143,
+            "p95": 160.3436,
+            "max": 160.3436
+          },
+          "measurementMs": {
+            "n": 9,
+            "median": 54.0435,
+            "p95": 76.5141,
+            "max": 76.5141
+          },
+          "detectedMin": 482,
+          "candidateMax": 719,
+          "configHashCount": 3
+        },
+        "mono-native": {
+          "n": 9,
+          "captureMs": {
+            "n": 9,
+            "median": 124.8512,
+            "p95": 375.4103,
+            "max": 375.4103
+          },
+          "measurementMs": {
+            "n": 9,
+            "median": 55.0608,
+            "p95": 71.5545,
+            "max": 71.5545
+          },
+          "detectedMin": 481,
+          "candidateMax": 723,
+          "configHashCount": 3
+        },
+        "mono-roi": {
+          "n": 9,
+          "captureMs": {
+            "n": 9,
+            "median": 101.6604,
+            "p95": 167.8202,
+            "max": 167.8202
+          },
+          "measurementMs": {
+            "n": 9,
+            "median": 45.6671,
+            "p95": 66.029,
+            "max": 66.029
+          },
+          "detectedMin": 465,
+          "candidateMax": 698,
+          "configHashCount": 3
+        },
+        "mono-roi-bin2": {
+          "n": 9,
+          "captureMs": {
+            "n": 9,
+            "median": 103.913,
+            "p95": 158.3363,
+            "max": 158.3363
+          },
+          "measurementMs": {
+            "n": 9,
+            "median": 10.1298,
+            "p95": 15.8897,
+            "max": 15.8897
+          },
+          "detectedMin": 396,
+          "candidateMax": 673,
+          "configHashCount": 3
+        },
+        "mono-roll": {
+          "n": 9,
+          "captureMs": {
+            "n": 9,
+            "median": 125.9927,
+            "p95": 200.4012,
+            "max": 200.4012
+          },
+          "measurementMs": {
+            "n": 9,
+            "median": 55.4355,
+            "p95": 58.76,
+            "max": 58.76
+          },
+          "detectedMin": 492,
+          "candidateMax": 717,
+          "configHashCount": 3
+        }
+      },
+      "allRows": {
+        "captureMs": {
+          "n": 90,
+          "median": 154.27465,
+          "p95": 772.7277,
+          "max": 997.8295
+        },
+        "measurementMs": {
+          "n": 90,
+          "median": 56.74245,
+          "p95": 729.5264,
+          "max": 811.1095
+        }
+      },
+      "distinct": {
+        "assessmentIdentities": 90,
+        "sourcePayloadSha256": 90,
+        "configHashes": 21,
+        "catalogIdentities": [
+          "e29a02ef8239eff08716fef1a30510f326e4a526cfbb5c2a1cd81065ef25b60b"
+        ],
+        "catalogSelectionIdentities": [
+          "ce81fa2e7cc859725cb105bc1b2167cf6fd286de2419c5aa1d282c19fa274cb8"
+        ],
+        "settingsIdentities": 1,
+        "warmPreviousLinked": 60
+      },
+      "grids": {
+        "rows": 22500,
+        "supported": 7272,
+        "residualPx": {
+          "n": 7272,
+          "median": 0.01147,
+          "p95": 0.068365,
+          "max": 0.241901
+        }
+      },
+      "sourceGeometry": {
+        "rows": 2250,
+        "supported": 846,
+        "rayErrorDeg": {
+          "n": 846,
+          "median": 0.00078,
+          "p95": 0.006984,
+          "max": 0.018922
+        },
+        "scaleRelErrorMax": 0.00012068660518682606
+      },
+      "sourceCoverage": {
+        "rows": 90,
+        "points": 2250,
+        "supported": 846,
+        "minSupported": 7,
+        "minUnsupported": 14
+      },
+      "mappingCoverage": {
+        "rows": 900,
+        "points": 22500,
+        "supported": 7272,
+        "minSupported": 5,
+        "minUnsupported": 14
+      },
+      "reproducibility": "no explicit reproducibility/repeat field in report; distinct-identity counts above are the only in-report evidence"
+    },
+    "actual-configured-resolution-resources": {
+      "reportSha256": "4e15293c656048d50da96ba7fe869e115cbcd38fa3c8a93070c4725c6f0fa501",
+      "schema": "virtual-astrometry-resources-v2",
+      "revision": "9061c8f7906bebc214268f59c79773f01c46a129",
+      "route": "existing-production-through-qualified-pixel-harness",
+      "warmup": 5,
+      "measured": 30,
+      "concurrency": 1,
+      "tieredCompilation": "0",
+      "initialProcessPeakBytes": 217116672,
+      "failures": 0,
+      "note": "report has capture and detection(=measure) timings only; no solve timing field",
+      "reports": [
+        {
+          "name": "mono-native",
+          "configHash": "4A444FE90D350DD962594497F3C92DFD9958FEFEC8D7831F3C7961B88EA64FE8",
+          "identitySha256": "15f17561289b84c76d1e5d2fad78ab1a3e63c414e4e4d4414ba0e404c82428d8",
+          "captureMedianMs": 121.8029,
+          "captureP95Ms": 132.6695,
+          "detectionMedianMs": 55.3817,
+          "detectionP95Ms": 58.5579,
+          "medianAllocatedBytes": 102206528,
+          "operationsPerSecond": 5.614962,
+          "cpuMs": {
+            "n": 30,
+            "median": 192.2195,
+            "p95": 212.621,
+            "max": 228.861
+          },
+          "peakWorkingSetBytes": 447578112,
+          "samples": 30,
+          "detectedMin": 505,
+          "payloadBytes": 4708352,
+          "exposure": "00:00:01",
+          "gain": 150,
+          "readBytes": 0,
+          "writeBytes": 0
+        },
+        {
+          "name": "cfa-native",
+          "configHash": "057C12DFC3F94B9D9E9795045C60F364325FB4AD2746F5186A22300A713DD79A",
+          "identitySha256": "c2385ea99cd7590109debca6d3091ffc993bdd14cc78131a3cce5e7137e32947",
+          "captureMedianMs": 704.0028,
+          "captureP95Ms": 733.0701,
+          "detectionMedianMs": 630.3956000000001,
+          "detectionP95Ms": 653.5381,
+          "medianAllocatedBytes": 543778184,
+          "operationsPerSecond": 0.747396,
+          "cpuMs": {
+            "n": 30,
+            "median": 1356.683,
+            "p95": 1397.514,
+            "max": 1398.679
+          },
+          "peakWorkingSetBytes": 1137000448,
+          "samples": 30,
+          "detectedMin": 671,
+          "payloadBytes": 12879360,
+          "exposure": "00:00:01",
+          "gain": 150,
+          "readBytes": 0,
+          "writeBytes": 0
+        }
+      ],
+      "cumulativePeakBytes": 1137000448
+    },
+    "stellar-exposure": [
+      {
+        "workload": "asi676-day",
+        "reportSha256": "43e2b80809e8a6daebaa08d607b8eda8f756e86771dc5b761aceb692e71f0bf0",
+        "label": "after",
+        "revisionMatchesBinary": true,
+        "revision": "9061c8f7",
+        "configHash": "60FECF85275423D7B2FAFEFFC715A76B0CE201D1C8B25781668D5BD98197AB0A",
+        "databaseSha256": "B51D18B7",
+        "warmups": 5,
+        "measured": 30,
+        "concurrency": 1,
+        "tieredCompilation": "0",
+        "captureMedianMs": 1971.93385,
+        "captureP95Ms": 2092.6002,
+        "operationsPerSecond": 0.506087,
+        "captureMaxMs": 2246.3117,
+        "cpuMedianMs": 1985.6405,
+        "allocatedMedianBytes": 628773964,
+        "peakWorkingSetBytes": 1289080832,
+        "initialProcessPeakBytes": 217358336,
+        "candidateMedian": 12829,
+        "visibleMedian": 1525.5,
+        "failures": 0,
+        "samples": 30,
+        "config": {
+          "exposure": "00:01:00",
+          "gain": 150,
+          "width": 3552,
+          "height": 3552,
+          "pixelFormat": "BayerRggb16",
+          "cfa": "Rggb",
+          "sensor": "VirtualAsi676McRggbRaw16Provisional",
+          "payloadBytes": 25233408
+        },
+        "sourceHashesSha256": "94d60d53b50c4f4d4207161f1d7ba242003121896e13707e7180cb6c7a5d055f"
+      },
+      {
+        "workload": "asi676-long",
+        "reportSha256": "8ef2c0ef9adffaa0fd7040a7766f571a0ed7c1e207c71f61d684a104ceb547d6",
+        "label": "after",
+        "revisionMatchesBinary": true,
+        "revision": "9061c8f7",
+        "configHash": "83F8FBAE54B787DB7DBFB85A2DEBC4AEB672340E20FE8DAC893C885C174D05F5",
+        "databaseSha256": "B51D18B7",
+        "warmups": 5,
+        "measured": 30,
+        "concurrency": 1,
+        "tieredCompilation": "0",
+        "captureMedianMs": 1652.93325,
+        "captureP95Ms": 2186.8445,
+        "operationsPerSecond": 0.584393,
+        "captureMaxMs": 2303.052,
+        "cpuMedianMs": 1665.3705,
+        "allocatedMedianBytes": 628456760,
+        "peakWorkingSetBytes": 1551892480,
+        "initialProcessPeakBytes": 217657344,
+        "candidateMedian": 12868.5,
+        "visibleMedian": 3948.5,
+        "failures": 0,
+        "samples": 30,
+        "config": {
+          "exposure": "00:00:20",
+          "gain": 150,
+          "width": 3552,
+          "height": 3552,
+          "pixelFormat": "BayerRggb16",
+          "cfa": "Rggb",
+          "sensor": "VirtualAsi676McRggbRaw16Provisional",
+          "payloadBytes": 25233408
+        },
+        "sourceHashesSha256": "e49ed35c37be142259179d7d4a7bae2138e4bb7ba72a476cf234cdf2602139c3"
+      },
+      {
+        "workload": "asi676-short",
+        "reportSha256": "16b05769b09694a2905f6c6b1850f39457d3009026d4fc050b3e12fcd2174f20",
+        "label": "after",
+        "revisionMatchesBinary": true,
+        "revision": "9061c8f7",
+        "configHash": "83F8FBAE54B787DB7DBFB85A2DEBC4AEB672340E20FE8DAC893C885C174D05F5",
+        "databaseSha256": "B51D18B7",
+        "warmups": 5,
+        "measured": 30,
+        "concurrency": 1,
+        "tieredCompilation": "0",
+        "captureMedianMs": 1074.0153,
+        "captureP95Ms": 1093.1205,
+        "operationsPerSecond": 0.930104,
+        "captureMaxMs": 1153.022,
+        "cpuMedianMs": 1089.3405,
+        "allocatedMedianBytes": 486990560,
+        "peakWorkingSetBytes": 989675520,
+        "initialProcessPeakBytes": 214765568,
+        "candidateMedian": 12869,
+        "visibleMedian": 399,
+        "failures": 0,
+        "samples": 30,
+        "config": {
+          "exposure": "00:00:00.1000000",
+          "gain": 150,
+          "width": 3552,
+          "height": 3552,
+          "pixelFormat": "BayerRggb16",
+          "cfa": "Rggb",
+          "sensor": "VirtualAsi676McRggbRaw16Provisional",
+          "payloadBytes": 25233408
+        },
+        "sourceHashesSha256": "ed92f425887f07202d2b8a3a9e7316ba4b97c6dbbb0db6522ea17ae4f6bce89c"
+      },
+      {
+        "workload": "cfa-day",
+        "reportSha256": "5ada1c3209ec8aa79b13bc938058a351cc07eabb5d2db5c3b2c9713ae94aac1d",
+        "label": "after",
+        "revisionMatchesBinary": true,
+        "revision": "9061c8f7",
+        "configHash": "F2D5FC4A413DB4E705852C0505BA99D11A4E08AF6AEB62D5692513061DCE15D8",
+        "databaseSha256": "B51D18B7",
+        "warmups": 5,
+        "measured": 30,
+        "concurrency": 1,
+        "tieredCompilation": "0",
+        "captureMedianMs": 1165.5348,
+        "captureP95Ms": 1195.9582,
+        "operationsPerSecond": 0.857541,
+        "captureMaxMs": 1210.9469,
+        "cpuMedianMs": 1172.1685,
+        "allocatedMedianBytes": 431285484,
+        "peakWorkingSetBytes": 914702336,
+        "initialProcessPeakBytes": 217952256,
+        "candidateMedian": 13207,
+        "visibleMedian": 1197.5,
+        "failures": 0,
+        "samples": 30,
+        "config": {
+          "exposure": "00:01:00",
+          "gain": 150,
+          "width": 3096,
+          "height": 2080,
+          "pixelFormat": "BayerRggb16",
+          "cfa": "Rggb",
+          "sensor": "VirtualAsi178McRaw16",
+          "payloadBytes": 12879360
+        },
+        "sourceHashesSha256": "f8622a531c9d75974986e9252916ca9a0293c636667a96fdce6c6d7f0f5905cf"
+      },
+      {
+        "workload": "cfa-long",
+        "reportSha256": "8b3e1b933513821c93aaf31c4aac0755e5a4fa34e766a1ec627ea64b11476f1a",
+        "label": "after",
+        "revisionMatchesBinary": true,
+        "revision": "9061c8f7",
+        "configHash": "609EE0C372F92A2F8701CC39FF958D8A7B6A07B2375C0152BD60D735FAACD620",
+        "databaseSha256": "B51D18B7",
+        "warmups": 5,
+        "measured": 30,
+        "concurrency": 1,
+        "tieredCompilation": "0",
+        "captureMedianMs": 1025.4915,
+        "captureP95Ms": 1049.4232,
+        "operationsPerSecond": 0.972521,
+        "captureMaxMs": 1050.2026,
+        "cpuMedianMs": 1028.013,
+        "allocatedMedianBytes": 475510456,
+        "peakWorkingSetBytes": 941813760,
+        "initialProcessPeakBytes": 215932928,
+        "candidateMedian": 13324.5,
+        "visibleMedian": 4165.5,
+        "failures": 0,
+        "samples": 30,
+        "config": {
+          "exposure": "00:00:20",
+          "gain": 150,
+          "width": 3096,
+          "height": 2080,
+          "pixelFormat": "BayerRggb16",
+          "cfa": "Rggb",
+          "sensor": "VirtualAsi178McRaw16",
+          "payloadBytes": 12879360
+        },
+        "sourceHashesSha256": "730c68142f56a9f54e5005622c23651c663fd95fe8036ee54a01b540af913c54"
+      },
+      {
+        "workload": "cfa-short",
+        "reportSha256": "e15494dd0b5cb6ad1aabf8a5783f4bf52b9410e1da1a3d3a12b32ac27d3ad524",
+        "label": "after",
+        "revisionMatchesBinary": true,
+        "revision": "9061c8f7",
+        "configHash": "609EE0C372F92A2F8701CC39FF958D8A7B6A07B2375C0152BD60D735FAACD620",
+        "databaseSha256": "B51D18B7",
+        "warmups": 5,
+        "measured": 30,
+        "concurrency": 1,
+        "tieredCompilation": "0",
+        "captureMedianMs": 612.47515,
+        "captureP95Ms": 633.4696,
+        "operationsPerSecond": 1.634144,
+        "captureMaxMs": 654.4944,
+        "cpuMedianMs": 620.341,
+        "allocatedMedianBytes": 335930984,
+        "peakWorkingSetBytes": 1150496768,
+        "initialProcessPeakBytes": 217546752,
+        "candidateMedian": 13323.5,
+        "visibleMedian": 447,
+        "failures": 0,
+        "samples": 30,
+        "config": {
+          "exposure": "00:00:00.1000000",
+          "gain": 150,
+          "width": 3096,
+          "height": 2080,
+          "pixelFormat": "BayerRggb16",
+          "cfa": "Rggb",
+          "sensor": "VirtualAsi178McRaw16",
+          "payloadBytes": 12879360
+        },
+        "sourceHashesSha256": "8f3e0640f879fe33c6e0b4149b262ba38efb0a0399f54e17c5bebf4e9d709657"
+      },
+      {
+        "workload": "mono-day",
+        "reportSha256": "e7d21aabf928588e7d4f2e3dfb2f135116dc9e64f71f9a1995ff183635e02fc9",
+        "label": "after",
+        "revisionMatchesBinary": true,
+        "revision": "9061c8f7",
+        "configHash": "63A66ED414BF59DAD4D60D56E297FFB342EEDEEB73C3831DAC8B1FB4CF7FD7DF",
+        "databaseSha256": "B51D18B7",
+        "warmups": 5,
+        "measured": 30,
+        "concurrency": 1,
+        "tieredCompilation": "0",
+        "captureMedianMs": 389.6041,
+        "captureP95Ms": 429.8839,
+        "operationsPerSecond": 2.543328,
+        "captureMaxMs": 462.0889,
+        "cpuMedianMs": 397.309,
+        "allocatedMedianBytes": 214098516,
+        "peakWorkingSetBytes": 365559808,
+        "initialProcessPeakBytes": 215117824,
+        "candidateMedian": 13206,
+        "visibleMedian": 546,
+        "failures": 0,
+        "samples": 30,
+        "config": {
+          "exposure": "00:01:00",
+          "gain": 150,
+          "width": 1936,
+          "height": 1216,
+          "pixelFormat": "Mono16",
+          "cfa": "None",
+          "sensor": "VirtualAsi174Mm",
+          "payloadBytes": 4708352
+        },
+        "sourceHashesSha256": "4f3597d1eebe930e12b0d77768ab36901ac71713d82d3c99e0940902c934dca1"
+      },
+      {
+        "workload": "mono-long",
+        "reportSha256": "0c331f2cd4d7d7eb434a9bafc97d6ad9aece6e812ef9e16817a39f91da5026ce",
+        "label": "after",
+        "revisionMatchesBinary": true,
+        "revision": "9061c8f7",
+        "configHash": "60777386BBDCFEE70B0D78365A03DF99395AD384695F701B505F2D51551F17B4",
+        "databaseSha256": "B51D18B7",
+        "warmups": 5,
+        "measured": 30,
+        "concurrency": 1,
+        "tieredCompilation": "0",
+        "captureMedianMs": 301.53665,
+        "captureP95Ms": 318.7845,
+        "operationsPerSecond": 3.312556,
+        "captureMaxMs": 332.113,
+        "cpuMedianMs": 310.1745,
+        "allocatedMedianBytes": 235511900,
+        "peakWorkingSetBytes": 384765952,
+        "initialProcessPeakBytes": 217505792,
+        "candidateMedian": 13386,
+        "visibleMedian": 4169.5,
+        "failures": 0,
+        "samples": 30,
+        "config": {
+          "exposure": "00:00:20",
+          "gain": 150,
+          "width": 1936,
+          "height": 1216,
+          "pixelFormat": "Mono16",
+          "cfa": "None",
+          "sensor": "VirtualAsi174Mm",
+          "payloadBytes": 4708352
+        },
+        "sourceHashesSha256": "f325492f74a1628a059dd6c26949e541dbcd0896b951bd742d2336ef3560b96d"
+      },
+      {
+        "workload": "mono-short",
+        "reportSha256": "657510257efede319615668dabee0bb249d32911c8fa94eb6ef2239e8455987f",
+        "label": "after",
+        "revisionMatchesBinary": true,
+        "revision": "9061c8f7",
+        "configHash": "60777386BBDCFEE70B0D78365A03DF99395AD384695F701B505F2D51551F17B4",
+        "databaseSha256": "B51D18B7",
+        "warmups": 5,
+        "measured": 30,
+        "concurrency": 1,
+        "tieredCompilation": "0",
+        "captureMedianMs": 186.98149999999998,
+        "captureP95Ms": 202.9665,
+        "operationsPerSecond": 5.360465,
+        "captureMaxMs": 210.7066,
+        "cpuMedianMs": 194.66,
+        "allocatedMedianBytes": 176322304,
+        "peakWorkingSetBytes": 396726272,
+        "initialProcessPeakBytes": 215236608,
+        "candidateMedian": 12659,
+        "visibleMedian": 181.5,
+        "failures": 0,
+        "samples": 30,
+        "config": {
+          "exposure": "00:00:00.1000000",
+          "gain": 150,
+          "width": 1936,
+          "height": 1216,
+          "pixelFormat": "Mono16",
+          "cfa": "None",
+          "sensor": "VirtualAsi174Mm",
+          "payloadBytes": 4708352
+        },
+        "sourceHashesSha256": "7c3852f59091af4797486f573259bc05bd0078a6e0007ae1611d4b834fb810de"
+      }
+    ],
+    "measured-stars-held-out": {
+      "reportSha256": "bcdc63f1ef7b72cdfbfb8c006bbe94635e96a23f5edc0e293569f3d11a375925",
+      "schema": "virtual-measured-stars-v1",
+      "partition": "measured-stars-held-out",
+      "revision": "9061c8f7906bebc214268f59c79773f01c46a129",
+      "identitySha256": "e29a02ef8239eff08716fef1a30510f326e4a526cfbb5c2a1cd81065ef25b60b",
+      "selectionIdentitySha256": "ce81fa2e7cc859725cb105bc1b2167cf6fd286de2419c5aa1d282c19fa274cb8",
+      "tieredCompilation": "0",
+      "tolerances": {
+        "maximumCentroidRmsPixels": 0.25,
+        "maximumCentroidRmsRegressionPixels": 0.02,
+        "maximumRecallRegression": 0.02,
+        "maximumMeasurementMilliseconds": 2500,
+        "maximumMeasurementTimeRatio": 4,
+        "maximumMeasurementAllocatedBytesPerPixel": 64,
+        "maximumPeakWorkingSetBytes": 2147483648,
+        "falseAssociations": 0
+      },
+      "cases": 21,
+      "failures": 0,
+      "windowPressure": {
+        "streakSamples": 600,
+        "detections": 0,
+        "extendedRegionExclusions": 1,
+        "allocatedBytesPerPixel": 4.1719429643323185,
+        "resources": {
+          "wallMs": 465.5954,
+          "cpuMs": 466.878,
+          "allocatedBytes": 9821488,
+          "peakWorkingSetBytes": 813543424
+        },
+        "streakFreeBaseline": {
+          "wallMs": 470.395,
+          "cpuMs": 471.635,
+          "allocatedBytes": 9821608,
+          "peakWorkingSetBytes": 805711872
+        }
+      },
+      "perCase": [
+        {
+          "caseId": "01-mono-native",
+          "v1Recall": 0.956701,
+          "v2Recall": 1,
+          "v1Rms": 0.13442,
+          "v2Rms": 0.079391,
+          "v2P95": 0.147042,
+          "v1Ms": 65.4494,
+          "v2Ms": 169.1706,
+          "ratio": 2.584754,
+          "v2CpuMs": 170.475,
+          "v2BPerPx": 16.48082,
+          "v1Assoc": 469,
+          "v2Assoc": 489,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 348688384,
+          "missed": {}
+        },
+        {
+          "caseId": "01-mono-roi",
+          "v1Recall": 0.97234,
+          "v2Recall": 1,
+          "v1Rms": 0.131184,
+          "v2Rms": 0.080576,
+          "v2P95": 0.149667,
+          "v1Ms": 47.2817,
+          "v2Ms": 121.02,
+          "ratio": 2.559553,
+          "v2CpuMs": 134.646,
+          "v2BPerPx": 17.15306,
+          "v1Assoc": 461,
+          "v2Assoc": 472,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 382013440,
+          "missed": {}
+        },
+        {
+          "caseId": "01-mono-bin2",
+          "v1Recall": 0.832432,
+          "v2Recall": 1,
+          "v1Rms": 0.176662,
+          "v2Rms": 0.060184,
+          "v2P95": 0.100419,
+          "v1Ms": 11.4175,
+          "v2Ms": 35.6965,
+          "ratio": 3.126473,
+          "v2CpuMs": 35.706,
+          "v2BPerPx": 19.056777,
+          "v1Assoc": 162,
+          "v2Assoc": 192,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 382013440,
+          "missed": {}
+        },
+        {
+          "caseId": "01-mono-roi-bin2",
+          "v1Recall": 0.808989,
+          "v2Recall": 1,
+          "v1Rms": 0.17919,
+          "v2Rms": 0.059155,
+          "v2P95": 0.099582,
+          "v1Ms": 11.5349,
+          "v2Ms": 33.8556,
+          "ratio": 2.935058,
+          "v2CpuMs": 34.147,
+          "v2BPerPx": 21.207031,
+          "v1Assoc": 150,
+          "v2Assoc": 183,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 389152768,
+          "missed": {}
+        },
+        {
+          "caseId": "01-mono-mirror",
+          "v1Recall": 0.960825,
+          "v2Recall": 1,
+          "v1Rms": 0.127772,
+          "v2Rms": 0.077673,
+          "v2P95": 0.145548,
+          "v1Ms": 55.1449,
+          "v2Ms": 135.8526,
+          "ratio": 2.463557,
+          "v2CpuMs": 136.1,
+          "v2BPerPx": 16.3989,
+          "v1Assoc": 470,
+          "v2Assoc": 489,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 388132864,
+          "missed": {}
+        },
+        {
+          "caseId": "01-mono-roll",
+          "v1Recall": 0.971134,
+          "v2Recall": 1,
+          "v1Rms": 0.134037,
+          "v2Rms": 0.084565,
+          "v2P95": 0.170344,
+          "v1Ms": 54.7805,
+          "v2Ms": 137.8175,
+          "ratio": 2.515813,
+          "v2CpuMs": 153.871,
+          "v2BPerPx": 16.398672,
+          "v1Assoc": 476,
+          "v2Assoc": 490,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 389562368,
+          "missed": {}
+        },
+        {
+          "caseId": "01-cfa-native",
+          "v1Recall": 0.985401,
+          "v2Recall": 0.992701,
+          "v1Rms": 0.081629,
+          "v2Rms": 0.092657,
+          "v2P95": 0.166927,
+          "v1Ms": 652.6184,
+          "v2Ms": 998.0451,
+          "ratio": 1.529294,
+          "v2CpuMs": 1022.285,
+          "v2BPerPx": 51.76808,
+          "v1Assoc": 676,
+          "v2Assoc": 680,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 718630912,
+          "missed": {
+            "crowded": 3,
+            "masked-aperture": 1,
+            "saturated-excessive": 1
+          }
+        },
+        {
+          "caseId": "05-mono-native",
+          "v1Recall": 0.966387,
+          "v2Recall": 1,
+          "v1Rms": 0.128641,
+          "v2Rms": 0.079246,
+          "v2P95": 0.15997,
+          "v1Ms": 55.3639,
+          "v2Ms": 137.2233,
+          "ratio": 2.47857,
+          "v2CpuMs": 137.904,
+          "v2BPerPx": 16.3731,
+          "v1Assoc": 464,
+          "v2Assoc": 481,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 754442240,
+          "missed": {}
+        },
+        {
+          "caseId": "05-mono-roi",
+          "v1Recall": 0.974026,
+          "v2Recall": 1,
+          "v1Rms": 0.13122,
+          "v2Rms": 0.083149,
+          "v2P95": 0.156729,
+          "v1Ms": 42.6864,
+          "v2Ms": 126.2392,
+          "ratio": 2.957363,
+          "v2CpuMs": 126.66,
+          "v2BPerPx": 17.130056,
+          "v1Assoc": 451,
+          "v2Assoc": 464,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 754442240,
+          "missed": {}
+        },
+        {
+          "caseId": "05-mono-bin2",
+          "v1Recall": 0.852041,
+          "v2Recall": 1,
+          "v1Rms": 0.16828,
+          "v2Rms": 0.058718,
+          "v2P95": 0.096107,
+          "v1Ms": 11.8128,
+          "v2Ms": 37.8863,
+          "ratio": 3.207224,
+          "v2CpuMs": 37.896,
+          "v2BPerPx": 18.953485,
+          "v1Assoc": 168,
+          "v2Assoc": 196,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 754442240,
+          "missed": {}
+        },
+        {
+          "caseId": "05-mono-roi-bin2",
+          "v1Recall": 0.827957,
+          "v2Recall": 1,
+          "v1Rms": 0.179663,
+          "v2Rms": 0.054039,
+          "v2P95": 0.10163,
+          "v1Ms": 9.7014,
+          "v2Ms": 34.2545,
+          "ratio": 3.530882,
+          "v2CpuMs": 34.263,
+          "v2BPerPx": 21.131749,
+          "v1Assoc": 154,
+          "v2Assoc": 186,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 754442240,
+          "missed": {}
+        },
+        {
+          "caseId": "05-mono-mirror",
+          "v1Recall": 0.970588,
+          "v2Recall": 1,
+          "v1Rms": 0.131397,
+          "v2Rms": 0.088741,
+          "v2P95": 0.151891,
+          "v1Ms": 53.2157,
+          "v2Ms": 140.2657,
+          "ratio": 2.635795,
+          "v2CpuMs": 140.78,
+          "v2BPerPx": 16.377403,
+          "v1Assoc": 467,
+          "v2Assoc": 481,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 754442240,
+          "missed": {}
+        },
+        {
+          "caseId": "05-mono-roll",
+          "v1Recall": 0.962185,
+          "v2Recall": 1,
+          "v1Rms": 0.125733,
+          "v2Rms": 0.083352,
+          "v2P95": 0.146175,
+          "v1Ms": 53.9369,
+          "v2Ms": 131.0227,
+          "ratio": 2.429185,
+          "v2CpuMs": 131.412,
+          "v2BPerPx": 16.369947,
+          "v1Assoc": 463,
+          "v2Assoc": 481,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 754442240,
+          "missed": {}
+        },
+        {
+          "caseId": "05-cfa-native",
+          "v1Recall": 0.984733,
+          "v2Recall": 0.992366,
+          "v1Rms": 0.076769,
+          "v2Rms": 0.088416,
+          "v2P95": 0.15621,
+          "v1Ms": 645.527,
+          "v2Ms": 967.717,
+          "ratio": 1.499112,
+          "v2CpuMs": 985.285,
+          "v2BPerPx": 51.726832,
+          "v1Assoc": 645,
+          "v2Assoc": 650,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 786259968,
+          "missed": {
+            "crowded": 5
+          }
+        },
+        {
+          "caseId": "09-mono-native",
+          "v1Recall": 0.984914,
+          "v2Recall": 1,
+          "v1Rms": 0.128813,
+          "v2Rms": 0.073285,
+          "v2P95": 0.137677,
+          "v1Ms": 52.5369,
+          "v2Ms": 132.9568,
+          "ratio": 2.530732,
+          "v2CpuMs": 148.071,
+          "v2BPerPx": 16.360333,
+          "v1Assoc": 461,
+          "v2Assoc": 468,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 786259968,
+          "missed": {}
+        },
+        {
+          "caseId": "09-mono-roi",
+          "v1Recall": 0.975556,
+          "v2Recall": 1,
+          "v1Rms": 0.126392,
+          "v2Rms": 0.080673,
+          "v2P95": 0.145958,
+          "v1Ms": 43.9211,
+          "v2Ms": 120.5701,
+          "ratio": 2.745152,
+          "v2CpuMs": 120.938,
+          "v2BPerPx": 17.078944,
+          "v1Assoc": 443,
+          "v2Assoc": 453,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 786259968,
+          "missed": {}
+        },
+        {
+          "caseId": "09-mono-bin2",
+          "v1Recall": 0.827586,
+          "v2Recall": 1,
+          "v1Rms": 0.189764,
+          "v2Rms": 0.091032,
+          "v2P95": 0.100658,
+          "v1Ms": 11.6559,
+          "v2Ms": 38.247,
+          "ratio": 3.281342,
+          "v2CpuMs": 38.517,
+          "v2BPerPx": 18.92774,
+          "v1Assoc": 154,
+          "v2Assoc": 183,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 786259968,
+          "missed": {}
+        },
+        {
+          "caseId": "09-mono-roi-bin2",
+          "v1Recall": 0.821429,
+          "v2Recall": 1,
+          "v1Rms": 0.178357,
+          "v2Rms": 0.059833,
+          "v2P95": 0.10672,
+          "v1Ms": 11.5851,
+          "v2Ms": 33.882,
+          "ratio": 2.924619,
+          "v2CpuMs": 33.89,
+          "v2BPerPx": 20.971897,
+          "v1Assoc": 144,
+          "v2Assoc": 174,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 786259968,
+          "missed": {}
+        },
+        {
+          "caseId": "09-mono-mirror",
+          "v1Recall": 0.974138,
+          "v2Recall": 1,
+          "v1Rms": 0.129899,
+          "v2Rms": 0.081634,
+          "v2P95": 0.144333,
+          "v1Ms": 70.6243,
+          "v2Ms": 136.9512,
+          "ratio": 1.939151,
+          "v2CpuMs": 137.468,
+          "v2BPerPx": 16.359494,
+          "v1Assoc": 456,
+          "v2Assoc": 468,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 786259968,
+          "missed": {}
+        },
+        {
+          "caseId": "09-mono-roll",
+          "v1Recall": 0.980603,
+          "v2Recall": 1,
+          "v1Rms": 0.134256,
+          "v2Rms": 0.086853,
+          "v2P95": 0.1604,
+          "v1Ms": 50.0756,
+          "v2Ms": 138.7909,
+          "ratio": 2.771627,
+          "v2CpuMs": 139.345,
+          "v2BPerPx": 16.360914,
+          "v1Assoc": 459,
+          "v2Assoc": 468,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 786259968,
+          "missed": {}
+        },
+        {
+          "caseId": "09-cfa-native",
+          "v1Recall": 0.990937,
+          "v2Recall": 0.998489,
+          "v1Rms": 0.082118,
+          "v2Rms": 0.092945,
+          "v2P95": 0.1665,
+          "v1Ms": 663.506,
+          "v2Ms": 988.9804,
+          "ratio": 1.490537,
+          "v2CpuMs": 1005.711,
+          "v2BPerPx": 51.739404,
+          "v1Assoc": 657,
+          "v2Assoc": 662,
+          "v2Status": "Accepted",
+          "v1Status": "Accepted",
+          "v2False": 0,
+          "peak": 786259968,
+          "missed": {
+            "crowded": 1
+          }
+        }
+      ],
+      "summary": {
+        "v2RmsMax": 0.092945,
+        "rmsRegressionMax": 0.011647,
+        "recallRegressionMax": -0.007299,
+        "v2MsMax": 998.0451,
+        "v2MsMin": 33.8556,
+        "ratioMax": 3.530882,
+        "v2BytesPerPixelMax": 51.76808,
+        "falseAssociationsSum": 0,
+        "v2NotAccepted": 0,
+        "peakWorkingSetBytes": 813543424
+      }
+    },
+    "optical-calibration-held-out": {
+      "reportSha256": "b14da57453362b484fc20eff17cb1be8ba59fb1254cac6ed4dc661ae58dbe319",
+      "schema": "virtual-optical-calibration-v1",
+      "partition": "optical-calibration-held-out",
+      "revision": "9061c8f7906bebc214268f59c79773f01c46a129",
+      "identitySha256": "e29a02ef8239eff08716fef1a30510f326e4a526cfbb5c2a1cd81065ef25b60b",
+      "selectionIdentitySha256": "ce81fa2e7cc859725cb105bc1b2167cf6fd286de2419c5aa1d282c19fa274cb8",
+      "fitter": "session-optical-calibration-v1",
+      "tieredCompilation": "0",
+      "tolerances": {
+        "maximumFocalScaleError": 0.001,
+        "maximumPrincipalPointErrorPixels": 1,
+        "maximumRadialDistortionError": 0.0015,
+        "maximumNativeMappingErrorPixels": 0.5,
+        "mappingDomainZenithDegrees": 85,
+        "maximumValidationVerificationRmsPixels": 0.5,
+        "maximumFitMilliseconds": 60000,
+        "maximumFitToSingleSolveRatioMargin": 1.25,
+        "fitOverheadMilliseconds": 2000,
+        "fitOverheadAllocatedBytes": 268435456,
+        "maximumPeakWorkingSetBytes": 2147483648
+      },
+      "solves": 7,
+      "cases": 3,
+      "failures": 0,
+      "perCase": [
+        {
+          "caseId": "01",
+          "kind": "cold",
+          "status": "Accepted",
+          "fitIdentitySha256": "0035ad8c65c644ee337ad5648734d4fa4ff896635b1aee273da77a6e9c8f3e03",
+          "truth": {
+            "focalScale": 1.008,
+            "principalOffsetX": 4.5,
+            "principalOffsetY": -3.5,
+            "k1": -0.008,
+            "pose": {
+              "boresightAltitudeDegrees": 78,
+              "boresightAzimuthDegrees": 205,
+              "rollAdjustmentDegrees": -21
+            }
+          },
+          "errors": {
+            "focalError": 0.000013450992694563624,
+            "principalError": 0.003709783055159287,
+            "k1Error": 0.0000012904884024653174,
+            "mappingError": 0.009591335154577448
+          },
+          "diagnostics": {
+            "skyRotationDegrees": 60.164275,
+            "fittedFrames": 4,
+            "fittingStars": 1741,
+            "verificationStars": 295,
+            "fittingRmsPixels": 0.129774,
+            "verificationRmsPixels": 0.075595,
+            "occupiedRadialBins": 5,
+            "occupiedAzimuthBins": 8,
+            "conditionNumber": 25.763428,
+            "iterations": 15,
+            "converged": true
+          },
+          "validationVerificationRmsMax": 0.08502,
+          "withheld": [
+            {
+              "readout": "native",
+              "precision": 1,
+              "rms": 0.007023,
+              "p95": 0.010295,
+              "poseDeg": 0.000448,
+              "focal": 0.000019773316926041673,
+              "missing": 0,
+              "n": 271
+            },
+            {
+              "readout": "roi",
+              "precision": 1,
+              "rms": 0.00332,
+              "p95": 0.005689,
+              "poseDeg": 0.000632,
+              "focal": 0.0000023271485345421894,
+              "missing": 0,
+              "n": 263
+            },
+            {
+              "readout": "roi-bin2",
+              "precision": 1,
+              "rms": 0.007229,
+              "p95": 0.009985,
+              "poseDeg": 0.001721,
+              "focal": 0.000028484967699471397,
+              "missing": 0,
+              "n": 524
+            }
+          ],
+          "omitted": {
+            "status": "Rejected",
+            "rejections": [
+              "fitting-residual",
+              "verification-residual",
+              "radial-bias:0",
+              "radial-bias:1",
+              "radial-bias:2",
+              "radial-bias:3"
+            ]
+          },
+          "fitResources": {
+            "wallMs": 19249.8429,
+            "cpuMs": 19325.568,
+            "allocatedBytes": 19879118280,
+            "peakWorkingSetBytes": 503959552
+          },
+          "baseline": {
+            "wallMs": 2687.9978,
+            "cpuMs": 2702.18,
+            "allocatedBytes": 2888081000,
+            "peakWorkingSetBytes": 503959552
+          },
+          "phases": {
+            "elapsedMilliseconds": 19209.5497,
+            "acquisitionMilliseconds": 10439.4053,
+            "fitMilliseconds": 92.0944,
+            "validationMilliseconds": 8671.1231
+          },
+          "wallLimitMs": 25519.98075,
+          "allocLimitBytes": 25539144206,
+          "wallHeadroom": 0.245695,
+          "allocHeadroom": 0.221622
+        },
+        {
+          "caseId": "05",
+          "kind": "session",
+          "status": "Accepted",
+          "fitIdentitySha256": "f79e4e81890742ead4f2a5a6dd9d4f77ac0257861d4ce6bd6fb547682ebeb45f",
+          "truth": {
+            "focalScale": 0.992,
+            "principalOffsetX": -6,
+            "principalOffsetY": 2.5,
+            "k1": 0.006,
+            "pose": {
+              "boresightAltitudeDegrees": 85,
+              "boresightAzimuthDegrees": 40,
+              "rollAdjustmentDegrees": 33
+            }
+          },
+          "errors": {
+            "focalError": 2.6253004214993325E-9,
+            "principalError": 0.0050031053697184545,
+            "k1Error": 0.000003232190950661247,
+            "mappingError": 0.008971249018296823
+          },
+          "diagnostics": {
+            "skyRotationDegrees": 60.164275,
+            "fittedFrames": 4,
+            "fittingStars": 1742,
+            "verificationStars": 335,
+            "fittingRmsPixels": 0.106619,
+            "verificationRmsPixels": 0.079793,
+            "occupiedRadialBins": 5,
+            "occupiedAzimuthBins": 8,
+            "conditionNumber": 34.637364,
+            "iterations": 14,
+            "converged": true
+          },
+          "validationVerificationRmsMax": 0.086775,
+          "withheld": [
+            {
+              "readout": "native",
+              "precision": 1,
+              "rms": 0.00913,
+              "p95": 0.015768,
+              "poseDeg": 0.000924,
+              "focal": 0.000006250326179069177,
+              "missing": 0,
+              "n": 245
+            },
+            {
+              "readout": "roi",
+              "precision": 1,
+              "rms": 0.008811,
+              "p95": 0.011283,
+              "poseDeg": 0.000474,
+              "focal": 0.000012817651250829343,
+              "missing": 0,
+              "n": 215
+            },
+            {
+              "readout": "roi-bin2",
+              "precision": 1,
+              "rms": 0.009645,
+              "p95": 0.011514,
+              "poseDeg": 0.002894,
+              "focal": 0.000009198035249902148,
+              "missing": 0,
+              "n": 489
+            }
+          ],
+          "omitted": {
+            "status": "Rejected",
+            "rejections": [
+              "fitting-residual",
+              "verification-residual",
+              "radial-bias:0",
+              "radial-bias:1",
+              "radial-bias:2",
+              "radial-bias:3",
+              "radial-bias:4"
+            ]
+          },
+          "fitResources": {
+            "wallMs": 14949.6521,
+            "cpuMs": 15004.326,
+            "allocatedBytes": 15869207112,
+            "peakWorkingSetBytes": 503959552
+          },
+          "baseline": {
+            "wallMs": 1935.4203,
+            "cpuMs": 1939.569,
+            "allocatedBytes": 2123853840,
+            "peakWorkingSetBytes": 503959552
+          },
+          "phases": {
+            "elapsedMilliseconds": 14947.0793,
+            "acquisitionMilliseconds": 8429.7654,
+            "fitMilliseconds": 52.3538,
+            "validationMilliseconds": 6464.9361
+          },
+          "wallLimitMs": 18934.927625,
+          "allocLimitBytes": 18852156556,
+          "wallHeadroom": 0.210472,
+          "allocHeadroom": 0.158229
+        },
+        {
+          "caseId": "09",
+          "kind": "session",
+          "status": "Accepted",
+          "fitIdentitySha256": "96885952bf3126cf5a15ebb118829c0876f2424e5db281686261fa89fb3b75d6",
+          "truth": {
+            "focalScale": 1.004,
+            "principalOffsetX": 3,
+            "principalOffsetY": 5,
+            "k1": 0,
+            "pose": {
+              "boresightAltitudeDegrees": 80,
+              "boresightAzimuthDegrees": 300,
+              "rollAdjustmentDegrees": 5
+            }
+          },
+          "errors": {
+            "focalError": 0.000029830056315183207,
+            "principalError": 0.008270969622755196,
+            "k1Error": 0.000018493679121276325,
+            "mappingError": 0.014404792199970283
+          },
+          "diagnostics": {
+            "skyRotationDegrees": 60.164275,
+            "fittedFrames": 4,
+            "fittingStars": 1654,
+            "verificationStars": 302,
+            "fittingRmsPixels": 0.112813,
+            "verificationRmsPixels": 0.083483,
+            "occupiedRadialBins": 5,
+            "occupiedAzimuthBins": 8,
+            "conditionNumber": 27.685324,
+            "iterations": 14,
+            "converged": true
+          },
+          "validationVerificationRmsMax": 0.082941,
+          "withheld": [
+            {
+              "readout": "native",
+              "precision": 1,
+              "rms": 0.005813,
+              "p95": 0.009524,
+              "poseDeg": 0.002021,
+              "focal": 0.00002619926525260219,
+              "missing": 0,
+              "n": 255
+            },
+            {
+              "readout": "roi",
+              "precision": 1,
+              "rms": 0.0086,
+              "p95": 0.012729,
+              "poseDeg": 0.001381,
+              "focal": 0.00003561015052810923,
+              "missing": 0,
+              "n": 253
+            },
+            {
+              "readout": "roi-bin2",
+              "precision": 1,
+              "rms": 0.012814,
+              "p95": 0.019076,
+              "poseDeg": 0.004002,
+              "focal": 0.00004830567709501743,
+              "missing": 0,
+              "n": 502
+            }
+          ],
+          "omitted": {
+            "status": "Accepted",
+            "rejections": []
+          },
+          "fitResources": {
+            "wallMs": 16451.5742,
+            "cpuMs": 16548.278,
+            "allocatedBytes": 16573656784,
+            "peakWorkingSetBytes": 514125824
+          },
+          "baseline": {
+            "wallMs": 2234.4916,
+            "cpuMs": 2249.411,
+            "allocatedBytes": 2307843400,
+            "peakWorkingSetBytes": 514125824
+          },
+          "phases": {
+            "elapsedMilliseconds": 16449.3263,
+            "acquisitionMilliseconds": 9902.5108,
+            "fitMilliseconds": 56.7207,
+            "validationMilliseconds": 6490.0697
+          },
+          "wallLimitMs": 21551.8015,
+          "allocLimitBytes": 20462065206,
+          "wallHeadroom": 0.23665,
+          "allocHeadroom": 0.19003
+        }
+      ],
+      "peakWorkingSetBytes": 514125824
+    },
+    "astrometric-uncertainty-held-out": {
+      "reportSha256": "0af875ae6fe59609ae9b3e4091cb162c2c16cc19d80eb41e5821138a29a9044a",
+      "schema": "virtual-astrometric-uncertainty-v1",
+      "partition": "uncertainty-held-out",
+      "revision": "9061c8f7906bebc214268f59c79773f01c46a129",
+      "identitySha256": "e29a02ef8239eff08716fef1a30510f326e4a526cfbb5c2a1cd81065ef25b60b",
+      "selectionIdentitySha256": "ce81fa2e7cc859725cb105bc1b2167cf6fd286de2419c5aa1d282c19fa274cb8",
+      "estimator": "astrometric-frame-uncertainty-v1",
+      "tieredCompilation": "0",
+      "tolerances": {
+        "coverageToleranceSigma": 3.5,
+        "levels": [
+          0.6827,
+          0.95,
+          0.99
+        ],
+        "ellipsoid": [
+          4.7198,
+          9.4877,
+          13.2767
+        ],
+        "interval": [
+          1,
+          1.95996,
+          2.57583
+        ],
+        "sessionEllipsoidLimit": 18.4668,
+        "maximumFalseWithholdFraction": 0.02,
+        "maximumEstimatorMilliseconds": 250,
+        "maximumEstimatorAllocatedBytes": 33554432,
+        "maximumEstimatorToFrameRatio": 0.5,
+        "declaredFloorPixels": {
+          "mono-native": 0.042,
+          "mono-roi": 0.042,
+          "mono-mirror": 0.042,
+          "mono-roll": 0.042,
+          "mono-bin2": 0.028,
+          "mono-roi-bin2": 0.028,
+          "cfa-native": 0.063
+        }
+      },
+      "realizationsPerProfile": 20,
+      "frames": 420,
+      "sessions": 3,
+      "failures": 0,
+      "withheldFrames": 0,
+      "falseWithholdFraction": 0,
+      "frameResources": {
+        "frameMedianMs": 137.3676,
+        "estimatorMedianMs": 2.5371,
+        "estimatorMaximumMs": 48.9623,
+        "estimatorMedianAllocatedBytes": 681024,
+        "estimatorMaximumAllocatedBytes": 1522584,
+        "peakWorkingSetBytes": 1466163200
+      },
+      "estimatorToFrameRatioMax": 0.090899,
+      "coverage": [
+        {
+          "profile": "mono-native",
+          "frames": 60,
+          "withheld": 0,
+          "chi2PerDof": 0.966768,
+          "heldOutChi2PerDof": 0.974914,
+          "ellipsoid": [
+            0.766667,
+            0.966667,
+            1
+          ],
+          "minInterval": [
+            0.633333,
+            0.966667,
+            0.966667
+          ],
+          "maxDeviationInterval": [
+            0.8,
+            1,
+            0.966667
+          ],
+          "bound": [
+            0.210302,
+            0.098478,
+            0.044958
+          ],
+          "minHeadroom": 0.442229
+        },
+        {
+          "profile": "mono-roi",
+          "frames": 60,
+          "withheld": 0,
+          "chi2PerDof": 0.954305,
+          "heldOutChi2PerDof": 0.986759,
+          "ellipsoid": [
+            0.75,
+            0.933333,
+            0.983333
+          ],
+          "minInterval": [
+            0.633333,
+            0.916667,
+            0.983333
+          ],
+          "maxDeviationInterval": [
+            0.633333,
+            1,
+            1
+          ],
+          "bound": [
+            0.210302,
+            0.098478,
+            0.044958
+          ],
+          "minHeadroom": 0.492272
+        },
+        {
+          "profile": "mono-bin2",
+          "frames": 60,
+          "withheld": 0,
+          "chi2PerDof": 0.990214,
+          "heldOutChi2PerDof": 0.988635,
+          "ellipsoid": [
+            0.716667,
+            0.883333,
+            0.966667
+          ],
+          "minInterval": [
+            0.683333,
+            0.933333,
+            0.966667
+          ],
+          "maxDeviationInterval": [
+            0.766667,
+            0.933333,
+            0.966667
+          ],
+          "bound": [
+            0.210302,
+            0.098478,
+            0.044958
+          ],
+          "minHeadroom": 0.32303
+        },
+        {
+          "profile": "mono-roi-bin2",
+          "frames": 60,
+          "withheld": 0,
+          "chi2PerDof": 0.966415,
+          "heldOutChi2PerDof": 0.976347,
+          "ellipsoid": [
+            0.666667,
+            0.916667,
+            0.95
+          ],
+          "minInterval": [
+            0.566667,
+            0.916667,
+            0.966667
+          ],
+          "maxDeviationInterval": [
+            0.566667,
+            0.916667,
+            0.966667
+          ],
+          "bound": [
+            0.210302,
+            0.098478,
+            0.044958
+          ],
+          "minHeadroom": 0.110287
+        },
+        {
+          "profile": "mono-mirror",
+          "frames": 60,
+          "withheld": 0,
+          "chi2PerDof": 0.964056,
+          "heldOutChi2PerDof": 0.985957,
+          "ellipsoid": [
+            0.7,
+            0.95,
+            1
+          ],
+          "minInterval": [
+            0.65,
+            0.916667,
+            0.966667
+          ],
+          "maxDeviationInterval": [
+            0.766667,
+            0.916667,
+            0.966667
+          ],
+          "bound": [
+            0.210302,
+            0.098478,
+            0.044958
+          ],
+          "minHeadroom": 0.481001
+        },
+        {
+          "profile": "mono-roll",
+          "frames": 60,
+          "withheld": 0,
+          "chi2PerDof": 0.971115,
+          "heldOutChi2PerDof": 0.971904,
+          "ellipsoid": [
+            0.666667,
+            0.983333,
+            1
+          ],
+          "minInterval": [
+            0.666667,
+            0.933333,
+            0.983333
+          ],
+          "maxDeviationInterval": [
+            0.766667,
+            0.966667,
+            1
+          ],
+          "bound": [
+            0.210302,
+            0.098478,
+            0.044958
+          ],
+          "minHeadroom": 0.600732
+        },
+        {
+          "profile": "cfa-native",
+          "frames": 60,
+          "withheld": 0,
+          "chi2PerDof": 0.989199,
+          "heldOutChi2PerDof": 0.952075,
+          "ellipsoid": [
+            0.683333,
+            0.966667,
+            1
+          ],
+          "minInterval": [
+            0.6,
+            0.95,
+            0.983333
+          ],
+          "maxDeviationInterval": [
+            0.6,
+            1,
+            1
+          ],
+          "bound": [
+            0.210302,
+            0.098478,
+            0.044958
+          ],
+          "minHeadroom": 0.492272
+        },
+        {
+          "profile": "pooled",
+          "frames": 420,
+          "withheld": 0,
+          "chi2PerDof": 0.971725,
+          "heldOutChi2PerDof": 0.976656,
+          "ellipsoid": [
+            0.707143,
+            0.942857,
+            0.985714
+          ],
+          "minInterval": [
+            0.661905,
+            0.947619,
+            0.990476
+          ],
+          "maxDeviationInterval": [
+            0.721429,
+            0.966667,
+            0.992857
+          ],
+          "bound": [
+            0.079487,
+            0.037221,
+            0.016993
+          ],
+          "minHeadroom": 0.512765
+        }
+      ],
+      "requiredFloorPx": {
+        "cfa-native": {
+          "min": 0.058325,
+          "median": 0.062687,
+          "max": 0.066781
+        },
+        "mono-bin2": {
+          "min": 0.023818,
+          "median": 0.027759,
+          "max": 0.03234
+        },
+        "mono-mirror": {
+          "min": 0.037502,
+          "median": 0.040855,
+          "max": 0.045805
+        },
+        "mono-native": {
+          "min": 0.037114,
+          "median": 0.040519,
+          "max": 0.045202
+        },
+        "mono-roi": {
+          "min": 0.036279,
+          "median": 0.04049,
+          "max": 0.04433
+        },
+        "mono-roi-bin2": {
+          "min": 0.023563,
+          "median": 0.026917,
+          "max": 0.03317
+        },
+        "mono-roll": {
+          "min": 0.036967,
+          "median": 0.041243,
+          "max": 0.044484
+        }
+      },
+      "sessionRows": [
+        {
+          "session": "01-session",
+          "readout": "native",
+          "totalMahalanobis": 3.653603,
+          "conditionalOnlyMahalanobis": 22.305508
+        },
+        {
+          "session": "01-session",
+          "readout": "roi",
+          "totalMahalanobis": 4.193231,
+          "conditionalOnlyMahalanobis": 14.956907
+        },
+        {
+          "session": "01-session",
+          "readout": "roi-bin2",
+          "totalMahalanobis": 0.941711,
+          "conditionalOnlyMahalanobis": 1.45702
+        },
+        {
+          "session": "05-session",
+          "readout": "native",
+          "totalMahalanobis": 8.049694,
+          "conditionalOnlyMahalanobis": 24.797345
+        },
+        {
+          "session": "05-session",
+          "readout": "roi",
+          "totalMahalanobis": 4.777073,
+          "conditionalOnlyMahalanobis": 24.531849
+        },
+        {
+          "session": "05-session",
+          "readout": "roi-bin2",
+          "totalMahalanobis": 2.612352,
+          "conditionalOnlyMahalanobis": 4.897015
+        },
+        {
+          "session": "09-session",
+          "readout": "native",
+          "totalMahalanobis": 8.75985,
+          "conditionalOnlyMahalanobis": 42.767326
+        },
+        {
+          "session": "09-session",
+          "readout": "roi",
+          "totalMahalanobis": 6.994772,
+          "conditionalOnlyMahalanobis": 39.321309
+        },
+        {
+          "session": "09-session",
+          "readout": "roi-bin2",
+          "totalMahalanobis": 10.175008,
+          "conditionalOnlyMahalanobis": 16.063337
+        }
+      ],
+      "sessionTotalMax": 10.175008,
+      "sessionTotalMean": 5.573033,
+      "distinctFrameIdentities": 420
+    }
+  }
+}

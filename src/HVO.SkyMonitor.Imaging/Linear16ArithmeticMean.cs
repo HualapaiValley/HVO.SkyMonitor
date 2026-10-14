@@ -1,3 +1,6 @@
+using System.Buffers;
+using System.Numerics;
+using System.Runtime.InteropServices;
 using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.Imaging;
@@ -38,9 +41,6 @@ public static class Linear16ArithmeticMean
         }
 
         var first = frames[0] ?? throw new ArgumentException("Source frames must not contain null entries.", nameof(frames));
-        ValidateFrame(first, nameof(frames));
-        var sampleCount = checked(first.Width * first.Height);
-        var totals = new ulong[sampleCount];
         for (var frameIndex = 0; frameIndex < frames.Count; frameIndex++)
         {
             var frame = frames[frameIndex]
@@ -50,32 +50,19 @@ public static class Linear16ArithmeticMean
             {
                 throw new ArgumentException("All source frames must have compatible dimensions and pixel format.", nameof(frames));
             }
-
-            var source = frame.PixelData.Span;
-            for (var y = 0; y < frame.Height; y++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var sourceRow = y * frame.StrideBytes;
-                var destinationRow = y * frame.Width;
-                for (var x = 0; x < frame.Width; x++)
-                {
-                    var offset = sourceRow + x * 2;
-                    totals[destinationRow + x] += (ushort)(source[offset] | source[offset + 1] << 8);
-                }
-            }
         }
 
-        var output = new byte[checked(sampleCount * 2)];
-        for (var y = 0; y < first.Height; y++)
+        // Rows are summed across frames into one row-sized accumulator instead of a full-frame accumulator, so the
+        // only frame-sized allocation is the output. A 32-bit total holds up to 65537 frames of 65535 exactly, and
+        // its truncating division is the same quotient as the 64-bit one.
+        var output = new byte[checked(first.Width * first.Height * 2)];
+        if (frames.Count <= NarrowAccumulatorMaximumFrames && BitConverter.IsLittleEndian)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            for (var x = 0; x < first.Width; x++)
-            {
-                var pixel = y * first.Width + x;
-                var average = (ushort)(totals[pixel] / (ulong)frames.Count);
-                output[pixel * 2] = (byte)average;
-                output[pixel * 2 + 1] = (byte)(average >> 8);
-            }
+            ComputeNarrow(frames, first.Width, first.Height, output, cancellationToken);
+        }
+        else
+        {
+            ComputeWide(frames, first.Width, first.Height, output, cancellationToken);
         }
 
         return new Linear16MeanResult(
@@ -86,6 +73,108 @@ public static class Linear16ArithmeticMean
             output,
             frames.Count,
             AlgorithmVersion);
+    }
+
+    private const int NarrowAccumulatorMaximumFrames = 65537;
+
+    private static void ComputeNarrow(
+        IReadOnlyList<Linear16Frame> frames,
+        int width,
+        int height,
+        byte[] output,
+        CancellationToken cancellationToken)
+    {
+        var count = (uint)frames.Count;
+        var rented = ArrayPool<uint>.Shared.Rent(width);
+        try
+        {
+            var totals = rented.AsSpan(0, width);
+            var destination = MemoryMarshal.Cast<byte, ushort>(output.AsSpan());
+            for (var y = 0; y < height; y++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                totals.Clear();
+                for (var frameIndex = 0; frameIndex < frames.Count; frameIndex++)
+                {
+                    var frame = frames[frameIndex];
+                    AccumulateRow(
+                        MemoryMarshal.Cast<byte, ushort>(frame.PixelData.Span.Slice(y * frame.StrideBytes, width * 2)),
+                        totals);
+                }
+
+                var row = destination.Slice(y * width, width);
+                for (var x = 0; x < width; x++)
+                {
+                    row[x] = (ushort)(totals[x] / count);
+                }
+            }
+        }
+        finally
+        {
+            ArrayPool<uint>.Shared.Return(rented);
+        }
+    }
+
+    private static void AccumulateRow(ReadOnlySpan<ushort> source, Span<uint> totals)
+    {
+        var x = 0;
+        if (Vector.IsHardwareAccelerated)
+        {
+            for (; x <= source.Length - Vector<ushort>.Count; x += Vector<ushort>.Count)
+            {
+                Vector.Widen(new Vector<ushort>(source[x..]), out var low, out var high);
+                var lowTotals = totals.Slice(x, Vector<uint>.Count);
+                (new Vector<uint>(lowTotals) + low).CopyTo(lowTotals);
+                var highTotals = totals.Slice(x + Vector<uint>.Count, Vector<uint>.Count);
+                (new Vector<uint>(highTotals) + high).CopyTo(highTotals);
+            }
+        }
+
+        for (; x < source.Length; x++)
+        {
+            totals[x] += source[x];
+        }
+    }
+
+    private static void ComputeWide(
+        IReadOnlyList<Linear16Frame> frames,
+        int width,
+        int height,
+        byte[] output,
+        CancellationToken cancellationToken)
+    {
+        var count = (ulong)frames.Count;
+        var rented = ArrayPool<ulong>.Shared.Rent(width);
+        try
+        {
+            var totals = rented.AsSpan(0, width);
+            for (var y = 0; y < height; y++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                totals.Clear();
+                for (var frameIndex = 0; frameIndex < frames.Count; frameIndex++)
+                {
+                    var frame = frames[frameIndex];
+                    var source = frame.PixelData.Span.Slice(y * frame.StrideBytes, width * 2);
+                    for (var x = 0; x < width; x++)
+                    {
+                        totals[x] += (ushort)(source[x * 2] | source[x * 2 + 1] << 8);
+                    }
+                }
+
+                var row = output.AsSpan(y * width * 2, width * 2);
+                for (var x = 0; x < width; x++)
+                {
+                    var average = (ushort)(totals[x] / count);
+                    row[x * 2] = (byte)average;
+                    row[x * 2 + 1] = (byte)(average >> 8);
+                }
+            }
+        }
+        finally
+        {
+            ArrayPool<ulong>.Shared.Return(rented);
+        }
     }
 
     private static void ValidateFrame(Linear16Frame frame, string parameterName)

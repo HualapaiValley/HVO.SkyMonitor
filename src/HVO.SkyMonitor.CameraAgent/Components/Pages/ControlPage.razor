@@ -1,0 +1,188 @@
+@inherits SiteTimeComponent
+@page "/operations/control"
+@layout OperationsLayout
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
+@using HVO.SkyMonitor.CameraAgent.Services
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>System control</PageTitle>
+
+<OperationsPageHeading Eyebrow="System / authenticated local actions" Title="System control" HeadingId="control-heading"
+                       Description="Perform only bounded CameraAgent controls that preserve accepted evidence and produce an auditable terminal receipt.">
+    <Actions>
+        <button type="button" id="control-refresh" class="button secondary" disabled="@(_loading || _submitting)" @onclick="RefreshAsync">@(_loading ? "Refreshing…" : "Refresh")</button>
+    </Actions>
+</OperationsPageHeading>
+
+@if (_restarting)
+{
+    <div class="ops-note-banner" role="status"><span class="status-icon running" aria-hidden="true"></span><span><strong>Restarting CameraAgent.</strong> Captures pause briefly. This page reconnects and reloads when CameraAgent is back.</span></div>
+}
+else if (_loading && _view is null)
+{
+    <div class="ops-note-banner" role="status"><span class="status-icon running" aria-hidden="true"></span><span>Reading the capture control state.</span></div>
+}
+else if (_view is null)
+{
+    <div class="ops-note-banner" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Capture state unavailable.</strong> @_error Pause and resume stay disabled until the state can be read.</span></div>
+}
+else
+{
+    var banner = StateBanner;
+    <div class="ops-note-banner" role="status"><span class="status-icon @banner.Tone" aria-hidden="true"></span><span><strong>@banner.Title</strong> @banner.Detail</span></div>
+}
+@if (_message is not null)
+{
+    <div class="ops-note-banner compact control-message" role="status"><span class="status-icon @_message.Tone" aria-hidden="true"></span><span><strong>@_message.Title</strong> @_message.Detail</span></div>
+}
+
+<div class="ops-grid two">
+    <section class="ops-panel" aria-labelledby="control-capture-heading">
+        <header class="ops-panel-heading"><div><h2 id="control-capture-heading">Capture control</h2><p>These actions affect local admission, not historical evidence.</p></div></header>
+        <div class="ops-action-list">
+            <article class="ops-action-row">
+                @if (CanResume)
+                {
+                    <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M7 5v10l8-5-8-5Z"></path></svg></span>
+                    <span><strong>Resume acquisition</strong><small>Reopen capture admission with the current startup-validated configuration.</small></span>
+                    <button type="button" id="@CaptureTriggerId" class="button primary" disabled="@_submitting" @onclick="() => BeginCapture(paused: false)">Resume</button>
+                }
+                else
+                {
+                    <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M7 5v10m6-10v10"></path></svg></span>
+                    <span><strong>Pause acquisition</strong><small>Finish the current exposure, then block new capture admission.</small></span>
+                    <button type="button" id="@CaptureTriggerId" class="button secondary" disabled="@(_submitting || !CanPause)"
+                            title="@CaptureUnavailableReason" aria-describedby="@(CaptureUnavailableReason is null ? null : "control-capture-unavailable")"
+                            @onclick="() => BeginCapture(paused: true)">@(CaptureState == "PauseRequested" ? "Pausing…" : "Pause")</button>
+                    @if (CaptureUnavailableReason is { } captureUnavailable)
+                    {
+                        <span id="control-capture-unavailable" class="visually-hidden">@captureUnavailable</span>
+                    }
+                }
+            </article>
+            <article class="ops-action-row">
+                <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="13" rx="2"></rect><path d="M3 8h14"></path></svg></span>
+                <span><strong>Temporary schedule override</strong><small>Force open or closed with an explicit expiry and reason.</small></span>
+                <a id="control-override" class="button secondary" href="/operations/schedule?action=override">Create</a>
+            </article>
+            <article class="ops-action-row">
+                <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M4 5h12v8H8l-4 4V5Z"></path></svg></span>
+                <span><strong>Acquire environment now</strong><small>Request an independent durable weather observation.</small></span>
+                <a id="control-acquire" class="button secondary" href="/operations/environment?action=acquire">Acquire</a>
+            </article>
+        </div>
+    </section>
+    <section class="ops-panel" aria-labelledby="control-lifecycle-heading">
+        <header class="ops-panel-heading"><div><h2 id="control-lifecycle-heading">Worker &amp; lifecycle boundary</h2><p>Accepted evidence must reach a terminal durable state.</p></div></header>
+        <div class="ops-action-list">
+            <article class="ops-action-row">
+                <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 10h14M13 6l4 4-4 4"></path></svg></span>
+                <span><strong>Request graceful drain</strong><small>Stop acquisition and finish accepted processing before host shutdown.</small></span>
+                <button type="button" class="button secondary" disabled title="@DrainUnavailableReason" aria-describedby="control-drain-unavailable">Not available</button>
+                <span id="control-drain-unavailable" class="visually-hidden">@DrainUnavailableReason</span>
+            </article>
+            <article class="ops-action-row danger">
+                <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 2v7"></path><path d="M6 4a7 7 0 1 0 8 0"></path></svg></span>
+                <span><strong>Restart CameraAgent</strong><small>@RestartDetail</small></span>
+                <button type="button" id="@RestartTriggerId" class="button secondary" disabled="@(_submitting || RestartUnavailableReason is not null)"
+                        title="@RestartUnavailableReason" aria-describedby="@(RestartUnavailableReason is null ? null : "control-restart-unavailable")"
+                        @onclick="BeginRestart">@(_restarting ? "Restarting…" : _restart is { Supervised: false } ? "Not supervised" : "Restart")</button>
+                @if (RestartUnavailableReason is { } restartUnavailable)
+                {
+                    <span id="control-restart-unavailable" class="visually-hidden">@restartUnavailable</span>
+                }
+            </article>
+            <article class="ops-action-row danger">
+                <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 16V5m-5 5 5-5 5 5"></path></svg></span>
+                <span><strong>Upgrade or roll back</strong><small>The installer verifies the candidate before capture resumes.</small></span>
+                <button type="button" class="button secondary" disabled title="@UpgradeUnavailableReason" aria-describedby="control-upgrade-unavailable">CLI only</button>
+                <span id="control-upgrade-unavailable" class="visually-hidden">@UpgradeUnavailableReason</span>
+            </article>
+            <article class="ops-action-row danger">
+                <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M4 6h12M8 6V4h4v2m-6 0 1 11h6l1-11"></path></svg></span>
+                <span><strong>Purge local evidence</strong><small>Deliberately excluded from routine controls; retention owns normal removal.</small></span>
+                <button type="button" class="button secondary" disabled title="@PurgeUnavailableReason" aria-describedby="control-purge-unavailable">Unavailable</button>
+                <span id="control-purge-unavailable" class="visually-hidden">@PurgeUnavailableReason</span>
+            </article>
+        </div>
+    </section>
+</div>
+
+<TimeSyncPanel Generation="@_timeGeneration" />
+
+<section class="ops-panel ops-grid" aria-labelledby="control-receipts-heading">
+    <header class="ops-panel-heading"><div><h2 id="control-receipts-heading">Recent control receipts</h2><p>Mutating operations preserve actor, reason, start, and terminal result.</p></div><span>@SiteTime.Label</span></header>
+    @if (_receiptsError is not null)
+    {
+        <div class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@_receiptsError</span></div>
+    }
+    else if (_receipts is null)
+    {
+        <p class="control-empty">@(_loading ? "Reading receipts." : "Receipts are unavailable.")</p>
+    }
+    else if (_receipts.Count == 0)
+    {
+        <p class="control-empty">No pause, resume or schedule override has been recorded on this agent yet.</p>
+    }
+    else
+    {
+        <div class="ops-table-wrap">
+            <table class="ops-table control-receipts">
+                <thead><tr><th scope="col">Time</th><th scope="col">Action</th><th scope="col">Actor</th><th scope="col">Reason</th><th scope="col">Result</th></tr></thead>
+                <tbody>
+                    @foreach (var receipt in _receipts)
+                    {
+                        var outcome = OutcomeChip(receipt.Outcome);
+                        <tr>
+                            <td>@FormatReceiptTime(receipt.OccurredUtc)</td>
+                            <td><strong>@ActionText(receipt)</strong>@if (OverrideWindow(receipt) is { } window)
+                                {
+                                    <small>@window</small>
+                                }</td>
+                            <td>@ActorText(receipt.Actor)</td>
+                            <td>@ReasonText(receipt.Reason)</td>
+                            <td><span class="state-chip @outcome.Css">@outcome.Text</span></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@if (_pending is not null)
+{
+    <dialog class="action-dialog operations-dialog control-dialog" aria-labelledby="control-dialog-heading" aria-describedby="control-dialog-description"
+            @ref="_dialogElement" @oncancel="CancelDialog" @oncancel:preventDefault>
+        <div class="dialog-header">
+            <div><p class="eyebrow">Authenticated local action</p><h2 id="control-dialog-heading">@_pending.Heading</h2></div>
+            <button type="button" class="icon-button" aria-label="Close dialog" disabled="@_submitting" @onclick="CancelDialog"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg></button>
+        </div>
+        <p id="control-dialog-description" class="dialog-intro">@_pending.Description</p>
+        @if (_pending.Kind == ControlKind.Restart)
+        {
+            <div class="operations-dialog-note"><strong>Restarts this host</strong><span>CameraAgent stops and its supervisor starts it again. Accepted work resumes from durable state.</span></div>
+        }
+        else
+        {
+            <div class="operations-dialog-note"><strong>Local authority only</strong><span>Changes capture admission on this CameraAgent only. Expected state version @_pending.ExpectedVersion.</span></div>
+            <fieldset disabled="@_submitting">
+                <legend class="visually-hidden">Command reason</legend>
+                <label class="ops-field">Reason (optional, recorded with the receipt)
+                    <input id="control-reason" autocomplete="off" maxlength="@ReasonMaxLength" @bind="_reasonInput" />
+                </label>
+            </fieldset>
+        }
+        @if (_commandError is not null)
+        {
+            <div class="ops-note-banner compact dialog-error" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@_commandError</span></div>
+        }
+        <footer>
+            <button type="button" id="control-dialog-cancel" class="button secondary" disabled="@_submitting" @onclick="CancelDialog">Cancel</button>
+            <button type="button" id="control-dialog-confirm" class="button primary" disabled="@_submitting" @onclick="ConfirmAsync">@(_submitting ? "Submitting…" : _pending.ConfirmLabel)</button>
+        </footer>
+    </dialog>
+}

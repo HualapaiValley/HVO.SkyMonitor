@@ -32,6 +32,20 @@ public sealed record CaptureControlCommandResult(
     DateTimeOffset RequestedUtc,
     DateTimeOffset CompletedUtc);
 
+/// <summary>
+/// One durable pause or resume command as the operator receipts list shows it. The idempotency key and payload hash
+/// are deliberately omitted; <see cref="Actor"/> is the stored actor string and must be mapped before display.
+/// </summary>
+public sealed record CaptureControlCommandRecord(
+    CaptureAdmissionState TargetState,
+    string Actor,
+    string? Reason,
+    bool IsComplete,
+    CaptureAdmissionState? ResultState,
+    bool Changed,
+    DateTimeOffset RequestedUtc,
+    DateTimeOffset? CompletedUtc);
+
 public sealed class CaptureControlValidationException : InvalidOperationException
 {
     public CaptureControlValidationException()
@@ -82,6 +96,7 @@ public sealed class CaptureAdmissionUnavailableException : InvalidOperationExcep
 
 public sealed class CaptureAdmissionCoordinator : IDisposable
 {
+    public const int MaxRecentCommands = 50;
     private const int GateRunning = 1;
     private const int GateClosed = 2;
     private readonly IRawCaptureIngress _rawCaptureIngress;
@@ -211,6 +226,21 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             actor,
             reason,
             cancellationToken);
+
+    /// <summary>
+    /// Reads the most recent durable pause and resume commands, newest first. The read is bounded by
+    /// <paramref name="limit"/> through the table's insertion order and never scans the full command history.
+    /// </summary>
+    public async Task<IReadOnlyList<CaptureControlCommandRecord>> GetRecentCommandsAsync(
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, MaxRecentCommands);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return await _store.ReadRecentCommandsAsync(limit, cancellationToken).ConfigureAwait(false);
+    }
 
     internal async Task<T> ExecuteCaptureBoundaryAsync<T>(
         Func<CancellationToken, Task<T>> action,
@@ -661,6 +691,39 @@ internal sealed class SqliteCaptureControlStore(
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new CaptureControlStoreResult(completed, true, false, true, requestedUtc, now);
+    }
+
+    internal async Task<IReadOnlyList<CaptureControlCommandRecord>> ReadRecentCommandsAsync(
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT target_state, actor, reason, status, result_state, changed, requested_unix_ms, completed_unix_ms
+            FROM capture_control_commands
+            ORDER BY rowid DESC
+            LIMIT $limit;
+            """;
+        command.Parameters.AddWithValue("$limit", limit);
+        var records = new List<CaptureControlCommandRecord>(limit);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var complete = string.Equals(reader.GetString(3), "completed", StringComparison.Ordinal);
+            records.Add(new CaptureControlCommandRecord(
+                string.Equals(reader.GetString(0), "running", StringComparison.Ordinal)
+                    ? CaptureAdmissionState.Running
+                    : CaptureAdmissionState.Paused,
+                reader.GetString(1),
+                NullableString(reader, 2),
+                complete,
+                NullableString(reader, 4) is { } resultState ? ParseState(resultState) : null,
+                reader.GetInt64(5) != 0,
+                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6)),
+                NullableLong(reader, 7) is { } completed ? DateTimeOffset.FromUnixTimeMilliseconds(completed) : null));
+        }
+        return records;
     }
 
     private static async Task<CaptureControlStoreResult?> ReadCommandAsync(

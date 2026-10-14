@@ -6,7 +6,7 @@ using Microsoft.JSInterop;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class ProcessingGraphsPage : ComponentBase, IAsyncDisposable
+public sealed partial class ProcessingGraphsPage : SiteTimeComponent, IAsyncDisposable
 {
     private ProcessingGraphRegistryState? _registry;
     private PendingGraphAction? _pending;

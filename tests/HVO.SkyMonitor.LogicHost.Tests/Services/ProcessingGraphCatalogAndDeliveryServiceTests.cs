@@ -892,6 +892,7 @@ public sealed class ProcessingGraphCatalogAndDeliveryServiceTests
             new(ProcessingGraphHosts.LogicHost, registry.Capabilities));
         Assert.IsTrue(rawOnly.IsValid);
         Assert.IsTrue(registry.Validate(rawOnly.Plan!));
+        Assert.IsNull(registry.FindUnsupported(rawOnly.Plan!));
 
         // A graph sourcing Preview (or any non-Raw/Calibrated role) is structurally valid but no ingest path would
         // ever invoke live scheduling for it, so central validation must reject it.
@@ -900,6 +901,7 @@ public sealed class ProcessingGraphCatalogAndDeliveryServiceTests
             previewSource, new(ProcessingGraphHosts.LogicHost, registry.Capabilities));
         Assert.IsTrue(previewCompiled.IsValid, string.Join(Environment.NewLine, previewCompiled.Diagnostics));
         Assert.IsFalse(registry.Validate(previewCompiled.Plan!));
+        Assert.AreEqual(ICentralProcessingGraphNodeRegistry.UnsupportedSources, registry.FindUnsupported(previewCompiled.Plan!));
 
         await using var context = CreateContext();
         var now = new DateTimeOffset(2026, 9, 3, 8, 0, 0, TimeSpan.Zero);

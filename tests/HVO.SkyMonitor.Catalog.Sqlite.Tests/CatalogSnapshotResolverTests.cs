@@ -1,15 +1,18 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text.Json.Nodes;
 
 namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 [DoNotParallelize]
 internal sealed class CatalogSnapshotResolverTests
 {
     private const string FixtureCatalogId = "hyg-v42-fixture";
     private const string ProductionCatalogId = "hyg-v42-production";
+    private const string ComposedProductionCatalogId = "hyg-v44-openngc-production";
     private const string SnapshotVersion = "hyg-v42-fixture-1";
     private static readonly string FixturePath = Path.Combine(
         AppContext.BaseDirectory, "Fixtures", "hyg-v42-bright-stars.sqlite");
@@ -71,6 +74,33 @@ internal sealed class CatalogSnapshotResolverTests
     }
 
     [TestMethod]
+    [Timeout(60_000)]
+    public void AuthenticateFileRefusesAFifoWithoutWaitingForAWriter()
+    {
+        // Without O_NONBLOCK the open of a FIFO blocks until a writer appears, so a FIFO planted under a retained or
+        // bundle file name hung the caller instead of failing type validation (issue #521).
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("Native FIFO creation is verified on Linux.");
+        }
+
+        var root = Directory.CreateTempSubdirectory("hvo-catalog-fifo-");
+        try
+        {
+            var fifo = Path.Combine(root.FullName, "retained.sqlite");
+            Assert.AreEqual(0, MkFifo(fifo, 0x180), $"mkfifo failed with errno {Marshal.GetLastPInvokeError()}.");
+
+            var refused = Assert.ThrowsExactly<InvalidDataException>(
+                () => CatalogSnapshotResolver.AuthenticateFile(fifo, "Catalog database"));
+            StringAssert.Contains(refused.Message, "must be a regular file", StringComparison.Ordinal);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [TestMethod]
     public void ResolveLoadsExplicitFixtureAndReturnsValidatedIdentity()
     {
         using var installation = CreateInstallation();
@@ -101,7 +131,8 @@ internal sealed class CatalogSnapshotResolverTests
 
         var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
 
-        StringAssert.Contains(exception.Message, "Expected 2, got 1", StringComparison.Ordinal);
+        Assert.AreEqual(
+            "Catalog manifest version 1 is unsupported. This runtime reads versions 2 through 3.", exception.Message);
     }
 
     [TestMethod]
@@ -137,11 +168,24 @@ internal sealed class CatalogSnapshotResolverTests
     public void ResolveRejectsUnknownManifestVersionExplicitly()
     {
         using var installation = CreateInstallation();
+        File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath, manifestVersion: 4));
+
+        var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
+
+        Assert.AreEqual(
+            "Catalog manifest version 4 is unsupported. This runtime reads versions 2 through 3.", exception.Message);
+    }
+
+    [TestMethod]
+    public void ResolveRejectsAVersion3ManifestWithoutItsDeepSkyContract()
+    {
+        // Raising only the version number of a stars-only manifest must not pass as a composed catalog.
+        using var installation = CreateInstallation();
         File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath, manifestVersion: 3));
 
         var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
 
-        StringAssert.Contains(exception.Message, "Expected 2, got 3", StringComparison.Ordinal);
+        Assert.AreEqual("Catalog manifest object 'database' is missing required property 'deepSky'.", exception.Message);
     }
 
     [TestMethod]
@@ -252,6 +296,39 @@ internal sealed class CatalogSnapshotResolverTests
             CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
                 installation.Root, ProductionCatalogId)));
         StringAssert.Contains(mismatch.Message, "source.projectUrl mismatch", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow("source-commit", "components[1].commit mismatch")]
+    [DataRow("input-hash", "components[1].inputs[0] mismatch")]
+    [DataRow("transformation-subject", "transformations[2].subjects differs from the approved specification")]
+    public void ResolveRejectsUnapprovedProductionComposition(string mutation, string expectedMismatch)
+    {
+        using var installation = CreateComposedProductionInstallation();
+        var manifest = JsonNode.Parse(File.ReadAllText(installation.ManifestPath))!;
+        var approvedDatabase = manifest["database"]!.ToJsonString();
+        switch (mutation)
+        {
+            case "source-commit":
+                manifest["components"]![1]!["commit"] = new string('a', 40);
+                break;
+            case "input-hash":
+                manifest["components"]![1]!["inputs"]![0]!["sha256"] = new string('a', 64);
+                break;
+            case "transformation-subject":
+                manifest["transformations"]![2]!["subjects"]![0] = "M102->NGC5866";
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(mutation));
+        }
+        Assert.AreEqual(approvedDatabase, manifest["database"]!.ToJsonString());
+        File.WriteAllText(installation.ManifestPath, manifest.ToJsonString());
+
+        var mismatch = Assert.ThrowsExactly<InvalidDataException>(() =>
+            CatalogSnapshotResolver.Resolve(new CatalogSnapshotResolverOptions(
+                installation.Root, ComposedProductionCatalogId)));
+
+        StringAssert.Contains(mismatch.Message, expectedMismatch, StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -742,6 +819,34 @@ internal sealed class CatalogSnapshotResolverTests
         return installation;
     }
 
+    private static Installation CreateComposedProductionInstallation()
+    {
+        using var stream = typeof(ApprovedCatalogSpecifications).Assembly.GetManifestResourceStream(
+            "HVO.SkyMonitor.Catalog.Sqlite.ApprovedCatalogSpecifications.json");
+        Assert.IsNotNull(stream);
+        var registry = JsonNode.Parse(stream)!;
+        var manifest = registry["specifications"]!.AsArray()
+            .Single(item => item!["catalogId"]!.GetValue<string>() == ComposedProductionCatalogId)!.DeepClone().AsObject();
+        var version = manifest["packageVersionPrefix"]!.GetValue<string>() + "1";
+        manifest.Remove("catalogId");
+        manifest.Remove("packageLineage");
+        manifest.Remove("packageVersionPrefix");
+        manifest["catalog"]!["id"] = ComposedProductionCatalogId;
+        manifest["package"] = new JsonObject { ["kind"] = "production", ["version"] = version };
+        manifest["topology"]!.AsObject().Remove("unresolvedEndpoints");
+
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-catalog-install-{Guid.NewGuid():N}");
+        var versionDirectory = Path.Combine(root, "versions", version);
+        Directory.CreateDirectory(versionDirectory);
+        var pointerPath = Path.Combine(root, "current");
+        Directory.CreateSymbolicLink(pointerPath, $"versions/{version}");
+        var manifestPath = Path.Combine(versionDirectory, "manifest.json");
+        File.WriteAllText(manifestPath, manifest.ToJsonString());
+        // Composition is checked before retained files or database loading; no production database copy is needed.
+        var databasePath = Path.Combine(versionDirectory, manifest["database"]!["relativePath"]!.GetValue<string>());
+        return new Installation(root, pointerPath, manifestPath, databasePath);
+    }
+
     private static string CreateManifest(
         string databasePath,
         int manifestVersion = 2,
@@ -951,10 +1056,14 @@ internal sealed class CatalogSnapshotResolverTests
 
     private sealed record FileFingerprint(long Length, string Sha256);
 
-#pragma warning disable SYSLIB1054 // Test-only Unix hardlink setup does not warrant enabling unsafe interop generation.
+#pragma warning disable SYSLIB1054 // Test-only Unix hardlink and FIFO setup does not warrant enabling unsafe interop generation.
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("libc", EntryPoint = "link", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
     private static extern int Link(string source, string destination);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libc", EntryPoint = "mkfifo", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
+    private static extern int MkFifo(string path, uint mode);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("kernel32.dll", EntryPoint = "CreateHardLinkW", CharSet = CharSet.Unicode, SetLastError = true)]

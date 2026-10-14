@@ -3,6 +3,8 @@ using System.Data.Common;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Tracing;
+using System.Diagnostics.Metrics;
+using System.Runtime.CompilerServices;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Runtime;
@@ -24,8 +26,6 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Data.SqlClient;
-using Minio;
-using Minio.DataModel.Args;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -64,7 +64,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             string.Join(' ', TestClients.SystemCameraAgent.Scopes)).ConfigureAwait(false);
         SetAuthorization(client, token.AccessToken);
 
-        using var protocolCounter = new ProtocolCounter(IntegrationTestFixture.ExternalS3Endpoint);
+        using var protocolCounter = new ProtocolCounter();
         var allocator = new UploadAllocator(w1, w2);
         var successfulUploads = new List<ExpectedUpload>();
         var steadyState = new List<IngestMeasurement>();
@@ -132,7 +132,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             durableFailures: false).ConfigureAwait(false);
         successfulUploads.AddRange(corruptUploads);
 
-        var objectFault = new ObjectProtocolFaultHandler { InnerHandler = new SocketsHttpHandler() };
+        var objectFault = new ObjectProtocolFaultHandler(fixture.Factory.Services.GetRequiredService<IObjectStore>());
         using var objectFaultFactory = CreateObjectFaultFactory(fixture, objectFault, startWorker: false);
         using var objectFaultClient = objectFaultFactory.CreateClient();
         SetAuthorization(objectFaultClient, token.AccessToken);
@@ -173,6 +173,15 @@ public sealed partial class LogicHostIngestPerformanceTests
         successfulUploads.AddRange(restartUploads);
 
         var correctness = await ValidatePersistedResultsAsync(fixture, successfulUploads, w1, w2).ConfigureAwait(false);
+        Assert.AreEqual(StandardWarmups + StandardMeasurements, objectFault.InjectedFailures);
+        foreach (var measurement in steadyState)
+        {
+            var observed = measurement.Protocol.Observed;
+            Assert.AreEqual(0, observed.MinioRequestsObserved);
+            Assert.IsNotNull(observed.ObjectStore);
+            Assert.IsGreaterThan(0, observed.ObjectStore.GetValueOrDefault("operations.put.success"));
+            Assert.IsGreaterThan(0, observed.ObjectStore.GetValueOrDefault("payload-bytes.put.write"));
+        }
         var locationBindingMethod = typeof(ArtifactIngestService).GetMethod(
             "BindCaptureLocationAsync",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
@@ -266,7 +275,8 @@ public sealed partial class LogicHostIngestPerformanceTests
                     Sdk = ReadPinnedSdkVersion(evidenceRun.RepositoryRoot),
                     Configuration = "Release",
                     SqlServer = "SQL Server 2022 CU26 Ubuntu 22.04 Testcontainer",
-                    Minio = "MinIO RELEASE.2025-09-07T16-13-09Z Testcontainer",
+                    Minio = "N/A: no S3 endpoint or container",
+                    ObjectStore = "Filesystem; fixture-owned local root",
                     Http = "ASP.NET Core TestServer"
                 }
             },
@@ -293,8 +303,8 @@ public sealed partial class LogicHostIngestPerformanceTests
                 Latency = "Nearest-rank median/p95/maximum over 30 independent measured logical operations after five warmups; W4 uses 200 measured operations after 20 warmups.",
                 Resources = "Process.TotalProcessorTime, 100 ms System.Runtime allocation-rate samples with up to one interval of uncertainty at each boundary, and 10 ms Process.WorkingSet64 sampling for the test process including TestServer.",
                 Sql = "EF Core diagnostic events observe commands and transaction start/commit/rollback/failure. SQL wire bytes are unavailable from the provider and are reported as unavailable, not estimated.",
-                ObjectStore = "System.Net.Http diagnostics and the deterministic boundary handler observe MinIO methods and request/response Content-Length when supplied. Content-Length is a header observation, not a claim that HEAD response bodies transferred; missing values remain unavailable.",
-                Faults = "Object faults return HTTP 503 from a delegating handler at the MinIO S3 PUT boundary. SQL faults throw at EF TransactionCommittingAsync on each second ingest transaction, after the durable intent commit and object publication.",
+                ObjectStore = "Production object-storage Meter counters record completed provider operations by outcome and logical payload bytes. Legacy Minio/HTTP counters remain zero (no S3 traffic); ObjectStore and ObjectStoreOperations are additive provider-neutral fields. Legacy Correctness.Minio* names retain store-neutral object validation totals. Provider payload bytes are not filesystem or wire I/O.",
+                Faults = "Object faults throw a provider-neutral Transient failure before IObjectStore.PutAsync reaches the real filesystem provider. SQL faults throw at EF TransactionCommittingAsync on each second ingest transaction, after the durable intent commit and object publication.",
                 HttpBytes = "Logical payload bytes are fixture-derived application bytes. Exact request-content body bytes, including multipart framing, are counted separately for every multipart and manifest-only status POST; TestServer transport headers are excluded.",
                 Correctness = "Acknowledgement identity/checksum/length, normalized SQL state/profile/layout/recipe/empty ordered lineage, reconstruction, and every final object SHA-256 are asserted.",
                 PayloadMemory = "N/A: phase-isolated object-type and copy attribution requires profiler instrumentation disproportionate to this metadata-only change."
@@ -316,9 +326,9 @@ public sealed partial class LogicHostIngestPerformanceTests
             },
             IO = new
             {
-                Scope = "Per-scenario HTTP, SQL transaction, and MinIO operation/byte counters are recorded under Measurements.Protocol.",
+                Scope = "Per-scenario ingest HTTP, SQL transaction, and filesystem provider operation/payload counters are recorded under Measurements.Protocol.",
                 SqlWireBytes = "N/A: Microsoft.Data.SqlClient diagnostics do not expose wire bytes.",
-                FileSystemBytes = "N/A: container filesystem bytes are not instrumented.",
+                FileSystemBytes = "N/A: filesystem system calls, metadata, journal and physical disk bytes are not instrumented; provider payload bytes are reported separately.",
                 QueueState = "Durable count, bytes, age, object, and reconstruction backlog snapshots are recorded per scenario."
             },
             Correctness = correctness,
@@ -333,7 +343,7 @@ public sealed partial class LogicHostIngestPerformanceTests
                 LohInterpretation = "Payload arrays are LOH-sized. Process allocation and 10 ms RSS peaks include LOH effects, but System.Runtime does not provide a phase-isolated LOH byte counter; no separate LOH byte value is claimed.",
                 W4Scaling = CreateW4ScalingEvidence(steadyState),
                 Interpretation = "Physical timing is environment-specific; durable state, identity, lineage, and checksums are pass/fail.",
-                ResidualRisk = "TestServer excludes kernel TCP/TLS and process counters exclude SQL Server/MinIO containers. SQL wire bytes and absent HTTP Content-Length values are unavailable."
+                ResidualRisk = "TestServer excludes kernel TCP/TLS and process counters include the filesystem provider and exclude the SQL Server container. SQL wire bytes and physical filesystem I/O are unavailable; historical S3 trials are not directly comparable."
             },
             HarnessElapsedMilliseconds = Stopwatch.GetElapsedTime(harnessStarted).TotalMilliseconds,
             RecordedAtUtc = DateTimeOffset.UtcNow
@@ -504,7 +514,7 @@ public sealed partial class LogicHostIngestPerformanceTests
         protocolCounter.Start();
         var recoveryStarted = Stopwatch.GetTimestamp();
         var recoveryStartedAtUtc = DateTimeOffset.UtcNow;
-        var recoveryObjectProtocol = new ObjectProtocolFaultHandler { InnerHandler = new SocketsHttpHandler() };
+        var recoveryObjectProtocol = new ObjectProtocolFaultHandler(fixture.Factory.Services.GetRequiredService<IObjectStore>());
         using (var recoveryFactory = CreateObjectFaultFactory(fixture, recoveryObjectProtocol, startWorker: true))
         {
             _ = recoveryFactory.Services;
@@ -548,17 +558,8 @@ public sealed partial class LogicHostIngestPerformanceTests
         bool startWorker)
         => fixture.Factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
-            services.RemoveAll<IMinioClient>();
-            services.AddSingleton<IMinioClient>(_ =>
-            {
-                var httpClient = new HttpClient(faultHandler, disposeHandler: false);
-                return new MinioClient()
-                    .WithEndpoint(IntegrationTestFixture.ExternalS3Endpoint)
-                    .WithCredentials(IntegrationTestFixture.ExternalS3AccessKey, IntegrationTestFixture.ExternalS3SecretKey)
-                    .WithHttpClient(httpClient, disposeHttpClient: true)
-                    .Build();
-            });
-            ObjectStoreTestClient.Replace(services);
+            services.RemoveAll<IObjectStore>();
+            services.AddSingleton<IObjectStore>(faultHandler);
             if (startWorker)
             {
                 services.AddHostedService<CentralArtifactReconciliationService>();
@@ -886,7 +887,7 @@ public sealed partial class LogicHostIngestPerformanceTests
         Assert.AreEqual(uploads.Count, artifacts.Select(static artifact => artifact.StorageReference).Distinct(StringComparer.Ordinal).Count());
 
         await using var validationScope = fixture.Factory.Services.CreateAsyncScope();
-        var minio = validationScope.ServiceProvider.GetRequiredService<IMinioClient>();
+        var objectStore = validationScope.ServiceProvider.GetRequiredService<IObjectStore>();
         long objectBytesValidated = 0;
         foreach (var artifact in artifacts)
         {
@@ -949,16 +950,15 @@ public sealed partial class LogicHostIngestPerformanceTests
 
             var objectKey = artifact.StorageReference[$"object://{ArtifactBucket}/".Length..];
             string? objectChecksum = null;
-            var objectInfo = await minio.StatObjectAsync(new StatObjectArgs()
-                .WithBucket(ArtifactBucket).WithObject(objectKey)).ConfigureAwait(false);
-            await minio.GetObjectAsync(new GetObjectArgs()
-                .WithBucket(ArtifactBucket)
-                .WithObject(objectKey)
-                .WithCallbackStream(stream => objectChecksum = Convert.ToHexString(SHA256.HashData(stream))))
-                .ConfigureAwait(false);
-            Assert.AreEqual(expected.Workload.Payload.LongLength, objectInfo.Size);
+            var objectInfo = await objectStore.StatAsync(ArtifactBucket, objectKey, CancellationToken.None).ConfigureAwait(false);
+            await objectStore.ReadAsync(ArtifactBucket, objectKey, objectInfo.Generation, (stream, _) =>
+            {
+                objectChecksum = Convert.ToHexString(SHA256.HashData(stream));
+                return Task.CompletedTask;
+            }, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(expected.Workload.Payload.LongLength, objectInfo.ContentLength);
             Assert.AreEqual(expected.Workload.ChecksumSha256, objectChecksum, ignoreCase: true);
-            objectBytesValidated += objectInfo.Size;
+            objectBytesValidated += objectInfo.ContentLength;
         }
 
         return new(
@@ -980,7 +980,7 @@ public sealed partial class LogicHostIngestPerformanceTests
             objectBytesValidated,
             w1.ChecksumSha256,
             w2.ChecksumSha256,
-            "Every successful acknowledgement and normalized identity/layout/profile/recipe/state was checked; raw lineage was exactly the declared empty ordered list; every final object passed HEAD length and streamed SHA-256 verification.");
+            "Every successful acknowledgement and normalized identity/layout/profile/recipe/state was checked; raw lineage was exactly the declared empty ordered list; every final object passed provider metadata length and generation-bound streamed SHA-256 verification. Legacy Minio* correctness field names denote these provider-neutral totals.");
     }
 
     private static Workload CreateWorkload(string id, int width, int height, CameraPixelFormat format)
@@ -1371,83 +1371,29 @@ public sealed partial class LogicHostIngestPerformanceTests
         }
     }
 
-    private sealed class ObjectProtocolFaultHandler : DelegatingHandler
+    private sealed class ObjectProtocolFaultHandler(IObjectStore inner) : PerformanceObjectStoreDecorator(inner)
     {
         private int _armed;
         private long _injectedFailures;
-        private long _requests;
-        private long _get;
-        private long _put;
-        private long _post;
-        private long _delete;
-        private long _head;
-        private long _requestContentLengthBytes;
-        private long _responseContentLengthBytes;
-        private long _requestsWithoutContentLength;
-        private long _responsesWithoutContentLength;
 
         public long InjectedFailures => Interlocked.Read(ref _injectedFailures);
-
         public void Arm() => Volatile.Write(ref _armed, 1);
-
         public void Disarm() => Volatile.Write(ref _armed, 0);
 
         public ObjectBoundarySnapshot Snapshot()
-            => new(
-                Interlocked.Read(ref _requests),
-                Interlocked.Read(ref _get),
-                Interlocked.Read(ref _put),
-                Interlocked.Read(ref _post),
-                Interlocked.Read(ref _delete),
-                Interlocked.Read(ref _head),
-                Interlocked.Read(ref _requestContentLengthBytes),
-                Interlocked.Read(ref _responseContentLengthBytes),
-                Interlocked.Read(ref _requestsWithoutContentLength),
-                Interlocked.Read(ref _responsesWithoutContentLength),
-                Interlocked.Read(ref _injectedFailures));
+            => new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, InjectedFailures)
+            {
+                ObjectStoreOperations = OperationCounts()
+            };
 
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override ValueTask BeforeOperationAsync(string operation, string key, CancellationToken cancellationToken)
         {
-            Interlocked.Increment(ref _requests);
-            if (request.Content?.Headers.ContentLength is long requestBytes)
-            {
-                Interlocked.Add(ref _requestContentLengthBytes, requestBytes);
-            }
-            else
-            {
-                Interlocked.Increment(ref _requestsWithoutContentLength);
-            }
-            if (request.Method == HttpMethod.Get) Interlocked.Increment(ref _get);
-            else if (request.Method == HttpMethod.Put) Interlocked.Increment(ref _put);
-            else if (request.Method == HttpMethod.Post) Interlocked.Increment(ref _post);
-            else if (request.Method == HttpMethod.Delete) Interlocked.Increment(ref _delete);
-            else if (request.Method == HttpMethod.Head) Interlocked.Increment(ref _head);
-            if (Volatile.Read(ref _armed) == 1 && request.Method == HttpMethod.Put)
+            if (Volatile.Read(ref _armed) == 1 && operation == "put")
             {
                 Interlocked.Increment(ref _injectedFailures);
-                var faultResponse = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
-                {
-                    RequestMessage = request,
-                    Content = new StringContent("issue-98 deterministic MinIO PUT fault", Encoding.UTF8, "text/plain")
-                };
-                ObserveResponse(faultResponse);
-                return faultResponse;
+                throw new ObjectStoreException(ObjectStoreFailureKind.Transient, operation);
             }
-            var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            ObserveResponse(response);
-            return response;
-        }
-
-        private void ObserveResponse(HttpResponseMessage response)
-        {
-            if (response.Content.Headers.ContentLength is long responseBytes)
-            {
-                Interlocked.Add(ref _responseContentLengthBytes, responseBytes);
-            }
-            else
-            {
-                Interlocked.Increment(ref _responsesWithoutContentLength);
-            }
+            return ValueTask.CompletedTask;
         }
     }
 
@@ -1462,7 +1408,8 @@ public sealed partial class LogicHostIngestPerformanceTests
         private const string HttpRequestStop = "System.Net.Http.HttpRequestOut.Stop";
         private readonly ConcurrentBag<IDisposable> _subscriptions = [];
         private readonly IDisposable _allListeners;
-        private readonly string _minioAuthority;
+        private readonly string? _minioAuthority;
+        private readonly PerformanceObjectStoreMeasurements _objectStore = new();
         private long _sqlCommands;
         private long _transactionsStarted;
         private long _transactionsCommitted;
@@ -1480,7 +1427,7 @@ public sealed partial class LogicHostIngestPerformanceTests
         private long _minioResponsesWithoutContentLength;
         private int _active;
 
-        public ProtocolCounter(string minioEndpoint)
+        public ProtocolCounter(string? minioEndpoint = null)
         {
             _minioAuthority = minioEndpoint;
             _allListeners = DiagnosticListener.AllListeners.Subscribe(this);
@@ -1488,6 +1435,7 @@ public sealed partial class LogicHostIngestPerformanceTests
 
         public void Start()
         {
+            _objectStore.Start();
             _sqlCommands = 0;
             _transactionsStarted = 0;
             _transactionsCommitted = 0;
@@ -1524,7 +1472,10 @@ public sealed partial class LogicHostIngestPerformanceTests
                 Interlocked.Read(ref _minioRequestContentBytes),
                 Interlocked.Read(ref _minioResponseContentBytes),
                 Interlocked.Read(ref _minioRequestsWithoutContentLength),
-                Interlocked.Read(ref _minioResponsesWithoutContentLength));
+                Interlocked.Read(ref _minioResponsesWithoutContentLength))
+            {
+                ObjectStore = _objectStore.Stop()
+            };
         }
 
         public void OnNext(DiagnosticListener listener)
@@ -1609,6 +1560,7 @@ public sealed partial class LogicHostIngestPerformanceTests
 
         public void Dispose()
         {
+            _objectStore.Dispose();
             _allListeners.Dispose();
             foreach (var subscription in _subscriptions)
             {
@@ -1831,7 +1783,10 @@ public sealed partial class LogicHostIngestPerformanceTests
         long MinioRequestContentLengthBytesObserved,
         long MinioResponseContentLengthBytesObserved,
         long MinioRequestsWithoutContentLength,
-        long MinioResponsesWithoutContentLength);
+        long MinioResponsesWithoutContentLength)
+    {
+        public IReadOnlyDictionary<string, long>? ObjectStore { get; init; }
+    }
     private sealed record ObjectBoundarySnapshot(
         long RequestsObserved,
         long GetObserved,
@@ -1843,7 +1798,10 @@ public sealed partial class LogicHostIngestPerformanceTests
         long ResponseContentLengthBytesObserved,
         long RequestsWithoutContentLength,
         long ResponsesWithoutContentLength,
-        long InjectedFailures);
+        long InjectedFailures)
+    {
+        public IReadOnlyDictionary<string, long>? ObjectStoreOperations { get; init; }
+    }
     private sealed record ProtocolEvidence(HttpEvidence Http, ProtocolSnapshot Observed, string SqlWireBytes);
     private sealed record PhaseEvidence(
         double ElapsedMilliseconds,
@@ -1921,4 +1879,121 @@ public sealed partial class LogicHostIngestPerformanceTests
         string W1PayloadSha256,
         string W2PayloadSha256,
         string Checks);
+}
+
+// Kept in the allowlisted ingest harness so #971 can carry the two-file correction
+// onto its pinned product revision without widening the evidence-harness policy.
+internal abstract class PerformanceObjectStoreDecorator(IObjectStore inner) : IObjectStore
+{
+    private readonly ConcurrentDictionary<string, long> _operations = new(StringComparer.Ordinal);
+
+    protected IReadOnlyDictionary<string, long> OperationCounts()
+        => new SortedDictionary<string, long>(_operations, StringComparer.Ordinal);
+
+    protected abstract ValueTask BeforeOperationAsync(string operation, string key, CancellationToken cancellationToken);
+
+    private async ValueTask ObserveAsync(string operation, string key, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        _operations.AddOrUpdate(operation, 1, static (_, count) => count + 1);
+        await BeforeOperationAsync(operation, key, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<bool> BucketExistsAsync(string bucket, CancellationToken cancellationToken)
+    {
+        await ObserveAsync("bucket-exists", bucket, cancellationToken).ConfigureAwait(false);
+        return await inner.BucketExistsAsync(bucket, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task PutAsync(string bucket, string key, Stream content, long contentLength, string contentType, CancellationToken cancellationToken)
+    {
+        await ObserveAsync("put", key, cancellationToken).ConfigureAwait(false);
+        await inner.PutAsync(bucket, key, content, contentLength, contentType, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<ObjectStoreObjectMetadata> StatAsync(string bucket, string key, CancellationToken cancellationToken)
+    {
+        await ObserveAsync("stat", key, cancellationToken).ConfigureAwait(false);
+        return await inner.StatAsync(bucket, key, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task ReadAsync(string bucket, string key, string? generation, Func<Stream, CancellationToken, Task> reader, CancellationToken cancellationToken)
+    {
+        await ObserveAsync("read", key, cancellationToken).ConfigureAwait(false);
+        await inner.ReadAsync(bucket, key, generation, reader, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task CopyAsync(string bucket, string sourceKey, string destinationKey, CancellationToken cancellationToken)
+    {
+        await ObserveAsync("copy", destinationKey, cancellationToken).ConfigureAwait(false);
+        await inner.CopyAsync(bucket, sourceKey, destinationKey, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task DeleteAsync(string bucket, string key, CancellationToken cancellationToken)
+    {
+        await ObserveAsync("delete", key, cancellationToken).ConfigureAwait(false);
+        await inner.DeleteAsync(bucket, key, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async IAsyncEnumerable<ObjectStoreItem> ListAsync(string bucket, string prefix,
+        [EnumeratorCancellation] CancellationToken cancellationToken, string? startAfter = null)
+    {
+        await ObserveAsync("list", prefix, cancellationToken).ConfigureAwait(false);
+        await foreach (var item in inner.ListAsync(bucket, prefix, cancellationToken, startAfter).ConfigureAwait(false))
+        {
+            yield return item;
+        }
+    }
+}
+
+internal sealed class PerformanceObjectStoreMeasurements : IDisposable
+{
+    private readonly MeterListener _listener = new();
+    private readonly ConcurrentDictionary<string, long> _values = new(StringComparer.Ordinal);
+    private int _active;
+
+    public PerformanceObjectStoreMeasurements()
+    {
+        _listener.InstrumentPublished = (instrument, listener) =>
+        {
+            if (instrument.Meter.Name == ObjectStoreTelemetry.MeterName
+                && instrument.Name is "skymonitor.central.object_storage.operations" or "skymonitor.central.object_storage.bytes")
+            {
+                listener.EnableMeasurementEvents(instrument);
+            }
+        };
+        _listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) =>
+        {
+            if (Volatile.Read(ref _active) == 0) return;
+            string? operation = null;
+            string? outcome = null;
+            string? direction = null;
+            foreach (var tag in tags)
+            {
+                if (tag.Key == "operation") operation = tag.Value?.ToString();
+                else if (tag.Key == "outcome") outcome = tag.Value?.ToString();
+                else if (tag.Key == "direction") direction = tag.Value?.ToString();
+            }
+            var key = instrument.Name.EndsWith(".operations", StringComparison.Ordinal)
+                ? $"operations.{operation}.{outcome}"
+                : $"payload-bytes.{operation}.{direction}";
+            _values.AddOrUpdate(key, value, (_, current) => current + value);
+        });
+        _listener.Start();
+    }
+
+    public void Start()
+    {
+        Volatile.Write(ref _active, 0);
+        _values.Clear();
+        Volatile.Write(ref _active, 1);
+    }
+
+    public IReadOnlyDictionary<string, long> Stop()
+    {
+        Volatile.Write(ref _active, 0);
+        return new SortedDictionary<string, long>(_values, StringComparer.Ordinal);
+    }
+
+    public void Dispose() => _listener.Dispose();
 }

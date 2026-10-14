@@ -755,7 +755,8 @@ internal sealed partial class CentralTransientValidationExecutor(
         if (!string.Equals(canonical.Json, validation.ExecutionOptionsJson, StringComparison.Ordinal) ||
             !string.Equals(canonical.Sha256, validation.ExecutionOptionsIdentitySha256, StringComparison.Ordinal) ||
             options.SchemaVersion != CentralTransientExecutionOptionsV1.CurrentSchemaVersion ||
-            options.MaskPolicy != CentralTransientMaskPolicyV1.ProfileBoundProjectedStarsV1)
+            options.MaskPolicy is not (CentralTransientMaskPolicyV1.ProfileBoundProjectedStarsV1 or
+                CentralTransientMaskPolicyV1.ProfileBoundExposureSweptStarsV2))
         {
             throw new CentralDerivativeInputRejectedException("The durable transient execution options failed integrity validation.");
         }

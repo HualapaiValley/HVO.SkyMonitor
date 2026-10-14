@@ -1,10 +1,14 @@
+using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using FluentAssertions;
+using FluentAssertions.Execution;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -144,6 +148,61 @@ public sealed class DeploymentLocationReconciliationServiceTests
     }
 
     [TestMethod]
+    public async Task ProcessNextAsync_IntegrityRejectionIsContainedPerArtifactAndSchedulingMovesPastIt()
+    {
+        var now = new DateTimeOffset(2026, 8, 1, 12, 0, 0, TimeSpan.Zero);
+        var frames = new[]
+        {
+            new FrameSpec(Guid.NewGuid(), now.AddMinutes(-3)),
+            new FrameSpec(Guid.NewGuid(), now.AddMinutes(-2)),
+            new FrameSpec(Guid.NewGuid(), now.AddMinutes(-1))
+        };
+        await using var database = await ReconciliationDatabase.CreateAsync("Rejected", now, frames).ConfigureAwait(false);
+        var scheduler = new IntegrityRejectingScheduler();
+        var clock = new MutableTimeProvider(now);
+        var logger = new RecordingLogger<DeploymentLocationReconciliationService>();
+        using var outcomes = new ReconciliationOutcomeCollector();
+
+        // A scheduling batch of two puts a good artifact behind the rejected one in the same pass and leaves the
+        // third for a later pass, so both the in-pass and the cross-pass head-of-line behaviour are observed.
+        _ = await DrainAsync(database, scheduler, clock, CreateOptions(3, 2), logger).ConfigureAwait(false);
+
+        await using var verification = database.CreateContext();
+        var work = await verification.DeploymentLocationReconciliationWork.AsNoTracking().SingleAsync()
+            .ConfigureAwait(false);
+        var artifacts = await verification.CentralArtifacts.AsNoTracking()
+            .ToDictionaryAsync(item => item.ArtifactId).ConfigureAwait(false);
+        using (new AssertionScope())
+        {
+            work.Status.Should().Be(DeploymentLocationReconciliationStatuses.Completed,
+                "an integrity rejection for one artifact must not hold the whole work item in retry");
+            work.LastErrorCode.Should().BeNull();
+            work.AttemptCount.Should().Be(0);
+            work.CompletedCaptureCount.Should().Be(3);
+            work.ScheduledArtifactCount.Should().Be(2, "the rejected artifact was not scheduled");
+            scheduler.Calls.Should().HaveCount(3).And.OnlyHaveUniqueItems(
+                "every artifact is attempted once and the rejected one is not reselected");
+            scheduler.Calls.Should().StartWith(scheduler.RejectedArtifactId!.Value);
+            scheduler.WindowCalls.Should().BeEquivalentTo(scheduler.Calls.Skip(1));
+            var rejected = artifacts[scheduler.RejectedArtifactId!.Value];
+            rejected.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+            rejected.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+            rejected.StateReasonCode.Should().Be("object.derivative-scheduling-rejected");
+            artifacts.Values.Where(item => item.ArtifactId != scheduler.RejectedArtifactId)
+                .Should().HaveCount(2).And.OnlyContain(item => item.StateReasonCode == null);
+            logger.Entries.Where(entry => entry.EventId.Id == 7413).Should().BeEmpty();
+            var rejection = logger.Entries.Should().ContainSingle(entry => entry.EventId.Id == 2143).Subject;
+            rejection.Level.Should().Be(LogLevel.Error);
+            rejection.Message.Should().Contain("projected-scene.source-mismatch")
+                .And.NotContain(scheduler.RejectedArtifactId!.Value.ToString());
+            rejection.Exception.Should().BeNull();
+            outcomes.Observations.Should().NotContain(item => item.Phase == "work" && item.Outcome == "failed");
+            outcomes.Observations.Where(item => item.Outcome == "scheduling-rejected")
+                .Should().ContainSingle().Which.Should().Be(("scheduling", "scheduling-rejected", 1L));
+        }
+    }
+
+    [TestMethod]
     public async Task ProcessNextAsync_FencesSchedulingBeforeAuthorityGenerationReset()
     {
         var now = new DateTimeOffset(2026, 8, 1, 12, 0, 0, TimeSpan.Zero);
@@ -233,13 +292,14 @@ public sealed class DeploymentLocationReconciliationServiceTests
 
     private static async Task<int> DrainAsync(
         ReconciliationDatabase database,
-        RecordingScheduler scheduler,
+        ICentralDerivativeJobScheduler scheduler,
         MutableTimeProvider clock,
-        DeploymentLocationReconciliationOptions options)
+        DeploymentLocationReconciliationOptions options,
+        ILogger<DeploymentLocationReconciliationService>? logger = null)
     {
         for (var calls = 1; calls <= 30; calls++)
         {
-            if (!await ProcessOneAsync(database, scheduler, clock, options).ConfigureAwait(false))
+            if (!await ProcessOneAsync(database, scheduler, clock, options, logger).ConfigureAwait(false))
             {
                 return calls;
             }
@@ -252,7 +312,8 @@ public sealed class DeploymentLocationReconciliationServiceTests
         ReconciliationDatabase database,
         ICentralDerivativeJobScheduler scheduler,
         MutableTimeProvider clock,
-        DeploymentLocationReconciliationOptions options)
+        DeploymentLocationReconciliationOptions options,
+        ILogger<DeploymentLocationReconciliationService>? logger = null)
     {
         await using var context = database.CreateContext();
         using var telemetry = new DeploymentLocationTelemetry();
@@ -262,7 +323,7 @@ public sealed class DeploymentLocationReconciliationServiceTests
             telemetry,
             Options.Create(options),
             clock,
-            NullLogger<DeploymentLocationReconciliationService>.Instance);
+            logger ?? NullLogger<DeploymentLocationReconciliationService>.Instance);
         return await processor.ProcessNextAsync().ConfigureAwait(false);
     }
 
@@ -346,6 +407,95 @@ public sealed class DeploymentLocationReconciliationServiceTests
             WindowCalls.Add(artifactId);
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class IntegrityRejectingScheduler : ICentralDerivativeJobScheduler
+    {
+        internal List<Guid> Calls { get; } = [];
+        internal List<Guid> WindowCalls { get; } = [];
+        internal Guid? RejectedArtifactId { get; private set; }
+
+        public Task EnsureRequiredJobsAsync(
+            CentralArtifact artifact,
+            DateTimeOffset now,
+            CancellationToken cancellationToken)
+            => throw new AssertFailedException("Reconciliation must use the durable artifact-identity overload.");
+
+        public Task EnsureRequiredJobsAsync(
+            Guid devicePublicId,
+            Guid artifactId,
+            DateTimeOffset now,
+            CancellationToken cancellationToken)
+        {
+            // The first artifact in scheduling order is the one whose evidence fails validation, so it always
+            // leads the window it is selected in.
+            Calls.Add(artifactId);
+            RejectedArtifactId ??= artifactId;
+            return artifactId == RejectedArtifactId
+                ? throw new CentralArtifactIntegrityException("projected-scene.source-mismatch")
+                : Task.CompletedTask;
+        }
+
+        public Task ResolveAffectedWindowsAsync(
+            Guid devicePublicId,
+            Guid artifactId,
+            DateTimeOffset now,
+            CancellationToken cancellationToken)
+        {
+            WindowCalls.Add(artifactId);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed record LogEntry(LogLevel Level, EventId EventId, string Message, Exception? Exception);
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public ConcurrentQueue<LogEntry> Entries { get; } = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => Entries.Enqueue(new LogEntry(logLevel, eventId, formatter(state, exception), exception));
+    }
+
+    private sealed class ReconciliationOutcomeCollector : IDisposable
+    {
+        private readonly MeterListener listener = new();
+
+        internal ConcurrentQueue<(string Phase, string Outcome, long Items)> Observations { get; } = new();
+
+        internal ReconciliationOutcomeCollector()
+        {
+            listener.InstrumentPublished = (instrument, meterListener) =>
+            {
+                if (instrument.Meter.Name == DeploymentLocationTelemetry.MeterName
+                    && instrument.Name == "skymonitor.deployment_location.reconciliation.items")
+                {
+                    meterListener.EnableMeasurementEvents(instrument);
+                }
+            };
+            listener.SetMeasurementEventCallback<long>((_, value, tags, _) =>
+            {
+                string? phase = null;
+                string? outcome = null;
+                foreach (var tag in tags)
+                {
+                    if (tag.Key == "phase")
+                    {
+                        phase = tag.Value as string;
+                    }
+                    else if (tag.Key == "outcome")
+                    {
+                        outcome = tag.Value as string;
+                    }
+                }
+                Observations.Enqueue((phase ?? string.Empty, outcome ?? string.Empty, value));
+            });
+            listener.Start();
+        }
+
+        public void Dispose() => listener.Dispose();
     }
 
     private sealed class BlockingScheduler : ICentralDerivativeJobScheduler

@@ -32,12 +32,42 @@ Issues merged into `development/v1` are closed explicitly with the pull request 
 
 The branch currently requires:
 
-- **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace validation and pinned workflow linting.
+- **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace validation, pinned workflow linting, shell syntax and the inexpensive CI-control regression checks.
 - **Development v1 / Build and Unit** on a self-hosted x64 runner: pinned SDK setup, solution restore, warning-clean Release build, and the complete Docker-disabled Unit selection.
 
 Draft pull requests run hosted Preflight only. Marking a reviewed pull request ready starts the self-hosted Build and Unit check. Pushes to `development/v1` run both checks.
 
-The target controlling path is under ten minutes. Recent bootstrap and pilot runs completed in about four minutes, but timings are observations rather than a compatibility promise. Each self-hosted run retains stage timing, largest-process RSS, and Unit TRX evidence.
+The target controlling path is under ten minutes, with a 720-second cumulative
+workload budget and a 15-minute hard job timeout. Each self-hosted run retains
+restore/build/Unit timing, largest-process RSS, and Unit TRX evidence in the
+`hvo-development-v1-ci-v4` manifest. Failed runs retain their evidence too.
+
+### Short checks and full qualification
+
+The operator-approved #1142 split keeps these checks off the short path:
+
+| Check | Required full-qualification owner in `ci.yml` |
+| --- | --- |
+| Whole-repository ShellCheck and its contract tests | Quality |
+| Exhaustive test discovery, category disjointness and inventory counts | Build |
+| Integration, coverage, architecture/publish and migrations | Existing full-matrix jobs |
+| Deployment qualification | Existing selected Deployment Contracts job |
+
+The short run still builds the entire solution warning-clean and executes the
+complete positive Unit selection with an invalid Docker endpoint. It does not
+claim exhaustive category or full qualification evidence. Changes to shell or
+category behavior require focused local checks; an inventory/category defect
+not exercised by Unit remains a promotion blocker when full CI discovers it.
+
+For ordinary v1 PRs, agents must use these two branch-required checks. Record
+`profile=development-v1` with local validation and review evidence.
+`scripts/ci:classify` describes affected local/full-qualification scope;
+`mode=full` or `complete=true` is **not** a request to manually dispatch
+`ci.yml`. This remains true after syncing a broad set of upstream changes.
+Risk-tier local gates and explicit issue acceptance still apply. Run extra full
+qualification only when the issue or operator explicitly requires it, recording
+that reason separately. Passing v1 is not promotion to main or production
+qualification.
 
 ## Review
 
@@ -47,13 +77,19 @@ Mechanical, Standard, and Deep review levels use one parent review with one reso
 
 `main` moves only by promotion from `development/v1`. Every night at 02:00
 America/Phoenix, `.github/workflows/promote-main.yml` compares the two branches
-and, when `development/v1` is ahead, opens or refreshes one promotion pull
+and, when `development/v1` is ahead, opens or refreshes one draft promotion pull
 request as `hvo-agentcontrol[bot]`. It refuses to promote a head whose own
 Development v1 push run is not green, and it halts if `main` has commits that
 `development/v1` lacks, because that means the branch model was bypassed.
 
-The legacy pipeline on `main` (`Required CI`) is the qualification gate for the
-promotion pull request. Merging is the operator's decision, taken with a merge
+New promotions remain draft while feature work continues. A title/body refresh
+does not mark an existing draft ready. A reviewed promotion is marked ready
+only for a planned qualification/merge window; return it to draft if that
+window is deferred or its reviewed source changes. This prevents a moving,
+unreviewed promotion from launching full CI for every development merge.
+
+The full pipeline on `main` (`Required CI`) is the qualification gate for the
+ready promotion pull request. Merging is the operator's decision, taken with a merge
 commit so every `development/v1` commit keeps its SHA on `main`. The workflow
 never pushes to `main` and never merges; its token is pull-requests write only.
 It can be run on demand with `gh workflow run promote-main.yml`.

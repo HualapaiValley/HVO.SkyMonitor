@@ -18,7 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 [TestClass]
 [TestCategory("Manual")]
 [DoNotParallelize]
-public sealed class RawCaptureIngressPerformanceTests
+public sealed partial class RawCaptureIngressPerformanceTests
 {
     private const int W2Width = 3096;
     private const int W2Height = 2080;

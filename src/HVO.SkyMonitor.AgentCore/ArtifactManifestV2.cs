@@ -35,10 +35,30 @@ public sealed record ArtifactManifestV2(
         {
             return descriptorValidation;
         }
+        if (Scene is { RequiresProjectedScene: true } compact &&
+            (!SceneProvenance.IsRetainedProjectedSceneSchemaVersion(compact.ProjectedSceneSchemaVersion) ||
+             compact.Objects is not null || compact.Segments is not null || compact.SceneUtc is null ||
+             !IsSha256(compact.SceneId) ||
+             compact.ProjectedSceneStageSchemaVersion != "projected-scene-stage-v1" ||
+             !IsSha256(compact.ProjectedSceneStageKey) ||
+             !IsSha256(compact.RigProfileHashSha256)))
+            return CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "scene.projectedSceneSchemaVersion");
+        if (Scene?.VirtualExposure is { } exposure &&
+            (!exposure.IsValid(Descriptor!.Controls.EffectiveExposure) ||
+             exposure.RequestedStartUtc.ToUnixTimeMilliseconds() != Descriptor.Timing.RequestedStartUtc.ToUnixTimeMilliseconds() ||
+             Scene.SceneUtc != exposure.CelestialMidpointUtc ||
+             Scene.CloudScenario is { } cloud &&
+                (cloud.IntegrationStartUtc != exposure.ScenarioStartUtc || cloud.IntegrationEndUtc != exposure.ScenarioEndUtc) ||
+             Scene.TransientScenario is { } virtualTransient &&
+                (virtualTransient.IntegrationStartUtc != exposure.ScenarioStartUtc || virtualTransient.IntegrationEndUtc != exposure.ScenarioEndUtc)))
+            return CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "scene.virtualExposure");
         return Scene?.TransientScenario is not { } transient || transient.IsValid()
             ? CaptureContractValidationResult.Success
             : CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "scene.transientScenario");
     }
+
+    private static bool IsSha256(string? value)
+        => value is { Length: 64 } && value.All(Uri.IsHexDigit);
 
     private static bool IsSafeRelativePath(string path)
     {

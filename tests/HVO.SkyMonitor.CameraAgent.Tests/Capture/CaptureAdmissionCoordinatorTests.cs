@@ -495,6 +495,51 @@ public sealed class CaptureAdmissionCoordinatorTests
                 }),
             CapturePipelineConfig.Empty);
 
+    [TestMethod]
+    public async Task RecentCommandsAreNewestFirstAndBoundedAsync()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var fixture = await CoordinatorFixture.CreateAsync(root).ConfigureAwait(false);
+            var paused = await fixture.Coordinator.PauseAsync(
+                "pause-1", 0, "owner-1", "Dome maintenance", CancellationToken.None).ConfigureAwait(false);
+            _ = await fixture.Coordinator.ResumeAsync(
+                "resume-1", paused.Version, "installer-lifecycle:upgrade", null, CancellationToken.None).ConfigureAwait(false);
+            _ = await fixture.Coordinator.ResumeAsync(
+                "resume-2", null, "owner-1", "Already running", CancellationToken.None).ConfigureAwait(false);
+
+            var recent = await fixture.Coordinator.GetRecentCommandsAsync(
+                CaptureAdmissionCoordinator.MaxRecentCommands, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.HasCount(3, recent);
+            Assert.AreEqual(CaptureAdmissionState.Running, recent[0].TargetState);
+            Assert.AreEqual("Already running", recent[0].Reason);
+            Assert.IsFalse(recent[0].Changed);
+            Assert.AreEqual("installer-lifecycle:upgrade", recent[1].Actor);
+            Assert.IsNull(recent[1].Reason);
+            Assert.IsTrue(recent[1].Changed);
+            Assert.AreEqual(CaptureAdmissionState.Paused, recent[2].TargetState);
+            Assert.AreEqual(CaptureAdmissionState.Paused, recent[2].ResultState);
+            Assert.AreEqual("owner-1", recent[2].Actor);
+            Assert.AreEqual("Dome maintenance", recent[2].Reason);
+            Assert.IsTrue(recent[2].IsComplete);
+            Assert.AreEqual(paused.CompletedUtc, recent[2].CompletedUtc);
+
+            var bounded = await fixture.Coordinator.GetRecentCommandsAsync(2, CancellationToken.None).ConfigureAwait(false);
+            Assert.HasCount(2, bounded);
+            Assert.AreEqual("Already running", bounded[0].Reason);
+            await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(() =>
+                fixture.Coordinator.GetRecentCommandsAsync(0, CancellationToken.None)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(() => fixture.Coordinator.GetRecentCommandsAsync(
+                CaptureAdmissionCoordinator.MaxRecentCommands + 1, CancellationToken.None)).ConfigureAwait(false);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
     private static SqliteRawCaptureJournal CreateJournal(string root)
         => new(Path.Combine(root, "journal", "raw-ingress.db"), 1);
 

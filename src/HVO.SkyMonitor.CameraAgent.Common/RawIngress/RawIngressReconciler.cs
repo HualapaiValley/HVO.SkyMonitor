@@ -65,7 +65,6 @@ internal sealed class RawIngressReconciler(
             cleaned++;
         }
 
-        var entries = await _journal.ReadAllAsync(cancellationToken).ConfigureAwait(false);
         Dictionary<Guid, List<string>> indexedArtifacts;
         try
         {
@@ -76,10 +75,12 @@ internal sealed class RawIngressReconciler(
             indexedArtifacts = [];
             indexProjectionFailures++;
         }
-        var claimedPayloads = new HashSet<string>(entries.Select(static entry => entry.PayloadRelativePath), StringComparer.Ordinal);
-        var claimedSidecars = new HashSet<string>(entries.Select(static entry => entry.SidecarRelativePath), StringComparer.Ordinal);
-        foreach (var entry in entries)
+        var claimedPayloads = new HashSet<string>(StringComparer.Ordinal);
+        var claimedSidecars = new HashSet<string>(StringComparer.Ordinal);
+        await foreach (var entry in _journal.EnumerateAsync(cancellationToken).ConfigureAwait(false))
         {
+            claimedPayloads.Add(entry.PayloadRelativePath);
+            claimedSidecars.Add(entry.SidecarRelativePath);
             cancellationToken.ThrowIfCancellationRequested();
             inspected++;
             var expectedPaths = RawIngressFileStore.GetPaths(_root, entry.ExposureStartedUtc, entry.ArtifactId);

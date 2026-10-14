@@ -15,18 +15,27 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.ProcessingRunner.Contracts\HVO.SkyMonitor.ProcessingRunner.Contracts.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
     <Compile Include="..\TestSettings\MSTestSettings.cs" Link="MSTestSettings.cs" />
+    <Compile Include="..\HVO.SkyMonitor.LogicHost.IntegrationTests\Infrastructure\P5TrialDiagnostics.cs" Link="Services\P5TrialDiagnostics.cs" />
     <!-- The universal object-store conformance suite is shared with the Integration project so the filesystem
          provider is held to exactly the contract the S3 provider passes; linked rather than referenced so the
          Unit run does not take a dependency on Testcontainers. The classifier treats a linked source as owned
          by every project that compiles it. -->
     <Compile Include="..\HVO.SkyMonitor.LogicHost.IntegrationTests\ObjectStoreConformanceSuite.cs" Link="Services\ObjectStoreConformanceSuite.cs" />
     <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\LogicHostProcessingConformanceTests.cs" Link="Services\LogicHostProcessingConformanceTests.cs" />
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.cs" Link="Services\HostRecipeContractConformanceTests.cs" />
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.Reconstruction.cs" Link="Services\HostRecipeContractConformanceTests.Reconstruction.cs" />
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.Calibration.cs" Link="Services\HostRecipeContractConformanceTests.Calibration.cs" />
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.Scene.cs" Link="Services\HostRecipeContractConformanceTests.Scene.cs" />
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent.LogicHost.Tests\HostRecipeContractConformanceTests.Still.cs" Link="Services\HostRecipeContractConformanceTests.Still.cs" />
+    <!-- Central and combined host lanes use the canonical analytic/mask/noise Imaging conformance suite. -->
+    <Compile Include="..\HVO.SkyMonitor.Imaging.Tests\FocusStarMeasurerTests.cs" Link="Imaging\FocusStarMeasurerTests.cs" />
   </ItemGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\fixtures\processing\cameraagent-execution-evidence-*.json" Link="Fixtures\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fixtures\processing\canonical-central-graph-rev*-*.json" Link="Fixtures\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\docs\validation\central-transient-fault-matrix.json" Link="Validation\central-transient-fault-matrix.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\docs\validation\central-transient-runtime-signals.json" Link="Validation\central-transient-runtime-signals.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\docs\validation\transient-review-runtime-signals.json" Link="Validation\transient-review-runtime-signals.json" CopyToOutputDirectory="PreserveNewest" />

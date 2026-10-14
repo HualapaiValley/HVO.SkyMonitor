@@ -14,7 +14,7 @@ namespace HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests;
 [TestCategory("Manual")]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
-public sealed class CatalogPerformanceTests
+public sealed partial class CatalogPerformanceTests
 {
     private const int WarmupOperations = 5;
     private const int MeasuredOperations = 100;

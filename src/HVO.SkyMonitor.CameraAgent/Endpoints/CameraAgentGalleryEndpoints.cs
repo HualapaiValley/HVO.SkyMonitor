@@ -30,6 +30,7 @@ internal static class CameraAgentGalleryEndpoints
             .WithName("GetCameraAgentGalleryCalendar")
             .Produces<CameraAgentGalleryCalendar>()
             .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status422UnprocessableEntity)
             .Produces(StatusCodes.Status401Unauthorized)
             .Produces(StatusCodes.Status403Forbidden);
         gallery.MapGet("/products", GetProductPageAsync)
@@ -116,6 +117,7 @@ internal static class CameraAgentGalleryEndpoints
     private static async Task<IResult> GetCalendarAsync(
         [FromQuery(Name = "from")] DateOnly? fromDate,
         [FromQuery(Name = "to")] DateOnly? toDate,
+        [FromQuery(Name = "calendar")] string? calendarVersion,
         [AsParameters] CameraAgentGalleryEndpointQuery filters,
         ICameraAgentArchive archive,
         CancellationToken cancellationToken)
@@ -134,12 +136,21 @@ internal static class CameraAgentGalleryEndpoints
                     EvidenceOrigin: filters.EvidenceOrigin,
                     ProcessingRole: filters.ProcessingRole,
                     Recipe: filters.Recipe,
-                    ProcessingStatus: filters.ProcessingStatus)), cancellationToken).ConfigureAwait(false);
+                    ProcessingStatus: filters.ProcessingStatus), calendarVersion), cancellationToken).ConfigureAwait(false);
             return Results.Ok(calendar);
         }
         catch (CameraAgentGalleryQueryException)
         {
             return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "The calendar query is invalid.");
+        }
+        catch (ArgumentException)
+        {
+            return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "The reporting-calendar version is unsupported.");
+        }
+        catch (ReportingPeriodUnavailableException)
+        {
+            return Results.Problem(statusCode: StatusCodes.Status422UnprocessableEntity,
+                title: "A complete sunrise reporting period is unavailable for this site and date range.");
         }
     }
 

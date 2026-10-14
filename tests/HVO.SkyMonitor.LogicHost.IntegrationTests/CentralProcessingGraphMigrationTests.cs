@@ -20,7 +20,7 @@ namespace HVO.SkyMonitor.IntegrationTests;
 [TestClass]
 [TestCategory("Integration")]
 [DoNotParallelize]
-public sealed class CentralProcessingGraphMigrationTests
+public sealed partial class CentralProcessingGraphMigrationTests
 {
     [TestMethod]
     public async Task SqlServerReplayExpansionSealsAndProducesAClaimableFrozenLease()
@@ -3601,6 +3601,9 @@ public sealed class CentralProcessingGraphMigrationTests
             => stepAlias == handler.StepAlias ? handler : throw new InvalidOperationException("Unexpected step alias.");
 
         public bool Validate(ProcessingGraphExecutionPlan plan) => plan.Nodes.Length == 1;
+
+        public string? FindUnsupported(ProcessingGraphExecutionPlan plan)
+            => Validate(plan) ? null : plan.Nodes[^1].Definition.StepAlias;
     }
 
     private sealed class ThrowOnSaveChangesInterceptor : SaveChangesInterceptor

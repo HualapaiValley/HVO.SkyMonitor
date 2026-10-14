@@ -365,7 +365,7 @@ public sealed class PreflightSignedReleaseTests
         var finding = report.Findings.Single(static value => value.Code == "contract-catalog");
         Assert.IsTrue(finding.Blocking);
         Assert.AreEqual("hyg-v43-production-p3-s2", finding.Observed);
-        Assert.AreEqual("hyg-v42-production-p3-s2", finding.Expected);
+        Assert.AreEqual("hvo-approved-catalogs-v1 (selected catalog hyg-v42-production)", finding.Expected);
         // The persisted-state boundaries are unaffected by an identity mismatch and still report clean.
         Assert.AreEqual(1, report.Findings.Count(static value => value.Blocking));
     }
@@ -911,7 +911,7 @@ public sealed class PreflightSignedReleaseTests
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-preflight-release-{Guid.NewGuid():N}");
             var instanceId = Guid.NewGuid();
-            var paths = InstallationPaths.Create(root, instanceId, ProductionCatalog.CatalogId);
+            var paths = InstallationPaths.Create(root, instanceId, HygV42.CatalogId);
             foreach (var directory in new[]
             {
                 paths.ProductRoot, Path.Combine(paths.ProductRoot, "cameraagents"), paths.InstanceRoot,
@@ -1039,15 +1039,15 @@ public sealed class PreflightSignedReleaseTests
 
         private void WriteCatalogManifest()
         {
-            var versionRoot = Path.Combine(Paths.CatalogRoot, "versions", ProductionCatalog.PackageVersion);
+            var versionRoot = Path.Combine(Paths.CatalogRoot, "versions", HygV42.PackageVersion);
             SafeFileSystem.CreateOwnerDirectory(versionRoot);
             File.WriteAllText(
                 Path.Combine(versionRoot, "manifest.json"),
                 "{\"manifestVersion\":" +
                 CurrentCatalogManifestVersion.ToString(CultureInfo.InvariantCulture) +
-                ",\"catalog\":{\"id\":\"" + ProductionCatalog.CatalogId + "\"}}");
+                ",\"catalog\":{\"id\":\"" + HygV42.CatalogId + "\"}}");
             Directory.CreateSymbolicLink(
-                Path.Combine(Paths.CatalogRoot, "current"), $"versions/{ProductionCatalog.PackageVersion}");
+                Path.Combine(Paths.CatalogRoot, "current"), $"versions/{HygV42.PackageVersion}");
         }
 
         private void WriteIdentityDatabase()
@@ -1089,8 +1089,8 @@ public sealed class PreflightSignedReleaseTests
         {
             var applicationIdentity = Guid.NewGuid();
             var catalog = new CatalogInstallationIdentity(
-                ProductionCatalog.CatalogId, ProductionCatalog.PackageVersion, "2", "3",
-                ProductionCatalog.DatabaseSha256, ProductionCatalog.DatabaseLength, ProductionCatalog.RowCount,
+                HygV42.CatalogId, HygV42.PackageVersion, "2", "3",
+                HygV42.DatabaseSha256, HygV42.DatabaseLength, HygV42.RowCount,
                 Paths.CatalogRoot, new string('a', 64), "local-offline");
             // The recorded daemon architecture is what a signed-release preflight must select on; the installed
             // image's architecture agrees with it, as a real installation guarantees.

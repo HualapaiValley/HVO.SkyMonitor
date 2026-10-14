@@ -21,6 +21,7 @@ internal sealed class CentralTransientOptions : IValidatableObject
     public double StarMaximumMagnitude { get; init; } = 6.5;
     public int StarMaximumResults { get; init; } = 2_000;
     public double StarSourceSupportRadiusPixels { get; init; } = 1;
+    public bool ExposureIntegratedStarMask { get; init; }
     public CentralTransientExtractionOptions Extraction { get; init; } = new();
     public CentralTransientAssessmentOptions Assessment { get; init; } = new();
 
@@ -46,6 +47,8 @@ internal sealed class CentralTransientOptions : IValidatableObject
         {
             yield return new ValidationResult("Central transient window or association values are invalid.");
         }
+        if (ExposureIntegratedStarMask && StarSourceSupportRadiusPixels is < .125 or > 16)
+            yield return new ValidationResult("Exposure-integrated star support must cover 0.5 to 64 source pixels after the four-pixel support multiplier.");
         foreach (var result in Extraction.Validate())
         {
             yield return result;
@@ -70,7 +73,8 @@ internal sealed class CentralTransientOptions : IValidatableObject
             StarMaximumMagnitude,
             StarMaximumResults,
             StarSourceSupportRadiusPixels,
-            CentralTransientMaskPolicyV1.ProfileBoundProjectedStarsV1);
+            ExposureIntegratedStarMask ? CentralTransientMaskPolicyV1.ProfileBoundExposureSweptStarsV2 :
+                CentralTransientMaskPolicyV1.ProfileBoundProjectedStarsV1);
 }
 
 internal sealed class CentralTransientExtractionOptions
@@ -161,7 +165,8 @@ internal sealed class CentralTransientAssessmentOptions
 
 internal enum CentralTransientMaskPolicyV1
 {
-    ProfileBoundProjectedStarsV1
+    ProfileBoundProjectedStarsV1,
+    ProfileBoundExposureSweptStarsV2
 }
 
 internal sealed record CentralTransientExecutionOptionsV1(

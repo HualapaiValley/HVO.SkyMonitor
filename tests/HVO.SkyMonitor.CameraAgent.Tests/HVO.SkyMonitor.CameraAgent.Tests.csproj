@@ -47,6 +47,9 @@
     <None Include="..\fixtures\virtual-sky\cloud-scenarios-v1.json" Link="Fixtures\cloud-scenarios-v1.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\fixtures\virtual-sky\transient-camera-exposure-v2.json" Link="Fixtures\transient-camera-exposure-v2.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="..\fixtures\virtual-sky\transient-scenarios-v1.json" Link="Fixtures\transient-scenarios-v1.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
@@ -104,6 +107,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="..\fixtures\astronomy\hualapai-asi174-conformance-v1.json" Link="Fixtures\hualapai-asi174-conformance-v1.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\fixtures\astronomy\hualapai-asi174-temporal-conformance-v2.json" Link="Fixtures\hualapai-asi174-temporal-conformance-v2.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Include="..\fixtures\locations\siding-spring-synthetic-deployment-v1.json" Link="Fixtures\siding-spring-synthetic-deployment-v1.json">

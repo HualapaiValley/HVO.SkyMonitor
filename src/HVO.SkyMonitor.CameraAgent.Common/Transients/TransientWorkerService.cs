@@ -330,6 +330,9 @@ internal sealed class TransientWorkerService(
                 var sources = await detector.CreateSourcesAsync(
                     await ResolveConfigurationsAsync(loaded, cancellationToken).ConfigureAwait(false),
                     _options, loaded, cancellationToken).ConfigureAwait(false);
+                // Causal evidence freezes every source mask identity. A policy/configuration
+                // change must not turn an unfinished candidate into a different automatic verdict.
+                var causalMasksMatch = CausalMasksMatch(observationExtraction.Background, sources);
                 var knownEvents = await store.ReadKnownEventEvidenceIdsAsync(
                     frame.AgentId, frame.CaptureSequence, cancellationToken).ConfigureAwait(false);
                 var background = TransientTemporalBackgroundFactory.Create(new TransientTemporalBackgroundRequest(
@@ -339,7 +342,7 @@ internal sealed class TransientWorkerService(
                     knownEvents,
                     TimeSpan.FromSeconds(_options.MaximumAdjacentStartIntervalSeconds),
                     deadlineExpired), cancellationToken);
-                if (background.Status == TransientTemporalBackgroundStatus.Produced && background.Product is not null)
+                if (causalMasksMatch && background.Status == TransientTemporalBackgroundStatus.Produced && background.Product is not null)
                 {
                     var probe = TransientDetectorRuntime.Extract(
                         frame.AgentId,
@@ -519,6 +522,18 @@ internal sealed class TransientWorkerService(
             return false;
         }
     }
+
+    internal static bool CausalMasksMatch(
+        TransientTemporalBackgroundDescriptorV1 causalBackground,
+        IReadOnlyDictionary<int, TransientTemporalSource> sources)
+        => causalBackground.Sources.All(lineage =>
+            sources.Values.SingleOrDefault(source => source.Input.Descriptor.Source.EvidenceId == lineage.EvidenceId) is { } current &&
+            lineage.MaskIdentitySha256s.Order(StringComparer.Ordinal).SequenceEqual(
+                current.Masks.Select(static mask => mask.MaskIdentitySha256).Append(
+                    TransientDetectorMask.Create(TransientDetectorMaskKind.Saturation,
+                        new ProcessingAlgorithmIdentity("linear16-saturation-mask", "inclusive-threshold-v1"),
+                        current.Input.SaturationMask).MaskIdentitySha256).Order(StringComparer.Ordinal),
+                StringComparer.OrdinalIgnoreCase));
 
     private async ValueTask<IReadOnlyList<TransientRuntimeCandidate>> AllocateCandidatesAsync(
         TransientRuntimeFrame frame,

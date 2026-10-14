@@ -150,15 +150,6 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
     private void UpdatePath(string location)
         => _currentPath = new Uri(location).AbsolutePath;
 
-    private static string LinkClass(OperationsSection section, bool current)
-        => (current, section.UnavailableReason is null) switch
-        {
-            (true, true) => "active",
-            (true, false) => "active unavailable",
-            (false, false) => "unavailable",
-            _ => ""
-        };
-
     private static string HealthTitle(OperationsAttention attention) => attention.Items.Count switch
     {
         0 => "No open attention items.",
@@ -166,8 +157,8 @@ public sealed partial class OperationsLayout : LayoutComponentBase, IDisposable
         var count => $"{count} open attention items."
     };
 
-    private static string UnavailableId(OperationsSection section)
-        => $"operations-unavailable-{section.Slug}";
+    private static string NoteId(OperationsSection section)
+        => $"operations-note-{section.Slug}";
 
     private static string GroupId(string group)
         => $"operations-group-{group}";

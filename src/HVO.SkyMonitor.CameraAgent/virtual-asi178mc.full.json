@@ -6,7 +6,7 @@
       "seed": 2025,
       "rigProfileVersion": "virtual-asi178mc-fujinon-unverified-v6",
       "maximumMagnitude": 6.5,
-      "maximumResults": 300,
+      "maximumResults": 32768,
       "magnitudeZeroElectronsPerSecond": 18000.0,
       "bortleClass": 3
     }
@@ -107,9 +107,10 @@
     "schemaVersion": "cameraagent-capture-pipeline-v2",
     "dependencyPolicy": "reject-enabled-dependent-v1",
     "steps": [
+      { "id": "ProjectedScene", "type": "ProjectedScene", "order": 15, "dependsOn": ["$raw"] },
       { "id": "RollingCombination", "type": "RollingCombination", "order": 25, "dependsOn": ["$raw"] },
       { "id": "Preview", "type": "Preview", "order": 50, "dependsOn": ["RollingCombination"] },
-      { "id": "Annotation", "type": "Annotation", "order": 75, "dependsOn": ["Preview"] }
+      { "id": "Annotation", "type": "Annotation", "order": 75, "dependsOn": ["Preview", "ProjectedScene"], "options": { "requireProjectedSceneDependency": true } }
     ]
   },
   "schedule": {

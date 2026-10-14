@@ -1,368 +1,408 @@
 @page "/operations/automations"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Operations
 @using HVO.SkyMonitor.CameraAgent.Common.Automation
-@using HVO.SkyMonitor.CameraAgent.Common.Environmental
-@using HVO.SkyMonitor.CameraAgent.Services
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
 
 <PageTitle>Automations</PageTitle>
 
-<div class="automations-page">
-    <PageHeader Eyebrow="Registered local tasks" Title="Automations" Lead="Every automated behaviour this CameraAgent runs on its own, with the durable state that drives it. Only registered task and trigger kinds appear here; nothing on this page executes arbitrary commands.">
-        <button class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="LoadAsync">Refresh</button>
-    </PageHeader>
+<OperationsPageHeading Eyebrow="Automation / typed scheduled work" Title="Automations" HeadingId="automations-heading"
+                       Description="Generate observing-day products and perform bounded maintenance through registered task types, explicit triggers, and durable run history.">
+    <Actions>
+        <button type="button" id="automation-refresh" class="icon-button" aria-label="Refresh" title="Refresh" disabled="@_loading" @onclick="LoadAsync">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 7A6 6 0 1 0 16 11"></path><path d="M16 3.5V7h-3.5"></path></svg>
+        </button>
+        <button type="button" id="@CreateTriggerId" class="button primary" title="@CreateUnavailableReason"
+                aria-describedby="@(CreateUnavailableReason is null ? null : "automation-create-reason")"
+                disabled="@(CreateUnavailableReason is not null || _busy || _loading)" @onclick="OpenCreate">Create automation</button>
+        @if (CreateUnavailableReason is not null)
+        {
+            <span id="automation-create-reason" class="visually-hidden">@CreateUnavailableReason</span>
+        }
+    </Actions>
+</OperationsPageHeading>
 
-    @if (_loading)
+<div class="ops-note-banner" role="status"><span class="status-icon success" aria-hidden="true"></span><span><strong>Capture Schedule remains separate.</strong> Capture Schedule admits exposures; Automations consume durable data or perform explicitly supported maintenance after defined boundaries. <a class="automation-link" href="/operations/schedule">Open Capture Schedule</a></span></div>
+
+@if (_loading && _automation is null)
+{
+    <div class="ops-note-banner" role="status"><span class="status-icon running" aria-hidden="true"></span><span>Loading local automations.</span></div>
+}
+else if (_automation is null)
+{
+    <div class="ops-note-banner" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Automations unavailable.</strong> @_error</span></div>
+}
+else
+{
+    var automation = _automation;
+    @if (_error is not null)
     {
-        <PageStateNotice Kind="PageStateNotice.PageStateKind.Loading" Title="Loading registered automations" Message="Reading the capture schedule and environmental source state." />
+        <div class="ops-note-banner" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>Showing the last valid snapshot.</strong> @_error</span></div>
     }
-    else
+    @if (AvailableTask is null)
     {
-        @if (_schedule is null && _environment is null && _automation is null)
-        {
-            <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Automations unavailable" Message="@(_message ?? "Neither the capture schedule, the environmental sources, nor the local automations could be read.")">
-                <button type="button" class="btn btn-outline-light btn-sm" disabled="@_loading" @onclick="LoadAsync">Try again</button>
-            </PageStateNotice>
-        }
-        else if (_message is not null)
-        {
-            <PageStateNotice Kind="PageStateNotice.PageStateKind.Stale" Title="Showing partial data" Message="@_message" />
-        }
+        <div class="ops-note-banner" role="status"><span class="status-icon warning" aria-hidden="true"></span><span><strong>No automation task is available.</strong> @RegistryUnavailableReason</span></div>
+    }
+    @if (_calendarMessage is not null)
+    {
+        <div class="ops-note-banner automation-utc" role="status"><span class="status-icon warning" aria-hidden="true"></span><span><strong>Times are shown in UTC because the site timezone could not be read.</strong> @_calendarMessage</span></div>
+    }
+    @if (_commandMessage is not null && _dialog == DialogMode.None)
+    {
+        <div class="ops-note-banner automation-message" role="@(_commandMessageIsError ? "alert" : "status")"><span class="status-icon @(_commandMessageIsError ? "failure" : "success")" aria-hidden="true"></span><span>@_commandMessage</span></div>
+    }
 
-        <section class="automation-grid" aria-label="Registered automations">
-            @if (_schedule is not null)
-            {
-                <article class="automation-card automation-card--wide" aria-labelledby="automation-schedule">
-                    <header>
-                        <div><p class="eyebrow">Exposure-admission authority</p><h2 id="automation-schedule">Capture schedule</h2></div>
-                        <span class="state-chip @(_schedule.Decision.Admitted ? "state-chip--open" : "state-chip--closed")">@(_schedule.Decision.Admitted ? "Open" : "Closed")</span>
+    <nav class="automation-tabs" aria-label="Automation views">
+        <button type="button" class="@(_view == AutomationView.Definitions ? "active" : null)" aria-pressed="@(_view == AutomationView.Definitions ? "true" : "false")" @onclick="() => SelectView(AutomationView.Definitions)">Definitions</button>
+        <button type="button" class="@(_view == AutomationView.Schedule ? "active" : null)" aria-pressed="@(_view == AutomationView.Schedule ? "true" : "false")" @onclick="() => SelectView(AutomationView.Schedule)">Schedule</button>
+        <button type="button" class="@(_view == AutomationView.Runs ? "active" : null)" aria-pressed="@(_view == AutomationView.Runs ? "true" : "false")" @onclick="() => SelectView(AutomationView.Runs)">Run history</button>
+    </nav>
+
+    @switch (_view)
+    {
+        case AutomationView.Schedule:
+            var (trackStart, trackEnd) = TrackWindow();
+            var markers = RunMarkers(trackStart, trackEnd);
+            var captureRelative = automation.Definitions
+                .Where(static item => item.Definition.Enabled && item.NextRunCaptureSequence is not null)
+                .OrderBy(static item => item.NextRunCaptureSequence)
+                .ToList();
+            <div class="automation-view" id="automation-schedule">
+                <section class="ops-panel" aria-labelledby="automation-day-heading">
+                    <header class="ops-panel-heading">
+                        <div><h3 id="automation-day-heading">Next 24 hours</h3><p>Wall-clock triggers use @_timeZoneId and the capture windows from Capture Schedule.</p></div>
+                        <span>@Clock(trackStart) – @Clock(trackEnd) @(_calendar is null ? "UTC" : "local")</span>
                     </header>
-                    <dl class="fact-grid">
-                        <div><dt>Active revision</dt><dd>Revision @_schedule.ActiveRevision.RevisionNumber</dd></div>
-                        <div><dt>Reason</dt><dd>@Split(_schedule.Decision.Reason.ToString())</dd></div>
-                        <div><dt>Next transition</dt><dd>@FormatUtc(_schedule.Decision.NextTransitionUtc)</dd></div>
-                        <div><dt>Weekly windows</dt><dd>@_schedule.ActiveRevision.Definition.WeeklyWindows.Count</dd></div>
-                        <div><dt>Date exceptions</dt><dd>@(_schedule.ActiveRevision.Definition.DateExceptions?.Count ?? 0)</dd></div>
-                        <div><dt>Blackouts</dt><dd>@(_schedule.ActiveRevision.Definition.Blackouts?.Count ?? 0)</dd></div>
-                        <div><dt>Active overrides</dt><dd>@_schedule.Overrides.Count</dd></div>
-                        <div><dt>Setpoint profiles</dt><dd>@string.Join(", ", _schedule.ActiveRevision.Definition.SetpointProfiles.Select(static profile => profile.Id))</dd></div>
-                    </dl>
-                    <h3>Next scheduled activity</h3>
-                    @if (_schedule.Preview.Intervals.Count == 0)
+                    <div class="automation-track-scroll">
+                        <div class="automation-day-track" role="img" aria-label="@(Plural(markers.Count, "run", "runs")) due in the next 24 hours. The same runs are listed below.">
+                            @foreach (var band in CaptureWindows(trackStart, trackEnd))
+                            {
+                                <span class="automation-night" style="left:@Css(band.Left)%;width:@Css(band.Width)%">@band.Label</span>
+                            }
+                            <i class="automation-now" style="left:@Css(Percent(automation.ReadAtUtc, trackStart, trackEnd))%"><small>Now @Clock(automation.ReadAtUtc)</small></i>
+                            @foreach (var marker in markers)
+                            {
+                                <span class="automation-run-tick" style="left:@Css(marker.Tick)%"></span>
+                                @if (marker.Card is { } card)
+                                {
+                                    <span class="automation-run-marker @(marker.Row == 0 ? "row-0" : "row-1")" style="left:@Css(card)%"><strong>@marker.Time</strong><small>@marker.Name</small></span>
+                                }
+                            }
+                        </div>
+                    </div>
+                    <h4 class="automation-subheading">Upcoming runs</h4>
+                    @if (automation.Calendar.Count == 0 && captureRelative.Count == 0)
                     {
-                        <p class="empty-copy">No open or closed intervals occur in the current preview range.</p>
+                        <p class="automation-empty">No enabled automation is due. Enable a definition to schedule its next run.</p>
                     }
                     else
                     {
-                        <ol class="calendar-list">
-                            @foreach (var interval in _schedule.Preview.Intervals.Take(MaximumIntervals))
+                        <ol class="automation-upcoming">
+                            @foreach (var entry in automation.Calendar.OrderBy(static item => item.DueUtc))
                             {
-                                <li>
-                                    <strong>@(interval.SetpointProfileId ?? "Closed")</strong>
-                                    <span>@Split(interval.Source.ToString())</span>
-                                    <time datetime="@interval.StartUtc.ToString("O")">@interval.StartUtc.ToString("u")</time>
-                                    <time datetime="@interval.EndUtc.ToString("O")">@interval.EndUtc.ToString("u")</time>
-                                </li>
+                                <li @key="@($"{entry.DefinitionId}-{entry.DueUtc.UtcTicks}")"><strong>@DayClock(entry.DueUtc)</strong><span>@entry.Name</span><small>@entry.TaskTarget</small></li>
+                            }
+                            @foreach (var item in captureRelative)
+                            {
+                                <li @key="@($"{item.Definition.DefinitionId}-capture")"><strong>@DescribeNextRun(item)</strong><span>@item.Definition.Name</span><small>@item.Definition.TaskTarget</small></li>
                             }
                         </ol>
                     }
-                    <a class="inline-link" href="/operations/schedule">Edit the capture schedule</a>
-                </article>
-            }
-
-            @if (_environment is not null)
-            {
-                <article class="automation-card automation-card--wide" aria-labelledby="automation-environment">
-                    <header>
-                        <div><p class="eyebrow">Environmental acquisition</p><h2 id="automation-environment">Source acquisition tasks</h2></div>
-                        <span class="state-chip @(_environment.Enabled ? "state-chip--open" : "state-chip--closed")">@(_environment.Enabled ? "Enabled" : "Disabled")</span>
-                    </header>
-                    @if (_environment.Sources.Count == 0)
-                    {
-                        <p class="empty-copy">No environmental sources are registered in the startup configuration.</p>
-                    }
-                    else
-                    {
-                        <ul class="task-list">
-                            @foreach (var source in _environment.Sources)
+                </section>
+                <div class="ops-grid two">
+                    <section class="ops-panel" aria-labelledby="automation-vocabulary-heading">
+                        <header class="ops-panel-heading"><div><h3 id="automation-vocabulary-heading">Trigger vocabulary</h3><p>Task types opt into only compatible durable triggers.</p></div></header>
+                        <div class="ops-validation-list">
+                            @foreach (var trigger in automation.Registry.SelectMany(static descriptor => descriptor.CompatibleTriggers).Distinct())
                             {
-                                <li>
-                                    <div><strong>@source.Id</strong><span>@Split(source.Kind.ToString()) / @(source.Required ? "required" : "optional") / @(source.SupportsOnDemand ? "on demand available" : "polling only")</span></div>
-                                    <dl>
-                                        <div><dt>Next poll</dt><dd>@FormatUtc(source.NextPollUtc)</dd></div>
-                                        <div><dt>Freshness</dt><dd>@Split(source.Freshness)</dd></div>
-                                        <div><dt>Last outcome</dt><dd>@(source.LastDisposition is null ? "None yet" : Split(source.LastDisposition.ToString()!))</dd></div>
-                                        <div><dt>Consecutive failures</dt><dd>@source.ConsecutiveFailures</dd></div>
-                                    </dl>
-                                </li>
+                                var (minimum, maximum) = IntervalBounds(trigger);
+                                <div class="ops-validation-item">
+                                    <i aria-hidden="true">+</i>
+                                    @if (trigger == LocalAutomationTriggerKind.Periodic)
+                                    {
+                                        <span><strong>Periodic.</strong> A fixed wall-clock interval of @minimum to @maximum seconds, counted from the definition's epoch.</span>
+                                    }
+                                    else if (trigger == LocalAutomationTriggerKind.SourceWindowClosed)
+                                    {
+                                        <span><strong>Source window.</strong> Runs after its planned source period closes and the retained processing allowance expires.</span>
+                                    }
+                                    else
+                                    {
+                                        <span><strong>Capture relative.</strong> After every @minimum to @maximum durable captures, counted from the capture observed when the definition was enabled.</span>
+                                    }
+                                </div>
                             }
-                        </ul>
-                    }
-                    <a class="inline-link" href="/operations/environment">Review environmental history</a>
-                </article>
-            }
+                            <div class="ops-validation-item neutral"><i aria-hidden="true">-</i><span>Automatic runs cover the latest eligible occurrence. Earlier source windows require an explicit backfill.</span></div>
+                        </div>
+                    </section>
+                    <section class="ops-panel" aria-labelledby="automation-ownership-heading">
+                        <header class="ops-panel-heading"><div><h3 id="automation-ownership-heading">Execution ownership</h3><p>Local definitions run here, whether or not LogicHost is reachable.</p></div></header>
+                        <dl class="ops-facts">
+                            <div><dt>Definitions stored</dt><dd>On this CameraAgent</dd></div>
+                            <div><dt>Executor</dt><dd>Local durable scheduler</dd></div>
+                            <div><dt>Capture timing</dt><dd>Never changed</dd></div>
+                            <div><dt>Definitions</dt><dd>@automation.Definitions.Count of @LocalAutomationContract.MaximumDefinitions</dd></div>
+                            <div><dt>Revisions retained</dt><dd>Up to @LocalAutomationContract.MaximumRetainedRevisions per definition</dd></div>
+                            <div><dt>Observed capture</dt><dd>@(automation.ObservedCaptureSequence is { } observed ? $"Sequence {observed}" : "None yet")</dd></div>
+                            <div class="full"><dt>Commands</dt><dd>Only registered task types run; arbitrary commands are never accepted.</dd></div>
+                        </dl>
+                    </section>
+                </div>
+            </div>
+            break;
 
-            <article class="automation-card" aria-labelledby="automation-triggers">
-                <header><div><p class="eyebrow">Registered vocabulary</p><h2 id="automation-triggers">Environmental acquisition trigger kinds</h2></div></header>
-                <p>Environmental acquisition may only be started by these registered triggers. They are the source's own vocabulary, driven by the capture lane. Local automation definitions use their own separate trigger vocabulary, shown in the editor below.</p>
-                <ul class="trigger-list">
-                    @foreach (var trigger in Enum.GetValues<EnvironmentalAcquisitionTrigger>())
+        case AutomationView.Runs:
+            <div class="automation-view" id="automation-runs">
+                <section class="ops-panel" aria-labelledby="automation-runs-heading">
+                    <header class="ops-panel-heading">
+                        <div><h3 id="automation-runs-heading">Recent retained runs</h3><p>Every occurrence is recorded once with its outcome. A retry is a new run; a recorded run is never rewritten.</p></div>
+                        <span>@Plural(automation.Runs.Count, "run", "runs") retained</span>
+                    </header>
+                    @if (automation.Runs.Count == 0)
                     {
-                        <li>@Split(trigger.ToString())</li>
-                    }
-                </ul>
-            </article>
-
-            <article class="automation-card automation-card--wide" aria-labelledby="automation-definitions">
-                <header>
-                    <div><p class="eyebrow">Versioned local contract</p><h2 id="automation-definitions" tabindex="-1">Local automation definitions</h2></div>
-                    @if (_automation is not null)
-                    {
-                        <span class="state-chip state-chip--readonly">@_automation.Definitions.Count of @LocalAutomationContract.MaximumDefinitions</span>
-                    }
-                </header>
-                @if (_automation is null)
-                {
-                    <p class="empty-copy">The local automation store could not be read, so definitions and run history are unavailable.</p>
-                }
-                else
-                {
-                    <p class="truth-note">Every definition names one registered task kind and one registered trigger kind. Nothing on this page runs a command, a script, or a path, and no definition can express one. Saving records an immutable revision; the runner never admits an exposure and never changes capture timing.</p>
-                    @if (_commandMessage is not null && !_confirming)
-                    {
-                        @* While the modal is open the same notice is announced inside it instead. *@
-                        <p class="truth-note @(_commandMessageIsError ? "automation-error" : "automation-ok")" role="@(_commandMessageIsError ? "alert" : "status")">@_commandMessage</p>
-                    }
-
-                    <h3>Registered tasks</h3>
-                    <ul class="task-list">
-                        @foreach (var descriptor in _automation.Registry)
-                        {
-                            <li>
-                                <div><strong>@Split(descriptor.TaskKind.ToString())</strong><span>@(descriptor.Available ? "available" : descriptor.UnavailableReason)</span></div>
-                                <dl>
-                                    <div><dt>Compatible triggers</dt><dd>@string.Join(", ", descriptor.CompatibleTriggers.Select(static trigger => Split(trigger.ToString())))</dd></div>
-                                    <div><dt>Targets</dt><dd>@(descriptor.Targets.Count == 0 ? "None registered" : string.Join(", ", descriptor.Targets))</dd></div>
-                                </dl>
-                            </li>
-                        }
-                    </ul>
-
-                    <h3>Definitions</h3>
-                    @if (_automation.Definitions.Count == 0)
-                    {
-                        <p class="empty-copy">No local automation is defined on this CameraAgent.</p>
+                        <p class="automation-empty">No automation run has been recorded on this CameraAgent.</p>
                     }
                     else
                     {
-                        <div class="table-scroll">
-                            <table class="facts-table">
-                                <caption class="visually-hidden">Local automation definitions</caption>
-                                <thead><tr><th scope="col">Identifier</th><th scope="col">Name</th><th scope="col">State</th><th scope="col">Task</th><th scope="col">Trigger</th><th scope="col">Version</th><th scope="col">Next run</th><th scope="col">Last run</th><th scope="col">Actions</th></tr></thead>
+                        <div class="ops-table-wrap">
+                            <table class="ops-table automation-run-table">
+                                <thead><tr><th scope="col">Run</th><th scope="col">Automation</th><th scope="col">Trigger</th><th scope="col">Scheduled for</th><th scope="col">Outcome</th><th scope="col">Detail</th></tr></thead>
                                 <tbody>
-                                    @foreach (var definition in _automation.Definitions)
+                                    @foreach (var run in automation.Runs)
                                     {
-                                        <tr @key="definition.Definition.DefinitionId">
-                                            <th scope="row">@definition.Definition.DefinitionId</th>
-                                            <td>@definition.Definition.Name</td>
-                                            <td>@(definition.Definition.Enabled ? "Enabled" : "Disabled")</td>
-                                            <td>@Split(definition.Definition.TaskKind.ToString()) / @definition.Definition.TaskTarget</td>
-                                            <td>@Split(definition.Definition.TriggerKind.ToString()) every @definition.Definition.TriggerInterval @(definition.Definition.TriggerKind == LocalAutomationTriggerKind.Periodic ? "s" : "captures")</td>
-                                            <td>@definition.Version</td>
-                                            <td>@DescribeNextRun(definition)</td>
-                                            <td>@(definition.LastRun is null ? "None yet" : $"{Split(definition.LastRun.Outcome.ToString())} at {definition.LastRun.StartedAtUtc:u}")</td>
-                                            <td class="row-actions">
-                                                <button id="@EditTriggerId(definition)" type="button" class="btn btn-outline-light" aria-label="Edit @definition.Definition.DefinitionId" disabled="@(_busy || _loading)" @onclick="() => BeginEdit(definition)">Edit</button>
-                                                <button id="@ToggleTriggerId(definition)" type="button" class="btn btn-outline-light" aria-label="@(definition.Definition.Enabled ? "Disable" : "Enable") @definition.Definition.DefinitionId" disabled="@(_busy || _loading)" @onclick="() => BeginToggle(definition)">@(definition.Definition.Enabled ? "Disable" : "Enable")</button>
-                                                <button id="@RemoveTriggerId(definition)" type="button" class="btn btn-outline-light" aria-label="Remove @definition.Definition.DefinitionId" disabled="@(_busy || _loading)" @onclick="() => BeginRemove(definition)">Remove</button>
+                                        <tr @key="run.Sequence">
+                                            <td>@DayClock(run.StartedAtUtc)</td>
+                                            <td><strong>@DefinitionName(run.DefinitionId)</strong><small>@run.DefinitionId</small></td>
+                                            <td>@Split(run.TriggerKind.ToString())</td>
+                                            <td>
+                                                @DayClock(run.ScheduledForUtc)
+                                                @if (run.ObservedCaptureSequence is { } sequence)
+                                                {
+                                                    <small>Capture @sequence</small>
+                                                }
                                             </td>
+                                            <td><span class="state-chip @OutcomeClass(run.Outcome)">@Split(run.Outcome.ToString())</span></td>
+                                            <td>@(string.IsNullOrWhiteSpace(run.Detail) ? "None" : run.Detail)</td>
                                         </tr>
                                     }
                                 </tbody>
                             </table>
                         </div>
-
-                        <h3>Recorded revisions</h3>
-                        @foreach (var definition in _automation.Definitions)
-                        {
-                            <details class="revision-history" @key="definition.Definition.DefinitionId">
-                                <summary>@definition.Definition.DefinitionId &mdash; showing the @definition.History.Count most recent of up to @LocalAutomationContract.MaximumRetainedRevisions retained revisions</summary>
-                                @if (definition.History.Count == 0)
-                                {
-                                    <p class="empty-copy">No revision of this definition is retained.</p>
-                                }
-                                else
-                                {
-                                <div class="table-scroll">
-                                    <table class="facts-table">
-                                        <caption class="visually-hidden">Recorded revisions of @definition.Definition.DefinitionId, newest first</caption>
-                                        <thead><tr><th scope="col">Version</th><th scope="col">Recorded</th><th scope="col">Actor</th><th scope="col">State</th><th scope="col">Task</th><th scope="col">Trigger</th><th scope="col">Reason</th><th scope="col">Revision</th></tr></thead>
-                                        <tbody>
-                                            @foreach (var revision in definition.History)
-                                            {
-                                                <tr @key="revision.Version">
-                                                    <th scope="row">@revision.Version</th>
-                                                    <td>@revision.RecordedAtUtc.ToString("u")</td>
-                                                    <td>@revision.Actor</td>
-                                                    <td>@(revision.Removed ? "Removed" : revision.Definition.Enabled ? "Enabled" : "Disabled")</td>
-                                                    <td>@revision.Definition.TaskTarget</td>
-                                                    <td>@Split(revision.Definition.TriggerKind.ToString()) / @revision.Definition.TriggerInterval</td>
-                                                    <td>@(revision.Reason ?? "Not recorded")</td>
-                                                    <td class="mono">@revision.RevisionSha256[..12]</td>
-                                                </tr>
-                                            }
-                                        </tbody>
-                                    </table>
-                                </div>
-                                }
-                            </details>
-                        }
                     }
+                </section>
+            </div>
+            break;
 
-                    <h3 id="automation-editor" tabindex="-1">@(_editingVersion == 0 ? "Define an automation" : $"Edit {_idInput}")</h3>
-                    <fieldset class="automation-form" disabled="@(_busy || _loading)">
-                        <legend class="visually-hidden">Local automation definition</legend>
-                        <div class="automation-field">
-                            <label for="automation-id">Identifier</label>
-                            <input id="automation-id" class="form-control" autocomplete="off" readonly="@(_editingVersion != 0)" @bind="_idInput" @bind:after="FormChanged" />
-                        </div>
-                        <div class="automation-field">
-                            <label for="automation-name">Name</label>
-                            <input id="automation-name" class="form-control" autocomplete="off" @bind="_nameInput" @bind:after="FormChanged" />
-                        </div>
-                        <div class="automation-field">
-                            <label for="automation-task">Registered task</label>
-                            <select id="automation-task" class="form-select" @bind="_taskKindInput" @bind:after="FormChanged">
-                                @foreach (var descriptor in _automation.Registry)
+        default:
+            var next = NextEntry;
+            var nextCapture = NextCaptureRelative;
+            var lastDay = LastDay;
+            <div class="automation-view" id="automation-definitions">
+                <section class="ops-status-rail" aria-label="Automation status">
+                    <div><span>Enabled</span><strong>@EnabledCount</strong><small>of @Plural(automation.Definitions.Count, "definition", "definitions")</small></div>
+                    <div>
+                        <span>Next run</span>
+                        @if (next is not null)
+                        {
+                            <strong>@Clock(next.DueUtc)</strong><small>@next.Name</small>
+                        }
+                        else if (nextCapture is not null)
+                        {
+                            <strong>Capture @nextCapture.NextRunCaptureSequence</strong><small>@nextCapture.Definition.Name</small>
+                        }
+                        else
+                        {
+                            <strong>None scheduled</strong><small>No enabled definition is due</small>
+                        }
+                    </div>
+                    <div><span>Running</span><strong>@RunningCount</strong><small>@(RunningCount == 0 ? "No active tasks" : "In progress now")</small></div>
+                    <div><span>Last 24 hours</span><strong>@lastDay.Succeeded / @lastDay.Finished</strong><small>Successful runs@(lastDay.Truncated ? " (latest 50 runs only)" : null)</small></div>
+                </section>
+
+                @if (automation.Definitions.Count == 0)
+                {
+                    <p class="automation-empty">No local automation is defined on this CameraAgent.@(AvailableTask is null ? null : " Use Create automation to schedule a registered task.")</p>
+                }
+                <div class="automation-card-grid">
+                    @foreach (var definition in automation.Definitions)
+                    {
+                        var item = definition.Definition;
+                        <article class="automation-card" @key="item.DefinitionId" aria-labelledby="@($"automation-card-{item.DefinitionId}")">
+                            <header>
+                                <span class="automation-icon environment" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M8 3.5a2 2 0 0 1 4 0v7.6a4 4 0 1 1-4 0Z"></path><path d="M10 8v6"></path></svg></span>
+                                <div><h3 id="@($"automation-card-{item.DefinitionId}")">@item.Name</h3><p>@TaskDescription(item)</p></div>
+                                <span class="state-chip @(item.Enabled ? "success" : "pending")">@(item.Enabled ? "Enabled" : "Disabled")</span>
+                            </header>
+                            <dl>
+                                <div><dt>Trigger</dt><dd>@DescribeTrigger(item)</dd></div>
+                                <div><dt>Target</dt><dd>@item.TaskTarget</dd></div>
+                                <div><dt>Last run</dt><dd>@DescribeLastRun(definition.LastRun)</dd></div>
+                                <div><dt>Next run</dt><dd>@DescribeNextRun(definition)</dd></div>
+                            </dl>
+                            @if (item.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed)
+                            {
+                                <p class="automation-field-hint">Source-window settings are read-only in this editor.</p>
+                            }
+                            @if (definition.History.Count > 0)
+                            {
+                                <details class="revision-history">
+                                    <summary>@Plural(definition.History.Count, "recorded revision", "recorded revisions")</summary>
+                                    <ol>
+                                        @foreach (var revision in definition.History)
+                                        {
+                                            <li @key="revision.Version">
+                                                <strong>Revision @revision.Version</strong>
+                                                <span>@DayClock(revision.RecordedAtUtc) / @revision.Actor / @(revision.Removed ? "Removed" : revision.Definition.Enabled ? "Enabled" : "Disabled")</span>
+                                                @if (!string.IsNullOrWhiteSpace(revision.Reason))
+                                                {
+                                                    <small>@revision.Reason</small>
+                                                }
+                                            </li>
+                                        }
+                                    </ol>
+                                </details>
+                            }
+                            <footer>
+                                <span>@Split(item.TaskKind.ToString()) / revision @definition.Version</span>
+                                <div class="automation-card-actions">
+                                    <button type="button" id="@EditTriggerId(definition)" class="button secondary small" aria-label="@($"Edit {item.DefinitionId}")" disabled="@(_busy || _loading || item.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed)" @onclick="() => BeginEdit(definition)">Edit</button>
+                                    <button type="button" id="@ToggleTriggerId(definition)" class="button secondary small" aria-label="@($"{(item.Enabled ? "Disable" : "Enable")} {item.DefinitionId}")" disabled="@(_busy || _loading)" @onclick="() => BeginToggle(definition)">@(item.Enabled ? "Disable" : "Enable")</button>
+                                    <button type="button" id="@RemoveTriggerId(definition)" class="button secondary small" aria-label="@($"Remove {item.DefinitionId}")" disabled="@(_busy || _loading)" @onclick="() => BeginRemove(definition)">Remove</button>
+                                </div>
+                            </footer>
+                        </article>
+                    }
+                    <article class="automation-card unsupported" aria-labelledby="automation-card-restart">
+                        <header>
+                            <span class="automation-icon reboot" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 2v7"></path><path d="M6 4a7 7 0 1 0 8 0"></path></svg></span>
+                            <div><h3 id="automation-card-restart">Scheduled CameraAgent Restart</h3><p>Requires authenticated lifecycle support, graceful drain, restart verification, and a terminal receipt.</p></div>
+                            <span class="state-chip pending">Design target</span>
+                        </header>
+                        <dl>
+                            <div><dt>Task type</dt><dd>Not registered</dd></div>
+                            <div><dt>Interface</dt><dd>Installer CLI only</dd></div>
+                            <div><dt>Scheduling</dt><dd>Unavailable</dd></div>
+                            <div><dt>Safety</dt><dd>Lifecycle service required</dd></div>
+                        </dl>
+                        <footer>
+                            <span>Arbitrary command execution is never allowed.</span>
+                            <button type="button" class="button secondary small" disabled>Unavailable</button>
+                        </footer>
+                    </article>
+                </div>
+            </div>
+            break;
+    }
+
+    @if (_dialog != DialogMode.None)
+    {
+        <dialog class="action-dialog operations-dialog automation-dialog" aria-labelledby="automation-dialog-heading" aria-describedby="automation-dialog-description" @ref="_dialogElement" @oncancel="DismissDialog">
+            <div class="dialog-header">
+                <div>
+                    <p class="eyebrow">@(_dialog == DialogMode.Editor ? Editing ? "Edit automation" : "Create automation" : ConfirmationEyebrow())</p>
+                    <h2 id="automation-dialog-heading">@(_dialog == DialogMode.Editor ? Editing ? $"Edit {_idInput}" : "Define a local automation" : ConfirmationHeading())</h2>
+                </div>
+                <button type="button" class="icon-button" aria-label="Close dialog" disabled="@_busy" @onclick="CloseDialog">
+                    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"></path></svg>
+                </button>
+            </div>
+            @if (_dialog == DialogMode.Editor)
+            {
+                <p id="automation-dialog-description" class="dialog-intro">Choose a registered task, its target and a trigger. Nothing is recorded until you review and confirm; arbitrary commands are never accepted.</p>
+                <fieldset disabled="@(_busy || _loading)">
+                    <legend class="visually-hidden">Local automation definition</legend>
+                    <div class="automation-dialog-grid">
+                        <label class="ops-field">Identifier
+                            <input id="automation-id" autocomplete="off" spellcheck="false" readonly="@Editing" aria-describedby="automation-id-help" @bind="_idInput" @bind:after="FormChanged" />
+                            <small id="automation-id-help" class="automation-field-hint">@(Editing ? "Fixed once recorded." : "Lower-case letters, digits, hyphens and dots; fixed once recorded.")</small>
+                        </label>
+                        <label class="ops-field">Name
+                            <input id="automation-name" autocomplete="off" maxlength="@LocalAutomationContract.MaximumNameLength" @bind="_nameInput" @bind:after="FormChanged" />
+                        </label>
+                        <label class="ops-field">Registered task
+                            <select id="automation-task" @bind="_taskKindInput" @bind:after="TaskChanged">
+                                @foreach (var descriptor in EditorTasks)
                                 {
-                                    <option value="@descriptor.TaskKind">@Split(descriptor.TaskKind.ToString())</option>
+                                    <option value="@descriptor.TaskKind" disabled="@(!descriptor.Available)">@Split(descriptor.TaskKind.ToString())</option>
                                 }
                             </select>
-                        </div>
-                        <div class="automation-field">
-                            <label for="automation-target">Task target</label>
-                            <select id="automation-target" class="form-select" @bind="_targetInput" @bind:after="FormChanged">
+                        </label>
+                        <label class="ops-field">Task target
+                            <select id="automation-target" @bind="_targetInput" @bind:after="FormChanged">
                                 <option value="">Select a registered target</option>
                                 @foreach (var target in Targets())
                                 {
                                     <option value="@target">@target</option>
                                 }
                             </select>
-                        </div>
-                        <div class="automation-field">
-                            <label for="automation-trigger">Registered trigger</label>
-                            <select id="automation-trigger" class="form-select" @bind="_triggerKindInput" @bind:after="FormChanged">
+                        </label>
+                        <label class="ops-field">Trigger
+                            <select id="automation-trigger" @bind="_triggerKindInput" @bind:after="TriggerChanged">
                                 @foreach (var trigger in CompatibleTriggers())
                                 {
                                     <option value="@trigger">@Split(trigger.ToString())</option>
                                 }
                             </select>
-                        </div>
-                        <div class="automation-field">
-                            <label for="automation-interval">@(_triggerKindInput == LocalAutomationTriggerKind.Periodic ? "Interval (seconds)" : "Interval (captures)")</label>
-                            <input id="automation-interval" class="form-control" inputmode="numeric" autocomplete="off" @bind="_intervalInput" @bind:after="FormChanged" />
-                        </div>
-                        <div class="automation-field automation-field--check">
-                            <input id="automation-enabled" class="form-check-input" type="checkbox" @bind="_enabledInput" @bind:after="FormChanged" />
-                            <label for="automation-enabled">Enabled</label>
-                        </div>
-                        <div class="automation-field automation-field--wide">
-                            <label for="automation-reason">Reason (recorded with the revision)</label>
-                            <input id="automation-reason" class="form-control" autocomplete="off" @bind="_reasonInput" @bind:after="FormChanged" />
-                        </div>
-                    </fieldset>
-                    <div class="automation-actions">
-                        <button id="@SaveTriggerId" type="button" class="btn btn-primary" disabled="@(_busy || _loading)" @onclick="BeginSave">Save automation</button>
-                        @if (_editingVersion != 0)
-                        {
-                            <button type="button" class="btn btn-outline-light" disabled="@(_busy || _loading)" @onclick="ResetForm">Cancel edit</button>
-                        }
+                        </label>
+                        <label class="ops-field">@(_triggerKindInput == LocalAutomationTriggerKind.Periodic ? "Interval (seconds)" : "Interval (captures)")
+                            <input id="automation-interval" inputmode="numeric" autocomplete="off" aria-describedby="automation-interval-help" @bind="_intervalInput" @bind:after="FormChanged" />
+                            <small id="automation-interval-help" class="automation-field-hint">@IntervalHint()</small>
+                        </label>
+                        <label class="automation-check full"><input id="automation-enabled" type="checkbox" @bind="_enabledInput" @bind:after="FormChanged" /> Run this automation once it is recorded</label>
+                        <label class="ops-field full">Reason (recorded with the revision)
+                            <input id="automation-reason" autocomplete="off" @bind="_reasonInput" @bind:after="FormChanged" />
+                        </label>
                     </div>
+                </fieldset>
+                @if (_commandMessage is not null)
+                {
+                    <div class="ops-note-banner automation-dialog-message" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@_commandMessage</span></div>
                 }
-            </article>
-
-            @if (_automation is not null)
-            {
-                <article class="automation-card" aria-labelledby="automation-calendar">
-                    <header><div><p class="eyebrow">Wall-clock occurrences</p><h2 id="automation-calendar">Next-run calendar</h2></div></header>
-                    @if (_automation.Calendar.Count == 0)
-                    {
-                        <p class="empty-copy">No enabled definition uses a wall-clock trigger, so no calendar entry is due. Capture-relative definitions appear in the definitions table with their next capture sequence.</p>
-                    }
-                    else
-                    {
-                        <ol class="calendar-list">
-                            @foreach (var entry in _automation.Calendar)
-                            {
-                                <li @key="entry.DefinitionId">
-                                    <strong>@entry.Name</strong>
-                                    <span>@entry.TaskTarget</span>
-                                    <time datetime="@entry.DueUtc.ToString("O")">@entry.DueUtc.ToString("u")</time>
-                                    <span>@Split(entry.TaskKind.ToString())</span>
-                                </li>
-                            }
-                        </ol>
-                    }
-                </article>
-
-                <article class="automation-card automation-card--wide" aria-labelledby="automation-runs">
-                    <header>
-                        <div><p class="eyebrow">Durable journal</p><h2 id="automation-runs">Run history</h2></div>
-                        @if (_automation.ObservedCaptureSequence is { } observed)
-                        {
-                            <span class="state-chip state-chip--readonly">Capture sequence @observed</span>
-                        }
-                    </header>
-                    @if (_automation.Runs.Count == 0)
-                    {
-                        <p class="empty-copy">No automation run has been recorded on this CameraAgent.</p>
-                    }
-                    else
-                    {
-                        <div class="table-scroll">
-                            <table class="facts-table">
-                                <caption class="visually-hidden">The @LocalAutomationContract.MaximumProjectedRuns most recent recorded automation runs across all definitions, newest first</caption>
-                                <thead><tr><th scope="col">Started</th><th scope="col">Automation</th><th scope="col">Trigger</th><th scope="col">Scheduled for</th><th scope="col">Outcome</th><th scope="col">Detail</th><th scope="col">Revision</th></tr></thead>
-                                <tbody>
-                                    @foreach (var run in _automation.Runs)
-                                    {
-                                        <tr @key="run.Sequence">
-                                            <th scope="row">@run.StartedAtUtc.ToString("u")</th>
-                                            <td>@run.DefinitionId</td>
-                                            <td>@Split(run.TriggerKind.ToString())</td>
-                                            <td>@run.ScheduledForUtc.ToString("u")</td>
-                                            <td>@Split(run.Outcome.ToString())</td>
-                                            <td>@(run.Detail.Length == 0 ? "Running" : run.Detail)</td>
-                                            <td class="mono">@run.RevisionSha256[..12]</td>
-                                        </tr>
-                                    }
-                                </tbody>
-                            </table>
-                        </div>
-                    }
-                </article>
+                @if (_editTargetRemoved)
+                {
+                    <div class="operations-dialog-note warning automation-removed-note"><strong>This automation was removed</strong><span>Another change removed @_idInput.Trim() while it was open here. Recreate records these fields as a new automation.</span><button type="button" id="automation-recreate" class="button secondary" disabled="@(_busy || _loading)" @onclick="RecreateRemoved">Recreate</button></div>
+                }
+                <footer>
+                    <button type="button" id="automation-editor-cancel" class="button secondary" disabled="@_busy" @onclick="CloseDialog">Cancel</button>
+                    <button type="button" id="@SaveTriggerId" class="button primary" disabled="@(_busy || _loading)" @onclick="BeginSave">Review and save</button>
+                </footer>
             }
-
-            @if (_confirming)
+            else
             {
-                <dialog class="confirmation-panel" aria-labelledby="automation-confirm-heading" aria-describedby="automation-confirm-description"
-                        @oncancel="CancelCommand" @ref="_confirmationDialog">
-                    <div>
-                        <p class="eyebrow">Durable automation confirmation</p>
-                        <h2 id="automation-confirm-heading">@ConfirmationHeading()</h2>
-                        <p id="automation-confirm-description">@ConfirmationDescription()</p>
-                        @if (_commandMessage is not null)
-                        {
-                            @* The open modal makes the card behind it inert, so the outcome has to be announced here. *@
-                            <p class="truth-note @(_commandMessageIsError ? "automation-error" : "automation-ok")" role="alert">@_commandMessage</p>
-                        }
-                    </div>
-                    <div><button type="button" class="btn btn-primary" disabled="@_busy" @onclick="ConfirmCommandAsync">Confirm</button><button type="button" class="btn btn-outline-light" disabled="@_busy" autofocus @onclick="CancelCommand">Cancel</button></div>
-                </dialog>
+                <p id="automation-dialog-description" class="dialog-intro">@ConfirmationDescription()</p>
+                @if (_pendingKind == PendingCommandKind.Save)
+                {
+                    <dl class="ops-facts automation-confirm-facts">
+                        <div><dt>Identifier</dt><dd>@_idInput.Trim()</dd></div>
+                        <div><dt>Name</dt><dd>@_nameInput.Trim()</dd></div>
+                        <div><dt>Task</dt><dd>@Split(_taskKindInput.ToString())</dd></div>
+                        <div><dt>Target</dt><dd>@_targetInput.Trim()</dd></div>
+                        <div><dt>Trigger</dt><dd>@(int.TryParse(_intervalInput, System.Globalization.NumberStyles.Integer, Invariant, out var interval) ? DescribeTrigger(_triggerKindInput, interval) : _intervalInput)</dd></div>
+                        <div><dt>State</dt><dd>@(_enabledInput ? "Enabled" : "Disabled")</dd></div>
+                        <div class="full"><dt>Reason</dt><dd>@(TrimmedReason() ?? "None given")</dd></div>
+                    </dl>
+                }
+                else
+                {
+                    <fieldset disabled="@_busy">
+                        <legend class="visually-hidden">Command reason</legend>
+                        <label class="ops-field">Reason (optional, recorded with the revision)
+                            <input id="automation-command-reason" autocomplete="off" @bind="_commandReasonInput" />
+                        </label>
+                    </fieldset>
+                }
+                @if (_commandMessage is not null)
+                {
+                    <div class="ops-note-banner automation-dialog-message" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span>@_commandMessage</span></div>
+                }
+                <footer>
+                    <button type="button" id="@CancelId" class="button secondary" disabled="@_busy" @onclick="CancelCommand">@(_pendingKind == PendingCommandKind.Save ? "Back to editor" : "Cancel")</button>
+                    <button type="button" id="@ConfirmId" class="button primary" disabled="@_busy" @onclick="ConfirmCommandAsync">@ConfirmLabel()</button>
+                </footer>
             }
-        </section>
+        </dialog>
     }
-</div>
+}

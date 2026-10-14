@@ -1,0 +1,295 @@
+{
+  "schema": "issue1170-checkpoints-v1",
+  "manifest": "docs/validation/issue-1170-pipeline-manifest.json",
+  "evidenceRoot": "home-dev-01:~/development-state/HVO.SkyMonitor/evidence/1170",
+  "attribution": "Any statement in this file about hosts, locks, processes, sessions, sampling, kernel settings or other activity that does not cite a retained record (a log line, a pack's host.hostname, a run.trx computerName, or another named file) is the owner's account.",
+  "checkpoints": [
+    {
+      "id": "cp-518",
+      "trigger": "#518 merged into development/v1 by PR #1176",
+      "arms": {
+        "A": {
+          "revision": "f7d1986502559575b85b2f9bffe2e1ff19f5a659",
+          "role": "development/v1 after #1170 pr1 (PR #1177), before #518"
+        },
+        "B": {
+          "revision": "87f947c68b942fe3cebe99d2f31060c1ab7992fa",
+          "role": "development/v1 after #518 (PR #1176)"
+        }
+      },
+      "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+      "productSourceUnchangedFromBase": false,
+      "protocol": "Full unchanged manifest, interleaved arms on home-dev-01 (each pack's host.hostname) between 2026-10-07T09:22:49Z, the first arm's start in prof.log, and 13:19:48Z, the last arm's finish in attr.log (the packs' runs[] records span 09:22:49Z-13:19:42Z): odd pair indices run A then B, even pair indices run B then A, and only adjacent arms are compared. By the owner's account, measured cells ran only while the home-dev-02 holder held /tmp/hvo-520-heavy.lock.",
+      "windows": [
+        {
+          "slot": "prof",
+          "holder": null,
+          "start": "2026-10-07T09:22:49Z",
+          "end": "2026-10-07T10:04:02Z",
+          "items": [
+            "S1 A 09:22:49Z-09:43:56Z rc=1",
+            "S1 B 09:43:56Z-10:04:02Z rc=0"
+          ],
+          "disclosure": "Outside a quiet window. By the owner's account, home-dev-02 was the probable co-resident host and #526's Tier C held its lock; home-dev-02 load 15.67/14.83/10.37 at 09:43:09Z, as read by the #520 coordinator; its decisions ledger (heartbeat 09:43:27Z) retains the one-minute figure. The window's driver, prof.sh, starts no sampler."
+        },
+        {
+          "slot": "a",
+          "holder": {
+            "acquired": "2026-10-07T10:36:14Z",
+            "released": "2026-10-07T11:47:59Z",
+            "reason": "done",
+            "capMinutesRequested": 95
+          },
+          "start": "2026-10-07T10:36:22Z",
+          "end": "2026-10-07T11:47:43Z",
+          "items": [
+            "S1 A r2 10:36:22Z-10:54:09Z rc=0",
+            "pairs 01 02 03 04 05 09 10 11 10:54:09Z-11:47:43Z"
+          ]
+        },
+        {
+          "slot": "b",
+          "holder": {
+            "acquired": "2026-10-07T11:49:24Z",
+            "released": "2026-10-07T12:43:39Z",
+            "reason": "done",
+            "capMinutesRequested": 75
+          },
+          "start": "2026-10-07T11:49:32Z",
+          "end": "2026-10-07T12:35:11Z",
+          "items": [
+            "pairs 06 07"
+          ]
+        },
+        {
+          "slot": "c",
+          "holder": {
+            "acquired": "2026-10-07T11:49:24Z",
+            "released": "2026-10-07T12:43:39Z",
+            "reason": "done",
+            "capMinutesRequested": 75
+          },
+          "start": "2026-10-07T12:35:11Z",
+          "end": "2026-10-07T12:43:28Z",
+          "items": [
+            "pair 08"
+          ]
+        },
+        {
+          "slot": "attr",
+          "holder": {
+            "acquired": "2026-10-07T12:49:35Z",
+            "released": "2026-10-07T13:19:57Z",
+            "reason": "done",
+            "capMinutesRequested": 50
+          },
+          "start": "2026-10-07T12:49:44Z",
+          "end": "2026-10-07T13:19:48Z",
+          "items": [
+            "attribution B 12:49:47Z-13:05:21Z rc=0",
+            "attribution A 13:05:54Z-13:19:48Z rc=0"
+          ],
+          "disclosure": "By the owner's account, light activity on home-dev-02 overlapped four trials, which are labelled and not adjusted: B s2-w2-night allocation and cpu (git reads about 12:54:30Z-12:56:25Z; an 11 s scripted burst at 12:55:42Z-12:55:52Z fell between them), A s2-w1-night-long allocation (git fetch 13:07:15Z) and A s2-w2-night allocation (git and gh reads 13:09:04Z-13:09:15Z). B s2-w2-night allocation, A s2-w1-night-long allocation and A s2-w2-night allocation are not outliers against their siblings. B s2-w2-night cpu: highest of 20 (+5.2%, sibling +4.1%); overlapped labelled interval 2 (the git reads); explanatory only; no verdict depends on it."
+        }
+      ],
+      "exclusions": [
+        {
+          "name": "renderSolarSystemDisks",
+          "reason": "An opt-in on the VirtualSky source that defaults to false and is absent from cameraagent.sample.json. No real-camera path produces resolved Sun or Moon footprints; the only producer is VirtualSkyCameraModule calling VisibleScene.WithResolvedBodies. cp-518 therefore measures the production composition, footprint-free scenes that keep projected-scene-v1 and the released annotation identity, and has no disks-on cell."
+        }
+      ],
+      "result": "Comparator pairs over all 11 cells: rc=0, regressed=False, outputsIdentical=True, complete=True. S1 A r2 against B identical; S1 A (rc=1) against B differs only in the measured-stars-held-out gate status, exit code and failure line. S4 A and B ranges overlap on every measure. Attribution (one trial per cell and collector per arm, explanatory only; pairs stay the record): collector overhead -1.8% to +5.2%, on-CPU running within 1.2%, no frame difference claimed from single trials (SQLite prepare is 11-26 ms higher at B in all five cells, under 0.5% of running time), and no SolarDisk frame in the full frame set of any of the ten cpu traces.",
+      "evidence": [
+        {
+          "pack": "cp518/s1/A-f7d19865",
+          "role": "S1 arm A, rc=1 (#1106 4x gate on measured-stars-held-out 01-mono-bin2), outside a quiet window; the record",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "3eefaa66a1ba2a3e851fcff3d63719cdd5026b6a594d9a842697a6df3f031af3",
+          "sha256SumsSha256": "cd8c558603f583756f629a34341f69e42b39eb612de82d8ca57311a0eb938389"
+        },
+        {
+          "pack": "cp518/s1/A-f7d19865-r2",
+          "role": "S1 arm A, additional sample r2 in slot a; not a replacement",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "7ae8e9194fab19dbcae95c30e97fdfe2708d16111e90d51b58b8811cb8e17b6d",
+          "sha256SumsSha256": "731f0304d342b2acc70b97ce129210315225739d3d459f3573b3faec20700f09"
+        },
+        {
+          "pack": "cp518/s1/B-87f947c6",
+          "role": "S1 arm B, outside a quiet window",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "e3b66c71877e33c07c55e6b32301ea1b8ed49414ca3b2a23ec5bfeab10746471",
+          "sha256SumsSha256": "b20855785ad1022ea529a401d063b102008aad1d016704bfde274cd21b078446"
+        },
+        {
+          "pack": "cp518/01-s2-sample-night/A-f7d19865",
+          "role": "Pair 01 s2-sample-night, arm A",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "2eab46efe004194ac2747493ce64dfe5ab002c56feb85ef539a41c002abdaa75",
+          "sha256SumsSha256": "10059f782c509187ed669a52b5af7b6adfec29c27c6c39ff7334b7220ec976e2"
+        },
+        {
+          "pack": "cp518/01-s2-sample-night/B-87f947c6",
+          "role": "Pair 01 s2-sample-night, arm B",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "3c04ed66d65ee2a4f2935ee0ee37ef70e62408b9053cec1c6ac7b319a07b2ced",
+          "sha256SumsSha256": "ad9e6d0affc2b498d80c5856cd75ba343f84dec536e40d6fae6072b3ed33abd5"
+        },
+        {
+          "pack": "cp518/02-s2-w1-night-long/A-f7d19865",
+          "role": "Pair 02 s2-w1-night-long, arm A",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "2a555356dc6fec7a5cf781f8d43ff093e5a7f1b45e6ed0a5faf89949ac2e69fc",
+          "sha256SumsSha256": "dbcdcaf87fa2ea2ec9777e1ae695576c7810dbf2618b40cf057e76e2f7d605b5"
+        },
+        {
+          "pack": "cp518/02-s2-w1-night-long/B-87f947c6",
+          "role": "Pair 02 s2-w1-night-long, arm B",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "05d12d61b1d5b190932d3dee484cd8fcf30c5f8706ff7b45e50f0fef3ba3a7ea",
+          "sha256SumsSha256": "52ef0886c78baa818fb972f3e964a6275494d7feabb9ee26cadcfccf0ac8fb0a"
+        },
+        {
+          "pack": "cp518/03-s2-w1-night-short/A-f7d19865",
+          "role": "Pair 03 s2-w1-night-short, arm A",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "5405daccfb0192c397f0f292f306a08ca80a0e78de94a28cf1ec0e9d414f663f",
+          "sha256SumsSha256": "421a9659dc1a83ff277456b5774b5739346f01591962f753f0aab35eb81c2535"
+        },
+        {
+          "pack": "cp518/03-s2-w1-night-short/B-87f947c6",
+          "role": "Pair 03 s2-w1-night-short, arm B",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "99cc216d4868863a6018eeed1162655b4a5ec095ebcd7bc05f1f7791fb8bba74",
+          "sha256SumsSha256": "8aca1b8bc0cb5d107c8d74533b9c4647ff8a8b7c059b8a681508a0cfddf01c3d"
+        },
+        {
+          "pack": "cp518/04-s2-w1-day/A-f7d19865",
+          "role": "Pair 04 s2-w1-day, arm A",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "8011d5c48d2cc8c15636112795a794161841ef760259d65ec3999d9149067d38",
+          "sha256SumsSha256": "10d6cd7e54388717121992b240e1c4cf5083659a4c8525e93ccd80b9305a361e"
+        },
+        {
+          "pack": "cp518/04-s2-w1-day/B-87f947c6",
+          "role": "Pair 04 s2-w1-day, arm B",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "ad2beb1f42464b3bc427d88c0bc0bbaecd055bbf37e302f3e654f8684f1dfafe",
+          "sha256SumsSha256": "902d7ffb206829cc0c64b6544c102990eabac68675f70954b4b1b69b598e933d"
+        },
+        {
+          "pack": "cp518/05-s2-w1-dense/A-f7d19865",
+          "role": "Pair 05 s2-w1-dense, arm A",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "f55a121fb4a4eaa17e51af1a43b52cc9ff3baca78aabaa841bee045fe6720329",
+          "sha256SumsSha256": "f02881d096079e47c32312637ceb37c736e9eda26e7bc426ca7ea1cbbcd66226"
+        },
+        {
+          "pack": "cp518/05-s2-w1-dense/B-87f947c6",
+          "role": "Pair 05 s2-w1-dense, arm B",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "b25df0b7a8f5ce79ae2e6d9e1da4a8b205c7d9e3c3f2be18d5107cc25216c48c",
+          "sha256SumsSha256": "a3a2af6a7c13e88c8cb341243509796bfcfab70dcfba4b248ab6a096d7dd75eb"
+        },
+        {
+          "pack": "cp518/06-s2-w2-night/A-f7d19865",
+          "role": "Pair 06 s2-w2-night, arm A",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "f182d477cd61daf638c602c0e1e6ff5784e257209aa99d8bbe30550347600ccc",
+          "sha256SumsSha256": "a0b0df14b6468bbddf11a5ef9248e5e6e04b414d2259f4b5be887d05ddd06efa"
+        },
+        {
+          "pack": "cp518/06-s2-w2-night/B-87f947c6",
+          "role": "Pair 06 s2-w2-night, arm B",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "0ee791eddab636b22d4c1048fd7eb60218defa76ad406c2b57416e5ce17bb441",
+          "sha256SumsSha256": "edbf506656cf2f811eeb740a39c8872c42b113dbaac7c8d806de5cb108621aca"
+        },
+        {
+          "pack": "cp518/07-s2-w6-night/A-f7d19865",
+          "role": "Pair 07 s2-w6-night, arm A",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "bd59728774e443c5500ae33c6a3fe85610d60183a2d2aad683307f39dcb8e2ad",
+          "sha256SumsSha256": "6222a23e4b753b2b3b736c34255b226147a234ba206d14ef85b4a555610ae5f4"
+        },
+        {
+          "pack": "cp518/07-s2-w6-night/B-87f947c6",
+          "role": "Pair 07 s2-w6-night, arm B",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "4f7fa102e3406cf8a462ea3260a93947c351cecfe63d5f5c0c282a1071cc6318",
+          "sha256SumsSha256": "07803039c7c759a80d2872539490e27e85643efef4924f7718c17184ce6b7a75"
+        },
+        {
+          "pack": "cp518/08-s2-w1-night-long-tc0/A-f7d19865",
+          "role": "Pair 08 s2-w1-night-long-tc0, arm A",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "3e6a2a61a25e875cf7ab395d364d8176d62d6a1e214231569c7a3c33dbb4a8d8",
+          "sha256SumsSha256": "3a68f00bf62c53d90a692bed40fff2dbed5415483562a45263da892ac97dcd61"
+        },
+        {
+          "pack": "cp518/08-s2-w1-night-long-tc0/B-87f947c6",
+          "role": "Pair 08 s2-w1-night-long-tc0, arm B",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "d9ee7579106baf12412ba27527a12dec5ab2e303f26f835c9109674204b6ddc8",
+          "sha256SumsSha256": "8496f8c8ee75d09528268c89dcd4df51970d494fceed5466e28a4403b1dc6009"
+        },
+        {
+          "pack": "cp518/09-s3-sample-cold/A-f7d19865",
+          "role": "Pair 09 s3-sample-cold, arm A",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "0d33c1169fa4f9a5c5a8b0e21dcb988af4a011db274015753ffaf6ef5049767f",
+          "sha256SumsSha256": "36a73ccf2f96bb96d3bae3661f01c5314309d67ae503ff85790c0511a43f3360"
+        },
+        {
+          "pack": "cp518/09-s3-sample-cold/B-87f947c6",
+          "role": "Pair 09 s3-sample-cold, arm B",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "ea31afceea3a4a8cfa449c23b401c94c384d83a2d3f04a5ca60130c83d98f861",
+          "sha256SumsSha256": "7039b438a3db3150d9c7a5ab7d30dccb91257c09d3044afac3af4615c5bce8a0"
+        },
+        {
+          "pack": "cp518/10-s3-w1-cold/A-f7d19865",
+          "role": "Pair 10 s3-w1-cold, arm A",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "fa2aeda65cd8ef9c76fea2c0fcc2a16bd7106e9fe0885da9a1bbbdc117711df6",
+          "sha256SumsSha256": "be6ea2fc8a01458f38471b6227beb750786c3af3f70705d20f32db1d4e9ee1d5"
+        },
+        {
+          "pack": "cp518/10-s3-w1-cold/B-87f947c6",
+          "role": "Pair 10 s3-w1-cold, arm B",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "72a7e4e6fccb26a677afbce2c97119e28cfdadd5c9836505953e07b9a8b8545c",
+          "sha256SumsSha256": "95cc7d10455e28ab1241c47c79015d0b8d7f11384466cef33440c8eac2dc5d72"
+        },
+        {
+          "pack": "cp518/11-s4-w1-saturation/A-f7d19865",
+          "role": "Pair 11 s4-w1-saturation, arm A",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "caa1e61635ca5ecde8c1ffe782c7d0f0d610a93b22302da7d0c9fc1d10f602f2",
+          "sha256SumsSha256": "ef6d30288e92ed82a7ff3d3f095320a489dd4042d134c37cf2c97d51da53c97e"
+        },
+        {
+          "pack": "cp518/11-s4-w1-saturation/B-87f947c6",
+          "role": "Pair 11 s4-w1-saturation, arm B",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "4c12463cea6764a19fa19f03b3f292632b23834ba5c7c396bbceb110597d0d15",
+          "sha256SumsSha256": "38efa36616ed3aed1129f8689274922057067da4384ca3a27376a49622b2387e"
+        },
+        {
+          "pack": "cp518/attribute/B-87f947c6",
+          "role": "Attribution arm B, explanatory only; pairs are the record",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "94cd8d1b2c13d513a045e3184cd0c6b2b5d8dcabc0c251e50fd774d8316edbf2",
+          "sha256SumsSha256": "86a09f32ece887a21dc6753affe89c929044bf6fb2fd9034041254219003dd29"
+        },
+        {
+          "pack": "cp518/attribute/A-f7d19865",
+          "role": "Attribution arm A, explanatory only; pairs are the record",
+          "manifestSha256": "ca0f1ba779010c60ce3542b79bc37b763379f161869be170f6a03c2c3809f840",
+          "archiveSha256": "ed58667d64cf97a08965e22709626b5ff7bbc7ddec1f43b6dcdfff5154cea2b9",
+          "sha256SumsSha256": "8a6ea7c4b0a9cb920b02a4b38e6cc10cd4e2b1472778c199f6191937651f7fe2"
+        }
+      ]
+    }
+  ]
+}

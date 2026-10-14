@@ -28,7 +28,8 @@ public static class GroupedSvgPresentationRenderer
 {
     public const int MaximumSvgBytes = 2 * 1024 * 1024;
     public const int MaximumSvgElements = 20_000;
-    public const string RendererVersion = "cameraagent-grouped-svg-v3-plex";
+    public const string SemanticRendererVersion = "cameraagent-grouped-svg-v4-semantic";
+    public const string RendererVersion = "cameraagent-grouped-svg-v5-pinned-appearance";
 
     public static GroupedSvgPresentation Render(
         OverlayManifestV1 manifest,
@@ -47,6 +48,7 @@ public static class GroupedSvgPresentationRenderer
             throw new ArgumentException("Grouped SVG rendering supports ScenePixels layers only.", nameof(manifest));
         }
 
+        foreach (var payload in payloads) payload.ValidateStructure();
         var elementCount = payloads.Sum(ElementCount);
         if (elementCount > MaximumSvgElements)
         {
@@ -109,7 +111,12 @@ public static class GroupedSvgPresentationRenderer
             throw new ArgumentException("Base checksum must be a canonical SHA-256 value.", nameof(baseChecksumSha256));
         }
         var bytes = Encoding.ASCII.GetBytes(string.Join('|',
-            RendererVersion,
+            PresentationLayerCompositor.SelectAlgorithmVersion(manifest.Layers.Select(layer => layer.RendererVersion)) switch
+            {
+                PresentationLayerCompositor.PreviousAlgorithmVersion => "cameraagent-grouped-svg-v3-plex",
+                PresentationLayerCompositor.SemanticAlgorithmVersion => SemanticRendererVersion,
+                _ => RendererVersion
+            },
             manifest.ManifestIdentitySha256,
             baseChecksumSha256,
             string.Join(',', manifest.Layers.Select(static layer => layer.LayerIdentitySha256))));
@@ -146,6 +153,7 @@ public static class GroupedSvgPresentationRenderer
             Coordinate(writer, "y2", segment.To.Y);
             writer.WriteAttributeString("stroke", Color(segment.Color));
             writer.WriteAttributeString("stroke-width", segment.Thickness.ToString(CultureInfo.InvariantCulture));
+            WriteStroke(writer, segment.Stroke);
             writer.WriteEndElement();
         }
         foreach (var ellipse in payload.Ellipses)
@@ -157,10 +165,21 @@ public static class GroupedSvgPresentationRenderer
             Coordinate(writer, "ry", ellipse.RadiusY);
             writer.WriteAttributeString("fill", "none");
             writer.WriteAttributeString("stroke", Color(ellipse.Color));
+            if (ellipse.ThicknessMilliPixels is { } thickness)
+                Coordinate(writer, "stroke-width", thickness / 1000d);
+            WriteStroke(writer, ellipse.Stroke);
             writer.WriteEndElement();
         }
         foreach (var marker in payload.Markers)
         {
+            if (marker.Crosshair)
+            {
+                writer.WriteStartElement("path");
+                var radius = marker.Radius + 4;
+                writer.WriteAttributeString("d", FormattableString.Invariant($"M{Number(marker.Center.X - radius)} {Number(marker.Center.Y)}h{2 * radius}M{Number(marker.Center.X)} {Number(marker.Center.Y - radius)}v{2 * radius}"));
+                writer.WriteAttributeString("stroke", Color(marker.Color));
+                writer.WriteEndElement();
+            }
             writer.WriteStartElement(marker.Radius == 0 ? "rect" : "circle");
             if (marker.Radius == 0)
             {
@@ -182,23 +201,64 @@ public static class GroupedSvgPresentationRenderer
         }
         foreach (var block in payload.TextBlocks)
         {
+            if (block.Backplate is { } plate && block.Lines.Count > 0)
+            {
+                using var font = PresentationFont.Create(block.Scale);
+                var bounds = PresentationFont.BackplateBounds(block, payload.WidthPixels, payload.HeightPixels, font);
+                writer.WriteStartElement("rect");
+                Coordinate(writer, "x", bounds.Left); Coordinate(writer, "y", bounds.Top);
+                Coordinate(writer, "width", bounds.Width); Coordinate(writer, "height", bounds.Height);
+                writer.WriteAttributeString("fill", Color(plate.Fill));
+                writer.WriteAttributeString("fill-opacity", Number(plate.OpacityMillionths / 1_000_000d));
+                writer.WriteAttributeString("stroke", Color(plate.Border));
+                if (plate.Style is { } plateStyle)
+                {
+                    if (plateStyle.CornerRadiusMilliPixels is { } radius)
+                        Coordinate(writer, "rx", radius / 1000d);
+                    Coordinate(writer, "stroke-width", plateStyle.BorderWidthMilliPixels / 1000d);
+                    Coordinate(writer, "stroke-opacity", plateStyle.BorderOpacityMillionths / 1_000_000d);
+                }
+                writer.WriteEndElement();
+                if (plate.AccentPixels > 0)
+                {
+                    writer.WriteStartElement("rect");
+                    Coordinate(writer, "x", bounds.Left); Coordinate(writer, "y", bounds.Top);
+                    Coordinate(writer, "width", plate.AccentPixels); Coordinate(writer, "height", bounds.Height);
+                    writer.WriteAttributeString("fill", Color(plate.Border));
+                    writer.WriteEndElement();
+                }
+                if (plate.Style?.HeadingRule == true && block.Lines.Count > 1)
+                {
+                    writer.WriteStartElement("line");
+                    var y = PresentationFont.HeadingRuleY(block, payload.WidthPixels, payload.HeightPixels);
+                    Coordinate(writer, "x1", bounds.Left + plate.Padding); Coordinate(writer, "y1", y);
+                    Coordinate(writer, "x2", bounds.Right - plate.Padding); Coordinate(writer, "y2", y);
+                    writer.WriteAttributeString("stroke", Color(plate.Border));
+                    Coordinate(writer, "stroke-opacity", plate.Style.RuleOpacityMillionths / 1_000_000d);
+                    writer.WriteEndElement();
+                }
+            }
             for (var lineIndex = 0; lineIndex < block.Lines.Count; lineIndex++)
             {
                 var line = block.Lines[lineIndex];
-                using var font = PresentationFont.Create(block.Scale);
+                using var font = PresentationFont.Create(block, lineIndex);
+                var style = PresentationFont.LineStyle(block, lineIndex);
                 var (x, y) = PresentationFont.LineOrigin(block, payload.WidthPixels, payload.HeightPixels, font, line, lineIndex);
-                using var outline = PresentationFont.LinePath(font, line, x, y);
+                using var outline = PresentationFont.LinePath(font, line, x, y,
+                    (style?.LetterSpacingMilliPixels ?? 0) / 1000f);
                 var path = outline.ToSvgPathData();
                 if (path.Length > MaximumSvgBytes)
                     throw new InvalidDataException("Text SVG exceeds its payload bound.");
                 writer.WriteStartElement("path");
                 writer.WriteAttributeString("d", path);
-                writer.WriteAttributeString("fill", Color(block.Color));
-                var halo = PresentationFont.Halo(block.Scale);
+                writer.WriteAttributeString("fill", Color(style?.Color ?? block.Color));
+                var halo = style is null ? 2 * PresentationFont.Halo(block.Scale) : style.HaloWidthMilliPixels / 1000d;
                 if (halo > 0)
                 {
-                    writer.WriteAttributeString("stroke", "#000000");
-                    writer.WriteAttributeString("stroke-width", Number(2 * halo));
+                    writer.WriteAttributeString("stroke", style is null ? "#000000" : Color(style.HaloColor));
+                    writer.WriteAttributeString("stroke-width", Number(halo));
+                    if (style is not null)
+                        Coordinate(writer, "stroke-opacity", style.HaloOpacityMillionths / 1_000_000d);
                     writer.WriteAttributeString("stroke-linejoin", "round");
                     writer.WriteAttributeString("paint-order", "stroke fill");
                 }
@@ -246,8 +306,19 @@ public static class GroupedSvgPresentationRenderer
     }
 
     private static int ElementCount(PresentationLayerPayloadV1 payload) => checked(
-        payload.Markers.Count + payload.Segments.Count + payload.Ellipses.Count +
-        payload.TextBlocks.Sum(static block => block.Lines.Count) + (payload.TileMask is null ? 0 : 1));
+        payload.Markers.Sum(marker => marker.Crosshair ? 2 : 1) + payload.Segments.Count + payload.Ellipses.Count +
+        payload.TextBlocks.Sum(static block => block.Lines.Count + (block.Backplate is null ? 0 : 2) + (block.Backplate?.Style?.HeadingRule == true && block.Lines.Count > 1 ? 1 : 0)) + (payload.TileMask is null ? 0 : 1));
+
+    private static void WriteStroke(XmlWriter writer, PresentationStrokeV2? stroke)
+    {
+        if (stroke is null) return;
+        writer.WriteAttributeString("stroke-opacity", Number(stroke.OpacityMillionths / 1_000_000d));
+        if (stroke.DashPixels > 0)
+        {
+            writer.WriteAttributeString("stroke-dasharray", FormattableString.Invariant($"{stroke.DashPixels} {stroke.GapPixels}"));
+            writer.WriteAttributeString("stroke-dashoffset", Number(stroke.DashOffsetPixels));
+        }
+    }
 
     private static void Coordinate(XmlWriter writer, string name, double value) =>
         writer.WriteAttributeString(name, Number(value));

@@ -16,6 +16,8 @@ internal interface ICameraAgentEnvironmentalUiService
     ValueTask<OperatorUiResult<EnvironmentalUiStatus>> GetStatusAsync(CancellationToken cancellationToken);
     ValueTask<OperatorUiResult<EnvironmentalUiHistoryPage>> GetHistoryAsync(
         EnvironmentalObservationKind? kind, int pageSize, string? cursor, CancellationToken cancellationToken);
+    ValueTask<OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>> GetLatestReadingsAsync(
+        CancellationToken cancellationToken);
     ValueTask<OperatorUiResult<EnvironmentalOnDemandAcquisitionResult>> AcquireAsync(
         string sourceId, string idempotencyKey, string reason, CancellationToken cancellationToken);
 }
@@ -27,7 +29,23 @@ internal sealed record EnvironmentalUiStatus(
     long StoredBytes,
     long OverflowCount,
     IReadOnlyList<EnvironmentalUiSource> Sources,
-    IReadOnlyList<EnvironmentalAcquisitionAttemptRecord> Attempts);
+    IReadOnlyList<EnvironmentalAcquisitionAttemptRecord> Attempts,
+    int RetentionDays,
+    EnvironmentalUiDelivery Delivery);
+
+/// <summary>
+/// The independent environmental outbox as the Environment page shows it. Counters and times only; no payload,
+/// endpoint or credential is exposed. <see cref="ExportEnabled"/> is false when central integration or the
+/// environmental delivery lane is disabled, and every counter is then zero.
+/// </summary>
+internal sealed record EnvironmentalUiDelivery(
+    bool ExportEnabled,
+    string Availability,
+    DateTimeOffset? LastAcknowledgedUtc,
+    long? PendingCount,
+    long? RetryCount,
+    long? QuarantineCount,
+    DateTimeOffset? OldestPendingUtc);
 
 internal sealed record EnvironmentalUiSource(
     string Id,
@@ -40,7 +58,10 @@ internal sealed record EnvironmentalUiSource(
     DateTimeOffset? LastObservedUtc,
     double? LastObservationAgeSeconds,
     DateTimeOffset? NextPollUtc,
-    int ConsecutiveFailures);
+    int ConsecutiveFailures,
+    IReadOnlyList<EnvironmentalAcquisitionTrigger> Triggers,
+    int PeriodSeconds,
+    int EveryNthCapture);
 
 internal sealed record EnvironmentalUiHistoryPage(
     IReadOnlyList<EnvironmentalUiObservation> Items,
@@ -49,6 +70,7 @@ internal sealed record EnvironmentalUiHistoryPage(
 internal sealed record EnvironmentalUiObservation(
     Guid ObservationId,
     string SourceId,
+    EnvironmentalObservationSourceKind SourceKind,
     EnvironmentalObservationKind Kind,
     EnvironmentalObservationUnit Unit,
     double? NumericValue,
@@ -64,6 +86,7 @@ internal sealed class CameraAgentEnvironmentalUiService(
     IEnvironmentalAcquisitionStateStore stateStore,
     ILocalEnvironmentalObservationStore observationStore,
     EnvironmentalOnDemandAcquisitionService commandService,
+    EnvironmentalObservationDeliveryState deliveryState,
     IOptions<CameraAgentHostOptions> options,
     OutboxOperationsTokenService tokens,
     TimeProvider timeProvider,
@@ -101,7 +124,10 @@ internal sealed class CameraAgentEnvironmentalUiService(
                     state?.LastObservedUtc,
                     state?.LastObservedUtc is { } observed ? Math.Max(0, (now - observed).TotalSeconds) : null,
                     state?.NextPollUtc,
-                    state?.ConsecutiveFailures ?? 0);
+                    state?.ConsecutiveFailures ?? 0,
+                    source.Triggers,
+                    source.PeriodSeconds,
+                    source.EveryNthCapture);
             }).ToArray();
             return OperatorUiResult<EnvironmentalUiStatus>.Success(new(
                 configured.Enabled,
@@ -110,7 +136,9 @@ internal sealed class CameraAgentEnvironmentalUiService(
                 snapshot.StoredBytes,
                 snapshot.OverflowCount,
                 sources,
-                attempts));
+                attempts,
+                configured.RetentionDays,
+                Delivery()));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -218,17 +246,7 @@ internal sealed class CameraAgentEnvironmentalUiService(
             var page = await observationStore.ReadLocalPageAsync(
                 options.Value.RawIngressRoot, kind, pageSize, decoded, cancellationToken).ConfigureAwait(false);
             return OperatorUiResult<EnvironmentalUiHistoryPage>.Success(new(
-                page.Items.Select(static item => new EnvironmentalUiObservation(
-                    item.Fact.ObservationId,
-                    item.Fact.Source.SourceId,
-                    item.Fact.Value.Kind,
-                    item.Fact.Value.Unit,
-                    item.Fact.Value.NumericValue,
-                    item.Fact.Value.BooleanValue,
-                    item.Fact.Value.Quality,
-                    item.Fact.RigId,
-                    item.Fact.ObservedAtUtc,
-                    item.Fact.StaleAfterUtc)).ToArray(),
+                page.Items.Select(static item => Project(item)).ToArray(),
                 page.NextCursor is null ? null : tokens.ProtectEnvironmentalHistoryCursor(page.NextCursor, kind)));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -242,6 +260,80 @@ internal sealed class CameraAgentEnvironmentalUiService(
                 OperatorUiResultKind.Unavailable, "Environmental history is unavailable.");
         }
     }
+
+    /// <summary>
+    /// Reads the newest retained observation of every kind, one indexed single-row read per kind, so the page can
+    /// show a reading slot without scanning history. A kind with no retained observation is simply absent.
+    /// </summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The UI service logs internal failures and returns fixed sanitized states.")]
+    public async ValueTask<OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>> GetLatestReadingsAsync(
+        CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync().ConfigureAwait(false))
+        {
+            return OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Failure(
+                OperatorUiResultKind.Unauthorized, "Authorization is required.");
+        }
+        try
+        {
+            var root = options.Value.RawIngressRoot;
+            var latest = new List<EnvironmentalUiObservation>();
+            foreach (var kind in Enum.GetValues<EnvironmentalObservationKind>())
+            {
+                var page = await observationStore.ReadLocalPageAsync(root, kind, 1, null, cancellationToken)
+                    .ConfigureAwait(false);
+                if (page.Items.Count > 0)
+                {
+                    latest.Add(Project(page.Items[0]));
+                }
+            }
+            return OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Success(latest);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent environmental latest-reading read failed.");
+            return OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Failure(
+                OperatorUiResultKind.Unavailable, "Current environmental readings are unavailable.");
+        }
+    }
+
+    private EnvironmentalUiDelivery Delivery()
+    {
+        var host = options.Value;
+        if (host.CentralIntegration.Mode == CentralIntegrationMode.Disabled || !host.EnvironmentalDelivery.Enabled)
+        {
+            return new(false, "Disabled", null, 0, 0, 0, null);
+        }
+        // The outbox has no snapshot until the delivery worker first reads it; its counts are then unknown, not zero.
+        var snapshot = deliveryState.Snapshot;
+        var outbox = snapshot.Outbox;
+        return new(
+            true,
+            snapshot.Availability.ToString(),
+            snapshot.LastAcknowledgedUtc,
+            outbox?.PendingCount,
+            outbox?.RetryCount,
+            outbox?.QuarantineCount,
+            outbox?.OldestPendingUtc);
+    }
+
+    private static EnvironmentalUiObservation Project(LocalEnvironmentalObservationRecord item) => new(
+        item.Fact.ObservationId,
+        item.Fact.Source.SourceId,
+        item.Fact.Source.Kind,
+        item.Fact.Value.Kind,
+        item.Fact.Value.Unit,
+        item.Fact.Value.NumericValue,
+        item.Fact.Value.BooleanValue,
+        item.Fact.Value.Quality,
+        item.Fact.RigId,
+        item.Fact.ObservedAtUtc,
+        item.Fact.StaleAfterUtc);
 
     private async Task<bool> IsAuthorizedAsync()
     {

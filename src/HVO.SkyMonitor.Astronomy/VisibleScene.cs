@@ -224,12 +224,21 @@ public sealed class VisibleScene
         VisibleSceneRequest request,
         IEnumerable<ProjectedCelestialObject> objects,
         IEnumerable<ProjectedConstellationSegment>? segments = null,
-        VisibleSceneComputationProvenance? computationProvenance = null)
+        VisibleSceneComputationProvenance? computationProvenance = null,
+        IEnumerable<ProjectedResolvedFootprint>? resolvedFootprints = null,
+        ProjectedSceneDeepSkySelection? deepSkySelection = null,
+        ProjectedDeepSky? deepSky = null)
     {
+        if (deepSkySelection is null != deepSky is null)
+            throw new ArgumentException("A deep-sky collection and its selection are applied together.", nameof(deepSky));
         Request = request;
         Objects = new ReadOnlyCollection<ProjectedCelestialObject>(objects.ToArray());
         Segments = new ReadOnlyCollection<ProjectedConstellationSegment>((segments ?? []).ToArray());
         ComputationProvenance = computationProvenance ?? new("unspecified", null, null, null);
+        ResolvedFootprints = new ReadOnlyCollection<ProjectedResolvedFootprint>((resolvedFootprints ?? [])
+            .OrderBy(static item => item.Id, StringComparer.Ordinal).ToArray());
+        DeepSkySelection = deepSkySelection;
+        DeepSky = deepSky;
     }
 
     /// <summary>Gets the validated request and provenance for this scene.</summary>
@@ -243,6 +252,117 @@ public sealed class VisibleScene
 
     /// <summary>Gets topology and ephemeris provider identities actually used by the builder.</summary>
     public VisibleSceneComputationProvenance ComputationProvenance { get; }
+
+    /// <summary>Gets clipped outlines of sources with resolved angular size, in ID order.</summary>
+    public IReadOnlyList<ProjectedResolvedFootprint> ResolvedFootprints { get; }
+
+    /// <summary>Gets the bounds the deep-sky collection was placed under, or null when no collection was applied.</summary>
+    public ProjectedSceneDeepSkySelection? DeepSkySelection { get; }
+
+    /// <summary>
+    /// Gets the deep-sky collection, or null when none was applied. Deep-sky objects are never stars, solver
+    /// references or association candidates; their ellipses are the deep-sky entries of <see cref="ResolvedFootprints"/>.
+    /// </summary>
+    public ProjectedDeepSky? DeepSky { get; }
+
+    /// <summary>
+    /// Gets the projected-scene schema a snapshot of this scene carries: v3 with a deep-sky collection, v2 with
+    /// resolved footprints only, otherwise v1.
+    /// </summary>
+    public string ProjectedSceneSchemaVersion => DeepSky is not null
+        ? ProjectedSceneV1.DeepSkySchemaVersion
+        : ResolvedFootprints.Count > 0 ? ProjectedSceneV1.ResolvedFootprintSchemaVersion : ProjectedSceneV1.CurrentSchemaVersion;
+
+    /// <summary>Filters instantaneous stellar references by a separately evaluated admission set.</summary>
+    public VisibleScene WithSelectedStars(IReadOnlySet<string> admittedIds)
+    {
+        ArgumentNullException.ThrowIfNull(admittedIds);
+        return new(Request, Objects.Where(item => item.Kind != CelestialObjectKind.Star || admittedIds.Contains(item.Id)),
+            Segments, ComputationProvenance, ResolvedFootprints, DeepSkySelection, DeepSky);
+    }
+
+    /// <summary>
+    /// Places the cached curated preset after solar-system footprints. The object cap is applied before projection;
+    /// basic extents consume their own bounded share after the Sun and Moon. No source contours are visited.
+    /// A preset with no visible object leaves the scene unchanged, preserving its v1 or v2 snapshot.
+    /// </summary>
+    public VisibleScene WithCuratedDeepSky(IDeepSkyCatalog catalog, ProjectedSceneDeepSkySelection selection) =>
+        WithDeepSky(catalog, selection);
+
+    /// <summary>Places only the cached curated objects admitted by the pre-projection cap.</summary>
+    internal VisibleScene WithDeepSky(IDeepSkyCatalog catalog, ProjectedSceneDeepSkySelection selection)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(selection);
+        selection.Validate();
+        if (DeepSky is not null)
+            throw new InvalidOperationException("A deep-sky collection is applied once.");
+        if (ResolvedFootprints.Any(static item => item.SourceKind == ResolvedFootprintSourceKind.DeepSkyObject))
+            throw new InvalidOperationException("Deep-sky footprints come only from the deep-sky collection.");
+        var (section, footprints) = DeepSkySceneProjector.Project(this, catalog, selection);
+        if (section.Objects.Count == 0) return this;
+        return new(Request, Objects, Segments, ComputationProvenance, ResolvedFootprints.Concat(footprints), selection, section);
+    }
+
+    /// <summary>
+    /// Replaces selected Sun and Moon point objects with topocentric positions from their resolved disk
+    /// appearances and attaches each disk's projected outline. Bodies absent from the request selection
+    /// are ignored. A footprint is kept whenever part of the limb is visible, even if the centre is not.
+    /// </summary>
+    public VisibleScene WithResolvedBodies(IEnumerable<SolarDiskAppearance> appearances)
+    {
+        ArgumentNullException.ThrowIfNull(appearances);
+        if (DeepSky is not null)
+            throw new InvalidOperationException("Resolved bodies are attached before the deep-sky collection.");
+        var objects = Objects.ToList();
+        var footprints = ResolvedFootprints.ToList();
+        var resolvedIds = new HashSet<string>(StringComparer.Ordinal);
+        var projector = ProjectorFactory.Create(Request.Projection);
+        var basis = CameraBasis.Create(
+            Request.Projection.BoresightAltitudeDegrees, Request.Projection.BoresightAzimuthDegrees,
+            Request.Projection.RollDegrees, Request.Projection.HorizontalFlip);
+        foreach (var appearance in appearances)
+        {
+            ArgumentNullException.ThrowIfNull(appearance);
+            if (appearance.Body is not (SolarSystemBody.Sun or SolarSystemBody.Moon) ||
+                appearance.Utc.UtcDateTime != Request.Utc.UtcDateTime)
+                throw new ArgumentException("Resolved bodies must be Sun or Moon disks at the scene instant.", nameof(appearances));
+            if (!Request.SolarSystemBodies.Contains(appearance.Body)) continue;
+            var id = $"solar-system:{appearance.Body}";
+            if (!resolvedIds.Add(id))
+                throw new ArgumentException("Each resolved body may appear once.", nameof(appearances));
+            objects.RemoveAll(item => string.Equals(item.Id, id, StringComparison.Ordinal));
+            footprints.RemoveAll(item => string.Equals(item.Id, id, StringComparison.Ordinal));
+            var geometric = appearance.Direction;
+            if (Request.HorizonPolicy != HorizonPolicy.GeometricHorizon || geometric.AltitudeDegrees >= 0)
+            {
+                var apparent = geometric with
+                {
+                    AltitudeDegrees = AtmosphericRefraction.Apply(geometric.AltitudeDegrees, Request.Refraction)
+                };
+                if (projector.Project(apparent) is { } pixel)
+                {
+                    var ofDate = CoordinateTransforms.HorizontalToEquatorial(
+                        geometric, Request.Utc, Request.Observer.LatitudeDegrees, Request.Observer.LongitudeDegrees);
+                    objects.Add(new ProjectedCelestialObject(
+                        id, appearance.Body.ToString(), CelestialObjectKind.SolarSystemBody,
+                        EquatorialPrecession.PrecessToJ2000(ofDate, Request.Utc), ofDate, geometric, apparent,
+                        basis.ToCamera(CameraBasis.FromHorizontal(apparent)), pixel, appearance.VisualMagnitude, null,
+                        Request.CatalogMetadata.Version, Request.ProjectionVersion, Request.AlgorithmVersion));
+                }
+            }
+            var footprint = ResolvedFootprintSampler.Sample(
+                Request, id, appearance.Body.ToString(), ResolvedFootprintSourceKind.SolarSystemBody,
+                ResolvedFootprintExtent.Circle(appearance.AngularRadiusDegrees, SolarDiskEphemeris.RadiusSource),
+                geometric,
+                new ResolvedBodyAppearance(SolarDiskEphemeris.AlgorithmVersion, appearance.DistanceKilometers,
+                    appearance.IlluminatedFraction, appearance.BrightLimbAngleDegrees, appearance.VisualMagnitude));
+            if (footprint is not null) footprints.Add(footprint);
+        }
+        return new(Request,
+            objects.OrderBy(static item => item.Magnitude).ThenBy(static item => item.Id, StringComparer.Ordinal),
+            Segments, ComputationProvenance, footprints);
+    }
 }
 
 /// <summary>Builds deterministic visible scenes without persistence or rendering dependencies.</summary>
@@ -445,7 +565,7 @@ public sealed class VisibleSceneBuilder
         return optical.Value.RadiusDegrees <= horizon.Value.RadiusDegrees ? optical : horizon;
     }
 
-    private static J2000SphericalCap CreateJ2000Cap(
+    internal static J2000SphericalCap CreateJ2000Cap(
         VisibleSceneRequest request,
         AltAzPoint center,
         double radiusDegrees)
@@ -458,7 +578,7 @@ public sealed class VisibleSceneBuilder
             Math.Min(180, radiusDegrees + 1e-9));
     }
 
-    private static double OpticalRadiusDegrees(ProjectionContext projection)
+    internal static double OpticalRadiusDegrees(ProjectionContext projection)
     {
         if (projection.Model == ProjectionModel.Perspective)
         {
@@ -466,10 +586,15 @@ public sealed class VisibleSceneBuilder
                 projection.WidthPixels - projection.PrincipalPointX) / projection.FocalLengthXPixels;
             var vertical = Math.Max(projection.PrincipalPointY,
                 projection.HeightPixels - projection.PrincipalPointY) / projection.FocalLengthYPixels;
-            return Math.Atan(Math.Sqrt(horizontal * horizontal + vertical * vertical)) * 180d / Math.PI;
+            var corner = Math.Sqrt(horizontal * horizontal + vertical * vertical);
+            if (projection.RadialDistortionK1 != 0)
+                corner = RadialDistortion.Undistort(corner, projection.Model, projection.RadialDistortionK1);
+            return Math.Atan(corner) * 180d / Math.PI;
         }
 
-        var radius = projection.ImageCircleRadiusPixels!.Value;
+        var radius = projection.RadialDistortionK1 == 0
+            ? projection.ImageCircleRadiusPixels!.Value
+            : RadialDistortion.IdealEdgeRadius(projection) * projection.FocalLengthXPixels;
         var focal = projection.FocalLengthXPixels;
         var angle = projection.Model switch
         {
@@ -650,9 +775,18 @@ public sealed class VisibleSceneBuilder
         VisibleSceneRequest request,
         CameraBasis basis,
         EnuVector geometricDirection,
+        out PixelPoint pixel) => TryProjectGeometry(
+            request.Projection, request.HorizonPolicy, request.Refraction, basis, geometricDirection, out pixel);
+
+    internal static bool TryProjectGeometry(
+        ProjectionContext context,
+        HorizonPolicy horizonPolicy,
+        RefractionOptions refraction,
+        CameraBasis basis,
+        EnuVector geometricDirection,
         out PixelPoint pixel)
     {
-        if (request.HorizonPolicy == HorizonPolicy.GeometricHorizon && geometricDirection.Up < 0)
+        if (horizonPolicy == HorizonPolicy.GeometricHorizon && geometricDirection.Up < 0)
         {
             pixel = default;
             return false;
@@ -661,10 +795,9 @@ public sealed class VisibleSceneBuilder
         var geometric = CameraBasis.ToHorizontal(geometricDirection);
         var apparent = geometric with
         {
-            AltitudeDegrees = AtmosphericRefraction.Apply(geometric.AltitudeDegrees, request.Refraction)
+            AltitudeDegrees = AtmosphericRefraction.Apply(geometric.AltitudeDegrees, refraction)
         };
         var camera = basis.ToCamera(CameraBasis.FromHorizontal(apparent));
-        var context = request.Projection;
         if (context.Model == ProjectionModel.Perspective)
         {
             if (camera.Up <= 1e-12)
@@ -675,7 +808,7 @@ public sealed class VisibleSceneBuilder
             pixel = new PixelPoint(
                 context.PrincipalPointX + context.FocalLengthXPixels * camera.East / camera.Up,
                 context.PrincipalPointY - context.FocalLengthYPixels * camera.North / camera.Up);
-            return double.IsFinite(pixel.X) && double.IsFinite(pixel.Y);
+            return ApplyDistortion(context, ref pixel);
         }
 
         var theta = Math.Acos(Math.Clamp(camera.Up, -1d, 1d));
@@ -709,7 +842,20 @@ public sealed class VisibleSceneBuilder
         pixel = new PixelPoint(
             context.PrincipalPointX + radius * camera.East / planarLength,
             context.PrincipalPointY - radius * camera.North / planarLength);
-        return double.IsFinite(pixel.X) && double.IsFinite(pixel.Y);
+        return ApplyDistortion(context, ref pixel);
+    }
+
+    private static bool ApplyDistortion(ProjectionContext context, ref PixelPoint pixel)
+    {
+        if (!double.IsFinite(pixel.X) || !double.IsFinite(pixel.Y)) return false;
+        if (context.RadialDistortionK1 == 0) return true;
+        if (RadialDistortion.DistortPixel(context, pixel) is not { } distorted)
+        {
+            pixel = default;
+            return false;
+        }
+        pixel = distorted;
+        return true;
     }
 
     internal static void AddClippedChord(

@@ -56,6 +56,26 @@ public sealed class CaptureScheduleStoreConflictException : InvalidOperationExce
     }
 }
 
+public enum CaptureScheduleOverrideEventKind
+{
+    Created,
+    Consumed,
+    Cleared
+}
+
+/// <summary>
+/// One durable temporary-override event as the operator receipts list shows it. The override and event identifiers
+/// are omitted; <see cref="Actor"/> is the stored actor string and must be mapped before display.
+/// </summary>
+public sealed record CaptureScheduleOverrideEvent(
+    CaptureScheduleOverrideEventKind Kind,
+    CaptureScheduleOverrideMode Mode,
+    string Actor,
+    string? Reason,
+    DateTimeOffset OccurredUtc,
+    DateTimeOffset StartUtc,
+    DateTimeOffset EndUtc);
+
 public sealed class SqliteCaptureScheduleStore(
     IRawCaptureIngress rawCaptureIngress,
     IOptions<CameraAgentHostOptions> options,
@@ -973,6 +993,56 @@ public sealed class SqliteCaptureScheduleStore(
                 await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false)
                     ? null
                     : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(7))));
+        }
+        return values;
+    }
+
+    public const int MaxRecentOverrideEvents = 50;
+
+    /// <summary>
+    /// Reads the most recent temporary-override events, newest first. The inner select is bounded by
+    /// <paramref name="limit"/> through the event table's insertion order, and each event joins its override by key.
+    /// </summary>
+    public async Task<IReadOnlyList<CaptureScheduleOverrideEvent>> GetRecentOverrideEventsAsync(
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, MaxRecentOverrideEvents);
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT e.event_kind, o.mode, e.actor, e.reason, e.occurred_unix_ms, o.start_unix_ms, o.end_unix_ms
+            FROM (
+                SELECT rowid AS sequence, override_id, event_kind, actor, reason, occurred_unix_ms
+                FROM capture_schedule_override_events
+                ORDER BY rowid DESC
+                LIMIT $limit
+            ) e
+            JOIN capture_schedule_overrides o ON o.override_id = e.override_id
+            ORDER BY e.sequence DESC;
+            """;
+        command.Parameters.AddWithValue("$limit", limit);
+        var values = new List<CaptureScheduleOverrideEvent>(limit);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            values.Add(new CaptureScheduleOverrideEvent(
+                reader.GetString(0) switch
+                {
+                    "created" => CaptureScheduleOverrideEventKind.Created,
+                    "consumed" => CaptureScheduleOverrideEventKind.Consumed,
+                    _ => CaptureScheduleOverrideEventKind.Cleared
+                },
+                reader.GetString(1) == "force_closed"
+                    ? CaptureScheduleOverrideMode.ForceClosed
+                    : CaptureScheduleOverrideMode.ForceOpen,
+                reader.GetString(2),
+                await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(3),
+                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(4)),
+                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(5)),
+                DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(6))));
         }
         return values;
     }

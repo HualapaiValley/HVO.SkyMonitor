@@ -5,6 +5,7 @@ using Microsoft.Data.Sqlite;
 namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
 
 [TestClass]
+[TestCategory("Unit")]
 [DoNotParallelize]
 internal sealed class SqliteCelestialCatalogTests
 {
@@ -526,7 +527,7 @@ internal sealed class SqliteCelestialCatalogTests
         return path;
     }
 
-    private static string Checksum(string path)
+    internal static string Checksum(string path)
     {
         using var source = File.OpenRead(path);
         return Convert.ToHexString(SHA256.HashData(source));
@@ -552,7 +553,7 @@ internal sealed class SqliteCelestialCatalogTests
         }
     }
 
-    private static string CreateGeneratedFixture(string mutation)
+    internal static string CreateGeneratedFixture(string mutation)
     {
         var path = Path.Combine(Path.GetTempPath(), $"hvo-generated-catalog-{Guid.NewGuid():N}.sqlite");
         using var connection = new SqliteConnection($"Data Source={path}");

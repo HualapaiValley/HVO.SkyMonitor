@@ -43,6 +43,45 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
     }
 
     [TestMethod]
+    public async Task AcquisitionUnavailableReason_NamesThePhysicalCameraAndMissingReadoutAsync()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var virtualSky = Configuration();
+            using (var fixture = await Fixture.CreateAsync(root).ConfigureAwait(false))
+            {
+                Assert.IsNull(await fixture.Coordinator.GetAcquisitionUnavailableReasonAsync(CancellationToken.None)
+                    .ConfigureAwait(false));
+            }
+            using (var fixture = await Fixture.CreateAsync(
+                root, configuration: virtualSky with { Module = new CameraModuleDescriptor("ZwoAsi") }).ConfigureAwait(false))
+            {
+                StringAssert.Contains(
+                    await fixture.Coordinator.GetAcquisitionUnavailableReasonAsync(CancellationToken.None).ConfigureAwait(false),
+                    "physical camera is not implemented",
+                    StringComparison.Ordinal);
+                var planned = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+                    () => fixture.Coordinator.AcquireAsync(Request("acquire-physical"), CancellationToken.None))
+                    .ConfigureAwait(false);
+                StringAssert.Contains(planned.Message, "VirtualSky", StringComparison.Ordinal);
+            }
+            using (var fixture = await Fixture.CreateAsync(
+                root, configuration: virtualSky with { Rig = virtualSky.Rig with { Readout = null } }).ConfigureAwait(false))
+            {
+                StringAssert.Contains(
+                    await fixture.Coordinator.GetAcquisitionUnavailableReasonAsync(CancellationToken.None).ConfigureAwait(false),
+                    "explicit native readout",
+                    StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task AcquireAsync_PublishesExactLineageNormalizedMastersAndDoesNotActivate()
     {
         var root = CreateRoot();

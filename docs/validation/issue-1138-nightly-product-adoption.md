@@ -1,0 +1,285 @@
+# Issue #1138: nightly product adoption on the archive pages
+
+## Scope and acceptance boundary
+
+Tier B adoption of the #993 nightly product catalog by the CameraAgent archive
+pages. Deep review covers authorization, exact media identity and the
+presentation of recorded facts. Branch point:
+`1204a0feb99ee2d70bd9216ef7b593e7777b9ce4`, `development/v1`.
+
+The pages show only what #993 recorded:
+- daily and hourly evaluations;
+- current products, with their lineage, recipe options, automation runs and
+  algorithms.
+
+They never start, retry or regenerate a product, and no capture image stands in
+for a product. Time-lapse generation is #1130 and is not claimed here. Until it
+exists:
+- the time-lapse is always reported as not generated;
+- the calendar never lights its T badge;
+- an optional configured sample is labeled as a sample.
+
+The #1022 exact-artifact viewer at `/archive/products/{artifactId}` is
+unchanged. Nightly products have their own route.
+
+## Implementation
+
+- **Read-only projections.** `SqliteNightlyProductStore` gains three bounded,
+  read-only projections:
+  - A calendar date summary of at most 62 dates and 8,192 evaluated windows,
+    kept per retained sunrise-period identity.
+  - A day listing that joins every recorded evaluation to its current products.
+  - A product presentation, holding:
+    - the exact detail and its recorded algorithms;
+    - the distinct lineage frame count, within the window-candidate bound;
+    - the keogram time axis and gaps;
+    - every other published output of the same retained period, window and
+      part, current or not.
+
+  A final keogram's axis is its retained planned axis. A segment keogram's axis
+  is rebuilt from its retained gap options and lineage. Other outputs are other
+  definitions, revisions or reevaluations of the same period, window and part,
+  current or not; no predecessor or successor is recorded or inferred.
+- **Endpoints.** Authenticated `OperationsReadV1` endpoints serve those
+  projections. Preview and provenance media:
+  - accept `GET` and `HEAD`;
+  - use the published SHA-256 as a strong ETag and also return it in
+    `X-Content-SHA256`;
+  - answer `If-None-Match` with 304 and support byte ranges;
+  - are `private, no-cache` with `Vary: Cookie` and `nosniff`;
+  - return an attachment with `?download=1`.
+- **Calendar.** In the sunrise-period view, S (star trail) and K (keogram)
+  report one of these states:
+  - produced;
+  - hourly only;
+  - evaluated without a product;
+  - pending;
+  - not generated;
+  - unavailable.
+
+  A produced evaluation is preferred, so an older rejection never hides a
+  product. The legacy noon view hides the badges, explains why and links to the
+  sunrise view.
+- **Day page.** The page shows one card per kind from the recorded daily
+  evaluation, with its hourly evaluations listed under it:
+  - A produced card shows the exact preview and links to the nightly detail page.
+  - An unproduced card states the recorded disposition and reason.
+
+  Final cards count the segment products they composed; frame counts come from
+  the lineage on the detail page. When the store cannot be read, the page says
+  the nightly status is unavailable rather than showing products as missing.
+- **Time-lapse player.** `TimeLapsePlayer` reserves the declared aspect ratio
+  and uses native video controls. An animated image loads only when asked,
+  because it cannot be paused. Media that fails or is unsupported is reported
+  as such. Failures are handled on the element that reports them: `<source>`
+  for an unusable source, `<video>` for undecodable content, and `<img>` for an
+  animation that cannot load. Each keeps the download link.
+
+  The sample (`CameraAgent:TimeLapseSample`) is off by default and requires a
+  fully qualified path. It is served at an authenticated
+  `/api/v1/operations/time-lapse-sample`, labeled "not generated from this
+  night" and never counted as a product. No large sample is committed.
+- **Nightly product detail.** `/archive/products/nightly/{productId}` shows:
+  - the exact published product;
+  - its source period, product window and admitted frame span;
+  - selection, lineage and direct-source counts, and total integration;
+  - recipe, variant, automation definition and run, and algorithms;
+  - whether a current pointer names it: "not current" alone unless another
+    listed output is current, and never a succession;
+  - every other published output of its period, window and part.
+
+  A planned keogram axis is linear in clock time and hatches its gaps. A segment
+  axis labels only actual frame columns. A keogram without a recorded axis draws
+  no markers. Long source and gap lists name how many they omit. Narrow axes
+  hide clock labels that would overlap. A span crossing midnight is dated.
+- **Harness override.** `HVO_ISSUE993_REPORT_DATE` lets the #993 full-day harness
+  qualify a sunrise period that has already closed on the reviewing host. The
+  site, recipe and gaps are unchanged.
+
+## Private-host evidence
+
+Products come from the #993 full-day harness on `d64ec725`, run with
+`HVO_ISSUE993_REPORT_DATE=2026-10-02` (America/Phoenix). The sunrise period ran
+from 2026-10-02 13:31:18Z to 2026-10-03 13:32:05Z and used the production
+catalog `hyg-v4.2-p3-s2-r1`.
+
+The capture was VirtualSky at a one-minute cadence:
+- 1,391 sources;
+- a ten-minute leading omission, a thirty-minute internal omission and a
+  ten-minute trailing omission.
+
+The images are virtual, not actual sky. The harness passed in 6 m 5 s, with
+`evidence.json` SHA-256
+`90abefa72bae89f286d8dc40d5d76810ed12776b71797d343992bf7d6370a97e`.
+
+The resulting products:
+
+| Product | Facts |
+| --- | --- |
+| Nightly keogram `ea7d2cb0-bdbb-8e64-8e55-8236267672a6` | 1,441 × 629. Planned axis of 1 min per column, with 1,391 of 1,441 columns holding frames and 3 gaps. 44 segment products, 1,391 lineage frames, 3h 30m integration. Preview SHA-256 `1696B2C8…E264`, identical to the harness `keogram.jpg`. |
+| Nightly star trail `1aa0e4a7-3297-8a11-a6e0-080d28f86516` | 640 × 640. 18 segment products, 566 dark leaf frames, 3h 08m integration. |
+| Keogram segment part 1 `6adf1cc6-f6d5-862d-b815-17cf3599f9c5` | 32 frames, 06:41–07:12 local. Actual axis with no gaps, 39 ms integration. |
+
+The browser evidence comes from a private loopback host on `127.0.0.1:5138`
+running a Release publish of `33cbc454`. It used:
+- a copy of the harness runtime;
+- automation disabled;
+- no installed instance, installer or camera hardware.
+
+The later commit changes only documentation and the test inventory. Evidence is
+in `/home/roys/.cache/hvo/1138/`, captured by a Playwright tool (SHA-256
+`4992664f…6d29`) in Chromium 153.0.8010.12 at 1440, 390 and 320 widths:
+
+| Index | Content |
+| --- | --- |
+| `pages.json` | 29 screenshots and 18 checks. |
+| `sample-webm.json` | 3 screenshots and 3 checks of the WebM sample. |
+| `sample-mp4.json` | 3 screenshots and 3 checks of the MP4 sample. |
+| `sample-gif.json` | 3 screenshots and 3 checks of the GIF sample. |
+
+Every index has zero browser errors, no horizontal overflow and no clipped
+controls. Each records the full head SHA, the capture UTC and a SHA-256 for
+every screenshot.
+
+What the indexes show:
+- **Calendar and day page.** Calendar and day-page cards render at every width.
+  The legacy noon view shows no nightly cards and offers the switch link. An
+  unknown product ID shows "not found" with a return link.
+- **Detail pages.** The keogram, star trail and segment-part detail pages show
+  the facts above.
+- **Keogram preview headers.** Retrieved with an owner cookie:
+  - 200, whose body SHA-256 equals both the ETag and `X-Content-SHA256`;
+  - 206 for `bytes 0-1023/64501`;
+  - 304 for `If-None-Match`;
+  - `attachment` for `?download=1`;
+  - 200 for provenance, with checksum `510C3F4C…AFB5` matching its body.
+
+  A cookieless request context received 401 for both preview and provenance.
+- **Samples.** All three are synthetic test patterns labeled as samples. The
+  calendar T badge stays unlit.
+
+  | Sample | SHA-256 | Result |
+  | --- | --- | --- |
+  | 1280 × 1280, 30 fps, 12 s VP9 WebM | `6c8145f8…10a6` | Plays at `readyState` 4 |
+  | 1280 × 1280, 30 fps, 12 s H.264 High MP4 | `84e6fad9…c711` | Plays at `readyState` 4 |
+  | 480 × 480 GIF | `0fcb0947…2e89` | Loads at 480 × 480 when asked |
+
+### Correction evidence on `7f09c21a`
+
+The host above recorded its deployment site as `issue-1138-evidence-site`. The
+harness generated the products under `issue-993-qualified-site` version 1. The
+coordinates are the same, but the site records differ, so the sunrise-period
+identities differ.
+
+Before the F1 correction, the pages showed those products as the host period's
+own. The first capture therefore itself showed F1.
+
+The recapture used a Release publish of `7f09c21a` and a capture tool with
+SHA-256 `5af17783…53ba`. The evidence is in `/home/roys/.cache/hvo/1138-c1/`.
+Every index has zero browser errors, no horizontal overflow and no clipped
+controls.
+
+| Index | Host | What it shows |
+| --- | --- | --- |
+| `other-period.json` (6 screenshots and 4 checks at 1440 and 390) | The same host and site record as above | See below. |
+| `pages.json` (29 screenshots and 18 checks at 1440, 390 and 320) | A second copy of the harness runtime, configured with the harness's own site record (`issue-993-qualified-site`, source `test`) | See below. |
+
+**`other-period.json`.** The products are listed apart, as F1 requires:
+- The calendar marks S and K "recorded only under another source period".
+- The calendar counts 0 nights and notes "1 night has evaluations under
+  another source period, not counted".
+- The day cards show no image or link.
+- A note names the harness period, with its site, version, coordinates and UTC
+  boundaries, and links to both products.
+
+**`pages.json`.** The host resolves the products' own period, `535A2C16…1346`,
+and shows them as this period's products:
+- Day cards read "Frames 19:42 2 Oct–05:07 3 Oct" and "Frames 06:41 2
+  Oct–06:21 3 Oct" (F3).
+- The validators and the anonymous 401s match the table above.
+
+Three unplayable samples were configured on the second host. Each index holds 2
+screenshots and 2 checks, at 1440 and 390. A capturing listener recorded which
+element raised each error:
+
+| Index | Sample | Error raised on | Result |
+| --- | --- | --- | --- |
+| `corrupt-mp4.json` | 512 KiB of random bytes declared `video/mp4` (`546412f7…7502`) | `<source>`, network state no source | Failed |
+| `corrupt-webm.json` | The VP9 WebM sample, with random bytes from 64 KiB to 4 KiB before its end (`d1b2d57c…523f`) | `<video>`, `MEDIA_ERR_DECODE` (`PIPELINE_ERROR_DECODE`) during playback | Failed |
+| `corrupt-gif.json` | 128 KiB of random bytes declared `image/gif` (`c235ea98…aae5`), once the animation was requested | `<img>` | Failed |
+
+Each failure says "This browser could not play this file" and keeps the
+Download link. No media element remains.
+
+## Limitations
+
+- The harness produces daily finals only. Hourly evaluation rendering is covered
+  by bUnit tests, not by private-host evidence.
+- Full-page screenshots repeat the sticky header where Chromium stitches them.
+- Store reads share the store's existing gate with generation, so a page read
+  can wait for a running generation step.
+- Reading the nightly projections on an agent with no products creates the
+  empty #993 store schema, as #993 generation already does.
+- Real time-lapse size, codec and container choices await #1130. The player
+  accepts `video/mp4`, `video/webm`, `image/gif`, `image/webp` and
+  `video/x-ms-wmv`, and reports media the browser cannot decode.
+
+## Validation
+
+- **Tests.** There are 41 new Unit cases; the CameraAgent inventory is now
+  `Unit=3285`, and the CI runbook totals are aligned. They cover:
+  - projections over a real SQLite store: bounds, preference, axis
+    reconstruction and other outputs;
+  - endpoints: validators, ranges, `HEAD`, download disposition and 404/400;
+  - sample configuration and serving;
+  - calendar badges;
+  - day-page cards and hours;
+  - the player;
+  - the detail page.
+
+  The test-category audit and `scripts/docs:audit-operations` pass.
+- **Review corrections.** The initial review of `3e2c69f9` found five defects,
+  and each has a regression test:
+  - **F1.** Two sites on one report date keep their own summaries, day
+    evaluations and other outputs over a real store, including hourly windows
+    that share their UTC boundaries. The calendar badge and day page name
+    another period's evaluations without counting or showing them as the
+    period's products. Each date's period is resolved as the generator
+    resolves it, so a product whose captures have expired keeps its date. The
+    private-host recapture shows both presentations.
+  - **F2.** A no-source reevaluation over a real store leaves the published
+    final not current, with no other output. The page then claims no
+    replacement, and a non-current sibling is not taken as one.
+  - **F3.** A nightly card spanning two local dates shows both dates. The
+    private-host recapture shows this for the real products.
+  - **F4.** Errors raised on `<video>`, `<source>` and the revealed `<img>`
+    each replace the player and keep the download. Three corrupt samples on the
+    private host fail this way, one on each element.
+  - **F5.** Wording only.
+
+  The first correction rereview, of `b4193118`, confirmed F1, F2, F3 and F5 as
+  fixed. It also found that an error still in flight from replaced media could
+  fail the newer presentation (C1-F1). That correction:
+  - gives each presentation its own error handler, so an error from media that
+    has since been replaced fails nothing;
+  - adds a test renderer that withholds the browser's acknowledgement, as Blazor
+    Server does until the browser applies a render. With it, an error from a
+    replaced video and from a replaced animation each leave the new animation
+    playable. Both cases fail on `b4193118`.
+- **Gate.** `scripts/ci:classify` on `1204a0fe...` selected `mode=full
+  complete=false cameraagent=true combined=true`. The classifier output, the
+  four CI-control guards and the selected lane results are recorded in the PR
+  ledger on their exact commits.
+- **Review.** Independent review results are recorded in the PR ledger.
+
+## Observability and performance
+
+There is no new worker, background queue or image algorithm. Reads are bounded
+by the limits above and fail explicitly beyond them. Media responses stream the
+published bytes and are revalidated by checksum.
+
+Comparative benchmarks are not applicable to this bounded read and presentation
+change. Media identity, byte checksums, responsive bounds and failure semantics
+are the relevant evidence.
+
+Operator visual acceptance of the pages is pending.

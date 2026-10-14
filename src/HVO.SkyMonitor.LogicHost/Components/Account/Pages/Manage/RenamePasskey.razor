@@ -5,7 +5,7 @@
 @using Microsoft.AspNetCore.Identity
 @using System.Buffers.Text
 
-<EditForm Model="FormModel" OnValidSubmit="Rename" FormName="rename-passkey" method="post">
+<EditForm Model="Input" OnValidSubmit="Rename" FormName="rename-passkey" method="post">
     <DataAnnotationsValidator />
     @if (passkey?.Name is { } name)
     {
@@ -18,10 +18,10 @@
     <hr />
     <ValidationSummary class="text-danger" role="alert" />
     <div class="form-floating mb-3">
-        <InputText @bind-Value="FormModel.Name" id="Input.Name" class="form-control" aria-required="true"
+        <InputText @bind-Value="Input.Name" id="Input.Name" class="form-control" aria-required="true"
             placeholder="My passkey" />
         <label for="Input.Name" class="form-label">Passkey name</label>
-        <ValidationMessage For="() => FormModel.Name" class="text-danger" />
+        <ValidationMessage For="() => Input.Name" class="text-danger" />
     </div>
 
     <div>

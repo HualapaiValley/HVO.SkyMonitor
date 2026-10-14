@@ -18,8 +18,8 @@ public sealed class PresentationProjectionGeometryTests
         var clockwisePayload = PresentationLayerProducers.FromProjectedScene(clockwise);
         var counterClockwisePayload = PresentationLayerProducers.FromProjectedScene(counterClockwise);
 
-        AssertEllipse(clockwisePayload, new PixelPoint(10, 25), 5, 10);
-        AssertEllipse(counterClockwisePayload, new PixelPoint(10, 25), 5, 10);
+        AssertEllipse(clockwisePayload, new PixelPoint(100, 250), 50, 100);
+        AssertEllipse(counterClockwisePayload, new PixelPoint(100, 250), 50, 100);
         AssertCardinals(clockwise, clockwisePayload);
         AssertCardinals(counterClockwise, counterClockwisePayload);
         Assert.AreNotEqual(clockwisePayload.ContentIdentitySha256, counterClockwisePayload.ContentIdentitySha256);
@@ -35,7 +35,7 @@ public sealed class PresentationProjectionGeometryTests
         var plainPayload = PresentationLayerProducers.FromProjectedScene(plain);
         var mirroredPayload = PresentationLayerProducers.FromProjectedScene(mirrored);
 
-        AssertEllipse(mirroredPayload, new PixelPoint(10, 25), 5, 10);
+        AssertEllipse(mirroredPayload, new PixelPoint(100, 250), 50, 100);
         AssertCardinals(mirrored, mirroredPayload);
         CollectionAssert.AreNotEqual(plainPayload.TextBlocks.ToArray(), mirroredPayload.TextBlocks.ToArray());
         Assert.AreNotEqual(plainPayload.ContentIdentitySha256, mirroredPayload.ContentIdentitySha256);
@@ -46,16 +46,16 @@ public sealed class PresentationProjectionGeometryTests
     {
         var basisExcluded = await SceneAsync(new ProjectedSceneImageTransformV1(
             ProjectedSceneImageTransformV1.CurrentSchemaVersion,
-            100, 80, 40, 20, 20, 40, 2, 4, false, false,
-            ProjectedSceneQuarterRotation.Degrees0, 10, 10)).ConfigureAwait(false);
+            1000, 800, 400, 200, 200, 400, 2, 4, false, false,
+            ProjectedSceneQuarterRotation.Degrees0, 100, 100)).ConfigureAwait(false);
         var partialCardinals = await SceneAsync(new ProjectedSceneImageTransformV1(
             ProjectedSceneImageTransformV1.CurrentSchemaVersion,
-            100, 80, 40, 0, 60, 80, 2, 4, false, false,
-            ProjectedSceneQuarterRotation.Degrees0, 30, 20)).ConfigureAwait(false);
+            1000, 800, 400, 0, 600, 800, 2, 4, false, false,
+            ProjectedSceneQuarterRotation.Degrees0, 300, 200)).ConfigureAwait(false);
         var centerExcluded = await SceneAsync(new ProjectedSceneImageTransformV1(
             ProjectedSceneImageTransformV1.CurrentSchemaVersion,
-            100, 80, 0, 0, 40, 80, 2, 4, false, false,
-            ProjectedSceneQuarterRotation.Degrees0, 20, 20)).ConfigureAwait(false);
+            1000, 800, 0, 0, 400, 800, 2, 4, false, false,
+            ProjectedSceneQuarterRotation.Degrees0, 200, 200)).ConfigureAwait(false);
 
         var basisPayload = PresentationLayerProducers.FromProjectedScene(basisExcluded);
         var partialPayload = PresentationLayerProducers.FromProjectedScene(partialCardinals);
@@ -114,31 +114,21 @@ public sealed class PresentationProjectionGeometryTests
         var landmarks = RigProjectionContextFactory.CreateAnnotationLandmarks(projection)!;
         var expected = new[] { ("N", landmarks.North), ("E", landmarks.East), ("S", landmarks.South), ("W", landmarks.West) }
             .Where(item => ContainsCrop(scene.ImageTransform, item.Item2))
-            .Select(item => (item.Item1, Point(scene, landmarks.Center, item.Item2, 2))).ToArray();
+            .Select(item => (item.Item1, ProjectedSceneImageTransform.Apply(scene.ImageTransform, item.Item2))).ToArray();
         Assert.HasCount(expected.Length, payload.TextBlocks);
         foreach (var (label, point) in expected)
         {
             var block = payload.TextBlocks.Single(value => value.Lines[0] == label);
-            Assert.AreEqual(point.X, block.Point.X, 1e-12, label);
-            Assert.AreEqual(point.Y, block.Point.Y, 1e-12, label);
-            Assert.AreEqual(2, block.Scale);
+            // v3 centers the pinned glyph on the transformed sky landmark. Use
+            // its actual ink bounds, rather than the retired bitmap top-left offset.
+            using var font = PresentationFont.Create(block, 0);
+            var (x, y) = PresentationFont.LineOrigin(block, payload.WidthPixels, payload.HeightPixels,
+                font, label, 0);
+            var bounds = PresentationFont.LineBounds(font, label, x, y);
+            Assert.AreEqual(point.X, bounds.MidX, 0.5, label);
+            Assert.AreEqual(point.Y, bounds.MidY, 0.5, label);
+            Assert.AreEqual(PresentationFont.FrameScale(payload.WidthPixels, payload.HeightPixels, 2), block.Scale);
         }
-    }
-
-    private static PixelPoint Point(ProjectedSceneV1 scene, PixelPoint centerSource, PixelPoint targetSource, int scale)
-    {
-        var center = ProjectedSceneImageTransform.Apply(scene.ImageTransform, centerSource);
-        var target = ProjectedSceneImageTransform.Apply(scene.ImageTransform, targetSource);
-        var dx = target.X - center.X;
-        var dy = target.Y - center.Y;
-        var factor = 1d;
-        if (dx < 0) factor = Math.Min(factor, (3 * scale - center.X) / dx);
-        else if (dx > 0) factor = Math.Min(factor, (scene.ImageTransform.OutputWidthPixels - 3 * scale - 1 - center.X) / dx);
-        if (dy < 0) factor = Math.Min(factor, (4 * scale - center.Y) / dy);
-        else if (dy > 0) factor = Math.Min(factor, (scene.ImageTransform.OutputHeightPixels - 4 * scale - 1 - center.Y) / dy);
-        factor = Math.Clamp(factor, 0, 1);
-        return new(Math.Round(center.X + dx * factor, MidpointRounding.AwayFromZero) - 2 * scale,
-            Math.Round(center.Y + dy * factor, MidpointRounding.AwayFromZero) - 3 * scale);
     }
 
     private static bool ContainsCrop(ProjectedSceneImageTransformV1 transform, PixelPoint point) =>
@@ -148,15 +138,15 @@ public sealed class PresentationProjectionGeometryTests
     private static ProjectedSceneImageTransformV1 Transform(ProjectedSceneQuarterRotation rotation,
         bool horizontalMirror = false, bool verticalMirror = false) => new(
             ProjectedSceneImageTransformV1.CurrentSchemaVersion,
-            100, 80, 0, 0, 100, 80, 2, 4, horizontalMirror, verticalMirror, rotation, 20, 50);
+            1000, 800, 0, 0, 1000, 800, 2, 4, horizontalMirror, verticalMirror, rotation, 200, 500);
 
     private static async Task<ProjectedSceneV1> SceneAsync(ProjectedSceneImageTransformV1 transform)
     {
         var utc = new DateTimeOffset(2026, 8, 25, 0, 0, 0, TimeSpan.Zero);
         var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog([])).BuildAsync(new VisibleSceneRequest(
             utc, new ObserverLocation(0, 0, 0),
-            new ProjectionContext(ProjectionModel.EquidistantFisheye, 50, 40, 20, 20, 100, 80,
-                ProjectionAperture.Circular, 20, 90),
+            new ProjectionContext(ProjectionModel.EquidistantFisheye, 500, 400, 200, 200, 1000, 800,
+                ProjectionAperture.Circular, 200, 90),
             new CatalogQuery(6, 10),
             new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1"),
             projectionVersion: "fisheye-v1")).ConfigureAwait(false);

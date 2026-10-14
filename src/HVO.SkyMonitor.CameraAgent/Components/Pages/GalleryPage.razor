@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/gallery"
 @using HVO.SkyMonitor.AgentCore
 @using HVO.SkyMonitor.CameraAgent.Authorization
@@ -21,7 +22,7 @@
         <div class="gallery-heading-facts">
             <span aria-live="polite" aria-atomic="true"><strong>@VisibleItems.Count</strong> on this page</span>
             <span><strong>@ArtifactCount</strong> artifacts on this page</span>
-            <span title="Event linkage is not projected onto captures yet"><strong>Not linked</strong> events</span>
+            <span title="Prospectively recorded local candidate links; central event review is unavailable"><strong>@(CandidateLinksAvailable ? LinkedCandidateCount.ToString(System.Globalization.CultureInfo.InvariantCulture) : LinkedCandidateCount > 0 ? $"{LinkedCandidateCount}+" : "Unavailable")</strong> linked local candidates on this page</span>
         </div>
     </header>
 
@@ -42,8 +43,8 @@
                 <input id="gallerySearch" type="search" placeholder="Sequence, product, or raw state (this page)" value="@_draftSearch" @oninput="SetDraftSearch" />
             </span>
         </label>
-        <label><span>From UTC</span><input id="galleryFrom" type="datetime-local" step="1" value="@_draftFrom" @onchange="SetDraftFrom" /></label>
-        <label><span>To UTC</span><input id="galleryTo" type="datetime-local" step="1" value="@_draftTo" @onchange="SetDraftTo" /></label>
+        <label><span>From (@SiteTime.Label)</span><input id="galleryFrom" type="datetime-local" step="any" value="@_draftFrom" @onchange="SetDraftFrom" /></label>
+        <label><span>To (@SiteTime.Label)</span><input id="galleryTo" type="datetime-local" step="any" value="@_draftTo" @onchange="SetDraftTo" /></label>
         <label><span>Outcome</span>
             <select id="galleryOutcome" value="@_draftOutcome" @onchange="SetDraftOutcome">
                 <option value="all">All outcomes</option>
@@ -106,7 +107,11 @@
             {
                 <ArchiveCard Capture="@capture"
                              Presentation="@CardPresentation(capture)"
-                             DetailUrl="@DetailUrl(capture.CaptureId)" />
+                             DetailUrl="@DetailUrl(capture.CaptureId)"
+                             RunUrl="@RunUrl(capture.CaptureId)"
+                             RunUnavailableReason="@(CardLinks(capture.CaptureId)?.RunUnavailableReason ?? "The pipeline run identity is unavailable.")"
+                             DisplayProduct="@CardProduct(capture.CaptureId)"
+                             CandidateIds="@(CardLinks(capture.CaptureId)?.CandidateIds ?? [])" />
             }
         </section>
     }

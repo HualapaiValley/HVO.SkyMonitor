@@ -3,7 +3,6 @@ using Bunit;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Components.Layout;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
-using HVO.SkyMonitor.CameraAgent.Components.Pages.Devices;
 using HVO.SkyMonitor.CameraAgent.Controllers.v1;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components;
@@ -33,18 +32,22 @@ public sealed class OperatorRouteTests
             typeof(ArchiveCalendarPage),
             typeof(ProductsPage),
             typeof(ProductDetail),
-            typeof(SystemStatusPage),
+            typeof(NightlyProductDetailPage),
+            typeof(HealthPage),
+            typeof(ControlPage),
+            typeof(SoftwarePage),
+            typeof(RegistrationPage),
             typeof(PipelineSummaryPage),
             typeof(AutomationsPage),
             typeof(CameraRigPage),
-            typeof(DataStoragePage),
+            typeof(DeliveryPage),
+            typeof(StoragePage),
             typeof(ObservatoryLocationPage),
             typeof(ProcessingExecutionsPage),
             typeof(ProcessingExecutionDetailPage),
             typeof(ProcessingGraphsPage),
             typeof(ProcessingGraphDetailPage),
             typeof(ProcessingGraphEditorPage),
-            typeof(DeviceBootstrap),
             typeof(FramesController)
         })
         {
@@ -105,9 +108,15 @@ public sealed class OperatorRouteTests
             ("/operations/schedule", "Operations"),
             ("/operations/camera", "Operations"),
             ("/operations/data", "Operations"),
+            ("/operations/delivery", "Operations"),
+            ("/operations/storage", "Operations"),
             ("/operations/site", "Operations"),
             ("/operations/sky-map", "Operations"),
-            ("/operations/pipeline/executions", "Operations")
+            ("/operations/pipeline/executions", "Operations"),
+            ("/operations/health", "Operations"),
+            ("/operations/control", "Operations"),
+            ("/operations/software", "Operations"),
+            ("/operations/registration", "Operations")
         })
         {
             navigation.NavigateTo(path);
@@ -131,18 +140,22 @@ public sealed class OperatorRouteTests
             (typeof(SchedulePage), ["/schedule", "/operations/schedule"]),
             (typeof(CalibrationPage), ["/calibration", "/operations/calibration"]),
             (typeof(EnvironmentalPage), ["/environmental", "/operations/environment"]),
-            (typeof(SystemStatusPage), ["/system", "/operations/system"]),
+            (typeof(TransientOperationsPage), ["/operations/transients"]),
+            (typeof(HealthPage), ["/operations/health", "/operations/system", "/system"]),
+            (typeof(ControlPage), ["/operations/control"]),
+            (typeof(SoftwarePage), ["/operations/software"]),
             (typeof(QuarantinePage), ["/operations/quarantine"]),
             (typeof(PipelineSummaryPage), ["/operations/pipeline"]),
             (typeof(AutomationsPage), ["/operations/automations"]),
             (typeof(CameraRigPage), ["/operations/camera"]),
-            (typeof(DataStoragePage), ["/operations/data"]),
+            (typeof(DeliveryPage), ["/operations/delivery"]),
+            (typeof(StoragePage), ["/operations/storage", "/operations/data"]),
             (typeof(ObservatoryLocationPage), ["/operations/site", "/operations/sky-map"]),
             (typeof(ProcessingExecutionsPage), ["/operations/pipeline/executions"]),
             (typeof(ProcessingGraphsPage), ["/operations/pipeline/graphs"]),
             (typeof(ProcessingGraphDetailPage), ["/operations/pipeline/graphs/{RevisionId}"]),
             (typeof(ProcessingGraphEditorPage), ["/operations/pipeline/graphs/new"]),
-            (typeof(DeviceBootstrap), ["/devices/bootstrap"])
+            (typeof(RegistrationPage), ["/operations/registration", "/devices/bootstrap", "/devices"])
         })
         {
             var layout = type.GetCustomAttribute<LayoutAttribute>();

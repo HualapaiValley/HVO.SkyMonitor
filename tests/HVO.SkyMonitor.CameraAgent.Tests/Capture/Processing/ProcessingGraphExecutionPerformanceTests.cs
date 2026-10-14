@@ -779,7 +779,7 @@ public sealed class ProcessingGraphExecutionPerformanceTests
     private static CameraModuleConfig CreateConfiguration(Workload workload)
         => new(
             new ObservatoryLocation(0, 0, 0, "UTC"),
-            new CameraModuleDescriptor("VirtualSky"),
+            new CameraModuleDescriptor("Test"), // Payloads are supplied by this fixture, without a virtual sky scene.
             new CameraRigConfig(
                 new SensorProfile(
                     $"{workload.Id}-sensor",

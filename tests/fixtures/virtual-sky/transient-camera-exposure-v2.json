@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "transient-camera-exposure-v2",
+  "referenceModel": "Deterministic actual-camera regression. Same transient definitions and empty stellar catalog; logical midpoint/algorithm binding changes the controlled physical sensor noise identity.",
+  "intervals": {
+    "firstStartUtc": "2025-01-15T08:00:00Z",
+    "laterStartUtc": "2025-01-15T08:00:01Z",
+    "exposureSeconds": 1
+  },
+  "scenarioReferenceFixture": "transient-scenarios-v1.json",
+  "scenarioReferenceSha256": "bac54bef38a85bd5b07fa9fda855a3dc5dd316a51b37f21b8d3bc2e6d9f87f81",
+  "renderVersion": "camera-aware-stellar-exposure-v1",
+  "historicalInstantaneousChecksums": {
+    "Mono16": {
+      "first": "F703A678B0F2D6C4133D216E1AED8F06DD57E287A6A06F4DC17DC890788AF77A",
+      "later": "FFC5B7A47D26EBE277FCC8F6C23389615EEB31845459E499CB7A4390B544DCE4"
+    },
+    "Rgb24": {
+      "first": "3BD387EDC357C1C5B19129EA8DAB1329103D620DE20794D8600C1ABACDD9D22A",
+      "later": "1035AB2C2CFA287BDC71D8F14F591027F0B6A4026517A7F6018BF74C44AB1265"
+    },
+    "BayerRggb16": {
+      "first": "34DA48AE39F31F5F1549E5BA86654E48F973295B75992A48989C40752DA6E8C3",
+      "later": "B5E0939AF4B4122FFCA4C892DC9AC492179B65D01483589CB141893DB323813A"
+    }
+  },
+  "checksums": {
+    "Mono16": {
+      "first": "1358841CC8FAA8687E57F73033109DD2081E77D1FF829FCA6F0E5033FF903755",
+      "later": "EDBCF80F1562E49F7AB58908C6E57F2D35CC212549ACE03272C08298648EF526"
+    },
+    "Rgb24": {
+      "first": "3BD387EDC357C1C5B19129EA8DAB1329103D620DE20794D8600C1ABACDD9D22A",
+      "later": "1035AB2C2CFA287BDC71D8F14F591027F0B6A4026517A7F6018BF74C44AB1265"
+    },
+    "BayerRggb16": {
+      "first": "419B17F2F78EC4566CA3986811F1916C885EBECF18006F7562D15FC47866393F",
+      "later": "31548AC82029476B9B376AA545E0EAA02F2E191E6C366F87DA1EDE1401B65502"
+    }
+  }
+}

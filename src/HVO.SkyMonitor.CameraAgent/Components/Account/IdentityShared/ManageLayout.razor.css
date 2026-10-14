@@ -1,16 +1,33 @@
+/* The Operations sidebar (OperationsLayout.razor.css) as a panel beside the page: the same head, link and active
+   state. Account settings has three pages, so on a narrow screen the links become a row above the page instead of
+   the Operations drawer. */
 .manage-layout {
     display: grid;
-    grid-template-columns: minmax(11rem, 14rem) minmax(0, 1fr);
-    gap: clamp(1.5rem, 4vw, 3rem);
+    grid-template-columns: minmax(13rem, 16rem) minmax(0, 1fr);
+    gap: clamp(1rem, 2.6vw, 2rem);
+    align-items: start;
+    width: min(100%, 72rem);
 }
 
-.manage-content {
-    min-width: 0;
+.manage-sidebar {
+    position: sticky;
+    top: 5rem;
+    border: 1px solid var(--hvo-border-muted);
+    border-radius: .55rem;
+    background: linear-gradient(180deg, rgba(10, 17, 27, .98), rgba(7, 12, 20, .96));
 }
 
-@media (max-width: 767.98px) {
-    .manage-layout {
-        grid-template-columns: 1fr;
-        gap: 1.25rem;
-    }
+.manage-sidebar-head { padding: 1.1rem 1.1rem .9rem; border-bottom: 1px solid var(--hvo-border-muted); line-height: normal; }
+.manage-sidebar .manage-sidebar-head .eyebrow { margin: 0 0 .35rem; color: var(--hvo-muted); font-size: .7rem; font-weight: 600; letter-spacing: .08em; }
+.manage-sidebar-head strong { display: block; font-size: 1.15rem; font-weight: 550; letter-spacing: -.02em; }
+
+.manage-sidebar nav { padding: .55rem .6rem .7rem; }
+
+.manage-content { min-width: 0; }
+
+@media (max-width: 940px) {
+    .manage-layout { grid-template-columns: 1fr; }
+    .manage-sidebar { position: static; }
+    .manage-sidebar-head { display: none; }
+    .manage-sidebar nav { padding: .4rem; }
 }

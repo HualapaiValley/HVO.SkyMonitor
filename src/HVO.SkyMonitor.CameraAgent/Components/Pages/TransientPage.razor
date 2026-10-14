@@ -1,64 +1,117 @@
+@inherits SiteTimeComponent
 @page "/transients"
+@using HVO.SkyMonitor.CameraAgent.Services
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
 
-<PageTitle>Transients</PageTitle>
+<PageTitle>Detected events</PageTitle>
 
-<div class="transient-page">
-    <header class="page-heading">
-        <div><p class="eyebrow">Protected local evidence</p><h1>Transient candidates</h1><p>Bounded durable local candidate and event workflow state, newest first. CameraAgent records causal detections and local assessments only; authoritative event review is not performed here.</p></div>
-        <div class="heading-aside">
-            @if (_page is not null) { <span class="result-count">@_page.Items.Count candidate@(_page.Items.Count == 1 ? string.Empty : "s")</span> }
-            <a class="btn btn-outline-light" href="/archive/calendar">Calendar</a>
-        </div>
+<div class="transient-page archive-main">
+    <header class="archive-heading">
+        <div><p class="eyebrow">Scientific events / Local camera</p><h1>Detected events</h1><p>Browse local candidates and the retained evidence used for assessment. Central review is unavailable on this camera.</p></div>
+        <div class="archive-heading-actions"><a class="btn btn-outline-light" href="/operations/transients">Detector operations</a></div>
     </header>
-
-    @if (HasRange)
-    {
-        <p class="range-state" role="status">Showing candidates created between @RangeLabel. <a href="/transients">Show all candidates</a></p>
-    }
-
+    <section class="event-summary" aria-label="Event summary">
+        <article><span>Confirmed</span><strong>Unavailable</strong><small>Owner review is not recorded locally</small></article>
+        <article><span>Awaiting review</span><strong>Unavailable</strong><small>Central review state is not recorded locally</small></article>
+        <article><span>Rejected</span><strong>Unavailable</strong><small>Local workflow is not owner review</small></article>
+        <article><span>Latest event on this page</span>
+            @if (_isLoading) { <strong>Loading</strong><small>Reading retained candidates on this page</small> }
+            else if (_errorMessage is not null) { <strong>Unavailable</strong><small>The latest candidate could not be read</small> }
+            else if (Latest is { } latest)
+            {
+                <strong>@TimeZoneInfo.ConvertTime(RecordedUtc(latest), _calendar.TimeZone).ToString("HH:mm:ss zzz", System.Globalization.CultureInfo.InvariantCulture)</strong>
+                <small>@ObservingDateLabel(latest) reporting date · @SiteTimestamp(RecordedUtc(latest))</small>
+            }
+            else { <strong>Unavailable</strong><small>No retained candidate on this page</small> }
+        </article>
+    </section>
+    <section class="event-toolbar" aria-label="Filter loaded events">
+        <label><span>Local classification</span><select id="event-class-filter" value="@ClassificationFilter" @onchange="SetClassification"><option value="all">All classifications on this page</option><option value="fireball">Fireball</option><option value="meteor">Meteor</option><option value="unresolved">Unresolved</option><option value="satellite">Satellite</option><option value="aircraft">Aircraft</option><option value="sensor-artifact">Sensor artifact</option><option value="environmental-artifact">Environmental artifact</option></select></label>
+        <label><span>Review state</span><select disabled aria-describedby="review-unavailable"><option>Review unavailable</option></select></label>
+        <label><span>Observing date on this page</span><input id="event-date-filter" type="date" value="@Date" @onchange="SetDate" /></label>
+        <div class="view-switcher hvo-segmented" role="group" aria-label="Event layout">
+            <button type="button" class="@(!CalendarView ? "active" : null)" aria-label="Event list view" aria-pressed="@(!CalendarView ? "true" : "false")" @onclick="() => SetView(false)"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5h10M7 10h10M7 15h10"></path><circle cx="3.5" cy="5" r=".7"></circle><circle cx="3.5" cy="10" r=".7"></circle><circle cx="3.5" cy="15" r=".7"></circle></svg></button>
+            <button type="button" class="@(CalendarView ? "active" : null)" aria-label="Event calendar view" aria-pressed="@(CalendarView ? "true" : "false")" @onclick="() => SetView(true)"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4" width="14" height="13"></rect><path d="M6 2v4m8-4v4M3 8h14"></path></svg></button>
+        </div>
+    </section>
+    <p id="review-unavailable" class="event-result-count">Owner review belongs to LogicHost. A local assessment or finalization does not establish owner confirmation or rejection.</p>
+    @if (HasRange) { <p class="range-state">Candidate creation range: @RangeLabel. <a href="/transients">Clear range and filters</a></p> }
     @if (_isLoading)
     {
-        <section class="page-state" role="status"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span><strong>Loading transient evidence</strong></section>
+        <section class="page-state" role="status"><strong>Loading retained event evidence</strong></section>
     }
     else if (_errorMessage is not null)
     {
-        <section class="page-state page-state--error" role="alert"><div><strong>Transient evidence unavailable</strong><p>@_errorMessage</p></div><button class="btn btn-outline-light btn-sm" @onclick="LoadAsync">Try again</button></section>
-    }
-    else if (_page is null || _page.Items.Count == 0)
-    {
-        <section class="page-state" role="status"><div><strong>No transient candidates</strong><p>No durable candidate workflow evidence is present on this page.</p></div></section>
+        <section class="page-state page-state--error" role="alert"><div><strong>Event evidence unavailable</strong><p>@_errorMessage</p></div><button class="btn btn-outline-light" @onclick="LoadAsync">Try again</button></section>
     }
     else
     {
-        @if (_page.NextCursor is not null) { <p class="bounded-state">This bounded page omits older candidates.</p> }
-        <section class="candidate-list" aria-label="Transient candidates">
-            @foreach (var candidate in _page.Items)
+        <p class="event-result-count" role="status">@VisibleItems.Count matching local candidate@(VisibleItems.Count == 1 ? string.Empty : "s") on this bounded page · @TimeZoneLabel.</p>
+        @if (UnavailableEvidenceCount > 0)
+        {
+            <p class="event-result-count event-evidence-unavailable" role="status">Details unavailable for @UnavailableEvidenceCount local candidate@(UnavailableEvidenceCount == 1 ? string.Empty : "s"). Their classifications are not recorded and they are omitted from classification filters.</p>
+        }
+        @if (_page?.NextCursor is not null) { <p class="event-result-count">Older candidates are omitted from this page. Filters and calendar use only this page's records.</p> }
+        @if (VisibleItems.Count == 0) { <section class="page-state" role="status"><div><strong>No matching local candidates</strong><p>No retained candidate on this page matches these filters.</p></div></section> }
+        @if (CalendarView)
+        {
+            @if (UnassignedReportingDateCount > 0)
             {
-                <article>
-                    <header><div><p class="eyebrow">@FormatTime(candidate.CreatedUtc)</p><h2><a href="@DetailUrl(candidate.CandidateId)">@candidate.CandidateId</a></h2></div><span class="event-state">@SplitWords(candidate.EventState)</span></header>
-                    <dl>
-                        <div><dt>Candidate state</dt><dd>@SplitWords(candidate.CandidateState)</dd></div>
-                        <div><dt>Workflow phase</dt><dd>@SplitWords(candidate.WorkflowPhase)</dd></div>
-                        <div><dt>Event ID</dt><dd><code>@candidate.EventId</code></dd></div>
-                        <div><dt>Updated</dt><dd>@FormatTime(candidate.UpdatedUtc)</dd></div>
-                    </dl>
-                    <div class="stage-strip" aria-label="Evidence stages">
-                        <span class="@StageClass(candidate.CausalEvidenceState)"><strong>Causal</strong>@candidate.CausalEvidenceState</span>
-                        <span class="@StageClass(candidate.CenteredEvidenceState)"><strong>Centered</strong>@candidate.CenteredEvidenceState</span>
-                        <span class="@StageClass(candidate.AssessmentEvidenceState)"><strong>Assessment</strong>@candidate.AssessmentEvidenceState</span>
-                        <span class="@StageClass(candidate.FinalEvidenceState)"><strong>Final</strong>@candidate.FinalEvidenceState</span>
-                    </div>
-                    <a class="detail-link" href="@DetailUrl(candidate.CandidateId)">Inspect candidate evidence <span aria-hidden="true">&rarr;</span></a>
-                </article>
+                <p class="event-result-count" role="status">Reporting date unavailable for @UnassignedReportingDateCount matching local candidate@(UnassignedReportingDateCount == 1 ? string.Empty : "s"). Their source times remain available in list view.</p>
             }
-        </section>
+            <section class="event-calendar-panel" aria-label="Event calendar">
+                <header class="event-month-heading"><button class="btn btn-outline-light" aria-label="Previous month" @onclick="() => ChangeMonth(-1)">←</button><h2>@CalendarMonth.ToString("MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture)</h2><button class="btn btn-outline-light" aria-label="Next month" @onclick="() => ChangeMonth(1)">→</button></header>
+                <div class="event-month-weekdays" aria-hidden="true">@foreach (var day in new[] { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }) { <span>@day</span> }</div>
+                <div class="event-month-grid">
+                    @foreach (var day in CalendarCells)
+                    {
+                        var matches = VisibleItems.Where(candidate => ObservingDate(candidate) == day).ToArray();
+                        <div class="event-month-day @(day.Month != CalendarMonth.Month ? "outside" : matches.Length > 0 ? "has-event" : null)">
+                            <span>@day.Day</span>
+                            @foreach (var candidate in matches)
+                            {
+                                <a href="@DetailUrl(candidate.CandidateId)" aria-label="@($"Open {CameraAgentEventFacts.Title(Evidence(candidate.CandidateId)?.Detail.AssessmentEvidence)} on observing date {day:yyyy-MM-dd}")">@CameraAgentEventFacts.Classification(Evidence(candidate.CandidateId)?.Detail.AssessmentEvidence) · @TimeZoneInfo.ConvertTime(RecordedUtc(candidate), _calendar.TimeZone).ToString("HH:mm:ss zzz", System.Globalization.CultureInfo.InvariantCulture)</a>
+                            }
+                        </div>
+                    }
+                </div>
+                @if (OtherMonthCount > 0)
+                {
+                    <p class="event-calendar-empty event-other-months">@OtherMonthCount matching local candidate@(OtherMonthCount == 1 ? string.Empty : "s") in other months on this page. Change month to view those candidates.</p>
+                }
+                <p class="event-calendar-empty">The calendar groups matching candidates by @(_calendar.UsesSunrise ? "starting-sunrise report date" : "legacy noon association"). Records without a qualified period remain unassigned. <a href="/archive/calendar">Open capture calendar</a>.</p>
+            </section>
+        }
+        else
+        {
+            <section class="event-results" aria-label="Detected event results">
+                @foreach (var candidate in VisibleItems)
+                {
+                    var evidence = Evidence(candidate.CandidateId);
+                    var assessment = evidence?.Detail.AssessmentEvidence;
+                    <article class="event-card">
+                        <a class="event-card-media" href="@DetailUrl(candidate.CandidateId)" aria-label="Open exact candidate evidence">
+                            @if (evidence?.Reference?.Image is { } image && !_failedPreviews.Contains(candidate.CandidateId)) { <RetainedPreviewImage Source="@image.PreviewUrl!.OriginalString" Alt="Exact candidate source frame; extracted event media is unavailable" OnFailure="() => MarkPreviewFailed(candidate.CandidateId)" /> }
+                            else { <div class="event-media-placeholder">Candidate source image unavailable</div> }
+                            <span>@SiteTimestamp(RecordedUtc(candidate)) @(evidence?.Reference?.Source is null ? "· candidate recorded" : "· source observed")</span>
+                        </a>
+                        <div class="event-card-main">
+                            <header><div><p class="eyebrow">@ObservingDateLabel(candidate) reporting date / Local camera</p><h2>@CameraAgentEventFacts.Title(assessment)</h2></div><span class="classification-chip @CameraAgentEventFacts.ClassificationKey(assessment)">@CameraAgentEventFacts.Classification(assessment)</span></header>
+                            <p>Local assessment: @(assessment?.State ?? "Unavailable"). Centered context: @(evidence?.Detail.CenteredEvidence.CenteredContextConverged == true ? "Converged receipt" : "Incomplete or unavailable"). Source imagery shows its retained frame, not an extracted event product.</p>
+                            <a href="@DetailUrl(candidate.CandidateId)">Open event evidence →</a>
+                            <details class="event-local-evidence"><summary>Local workflow and identity</summary><dl><div><dt>Candidate ID</dt><dd><code>@candidate.CandidateId</code></dd></div><div><dt>Event ID</dt><dd><code>@candidate.EventId</code></dd></div><div><dt>Workflow</dt><dd>@SplitWords(candidate.WorkflowPhase) · @SplitWords(candidate.EventState)</dd></div><div><dt>Causal / Centered / Assessment / Final</dt><dd>@candidate.CausalEvidenceState / @candidate.CenteredEvidenceState / @candidate.AssessmentEvidenceState / @candidate.FinalEvidenceState</dd></div></dl></details>
+                        </div>
+                        <dl class="event-card-facts"><div><dt>Owner review</dt><dd>Unavailable</dd></div><div><dt>Confidence</dt><dd>@CameraAgentEventFacts.Confidence(assessment)</dd></div><div><dt>Measured duration</dt><dd>Not recorded</dd></div></dl>
+                    </article>
+                }
+            </section>
+        }
         <nav class="cursor-nav" aria-label="Transient pages">
             @if (!string.IsNullOrWhiteSpace(Cursor)) { <button class="btn btn-outline-light" @onclick="ShowNewest">Newest candidates</button> }
-            @if (_page.NextCursor is not null) { <button class="btn btn-primary" @onclick="ShowOlder">Older candidates</button> }
+            @if (_page?.NextCursor is not null) { <button class="btn btn-outline-light" @onclick="ShowOlder">Older candidates</button> }
         </nav>
     }
 </div>

@@ -365,6 +365,321 @@ Mono16 data. Annotation marks and readable scalable labels are restricted to
 properly named stars at magnitude 2.5 or brighter and named solar-system
 bodies; constellation lines can still use all resolved endpoints.
 
+### Selectable sky illumination (#1131 prototype)
+
+`module.options.illuminationMode` is the single configuration source:
+
+- Omitted or `LegacyScalarSolar`: preserve the existing uniform scalar solar
+  background, default option serialization, and scene identities.
+- `SolarDriven`: use `solar-clear-sky-rgb-approximation-v1` with the existing
+  Bortle night rate and continuous logarithmic solar-altitude multiplier. The
+  shared Astronomy projector supplies pixel directions. A bounded blue sky and
+  warm, Sun-facing horizon approximate clear daylight and twilight. Below -18
+  degrees the color multiplier is neutral. This is not atmospheric radiative
+  transfer, calibrated solar photometry, a resolved Sun, or a weather model.
+- `ControlledNight`: use the Bortle night rate at the actual celestial time.
+  Stars keep moving and actual Sun altitude/azimuth remain recorded. This mode
+  does not turn an operational daytime capture into astronomical night.
+
+An explicit `backgroundElectronsPerSecond` overrides every mode with the same
+uniform electron rate, preserving deterministic fixtures. The requested mode,
+effective override, actual solar direction and rendering algorithm are separate
+provenance fields. Non-default modes enter the scene identity; no historical
+frame or profile is rewritten. Existing producer defaults are unchanged.
+
+The spatial/color field enters before exposure, vignetting, noise, electron/ADU
+conversion and saturation. Native CFA channel response is applied to the new
+field before photosite sampling; RGB24 retains its declared compatibility
+response. Stellar admission evaluates the same local channel background as the
+renderer. Mono native ROI/binning uses the native ROI projection before digital
+readout. Work is bounded by the existing active-pixel and stellar budgets with
+constant extra retained storage; the approximation uses at most a fourfold
+channel multiplier. Long exposures sample illumination at the recorded celestial
+midpoint; the approximation does not integrate changing solar radiance through
+a twilight crossing.
+
+Optional `renderSolarSystemDisks: true` adds the resolved Sun and Moon before
+sensor integration. The shared `SolarDiskEphemeris` uses topocentric geometric
+position and distance, NASA mean radii (Sun 695,700 km; Moon 1,737.4 km), and the
+pinned Astronomy Engine lunar illuminated fraction. The bright limb points
+toward the actual Sun. It is a uniform bright hemisphere, not a lunar texture
+or photometric surface model; phase fraction is geocentric while disk position,
+size and limb orientation are topocentric. Extinction, earthshine, eclipses,
+lunar occultation of background sources and optical bloom/flare are not
+modeled. VirtualSky scenes keep refraction disabled, so their disks and
+footprints are unrefracted; see the #518 section below for the refraction the
+shared contract supports. Both disks are sampled at the exposure's recorded
+celestial midpoint; sequence motion is truthful, but long-exposure disk trails
+are not integrated. Sun/Moon entries in `solarSystemBodies` are not rendered a
+second time as point sources.
+
+The opt-in disk identities and complete angular/phase geometry are recorded in
+frame metadata and the scene identity. At 640 pixels across a 180-degree field,
+the half-degree bodies are only a few pixels wide. A separately labeled narrow
+field capture can demonstrate lunar phase; enlarging a body within the all-sky
+frame would falsify scale. The POC rig uses the supported upward-looking camera
+orientation (`horizontalFlip: true`): North up, East left, West right.
+
+Source constants: [NASA Sun fact sheet](https://nssdc.gsfc.nasa.gov/planetary/factsheet/sunfact.html)
+and [NASA Moon fact sheet](https://nssdc.gsfc.nasa.gov/planetary/factsheet/moonfact.html).
+Ephemeris semantics: [Astronomy Engine C# contracts](https://github.com/cosinekitty/astronomy/blob/v2.1.19/source/csharp/README.md).
+
+Qualification displays must use the frame's actual stored-code black/white
+levels and a declared fixed transfer function. Raw means, percentiles and
+clipping fractions are measured inside the optical aperture, separately from
+display pixels. Auto-stretched previews are not absolute-brightness evidence.
+This prototype is available for the explicitly authorized #1134 preparation
+route; production qualification still requires the complete candidate and PR
+gates and the recorded sample disposition.
+
+### Resolved Sun and Moon footprints (#518)
+
+`solar-lunar-resolved-psf-v4-resolved-footprints` replaces the #1131 disk
+raster. Surface samples use the same `ResolvedSourceFrame` and scene projector
+as the projected footprint. They pass the scene horizon policy and refraction
+one sample at a time and are deposited bilinearly onto a grid padded by the PSF
+radius. The grid is convolved with the configured stellar Gaussian PSF, the
+same sigma and cutoff that point sources use, and only then clipped to the
+sensor and aperture. The magnitude-derived source rate is normalized over the
+illuminated surface before horizon, PSF and sensor clipping. Light outside the
+frame or aperture is lost and never renormalized. `SourceElectronRate`,
+`VisibleElectronRate` and `RetainedElectronRate` record the budget at each
+stage. Sparse pixels and kernel visits are bounded
+(`MaximumSparsePixels`, `MaximumKernelCellVisits`).
+`SolarDiskChecksumGoldenTests` pins a Sun and quarter-Moon render in Mono16,
+RGB24 and Bayer RGGB16 to SHA-256 fixtures. A renderer change that moves them
+must bump the algorithm version and re-pin them.
+
+When at least one disk has a visible limb, `VisibleScene.WithResolvedBodies`
+attaches a `resolved-footprint-v1` outline to the scene, and the staged scene
+is `projected-scene-v2`. Every other scene stays byte-identical
+`projected-scene-v1`. The contract, its units and frames, and its
+uncertainty fields are defined in
+[`docs/astronomy/resolved-footprint.md`](astronomy/resolved-footprint.md).
+
+Annotations draw the footprint, not a fixed marker:
+
+- The Annotation raster (`projected-annotation-raster-v4-resolved-footprints`)
+  and the presentation layers (`projected-scene-presentation-v10-resolved-footprints`)
+  draw the outline padded outward by 4 px from its centre.
+- The body's label starts beyond the padded outline. In the presentation
+  layers, other labels that would fall on the disc are dropped.
+- A footprint whose padded half-extent fits inside the point marker keeps the
+  released marker and label, byte for byte.
+- A capture without resolved footprints (`projected-scene-v1`) keeps the
+  `projected-annotation-raster-v3` algorithm version and the same annotation
+  identity, so a retry of work retained before the upgrade reproduces the same
+  output under the same key.
+- Unresolved planets and stars keep the fixed minimum marker. Annotation size
+  never implies a planetary diameter.
+- Open outline parts left by the frame, aperture or horizon are drawn without a
+  closing chord.
+
+The outline is transformed through readout binning, crop, mirror and rotation
+once, by the projected-scene transforms. The annotation step maps it into
+display pixels together with the point objects. Inputs without footprints,
+including every `projected-scene-v1` scene and the standalone CameraAgent path,
+render the released bytes. Golden hashes pin this.
+
+Reference values come from offline JPL Horizons responses in
+`tests/fixtures/horizons/issue-518/`:
+
+- API `1.2`, DE441, retrieved `2026-10-06`, with a manifest of query parameters
+  and a SHA-256 for each response.
+- The Sun at the 2026 perihelion and aphelion from HVO.
+- The Moon at the January 2026 perigee from La Palma and Sutherland, and near
+  the apogee from HVO and Cerro Tololo.
+- Each case has an airless and a refracted response.
+
+Tests verify every hash before reading and never use the network. They require
+the following agreement:
+
+| Quantity | Tolerance |
+| --- | --- |
+| Topocentric direction | within 0.5′ |
+| Angular diameter | within 0.1% |
+| Range | within 0.02% |
+| Illuminated fraction | within 0.009: the analytic bound ½·sin(i)·π_max with the Moon's maximum horizontal parallax π_max ≈ 61.5′ (≈ 0.0089), because Horizons is topocentric and the engine fraction is geocentric. A physical bound, not a fitted value. |
+| Bennett refraction against the Horizons refracted elevation | within 5″, at 22–68° |
+
+They also check the perihelion/aphelion and perigee/apogee size ordering and
+the lunar parallax between two sites at one instant. Astronomy Engine and
+Bennett refraction remain visualization models, and the fixtures are not
+physical lens qualification.
+
+### Exposure-aware stellar visibility and motion
+
+The normal VirtualSky path uses `camera-aware-stellar-exposure-v1`. A frame now
+has two explicit logical intervals: the scenario clock for clouds/transients
+and the celestial clock for star geometry. `VirtualExposureProvenance` records
+both UTC starts, ends and floor-tick midpoints, together with effective exposure
+and the ordinary/fixed-scene/fixed-sequence mapping. Annotation references use
+the celestial midpoint. Capture callbacks, raw timestamps and acquisition facts
+continue to describe the operational capture. Full scene identity binds both
+logical clocks; controlled frozen-field transient runs use a separate celestial
+noise identity so advancing a transient does not redraw quiet stellar noise.
+
+Expected source visibility is a conditional simulation prediction. For a native
+aperture with extraction weights `w`, expected source electrons are `sum(w*s)`
+and physical noise variance is `sum(w*w*(s + sky + dark + readNoiseSquared))`.
+Expected SNR is source divided by the square root of that variance. Native
+channel response, existing approximate HYG color factors, vignetting and clipped
+PSF fractions enter before admission. Digital average/sum uses the collected
+native photosites and their read noise; it is not charge-domain binning. The
+physical Poisson variance remains the prediction convention when a controlled
+fixture disables stochastic shot noise. Saturation caused by a source preserves
+that source with a diagnostic reason; a saturated background alone does not
+force every faint catalog candidate into the image.
+
+The default minimum expected SNR is 5. The complete candidate query bounds both
+shot-noise-only SNR and source-caused saturation, using native full-well/ADC
+headroom, background, dark current and channel response, with a 0.5-magnitude
+margin. If background can approach clipping, arbitrarily faint source charge
+can cross that boundary: query the explicit HYG fidelity ceiling, then evaluate
+each aperture. Zero source photons never qualify by saturation. The configured HYG fidelity ceiling is
+separate from this sensitivity ceiling; both and the limiting-depth flag are
+recorded. The legacy magnitude is treated as approximate V-like photometry,
+not as new HYG 4.4 band/epoch semantics or a completeness guarantee for a real
+camera. PSF size does not change with source magnitude. Normal profiles use a
+32,768-candidate safety bound instead of silently retaining the brightest 300
+or 2,000; exhaustion explicitly refuses the exposure.
+
+`stellar-exposure-iau1976-bounded-midpoint-v1` projects the complete bounded
+selection over the exact celestial interval, including off-frame centers whose
+PSF can overlap the aperture. `bounded-temporal-gaussian-native-v1` integrates
+noiseless Gaussian footprints, normalized before clipping, then applies one
+sensor shot/dark/read/full-well/ADC pass. Missing horizon or clipped energy is
+not renormalized. Cloud transmission follows each source at its matching
+scenario time. The configured defaults permit at most 64 temporal samples per
+source, a 0.15-native-pixel maximum motion step, 100 million kernel-cell visits per render
+plane, 65,536 sparse aperture entries and 16,777,216 active native buffer pixels.
+An exposure that cannot satisfy a sampling or work bound fails explicitly.
+For a narrow discrete Gaussian, adjacent-photosite weight ratios change on the
+sigma-squared scale. The requested step is also bounded by `0.25 * sigma^2`;
+preparation checks the actual maximum interval motion, including geometry
+supplied outside the camera module. The qualified integrated kernel requires
+radius at least four sigma and at least 0.75 pixels. Strongly truncated kernels
+are explicitly unsupported. Sigma0.05 boundary fixtures pass independent dense
+quadrature at one second; the same narrow kernel at ten seconds can exceed the
+64-sample limit and is refused instead of publishing inaccurate pixels.
+Near the geometric horizon, bounded extremum checks detect a grazing rise or
+dip between equal-sign endpoints and midpoints. Horizon arcs are at most six
+hours, extremum searches stop after 72 iterations, and the default whole-capture
+budget is 16 million direction evaluations including refinement. Actual work
+and the limit are recorded in frame metadata; exhausting the bound refuses the
+exposure rather than dropping the remaining stars or renormalizing their flux.
+This version supports geometric altitude. Enabled atmospheric refraction is
+refused for positive exposures because its altitude-floor discontinuity and
+motion derivative are outside the geometric sampling bound.
+
+Transient masking can explicitly select `ExposureIntegratedStarMask=true` in
+the CameraAgent transient options or central transient options. The shared
+`catalog-geometric-exposure-swept-mask-v1` uses an independent complete catalog
+query, captured rig/location, effective exposure and validated time-only capture
+clock facts. It never reads simulated object locations, admissions, photon
+predictions or class truth. Half the declared maximum motion step expands both
+selection and sampled supports to cover unsampled shutter endpoints; detector
+transforms use their larger scale conservatively. Mask raster work is bounded
+at 100 million cells, including the entire central window, with explicit refusal
+instead of truncation.
+Central V2 resolves each source's acknowledged capture-bound deployment version
+and checks its descriptor provenance, canonical coordinate hash and effective
+interval against actual capture time. Missing or conflicting location evidence
+returns NeedsReview; registration coordinates never substitute for it. The
+virtual celestial clock does not change deployment validity. VirtualSky likewise
+checks the deployment interval against the operational capture request, independently
+of a fixed celestial or scenario epoch. Legacy V1 keeps
+its historical registration-based behavior for frozen receipts.
+
+The legacy instantaneous mask remains the default. A swept profile must declare
+an adequate complete-query safety bound, such as 32,768 for the HYG magnitude
+6.5 virtual qualification, rather than inherit a 2,000-result truncation.
+Central durable execution options freeze the legacy or swept policy. An edge
+candidate whose persisted causal mask identities cannot be reproduced after a
+policy/configuration change retains its causal evidence and finalizes as
+`NeedsReview`; it does not receive a changed automatic verdict. Switch profiles
+after draining unfinished edge windows when automatic completion is required.
+The full-resolution W1/W2 qualification uses independent catalog-only supports
+over five 20-second captures at 25-second cadence. It retains the original
+99% residual-suppression and 20% masked-area limits and requires zero star-only
+candidates. `star-mask-strategy-v2.json` pins the new deterministic results and
+retains the original instantaneous references separately; its hashes are
+regression checks, not independent physical or detection accuracy evidence.
+
+Without an explicit background-rate override,
+`bortle-solar-altitude-log-background-v1` retains the night rate below solar
+altitude -18 degrees, interpolates its logarithm through twilight and reaches a
+million-fold scalar daylight plateau at zero degrees. The ephemeris model is
+identified separately. This approximates solar background rather than lunar,
+weather, atmospheric-scattering or calibrated radiative-transfer behavior.
+Explicit electron-rate fixtures retain their configured rate. Display stretch
+still operates only on derivatives and does not determine source admission.
+
+The shared render result exposes bounded per-source expected signal, SNR,
+reason, saturation and swept optical footprint in native projection coordinates.
+These values are available for rendering diagnostics and scoring; they are not
+image detections and must not enter measured-source extraction or fitting.
+Capture metadata retains a versioned SHA-256 over ordered canonical prediction
+records without embedding another per-frame projected catalog. It also records
+candidate/admission/sample/actual-raster counts, buffer limits, and stage wall
+times and observed process-CPU deltas. Process CPU is attributable to these
+stages only in the declared isolated, single-capture benchmark; concurrent work
+can contribute to a process counter. Geometry and reference-scene stage counters
+include their catalog queries, whose separately measured CPU must be accounted
+for rather than added twice. Baseline uninstrumented stage CPU remains explicitly
+unavailable.
+
+The [#522 resource comparison](validation/issue-522-stellar-resources.json)
+retains the nine-workload before/after results, source revisions, configuration
+and raw-evidence hashes, CPU, allocations, I/O, throughput and stage counters.
+Each workload uses a fresh Release process, five warmups and 30 measured captures
+with tiered compilation disabled. All predeclared budgets passed: p95 at most
+10 seconds for Mono or 40 seconds for Bayer, and cumulative process peak below
+2 GiB. This is x64 virtual capture evidence; no queue/backlog or physical/ARM
+qualification is inferred.
+
+| Workload | Before p95 ms | After p95 ms | Ratio | After peak GiB |
+| --- | ---: | ---: | ---: | ---: |
+| mono-short | 82.65 | 175.73 | 2.13x | 0.341 |
+| mono-long | 87.28 | 469.57 | 5.38x | 0.357 |
+| mono-day | 86.95 | 366.92 | 4.22x | 0.358 |
+| cfa-short | 763.03 | 592.06 | 0.78x | 1.048 |
+| cfa-long | 906.94 | 945.65 | 1.04x | 0.879 |
+| cfa-day | 557.51 | 1087.35 | 1.95x | 0.734 |
+| asi676-short | 920.09 | 1041.99 | 1.13x | 1.787 |
+| asi676-long | 1150.66 | 1575.62 | 1.37x | 1.444 |
+| asi676-day | 1099.14 | 1886.01 | 1.72x | 1.195 |
+
+The 5.38x Mono long-exposure latency increase includes the larger complete
+8,920-candidate selection, a median 4,183.5 retained sources and 25,202.5 temporal
+samples, versus the old 300-object stationary scene. Median process CPU rose
+from 91.47 to 293.17 ms; prediction and rendering visited about 3.23 and 3.21
+million kernel cells. Short Mono also evaluates complete candidate apertures
+before rejecting faint sources. These additional work and allocation costs are
+reported alongside the passing absolute budgets. The nine workloads measured
+270 captures per version and introduce no forced garbage collection.
+
+Increasing the standalone W6 profiles' catalog safety cap from 300 to 32,768
+changes their local capture-profile identities. Tests pin both the new identities
+and the original identities reconstructed with only the historical cap restored;
+rig, schedule and processing-plan identity checks remain unchanged.
+
+The Siding Spring location/restart fixture requires observable catalog geometry,
+so it declares a fixed celestial epoch and a stronger magnitude-zero signal.
+Its original 10 ms, 1,000-electron/second fixture did not guarantee an admitted
+star at the physical SNR threshold. The nonempty-star assertion remains, with
+additional checks of the declared signal and clock; production admission and
+other host fixtures retain their configured inputs.
+
+The unchanged `hualapai-asi174-conformance-v1.json` retains independent astronomy
+and orientation references and historical instantaneous pixels. The separate
+`hualapai-asi174-temporal-conformance-v2.json` fixes exact exposure intervals and
+new deterministic actual-pixel hashes, centroids and statistics. Canonical Mono
+captures keep the old reference UTC as their midpoint. Physical temporal
+accuracy is checked separately against 4,096-sample numerical quadrature, with
+0.5% flux and 0.02-native-pixel centroid tolerances; a matching regression hash
+alone is not an independent physical validation.
+
 ## Optical Profiles
 
 The optical projector is created from rig configuration in
@@ -749,3 +1064,13 @@ accuracy is suitable for visualization, not precision astrometry or navigation.
 
 Portfolio order is owned by `docs/roadmap.md`, virtual-first phase order by
 `docs/project-plan.md`, and live status by the linked GitHub issues.
+
+Disk raster version `solar-lunar-geometric-disk-bilinear-v3-stellar-charge`
+uses an Astronomy angular-to-pixel Jacobian bound, including off-axis
+magnification and radial distortion. The grid prefers four samples per projected
+pixel and requires at least one per grid axis. Cases needing more than 512
+samples across an axis fail explicitly with a projection-sampling budget error;
+they are not silently rendered with dark sampling gaps. The existing 524,288
+sparse-pixel bound remains. Resolved disk light receives cloud transmission but
+is excluded from the diffuse background-scatter term. This is a correction to
+existing cloud interaction, not an atmospheric scattering simulation.

@@ -1,0 +1,30 @@
+/* Registration layout. The shared Operations vocabulary (.ops-*, .button, .state-chip, .action-dialog) lives in
+   OperationsLayout.razor.css; this file only adds the copyable identity values and the two-step dialog. */
+
+div.ops-note-banner.compact.registration-message { margin: 0 0 .8rem; }
+section.ops-profile-banner.registration-profile dl { flex-wrap: wrap; row-gap: .55rem; }
+section.ops-profile-banner.registration-profile dd { overflow-wrap: anywhere; }
+
+dd.registration-copy { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; }
+dd.registration-copy code { min-width: 0; overflow-wrap: anywhere; font-size: .62rem; letter-spacing: .04em; }
+dd.registration-copy code.masked { letter-spacing: .12em; }
+dd.registration-copy .icon-button { min-width: 2.75rem; min-height: 2.75rem; }
+
+.registration-copy-status { margin: .6rem 0 0; color: var(--muted-strong); font-size: .58rem; }
+.registration-copy-status.dialog { margin: .2rem 1.1rem 0; }
+.registration-note { margin: .7rem 0 0; color: var(--muted); font-size: .6rem; line-height: 1.5; }
+/* Current Sky's .text-button, copied so this page does not depend on another page's scoped styles. */
+.text-button { display: inline-flex; min-height: 2.75rem; align-items: center; margin-top: .3rem; padding: .35rem 0; color: var(--blue); font-size: .63rem; font-weight: 700; text-decoration: none; }
+
+dialog.action-dialog.registration-dialog { width: min(calc(100% - 2rem), 36rem); }
+dialog.action-dialog.registration-dialog fieldset { min-inline-size: 0; }
+dialog.action-dialog.registration-dialog textarea { min-height: 8rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .62rem; resize: vertical; overflow-wrap: anywhere; }
+dialog.action-dialog.registration-dialog dl.registration-dialog-facts { margin: 0 1.1rem; }
+dialog.action-dialog.registration-dialog .operations-dialog-note.warning { border-left-color: var(--amber); background: var(--amber-soft); }
+dialog.action-dialog.registration-dialog .operations-dialog-note a { color: var(--blue); font-weight: 700; }
+
+ol.registration-steps { display: flex; gap: .4rem; margin: .9rem 1.1rem 0; padding: 0; list-style: none; counter-reset: registration-step; }
+ol.registration-steps li { flex: 1 1 0; padding-top: .4rem; border-top: 2px solid var(--border-strong); color: var(--muted); font-size: .55rem; font-weight: 700; counter-increment: registration-step; }
+ol.registration-steps li::before { content: counter(registration-step) ". "; }
+ol.registration-steps li.current { border-top-color: var(--blue); color: var(--text); }
+ol.registration-steps li.done { border-top-color: var(--green); }

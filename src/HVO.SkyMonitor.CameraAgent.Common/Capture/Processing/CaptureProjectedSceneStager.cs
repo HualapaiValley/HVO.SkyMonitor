@@ -77,6 +77,12 @@ public sealed class CaptureProjectedSceneStager(
             includeConstellationEndpointStars: options.IncludeConstellationEndpointStars);
         var scene = await new VisibleSceneBuilder(catalog, topology, ephemeris)
             .BuildAsync(request, cancellationToken).ConfigureAwait(false);
+        if (options.CuratedAnnotations is { Enabled: true } curated)
+        {
+            var deepSky = (catalog as IDeepSkyCatalogSource)?.DeepSky
+                ?? throw new InvalidOperationException("Curated annotation requires an approved composed catalog.");
+            scene = scene.WithCuratedDeepSky(deepSky, curated.ToSelection());
+        }
         var identityDocument = ProjectedSceneJson.Create(
             ProjectedSceneKind.Predicted,
             scene,
@@ -88,6 +94,7 @@ public sealed class CaptureProjectedSceneStager(
         var stageKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             $"hvo.skymonitor.projected-scene-stage-key.v1\0{captureId:N}")));
         var topologyMetadata = options.ConstellationIds.Count > 0 ? topology?.Metadata : null;
+        var (catalogId, catalogPackageVersion) = CatalogSceneProvenanceIdentity.For(metadataSource);
         var provenance = new SceneProvenance(
             stageKey,
             config.Rig.ProfileVersion,
@@ -102,11 +109,8 @@ public sealed class CaptureProjectedSceneStager(
             metadata.License,
             metadata.SchemaVersion,
             metadataSource.PreprocessingVersion,
-            scene.Objects.Select(static item => new ProjectedObjectProvenance(
-                item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray(),
-            scene.Segments.Select(static item => new ProjectedSegmentProvenance(
-                item.ConstellationId, item.FromObjectId, item.ToObjectId,
-                item.FromPixel.X, item.FromPixel.Y, item.ToPixel.X, item.ToPixel.Y, item.PartIndex)).ToArray(),
+            Objects: null,
+            Segments: null,
             options.SolarSystemBodies.Count > 0 ? ephemeris?.ModelVersion : null,
             topologyMetadata?.Version,
             topologyMetadata?.SourceUrl,
@@ -120,7 +124,10 @@ public sealed class CaptureProjectedSceneStager(
             SceneUtc: effectiveUtc,
             ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
             ProjectedSceneStageKey: stageKey,
-            ProjectedSceneStageIdentitySha256: identityDocument.SceneIdentitySha256);
+            ProjectedSceneStageIdentitySha256: identityDocument.SceneIdentitySha256,
+            ProjectedSceneSchemaVersion: scene.ProjectedSceneSchemaVersion,
+            CatalogId: catalogId,
+            CatalogPackageVersion: catalogPackageVersion);
         await stagingStore.StageAsync(
             stageKey,
             stageKey,

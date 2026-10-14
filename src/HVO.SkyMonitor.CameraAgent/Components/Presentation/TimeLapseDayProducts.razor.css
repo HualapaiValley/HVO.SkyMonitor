@@ -1,0 +1,4 @@
+.time-lapse-day { padding: 1rem; border: 1px solid var(--hvo-border, #384354); border-radius: .75rem; min-width: 0; }
+.time-lapse-day p { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0; }
+.time-lapse-day small { flex-basis: 100%; overflow-wrap: anywhere; }
+.time-lapse-day__note { color: var(--hvo-muted, #b3bdca); font-size: .9rem; }

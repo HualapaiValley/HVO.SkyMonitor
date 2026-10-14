@@ -771,7 +771,7 @@ internal sealed class CameraModuleRunner
             checked((ushort)Math.Round(Math.Clamp(white, ushort.MinValue, ushort.MaxValue), MidpointRounding.AwayFromZero)));
     }
 
-    private static MeteringImageCircle? ResolveMeteringImageCircle(CameraModuleConfig config, CameraFrame frame)
+    internal static MeteringImageCircle? ResolveMeteringImageCircle(CameraModuleConfig config, CameraFrame frame)
     {
         if (config.Rig.Optics.ImageCircleRadiusPixels is not { } nativeRadius)
         {

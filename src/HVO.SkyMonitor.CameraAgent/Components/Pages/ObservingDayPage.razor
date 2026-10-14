@@ -2,6 +2,7 @@
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Automation
 @using HVO.SkyMonitor.CameraAgent.Common.Gallery
+@using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts
 @using HVO.SkyMonitor.CameraAgent.Components.Presentation
 @using HVO.SkyMonitor.CameraAgent.Services
 @using HVO.SkyMonitor.CameraAgent.Components.Shared
@@ -15,7 +16,7 @@
     @if (_invalidDate)
     {
         <PageStateNotice Kind="PageStateNotice.PageStateKind.Error" Title="Observing day not recognised" Message="Use a date in the form yyyy-MM-dd within the calendar range.">
-            <a class="btn btn-outline-light btn-sm" href="/archive/calendar">Back to calendar</a>
+            <a class="btn btn-outline-light btn-sm" href="@CalendarUrl">Back to calendar</a>
         </PageStateNotice>
     }
     else
@@ -39,7 +40,7 @@
                 {
                     <a class="btn btn-outline-light" href="@CandidatesUrl">View events</a>
                 }
-                <a class="btn btn-outline-light" href="/archive/calendar?month=@Date.ToString("yyyy-MM")">Calendar</a>
+                <a class="btn btn-outline-light" href="@CalendarUrl">Calendar</a>
             </div>
         </header>
 
@@ -90,7 +91,7 @@
             </section>
 
             <section class="night-timeline" aria-label="Night timeline">
-                <header><div><p class="eyebrow">Noon to noon</p><h2>Observing-day timeline</h2><p>Scheduled openings, retained exposures and candidate records on one local-time axis.</p></div><span class="night-timeline__range">@TimelineRange(view)</span></header>
+                <header><div><p class="eyebrow">@(view.Day.Day.SunrisePeriod is null ? "Legacy noon to noon" : "Sunrise to following sunrise")</p><h2>Observing-day timeline</h2><p>Scheduled openings, retained exposures and candidate records on one local-time axis.</p></div><span class="night-timeline__range">@TimelineRange(view)</span></header>
                 <div class="timeline-tracks" style="--night-hours: @NightHours(view).ToString(System.Globalization.CultureInfo.InvariantCulture)">
                     <span class="timeline-track-label">Schedule</span>
                     <div class="timeline-track" aria-label="Scheduled windows from the active schedule definition">
@@ -131,19 +132,200 @@
                 @if (view.Schedule?.ActiveRevisionCaveat == true) { <p class="night-timeline__note">The active schedule was created after this day. Its windows are not a historical admission record.</p> }
             </section>
 
-            <section class="daily-products" aria-label="Generated products">
-                <header><div><p class="eyebrow">Daily derivatives</p><h2>Generated products</h2><p>Timelapse, star trail and keogram generation is not yet available. No capture image is substituted for a product.</p></div><a href="/archive/products">Browse retained outputs</a></header>
-                <div class="product-slots">
-                    @foreach (var slot in ProductSlots)
-                    {
-                        <article class="product-slot product-slot--pending">
-                            <div class="product-slot__media" aria-hidden="true"><i class="bi @slot.Icon"></i></div>
-                            <h3>@slot.Title</h3>
-                            <p>@slot.Description</p>
-                            <span class="hvo-chip hvo-chip--neutral">Not yet produced</span>
+            <section class="daily-products" aria-label="Generated products" aria-busy="@(_nightlyLoading ? "true" : "false")">
+                <header><div><p class="eyebrow">Nightly products</p><h2>Generated products</h2><p>Recorded evaluations of this sunrise period. No capture image is substituted for a product.</p></div><a href="@ProductsPage.RetainedPath">Browse retained outputs</a></header>
+                @if (view.Day.Day.SunrisePeriod is null)
+                {
+                    <p class="daily-products__note" role="note">Nightly products belong to sunrise report dates, so this noon-to-noon view does not show them. <a href="@SunriseDayUrl">Switch to sunrise periods</a></p>
+                }
+                else if (_nightlyLoading)
+                {
+                    <p class="daily-products__note" role="status">Loading nightly products…</p>
+                }
+                else if (_nightly is null)
+                {
+                    <p class="daily-products__note daily-products__note--warning" role="status"><strong>Nightly product status unavailable.</strong> @_nightlyMessage</p>
+                }
+                else if (view.Day.Day.SunrisePeriod is { } period)
+                {
+                    var sample = _nightly.TimeLapseSample;
+                    var cards = Cards(view, period, _nightly.Day);
+                    <div class="product-slots">
+                        @foreach (var card in cards)
+                        {
+                            var kind = card.Kind;
+                            var label = NightlyProductLinks.KindLabel(kind);
+                            var noun = NightlyProductLinks.KindNoun(kind);
+                            <article class="product-slot" data-product-kind="@noun" data-nightly-state="@card.Badge.CssClass" aria-label="Nightly @noun">
+                                @if (CanOpen(card))
+                                {
+                                    <button type="button" id="@TileId(kind)" class="product-slot__media" aria-haspopup="dialog" aria-label="@($"Open the nightly {noun} of {DayTitle} and its details")" @onclick="() => OpenViewer(kind)">
+                                        @if (card.Product is not { } product)
+                                        {
+                                            <i class="bi @KindIcon(kind)" aria-hidden="true"></i>
+                                        }
+                                        else if (_failedPreviews.Contains(product.ProductId))
+                                        {
+                                            <span class="product-slot__failed"><i class="bi bi-image" aria-hidden="true"></i>Preview unavailable</span>
+                                        }
+                                        else
+                                        {
+                                            <RetainedPreviewImage Source="@NightlyProductLinks.Preview(product.ProductId)" Alt="@($"Nightly {noun} of {DayTitle}")" OnFailure="() => MarkPreviewFailed(product.ProductId)" />
+                                        }
+                                        <span class="product-slot__open" aria-hidden="true"><i class="bi bi-arrows-angle-expand"></i></span>
+                                    </button>
+                                }
+                                else
+                                {
+                                    <div class="product-slot__media" aria-hidden="true"><i class="bi @KindIcon(kind)"></i></div>
+                                }
+                                <h3>@label</h3>
+                                <p>@ProductFacts(card)</p>
+                                <div class="product-slot__chips">
+                                    <span class="hvo-chip @ChipClass(card.Badge.State)" title="@card.Badge.Description">@ChipLabel(card.Badge.State)</span>
+                                    @if (card.Hours.Count > 0)
+                                    {
+                                        <span class="product-slot__hourly">@HourlySummary(card)</span>
+                                    }
+                                </div>
+                            </article>
+                        }
+                        @if (_nightly.TimeLapses is { } videos && (videos.Jobs.Count > 0 || sample is null))
+                        {
+                            <TimeLapseDayProducts Day="@videos" Enabled="@_nightly.TimeLapseGenerationEnabled" />
+                        }
+                        else
+                        {
+                        <article class="product-slot @(sample is null ? "product-slot--pending" : "product-slot--sample")" data-product-kind="time-lapse" aria-label="Night time-lapse">
+                            @if (sample is not null)
+                            {
+                                <button type="button" id="@TimeLapseTileId" class="product-slot__media" aria-haspopup="dialog" aria-label="Play the time-lapse sample, not generated from this night" @onclick="OpenTimeLapse">
+                                    <span class="product-slot__play"><i class="bi bi-play-circle" aria-hidden="true"></i>Play sample</span>
+                                    <span class="product-slot__open" aria-hidden="true"><i class="bi bi-arrows-angle-expand"></i></span>
+                                </button>
+                            }
+                            else
+                            {
+                                <div class="product-slot__media" aria-hidden="true"><i class="bi bi-film"></i></div>
+                            }
+                            <h3>Night time-lapse</h3>
+                            <p>Time-lapse generation is not yet available. @(sample is null ? "Nothing is substituted for it." : "A configured sample can be played; it was not generated from this night and is not counted as a product.")</p>
+                            <div class="product-slot__chips">
+                                <span class="hvo-chip hvo-chip--neutral">Not yet generated</span>
+                                @if (sample is not null) { <span class="hvo-chip hvo-chip--info">Sample</span> }
+                            </div>
                         </article>
+                        }
+                    </div>
+                    var viewed = _viewerKind is { } viewedKind ? cards.Find(card => card.Kind == viewedKind) : null;
+                    var viewedId = viewed?.Product?.ProductId;
+                    <LargeImageViewer Open="@ViewerOpen(viewed, sample)" OpenChanged="ViewerOpenChanged" Eyebrow="@(viewed is null ? "Sample, not from this night" : "Nightly product")" Title="@ViewerTitle(viewed)" CloseLabel="Close the product viewer" Source="@ViewerSource(viewed)" Alt="@(viewed is null ? "" : $"Nightly {NightlyProductLinks.KindNoun(viewed.Kind)} of {DayTitle}")" TriggerId="@ViewerTriggerId" OnImageError="() => MarkViewedPreviewFailed(viewedId)">
+                        <Media>
+                            @if (viewed is null && sample is not null)
+                            {
+                                <div class="product-viewer__player">
+                                    <TimeLapsePlayer Source="@sample.Url" MediaType="@sample.MediaType" Width="@sample.Width" Height="@sample.Height" Label="Time-lapse sample, not generated from this night" Caption="@SampleCaption(sample)" />
+                                </div>
+                            }
+                            else if (viewed?.Product is null)
+                            {
+                                <p class="product-viewer__empty" role="note"><i class="bi @(viewed is null ? "bi-film" : KindIcon(viewed.Kind))" aria-hidden="true"></i><strong>No nightly product to show</strong><span>Nothing is substituted for it. Its hourly products are listed with the details.</span></p>
+                            }
+                            else
+                            {
+                                <p class="product-viewer__empty" role="status"><i class="bi bi-image" aria-hidden="true"></i><strong>Preview unavailable</strong><span>The display preview of this product could not be read. No other image has been substituted.</span></p>
+                            }
+                        </Media>
+                        <Details>
+                            @if (viewed is null && sample is not null)
+                            {
+                                <div class="product-viewer" data-viewer-kind="time-lapse">
+                                    <p class="product-viewer__state"><span class="hvo-chip hvo-chip--neutral">Not yet generated</span><span class="hvo-chip hvo-chip--info">Sample</span></p>
+                                    <p>Time-lapse generation is not yet available. This configured sample was not generated from this night and is not counted as a product.</p>
+                                    <dl class="product-viewer__facts">
+                                        <div><dt>Media type</dt><dd>@sample.MediaType</dd></div>
+                                        <div><dt>Declared size</dt><dd>@sample.Width × @sample.Height</dd></div>
+                                    </dl>
+                                </div>
+                            }
+                            else if (viewed is not null)
+                            {
+                                var noun = NightlyProductLinks.KindNoun(viewed.Kind);
+                                <div class="product-viewer" data-viewer-kind="@noun">
+                                    <p class="product-viewer__state"><span class="hvo-chip @ChipClass(viewed.Badge.State)">@ChipLabel(viewed.Badge.State)</span><small>@viewed.Badge.Description.</small></p>
+                                    @if (viewed.Product is { } product)
+                                    {
+                                        <dl class="product-viewer__facts">
+                                            <div><dt>Admitted frames</dt><dd>@LocalSpan(product.FirstObservationUtc, product.LastObservationUtc)</dd></div>
+                                            <div><dt>Composed from</dt><dd>@(FormattableString.Invariant($"{viewed.Daily!.Status.AdmittedCount:N0} segment products"))</dd></div>
+                                            <div><dt>Encoded size</dt><dd>@(FormattableString.Invariant($"{product.Width:N0} × {product.Height:N0} {product.PixelFormat}"))</dd></div>
+                                            <div><dt>Total integration</dt><dd>@FormatDuration(product.TotalIntegration)</dd></div>
+                                        </dl>
+                                    }
+                                    else
+                                    {
+                                        <p>@ProductFacts(viewed)</p>
+                                    }
+                                    @if (viewed.Hours.Count > 0)
+                                    {
+                                        <div class="product-hours">
+                                            <span class="product-hours__label">@HourlySummary(viewed)</span>
+                                            <ol aria-label="Hourly @(noun)s">
+                                                @foreach (var hour in viewed.Hours)
+                                                {
+                                                    <li>
+                                                        @if (hour.FinalProduct is { } hourly)
+                                                        {
+                                                            <a href="@NightlyProductLinks.Detail(hourly.ProductId)" title="@HourTitle(hour)" aria-label="@($"Hourly {noun} {HourTitle(hour)}")">@HourLabel(viewed, hour)</a>
+                                                        }
+                                                        else
+                                                        {
+                                                            <span title="@HourTitle(hour)" aria-label="@($"Hourly {noun} {HourTitle(hour)}")">@HourLabel(viewed, hour)</span>
+                                                        }
+                                                    </li>
+                                                }
+                                            </ol>
+                                        </div>
+                                    }
+                                    @if (viewed.Product is { } linked)
+                                    {
+                                        <div class="product-viewer__actions">
+                                            <a class="btn btn-outline-light btn-sm" href="@NightlyProductLinks.Detail(linked.ProductId)">Product detail</a>
+                                            <a class="btn btn-outline-light btn-sm" href="@NightlyProductLinks.PreviewDownload(linked.ProductId)" download>Download preview</a>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </Details>
+                    </LargeImageViewer>
+                    var otherPeriods = _nightly.Day.OtherPeriods(period.IdentitySha256);
+                    @if (otherPeriods.Count > 0)
+                    {
+                        <div class="daily-products__note daily-products__other" role="note">
+                            <p><strong>Also recorded under another source period.</strong> This report date has evaluations retained under a sunrise period resolved for another site or time-zone rules. They belong to that period, so they are not shown above as this period's products.</p>
+                            <ul>
+                                @foreach (var other in otherPeriods)
+                                {
+                                    <li>
+                                        <span>@ObservingDayPage.OtherPeriodLabel(other)</span>
+                                        <ul>
+                                            @foreach (var kind in ProductKinds)
+                                            {
+                                                var nightly = _nightly.Day.Daily(kind, other.IdentitySha256)?.FinalProduct;
+                                                <li>
+                                                    @NightlyProductLinks.KindLabel(kind): @OtherPeriodFacts(_nightly.Day, other, kind)@if (nightly is not null)
+                                                    {
+                                                        <text> · </text><a href="@NightlyProductLinks.Detail(nightly.ProductId)">Product detail</a>
+                                                    }
+                                                </li>
+                                            }
+                                        </ul>
+                                    </li>
+                                }
+                            </ul>
+                        </div>
                     }
-                </div>
+                }
             </section>
 
             <div class="day-columns">

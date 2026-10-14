@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace HVO.SkyMonitor.Astronomy;
 
 /// <summary>A pixel coordinate with its origin at the top-left sensor corner.</summary>
@@ -98,6 +100,13 @@ public enum ProjectionAperture
 }
 
 /// <summary>Model-neutral immutable optical intrinsics, orientation, aperture, and sensor bounds.</summary>
+/// <remarks>
+/// <see cref="RadialDistortionK1"/> is one radial term applied to normalized ideal image-plane coordinates
+/// <c>n = ((x - cx) / fx, (cy - y) / fy)</c> as <c>n_d = n (1 + k1 |n|^2)</c>. Normalized coordinates are
+/// invariant under ROI offset and binning, so one native coefficient serves every derived readout view. The
+/// image circle and sensor bounds are always measured on distorted pixels. A zero coefficient is omitted from
+/// serialized identities so every existing undistorted context keeps its identity.
+/// </remarks>
 public readonly record struct ProjectionContext(
     ProjectionModel Model,
     double PrincipalPointX,
@@ -112,7 +121,8 @@ public readonly record struct ProjectionContext(
     double BoresightAzimuthDegrees = 0,
     double RollDegrees = 0,
     bool HorizontalFlip = false,
-    bool EnforceSensorBounds = true)
+    bool EnforceSensorBounds = true,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] double RadialDistortionK1 = 0)
 {
     /// <summary>Validates finite positive intrinsics, orientation, aperture, and dimensions.</summary>
     public void Validate()
@@ -130,12 +140,14 @@ public readonly record struct ProjectionContext(
             Model != ProjectionModel.Perspective && Aperture != ProjectionAperture.Circular ||
             Model == ProjectionModel.Perspective && Aperture != ProjectionAperture.Rectangular ||
             Model != ProjectionModel.Perspective && Math.Abs(FocalLengthXPixels - FocalLengthYPixels) > 1e-12 ||
+            RadialDistortionK1 == 0 && (
             Model == ProjectionModel.EquidistantFisheye &&
             ImageCircleRadiusPixels > Math.PI * FocalLengthXPixels + DomainTolerance(FocalLengthXPixels) ||
             Model == ProjectionModel.EquisolidFisheye &&
             ImageCircleRadiusPixels > 2 * FocalLengthXPixels + DomainTolerance(FocalLengthXPixels) ||
             Model == ProjectionModel.OrthographicFisheye &&
-            ImageCircleRadiusPixels > FocalLengthXPixels + DomainTolerance(FocalLengthXPixels))
+            ImageCircleRadiusPixels > FocalLengthXPixels + DomainTolerance(FocalLengthXPixels)) ||
+            RadialDistortionK1 != 0 && !RadialDistortion.IsSupported(this))
         {
             throw new ArgumentOutOfRangeException(nameof(ProjectionContext));
         }
@@ -312,6 +324,11 @@ public static class ProjectorFactory
     public static IImageProjector Create(ProjectionContext context)
     {
         context.Validate();
+        return context.RadialDistortionK1 != 0 ? new RadialDistortionProjector(context) : CreateIdeal(context);
+    }
+
+    internal static IImageProjector CreateIdeal(ProjectionContext context)
+    {
         return context.Model switch
         {
             ProjectionModel.EquidistantFisheye => EquidistantFisheyeProjector.FromProjectionContext(context),

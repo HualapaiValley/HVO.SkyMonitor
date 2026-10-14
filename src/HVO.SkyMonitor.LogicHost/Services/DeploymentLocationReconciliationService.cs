@@ -315,12 +315,31 @@ internal sealed partial class DeploymentLocationReconciliationService(
         }
 
         var leaseToken = work.LeaseToken!.Value;
+        var scheduled = 0;
         foreach (var artifact in batch)
         {
-            await ScheduleOneAsync(
-                work.Id, leaseToken, work.AuthorityConcurrencyToken, artifact.DevicePublicId, artifact.ArtifactId,
-                cancellationToken)
-                .ConfigureAwait(false);
+            var artifactStarted = timeProvider.GetTimestamp();
+            try
+            {
+                await ScheduleOneAsync(
+                    work.Id, leaseToken, work.AuthorityConcurrencyToken, artifact.DevicePublicId, artifact.ArtifactId,
+                    cancellationToken)
+                    .ConfigureAwait(false);
+                scheduled++;
+            }
+            catch (CentralArtifactIntegrityException exception)
+            {
+                // A source whose evidence fails validation is a per-artifact finding, not a work-item failure: the
+                // scheduling transaction has rolled back, the source is marked, and the cursor below moves past it so
+                // the rest of the capture batch is scheduled instead of the whole item retrying forever.
+                dbContext.ChangeTracker.Clear();
+                await CentralDerivativeSchedulingRejection.RecordAsync(
+                    dbContext, artifact.DevicePublicId, artifact.ArtifactId, cancellationToken).ConfigureAwait(false);
+                telemetry.RecordReconciliation(
+                    "scheduling", CentralDerivativeSchedulingRejection.Outcome, 1,
+                    timeProvider.GetElapsedTime(artifactStarted));
+                Log.SchedulingRejected(logger, exception.ReasonCode);
+            }
             dbContext.ChangeTracker.Clear();
         }
         work = await dbContext.DeploymentLocationReconciliationWork.SingleAsync(item =>
@@ -328,10 +347,10 @@ internal sealed partial class DeploymentLocationReconciliationService(
                 && item.AuthorityConcurrencyToken == deployment.ConcurrencyToken, cancellationToken).ConfigureAwait(false);
         work.SchedulingCentralFrameId = batch[^1].FrameId;
         work.SchedulingCentralArtifactId = batch[^1].ArtifactId;
-        work.ScheduledArtifactCount += batch.Length;
+        work.ScheduledArtifactCount += scheduled;
         ReleaseForNext(work);
         await dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        telemetry.RecordReconciliation("scheduling", "completed", batch.Length, timeProvider.GetElapsedTime(started));
+        telemetry.RecordReconciliation("scheduling", "completed", scheduled, timeProvider.GetElapsedTime(started));
     }
 
     private async Task ScheduleOneAsync(
@@ -460,6 +479,10 @@ internal sealed partial class DeploymentLocationReconciliationService(
         [LoggerMessage(7411, LogLevel.Error,
             "Deployment location reconciliation retry state could not be persisted")]
         internal static partial void RetryPersistenceFailed(ILogger logger, Exception exception);
+
+        [LoggerMessage(2143, LogLevel.Error,
+            "Deployment location reconciliation recorded a derivative scheduling rejection: ReasonCode={ReasonCode}")]
+        internal static partial void SchedulingRejected(ILogger logger, string reasonCode);
     }
 }
 

@@ -151,6 +151,7 @@ internal sealed class HourlyArtifactFactsPrototype(string root, string journalPa
                 if (await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
                     throw new InvalidDataException("Indexed raw fact identity changed.");
             }
+            _fault?.Invoke("after-capture-index-commit");
             using var outputs = journal.CreateCommand();
             outputs.Transaction = snapshot;
             outputs.CommandText = """
@@ -270,8 +271,10 @@ internal sealed class HourlyArtifactFactsPrototype(string root, string journalPa
                 outputUpdate.Parameters.AddWithValue("$hash", productHash);
                 outputUpdate.Parameters.AddWithValue("$availability", outputReader.GetString(3));
                 outputUpdate.Parameters.AddWithValue("$path", productRelative);
+                _fault?.Invoke("before-output-index-commit");
                 if (await outputUpdate.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
                     throw new InvalidDataException("Indexed output fact identity changed.");
+                _fault?.Invoke("after-output-index-commit");
             }
         }
         using (var settle = index.CreateCommand())
@@ -307,8 +310,10 @@ internal sealed class HourlyArtifactFactsPrototype(string root, string journalPa
             throw new InvalidDataException("Source changed during the shadow scan; retry reconciliation.");
         using (var complete = index.CreateCommand())
         {
+            _fault?.Invoke("before-ready-commit");
             complete.CommandText = "UPDATE projection_state SET ready=1 WHERE id=1;";
             await complete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            _fault?.Invoke("after-ready-commit");
         }
     }
 
@@ -341,11 +346,14 @@ internal sealed class HourlyArtifactFactsPrototype(string root, string journalPa
         await using (stream.ConfigureAwait(false))
         {
             await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+            _fault?.Invoke("after-staged-write");
             stream.Flush(flushToDisk: true);
+            _fault?.Invoke("after-file-sync");
         }
         RawIngressFileStore.SyncDirectoryHierarchy(_root, Path.GetDirectoryName(path)!);
         _fault?.Invoke("before-rename");
         File.Move(pending, path);
+        _fault?.Invoke("after-rename-before-directory-sync");
         RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(path)!);
         _fault?.Invoke("after-rename");
     }

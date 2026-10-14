@@ -24,7 +24,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class RawCaptureIngressTests
+public sealed partial class RawCaptureIngressTests
 {
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
@@ -414,7 +414,7 @@ public sealed class RawCaptureIngressTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_InspectionBackupsRemainCoherentWhenLastWriterCloses()
+    public async Task InitializeAsync_InspectionReadsRemainCoherentWhenLastWriterCloses()
     {
         var root = CreateRoot();
         try
@@ -433,7 +433,7 @@ public sealed class RawCaptureIngressTests
             SqliteConnection.ClearAllPools();
 
             // Transient runtime inspector: the last writer closes exactly at the inspection seam, so the
-            // write-ahead log is checkpointed away before the backup step opens its read transaction. Coherence
+            // write-ahead log is checkpointed away before inspection opens its read transaction. Coherence
             // comes from that read transaction, not from holding the source connection open, and the inspection
             // still sees one committed image instead of a main file paired with side files copied at another instant.
             var transientBarrier = await CreateWalWriterBarrierAsync(databasePath).ConfigureAwait(false);
@@ -1687,8 +1687,23 @@ public sealed class RawCaptureIngressTests
                     }
                 }
             };
+            // Seed evidence from an older producer; new acquisitions now require the supported compact contract.
+            var configuration = CreateConfiguration();
+            var ids = RawCaptureDescriptorFactory.CreateStableIds(configuration, submission);
+            var descriptor = RawCaptureDescriptorFactory.Create(configuration, submission,
+                new RawCaptureIdentity(configuration.AgentId!, 1, ids.CaptureId, ids.ArtifactId),
+                PayloadChecksum.ComputeSha256(frame.PixelData.Span), DateTimeOffset.UtcNow);
+            var files = new RawIngressFileStore(root, new NullRawIngressFaultInjector());
+            var paths = files.GetPaths(descriptor.Timing.ExposureStartedUtc, ids.ArtifactId);
+            var retained = new ArtifactManifestV2(ArtifactManifestV2.CurrentSchemaVersion,
+                descriptor, paths.PayloadRelativePath, submission.Result.Frame!.Metadata.Scene);
+            var retainedBytes = CaptureContractJson.Serialize(retained);
+            await files.PublishPayloadAsync(paths, frame.PixelData, CancellationToken.None).ConfigureAwait(false);
+            await files.PublishSidecarAsync(paths, retainedBytes, CancellationToken.None).ConfigureAwait(false);
             using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System));
-            await ingress.AcceptAsync(CreateConfiguration(), submission, CancellationToken.None).ConfigureAwait(false);
+            var accepted = await ingress.AcceptAsync(configuration, submission, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(accepted);
+            CollectionAssert.AreEqual(retainedBytes, await File.ReadAllBytesAsync(paths.SidecarAbsolutePath).ConfigureAwait(false));
 
             var owned = await ingress.GetOwnedStageKeysAsync(CancellationToken.None).ConfigureAwait(false);
 

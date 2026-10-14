@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/operations/pipeline/replays/{ExecutionId:guid}"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
@@ -49,12 +50,12 @@
                 <div><dt>Priority</dt><dd>@_execution.Priority</dd></div>
                 <div><dt>Cancellation requested</dt><dd>@(_execution.CancellationRequested ? "Yes" : "No")</dd></div>
                 <div><dt>Trigger</dt><dd>@_execution.TriggerKind@(_execution.TriggerReference is null ? string.Empty : $" / {_execution.TriggerReference}")</dd></div>
-                <div><dt>Accepted</dt><dd><time datetime="@_execution.AcceptedUtc.ToString("O")">@_execution.AcceptedUtc.ToString("u")</time></dd></div>
-                <div><dt>Available</dt><dd><time datetime="@_execution.AvailableUtc.ToString("O")">@_execution.AvailableUtc.ToString("u")</time></dd></div>
-                <div><dt>Deadline</dt><dd><time datetime="@_execution.DeadlineUtc.ToString("O")">@_execution.DeadlineUtc.ToString("u")</time></dd></div>
-                <div><dt>Maximum age</dt><dd><time datetime="@_execution.MaximumAgeUtc.ToString("O")">@_execution.MaximumAgeUtc.ToString("u")</time></dd></div>
-                <div><dt>Started</dt><dd>@(_execution.StartedUtc is null ? "Not started" : _execution.StartedUtc.Value.ToString("u"))</dd></div>
-                <div><dt>Completed</dt><dd>@(_execution.CompletedUtc is null ? "Not completed" : _execution.CompletedUtc.Value.ToString("u"))</dd></div>
+                <div><dt>Accepted</dt><dd><time datetime="@_execution.AcceptedUtc.ToString("O")">@SiteTime.Format(_execution.AcceptedUtc)</time></dd></div>
+                <div><dt>Available</dt><dd><time datetime="@_execution.AvailableUtc.ToString("O")">@SiteTime.Format(_execution.AvailableUtc)</time></dd></div>
+                <div><dt>Deadline</dt><dd><time datetime="@_execution.DeadlineUtc.ToString("O")">@SiteTime.Format(_execution.DeadlineUtc)</time></dd></div>
+                <div><dt>Maximum age</dt><dd><time datetime="@_execution.MaximumAgeUtc.ToString("O")">@SiteTime.Format(_execution.MaximumAgeUtc)</time></dd></div>
+                <div><dt>Started</dt><dd>@(_execution.StartedUtc is null ? "Not started" : SiteTime.Format(_execution.StartedUtc.Value))</dd></div>
+                <div><dt>Completed</dt><dd>@(_execution.CompletedUtc is null ? "Not completed" : SiteTime.Format(_execution.CompletedUtc.Value))</dd></div>
                 <div class="wide"><dt>Failure reason</dt><dd>@(_execution.FailureReason ?? "None recorded")</dd></div>
                 <div class="wide"><dt>Graph revision</dt><dd><code>@_execution.GraphRevisionId</code></dd></div>
                 <div class="wide"><dt>Definition identity SHA-256</dt><dd><code>@_execution.GraphDefinitionIdentitySha256</code></dd></div>
@@ -93,8 +94,8 @@
                             <header><h3>@node.NodeId</h3><span>@OperationsPage.SplitWords(node.Status) / @(node.Required ? "required" : "optional")</span></header>
                             <dl>
                                 <div><dt>Attempts</dt><dd>@node.AttemptCount</dd></div>
-                                <div><dt>Started</dt><dd>@(node.StartedUtc is null ? "Not started" : node.StartedUtc.Value.ToString("u"))</dd></div>
-                                <div><dt>Completed</dt><dd>@(node.CompletedUtc is null ? "Not completed" : node.CompletedUtc.Value.ToString("u"))</dd></div>
+                                <div><dt>Started</dt><dd>@(node.StartedUtc is null ? "Not started" : SiteTime.Format(node.StartedUtc.Value))</dd></div>
+                                <div><dt>Completed</dt><dd>@(node.CompletedUtc is null ? "Not completed" : SiteTime.Format(node.CompletedUtc.Value))</dd></div>
                                 <div class="wide"><dt>Reason</dt><dd>@(node.Reason ?? "None recorded")</dd></div>
                             </dl>
                             <h4>Attempt history</h4>
@@ -110,7 +111,7 @@
                                         <li>
                                             <span>Attempt @attempt.AttemptNumber</span>
                                             <span>@OperationsPage.SplitWords(attempt.Status)@(attempt.Outcome is null ? string.Empty : $" / {attempt.Outcome}")</span>
-                                            <span>@attempt.StartedUtc.ToString("u")@(attempt.Duration is null ? string.Empty : $" / {attempt.Duration.Value.TotalMilliseconds.ToString("F0", System.Globalization.CultureInfo.InvariantCulture)} ms")</span>
+                                            <span>@SiteTime.Format(attempt.StartedUtc)@(attempt.Duration is null ? string.Empty : $" / {attempt.Duration.Value.TotalMilliseconds.ToString("F0", System.Globalization.CultureInfo.InvariantCulture)} ms")</span>
                                             <small>@(attempt.Reason ?? "No reason recorded")</small>
                                         </li>
                                     }

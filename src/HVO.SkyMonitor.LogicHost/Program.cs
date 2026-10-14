@@ -890,6 +890,7 @@ public sealed partial class Program
         builder.Services.AddScoped<ICentralProcessingGraphScheduler, CentralProcessingGraphScheduler>();
         builder.Services.AddScoped<ICentralProcessingGraphExecutionService, CentralProcessingGraphExecutionService>();
         builder.Services.AddScoped<ICentralDerivativeJobScheduler, CentralDerivativeJobScheduler>();
+        builder.Services.AddScoped<CentralProjectedSceneResolver>();
         builder.Services.AddScoped<ICentralDerivativeWindowResolver, CentralDerivativeWindowResolver>();
         builder.Services.AddScoped<CentralDerivativeJobService>();
         builder.Services.AddScoped<ICentralDerivativeJobService>(
@@ -928,6 +929,7 @@ public sealed partial class Program
         builder.Services.AddSingleton<CentralDerivativeWorkerTelemetry>();
         builder.Services.AddSingleton<CentralProcessingGraphConvergenceSignal>();
         builder.Services.AddHostedService<CentralDerivativeWorker>();
+        HVO.SkyMonitor.LogicHost.Services.TimeLapses.CentralTimeLapseServices.AddCentralTimeLapses(builder.Services, builder.Configuration);
         builder.Services.AddScoped<IDeviceRigProfileService, DeviceRigProfileService>();
         builder.Services.AddInstalledCelestialCatalog();
 

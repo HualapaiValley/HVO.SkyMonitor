@@ -49,6 +49,9 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2009, Level = LogLevel.Information, Message = "Camera module {Module} initialized")]
     public static partial void CameraModuleInitialized(this ILogger logger, string module);
 
+    [LoggerMessage(EventId = 4710, Level = LogLevel.Warning, Message = "Camera module {Module} leases did not drain within {DrainTimeout} after revocation; disposing it anyway")]
+    public static partial void CameraModuleLeaseDrainTimedOut(this ILogger logger, string module, TimeSpan drainTimeout);
+
     [LoggerMessage(EventId = 2010, Level = LogLevel.Error, Message = "Capture loop encountered an error")]
     public static partial void CaptureLoopFailed(this ILogger logger, Exception exception);
 
@@ -177,6 +180,18 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2056, Level = LogLevel.Warning, Message = "Capture lane {Lane} reached terminal outcome {Outcome} because {Reason}")]
     public static partial void CaptureLaneTerminal(this ILogger logger, string lane, string outcome, string reason);
 
+    [LoggerMessage(EventId = 2099, Level = LogLevel.Debug, Message = "Capture lane {Lane} abandoned work because {Reason}")]
+    public static partial void CaptureLaneAbandoned(this ILogger logger, string lane, string reason);
+
+    [LoggerMessage(EventId = 2096, Level = LogLevel.Debug, Message = "Processing work for graph revision {RevisionId} was abandoned because its plan was superseded: {Detail}")]
+    public static partial void CaptureProcessingPlanSuperseded(this ILogger logger, string? revisionId, string detail);
+
+    [LoggerMessage(EventId = 2097, Level = LogLevel.Error, Message = "Active processing graph revision {RevisionId} was compiled under plans the running code no longer builds (node {NodeId}: stored plan {StoredPlanSha256}, current plan {CurrentPlanSha256}). Captures are still accepted and uploaded, but standard processing is abandoned until an operator activates a revision compiled by this version or rolls back to configured-basic.")]
+    public static partial void ProcessingActiveRevisionSuperseded(this ILogger logger, string revisionId, string nodeId, string storedPlanSha256, string currentPlanSha256);
+
+    [LoggerMessage(EventId = 2098, Level = LogLevel.Information, Message = "Processing graph selection no longer uses superseded revision {RevisionId}; standard processing resumes")]
+    public static partial void ProcessingActiveRevisionSupersededCleared(this ILogger logger, string revisionId);
+
     [LoggerMessage(EventId = 2057, Level = LogLevel.Warning, Message = "Capture lane availability changed to {Availability} because {Reason}")]
     public static partial void CaptureLanePressureChanged(this ILogger logger, string availability, string reason);
 
@@ -222,6 +237,22 @@ internal static partial class CameraAgentLog
 
     [LoggerMessage(EventId = 2072, Level = LogLevel.Information, Message = "Capture processing graph completed with {Outcome}")]
     public static partial void CaptureProcessingGraphCompleted(this ILogger logger, string outcome);
+
+    [LoggerMessage(EventId = 2093, Level = LogLevel.Information, Message = "Clock check measured an offset of {OffsetMilliseconds} ms (round trip {RoundTripMilliseconds} ms, stratum {Stratum}, {Answered} of {Queried} servers answered, kernel {KernelStatus})")]
+    public static partial void ClockMeasured(
+        this ILogger logger,
+        double offsetMilliseconds,
+        double roundTripMilliseconds,
+        int stratum,
+        int answered,
+        int queried,
+        string kernelStatus);
+
+    [LoggerMessage(EventId = 2094, Level = LogLevel.Warning, Message = "Clock check found no usable time server ({Queried} queried, {Ignored} configured entries ignored as invalid); kernel {KernelStatus}")]
+    public static partial void ClockUnmeasured(this ILogger logger, int queried, int ignored, string kernelStatus);
+
+    [LoggerMessage(EventId = 2095, Level = LogLevel.Warning, Message = "Clock check round failed with {ExceptionType}")]
+    public static partial void ClockCheckFailed(this ILogger logger, string exceptionType);
 
     [LoggerMessage(EventId = 2090, Level = LogLevel.Information, Message = "CameraAgent operator {Actor} completed presentation materialization {OutputIdentity} for capture {CaptureId} as artifact {ArtifactId} (Replayed={Replayed})")]
     public static partial void PresentationMaterializationCompleted(

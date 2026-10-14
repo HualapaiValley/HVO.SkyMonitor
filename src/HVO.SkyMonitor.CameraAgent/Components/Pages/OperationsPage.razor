@@ -1,3 +1,4 @@
+@inherits SiteTimeComponent
 @page "/operations"
 @layout OperationsLayout
 @using HVO.SkyMonitor.CameraAgent.Authorization
@@ -90,7 +91,7 @@ else if (_view is not null)
         </section>
 
         <section class="ops-panel" aria-labelledby="configuration-heading">
-            <header class="ops-panel-heading"><div><h2 id="configuration-heading">Active configuration</h2><p>Every capture binds these exact revisions.</p></div><span>@(_configurationReadUtc is { } read ? $"Read {FormatClock(read)} UTC" : "Not read")</span></header>
+            <header class="ops-panel-heading"><div><h2 id="configuration-heading">Active configuration</h2><p>Every capture binds these exact revisions.</p></div><span>@(_configurationReadUtc is { } read ? $"Read {FormatClock(read)}" : "Not read")</span></header>
             <div class="ops-configuration-grid">
                 <a class="ops-config-card" href="/operations/camera"><span>Camera &amp; rig</span><strong>@RigTitle</strong><small>@RigDetail</small></a>
                 <a class="ops-config-card" href="/operations/schedule"><span>Schedule</span><strong>@(_schedule is null ? "Schedule unavailable" : $"Schedule r{_schedule.ActiveRevision.RevisionNumber}")</strong><small>@ScheduleDetail</small></a>
@@ -101,7 +102,7 @@ else if (_view is not null)
     </div>
 
     <section class="ops-panel ops-grid" aria-labelledby="lane-heading">
-        <header class="ops-panel-heading"><div><h2 id="lane-heading">Durable work lanes</h2><p>Image freshness and system safety remain separate signals.</p></div><a href="/operations/system">Full diagnostics</a></header>
+        <header class="ops-panel-heading"><div><h2 id="lane-heading">Durable work lanes</h2><p>Image freshness and system safety remain separate signals.</p></div><a href="/operations/health">Full diagnostics</a></header>
         <div class="ops-lane-list">
             <div class="ops-lane"><span><strong>Raw ingress</strong><small>Immutable evidence</small></span><small class="ops-lane-note">@BacklogText(summary.RawIngress.Value)</small><span>@CountText(summary.RawIngress.Value.PendingCount, "pending")</span></div>
             <div class="ops-lane"><span><strong>Frame processing</strong><small>Current graph</small></span><small class="ops-lane-note">@BacklogText(summary.CaptureProcessing.Value)</small><span>@ProcessingLaneText</span></div>
@@ -120,7 +121,7 @@ else if (_view is not null)
 
     <div class="ops-grid two">
         <section class="ops-panel" aria-labelledby="facts-heading">
-            <header class="ops-panel-heading"><div><h2 id="facts-heading">Current operating facts</h2><p>Bounded signals for this CameraAgent process.</p></div><span>@FormatClock(summary.CapturedUtc) UTC</span></header>
+            <header class="ops-panel-heading"><div><h2 id="facts-heading">Current operating facts</h2><p>Bounded signals for this CameraAgent process.</p></div><span>@FormatClock(summary.CapturedUtc)</span></header>
             <div class="ops-metric-grid">
                 @if (telemetry.LatestCaptureStartedUtc is { } latestCapture)
                 {
@@ -136,7 +137,7 @@ else if (_view is not null)
             </div>
         </section>
         <section class="ops-panel" aria-labelledby="changes-heading">
-            <header class="ops-panel-heading"><div><h2 id="changes-heading">Recent changes</h2><p>Authenticated configuration and control history.</p></div><span>UTC</span></header>
+            <header class="ops-panel-heading"><div><h2 id="changes-heading">Recent changes</h2><p>Authenticated configuration and control history.</p></div><span>@SiteTime.Label</span></header>
             @if (changes.Count == 0)
             {
                 <p class="ops-panel-empty"><span class="status-icon pending" aria-hidden="true"></span>Recent changes are unavailable.</p>

@@ -30,7 +30,8 @@ public sealed record CameraAgentTransientOperatorDetail(
     CameraAgentTransientExtractionEvidence CenteredEvidence,
     CameraAgentTransientAssessmentEvidence AssessmentEvidence,
     CameraAgentTransientFinalEvidence FinalEvidence,
-    IReadOnlyList<CameraAgentTransientOperatorSource>? Sources = null);
+    IReadOnlyList<CameraAgentTransientOperatorSource>? Sources = null,
+    IReadOnlyList<CameraAgentTransientOperatorSource>? CenteredSources = null);
 
 // A durable source frame the candidate was extracted from, resolved to the
 // retained raw capture so the operator can open the exact evidence.
@@ -43,7 +44,8 @@ public sealed record CameraAgentTransientOperatorSource(
     long CaptureSequence,
     DateTimeOffset ExposureStartedUtc,
     DateTimeOffset ObservationStartedUtc,
-    DateTimeOffset ObservationEndedUtc);
+    DateTimeOffset ObservationEndedUtc,
+    int? RelativePosition = null);
 
 public sealed record CameraAgentTransientCandidateEvidence(
     string State,
@@ -77,7 +79,8 @@ public sealed record CameraAgentTransientExtractionEvidence(
     bool? CenteredContextConverged = null,
     int? SourceCount = null,
     int? CandidateCount = null,
-    string? IdentitySha256 = null);
+    string? IdentitySha256 = null,
+    IReadOnlyList<string>? Methods = null);
 
 public sealed record CameraAgentTransientAssessmentEvidence(
     string State,
@@ -88,7 +91,8 @@ public sealed record CameraAgentTransientAssessmentEvidence(
     int? ConfidenceMillionths = null,
     int? EvidenceObservationCount = null,
     IReadOnlyList<string>? ReasonCodes = null,
-    string? IdentitySha256 = null);
+    string? IdentitySha256 = null,
+    IReadOnlyList<string>? Methods = null);
 
 public sealed record CameraAgentTransientFinalEvidence(
     string State,

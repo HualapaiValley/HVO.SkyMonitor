@@ -30,6 +30,50 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 public sealed class CameraCaptureServiceTests
 {
     [TestMethod]
+    public async Task Shutdown_LeaseDrainTimeoutKeepsTheOccupiedModuleAliveUntilRelease()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-occupied-module-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var ingress = new PassthroughRawIngress(root);
+            using var telemetry = new CaptureControlTelemetry();
+            using var admission = new CaptureAdmissionCoordinator(ingress,
+                Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressSqliteBusyTimeoutSeconds = 1 }),
+                TimeProvider.System, telemetry);
+            using var ownership = new CameraModuleOwnership();
+            using var lifetime = new TestHostApplicationLifetime();
+            var module = new GatedCameraModule();
+            using var service = new CameraCaptureService(new ConfigurationAccessor(CreateConfig()), new ModuleFactory(module),
+                ingress, new RecordingDistributor(), TimeProvider.System, new AstronomyEnginePlanetEphemeris(), telemetry,
+                admission, new FleetRuntimeState(TimeProvider.System), lifetime, NullLogger<CameraCaptureService>.Instance,
+                moduleOwnership: ownership)
+            { ModuleLeaseDrainTimeout = TimeSpan.FromMilliseconds(50) };
+            await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            lifetime.NotifyStarted();
+            await module.SecondCaptureStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.IsTrue(ownership.TryAcquire(out var occupied));
+            Task stopping;
+            using (occupied)
+            {
+                stopping = service.StopAsync(CancellationToken.None);
+                await module.CaptureCancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await Task.Delay(150).ConfigureAwait(false);
+                Assert.IsTrue(occupied.Revoked.IsCancellationRequested);
+                Assert.IsFalse(module.IsDisposed, "A drain timeout must never authorize disposal of an occupied module.");
+                Assert.IsFalse(stopping.IsCompleted, "Shutdown remains pending while the lease owns the module.");
+                Assert.IsFalse(ownership.TryAcquire(out _), "The occupied module is unavailable for new work.");
+            }
+            await stopping.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.IsTrue(module.IsDisposed);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [TestMethod]
     public async Task NamedRig_HostedRestartPublishesNewRigAndRawCaptureWithoutChangingSchedule()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-named-rig-hosted-{Guid.NewGuid():N}");

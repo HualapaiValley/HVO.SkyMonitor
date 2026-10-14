@@ -36,21 +36,26 @@
                             {
                                 var current = Current is not null && section.Slug == Current.Slug;
                                 var count = _attention?.CountFor(section.Slug) ?? 0;
-                                <a href="@section.NavigationHref"
-                                   class="@LinkClass(section, current)"
+                                var note = section.CapabilityNote;
+                                <a href="@section.Href"
+                                   class="@(current ? "active" : null)"
                                    aria-current="@(current ? "page" : null)"
-                                   aria-describedby="@(section.UnavailableReason is null ? null : UnavailableId(section))"
-                                   title="@(section.UnavailableReason ?? section.Description)">
+                                   aria-describedby="@(note is null ? null : NoteId(section))"
+                                   title="@(note ?? section.Description)">
                                     <span class="ops-nav-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="@section.IconPath"></path></svg></span>
                                     <span>@section.Label</span>
+                                    @if (section.Badge is { } badge)
+                                    {
+                                        <span class="ops-nav-badge neutral">@badge</span>
+                                    }
                                     @if (count > 0)
                                     {
                                         <span class="ops-nav-badge attention">@count<span class="visually-hidden"> open attention @(count == 1 ? "item" : "items")</span></span>
                                     }
                                 </a>
-                                @if (section.UnavailableReason is { } reason)
+                                @if (note is not null)
                                 {
-                                    <span id="@UnavailableId(section)" class="visually-hidden">@reason</span>
+                                    <span id="@NoteId(section)" class="visually-hidden">@note</span>
                                 }
                             }
                         }
@@ -59,7 +64,7 @@
                     <footer class="operations-scope">
                         <span class="agent-dot" aria-hidden="true"></span>
                         <span><strong>Local authority</strong><small>@ScopeText</small></span>
-                        <a href="/devices/bootstrap" aria-label="View registration"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 6 6-6 6"></path></svg></a>
+                        <a href="/operations/registration" aria-label="View registration"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 6 6-6 6"></path></svg></a>
                     </footer>
                 </aside>
             </ChildContent>

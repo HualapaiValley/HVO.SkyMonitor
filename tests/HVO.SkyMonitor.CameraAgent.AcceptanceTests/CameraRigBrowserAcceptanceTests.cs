@@ -154,8 +154,9 @@ public sealed class CameraRigBrowserAcceptanceTests
         Assert.AreEqual(0, await page.GetByLabel("Day exposure ms").CountAsync().ConfigureAwait(false));
         await selection.GetByRole(AriaRole.Link, new() { Name = "Capture schedule" }).ClickAsync()
             .ConfigureAwait(false);
-        await page.GetByRole(AriaRole.Heading, new() { Name = "Capture schedule", Level = 1 })
+        await page.GetByRole(AriaRole.Heading, new() { Name = "Schedule", Level = 1 })
             .WaitForAsync().ConfigureAwait(false);
+        await page.Locator("#schedule-edit-open").ClickAsync().ConfigureAwait(false);
         await page.GetByLabel("Day exposure ms").WaitForAsync().ConfigureAwait(false);
         await diagnostics.CompleteAsync().ConfigureAwait(false);
     }

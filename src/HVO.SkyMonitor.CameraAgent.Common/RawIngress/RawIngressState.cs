@@ -27,6 +27,19 @@ internal sealed record RawIngressBaseSnapshot(
     long QuarantineBytes,
     DateTimeOffset? OldestPendingUtc);
 
+/// <summary>
+/// The counts from the most recent completed raw-ingress reconciliation, which runs once when ingress initializes.
+/// It carries counts only, never a path or an evidence key.
+/// </summary>
+public sealed record RawIngressReconciliationReport(
+    DateTimeOffset CompletedUtc,
+    int Inspected,
+    int Recovered,
+    int Cleaned,
+    int Quarantined,
+    int MissingEvidence,
+    int IndexProjectionFailures);
+
 public sealed class RawIngressState(TimeProvider timeProvider)
 {
     private readonly TimeProvider _timeProvider = timeProvider;
@@ -49,7 +62,17 @@ public sealed class RawIngressState(TimeProvider timeProvider)
         null,
         timeProvider.GetUtcNow());
 
+    private RawIngressReconciliationReport? _lastReconciliation;
+
     public RawIngressSnapshot Snapshot => Volatile.Read(ref _snapshot);
+
+    public RawIngressReconciliationReport? LastReconciliation => Volatile.Read(ref _lastReconciliation);
+
+    internal void RecordReconciliation(RawIngressReconciliationSummary summary) => Volatile.Write(
+        ref _lastReconciliation,
+        new RawIngressReconciliationReport(
+            _timeProvider.GetUtcNow(), summary.Inspected, summary.Recovered, summary.Cleaned,
+            summary.Quarantined, summary.MissingEvidence, summary.IndexProjectionFailures));
 
     internal void Set(
         RawIngressAvailability availability,

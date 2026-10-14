@@ -113,13 +113,29 @@ public static class StructuredProcessingProductContracts
         => (mediaType, schemaVersion) switch
         {
             (ProjectedSceneMediaType, ProjectedSceneV1.CurrentSchemaVersion) => true,
+            (ProjectedSceneMediaType, ProjectedSceneV1.ResolvedFootprintSchemaVersion) => true,
+            (ProjectedSceneMediaType, ProjectedSceneV1.DeepSkySchemaVersion) => true,
             (CloudAssessmentMediaType, CloudAssessmentV1.CurrentSchemaVersion) => true,
             (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.CurrentSchemaVersion) => true,
+            (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.SemanticSchemaVersion) => true,
+            (PresentationLayerPayloadJson.MediaType, PresentationLayerPayloadV1.PreviousSchemaVersion) => true,
             (PresentationProcessingProducts.ManifestMediaType, OverlayManifestV1.CurrentSchemaVersion) => true,
             (PresentationMetadataFactsProductV1.MediaType,
                 PresentationMetadataFactsProductV1.CurrentSchemaVersion) => true,
             _ => false
         };
+
+    /// <summary>
+    /// Returns whether a product schema satisfies a node's declared output schema. A projected-scene node declares
+    /// the family root <c>projected-scene-v1</c> and emits <c>projected-scene-v2</c> only for a scene with resolved
+    /// footprints and <c>projected-scene-v3</c> only for a scene with a deep-sky collection; each adds members without
+    /// changing any v1 member. Every other schema must match exactly.
+    /// </summary>
+    public static bool SatisfiesDeclaredSchema(string? declaredSchemaVersion, string? productSchemaVersion)
+        => string.Equals(declaredSchemaVersion, productSchemaVersion, StringComparison.Ordinal) ||
+            string.Equals(declaredSchemaVersion, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal) &&
+            (string.Equals(productSchemaVersion, ProjectedSceneV1.ResolvedFootprintSchemaVersion, StringComparison.Ordinal) ||
+                string.Equals(productSchemaVersion, ProjectedSceneV1.DeepSkySchemaVersion, StringComparison.Ordinal));
 
     public static bool IsSupportedMediaType(string mediaType)
         => mediaType is ProjectedSceneMediaType or CloudAssessmentMediaType or

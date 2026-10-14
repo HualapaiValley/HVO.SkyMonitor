@@ -59,6 +59,13 @@ internal interface ICameraAgentScheduleUiService
         string? reason,
         CancellationToken cancellationToken);
 
+    /// <summary>Reads the active schedule resolved into local observing nights, starting with the current one.</summary>
+    ValueTask<OperatorUiResult<CameraAgentScheduleCalendar>> GetCalendarAsync(
+        int nightCount,
+        CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CameraAgentScheduleCalendar>.Failure(
+            OperatorUiResultKind.Unavailable, "The schedule calendar is unavailable."));
+
     ValueTask<OperatorUiResult<CameraAgentPipelineOperatorState>> GetPipelineAsync(
         CancellationToken cancellationToken)
         => ValueTask.FromResult(OperatorUiResult<CameraAgentPipelineOperatorState>.Failure(
@@ -89,6 +96,7 @@ internal sealed class CameraAgentScheduleUiService(
     ICameraAgentConfigurationAccessor configurationAccessor,
     ICaptureProcessingPipelineFactory pipelineFactory,
     CameraAgentOperatorTelemetry telemetry,
+    TimeProvider timeProvider,
     ILogger<CameraAgentScheduleUiService> logger) : ICameraAgentScheduleUiService
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
@@ -121,6 +129,45 @@ internal sealed class CameraAgentScheduleUiService(
         {
             logger.LogWarning(exception, "CameraAgent schedule UI read failed.");
             return Unavailable<CaptureScheduleOperatorState>("Current schedule data is unavailable.");
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The operator service returns fixed sanitized failures.")]
+    public async ValueTask<OperatorUiResult<CameraAgentScheduleCalendar>> GetCalendarAsync(
+        int nightCount,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(nightCount, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(nightCount, CameraAgentScheduleCalendarProjection.MaximumNights);
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+        {
+            return Denied<CameraAgentScheduleCalendar>();
+        }
+        try
+        {
+            await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+            var state = await runtime.GetOperatorStateAsync(cancellationToken).ConfigureAwait(false);
+            var current = runtime.Snapshot ?? throw new InvalidOperationException("Capture schedule runtime is not initialized.");
+            var now = timeProvider.GetUtcNow().ToUniversalTime();
+            var observer = current.Configuration.ResolveObservatory(now);
+            var timeZone = TimeZoneInfo.FindSystemTimeZoneById(observer.TimeZoneId);
+            var firstNight = CameraAgentScheduleCalendarProjection.CurrentNight(now, timeZone);
+            // One extra local day so the last night's morning half is inside the expansion.
+            var expansion = runtime.ExpandActive(firstNight, nightCount + 1)
+                ?? throw new InvalidOperationException("Capture schedule runtime is not initialized.");
+            return OperatorUiResult<CameraAgentScheduleCalendar>.Success(CameraAgentScheduleCalendarProjection.Create(
+                current.Revision.Definition, expansion, state.Overrides, observer.TimeZoneId, timeZone,
+                firstNight, nightCount, now));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent schedule calendar read failed.");
+            return Unavailable<CameraAgentScheduleCalendar>("The schedule calendar is unavailable.");
         }
     }
 

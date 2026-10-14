@@ -10,6 +10,22 @@ namespace HVO.SkyMonitor.Deployment.Distribution.Tests;
 [TestCategory("Unit")]
 public sealed partial class DistributionVerifierTests
 {
+    /// <summary>
+    /// An in-test approved set matching <see cref="SigningFixture.CatalogManifest"/>. The distribution layer never
+    /// references the production registry; the installer supplies it at the call site.
+    /// </summary>
+    private static readonly ApprovedCatalogSpecificationSet ApprovedCatalogs = new(
+    [
+        new ApprovedCatalogContract(
+            "hyg-v42-production", "hyg-v42-production-p3-s2", "hyg-v4.2-p3-s2-r", "HYG 4.2", "4.2", 2, "2", "3",
+            "hyg_v42.sqlite", new string('e', 64), 1, 1, "MIT", "LICENSE-HYG.md", "ATTRIBUTION-HYG.md",
+            "topology", new string('f', 64)),
+        new ApprovedCatalogContract(
+            "hyg-v44-production", "hyg-v44-production-p4-s3", "hyg-v4.4-p4-s3-r", "HYG 4.4", "4.4", 2, "3", "4",
+            "hyg_v44.sqlite", new string('9', 64), 2, 2, "MIT", "LICENSE-HYG.md", "ATTRIBUTION-HYG.md",
+            "topology", new string('f', 64))
+    ]);
+
     [TestMethod]
     public void VerifyManifest_ExactSignedBytes_AreAccepted()
     {
@@ -160,7 +176,7 @@ public sealed partial class DistributionVerifierTests
         var manifest = fixture.CatalogManifest("hyg-v4.2-p3-s2-r2");
         var bytes = JsonSerializer.SerializeToUtf8Bytes(manifest, DistributionJsonContext.Default.DistributionReleaseManifest);
 
-        var result = DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot);
+        var result = DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot, ApprovedCatalogs);
 
         Assert.AreEqual("hyg-v4.2-p3-s2-r2", result.Catalog?.PackageVersion);
     }
@@ -177,7 +193,7 @@ public sealed partial class DistributionVerifierTests
             DistributionJsonContext.Default.DistributionReleaseManifest);
 
         Assert.ThrowsExactly<DistributionValidationException>(
-            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot));
+            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot, ApprovedCatalogs));
     }
 
     [TestMethod]
@@ -190,7 +206,81 @@ public sealed partial class DistributionVerifierTests
         var bytes = JsonSerializer.SerializeToUtf8Bytes(manifest, DistributionJsonContext.Default.DistributionReleaseManifest);
 
         Assert.ThrowsExactly<DistributionValidationException>(
+            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot, ApprovedCatalogs));
+    }
+
+    [TestMethod]
+    public void VerifyManifest_CatalogWithoutApprovedSpecificationSource_FailsClosed()
+    {
+        using var fixture = SigningFixture.Create();
+        var bytes = SigningFixture.Serialize(fixture.CatalogManifest("hyg-v4.2-p3-s2-r1"));
+
+        Assert.ThrowsExactly<DistributionValidationException>(
             () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot));
+        Assert.AreEqual("hyg-v4.2-p3-s2-r1",
+            DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot, ApprovedCatalogs)
+                .Catalog?.PackageVersion);
+    }
+
+    [TestMethod]
+    public void VerifyManifest_SecondApprovedLineage_IsAcceptedOnlyWithItsOwnIdentity()
+    {
+        using var fixture = SigningFixture.Create();
+        var manifest = fixture.CatalogManifest("hyg-v4.4-p4-s3-r1");
+        var catalog = manifest.Catalog! with
+        {
+            CatalogId = "hyg-v44-production",
+            SchemaVersion = "3",
+            PreprocessingVersion = "4",
+            DatabaseSha256 = new string('9', 64),
+            DatabaseLength = 2,
+            RowCount = 2
+        };
+        var bytes = SigningFixture.Serialize(manifest with { Catalog = catalog });
+
+        Assert.AreEqual("hyg-v44-production",
+            DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot, ApprovedCatalogs)
+                .Catalog?.CatalogId);
+    }
+
+    /// <summary>
+    /// A validly signed manifest cannot approve itself: an unknown catalog, a version from another lineage, or any
+    /// pinned field that differs from the approved specification is refused before any bytes are acquired.
+    /// </summary>
+    [TestMethod]
+    [DataRow("unknown-id")]
+    [DataRow("cross-lineage-version")]
+    [DataRow("schema")]
+    [DataRow("preprocessing")]
+    [DataRow("database-sha256")]
+    [DataRow("database-length")]
+    [DataRow("row-count")]
+    [DataRow("license")]
+    [DataRow("topology-identity")]
+    [DataRow("topology-sha256")]
+    public void VerifyManifest_CatalogDifferingFromItsApprovedSpecification_IsRejected(string field)
+    {
+        using var fixture = SigningFixture.Create();
+        var manifest = fixture.CatalogManifest("hyg-v4.2-p3-s2-r1");
+        var catalog = manifest.Catalog!;
+        catalog = field switch
+        {
+            "unknown-id" => catalog with { CatalogId = "hyg-v43-production" },
+            "cross-lineage-version" => catalog with { PackageVersion = "hyg-v4.4-p4-s3-r1" },
+            "schema" => catalog with { SchemaVersion = "3" },
+            "preprocessing" => catalog with { PreprocessingVersion = "4" },
+            "database-sha256" => catalog with { DatabaseSha256 = new string('9', 64) },
+            "database-length" => catalog with { DatabaseLength = 2 },
+            "row-count" => catalog with { RowCount = 2 },
+            "license" => catalog with { LicenseIdentifier = "CC BY-SA 4.0" },
+            "topology-identity" => catalog with { TopologyIdentity = "other" },
+            "topology-sha256" => catalog with { TopologySha256 = new string('0', 64) },
+            _ => throw new ArgumentOutOfRangeException(nameof(field))
+        };
+        var bytes = SigningFixture.Serialize(manifest with { Catalog = catalog });
+
+        Assert.ThrowsExactly<DistributionValidationException>(
+            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot, ApprovedCatalogs));
     }
 
     [TestMethod]
@@ -323,7 +413,7 @@ public sealed partial class DistributionVerifierTests
         });
 
         Assert.ThrowsExactly<DistributionValidationException>(
-            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot));
+            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot, ApprovedCatalogs));
     }
 
     [TestMethod]
@@ -407,7 +497,7 @@ public sealed partial class DistributionVerifierTests
         });
 
         Assert.ThrowsExactly<DistributionValidationException>(
-            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot));
+            () => DistributionVerifier.VerifyManifest(bytes, fixture.Sign(bytes), fixture.TrustRoot, ApprovedCatalogs));
     }
 
     /// <summary>

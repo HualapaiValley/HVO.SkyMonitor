@@ -61,8 +61,11 @@ cookies, application identities, and owner-password references remain distinct.
 `catalogId` is a stable logical identifier declared by the catalog specification,
 required as `catalog.id` in manifest version 2, and repeated exactly in inventory,
 for example `hyg-v42-production`. It is not a random installation UUID and is
-never inferred from a package filename or display name. The HYG v4.2 production
-specification assigns `hyg-v42-production`; exact snapshots remain identified by
+never inferred from a package filename or display name. The approved specifications
+are embedded in `src/HVO.SkyMonitor.Catalog.Sqlite/ApprovedCatalogSpecifications.json`:
+HYG v4.2 assigns `hyg-v42-production` (package lineage `hyg-v4.2-p3-s2-r<N>`) and
+HYG v4.4 assigns `hyg-v44-production` (package lineage `hyg-v4.4-p4-s3-r<N>`).
+Any other ID fails closed. Exact snapshots remain identified by
 package version, schema/preprocessing versions, database SHA-256, byte length,
 and row count. Inventory declares `schemaVersion` and `preprocessingVersion`;
 source bundle, installed manifest, ledger, and active `current` selection must
@@ -74,6 +77,10 @@ target may select a different ID and independent `current`/`previous` pointers.
 Inventory rejects duplicate IDs, duplicate catalog roots, roots outside
 `<productRoot>/catalogs/<catalogId>`, and catalog/application ancestry overlap.
 The catalog phase records target, catalog ID, package version, and checksum.
+Installed hosts pin both `Catalog:RequiredCatalogId` and
+`Catalog:RequiredPackageVersion`. Each frame's scene provenance records the
+catalog ID and package version, and changing a selection never rewrites recorded
+frames ([HYG 4.4 catalog snapshot](../catalog/hyg-v44.md)).
 
 ## Backup Unit
 
@@ -89,8 +96,10 @@ and host-local state together; SQL Server, Redis, and object storage follow thei
 own application-consistent backup procedures.
 
 Catalogs are immutable deployment artifacts, not part of an instance backup.
-Record the selected catalog ID and exact active snapshot identity, then reinstall
-or restore that verified catalog independently. Lifecycle operations must use
+Record the selected catalog ID, exact package version and database SHA-256, then
+reinstall or restore that verified catalog independently. Also restore every
+historically pinned package that recorded frames name, so they keep resolving to
+their recorded identity. Lifecycle operations must use
 the exact UUID instance root and ownership manifest; they must not enumerate or
 delete sibling roots. The deployment does not accept or migrate the former
 singular product layout.

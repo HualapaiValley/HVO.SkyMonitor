@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.Astronomy;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -6,6 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -43,17 +45,20 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
     private readonly SqliteCaptureProcessingStore _processingStore;
     private readonly ICameraAgentStorageResolver? _storageResolver;
     private readonly IObservingDayCalendarProvider _observingDays;
+    private readonly IDeploymentLocationStore? _deploymentLocation;
 
     public SqliteCameraAgentGallery(
         IOptions<CameraAgentHostOptions> options,
         SqliteCaptureProcessingStore processingStore,
         ICameraAgentStorageResolver? storageResolver = null,
-        IObservingDayCalendarProvider? observingDays = null)
+        IObservingDayCalendarProvider? observingDays = null,
+        IDeploymentLocationStore? deploymentLocation = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         _processingStore = processingStore ?? throw new ArgumentNullException(nameof(processingStore));
         _storageResolver = storageResolver;
-        _observingDays = observingDays ?? new FixedObservingDayCalendarProvider(ObservingDayCalendar.Create(null));
+        _observingDays = observingDays ?? new DeploymentObservingDayCalendarProvider();
+        _deploymentLocation = deploymentLocation;
         _root = Path.GetFullPath(options.Value.RawIngressRoot);
         _databasePath = Path.Combine(_root, "journal", "raw-ingress.db");
         _busyTimeoutSeconds = options.Value.RawIngressSqliteBusyTimeoutSeconds;
@@ -111,13 +116,29 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         };
     }
 
+    public async ValueTask<CameraAgentGalleryCapture?> GetSourceCaptureAsync(Guid captureId, CancellationToken cancellationToken)
+    {
+        if (captureId == Guid.Empty) return null;
+        using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            {RawSelectSql}
+            WHERE raw.capture_id = $capture_id
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+        var row = await ReadRawRowAsync(reader, cancellationToken).ConfigureAwait(false);
+        var capture = ProjectCapture(row, [], false, false, true, "Unavailable");
+        return capture with { Detail = ProjectRawDetail(row, TryReadTrustedManifest(row), [], [], UnavailableCloudAssessment("NotRead")) };
+    }
+
     private async ValueTask<CameraAgentGalleryCaptureDetail> BuildDetailAsync(
         RawGalleryRow row,
         CameraAgentGalleryCapture capture,
         CancellationToken cancellationToken)
     {
-        var manifest = TryReadTrustedManifest(row);
-        var descriptor = manifest?.Descriptor;
         var processingDetails = await _processingStore.ReadGalleryNodeDetailsAsync(
             row.CaptureId, cancellationToken).ConfigureAwait(false);
         var retention = await _processingStore.ReadGalleryRetentionStatesAsync(
@@ -155,6 +176,52 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             detail.InputsTruncated))
             .ToArray();
 
+        var manifest = TryReadTrustedManifest(row);
+        var detail = ProjectRawDetail(row, manifest, artifactStates, nodeDetails,
+            await ReadCloudAssessmentAsync(row.CaptureId, cancellationToken).ConfigureAwait(false));
+        return detail with
+        {
+            CaptureProfile = await ReadCaptureProfileAsync(row, manifest?.Descriptor, cancellationToken).ConfigureAwait(false),
+            Location = CameraAgentCaptureLocationProjector.Project(manifest?.Descriptor, _deploymentLocation),
+            Schedule = manifest?.Descriptor.CycleEvidence?.ScheduleAdmission is { } schedule
+                ? new CameraAgentCaptureScheduleFacts(schedule.ScheduleRevisionId, schedule.ScheduleRevisionSha256,
+                    schedule.SetpointProfileId, schedule.Reason.ToString(), schedule.DecisionUtc)
+                : null
+        };
+    }
+
+    private async ValueTask<CameraAgentCaptureProfileFacts?> ReadCaptureProfileAsync(
+        RawGalleryRow row, ReconstructionDescriptor? descriptor, CancellationToken cancellationToken)
+    {
+        if (descriptor is null) return null;
+        using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        // This optional detail read is bounded and never joins processing history.
+        command.CommandText = """
+            SELECT context.context_json, context.context_sha256
+            FROM capture_lane_contexts context
+            JOIN raw_captures raw ON raw.raw_capture_row_id = context.raw_capture_row_id
+            WHERE raw.capture_id = $capture AND raw.raw_artifact_id = $artifact
+              AND context.context_source = 'capture'
+              AND length(context.context_json) <= 1048576
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$capture", row.CaptureId.ToString("N"));
+        command.Parameters.AddWithValue("$artifact", row.RawArtifactId.ToString("N"));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+        var json = await reader.GetFieldValueAsync<byte[]>(0, cancellationToken).ConfigureAwait(false);
+        return CameraAgentCaptureProfileProjector.Project(descriptor, json, reader.GetString(1));
+    }
+
+    private static CameraAgentGalleryCaptureDetail ProjectRawDetail(
+        RawGalleryRow row,
+        ArtifactManifestV2? manifest,
+        IReadOnlyList<CameraAgentGalleryArtifactState> artifactStates,
+        IReadOnlyList<CameraAgentGalleryProcessingNodeDetail> nodeDetails,
+        CameraAgentGalleryCloudAssessment cloudAssessment)
+    {
+        var descriptor = manifest?.Descriptor;
         return new CameraAgentGalleryCaptureDetail(
             descriptor is null ? "Unavailable" : "Available",
             manifest?.SchemaVersion,
@@ -190,7 +257,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             row.RetentionHold,
             artifactStates,
             nodeDetails,
-            await ReadCloudAssessmentAsync(row.CaptureId, cancellationToken).ConfigureAwait(false),
+            cloudAssessment,
             descriptor?.Profiles.Processing);
     }
 
@@ -517,7 +584,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(query);
-        var calendar = _observingDays.Current;
+        var calendar = _observingDays.Current.SelectVersion(query.CalendarVersion);
         IReadOnlyList<ObservingDay> days;
         try
         {
@@ -540,8 +607,8 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         for (var index = 0; index < days.Count; index++)
         {
             var day = days[index];
-            var start = day.StartUtc.ToUnixTimeMilliseconds();
-            var end = day.EndUtc.ToUnixTimeMilliseconds();
+            var start = day.StartUnixMillisecondsInclusive;
+            var end = day.EndUnixMillisecondsExclusive;
             long captures;
             DateTimeOffset? first = null;
             DateTimeOffset? last = null;
@@ -584,7 +651,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             result[index] = new CameraAgentGalleryCalendarDay(
                 day, captures, candidates, first, last, representative?.CaptureId, representative?.ExposureUtc);
         }
-        return new CameraAgentGalleryCalendar(calendar.TimeZoneId, calendar.TimeZoneFallback, result);
+        return new CameraAgentGalleryCalendar(calendar.TimeZoneId, calendar.TimeZoneFallback, result, calendar.CalendarVersion);
     }
 
     /// <summary>
@@ -633,11 +700,17 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         return (id, DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(1)));
     }
 
-    public async ValueTask<CameraAgentObservingDayDetail?> GetObservingDayAsync(
+    public ValueTask<CameraAgentObservingDayDetail?> GetObservingDayAsync(
         DateOnly observingDate,
         CancellationToken cancellationToken)
+        => GetObservingDayAsync(observingDate, _observingDays.Current.CalendarVersion, cancellationToken);
+
+    public async ValueTask<CameraAgentObservingDayDetail?> GetObservingDayAsync(
+        DateOnly observingDate,
+        string calendarVersion,
+        CancellationToken cancellationToken)
     {
-        var calendar = _observingDays.Current;
+        var calendar = _observingDays.Current.SelectVersion(calendarVersion);
         ObservingDay day;
         try
         {
@@ -647,7 +720,8 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         {
             return null;
         }
-        var summary = await GetCalendarAsync(new CameraAgentGalleryCalendarQuery(observingDate, observingDate), cancellationToken).ConfigureAwait(false);
+        var summary = await GetCalendarAsync(new CameraAgentGalleryCalendarQuery(observingDate, observingDate,
+            CalendarVersion: calendar.CalendarVersion), cancellationToken).ConfigureAwait(false);
         var facts = summary.Days.Count == 1 ? summary.Days[0] : new CameraAgentGalleryCalendarDay(day, 0, 0, null, null);
         var (instants, integration) = await ReadExposuresAsync(day, cancellationToken).ConfigureAwait(false);
         return new CameraAgentObservingDayDetail(facts, instants, integration);
@@ -673,8 +747,8 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
               AND raw.state = 'committed'
             ORDER BY raw.exposure_started_unix_ms ASC, raw.capture_sequence ASC, raw.raw_capture_row_id ASC;
             """;
-        command.Parameters.AddWithValue("$day_start", day.StartUtc.ToUnixTimeMilliseconds());
-        command.Parameters.AddWithValue("$day_end", day.EndUtc.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$day_start", day.StartUnixMillisecondsInclusive);
+        command.Parameters.AddWithValue("$day_end", day.EndUnixMillisecondsExclusive);
         var instants = new List<DateTimeOffset>();
         var total = TimeSpan.Zero;
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -911,7 +985,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         return new CameraAgentProductDetail(
             product,
             exposureStartedUtc,
-            _observingDays.Current.Resolve(exposureStartedUtc),
+            _observingDays.Current.LegacyNoon.Resolve(exposureStartedUtc),
             rigId,
             sources.Sources,
             sources.Truncated,
@@ -1138,7 +1212,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         {
             throw new CameraAgentGalleryQueryException($"Page size must be between 1 and {MaximumPageSize}.");
         }
-        var from = query.FromUtc?.ToUniversalTime().ToUnixTimeMilliseconds();
+        var from = query.FromUtc is { } fromUtc ? SunriseReportingPeriod.StoredMillisecondAtOrAfter(fromUtc) : (long?)null;
         var to = query.ToUtc?.ToUniversalTime().ToUnixTimeMilliseconds();
         if (from > to)
         {
@@ -1285,7 +1359,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
     {
         if (availableCaptures.Contains(captureId)) return "Available";
         var state = nodes.SelectMany(static node => node.Outputs)
-            .Where(static output => string.Equals(output.ProductSchemaVersion, "projected-scene-v1", StringComparison.Ordinal))
+            .Where(static output => ProjectedSceneV1.IsSupportedSchemaVersion(output.ProductSchemaVersion))
             .Select(static output => output.AvailabilityState)
             .FirstOrDefault();
         return state is "Quarantined" or "Missing" ? state : "Unavailable";
@@ -1452,7 +1526,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         {
             throw new CameraAgentGalleryQueryException($"Page size must be between 1 and {MaximumPageSize}.");
         }
-        var from = query.FromUtc?.ToUniversalTime().ToUnixTimeMilliseconds();
+        var from = query.FromUtc is { } fromUtc ? SunriseReportingPeriod.StoredMillisecondAtOrAfter(fromUtc) : (long?)null;
         var to = query.ToUtc?.ToUniversalTime().ToUnixTimeMilliseconds();
         if (from > to)
         {

@@ -1,3 +1,4 @@
+@using System.Globalization
 @using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing
 @using Microsoft.AspNetCore.Components.Web
 
@@ -37,6 +38,7 @@ else
     private readonly int _instance = Interlocked.Increment(ref _instances);
     private List<LaidOutNode> _layout = [];
     private List<Edge> _edges = [];
+    private double _height;
 
     [Parameter, EditorRequired] public IReadOnlyList<CaptureProcessingPlanNode> Nodes { get; set; } = [];
     [Parameter] public EventCallback<string> NodeSelected { get; set; }
@@ -44,53 +46,57 @@ else
     private string TitleId => $"diagram-title-{_instance}";
     private string DescriptionId => $"diagram-desc-{_instance}";
     private int Width => _layout.Count == 0 ? 0 : _layout.Max(static node => node.X) + NodeWidth + Margin;
-    private int Height => _layout.Count == 0 ? 0 : _layout.Max(static node => node.Y) + NodeHeight + Margin;
+    private string Height => _height.ToString("0.##", CultureInfo.InvariantCulture);
 
     private string Description => string.Join(" ", _layout.Select(node =>
         node.Dependencies.Count == 0 ? $"{node.Id} has no declared dependencies." : $"{node.Id} depends on {string.Join(", ", node.Dependencies)}."));
 
     protected override void OnParametersSet()
     {
-        // Rank = longest dependency chain from a source; one column per rank, list order within a column.
-        var byId = Nodes.ToDictionary(static node => node.Id, StringComparer.Ordinal);
-        var ranks = new Dictionary<string, int>(StringComparer.Ordinal);
-        int Rank(string id, int depth)
-        {
-            if (ranks.TryGetValue(id, out var known)) { return known; }
-            if (depth > Nodes.Count || !byId.TryGetValue(id, out var node)) { return 0; }
-            var rank = 0;
-            foreach (var dependency in node.Dependencies ?? [])
-            {
-                if (byId.ContainsKey(dependency)) { rank = Math.Max(rank, Rank(dependency, depth + 1) + 1); }
-            }
-            ranks[id] = rank;
-            return rank;
-        }
-        foreach (var node in Nodes) { Rank(node.Id, 0); }
-        var columns = new Dictionary<int, int>();
-        _layout = [];
-        foreach (var node in Nodes)
-        {
-            var rank = ranks.GetValueOrDefault(node.Id);
-            var row = columns.GetValueOrDefault(rank);
-            columns[rank] = row + 1;
-            _layout.Add(new LaidOutNode(node.Id, node.Enabled, node.Required, node.Dependencies ?? [], Margin + rank * (NodeWidth + ColumnGap), Margin + row * (NodeHeight + RowGap)));
-        }
-        var positions = _layout.ToDictionary(static node => node.Id, StringComparer.Ordinal);
+        // Named graphs compile with ordinal step ids (ProcessingGraphCompiler), so draw them the same way.
+        var placements = PipelineGraphLayout.Arrange(Nodes, StringComparer.Ordinal);
+        _layout = placements
+            .Select(static placement => new LaidOutNode(
+                placement.Node.Id,
+                placement.Node.Enabled,
+                placement.Node.Required,
+                placement.Dependencies,
+                placement.Rank,
+                placement.Row,
+                Margin + placement.Rank * (NodeWidth + ColumnGap),
+                Margin + placement.Row * (NodeHeight + RowGap)))
+            .ToList();
         _edges = [];
+        _height = 0;
+        if (_layout.Count == 0)
+        {
+            return;
+        }
+        var columns = Enumerable.Range(0, _layout.Max(static node => node.Rank) + 1)
+            .Select(static column => new GraphTrack(Margin + column * (NodeWidth + ColumnGap), NodeWidth))
+            .ToArray();
+        var rows = Enumerable.Range(0, _layout.Max(static node => node.Row) + 1)
+            .Select(static row => new GraphTrack(Margin + row * (NodeHeight + RowGap), NodeHeight))
+            .ToArray();
+        var router = new PipelineEdgeRouter(columns, rows, RowGap, _layout.Select(static node => (node.Rank, node.Row)));
+        var positions = new Dictionary<string, LaidOutNode>(StringComparer.Ordinal);
+        foreach (var node in _layout)
+        {
+            positions.TryAdd(node.Id, node);
+        }
         foreach (var node in _layout)
         {
             foreach (var dependency in node.Dependencies)
             {
-                if (positions.TryGetValue(dependency, out var source))
+                // Only a cycle puts a dependency in the same or a later column; the editor reports it, and an edge
+                // drawn backwards would cross the boxes between.
+                if (positions.TryGetValue(dependency, out var source) && source.Rank < node.Rank)
                 {
-                    var x1 = source.X + NodeWidth; var y1 = source.Y + NodeHeight / 2;
-                    var x2 = node.X; var y2 = node.Y + NodeHeight / 2;
-                    var mid = (x1 + x2) / 2;
-                    _edges.Add(new Edge($"M{x1},{y1} C{mid},{y1} {mid},{y2} {x2},{y2}"));
+                    _edges.Add(new Edge(PipelineEdgeRouter.Path(router.Route(source.Rank, source.Row, node.Rank, node.Row))));
                 }
             }
         }
+        _height = router.Rows[^1].End + Margin;
     }
 
     private async Task HandleKey(KeyboardEventArgs args, string nodeId)
@@ -101,6 +107,6 @@ else
         }
     }
 
-    private sealed record LaidOutNode(string Id, bool Enabled, bool Required, IReadOnlyList<string> Dependencies, int X, int Y);
+    private sealed record LaidOutNode(string Id, bool Enabled, bool Required, IReadOnlyList<string> Dependencies, int Rank, int Row, int X, int Y);
     private sealed record Edge(string Path);
 }

@@ -159,6 +159,21 @@ files while CameraAgent is running. `/health` reports `raw-ingress` as healthy
 only after schema verification, integrity checking, reconciliation, and a
 passive checkpoint complete.
 
+Schema inspection uses a read-only SQLite transaction over the main database and
+its committed WAL, with a bounded page cache and memory mapping disabled. It does
+not copy the journal into temporary storage. All schema queries in an inspection
+share the same committed image; contention remains a transient startup failure,
+while canonical-schema drift and integrity failures still fail closed.
+
+Raw reconciliation, projected-scene stage ownership, and recovered live-execution
+binding visit one retained manifest at a time. Reconciliation releases each SQLite reader before checking
+payload files or repairing state, so payload scanning does not pin a WAL reader
+for the whole history. Compact path and stage-key sets still scale with capture
+count; manifest bytes and decoded scene objects do not accumulate with history.
+Startup continues to read and checksum retained payloads and sidecars, and its
+I/O duration therefore scales with retained bytes. No resource default, schema,
+retention policy, or evidence-validation rule changes.
+
 The protected deployment-location history, the protected manual-coordinate record
 `manual-deployment-location.v1.protected` that carries the governing local seed
 when an owner has entered coordinates, and the dedicated stable-application Data
@@ -178,7 +193,8 @@ rollback-to-baseline contract. A baseline image never opens this file, so a
 rollback simply leaves it in place and a roll-forward finds the same definitions
 and run history. Back it up with the raw-ingress evidence. Its retention is
 bounded by the contract itself: at most 32 definitions, 50 retained revisions and
-200 retained runs per live definition, a further 200 retained revisions and 200
+200 terminal runs per live definition plus at most 32 queued and one running attempt,
+a further 200 retained revisions and 200
 retained runs in total for definitions that have been removed (pruned on every
 removal, because per-definition retention only runs from a live definition's own
 write paths and removal frees its slot), and a seven-day idempotency ledger whose

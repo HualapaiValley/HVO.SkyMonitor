@@ -933,6 +933,62 @@ public sealed class SqliteCaptureScheduleStoreTests
     }
 
     [TestMethod]
+    public async Task RecentOverrideEvents_AreNewestFirstAndBounded()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            using var schedule = new SqliteCaptureScheduleStore(new JournalInitializer(root), options, TimeProvider.System);
+            var initial = await schedule.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
+            var now = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            CaptureScheduleOverride Override(string id, CaptureScheduleOverrideMode mode, bool oneShot) => new(id,
+                initial.ActiveRevision.RevisionId, initial.ActiveRevision.ScheduleSha256, mode,
+                now.AddMinutes(-1), now.AddMinutes(10),
+                mode == CaptureScheduleOverrideMode.ForceOpen ? "initial" : null, oneShot);
+            var closed = Override("closed", CaptureScheduleOverrideMode.ForceClosed, false);
+            var added = await schedule.AddOverrideAsync(closed, "add-closed", initial.Version, "owner-1",
+                "Dome shut for rain", CancellationToken.None).ConfigureAwait(false);
+            var cleared = await schedule.ClearOverrideAsync(closed.Id, "clear-closed", added.Version,
+                "installer-lifecycle:upgrade", null, CancellationToken.None).ConfigureAwait(false);
+            var shot = Override("shot", CaptureScheduleOverrideMode.ForceOpen, true);
+            _ = await schedule.AddOverrideAsync(shot, "add-shot", cleared.Version, "owner-1", null,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsTrue(await schedule.GrantAdmissionAsync("admission-1", initial.ActiveRevision.RevisionId, shot.Id,
+                now, CancellationToken.None).ConfigureAwait(false));
+
+            var events = await schedule.GetRecentOverrideEventsAsync(
+                SqliteCaptureScheduleStore.MaxRecentOverrideEvents, CancellationToken.None).ConfigureAwait(false);
+
+            CaptureScheduleOverrideEventKind[] expectedKinds =
+            [
+                CaptureScheduleOverrideEventKind.Consumed,
+                CaptureScheduleOverrideEventKind.Created,
+                CaptureScheduleOverrideEventKind.Cleared,
+                CaptureScheduleOverrideEventKind.Created,
+            ];
+            CollectionAssert.AreEqual(expectedKinds, events.Select(static item => item.Kind).ToArray());
+            Assert.AreEqual("system", events[0].Actor);
+            Assert.AreEqual("capture admission", events[0].Reason);
+            Assert.AreEqual(CaptureScheduleOverrideMode.ForceOpen, events[0].Mode);
+            Assert.AreEqual("installer-lifecycle:upgrade", events[2].Actor);
+            Assert.IsNull(events[2].Reason);
+            Assert.AreEqual(CaptureScheduleOverrideMode.ForceClosed, events[3].Mode);
+            Assert.AreEqual("Dome shut for rain", events[3].Reason);
+            Assert.AreEqual(closed.StartUtc, events[3].StartUtc);
+            Assert.AreEqual(closed.EndUtc, events[3].EndUtc);
+
+            var bounded = await schedule.GetRecentOverrideEventsAsync(2, CancellationToken.None).ConfigureAwait(false);
+            CollectionAssert.AreEqual(expectedKinds[..2], bounded.Select(static item => item.Kind).ToArray());
+            await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(() =>
+                schedule.GetRecentOverrideEventsAsync(0, CancellationToken.None)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(() => schedule.GetRecentOverrideEventsAsync(
+                SqliteCaptureScheduleStore.MaxRecentOverrideEvents + 1, CancellationToken.None)).ConfigureAwait(false);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
     public async Task PendingNamedRig_OverrideMutationsAndAdmissionPreserveCancelAndReconciliation()
     {
         foreach (var reconcile in new[] { false, true })

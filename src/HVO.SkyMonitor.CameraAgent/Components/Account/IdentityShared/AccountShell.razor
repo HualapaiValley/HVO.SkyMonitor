@@ -1,0 +1,14 @@
+@namespace HVO.SkyMonitor.CameraAgent.Components.Account.IdentityShared
+
+@* The Operations design vocabulary for the account pages. OperationsLayout scopes that vocabulary to its own
+   subtree, and the account pages render outside it: sign-in pages directly under MainLayout, and Account settings
+   under ManageLayout. This shell carries the subset they use, with the same tokens and values. *@
+<div class="account-shell @Class">
+    @ChildContent
+</div>
+
+@code {
+    [Parameter] public string? Class { get; set; }
+
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

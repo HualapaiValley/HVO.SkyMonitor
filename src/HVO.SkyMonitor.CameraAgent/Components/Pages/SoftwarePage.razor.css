@@ -1,0 +1,7 @@
+/* Software & catalog layout. The shared Operations vocabulary (.ops-*, .button, .state-chip) lives in
+   OperationsLayout.razor.css; this file ports the prototype's lifecycle-comparison detail from operations-pages.css. */
+
+.ops-table-wrap .ops-table.lifecycle-comparison td small { display: block; margin-top: .15rem; color: var(--muted); font-size: .49rem; }
+.ops-table-wrap .ops-table.software-boundary td, .ops-table-wrap .ops-table.software-packages td { white-space: normal; }
+.ops-table-wrap .ops-table code { overflow-wrap: anywhere; font-size: .56rem; }
+dl.ops-facts.software-orbital-facts { margin-top: .7rem; }

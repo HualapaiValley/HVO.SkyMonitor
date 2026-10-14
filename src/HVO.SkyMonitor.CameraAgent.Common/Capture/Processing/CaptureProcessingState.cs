@@ -18,7 +18,21 @@ public sealed record CaptureProcessingSnapshot(
     long ReplayRetryCount = 0,
     long ReplayTerminalCount = 0,
     DateTimeOffset? OldestReplayPendingUtc = null,
-    long ReplayPendingBytes = 0);
+    long ReplayPendingBytes = 0,
+    string? SupersededActiveRevisionId = null);
+
+/// <summary>
+/// The outcome of the most recent derived-product reconciliation pass. A failed pass records no counts; its
+/// failure is also reflected in <see cref="CaptureProcessingSnapshot.ReconciliationFailed"/>.
+/// </summary>
+public sealed record DerivedProductReconciliationReport(
+    DateTimeOffset CompletedUtc,
+    bool Succeeded,
+    int Inspected,
+    int Recoverable,
+    int Cleaned,
+    int Missing,
+    int Quarantined);
 
 public sealed class CaptureProcessingState
 {
@@ -37,6 +51,7 @@ public sealed class CaptureProcessingState
     private long _replayTerminal;
     private long _replayPendingBytes;
     private DateTimeOffset? _oldestReplay;
+    private string? _supersededActiveRevision;
 
     public CaptureProcessingSnapshot Snapshot { get { lock (_gate) return Compose(); } }
 
@@ -90,7 +105,16 @@ public sealed class CaptureProcessingState
             _replayPendingBytes = pendingBytes;
         }
     }
+    internal void SetActiveRevisionSuperseded(string? revisionId) { lock (_gate) _supersededActiveRevision = revisionId; }
     internal void SetReconciliationFailure(bool failed) { lock (_gate) _reconciliationFailed = failed; }
+    private DerivedProductReconciliationReport? _lastReconciliation;
+    public DerivedProductReconciliationReport? LastReconciliation => Volatile.Read(ref _lastReconciliation);
+    internal void RecordReconciliation(DateTimeOffset completedUtc, DerivedProductReconciliationSummary? summary) => Volatile.Write(
+        ref _lastReconciliation,
+        summary is null
+            ? new DerivedProductReconciliationReport(completedUtc, false, 0, 0, 0, 0, 0)
+            : new DerivedProductReconciliationReport(
+                completedUtc, true, summary.Inspected, summary.Recoverable, summary.Cleaned, summary.Missing, summary.Quarantined));
     internal void SetProcessingEvidence(long missing, long quarantined) { lock (_gate) { _missing = missing; _quarantine = quarantined; } }
     internal void SetProcessingQuarantine(long count) => SetProcessingEvidence(_missing, count);
 
@@ -105,11 +129,13 @@ public sealed class CaptureProcessingState
         if (_reconciliationFailed) reasons.Add("reconciliation-failed");
         if (_replayTerminal > 0) reasons.Add("replay-terminal");
         if (_replayRetry > 0) reasons.Add("replay-retry");
+        if (_supersededActiveRevision is not null) reasons.Add("active-revision-superseded");
         var availability = _terminal > 0 ? CaptureProcessingAvailability.Unhealthy :
             reasons.Count > 0 ? CaptureProcessingAvailability.Degraded : CaptureProcessingAvailability.Healthy;
         return new(availability, _pending, _retry, _terminal,
             reasons.Count == 0 ? "completed" : string.Join(';', reasons), _oldest, DateTimeOffset.UtcNow,
             _quarantine, _missing, _durableUnavailable, _reconciliationFailed,
-            _replayPending, _replayRetry, _replayTerminal, _oldestReplay, _replayPendingBytes);
+            _replayPending, _replayRetry, _replayTerminal, _oldestReplay, _replayPendingBytes,
+            _supersededActiveRevision);
     }
 }

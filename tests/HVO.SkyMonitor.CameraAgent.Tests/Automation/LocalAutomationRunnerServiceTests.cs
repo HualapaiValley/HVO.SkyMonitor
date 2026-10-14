@@ -334,15 +334,36 @@ public sealed class LocalAutomationRunnerServiceTests : IDisposable
     }
 
     [TestMethod]
-    public async Task SweepAsync_WhenCancelledLeavesTheRunClaimedForRestartRecovery()
+    public async Task SweepAsync_AdapterLocalCancellationFailsTheRunAndAllowsTheNextOccurrence()
     {
         await SaveAsync().ConfigureAwait(false);
-        // The task is abandoned mid-run. The claim must survive so restart recovery settles it, rather
-        // than the runner inventing a terminal outcome it does not know.
         _registry.Throw = new OperationCanceledException();
         _timeProvider.Advance(TimeSpan.FromSeconds(3600));
 
         await CreateRunner().SweepAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var run = (await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single();
+        Assert.AreEqual(LocalAutomationRunOutcome.Failed, run.Outcome);
+        Assert.IsNotNull(run.CompletedAtUtc);
+        _registry.Throw = null;
+        _timeProvider.Advance(TimeSpan.FromSeconds(3600));
+        await CreateRunner().SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        var state = await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(2, _registry.ExecutedRunKeys.Count);
+        Assert.AreEqual(0, state.RunningRunCount);
+        Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, state.Runs[0].Outcome);
+    }
+
+    [TestMethod]
+    public async Task SweepAsync_HostCancellationLeavesTheRunClaimedForRestartRecovery()
+    {
+        await SaveAsync().ConfigureAwait(false);
+        using var stopping = new CancellationTokenSource();
+        _registry.BeforeExecution = stopping.Cancel;
+        _registry.Throw = new OperationCanceledException(stopping.Token);
+        _timeProvider.Advance(TimeSpan.FromSeconds(3600));
+
+        await CreateRunner().SweepAsync(stopping.Token).ConfigureAwait(false);
 
         var run = (await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single();
         Assert.AreEqual(LocalAutomationRunOutcome.Running, run.Outcome);

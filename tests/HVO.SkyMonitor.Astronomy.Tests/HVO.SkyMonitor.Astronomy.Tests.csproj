@@ -12,6 +12,9 @@
     <None Include="..\fixtures\stellarium\hualapai-fisheye-v1.json" Link="Fixtures\hualapai-fisheye-v1.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\fixtures\horizons\issue-518\*" Link="Fixtures\horizons\issue-518\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />

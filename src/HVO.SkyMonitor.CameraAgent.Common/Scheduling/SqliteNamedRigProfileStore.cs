@@ -525,6 +525,72 @@ public sealed class SqliteNamedRigProfileStore(
         await ingress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var revision = await ComposeCoreAsync(connection, transaction, schedule, profileId, cameraRevisionId,
+            opticsRevisionId, mountRevisionId, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return revision;
+    }
+
+    /// <summary>
+    /// Retains calibrated optics for the reviewed active rig as a new optics revision and a draft rig revision in one
+    /// transaction. The selection must still be at the reviewed version with the reviewed revision active and nothing
+    /// pending. An existing draft of the same profile, camera, mount and optics is returned instead of a duplicate, and
+    /// any conflict, failure or cancellation writes nothing.
+    /// </summary>
+    public async Task<NamedRigRevision> RetainCalibratedOpticsAsync(string activeRevisionId, long expectedVersion,
+        string displayName, OpticsProfile optics, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(optics);
+        if (string.IsNullOrWhiteSpace(activeRevisionId) || expectedVersion < 0 || !ValidName(displayName))
+            throw new ArgumentException("Invalid calibrated optics retention.");
+        if (scheduleStore is null) throw new InvalidOperationException("Schedule authority is unavailable.");
+        var schedule = await scheduleStore.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
+        await ingress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var selection = await ReadSelectionAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (selection.Version != expectedVersion || selection.ActiveRevisionId != activeRevisionId ||
+            selection.PendingRevisionId is not null)
+            throw new CaptureScheduleStoreConflictException("The named rig selection changed after review.");
+        var active = await ReadRevisionAsync(connection, transaction, activeRevisionId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The active named rig revision is missing.");
+        var siblings = new List<string>();
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = """
+                SELECT revision_id FROM named_rig_revisions
+                WHERE profile_id = $profile AND camera_revision_id = $camera AND mount_revision_id = $mount
+                ORDER BY revision_number;
+                """;
+            command.Parameters.AddWithValue("$profile", active.ProfileId);
+            command.Parameters.AddWithValue("$camera", active.CameraRevisionId);
+            command.Parameters.AddWithValue("$mount", active.MountRevisionId);
+            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                siblings.Add(reader.GetString(0));
+        }
+        foreach (var id in siblings)
+        {
+            var sibling = await ReadRevisionAsync(connection, transaction, id, cancellationToken).ConfigureAwait(false);
+            if (sibling?.Rig.Optics == optics)
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return sibling;
+            }
+        }
+        var opticsRevisionId = await InsertEquipmentAsync(connection, transaction, "optics", displayName.Trim(), optics,
+            timeProvider.GetUtcNow().ToUnixTimeMilliseconds(), cancellationToken).ConfigureAwait(false);
+        var revision = await ComposeCoreAsync(connection, transaction, schedule, active.ProfileId, active.CameraRevisionId,
+            opticsRevisionId, active.MountRevisionId, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return revision;
+    }
+
+    private async Task<NamedRigRevision> ComposeCoreAsync(SqliteConnection connection, SqliteTransaction transaction,
+        CaptureScheduleStoreSnapshot schedule, string profileId, string cameraRevisionId, string opticsRevisionId,
+        string mountRevisionId, CancellationToken cancellationToken)
+    {
         async Task<T> ReadEquipmentAsync<T>(string revisionId, string kind)
         {
             using var command = connection.CreateCommand();
@@ -577,7 +643,6 @@ public sealed class SqliteNamedRigProfileStore(
             """, cancellationToken, ("$id", id), ("$profile", profileId), ("$number", number),
             ("$camera", cameraRevisionId), ("$optics", opticsRevisionId), ("$mount", mountRevisionId),
             ("$json", bytes), ("$hash", Convert.ToHexString(SHA256.HashData(bytes))), ("$now", now)).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new NamedRigRevision(id, profileId, number, cameraRevisionId, opticsRevisionId,
             mountRevisionId, camera.Module, rig, null);
     }

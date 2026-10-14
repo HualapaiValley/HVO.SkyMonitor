@@ -1,0 +1,34 @@
+/* The Operations sidebar link (OperationsLayout.razor.css .operations-navigation a) and its active state. */
+.manage-navigation { display: grid; gap: .1rem; margin: 0; padding: 0; list-style: none; }
+
+.manage-navigation ::deep a {
+    display: grid;
+    grid-template-columns: 1.7rem minmax(0, 1fr);
+    min-height: 2.75rem;
+    align-items: center;
+    gap: .55rem;
+    padding: .48rem .6rem;
+    border: 1px solid transparent;
+    border-radius: .5rem;
+    color: var(--hvo-muted-strong);
+    font-size: .86rem;
+    font-weight: 500;
+    line-height: 1.35;
+    text-decoration: none;
+}
+
+.manage-navigation ::deep a:hover { border-color: var(--hvo-border-muted); color: var(--hvo-body-color); background: var(--hvo-surface-hover); }
+.manage-navigation ::deep a.active { border-color: rgba(88, 166, 255, .25); color: white; background: linear-gradient(90deg, rgba(47, 129, 247, .16), rgba(47, 129, 247, .035)); font-weight: 600; }
+.manage-navigation ::deep a.active .manage-nav-icon { color: #58a6ff; }
+
+.manage-nav-icon { display: grid; width: 1.7rem; height: 1.7rem; place-items: center; color: var(--hvo-muted); }
+.manage-nav-icon svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+
+@media (max-width: 940px) {
+    .manage-navigation { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .3rem; }
+    .manage-navigation ::deep a { grid-template-columns: auto minmax(0, 1fr); gap: .35rem; padding: .4rem .5rem; font-size: .8rem; }
+}
+
+@media (max-width: 420px) {
+    .manage-navigation ::deep a { grid-template-columns: 1fr; justify-items: center; gap: .1rem; text-align: center; font-size: .72rem; }
+}

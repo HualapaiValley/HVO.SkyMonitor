@@ -21,6 +21,12 @@ implement and validate locally
 
 Hosted Preflight runs on draft and ready PRs. Self-hosted Build and Unit runs only on non-draft PRs and pushes to `development/v1`.
 
+Use these two checks for ordinary v1 merge qualification. The full
+`ci.yml` matrix runs for main/release or explicit issue/operator qualification;
+do not dispatch it merely because a local classifier or base-sync delta selects
+`complete=true`. Keep focused local acceptance evidence and risk-tier gates.
+See [the short/full check ownership](../development-v1.md#short-checks-and-full-qualification).
+
 ## Review Levels And Limits
 
 | Level | Initial reviews | Correction reviews | Ordinary maximum |
@@ -198,7 +204,10 @@ Next: mark ready and run Development v1 CI.
 
 If Development v1 CI finds a real code defect, return the PR to draft, add a finding ID, correct it, and obtain a focused exceptional review. An infrastructure failure does not create a code finding and may receive one diagnosed rerun.
 
-Merge when review is converged, all conversations are resolved, the current head is reviewed and up to date, and required Development v1 checks pass. No repository-wide finalization lock is used for ordinary v1 PRs.
+Merge when review is converged, all conversations are resolved, the current head
+is reviewed and up to date, and required Development v1 checks pass. Follow
+the repository lifecycle skill's finalization reservation and exact-head checks;
+the reservation does not change the branch's CI profile or require a full-matrix dispatch.
 
 After merge, explicitly close the issue and comment:
 

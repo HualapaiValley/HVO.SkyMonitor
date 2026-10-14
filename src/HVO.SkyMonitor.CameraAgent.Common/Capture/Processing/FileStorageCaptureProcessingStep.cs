@@ -78,6 +78,18 @@ internal sealed class FileStorageCaptureProcessingStep(
             return;
         }
         context.RecordConsumedArtifacts(selectedArtifacts, selectedProducts);
+        var compactScene = (context.RawCapture?.Manifest.Scene ?? artifacts.Raw.Frame.Metadata.Scene)?.RequiresProjectedScene == true;
+        var needsSceneUpload = allowAutomaticPublication && compactScene && selectedArtifacts.Any(artifact =>
+        {
+            var product = context.GetProcessingProduct(artifact.ArtifactId);
+            return artifact.Role != FrameArtifactRole.Metadata &&
+                (artifact.Role != FrameArtifactRole.Raw || context.RawCapture is not { } raw ||
+                    IsStoredUnderRoot(raw.StoredFrame, Options.StorageRoot)) &&
+                QueuesUpload(context.GetDependencyProducerStepId(artifact.ArtifactId), artifact.Role,
+                    product?.Variant, product?.Recipe.Descriptor.Name);
+        });
+        await QueueCanonicalScenesAsync(context, selectedProducts, allowAutomaticPublication, needsSceneUpload,
+            cancellationToken).ConfigureAwait(false);
         await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -144,7 +156,11 @@ internal sealed class FileStorageCaptureProcessingStep(
                             artifact.ArtifactId,
                             artifact.Frame.Metadata.SourceId ?? Name,
                             product);
-                        stored = policy?.StepId is null
+                        // Canonical pixels were already committed with their producer identity.
+                        // Reuse those exact facts even when a broad Storage policy selects them.
+                        var manifestProducerStepId = metadataAlreadyStoredUnderRoot || policy?.StepId is not null
+                            ? producerStepId : null;
+                        stored = manifestProducerStepId is null
                             ? await _frameStorageService.SaveAsync(
                                 Options.StorageRoot,
                                 artifact,
@@ -161,7 +177,7 @@ internal sealed class FileStorageCaptureProcessingStep(
                             descriptor,
                             stored.RelativePath,
                             artifact.Frame.Metadata.Scene,
-                            policy?.StepId is null ? null : producerStepId);
+                            manifestProducerStepId);
                     }
                     else
                     {
@@ -214,7 +230,8 @@ internal sealed class FileStorageCaptureProcessingStep(
                     }
                     queueForUpload = false;
                 }
-                if (metadataAlreadyStoredUnderRoot && !queueForUpload)
+                var isCanonicalScene = SceneProvenance.IsRetainedProjectedSceneSchemaVersion(product.SchemaVersion);
+                if (isCanonicalScene || metadataAlreadyStoredUnderRoot && !queueForUpload)
                 {
                     continue;
                 }
@@ -222,8 +239,9 @@ internal sealed class FileStorageCaptureProcessingStep(
                 {
                     throw new InvalidOperationException("Layoutless metadata storage requires durable reconstruction context.");
                 }
+                var productRoot = Options.StorageRoot;
                 var output = await CaptureProcessingPersistence.CopyMetadataProductAsync(
-                    Options.StorageRoot,
+                    productRoot,
                     descriptor,
                     producerStepId ?? Name,
                     product,
@@ -231,7 +249,7 @@ internal sealed class FileStorageCaptureProcessingStep(
                 if (queueForUpload)
                 {
                     await _artifactOutbox.EnqueueAsync(
-                        Options.StorageRoot,
+                        productRoot,
                         new StructuredProcessingProductManifestV1(
                             StructuredProcessingProductManifestV1.CurrentSchemaVersion,
                             new StructuredProcessingProductDescriptorV1(
@@ -278,31 +296,65 @@ internal sealed class FileStorageCaptureProcessingStep(
 
     }
 
+    private async ValueTask QueueCanonicalScenesAsync(
+        CaptureProcessingContext context,
+        IReadOnlyList<ProcessingProduct> products,
+        bool allowAutomaticPublication,
+        bool needsSceneUpload,
+        CancellationToken cancellationToken)
+    {
+        if (!allowAutomaticPublication || !_centralIntegrationEnabled) return;
+        var scenes = products.Where(static product =>
+            SceneProvenance.IsRetainedProjectedSceneSchemaVersion(product.SchemaVersion)).ToArray();
+        if (needsSceneUpload && scenes.Length != 1)
+            throw new InvalidDataException("Compact image upload requires one declared canonical scene dependency.");
+        foreach (var product in scenes)
+        {
+            var producer = context.GetDependencyProducerStepId(ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256));
+            // Legacy image manifests already transported geometry regardless of the optional
+            // metadata mask. Compact images preserve that information through one dependency.
+            if (!needsSceneUpload && !(ResolvePolicy(producer, product)?.QueueForUpload ?? Options.QueueForUpload)) continue;
+            if (_processingPersistence is null || context.ReconstructionDescriptor is not { } descriptor)
+                throw new InvalidOperationException("Canonical scene upload requires durable reconstruction context.");
+            var root = _processingPersistence.StorageRoot;
+            var gate = StorageLifecycleLock.ForRoot(root);
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var output = await _processingPersistence.RequireCommittedSceneAsync(
+                    descriptor.Capture.CaptureId, product, cancellationToken).ConfigureAwait(false);
+                var manifest = await _processingPersistence.CreateSceneUploadManifestAsync(
+                    descriptor, output, cancellationToken).ConfigureAwait(false);
+                await _artifactOutbox.EnqueueAsync(root, manifest, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+    }
+
     private static bool IsExplicitPipeline(CameraModuleConfig config)
         => config.Pipeline is { SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2 };
 
+    internal bool QueuesUpload(string? producerStepId, FrameArtifactRole role, string? variant, string? recipeName)
+        => _centralIntegrationEnabled &&
+            (ResolvePolicy(producerStepId, role, variant, recipeName)?.QueueForUpload ?? Options.QueueForUpload);
+
     private ArtifactStoragePolicyOptions? ResolvePolicy(
-        string? producerStepId,
-        FrameArtifact artifact,
-        ProcessingProduct? product)
-        => (Options.Policies ?? [])
-            .Where(policy => policy.StepId is null || string.Equals(policy.StepId, producerStepId, StringComparison.OrdinalIgnoreCase))
-            .Where(policy => policy.Role is null || policy.Role == artifact.Role)
-            .Where(policy => policy.Variant is null || string.Equals(policy.Variant, product?.Variant, StringComparison.Ordinal))
-            .Where(policy => policy.RecipeName is null || string.Equals(
-                policy.RecipeName, product?.Recipe.Descriptor.Name, StringComparison.Ordinal))
-            .OrderByDescending(static policy =>
-                (policy.StepId is null ? 0 : 1) + (policy.Role is null ? 0 : 1) +
-                (policy.Variant is null ? 0 : 1) + (policy.RecipeName is null ? 0 : 1))
-            .FirstOrDefault();
+        string? producerStepId, FrameArtifact artifact, ProcessingProduct? product)
+        => ResolvePolicy(producerStepId, artifact.Role, product?.Variant, product?.Recipe.Descriptor.Name);
 
     private ArtifactStoragePolicyOptions? ResolvePolicy(string? producerStepId, ProcessingProduct product)
+        => ResolvePolicy(producerStepId, product.Role, product.Variant, product.Recipe.Descriptor.Name);
+
+    private ArtifactStoragePolicyOptions? ResolvePolicy(
+        string? producerStepId, FrameArtifactRole role, string? variant, string? recipeName)
         => (Options.Policies ?? [])
             .Where(policy => policy.StepId is null || string.Equals(policy.StepId, producerStepId, StringComparison.OrdinalIgnoreCase))
-            .Where(policy => policy.Role is null || policy.Role == product.Role)
-            .Where(policy => policy.Variant is null || string.Equals(policy.Variant, product.Variant, StringComparison.Ordinal))
-            .Where(policy => policy.RecipeName is null || string.Equals(
-                policy.RecipeName, product.Recipe.Descriptor.Name, StringComparison.Ordinal))
+            .Where(policy => policy.Role is null || policy.Role == role)
+            .Where(policy => policy.Variant is null || string.Equals(policy.Variant, variant, StringComparison.Ordinal))
+            .Where(policy => policy.RecipeName is null || string.Equals(policy.RecipeName, recipeName, StringComparison.Ordinal))
             .OrderByDescending(static policy =>
                 (policy.StepId is null ? 0 : 1) + (policy.Role is null ? 0 : 1) +
                 (policy.Variant is null ? 0 : 1) + (policy.RecipeName is null ? 0 : 1))

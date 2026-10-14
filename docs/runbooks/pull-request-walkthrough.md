@@ -209,10 +209,13 @@ taken, open it and link it here rather than leaving it in the comment.
 ## 9. What the nightly does with it
 
 At 02:00 America/Phoenix, if `development/v1` is ahead of `main` and its head's
-push run is green, `promote-main.yml` opens (or refreshes) one PR from
+push run is green, `promote-main.yml` opens (or refreshes) one draft PR from
 `development/v1` to `main` as the bot, listing every commit and the issues they
-reference. `main`'s full pipeline runs on it. The operator merges it with a
-merge commit. That is the only way `main` moves.
+reference. After review, mark it ready for a planned qualification/merge window;
+`main`'s full pipeline then runs on it. Return a deferred or stale promotion
+to draft so each feature merge does not launch another full matrix. The operator
+merges the qualified current head with a merge commit. That is the only way
+`main` moves.
 
 ## Worked example: PR #909
 

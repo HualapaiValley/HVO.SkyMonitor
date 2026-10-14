@@ -35,7 +35,8 @@ public static partial class DistributionVerifier
     public static DistributionReleaseManifest VerifyManifest(
         ReadOnlySpan<byte> manifestBytes,
         ReadOnlySpan<byte> signatureText,
-        DistributionTrustRoot trustRoot)
+        DistributionTrustRoot trustRoot,
+        IApprovedCatalogSpecificationSource? catalogSpecifications = null)
     {
         ArgumentNullException.ThrowIfNull(trustRoot);
         VerifySignedBytes(manifestBytes, signatureText, trustRoot);
@@ -56,7 +57,7 @@ public static partial class DistributionVerifier
         {
             throw new DistributionValidationException("The distribution manifest schema is invalid.", exception);
         }
-        Validate(manifest, trustRoot);
+        Validate(manifest, trustRoot, catalogSpecifications);
         return manifest;
     }
 
@@ -189,7 +190,8 @@ public static partial class DistributionVerifier
         }
     }
 
-    private static void Validate(DistributionReleaseManifest manifest, DistributionTrustRoot root)
+    private static void Validate(
+        DistributionReleaseManifest manifest, DistributionTrustRoot root, IApprovedCatalogSpecificationSource? catalogSpecifications)
     {
         // EnsureSupportedManifestVersion already rejected an unsupported version before deserialization. This
         // repeats the bound so the invariant holds for any future caller that validates a manifest it did not
@@ -237,16 +239,8 @@ public static partial class DistributionVerifier
         }
         ValidateComponentInventoryShape(manifest);
         ValidateReleaseShape(manifest, names);
-        if (manifest.Catalog is { } catalog &&
-            (catalog.CatalogId != "hyg-v42-production" || !ProductionCatalogVersionRegex().IsMatch(catalog.PackageVersion) ||
-             catalog.PackageKind != "production" || catalog.ManifestVersion != 2 || catalog.SchemaVersion != "2" ||
-             catalog.PreprocessingVersion != "3" || !Sha256Regex().IsMatch(catalog.BundleManifestSha256) ||
-              !Sha256Regex().IsMatch(catalog.DatabaseSha256) || catalog.DatabaseLength <= 0 || catalog.RowCount <= 0 ||
-              string.IsNullOrWhiteSpace(catalog.LicenseIdentifier) || string.IsNullOrWhiteSpace(catalog.TopologyIdentity) ||
-              !Sha256Regex().IsMatch(catalog.TopologySha256)))
-        {
-            throw new DistributionValidationException("The signed catalog identity is invalid.");
-        }
+        if (manifest.Catalog is { } catalog)
+            ValidateCatalog(catalog, catalogSpecifications);
         foreach (var image in manifest.Images)
         {
             if (!DigestRegex().IsMatch(image.ManifestDigest) || image.Platforms.Count == 0 ||
@@ -523,6 +517,25 @@ public static partial class DistributionVerifier
     [GeneratedRegex("^sha256:[a-f0-9]{64}$", RegexOptions.CultureInvariant)]
     private static partial Regex DigestRegex();
 
+    // A signed manifest can only name an approved specification (issue #521). Every pinned field is compared, so a
+    // validly signed manifest for an unapproved lineage, or one that mixes two lineages, is refused before any bytes
+    // are acquired. A caller that supplies no specification source cannot accept any catalog at all.
+    private static void ValidateCatalog(
+        DistributionCatalogIdentity catalog, IApprovedCatalogSpecificationSource? catalogSpecifications)
+    {
+        if (catalogSpecifications is null || !catalogSpecifications.TryGet(catalog.CatalogId, out var approved) ||
+            !approved.IsPackageVersion(catalog.PackageVersion) || catalog.PackageKind != "production" ||
+            catalog.ManifestVersion != approved.ManifestVersion || catalog.SchemaVersion != approved.SchemaVersion ||
+            catalog.PreprocessingVersion != approved.PreprocessingVersion ||
+            !Sha256Regex().IsMatch(catalog.BundleManifestSha256) ||
+            catalog.DatabaseSha256 != approved.DatabaseSha256 || catalog.DatabaseLength != approved.DatabaseLength ||
+            catalog.RowCount != approved.RowCount || catalog.LicenseIdentifier != approved.LicenseIdentifier ||
+            catalog.TopologyIdentity != approved.TopologyIdentity || catalog.TopologySha256 != approved.TopologySha256)
+        {
+            throw new DistributionValidationException("The signed catalog identity is invalid.");
+        }
+    }
+
     [GeneratedRegex("^[a-z0-9][a-z0-9.-]{0,63}(:[0-9]{1,5})?(/[a-z0-9]+([._-][a-z0-9]+)*){1,6}$", RegexOptions.CultureInvariant)]
     private static partial Regex ImageRepositoryRegex();
 
@@ -531,7 +544,4 @@ public static partial class DistributionVerifier
 
     [GeneratedRegex("^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$", RegexOptions.CultureInvariant)]
     private static partial Regex AssetNameRegex();
-
-    [GeneratedRegex("^hyg-v4\\.2-p3-s2-r[1-9][0-9]*$", RegexOptions.CultureInvariant)]
-    private static partial Regex ProductionCatalogVersionRegex();
 }

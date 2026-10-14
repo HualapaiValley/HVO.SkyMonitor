@@ -49,14 +49,14 @@ internal sealed class OperationsAttention
         {
             items.Add(new("health", "warning", "warning", "Some operating facts are stale",
                 "The latest read did not refresh every section; the values shown may be out of date.",
-                "/operations/system", "Inspect"));
+                "/operations/health", "Inspect"));
         }
 
         if (freshness.Contains("unknown", StringComparer.OrdinalIgnoreCase))
         {
             items.Add(new("health", "info", "pending", "Some operating facts have not been observed",
                 "No source has reported them since this CameraAgent started.",
-                "/operations/system", "Inspect"));
+                "/operations/health", "Inspect"));
         }
 
         var centralEnabled = !string.Equals(summary.Configuration.Value.CentralIntegration, "Disabled", StringComparison.Ordinal);
@@ -66,7 +66,7 @@ internal sealed class OperationsAttention
         {
             items.Add(new("health", "warning", "warning", "LogicHost connection unavailable",
                 "Local acquisition continues; central delivery waits in the durable outbox.",
-                "/operations/system", "Inspect"));
+                "/operations/health", "Inspect"));
         }
 
         var pressuredStorage = summary.Storage.Value.Where(static storage => storage.IsUnderPressure)
@@ -77,15 +77,15 @@ internal sealed class OperationsAttention
         {
             items.Add(new("storage", "warning", "warning", "Storage or lane pressure",
                 $"Under pressure: {string.Join(", ", pressuredStorage.Concat(pressuredLanes))}.",
-                "/operations/data", "Inspect"));
+                "/operations/storage", "Inspect"));
         }
 
         var artifactRetries = summary.ArtifactOutbox.Value.RetryCount;
         if (artifactRetries > 0)
         {
-            items.Add(new("storage", "info", "running", Plural(artifactRetries, "artifact delivery is", "artifact deliveries are") + " retrying",
+            items.Add(new("delivery", "info", "running", Plural(artifactRetries, "artifact delivery is", "artifact deliveries are") + " retrying",
                 "Captures are durable locally; the outbox is applying bounded backoff.",
-                "/operations/data", "Inspect"));
+                "/operations/delivery", "Inspect"));
         }
 
         var artifactHeld = Math.Max(summary.ArtifactOutbox.Value.QuarantineCount, view.ArtifactQuarantine.Count);
@@ -99,9 +99,9 @@ internal sealed class OperationsAttention
         var environmentalRetries = summary.EnvironmentalDelivery.Value.RetryCount;
         if (environmentalRetries > 0)
         {
-            items.Add(new("storage", "info", "running", Plural(environmentalRetries, "environmental delivery is", "environmental deliveries are") + " retrying",
+            items.Add(new("delivery", "info", "running", Plural(environmentalRetries, "environmental delivery is", "environmental deliveries are") + " retrying",
                 "Observations are durable locally; delivery is applying bounded backoff.",
-                "/operations/data", "Inspect"));
+                "/operations/delivery", "Inspect"));
         }
 
         var environmentalHeld = Math.Max(summary.EnvironmentalDelivery.Value.QuarantineCount, view.EnvironmentalQuarantine.Count);

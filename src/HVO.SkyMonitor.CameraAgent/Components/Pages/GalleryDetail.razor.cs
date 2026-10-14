@@ -10,7 +10,7 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 
-public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
+public sealed partial class GalleryDetail : SiteTimeComponent, IAsyncDisposable
 {
     private CancellationTokenSource? _loadCancellation;
     private CameraAgentGalleryCapture? _capture;
@@ -386,9 +386,9 @@ public sealed partial class GalleryDetail : ComponentBase, IAsyncDisposable
                     ? "Not applicable (infrastructure node)"
                     : "Recipe did not return an outcome";
 
-    private static string FormatNodeStarted(CameraAgentGalleryProcessingNodeDetail? detail)
+    private string FormatNodeStarted(CameraAgentGalleryProcessingNodeDetail? detail)
         => detail?.StartedUtc is { } startedUtc
-            ? GalleryPage.FormatCaptureTime(startedUtc)
+            ? SiteTime.Format(startedUtc)
             : detail?.Inputs is null
                 ? "Unavailable for legacy processing record"
                 : "Not executed";

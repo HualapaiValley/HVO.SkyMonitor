@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 2,
+  "fixtureId": "hualapai-asi174-temporal-conformance-v2",
+  "geometryReferenceFixture": "hualapai-asi174-conformance-v1.json",
+  "geometryReferenceSha256": "c11abf6221bed75a03a124af4d3591402d08d233a226a05763402fc3f3ed4c85",
+  "referenceModel": "Deterministic actual VirtualSky pixel regression; physical temporal accuracy is independently qualified by StellarTemporalIntegrationQualificationTests. Astronomy/orientation reference values remain in unchanged v1.",
+  "algorithms": {
+    "motion": "stellar-exposure-iau1976-bounded-midpoint-v1",
+    "raster": "bounded-temporal-gaussian-native-v1",
+    "visibility": "stellar-aperture-electrons-poisson-v1",
+    "render": "camera-aware-stellar-exposure-v1",
+    "sky": "bortle-solar-altitude-log-background-v1"
+  },
+  "renders": [
+    {
+      "id": "asi174mm-reduced",
+      "referenceModel": "internal deterministic regression",
+      "caseId": "primary",
+      "profileId": "reduced",
+      "pixelFormat": "Mono16",
+      "sensorRecipeVersion": "virtual-asi174mm-electron-domain-v2",
+      "rigProfileVersion": "canonical-asi174mm-v1",
+      "objectPixels": {
+        "HIP 32349": {
+          "x": 206.2686834265123,
+          "y": 236.27038538252305
+        },
+        "HIP 24608": {
+          "x": 195.87567302369607,
+          "y": 123.3189863672512
+        },
+        "HIP 37279": {
+          "x": 231.65452002346004,
+          "y": 201.71857083297678
+        },
+        "HIP 27989": {
+          "x": 187.7359865461824,
+          "y": 191.34906529847547
+        }
+      },
+      "centroids": {
+        "HIP 32349": {
+          "x": 206.29197892271662,
+          "y": 236.30117096018736,
+          "windowRadius": 6
+        }
+      },
+      "statistics": {
+        "minimum": 0,
+        "maximum": 2262,
+        "mean": 46.60374755328404
+      },
+      "sha256": "F5E3362A034180C04A81FA19FF72CA5A4DD399EFB70F8EB26E614BD5ABBA0C2E",
+      "exposureSeconds": 20,
+      "gain": 150,
+      "requestedStartUtc": "2025-01-15T07:59:50Z",
+      "celestialEndUtc": "2025-01-15T08:00:10Z",
+      "celestialMidpointUtc": "2025-01-15T08:00:00Z"
+    },
+    {
+      "id": "asi174mm-full",
+      "referenceModel": "internal deterministic regression",
+      "caseId": "primary",
+      "profileId": "full",
+      "pixelFormat": "Mono16",
+      "sensorRecipeVersion": "virtual-asi174mm-electron-domain-v2",
+      "rigProfileVersion": "canonical-asi174mm-v1",
+      "objectPixels": {
+        "HIP 32349": {
+          "x": 825.0747337060492,
+          "y": 945.0815415300922
+        },
+        "HIP 24608": {
+          "x": 783.5026920947843,
+          "y": 493.2759454690048
+        },
+        "HIP 37279": {
+          "x": 926.6180800938401,
+          "y": 806.8742833319071
+        },
+        "HIP 27989": {
+          "x": 750.9439461847296,
+          "y": 765.3962611939019
+        }
+      },
+      "centroids": {
+        "HIP 32349": {
+          "x": 825.1277191925278,
+          "y": 945.113859596264,
+          "windowRadius": 6
+        }
+      },
+      "statistics": {
+        "minimum": 0,
+        "maximum": 2042,
+        "mean": 31.33810343831557
+      },
+      "sha256": "E6CA434D6E16240922786B1394890AE75DE0E8E1428309960BF1474097887885",
+      "exposureSeconds": 20,
+      "gain": 150,
+      "requestedStartUtc": "2025-01-15T07:59:50Z",
+      "celestialEndUtc": "2025-01-15T08:00:10Z",
+      "celestialMidpointUtc": "2025-01-15T08:00:00Z"
+    },
+    {
+      "id": "asi174mc-rgb24-full",
+      "referenceModel": "internal deterministic regression",
+      "caseId": "primary",
+      "profileId": "full",
+      "pixelFormat": "Rgb24",
+      "sensorRecipeVersion": "virtual-asi174mc-rgb24-compat-v1",
+      "rigProfileVersion": "virtual-asi174mc-full-v1",
+      "exposureSeconds": 2.5,
+      "gain": 1,
+      "statistics": {
+        "minimum": 0,
+        "maximum": 255,
+        "mean": 32.39891721491228
+      },
+      "sha256": "4E5F6AE53D696859E25C8A7E8786C7263D29646CD00ADCA9B50039A27CB7E113",
+      "requestedStartUtc": "2025-01-15T08:00:00Z",
+      "celestialEndUtc": "2025-01-15T08:00:02.5Z",
+      "celestialMidpointUtc": "2025-01-15T08:00:01.25Z"
+    }
+  ],
+  "singleStarCaptures": {
+    "single-star-reduced": {
+      "width": 484,
+      "height": 304,
+      "requestedStartUtc": "2025-01-15T08:00:00Z",
+      "exposureSeconds": 1,
+      "sha256": "DCAE8EC91D4AF0645F61DA503DB29B1335C3650208633F2A25BDD5FF8A82E9AE"
+    },
+    "single-star-full": {
+      "width": 1936,
+      "height": 1216,
+      "requestedStartUtc": "2025-01-15T08:00:00Z",
+      "exposureSeconds": 1,
+      "sha256": "C3C5F95DCA6B5E81BDDE2D12F96526E47DF0B8593F74F6FD1B6DDA72F0E6CC11"
+    }
+  }
+}
