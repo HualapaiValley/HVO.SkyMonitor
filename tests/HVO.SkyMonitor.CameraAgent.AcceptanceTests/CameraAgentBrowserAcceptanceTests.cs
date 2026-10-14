@@ -111,14 +111,51 @@ public sealed class CameraAgentBrowserAcceptanceTests
         await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
-    // Replace only the existing home-page component inside this disposable fixture. The actual
-    // router, render-mode boundary, layout, authentication and navigation all remain in use.
-    private sealed class RecoveryTestComponentActivator(IServiceProvider services) : IComponentActivator
+    // Inject a page event failure or a navigation render failure only in this disposable fixture.
+    // The real router, render-mode boundaries, layouts and authentication remain in use.
+    private sealed class RecoveryTestComponentActivator(IServiceProvider services, bool failNavigation = false) : IComponentActivator
     {
         public IComponent CreateInstance(Type componentType) =>
-            componentType == typeof(HVO.SkyMonitor.CameraAgent.Components.Pages.CurrentSkyPage)
+            failNavigation && componentType == typeof(HVO.SkyMonitor.CameraAgent.Components.Layout.MainLayoutNavigation)
+                ? new RecoveryTestRenderFailure()
+                : componentType == typeof(HVO.SkyMonitor.CameraAgent.Components.Pages.CurrentSkyPage)
                 ? new RecoveryTestPage()
                 : (IComponent)ActivatorUtilities.CreateInstance(services, componentType);
+    }
+
+    [TestMethod]
+    public async Task StaticShellFailureRetainsOuterRecoveryLinksAsync()
+    {
+        using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
+        await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
+        await using var host = await CameraAgentKestrelFixture.CreateAsync(services =>
+            services.AddScoped<IComponentActivator>(provider => new RecoveryTestComponentActivator(provider, failNavigation: true))).ConfigureAwait(false);
+        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
+        await using var context = await diagnostics.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = host.BaseAddress.ToString(),
+            JavaScriptEnabled = false
+        }).ConfigureAwait(false);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+
+        await page.GotoAsync("/Error").ConfigureAwait(false);
+
+        await page.Locator(".error-display").WaitForAsync().ConfigureAwait(false);
+        Assert.IsFalse((await page.Locator(".error-display").InnerTextAsync().ConfigureAwait(false))
+            .Contains("private-error-sentinel", StringComparison.Ordinal));
+        Assert.AreEqual(0, await page.Locator(".error-display button").CountAsync().ConfigureAwait(false));
+        Assert.AreEqual("false", await page.GetByRole(AriaRole.Link, new() { Name = "Reload page", Exact = true })
+            .GetAttributeAsync("data-enhance-nav").ConfigureAwait(false));
+        Assert.AreEqual("/", await page.GetByRole(AriaRole.Link, new() { Name = "Return home", Exact = true })
+            .GetAttributeAsync("href").ConfigureAwait(false));
+        await diagnostics.CompleteAsync().ConfigureAwait(false);
+    }
+
+    private sealed class RecoveryTestRenderFailure : ComponentBase
+    {
+        protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder) =>
+            throw new InvalidOperationException("private-error-sentinel");
     }
 
     private sealed class RecoveryTestPage : ComponentBase
