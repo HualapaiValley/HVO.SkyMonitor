@@ -25,7 +25,7 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
     // The prototype's choices, with the ones CameraAgent cannot answer truthfully kept visible but disabled.
     internal static readonly FilterOption[] TypeOptions =
     [
-        new("time-lapse", "Timelapses", false),
+        new("time-lapse", "Timelapses", true),
         new(NightlyProductContract.StarTrailTarget, "Star trails", true),
         new(NightlyProductContract.KeogramTarget, "Keograms", true),
         new("daily-summary", "Daily summaries", false)
@@ -71,13 +71,17 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
         NightlyProductKind? kind = null;
         if (!string.IsNullOrEmpty(type))
         {
-            if (!NightlyProductContract.TryParseTarget(type, out var parsedKind))
+            if (string.Equals(type, "time-lapse", StringComparison.Ordinal))
+            {
+                // Daily videos have their own bounded store and presentation on this same page.
+            }
+            else if (!NightlyProductContract.TryParseTarget(type, out var parsedKind))
             {
                 return (null, Array.Find(TypeOptions, option => string.Equals(option.Value, type, StringComparison.Ordinal)) is { } known
                     ? $"{known.Label} are not yet generated, so none are listed and nothing is substituted for them."
                     : "The product type filter is not a product type CameraAgent generates.");
             }
-            kind = parsedKind;
+            else kind = parsedKind;
         }
         NightlyProductLibraryState? state = null;
         if (!string.IsNullOrEmpty(status))
@@ -144,7 +148,7 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
         _errorKind = PageStateNotice.PageStateKind.Error;
         _failedPreviews.Clear();
         (_query, _notice) = Resolve(Type, Status, Day, Before);
-        if (_query is null)
+        if (_query is null || string.Equals(Type, "time-lapse", StringComparison.Ordinal))
         {
             _isLoading = false;
             return;

@@ -200,6 +200,7 @@ public sealed partial class SchedulePage : SiteTimeComponent, IAsyncDisposable
                 _state = result.Value;
                 var editorRevision = _state.PendingRevision ?? _state.ActiveRevision;
                 var basisChanged = !string.Equals(_editorBasisRevisionId, editorRevision.RevisionId, StringComparison.Ordinal);
+                var discardedEdits = _editorDirty && !resetEditor && basisChanged;
                 var keepEdits = _editorDirty && !resetEditor && !basisChanged;
                 if (!keepEdits)
                 {
@@ -216,7 +217,7 @@ public sealed partial class SchedulePage : SiteTimeComponent, IAsyncDisposable
                 }
                 if (!_rigSelectionAvailable)
                     SetMessage("Named rig selection is unavailable. Schedule changes are disabled until refresh succeeds.", error: true);
-                else if (_editorDirty && !resetEditor && basisChanged)
+                else if (discardedEdits)
                     SetMessage("The schedule changed while you were editing, so your unsaved edits were discarded. The editor now shows the latest revision.", error: true);
                 else
                     _message = null;

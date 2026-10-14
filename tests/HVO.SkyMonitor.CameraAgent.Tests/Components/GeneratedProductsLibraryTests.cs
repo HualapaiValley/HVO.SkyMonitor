@@ -3,6 +3,7 @@ using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
+using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
@@ -175,11 +176,12 @@ public sealed class GeneratedProductsLibraryTests
         Assert.AreEqual("partial", cut.Find("#library-status").GetAttribute("value"));
         Assert.AreEqual("2026-10-01", cut.Find("#library-day").GetAttribute("value"));
         // Choices CameraAgent cannot answer truthfully stay visible but disabled, with the reason beside them.
-        foreach (var unrecorded in new[] { "#library-type option[value='time-lapse']", "#library-type option[value='daily-summary']", "#library-status option[value='running']" })
+        foreach (var unrecorded in new[] { "#library-type option[value='daily-summary']", "#library-status option[value='running']" })
         {
             Assert.IsTrue(cut.Find(unrecorded).HasAttribute("disabled"), unrecorded);
         }
         Assert.IsFalse(cut.Find("#library-status option[value='partial']").HasAttribute("disabled"));
+        Assert.IsFalse(cut.Find("#library-type option[value='time-lapse']").HasAttribute("disabled"));
         Assert.AreEqual("library-filter-note", cut.Find("#library-type").GetAttribute("aria-describedby"));
         StringAssert.Contains(cut.Find("#library-filter-note").TextContent, "not yet generated", StringComparison.Ordinal);
 
@@ -197,7 +199,6 @@ public sealed class GeneratedProductsLibraryTests
     }
 
     [TestMethod]
-    [DataRow("type=time-lapse", "Timelapses are not yet generated")]
     [DataRow("type=daily-summary", "Daily summaries are not yet generated")]
     [DataRow("type=fireball", "not a product type CameraAgent generates")]
     [DataRow("status=running", "Generation progress is not recorded")]
@@ -337,6 +338,33 @@ public sealed class GeneratedProductsLibraryTests
         Assert.AreEqual(0, retainedReads);
         Assert.IsEmpty(cut.FindAll("form.product-filters, .product-table"));
         Assert.AreEqual("/operations/automations", cut.Find(".page-header a").GetAttribute("href"));
+    }
+
+    [TestMethod]
+    [DataRow("type=keogram", 0)]
+    [DataRow("type=time-lapse", 2)]
+    [DataRow("type=time-lapse&status=produced&day=2026-10-01", 1)]
+    [DataRow("status=partial", 0)]
+    [DataRow("day=2026-09-30", 1)]
+    [DataRow("status=not-produced", 0)]
+    [DataRow("type=fireball", 0)]
+    public void Products_UrlFiltersAlsoApplyToPublishedTimeLapses(string query, int expectedVideos)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        using var context = new BunitContext();
+        var (_, nightly) = Configure(context);
+        nightly.VideoSummaries = [new(Guid.NewGuid(), Newest, 1920, 1080, true), new(Guid.NewGuid(), Older, 1920, 1080, false)];
+
+        var cut = Render(context, "/archive/products?" + query);
+
+        cut.WaitForAssertion(() => Assert.HasCount(expectedVideos, cut.FindAll(".video-library li")));
+        if (query.StartsWith("type=time-lapse", StringComparison.Ordinal))
+        {
+            Assert.IsFalse(cut.Find("#library-type option[value='time-lapse']").HasAttribute("disabled"));
+            Assert.IsEmpty(nightly.LibraryQueries);
+            Assert.IsEmpty(cut.FindAll(".page-state--info"));
+            StringAssert.Contains(cut.Find(".video-library li").TextContent, "2026-10-01", StringComparison.Ordinal);
+        }
     }
 
     private static (TestOperatorUiService Operations, TestNightlyProductUiService Nightly) Configure(BunitContext context, bool previewFailed = false)

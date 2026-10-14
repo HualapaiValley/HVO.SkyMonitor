@@ -41,6 +41,35 @@ public sealed class SchedulePageTests
         => cut.FindAll("button").Single(button => button.TextContent.Contains("Save draft", StringComparison.Ordinal));
 
     [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public void Refresh_WarnsWhenANewRevisionDiscardsDirtyEditsAndOtherwiseKeepsThem(bool basisChanged)
+    {
+        using var context = CreateContext();
+        var state = State();
+        var service = new ScheduleUiService(state);
+        context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
+        var cut = context.Render<SchedulePage>();
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find("#schedule-refresh").HasAttribute("disabled")));
+        OpenEditor(cut);
+        cut.FindAll("dialog footer button").Single(button => button.TextContent == "Next").Click();
+        cut.Find("input[aria-label='Setpoint gain']").Change("2");
+        cut.Find("dialog .icon-button[aria-label='Close dialog']").Click();
+        if (basisChanged)
+            service.ReplaceState(state with { ActiveRevision = state.ActiveRevision with { RevisionId = "profile-00000003-ABCDEF123456", RevisionNumber = 3 } });
+
+        cut.Find("#schedule-refresh").Click();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsFalse(cut.Find("#schedule-refresh").HasAttribute("disabled"));
+            Assert.AreEqual(basisChanged, cut.Markup.Contains("unsaved edits were discarded", StringComparison.Ordinal));
+        });
+        OpenEditor(cut);
+        Assert.AreEqual(basisChanged ? "1" : "2", cut.Find("input[aria-label='Setpoint gain']").GetAttribute("value"));
+    }
+
+    [TestMethod]
     public void Render_ShowsDurableStateEditorPreviewAndRollbackHistory()
     {
         using var context = CreateContext();
@@ -1182,6 +1211,8 @@ public sealed class SchedulePageTests
 
     internal class ScheduleUiService(CaptureScheduleOperatorState? state) : ICameraAgentScheduleUiService
     {
+        internal void ReplaceState(CaptureScheduleOperatorState value) => state = value;
+
         internal List<string> RollbackRevisionIds { get; } = [];
         internal List<string> ActivationRevisionIds { get; } = [];
         internal List<CaptureScheduleOverride> OverrideCommands { get; } = [];
