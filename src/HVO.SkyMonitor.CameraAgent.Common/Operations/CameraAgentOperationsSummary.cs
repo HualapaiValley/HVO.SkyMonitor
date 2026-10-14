@@ -268,7 +268,7 @@ public sealed class CameraAgentOperationsSummaryProvider(
                 lanes.PendingCount, lanes.PendingBytes, lanes.LeasedCount, lanes.RetryCount, lanes.QuarantineCount,
                 lanes.OldestPendingUtc)),
             Section("durable-processing-refresh", processing.EvaluatedUtc, now, new OperationsQueueState(
-                processing.Availability.ToString(), processing.PendingCount, 0, 0, processing.RetryCount,
+                processing.Availability.ToString(), processing.PendingCount, 0, processing.LeasedCount, processing.RetryCount,
                 0, processing.TerminalCount, processing.OldestPendingUtc)),
             Section("artifact-outbox-state", centralDisabled, outbox.EvaluatedUtc, now, new OperationsQueueState(
                 centralDisabled ? "Disabled" : outbox.Availability.ToString(),
