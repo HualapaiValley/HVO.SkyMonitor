@@ -300,7 +300,7 @@ public static class ResolvedFootprintSampler
         {
             var middleValid = VisibleSceneBuilder.TryProjectGeometry(request, basis, limb(middle), out var middlePixel);
             if (!middleValid ||
-                VisibleSceneBuilder.DistanceFromChord(middlePixel, fromPixel, toPixel) > MaximumChordErrorPixels)
+                Distance(middlePixel, new PixelPoint((fromPixel.X + toPixel.X) / 2, (fromPixel.Y + toPixel.Y) / 2)) > MaximumChordErrorPixels)
             {
                 if (depth < MaximumSubdivisionDepth)
                 {
@@ -346,7 +346,7 @@ public static class ResolvedFootprintSampler
         var boundaryMiddle = (validParameter + (fromValid ? from : to)) / 2;
         var endpoint = fromValid ? fromPixel : toPixel;
         if (!VisibleSceneBuilder.TryProjectGeometry(request, basis, limb(boundaryMiddle), out var boundaryMiddlePixel) ||
-            VisibleSceneBuilder.DistanceFromChord(boundaryMiddlePixel, endpoint, boundaryPixel) > MaximumChordErrorPixels)
+            Distance(boundaryMiddlePixel, new PixelPoint((endpoint.X + boundaryPixel.X) / 2, (endpoint.Y + boundaryPixel.Y) / 2)) > MaximumChordErrorPixels)
             return;
         if (fromValid)
             AddClipped(request.Projection, fromPixel, boundaryPixel, output, ref clipped);

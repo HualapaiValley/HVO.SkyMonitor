@@ -169,18 +169,24 @@ public sealed partial class CuratedDeepSkySceneTests
         var footprint = retained.ResolvedFootprints!.Single();
         Assert.IsTrue(footprint.Clipped);
         Assert.IsTrue(footprint.Parts.All(static part => !part.Closed));
-        foreach (var part in footprint.Parts)
+        for (var partIndex = 0; partIndex < footprint.Parts.Count; partIndex++)
         {
+            var part = footprint.Parts[partIndex];
             for (var index = 1; index < part.Points.Count; index++)
             {
                 var from = part.Points[index - 1];
                 var to = part.Points[index];
                 var dx = to.X - from.X;
                 var dy = to.Y - from.Y;
-                var t = Math.Clamp(-((from.X - 512) * dx + (from.Y - 512) * dy) / (dx * dx + dy * dy), 0, 1);
+                var lengthSquared = dx * dx + dy * dy;
+                Assert.IsTrue(double.IsFinite(lengthSquared) && lengthSquared > 0,
+                    $"Invalid part {partIndex}, segment {index - 1}: from=({from.X:R},{from.Y:R}), to=({to.X:R},{to.Y:R}), lengthSquared={lengthSquared:R}.");
+                var t = Math.Clamp(-((from.X - 512) * dx + (from.Y - 512) * dy) / lengthSquared, 0, 1);
                 var x = from.X + t * dx - 512;
                 var y = from.Y + t * dy - 512;
-                Assert.IsTrue(Math.Sqrt(x * x + y * y) > 490, "The true M45 limb stays near radii 494–501, not the interior.");
+                var closestRadius = Math.Sqrt(x * x + y * y);
+                Assert.IsTrue(closestRadius > 490,
+                    $"The true M45 limb stays near radii 494–501, not the interior. Part {partIndex}, segment {index - 1}: from=({from.X:R},{from.Y:R}), to=({to.X:R},{to.Y:R}), lengthSquared={lengthSquared:R}, t={t:R}, closestRadius={closestRadius:R}.");
             }
         }
     }
