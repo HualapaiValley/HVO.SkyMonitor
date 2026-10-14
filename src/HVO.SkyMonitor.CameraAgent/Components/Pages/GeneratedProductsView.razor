@@ -59,20 +59,20 @@ else if (_page is { } page)
         @* An empty older page says nothing about newer pages, so it never claims that no product matches. *@
         @if (_query?.Before is not null)
         {
-            <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No older generated products" Message="@(IsFiltered ? "No earlier sunrise-to-sunrise period has a recorded daily evaluation matching these filters." : "No earlier sunrise-to-sunrise period has a recorded daily evaluation.")">
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No older still products" Message="@(IsFiltered ? "No earlier sunrise-to-sunrise period has a recorded star-trail or keogram evaluation matching these filters." : "No earlier sunrise-to-sunrise period has a recorded star-trail or keogram evaluation.")">
                 <a class="btn btn-outline-light btn-sm" href="@NewestUrl">Newest products</a>
             </PageStateNotice>
         }
         else if (IsFiltered)
         {
-            <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No generated products match these filters" Message="Change the product type, status, or observing day.">
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No still products match these filters" Message="Change the product type, status, or observing day. Published daily videos are listed separately below when they match.">
                 <a class="btn btn-outline-light btn-sm" href="@LibraryPath">Show all products</a>
                 @if (_query?.ObservingDate is { } day) { <a class="btn btn-outline-light btn-sm" href="@ArchiveCalendarPage.DayUrl(day)">Open the observing day</a> }
             </PageStateNotice>
         }
         else
         {
-            <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No generated products yet" Message="No sunrise-to-sunrise period has a recorded star-trail or keogram evaluation. Cards appear here once an enabled automation evaluates a completed period.">
+            <PageStateNotice Kind="PageStateNotice.PageStateKind.Empty" Title="No still products yet" Message="No sunrise-to-sunrise period has a recorded star-trail or keogram evaluation. Published daily videos are listed separately below when they match.">
                 <a class="btn btn-outline-light btn-sm" href="/operations/automations">Manage automations</a>
             </PageStateNotice>
         }

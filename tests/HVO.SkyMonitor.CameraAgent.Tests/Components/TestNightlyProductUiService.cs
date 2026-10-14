@@ -34,13 +34,19 @@ internal sealed class TestNightlyProductUiService : ICameraAgentNightlyProductUi
         static _ => OperatorUiResult<CameraAgentTimeLapsePresentation>.Failure(OperatorUiResultKind.NotFound, "Video not found.");
 
     internal IReadOnlyList<CameraAgentTimeLapseSummary> VideoSummaries { get; set; } = [];
+    internal List<DateOnly?> VideoQueries { get; } = [];
     internal List<(Guid JobId, long Revision)> VideoRetries { get; } = [];
 
     public ValueTask<OperatorUiResult<CameraAgentTimeLapsePresentation>> GetTimeLapseAsync(Guid productId, CancellationToken cancellationToken)
         => ValueTask.FromResult(VideoHandler(productId));
 
     public ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseSummary>>> ListTimeLapsesAsync(DateOnly? before, CancellationToken cancellationToken)
-        => ValueTask.FromResult(OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseSummary>>.Success(VideoSummaries));
+    {
+        VideoQueries.Add(before);
+        return ValueTask.FromResult(OperatorUiResult<IReadOnlyList<CameraAgentTimeLapseSummary>>.Success(
+            VideoSummaries.Where(product => before is null || product.ReportDate < before)
+                .OrderByDescending(product => product.ReportDate).Take(31).ToArray()));
+    }
 
     public ValueTask<OperatorUiResult<bool>> RetryTimeLapseAsync(Guid jobId, long expectedRevision, Guid requestId, CancellationToken cancellationToken)
     {

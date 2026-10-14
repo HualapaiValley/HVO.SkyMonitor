@@ -41,11 +41,13 @@ public sealed class SchedulePageTests
         => cut.FindAll("button").Single(button => button.TextContent.Contains("Save draft", StringComparison.Ordinal));
 
     [TestMethod]
-    [DataRow(true)]
-    [DataRow(false)]
-    public void Refresh_WarnsWhenANewRevisionDiscardsDirtyEditsAndOtherwiseKeepsThem(bool basisChanged)
+    [DataRow(true, false)]
+    [DataRow(false, false)]
+    [DataRow(true, true)]
+    public void Refresh_WarnsWhenANewRevisionDiscardsDirtyEditsAndOtherwiseKeepsThem(bool basisChanged, bool rigUnavailable)
     {
-        using var context = CreateContext();
+        var rig = new Mock<ICameraAgentNamedRigUiService>();
+        using var context = CreateContext(rig: rig);
         var state = State();
         var service = new ScheduleUiService(state);
         context.Services.AddSingleton<ICameraAgentScheduleUiService>(service);
@@ -57,6 +59,9 @@ public sealed class SchedulePageTests
         cut.Find("dialog .icon-button[aria-label='Close dialog']").Click();
         if (basisChanged)
             service.ReplaceState(state with { ActiveRevision = state.ActiveRevision with { RevisionId = "profile-00000003-ABCDEF123456", RevisionNumber = 3 } });
+        if (rigUnavailable)
+            rig.Setup(value => value.GetAsync(It.IsAny<CancellationToken>())).Returns(() => ValueTask.FromResult(
+                OperatorUiResult<NamedRigUiCatalog>.Failure(OperatorUiResultKind.Unavailable, "Named rigs unavailable.")));
 
         cut.Find("#schedule-refresh").Click();
 
@@ -65,8 +70,13 @@ public sealed class SchedulePageTests
             Assert.IsFalse(cut.Find("#schedule-refresh").HasAttribute("disabled"));
             Assert.AreEqual(basisChanged, cut.Markup.Contains("unsaved edits were discarded", StringComparison.Ordinal));
         });
-        OpenEditor(cut);
-        Assert.AreEqual(basisChanged ? "1" : "2", cut.Find("input[aria-label='Setpoint gain']").GetAttribute("value"));
+        if (rigUnavailable)
+            StringAssert.Contains(cut.Markup, "Named rig selection is unavailable", StringComparison.Ordinal);
+        if (!rigUnavailable)
+        {
+            OpenEditor(cut);
+            Assert.AreEqual(basisChanged ? "1" : "2", cut.Find("input[aria-label='Setpoint gain']").GetAttribute("value"));
+        }
     }
 
     [TestMethod]

@@ -61,6 +61,7 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
     [Parameter] public string? Status { get; set; }
     [Parameter] public string? Day { get; set; }
     [Parameter] public string? Before { get; set; }
+    [Parameter] public DateOnly? VideoBefore { get; set; }
 
     /// <summary>
     /// The library query of the URL filters, or a notice explaining why nothing can be listed for them: an unrecorded
@@ -192,18 +193,19 @@ public sealed partial class GeneratedProductsView : ComponentBase, IAsyncDisposa
     private bool IsFiltered => _query is { Kind: not null } or { State: not null } or { ObservingDate: not null };
 
     /// <summary>The library URL of a filter set; changing a filter always returns to the newest page.</summary>
-    internal string FilterUrl(string? type, string? status, string? day, DateOnly? before = null)
+    internal string FilterUrl(string? type, string? status, string? day, DateOnly? before = null, bool preserveVideoPosition = false)
         => NavigationManager.GetUriWithQueryParameters(LibraryPath, new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["type"] = EmptyToNull(type),
             ["status"] = EmptyToNull(status),
             ["day"] = EmptyToNull(day),
-            ["before"] = before?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+            ["before"] = before?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            ["videoBefore"] = preserveVideoPosition ? VideoBefore?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : null
         });
 
-    private string NewestUrl => FilterUrl(Type, Status, null);
+    private string NewestUrl => FilterUrl(Type, Status, null, preserveVideoPosition: true);
 
-    private string OlderUrl(DateOnly before) => FilterUrl(Type, Status, null, before);
+    private string OlderUrl(DateOnly before) => FilterUrl(Type, Status, null, before, preserveVideoPosition: true);
 
     private void ApplyType() => NavigationManager.NavigateTo(FilterUrl(_draftType, Status, Day));
 
