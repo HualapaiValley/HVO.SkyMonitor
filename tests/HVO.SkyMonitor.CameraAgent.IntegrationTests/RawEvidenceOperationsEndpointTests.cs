@@ -14,7 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 public sealed partial class OutboxOperationsEndpointTests
 {
     [TestMethod]
-    public async Task RawEvidenceRelease_EnforcesAuthenticationOwnershipAntiforgeryAndActualActor()
+    public async Task RawEvidenceReleaseEnforcesAuthenticationOwnershipAntiforgeryAndActualActor()
     {
         var operations = new RawEvidenceOperations();
         using var factory = AssemblyHooks.Fixture.CreateCameraAgentFactory(services =>
