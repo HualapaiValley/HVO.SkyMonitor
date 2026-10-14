@@ -67,7 +67,7 @@ public sealed partial class CuratedDeepSkySceneTests
         var footprint = scene.ResolvedFootprints.Single();
         Assert.IsNotNull(deepSky);
 
-        Assert.ThrowsExactly<InvalidOperationException>(() => scene.WithResolvedSolarSystemBodies([]));
+        Assert.ThrowsExactly<InvalidOperationException>(() => scene.WithResolvedBodies([]));
 
         Assert.AreSame(deepSky, scene.DeepSky);
         Assert.AreSame(footprint, scene.ResolvedFootprints.Single());
