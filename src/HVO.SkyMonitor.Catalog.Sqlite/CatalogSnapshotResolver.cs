@@ -428,16 +428,33 @@ public static class CatalogSnapshotResolver
         return new SnapshotPointer(packageVersion, snapshotDirectory);
     }
 
-    private static SnapshotManifest ReadManifest(AuthenticatedFile file)
+    /// <summary>
+    /// Reads the manifest from its start, never past one byte beyond the limit. Authentication fixes the file's
+    /// identity, not its length, so the bound is enforced on the bytes actually read rather than on a length reported
+    /// before the read.
+    /// </summary>
+    internal static ReadOnlyMemory<byte> ReadBoundedManifest(Stream stream)
     {
-        if (file.Stream.Length > MaximumManifestLength)
+        if (stream.Length > MaximumManifestLength)
         {
             throw new InvalidDataException($"Catalog manifest exceeds the {MaximumManifestLength}-byte limit.");
         }
+        stream.Position = 0;
+        var buffer = new byte[MaximumManifestLength + 1];
+        var length = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
+        if (length > MaximumManifestLength)
+        {
+            throw new InvalidDataException($"Catalog manifest exceeds the {MaximumManifestLength}-byte limit.");
+        }
+        return buffer.AsMemory(0, length);
+    }
+
+    private static SnapshotManifest ReadManifest(AuthenticatedFile file)
+    {
+        var manifest = ReadBoundedManifest(file.Stream);
         try
         {
-            file.Stream.Position = 0;
-            using var document = JsonDocument.Parse(file.Stream, new JsonDocumentOptions
+            using var document = JsonDocument.Parse(manifest, new JsonDocumentOptions
             {
                 AllowTrailingCommas = false,
                 CommentHandling = JsonCommentHandling.Disallow,

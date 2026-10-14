@@ -1045,6 +1045,37 @@ internal sealed class CatalogSnapshotResolverTests
         }
     }
 
+    [TestMethod]
+    public void ReadBoundedManifestRejectsContentBeyondTheLimitThatItsReportedLengthHides()
+    {
+        // Authentication fixes the manifest's identity, not its length, so a manifest can grow after the length
+        // check. The bound must hold on the bytes read, not on the length reported before the read.
+        using var stream = new UnderReportingStream(new byte[200_000], reportedLength: 2);
+
+        var exception = Assert.ThrowsExactly<InvalidDataException>(() => CatalogSnapshotResolver.ReadBoundedManifest(stream));
+
+        StringAssert.Contains(exception.Message, "65536-byte limit", StringComparison.Ordinal);
+        Assert.AreEqual(65_537, stream.Position, "The read stops one byte beyond the limit.");
+    }
+
+    [TestMethod]
+    public void ReadBoundedManifestReadsAManifestAtTheLimitFromItsStart()
+    {
+        var content = new byte[65_536];
+        RandomNumberGenerator.Fill(content);
+        using var stream = new UnderReportingStream(content, reportedLength: 2);
+        stream.Position = content.Length;
+
+        var manifest = CatalogSnapshotResolver.ReadBoundedManifest(stream);
+
+        CollectionAssert.AreEqual(content, manifest.ToArray());
+    }
+
+    private sealed class UnderReportingStream(byte[] content, long reportedLength) : MemoryStream(content, writable: false)
+    {
+        public override long Length => reportedLength;
+    }
+
     internal sealed record Installation(
         string Root,
         string PointerPath,
