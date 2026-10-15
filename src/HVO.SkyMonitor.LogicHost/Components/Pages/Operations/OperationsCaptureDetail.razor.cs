@@ -16,6 +16,7 @@ public partial class OperationsCaptureDetail : ComponentBase, IAsyncDisposable
     private ElementReference presentationRoot;
     private bool bindPresentation;
     private long presentationGeneration;
+    private long baseImageAttempt;
     private CancellationTokenSource? presentationSaveCancellation;
     [Parameter] public Guid CaptureId { get; set; }
     [Inject] internal INetworkOperationsReadService Operations { get; set; } = default!;
@@ -35,6 +36,12 @@ public partial class OperationsCaptureDetail : ComponentBase, IAsyncDisposable
     internal CentralLayeredPresentation? Presentation { get; private set; }
     internal MarkupString PresentationSvg => new(Encoding.UTF8.GetString(Presentation?.Svg ?? []));
     internal string? MaterializationMessage { get; private set; }
+    internal bool IsBaseImageUnavailable { get; private set; }
+
+    // Each rendered base image is keyed to the presentation generation, identity and explicit retry
+    // attempt, so a new attempt gets a new element and an error raised by a superseded one is ignored.
+    internal string BaseImageKey => FormattableString.Invariant(
+        $"{presentationGeneration}:{Presentation?.PresentationIdentitySha256}:{baseImageAttempt}");
 
     protected override async Task OnParametersSetAsync()
     {
@@ -48,6 +55,7 @@ public partial class OperationsCaptureDetail : ComponentBase, IAsyncDisposable
         presentationGeneration++;
         IsSavingPresentation = false;
         IsLoadingMoreArtifacts = false;
+        IsBaseImageUnavailable = false;
         Detail = null;
         Presentation = null;
         Trace = null;
@@ -91,7 +99,7 @@ public partial class OperationsCaptureDetail : ComponentBase, IAsyncDisposable
 
     internal async Task SaveSelectedStackAsync()
     {
-        if (Presentation is null || principal is null || IsSavingPresentation)
+        if (Presentation is null || principal is null || IsSavingPresentation || IsBaseImageUnavailable)
         {
             return;
         }
@@ -154,6 +162,27 @@ public partial class OperationsCaptureDetail : ComponentBase, IAsyncDisposable
                 IsSavingPresentation = false;
             }
         }
+    }
+
+    // The browser's image error event carries no reliable HTTP status, so the display only records that
+    // the exact base image could not be shown; it never infers a reason or substitutes another image.
+    internal void OnBaseImageError(string baseImageKey)
+    {
+        if (Presentation is not null && string.Equals(baseImageKey, BaseImageKey, StringComparison.Ordinal))
+        {
+            IsBaseImageUnavailable = true;
+        }
+    }
+
+    internal void RetryBaseImage()
+    {
+        if (!IsBaseImageUnavailable || Presentation is null)
+        {
+            return;
+        }
+        baseImageAttempt++;
+        IsBaseImageUnavailable = false;
+        bindPresentation = true;
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
