@@ -1219,16 +1219,14 @@ internal sealed class CaptureProcessingPersistence(
             {
                 await stream.WriteAsync(content, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
-                stream.Flush(flushToDisk: true);
-#pragma warning restore CA1849
+                CameraAgentFileSystem.FlushFile(stream);
             }
             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, Path.GetDirectoryName(destinationPath)!);
             try
             {
-                File.Move(temporaryPath, destinationPath, overwrite: false);
+                CameraAgentFileSystem.PublishPrepared(storageRoot, temporaryPath, destinationPath, overwrite: false);
             }
-            catch (IOException) when (File.Exists(destinationPath))
+            catch (IOException exception) when (!FileSystemFaultCompatibility.IsContainmentFailure(exception) && File.Exists(destinationPath))
             {
                 var existing = await File.ReadAllBytesAsync(destinationPath, cancellationToken).ConfigureAwait(false);
                 if (!existing.AsSpan().SequenceEqual(content.Span))

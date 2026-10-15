@@ -30,13 +30,13 @@ public sealed class RawIngressFileStoreTests
         try
         {
             var actual = await Assert.ThrowsExactlyAsync<IOException>(() =>
-                store.PublishPayloadAsync(paths, new byte[] { 1, 2, 3 }, CancellationToken.None));
+                store.PublishPayloadAsync(paths, new byte[] { 1, 2, 3 }, CancellationToken.None)).ConfigureAwait(false);
             Assert.AreSame(injected, actual, "The shared exception wrapper must not change CameraAgent's failure contract.");
             Assert.AreEqual(1, flushes);
             Assert.AreEqual(OperatingSystem.IsLinux() ? directorySyncs : 0, syncs);
             Assert.AreEqual(stop, phases[^1]);
             Assert.AreEqual(published, File.Exists(paths.PayloadAbsolutePath));
-            if (published) CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, await File.ReadAllBytesAsync(paths.PayloadAbsolutePath));
+            if (published) CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, await File.ReadAllBytesAsync(paths.PayloadAbsolutePath).ConfigureAwait(false));
             Assert.IsEmpty(Directory.GetFiles(root, "*.tmp", SearchOption.AllDirectories));
         }
         finally
@@ -59,16 +59,16 @@ public sealed class RawIngressFileStoreTests
         var directory = Path.GetDirectoryName(paths.PayloadAbsolutePath)!;
         Directory.CreateDirectory(directory);
         var otherWriter = Path.Combine(directory, "other-writer.tmp");
-        await File.WriteAllBytesAsync(otherWriter, new byte[] { 9 });
+        await File.WriteAllBytesAsync(otherWriter, new byte[] { 9 }).ConfigureAwait(false);
         try
         {
             var actual = await Assert.ThrowsExactlyAsync<OperationCanceledException>(() =>
-                store.PublishPayloadAsync(paths, new byte[] { 1, 2, 3 }, cancellation.Token));
+                store.PublishPayloadAsync(paths, new byte[] { 1, 2, 3 }, cancellation.Token)).ConfigureAwait(false);
             Assert.AreSame(injected, actual);
             Assert.AreEqual(cancellation.Token, actual.CancellationToken);
             Assert.IsFalse(File.Exists(paths.PayloadAbsolutePath));
             CollectionAssert.AreEqual(new[] { otherWriter }, Directory.GetFiles(directory, "*.tmp"));
-            CollectionAssert.AreEqual(new byte[] { 9 }, await File.ReadAllBytesAsync(otherWriter));
+            CollectionAssert.AreEqual(new byte[] { 9 }, await File.ReadAllBytesAsync(otherWriter).ConfigureAwait(false));
         }
         finally
         {

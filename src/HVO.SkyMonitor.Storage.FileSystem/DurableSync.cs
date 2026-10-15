@@ -31,7 +31,15 @@ public static class DurableSync
         try
         {
 #pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
-            stream.Flush(flushToDisk: true);
+            if (OperatingSystem.IsLinux())
+            {
+                stream.Flush(flushToDisk: false);
+                FlushLinux(stream.SafeFileHandle);
+            }
+            else
+            {
+                stream.Flush(flushToDisk: true);
+            }
 #pragma warning restore CA1849
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -49,7 +57,8 @@ public static class DurableSync
         ArgumentNullException.ThrowIfNull(handle);
         try
         {
-            RandomAccess.FlushToDisk(handle);
+            if (OperatingSystem.IsLinux()) FlushLinux(handle);
+            else RandomAccess.FlushToDisk(handle);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -141,7 +150,7 @@ public static class DurableSync
             "sync-directory");
         try
         {
-            RandomAccess.FlushToDisk(handle);
+            FlushLinux(handle);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -162,7 +171,7 @@ public static class DurableSync
         }
         try
         {
-            RandomAccess.FlushToDisk(handle);
+            FlushLinux(handle);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -204,6 +213,26 @@ public static class DurableSync
         throw new FileSystemFaultException(FileSystemFaultKind.Containment, "sync-directory-chain", absolutePath);
     }
 
+    // The pinned .NET 10 native FSync helper returns a positive boolean on failure.
+    // Check libc directly so EIO/ENOSPC cannot become acknowledged durability. Keep the
+    // SafeFileHandle pinned by the interop marshaller, including during EINTR retries.
+    private static void FlushLinux(SafeFileHandle handle)
+    {
+        if (handle.IsInvalid) throw new ArgumentException("Invalid file handle.", nameof(handle));
+        int result;
+        int errno;
+        do
+        {
+            result = NativeFsync(handle);
+            errno = Marshal.GetLastPInvokeError();
+        }
+        while (result < 0 && errno == 4); // EINTR: no completed sync yet.
+        if (result < 0)
+        {
+            throw new IOException(new Win32Exception(errno).Message, errno);
+        }
+    }
+
     private static SafeFileHandle OpenLinux(string path, int flags, string operation)
     {
         var descriptor = NativeOpen(path, flags);
@@ -226,6 +255,10 @@ public static class DurableSync
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("libc", EntryPoint = "open", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
     private static extern int NativeOpen(string path, int flags);
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("libc", EntryPoint = "fsync", SetLastError = true)]
+    private static extern int NativeFsync(SafeFileHandle handle);
 
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("libc", EntryPoint = "statx", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]

@@ -33,6 +33,17 @@ public sealed class DurableSyncTests
     }
 
     [TestMethod]
+    public void Directory_ReportsUnsupportedKernelSyncInsteadOfClaimingDurability()
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Inconclusive("Requires Linux procfs.");
+        var fault = Assert.ThrowsExactly<FileSystemFaultException>(() => DurableSync.Directory("/proc"));
+        Assert.AreEqual("sync-directory", fault.Operation);
+        Assert.AreEqual(FileSystemFaultKind.Io, fault.Kind);
+        var original = Assert.IsInstanceOfType<IOException>(fault.InnerException);
+        Assert.AreEqual(22, original.HResult, "Preserve the actual EINVAL from fsync(procfs).");
+    }
+
+    [TestMethod]
     public void File_FlushesAnExistingFileByPathAndHandle()
     {
         var path = Path.Combine(_temp, "data.bin");

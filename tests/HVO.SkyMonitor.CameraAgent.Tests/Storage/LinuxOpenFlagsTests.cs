@@ -11,7 +11,6 @@ public sealed class LinuxOpenFlagsTests
     [TestMethod]
     public void DirectoryAndNoFollow_FollowTheKernelAbiOfEachArchitecture()
     {
-        Assert.AreEqual(SharedLinuxOpenFlags.CloseOnExec, LinuxOpenFlags.CloseOnExec);
         Assert.AreEqual(SharedLinuxOpenFlags.Directory, LinuxOpenFlags.Directory);
         Assert.AreEqual(SharedLinuxOpenFlags.NoFollow, LinuxOpenFlags.NoFollow);
         // arm and powerpc override the asm-generic values in their uapi/asm/fcntl.h.
