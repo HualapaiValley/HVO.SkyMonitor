@@ -83,7 +83,7 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual(ProcessingOutcomeStatus.Produced, preview.Status, preview.ReasonCode);
             var previewArtifact = ToArtifact(preview.Products.Single());
             var original = PresentationProcessingProducts.CreateManifestProduct(
-                PresentationProcessingProducts.CreateReference(previewArtifact, new string('C', 64)), null, [],
+                PresentationProcessingProducts.CreateReference(previewArtifact, ProcessingIdentity.ComputePayloadSha256(previewArtifact.Payload)), null, [],
                 "overlay-manifest", previewArtifact);
             var graph = new CaptureProcessingGraph([
                 Node("rolling", new FixedArtifactProducingStep(combined.Products.Single()), []),
@@ -126,6 +126,8 @@ public sealed partial class DurableCaptureProcessingTests
             var first = await optionalService.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false);
             var publicationMilliseconds = Stopwatch.GetElapsedTime(publicationStart).TotalMilliseconds;
             Assert.IsNotNull(first.Presentation);
+            Assert.IsNotNull(first.Presentation.TrailEvidence);
+            Assert.AreEqual("MeasuredEvidence", first.Presentation.TrailEvidence.State, first.Presentation.TrailEvidence.Reason);
             Assert.AreEqual(width, first.Presentation.WidthPixels);
             Assert.AreEqual(height, first.Presentation.HeightPixels);
             var layer = first.Presentation.Layers.Single();
