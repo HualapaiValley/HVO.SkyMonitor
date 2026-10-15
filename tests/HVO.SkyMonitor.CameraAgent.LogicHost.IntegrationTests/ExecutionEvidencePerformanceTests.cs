@@ -359,7 +359,7 @@ public sealed class ExecutionEvidencePerformanceTests
                 central.OperationCompleted = steadyState.ObserveAsync;
                 coldStart = await MeasureColdStartAsync(edge, central, counters, steadyState, destination, source,
                     fixtureStartedUtc, startupProcessBefore!, startupSqlBefore!).ConfigureAwait(false);
-                await edge.ResumeCaptureAsync().ConfigureAwait(false);
+                await edge.ResumeCaptureAsync(CancellationToken.None).ConfigureAwait(false);
             }
             else
             {
