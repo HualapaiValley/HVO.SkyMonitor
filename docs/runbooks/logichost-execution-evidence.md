@@ -89,8 +89,10 @@ the original bytes remain unchanged. A lost response after commit is recovered
 by duplicate delivery. SQL failure before commit never produces an
 acknowledgement.
 
-An execution arriving before its graph revision, or a correction before its
-predecessor, remains retryable until its dependency arrives. It must not receive
+An execution arriving before its graph revision, an availability report before
+its execution, or a correction before its predecessor remains retryable until
+its dependency arrives. The referenced execution must belong to the same
+authorized binding. It must not receive
 a terminal rejection merely because delivery was reordered: the current
 CameraAgent quarantines a unit when it receives a `Rejected` fact. Missing
 ranges and resynchronization are bounded; neither side expands an arbitrary
@@ -102,6 +104,10 @@ The read API applies observatory membership and credential scope before
 selecting records. Missing and unauthorized resources have the same result.
 List operations use increasing record IDs and bounded `take` values, rather
 than offsets or unbounded history reads.
+
+Availability reports can include artifacts from earlier captures or additional
+outputs. Associating a report with an execution does not assert that every
+reported artifact was produced by that execution.
 
 | Path under `/api/internal/execution-evidence/bindings/{bindingId}` | Purpose |
 | --- | --- |
