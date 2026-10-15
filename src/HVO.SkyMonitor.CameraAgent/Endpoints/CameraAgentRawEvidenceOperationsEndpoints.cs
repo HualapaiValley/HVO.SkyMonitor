@@ -41,9 +41,16 @@ internal static class CameraAgentRawEvidenceOperationsEndpoints
             {
                 Items = page.Items.Select(item => new
                 {
-                    item.AgentId, item.CaptureSequence, CaptureId = item.Target.CaptureId, item.ArtifactId,
-                    item.PayloadBytes, item.CreatedUtc, item.WrittenOff, item.LatestAudit,
-                    State = item.Target.State, ReasonCode = item.Target.FailureReason,
+                    item.AgentId,
+                    item.CaptureSequence,
+                    CaptureId = item.Target.CaptureId,
+                    item.ArtifactId,
+                    item.PayloadBytes,
+                    item.CreatedUtc,
+                    item.WrittenOff,
+                    item.LatestAudit,
+                    State = item.Target.State,
+                    ReasonCode = item.Target.FailureReason,
                     RevalidateToken = item.WrittenOff || item.Target.State == "committed" ? null : tokens.ProtectRawEvidenceAction(RawEvidenceReleaseAction.Revalidate, item.Target),
                     WriteOffToken = item.WrittenOff || item.Target.State == "committed" ? null : tokens.ProtectRawEvidenceAction(RawEvidenceReleaseAction.WriteOff, item.Target)
                 }).ToArray(),
