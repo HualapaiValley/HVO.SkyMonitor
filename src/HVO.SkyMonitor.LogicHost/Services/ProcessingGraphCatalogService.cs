@@ -66,6 +66,10 @@ internal interface IProcessingGraphCatalogService
         int maximumCount,
         CancellationToken cancellationToken);
 
+    Task<CentralProcessingGraphRevisionView?> GetRevisionAsync(
+        Guid revisionId,
+        CancellationToken cancellationToken);
+
     Task<CentralProcessingGraphMutationResult<CentralProcessingGraphRevisionView>> CreateRevisionAsync(
         ProcessingGraphDefinition definition,
         string actorUserId,
@@ -123,6 +127,15 @@ internal sealed partial class ProcessingGraphCatalogService(
                 .ConfigureAwait(false))
             .Select(ToView)
             .ToArray();
+    }
+
+    public async Task<CentralProcessingGraphRevisionView?> GetRevisionAsync(
+        Guid revisionId,
+        CancellationToken cancellationToken)
+    {
+        var revision = await dbContext.CentralProcessingGraphRevisions.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == revisionId, cancellationToken).ConfigureAwait(false);
+        return revision is null ? null : ToView(revision);
     }
 
     public async Task<CentralProcessingGraphMutationResult<CentralProcessingGraphRevisionView>> CreateRevisionAsync(

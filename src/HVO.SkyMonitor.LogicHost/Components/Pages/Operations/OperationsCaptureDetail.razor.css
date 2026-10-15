@@ -32,3 +32,16 @@
 .layer-controls .form-check {
     min-width: 10rem;
 }
+
+.layered-canvas-unavailable {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: visible;
+    aspect-ratio: auto;
+    min-height: 10rem;
+}
+
+.layered-unavailable {
+    color: #e2e8f0;
+}
