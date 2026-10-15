@@ -11,19 +11,40 @@ internal static class SafeTreeDeletion
     {
         ValidateName(childName);
         using var parent = NativeLinux.OpenDirectoryNoFollow(parentPath);
-        var parentIdentity = NativeLinux.GetOpenNodeIdentity(parent, parentPath);
-        using var child = NativeLinux.TryOpenDirectoryAt(parent, childName)
-            ?? throw new InstallerException("Authenticated deletion root is not a directory.");
-        var rootIdentity = NativeLinux.GetOpenNodeIdentity(child, childName);
-        if (expectedIdentity is not null) EnsureSameIdentity(rootIdentity, expectedIdentity, childName);
-        ValidateDirectory(rootIdentity, parentIdentity, uid, gid, childName);
-        NativeLinux.MakeOpenDirectoryOwnerWritable(child);
-        rootIdentity = NativeLinux.GetOpenNodeIdentity(child, childName);
-        DeleteDirectoryContents(child, rootIdentity, uid, gid);
-        rootIdentity = NativeLinux.GetOpenNodeIdentity(child, childName);
-        Revalidate(parent, childName, rootIdentity);
+        EmptyChild(parent, parentPath, childName, uid, gid, expectedIdentity);
         NativeLinux.UnlinkNodeAt(parent, childName, directory: true);
         NativeLinux.FlushDirectory(parentPath);
+    }
+
+    /// <summary>
+    /// Deletes every entry beneath an authenticated child while retaining the child directory itself, and returns the
+    /// emptied directory's identity. A caller whose parent directory it cannot write removes that empty directory
+    /// through a separately authorized, identity-bound removal.
+    /// </summary>
+    public static UnixNodeIdentity EmptyChild(
+        string parentPath,
+        string childName,
+        uint uid,
+        uint gid,
+        UnixNodeIdentity expectedIdentity)
+    {
+        ValidateName(childName);
+        using var parent = NativeLinux.OpenDirectoryNoFollow(parentPath);
+        return EmptyChild(parent, parentPath, childName, uid, gid, expectedIdentity);
+    }
+
+    /// <summary>
+    /// Removes an authenticated empty child directory. Returns <see langword="false"/>, with nothing changed, only when
+    /// the caller lacks write access to the parent.
+    /// </summary>
+    public static bool TryRemoveEmptyChild(string parentPath, string childName, UnixNodeIdentity expectedIdentity)
+    {
+        ValidateName(childName);
+        using var parent = NativeLinux.OpenDirectoryNoFollow(parentPath);
+        Revalidate(parent, childName, expectedIdentity);
+        if (!NativeLinux.TryRemoveDirectoryAt(parent, childName)) return false;
+        NativeLinux.FlushDirectory(parentPath);
+        return true;
     }
 
     public static UnixNodeIdentity ValidateChild(string parentPath, string childName, uint uid, uint gid)
@@ -42,13 +63,24 @@ internal static class SafeTreeDeletion
 
     public static void RenameChild(string parentPath, string oldName, string newName, UnixNodeIdentity expectedIdentity)
     {
+        if (!TryRenameChild(parentPath, oldName, newName, expectedIdentity))
+            throw new InstallerException($"Entry '{oldName}' could not be renamed through its authenticated parent.");
+    }
+
+    /// <summary>
+    /// Renames an authenticated child without replacing an existing entry. Returns <see langword="false"/>, with
+    /// nothing changed, only when the caller lacks write access to the parent.
+    /// </summary>
+    public static bool TryRenameChild(string parentPath, string oldName, string newName, UnixNodeIdentity expectedIdentity)
+    {
         ValidateName(oldName);
         ValidateName(newName);
         using var parent = NativeLinux.OpenDirectoryNoFollow(parentPath);
         Revalidate(parent, oldName, expectedIdentity);
-        NativeLinux.RenameNodeAt(parent, oldName, newName);
+        if (!NativeLinux.TryRenameNodeAt(parent, oldName, newName)) return false;
         Revalidate(parent, newName, expectedIdentity);
         NativeLinux.FlushDirectory(parentPath);
+        return true;
     }
 
     public static IReadOnlyList<DestructiveTreeNode> CaptureChildInventory(
@@ -88,6 +120,40 @@ internal static class SafeTreeDeletion
         return new UnixNodeIdentity(
             root.Uid, root.Gid, (UnixFileMode)root.Mode, root.Type, root.LinkCount, root.Inode,
             root.DeviceMajor, root.DeviceMinor, root.MountId);
+    }
+
+    /// <summary>
+    /// Whether a freshly captured inventory is exactly a retained one: the same paths, each with the same owner, mode,
+    /// type, link count, inode, and device. Only the mount ID, which a remount or reboot may renumber, is not compared.
+    /// </summary>
+    public static bool IsUnchangedInventory(
+        IReadOnlyList<DestructiveTreeNode> current,
+        IReadOnlyList<DestructiveTreeNode> retained)
+        => current.Count == retained.Count &&
+           current.OrderBy(static node => node.RelativePath, StringComparer.Ordinal)
+               .Zip(retained.OrderBy(static node => node.RelativePath, StringComparer.Ordinal))
+               .All(static pair => pair.First with { MountId = 0 } == pair.Second with { MountId = 0 });
+
+    private static UnixNodeIdentity EmptyChild(
+        SafeFileHandle parent,
+        string parentPath,
+        string childName,
+        uint uid,
+        uint gid,
+        UnixNodeIdentity? expectedIdentity)
+    {
+        var parentIdentity = NativeLinux.GetOpenNodeIdentity(parent, parentPath);
+        using var child = NativeLinux.TryOpenDirectoryAt(parent, childName)
+            ?? throw new InstallerException("Authenticated deletion root is not a directory.");
+        var rootIdentity = NativeLinux.GetOpenNodeIdentity(child, childName);
+        if (expectedIdentity is not null) EnsureSameIdentity(rootIdentity, expectedIdentity, childName);
+        ValidateDirectory(rootIdentity, parentIdentity, uid, gid, childName);
+        NativeLinux.MakeOpenDirectoryOwnerWritable(child);
+        rootIdentity = NativeLinux.GetOpenNodeIdentity(child, childName);
+        DeleteDirectoryContents(child, rootIdentity, uid, gid);
+        rootIdentity = NativeLinux.GetOpenNodeIdentity(child, childName);
+        Revalidate(parent, childName, rootIdentity);
+        return rootIdentity;
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Every nullable child directory handle is disposed by the using declaration before the loop advances.")]
