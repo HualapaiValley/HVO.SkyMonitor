@@ -176,9 +176,8 @@ ref, which is `development/v1`. Therefore:
 4. Observe from the merge through the next two complete qualification runs.
    Collect that window with the commands in section 5, using the same
    six-runner `--pool` even if a runner ran nothing. Compare it with sections 2
-   and 3 and record the result on #849. The baseline
-   is the observed current-window qualification makespan in section 2, a mean
-   of 1336s.
+   and 3 and record the result on #849. The baseline is the observed
+   current-window qualification makespan in section 2, a mean of 1336s.
 
    | Observation | Decision |
    | --- | --- |
@@ -186,8 +185,9 @@ ref, which is `development/v1`. Therefore:
    | Waits hold, but the makespan exceeds +20% | Step down to one reserve: add the label to `gh-runner-05` (ID 20), then rerun `verify-labels` with `--qualification gh-runner-01,gh-runner-02,gh-runner-03,gh-runner-04,gh-runner-05 --general gh-runner-06`, and record the new split on #849. One reserve trades the `push-then-pr` protection for a 3.8% modeled cost |
    | Any wait over 60s not explained by other general jobs holding both reserves | Roll back: this is a defect, not modeled contention |
 
-   The +20% bound is the operational rollback ceiling for this bounded trial
-   only. Staying under it does not show that qualification or any other job
+   The +20% bound is the operational rollback ceiling for the two-reserve
+   trial: above it the second reserve is withdrawn by the step-down. Staying
+   under it does not show that qualification or any other job
    improved. It does not waive the 60s ready-PR condition either, and no
    qualification run is dispatched merely to obtain the two samples.
 
