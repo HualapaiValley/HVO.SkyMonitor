@@ -134,9 +134,13 @@ public sealed partial class RawCaptureIngressPerformanceTests
             SamplesMilliseconds = samples,
             CpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - cpu).TotalMilliseconds,
             AllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocated,
-            RssBeforeBytes = rss, RssAfterBytes = Environment.WorkingSet,
-            LohBeforeBytes = loh, LohAfterBytes = GetLohSize(),
-            FileFlushes = flushes, DirectorySyncs = syncs, events.Renames,
+            RssBeforeBytes = rss,
+            RssAfterBytes = Environment.WorkingSet,
+            LohBeforeBytes = loh,
+            LohAfterBytes = GetLohSize(),
+            FileFlushes = flushes,
+            DirectorySyncs = syncs,
+            events.Renames,
             IoDelta = IoDelta(io)
         };
         Assert.AreEqual(2 * MeasuredCount, flushes);
@@ -161,11 +165,17 @@ public sealed partial class RawCaptureIngressPerformanceTests
                 new RawCaptureIdentity(configuration.AgentId!, index + 1, ids.CaptureId, ids.ArtifactId), checksum, new EvidenceClock().GetUtcNow());
             var artifactId = new Guid(index + 1, 2, 0, new byte[8]);
             var recipe = RecipeIdentityDescriptor.Create("fixture-identity-calibration", "1.0.0", "fixture-pass-through-v1", JsonSerializer.SerializeToElement(new { }));
-            var descriptor = raw with { Artifact = raw.Artifact with
+            var descriptor = raw with
             {
-                ArtifactId = artifactId, Role = FrameArtifactRole.Calibrated, Variant = "calibrated",
-                SourceArtifactIds = [ids.ArtifactId], Recipe = recipe
-            } };
+                Artifact = raw.Artifact with
+                {
+                    ArtifactId = artifactId,
+                    Role = FrameArtifactRole.Calibrated,
+                    Variant = "calibrated",
+                    SourceArtifactIds = [ids.ArtifactId],
+                    Recipe = recipe
+                }
+            };
             Assert.IsTrue(descriptor.Validate().IsValid, descriptor.Validate().FieldPath);
             return (Artifact: new FrameArtifact(artifactId, FrameArtifactRole.Calibrated, submission.Result.Frame!, [ids.ArtifactId], recipe.SemanticVersion), Descriptor: descriptor);
         }).ToArray();
@@ -189,8 +199,11 @@ public sealed partial class RawCaptureIngressPerformanceTests
             SamplesMilliseconds = samples,
             CpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - cpu).TotalMilliseconds,
             AllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocated,
-            RssBeforeBytes = rss, RssAfterBytes = Environment.WorkingSet,
-            LohBeforeBytes = loh, LohAfterBytes = GetLohSize(), IoDelta = IoDelta(io)
+            RssBeforeBytes = rss,
+            RssAfterBytes = Environment.WorkingSet,
+            LohBeforeBytes = loh,
+            LohAfterBytes = GetLohSize(),
+            IoDelta = IoDelta(io)
         };
         var hashes = await HashTreeAsync(root).ConfigureAwait(false);
         // Reopen the service and repeat every write: payload/sidecar/index bytes must not change.

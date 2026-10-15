@@ -197,7 +197,8 @@ public sealed partial class RawCaptureIngressPerformanceTests
             Directory.EnumerateFiles(Path.Combine(root, "index"), "*.jsonl").Sum(static path => new FileInfo(path).Length),
             new FileInfo(databasePath).Length,
             File.Exists(walPath) ? new FileInfo(walPath).Length : 0,
-            "Flush, directory-sync, and transaction counts are recorded by the measured accept path; byte sizes are read from produced files.") { SamplesMilliseconds = chronologicalSamples, SortedSamplesMilliseconds = samples };
+            "Flush, directory-sync, and transaction counts are recorded by the measured accept path; byte sizes are read from produced files.")
+        { SamplesMilliseconds = chronologicalSamples, SortedSamplesMilliseconds = samples };
     }
 
     private static async Task<object> MeasureW3MetadataAsync(
@@ -337,10 +338,21 @@ public sealed partial class RawCaptureIngressPerformanceTests
         foreach (var entry in discovered.OrderBy(static entry => entry.CaptureSequence))
             logicalRows.AppendData(JsonSerializer.SerializeToUtf8Bytes(new
             {
-                entry.AgentId, entry.CaptureSequence, entry.CaptureId, entry.ArtifactId,
-                entry.DescriptorSha256, entry.ManifestSha256, entry.PayloadSha256, entry.PayloadLength,
-                entry.PayloadRelativePath, entry.SidecarRelativePath, entry.ManifestJson,
-                entry.ExposureStartedUtc, entry.DurableIngressUtc, entry.State, entry.RetentionHold,
+                entry.AgentId,
+                entry.CaptureSequence,
+                entry.CaptureId,
+                entry.ArtifactId,
+                entry.DescriptorSha256,
+                entry.ManifestSha256,
+                entry.PayloadSha256,
+                entry.PayloadLength,
+                entry.PayloadRelativePath,
+                entry.SidecarRelativePath,
+                entry.ManifestJson,
+                entry.ExposureStartedUtc,
+                entry.DurableIngressUtc,
+                entry.State,
+                entry.RetentionHold,
                 entry.EvidenceOrigin
             }, EvidenceOptions));
         var logicalRowsSha256 = Convert.ToHexString(logicalRows.GetHashAndReset());
