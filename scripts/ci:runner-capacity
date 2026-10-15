@@ -1,0 +1,549 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Measure and replay x64 self-hosted runner capacity for ready-PR protection (#849).
+#
+#   collect        read-only: normalize every self-hosted job in a UTC date window
+#   verify-labels  read-only: prove the qualification label rollout on an org pool
+#   report         offline: observed waits, a reserve replay, and a ready-PR stress
+#
+# Only `collect` and `verify-labels` call GitHub, and only with GET requests. The
+# report is deterministic for a given input and seed list so a reviewer can
+# reproduce every number in docs/runbooks/ci-runner-capacity.md.
+
+usage() {
+    cat >&2 <<'USAGE'
+Usage:
+  scripts/ci:runner-capacity collect --since YYYY-MM-DD --until YYYY-MM-DD --output FILE
+                                     [--repo OWNER/REPO]... [--workers N]
+  scripts/ci:runner-capacity verify-labels --org ORG --qualification NAME[,NAME...]
+                                           --general NAME[,NAME...] [--label LABEL]
+  scripts/ci:runner-capacity report --input FILE --pool NAME[,NAME...]
+                                    [--since ISO8601] [--until ISO8601]
+                                    [--pool-prefix PREFIX] [--reserve N[,N...]]
+                                    [--seeds N] [--probe-seconds S] [--probe-step S]
+                                    [--summary]
+USAGE
+    exit 2
+}
+
+[[ $# -gt 0 ]] || usage
+case "$1" in
+    collect | verify-labels | report) ;;
+    *) usage ;;
+esac
+
+exec python3 -I - "$@" <<'PY'
+import concurrent.futures
+import datetime
+import heapq
+import json
+import os
+import random
+import statistics
+import subprocess
+import sys
+import time
+
+SCHEMA_INPUT = "hvo-runner-capacity-input-v1"
+SCHEMA_REPORT = "hvo-runner-capacity-v1"
+SCHEMA_LABELS = "hvo-runner-labels-v1"
+BASE_LABELS = ("self-hosted", "linux", "x64", "hvo-skymonitor")
+RUN_LIST_LIMIT = 1000
+retry_delay = float(os.environ.get("HVO_RUNNER_CAPACITY_RETRY_DELAY", "2"))
+
+
+def fail(message):
+    print(message, file=sys.stderr)
+    sys.exit(1)
+
+
+def options(arguments, flags, multi=(), switches=()):
+    values = {name: [] for name in multi}
+    values.update({name: False for name in switches})
+    index = 0
+    while index < len(arguments):
+        name = arguments[index]
+        if name in switches:
+            values[name] = True
+            index += 1
+            continue
+        if name not in flags and name not in multi:
+            fail(f"Unknown argument: {name}")
+        if index + 1 >= len(arguments) or arguments[index + 1].startswith("--"):
+            fail(f"{name} requires a value.")
+        if name in multi:
+            values[name].append(arguments[index + 1])
+        else:
+            values[name] = arguments[index + 1]
+        index += 2
+    return values
+
+
+def gh_json(path, attempts=3):
+    # GET only: this tool never mutates runners, workflows or runs.
+    for attempt in range(attempts):
+        result = subprocess.run(
+            ["gh", "api", "--paginate", "--slurp", path],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            try:
+                return json.loads(result.stdout)
+            except json.JSONDecodeError:
+                pass
+        if attempt + 1 < attempts:
+            time.sleep(retry_delay * (attempt + 1))
+    fail(f"Could not read {path}")
+
+
+def pages(path, key, limit=None):
+    document = gh_json(path)
+    if not isinstance(document, list) or not document:
+        fail(f"Malformed pages from {path}")
+    totals = {page.get("total_count") for page in document}
+    if len(totals) != 1 or not isinstance(next(iter(totals)), int):
+        fail(f"Pages disagree on total_count for {path}")
+    items = [item for page in document for item in page.get(key, [])]
+    total = next(iter(totals))
+    if limit is not None and total >= limit:
+        # A listing at its cap cannot be proven complete; fail rather than undercount.
+        fail(f"{path} lists {total} items; the API cannot prove completeness.")
+    # Overlapping pages can repeat a record and still reach total_count while
+    # another record is missing, so every object must be distinct.
+    ids = [item.get("id") if isinstance(item, dict) else None for item in items]
+    if not all(isinstance(value, int) for value in ids) or len(set(ids)) != len(ids):
+        fail(f"Duplicate or missing ids in listing for {path}")
+    if len(items) != total:
+        fail(f"Incomplete listing for {path}: {len(items)} of {total}")
+    return items, total
+
+
+def day_range(since, until):
+    try:
+        start = datetime.date.fromisoformat(since)
+        end = datetime.date.fromisoformat(until)
+    except ValueError:
+        fail("--since and --until must be YYYY-MM-DD.")
+    if end < start:
+        fail("--until precedes --since.")
+    while start <= end:
+        yield start.isoformat()
+        start += datetime.timedelta(days=1)
+
+
+def collect(arguments):
+    values = options(arguments, ("--since", "--until", "--output", "--workers"), multi=("--repo",))
+    for required in ("--since", "--until", "--output"):
+        if not values.get(required):
+            fail(f"{required} is required.")
+    repositories = values["--repo"] or ["HualapaiValley/HVO.SkyMonitor"]
+    for repository in repositories:
+        if repository.count("/") != 1 or not all(repository.split("/")):
+            fail("--repo must be OWNER/REPO.")
+    workers = int(values.get("--workers") or 8)
+    if not 1 <= workers <= 16:
+        fail("--workers must be between 1 and 16.")
+    runs = []
+    for repository in repositories:
+        for day in day_range(values["--since"], values["--until"]):
+            # The run listing stops at 1000 results, so the window is split by day.
+            listed, _ = pages(f"repos/{repository}/actions/runs?created={day}&per_page=100",
+                              "workflow_runs", limit=RUN_LIST_LIMIT)
+            runs.extend((repository, run) for run in listed)
+
+    def jobs_for(entry):
+        repository, run = entry
+        listed, _ = pages(
+            f"repos/{repository}/actions/runs/{run['id']}/jobs?filter=all&per_page=100", "jobs")
+        return repository, run, listed
+
+    jobs = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        for repository, run, listed in pool.map(jobs_for, runs):
+            for job in listed:
+                if "self-hosted" not in job.get("labels", []):
+                    continue
+                jobs.append({
+                    "repository": repository,
+                    "workflow": run.get("name"),
+                    "event": run.get("event"),
+                    "headBranch": run.get("head_branch"),
+                    "run": run["id"],
+                    "attempt": job.get("run_attempt"),
+                    "job": job.get("id"),
+                    "name": job.get("name"),
+                    "labels": sorted(job.get("labels", [])),
+                    "runner": job.get("runner_name"),
+                    "createdAt": job.get("created_at"),
+                    "startedAt": job.get("started_at"),
+                    "completedAt": job.get("completed_at"),
+                    "conclusion": job.get("conclusion"),
+                    "headSha": job.get("head_sha"),
+                })
+    jobs.sort(key=lambda job: (job["createdAt"] or "", job["repository"], job["run"], job["job"] or 0))
+    document = {
+        "schema": SCHEMA_INPUT,
+        "window": {"since": values["--since"], "until": values["--until"]},
+        "repositories": repositories,
+        "runs": len(runs),
+        "jobs": jobs,
+    }
+    with open(values["--output"], "w") as output:
+        json.dump(document, output, indent=1, sort_keys=True)
+        output.write("\n")
+    print(f"Collected {len(jobs)} self-hosted jobs from {len(runs)} runs.", file=sys.stderr)
+
+
+def verify_labels(arguments):
+    values = options(arguments, ("--org", "--qualification", "--general", "--label"))
+    for required in ("--org", "--qualification", "--general"):
+        if not values.get(required):
+            fail(f"{required} is required.")
+    label = values.get("--label") or "hvo-qualification"
+    qualification = sorted(set(values["--qualification"].split(",")))
+    general = sorted(set(values["--general"].split(",")))
+    if set(qualification) & set(general):
+        fail("A runner cannot be both qualification and general.")
+    runners, _ = pages(f"orgs/{values['--org']}/actions/runners?per_page=100", "runners")
+    by_name = {runner["name"]: runner for runner in runners}
+    errors = []
+    observed = {}
+    for name in qualification + general:
+        runner = by_name.get(name)
+        if runner is None:
+            errors.append(f"{name}: not registered")
+            continue
+        labels = sorted(item["name"] for item in runner.get("labels", []))
+        lowered = {item.lower() for item in labels}
+        observed[name] = {"id": runner.get("id"), "status": runner.get("status"),
+                          "busy": runner.get("busy"), "labels": labels}
+        missing = [item for item in BASE_LABELS if item not in lowered]
+        if missing:
+            errors.append(f"{name}: lost general labels {missing}")
+        if name in qualification and label not in lowered:
+            errors.append(f"{name}: missing {label}")
+        if name in general and label in lowered:
+            errors.append(f"{name}: must stay general but carries {label}")
+    online_general = [name for name in general
+                      if observed.get(name, {}).get("status") == "online"]
+    unexpected = sorted(runner["name"] for runner in runners
+                        if runner["name"] not in observed
+                        and label in {item["name"].lower() for item in runner.get("labels", [])})
+    if unexpected:
+        errors.append(f"unlisted runners carry {label}: {unexpected}")
+    report = {"schema": SCHEMA_LABELS, "label": label, "runners": observed,
+              "onlineGeneral": online_general, "errors": errors}
+    print(json.dumps(report, indent=1, sort_keys=True))
+    if errors:
+        fail("Runner label verification failed:\n- " + "\n- ".join(errors))
+    if not online_general:
+        print("Warning: no general runner is online; ready PRs have no reserved capacity.",
+              file=sys.stderr)
+
+
+def epoch(value):
+    if not value:
+        return None
+    moment = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=datetime.timezone.utc)
+    return moment.timestamp()
+
+
+def classify(job):
+    if job["repository"].split("/")[1] != "HVO.SkyMonitor":
+        return "shared-" + job["repository"].split("/")[1]
+    if job["workflow"] == "Development v1":
+        return "ready-pr" if job["event"] == "pull_request" else "v1-push"
+    if job["workflow"] == "CI":
+        return "qualification-" + job["event"]
+    return "other-skymonitor"
+
+
+def is_qualification(job_class):
+    return job_class.startswith("qualification-")
+
+
+def percentile(values, quantile):
+    ordered = sorted(values)
+    if not ordered:
+        return None
+    return ordered[min(len(ordered) - 1, int(quantile * len(ordered)))]
+
+
+def summarize(values, waits=True):
+    if not values:
+        return {"n": 0}
+    result = {
+        "n": len(values),
+        "p50": round(percentile(values, 0.5)),
+        "p90": round(percentile(values, 0.9)),
+        "p99": round(percentile(values, 0.99)),
+        "max": round(max(values)),
+        "mean": round(statistics.mean(values), 1),
+    }
+    if waits:
+        result["over60"] = sum(value > 60 for value in values)
+    return result
+
+
+def load(values, pool):
+    try:
+        with open(values["--input"]) as source:
+            document = json.load(source)
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"Could not read input: {error}")
+    if not isinstance(document, dict) or document.get("schema") != SCHEMA_INPUT:
+        fail("Input is not a hvo-runner-capacity-input-v1 document.")
+    if not isinstance(document.get("jobs"), list):
+        fail("Input jobs are malformed.")
+    since = epoch(values.get("--since")) if values.get("--since") else float("-inf")
+    until = epoch(values.get("--until")) if values.get("--until") else float("inf")
+    prefix = values.get("--pool-prefix") or "gh-runner-"
+    jobs, clamped, reused, seen = [], 0, 0, set()
+    ordered = sorted(document["jobs"], key=lambda raw: (raw.get("attempt") or 0, str(raw.get("job"))))
+    for raw in ordered:
+        runner = raw.get("runner") or ""
+        created, started, completed = (epoch(raw.get(key)) for key in
+                                       ("createdAt", "startedAt", "completedAt"))
+        if not runner.startswith(prefix) or started is None or completed is None:
+            continue
+        if runner not in pool:
+            # A pool runner missing from --pool would silently shrink the model.
+            fail(f"Job {raw.get('job')} ran on {runner}, which --pool does not list.")
+        if created is None or not since <= created < until:
+            continue
+        # A failed-jobs re-run lists the jobs it reused from an earlier attempt
+        # again, with the same runner and timestamps; count that execution once.
+        execution = (raw.get("repository"), raw.get("run"), raw.get("name"), runner,
+                     raw.get("startedAt"), raw.get("completedAt"))
+        if execution in seen:
+            reused += 1
+            continue
+        seen.add(execution)
+        if completed < started:
+            fail(f"Job {raw.get('job')} completes before it starts.")
+        if started < created:
+            # A re-run keeps its original created_at; treat it as dispatched at start.
+            created = started
+            clamped += 1
+        jobs.append({
+            "key": (raw["repository"], raw["run"], raw.get("attempt")),
+            "id": raw.get("job"), "class": classify(raw), "runner": runner,
+            "created": created, "started": started, "completed": completed,
+            "duration": completed - started,
+        })
+    if not jobs:
+        fail("No completed pool jobs in the selected window.")
+    jobs.sort(key=lambda job: (job["created"], str(job["id"])))
+    return document, jobs, clamped, reused
+
+
+def simulate(jobs, runners, reserve, seed):
+    # Event-driven replay: FIFO dispatch over idle eligible runners, a seeded
+    # random choice among ties, and in-run dependency delay propagation. A job
+    # created after an earlier job of its run completed waits for that job's
+    # simulated completion, preserving the observed gap between them. Only a
+    # job earlier in (created, position) order can be a predecessor, so short
+    # or zero-length jobs created together cannot depend on one another.
+    rng = random.Random(seed)
+    general_only = set(runners[len(runners) - reserve:]) if reserve else set()
+    by_run = {}
+    for index, job in enumerate(jobs):
+        by_run.setdefault(job["key"], []).append(index)
+    predecessors = [[] for _ in jobs]
+    dependents = [[] for _ in jobs]
+    for members in by_run.values():
+        for index in members:
+            for other in members:
+                earlier = (jobs[other]["created"], other) < (jobs[index]["created"], index)
+                if earlier and jobs[other]["completed"] <= jobs[index]["created"] + 1:
+                    predecessors[index].append(other)
+                    dependents[other].append(index)
+    outstanding = [len(items) for items in predecessors]
+    finish = [None] * len(jobs)
+    start = [None] * len(jobs)
+    arrival = [None] * len(jobs)
+    events = []
+    sequence = 0
+    for index, job in enumerate(jobs):
+        if not predecessors[index]:
+            heapq.heappush(events, (job["created"], 1, sequence, "arrive", index, None))
+            sequence += 1
+    idle = set(runners)
+    queue = []
+    while events:
+        now, _, _, kind, index, runner = heapq.heappop(events)
+        if kind == "finish":
+            finish[index] = now
+            idle.add(runner)
+            for dependent in dependents[index]:
+                outstanding[dependent] -= 1
+                if outstanding[dependent] == 0:
+                    shift = max(finish[item] - jobs[item]["completed"]
+                                for item in predecessors[dependent])
+                    ready = max(now, jobs[dependent]["created"] + max(0.0, shift))
+                    heapq.heappush(events, (ready, 1, sequence, "arrive", dependent, None))
+                    sequence += 1
+        else:
+            arrival[index] = now
+            queue.append(index)
+        if events and events[0][0] == now:
+            continue
+        waiting = []
+        for item in sorted(queue, key=lambda value: (arrival[value], value)):
+            eligible = sorted(name for name in idle if not (
+                name in general_only and is_qualification(jobs[item]["class"])))
+            if not eligible:
+                waiting.append(item)
+                continue
+            chosen = rng.choice(eligible)
+            idle.discard(chosen)
+            start[item] = now
+            heapq.heappush(events, (now + jobs[item]["duration"], 0, sequence, "finish", item, chosen))
+            sequence += 1
+        queue = waiting
+    if any(value is None for value in finish):
+        fail("Replay left jobs unscheduled; the pool cannot run every class.")
+    return arrival, start, finish
+
+
+def makespans(jobs, finish):
+    runs = {}
+    for index, job in enumerate(jobs):
+        if is_qualification(job["class"]):
+            runs.setdefault(job["key"], []).append(index)
+    return [max(finish[index] for index in members) - min(jobs[index]["created"] for index in members)
+            for members in runs.values()]
+
+
+def report(arguments):
+    values = options(arguments, ("--input", "--pool", "--since", "--until", "--pool-prefix",
+                                 "--reserve", "--seeds", "--probe-seconds", "--probe-step"),
+                     switches=("--summary",))
+    if not values.get("--input"):
+        fail("--input is required.")
+    reserves = sorted({int(item) for item in (values.get("--reserve") or "0,1,2").split(",")})
+    seeds = int(values.get("--seeds") or 3)
+    probe_seconds = float(values.get("--probe-seconds") or 316)
+    probe_step = int(values.get("--probe-step") or 30)
+    if seeds < 1 or probe_seconds <= 0 or probe_step < 1:
+        fail("--seeds, --probe-seconds and --probe-step must be positive.")
+    # The pool is an explicit inventory: a runner that ran nothing in the window
+    # still serves jobs in the replay. The last `reserve` names stay general.
+    runners = sorted({name for name in (values.get("--pool") or "").split(",") if name})
+    if not runners:
+        fail("--pool is required: list every runner in the pool, busy or idle.")
+    # Jobs are selected by prefix and must then belong to --pool, so every
+    # inventory name must carry the prefix; otherwise a listed runner would add
+    # capacity while its own work was silently excluded.
+    prefix = values.get("--pool-prefix") or "gh-runner-"
+    outside = [name for name in runners if not name.startswith(prefix)]
+    if outside:
+        fail(f"--pool names must start with --pool-prefix {prefix}: {outside}")
+    document, jobs, clamped, reused = load(values, set(runners))
+    if any(reserve < 0 or reserve >= len(runners) for reserve in reserves):
+        fail(f"--reserve must leave at least one qualification runner of {len(runners)}.")
+    classes = sorted({job["class"] for job in jobs})
+
+    observed_waits = {cls: summarize([job["started"] - job["created"] for job in jobs
+                                      if job["class"] == cls]) for cls in classes}
+    points = sorted([(job["started"], 1) for job in jobs] + [(job["completed"], -1) for job in jobs])
+    current = peak = 0
+    for _, delta in points:
+        current += delta
+        peak = max(peak, current)
+
+    replay = {}
+    for reserve in reserves:
+        waits = {cls: [] for cls in classes}
+        spans = []
+        for seed in range(seeds):
+            arrival, start, finish = simulate(jobs, runners, reserve, seed)
+            for index, job in enumerate(jobs):
+                waits[job["class"]].append(start[index] - arrival[index])
+            spans.extend(makespans(jobs, finish))
+        replay[str(reserve)] = {
+            "generalOnlyRunners": runners[len(runners) - reserve:] if reserve else [],
+            "waits": {cls: summarize(items) for cls, items in waits.items()},
+            "qualificationMakespan": summarize(spans, waits=False),
+        }
+
+    # Stress: inject a ready-PR Build and Unit every probe step through each
+    # observed qualification run, alone and with a v1 push arriving at the same
+    # moment ahead of or behind it. Each arrival order is reported separately.
+    qualification_runs = {}
+    for job in jobs:
+        if is_qualification(job["class"]):
+            qualification_runs.setdefault(job["key"], []).append(job)
+    scenarios = {"alone": ("pr",), "pr-then-push": ("pr", "push"), "push-then-pr": ("push", "pr")}
+    stress = {}
+    for reserve in reserves:
+        probes, isolated = {name: [] for name in scenarios}, []
+        for key in sorted(qualification_runs, key=str):
+            members = qualification_runs[key]
+            first = min(job["created"] for job in members)
+            last = max(job["completed"] for job in members)
+            context = [job for job in jobs if job["created"] < last + 600 and job["completed"] > first - 600]
+            for offset in range(0, max(1, int(last - first)), probe_step):
+                for scenario, order in scenarios.items():
+                    # Equal arrivals dispatch in id order, so the ids fix the order.
+                    injected = [{"key": ("probe", offset, kind), "id": f"probe-{position}",
+                                 "class": "ready-pr" if kind == "pr" else "v1-push",
+                                 "created": first + offset, "completed": first + offset + probe_seconds,
+                                 "duration": probe_seconds} for position, kind in enumerate(order)]
+                    combined = sorted(context + injected, key=lambda job: (job["created"], str(job["id"])))
+                    probe = combined.index(injected[order.index("pr")])
+                    for seed in range(seeds):
+                        arrival, start, _ = simulate(combined, runners, reserve, seed)
+                        probes[scenario].append(start[probe] - arrival[probe])
+            for seed in range(seeds):
+                _, _, finish = simulate(sorted(members, key=lambda job: (job["created"], str(job["id"]))),
+                                        runners, reserve, seed)
+                isolated.append(max(finish) - first)
+        stress[str(reserve)] = {"injectedReadyPrWait": {name: summarize(items)
+                                                        for name, items in probes.items()},
+                                "isolatedQualificationMakespan": summarize(isolated, waits=False)}
+
+    result = {
+        "schema": SCHEMA_REPORT,
+        "input": {"schema": document["schema"], "window": document.get("window"),
+                  "repositories": document.get("repositories"),
+                  "selected": {"since": values.get("--since"), "until": values.get("--until")}},
+        "pool": {"runners": runners, "observedPeakConcurrent": peak,
+                 "idleInWindow": sorted(set(runners) - {job["runner"] for job in jobs})},
+        "observed": {"jobs": len(jobs), "rerunCreatedClamped": clamped,
+                     "reusedAttemptJobsDropped": reused, "waits": observed_waits,
+                     "qualificationMakespan": summarize(
+                         makespans(jobs, [job["completed"] for job in jobs]), waits=False)},
+        "model": {"seeds": seeds, "reserves": reserves, "probeSeconds": probe_seconds,
+                  "probeStep": probe_step, "dispatch": "fifo-random-eligible-runner",
+                  "scenarios": {name: list(order) for name, order in scenarios.items()},
+                  "note": "modeled replay, not an observed measurement"},
+        "replay": replay,
+        "stress": stress,
+    }
+    if values["--summary"]:
+        lines = ["| Class | n | p50 | p90 | p99 | max | >60s |", "|---|---:|---:|---:|---:|---:|---:|"]
+        for cls, item in observed_waits.items():
+            lines.append(f"| {cls} | {item['n']} | {item['p50']} | {item['p90']} | "
+                         f"{item['p99']} | {item['max']} | {item['over60']} |")
+        lines += ["", "Observed queue wait in seconds; modeled results follow.", "",
+                  "| Reserve | Scenario | injected ready-PR mean/p99/max | >60s of n |"
+                  " qualification makespan mean |",
+                  "|---:|---|---:|---:|---:|"]
+        for reserve in reserves:
+            span = stress[str(reserve)]["isolatedQualificationMakespan"]
+            for scenario, probe in stress[str(reserve)]["injectedReadyPrWait"].items():
+                lines.append(f"| {reserve} | {scenario} | {probe.get('mean')}/{probe.get('p99')}/"
+                             f"{probe.get('max')} | {probe.get('over60')} of {probe.get('n')} | "
+                             f"{span.get('mean')} |")
+        print("\n".join(lines))
+    else:
+        print(json.dumps(result, sort_keys=True))
+
+
+command, arguments = sys.argv[1], sys.argv[2:]
+{"collect": collect, "verify-labels": verify_labels, "report": report}[command](arguments)
+PY
