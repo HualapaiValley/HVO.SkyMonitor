@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -57,6 +58,7 @@ public sealed partial class DurableCaptureDistributionTests
             {
                 services.AddSingleton<IRawEvidenceOperations>(ingress);
                 services.AddSingleton(new OutboxOperationsTokenService(new EphemeralDataProtectionProvider(), TimeSpan.FromMinutes(5)));
+                services.AddDataProtection().UseEphemeralDataProtectionProvider();
                 services.AddAuthentication(RecoveryOwnerAuthentication.SchemeName)
                     .AddScheme<AuthenticationSchemeOptions, RecoveryOwnerAuthentication>(RecoveryOwnerAuthentication.SchemeName, _ => { });
                 services.AddAuthorization(options =>
@@ -90,7 +92,7 @@ public sealed partial class DurableCaptureDistributionTests
             Assert.IsFalse(coordinator.Snapshot.IsInitialized);
             var admission = coordinator.EnterAsync(timeout.Token).AsTask();
             Assert.IsFalse(admission.IsCompleted, "Unreleased evidence must keep capture admission closed.");
-            using var handler = new HttpClientHandler { CookieContainer = new CookieContainer() };
+            using var handler = new HttpClientHandler { CookieContainer = new CookieContainer(), CheckCertificateRevocationList = true };
             using var client = new HttpClient(handler)
             {
                 BaseAddress = new Uri(host.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single())
@@ -169,6 +171,30 @@ public sealed partial class DurableCaptureDistributionTests
         CollectionAssert.AreEqual(new byte[] { 1, 2, 0, 4 }, await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false));
     }
 
+    [TestMethod]
+    public async Task RevalidationPreservesUnrelatedRequiredLaneQuarantine()
+    {
+        using var fixture = CreateFixture(new() { UploadEnabled = true });
+        var receipt = await fixture.AcceptAsync(0).ConfigureAwait(false);
+        var upload = await fixture.ClaimAsync("upload").ConfigureAwait(false);
+        Assert.IsNotNull(upload);
+        await fixture.Store.FailAsync(upload, CaptureLaneHandlerResult.Terminal("provider-configuration-invalid"), CancellationToken.None).ConfigureAwait(false);
+        var backup = Path.Combine(fixture.Root, "unrelated-recovery.bin");
+        File.Move(receipt.StoredFrame.AbsolutePath, backup);
+        Assert.IsNull(await fixture.Store.ClaimAsync(fixture.Policy.Definitions.Single(lane => lane.Name == "standard"),
+            "evidence-reader", fixture.Configuration, CancellationToken.None).ConfigureAwait(false));
+        var item = (await fixture.Ingress.ReadEvidencePageAsync(10, null, CancellationToken.None).ConfigureAwait(false)).Items.Single();
+        File.Move(backup, receipt.StoredFrame.AbsolutePath);
+        await fixture.Ingress.ReleaseEvidenceAsync(item.Target, RawEvidenceReleaseAction.Revalidate,
+            "unrelated-revalidation", "recovery-owner", "evidence-restored", CancellationToken.None).ConfigureAwait(false);
+        using var connection = await OpenAsync(fixture.Root).ConfigureAwait(false);
+        Assert.AreEqual("quarantined", await ScalarStringAsync(connection, "SELECT state FROM capture_lane_work WHERE lane_name='upload';").ConfigureAwait(false));
+        Assert.AreEqual("provider-configuration-invalid", await ScalarStringAsync(connection, "SELECT failure_reason FROM capture_lane_work WHERE lane_name='upload';").ConfigureAwait(false));
+        await Assert.ThrowsExactlyAsync<CaptureLaneBackpressureException>(() => fixture.AcceptAsync(1)).ConfigureAwait(false);
+        CollectionAssert.AreEqual(new byte[] { 1, 2, 0, 4 }, await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false));
+    }
+
+    [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "ASP.NET instantiates the registered authentication scheme handler through dependency injection.")]
     private sealed class RecoveryOwnerAuthentication(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)
         : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
     {

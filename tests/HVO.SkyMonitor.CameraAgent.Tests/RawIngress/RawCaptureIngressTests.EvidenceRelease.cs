@@ -5,6 +5,30 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 public sealed partial class RawCaptureIngressTests
 {
     [TestMethod]
+    public async Task EvidenceRecoveryMigratesCanonicalV14WithoutChangingCommittedRaw()
+    {
+        var root = CreateRoot();
+        try
+        {
+            RawCaptureReceipt receipt;
+            using (var original = CreateIngress(root, new(TimeProvider.System)))
+                receipt = (await original.AcceptAsync(CreateConfiguration(), CreateSubmission(Timestamp(1), [1, 2, 3, 4]), CancellationToken.None).ConfigureAwait(false))!;
+            using (var legacy = await OpenJournalAsync(root).ConfigureAwait(false))
+                await ExecuteTestSqlAsync(legacy, "PRAGMA user_version=14;").ConfigureAwait(false);
+            using var upgraded = CreateIngress(root, new(TimeProvider.System));
+            await upgraded.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(15L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+            CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4 }, await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false));
+            var retry = await upgraded.AcceptAsync(CreateConfiguration(), CreateSubmission(Timestamp(1), [1, 2, 3, 4]), CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(RawIngressOutcome.Existing, retry!.Outcome);
+            Assert.AreEqual(receipt.CommittedManifestSha256, retry.CommittedManifestSha256);
+        }
+        finally { DeleteRoot(root); }
+    }
+
+    [TestMethod]
     public async Task EvidenceRelease_PartialWriteOffCannotAdmitFreshCaptureAlreadyWaitingForLifecycleLock()
     {
         var root = CreateRoot();
