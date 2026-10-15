@@ -269,6 +269,7 @@ public sealed partial class CuratedDeepSkySceneTests
         var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible, transform,
             new ProjectedSceneSource(Guid.NewGuid(), Guid.NewGuid(), new string('B', 64)), new string('C', 64), "cal-v1");
         Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, scene.SchemaVersion);
+        Assert.AreEqual(scene.SchemaVersion, visible.ProjectedSceneSchemaVersion);
         Assert.IsEmpty(scene.DeepSky!.Objects);
         Assert.IsNull(scene.ResolvedFootprints);
         var parsed = ProjectedSceneJson.Parse(ProjectedSceneJson.Serialize(scene));

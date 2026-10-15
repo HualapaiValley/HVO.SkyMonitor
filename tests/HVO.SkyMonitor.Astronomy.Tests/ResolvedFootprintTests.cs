@@ -178,11 +178,14 @@ public sealed class ResolvedFootprintTests
         var scene = await BuildAsync(utc, Fisheye(1000, 3200, 3200, 1590)).ConfigureAwait(false);
         var v1 = ProjectedSceneJson.Create(ProjectedSceneKind.VirtualRenderAuthoritative, scene,
             ProjectedSceneImageTransformV1.Identity(3200, 3200), Source(), "calibration-v1", scene.Request.ProjectionVersion);
+        var resolvedScene = scene.WithResolvedBodies([SolarDiskEphemeris.Get(SolarSystemBody.Moon, utc, Site)]);
         var v2 = ProjectedSceneJson.Create(ProjectedSceneKind.VirtualRenderAuthoritative,
-            scene.WithResolvedBodies([SolarDiskEphemeris.Get(SolarSystemBody.Moon, utc, Site)]),
+            resolvedScene,
             ProjectedSceneImageTransformV1.Identity(3200, 3200), Source(), "calibration-v1", scene.Request.ProjectionVersion);
 
         Assert.AreEqual(ProjectedSceneV1.CurrentSchemaVersion, v1.SchemaVersion);
+        Assert.AreEqual(v1.SchemaVersion, scene.ProjectedSceneSchemaVersion);
+        Assert.AreEqual(v2.SchemaVersion, resolvedScene.ProjectedSceneSchemaVersion);
         Assert.IsNull(v1.ResolvedFootprints);
         var v1Json = Encoding.UTF8.GetString(ProjectedSceneJson.Serialize(v1));
         Assert.DoesNotContain("resolvedFootprints", v1Json);
