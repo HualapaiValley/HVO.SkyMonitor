@@ -54,10 +54,14 @@ internal sealed partial class ExecutionEvidenceService(
             .ConfigureAwait(false) >= _options.MaximumBindingsPerRegistration) { throw new ExecutionEvidencePressureException(); }
         var binding = new ExecutionEvidenceBinding
         {
-            ObservatoryId = request.ObservatoryId, RegistrationId = request.RegistrationId,
-            LogicalCameraInstallationId = request.LogicalCameraInstallationId, InstallationPublicId = registration.DevicePublicId.Value,
-            OriginInstallationId = request.OriginInstallationId, AgentInstanceId = request.AgentInstanceId,
-            CreatedAtUtc = timeProvider.GetUtcNow(), CreatedByUserId = actorUserId
+            ObservatoryId = request.ObservatoryId,
+            RegistrationId = request.RegistrationId,
+            LogicalCameraInstallationId = request.LogicalCameraInstallationId,
+            InstallationPublicId = registration.DevicePublicId.Value,
+            OriginInstallationId = request.OriginInstallationId,
+            AgentInstanceId = request.AgentInstanceId,
+            CreatedAtUtc = timeProvider.GetUtcNow(),
+            CreatedByUserId = actorUserId
         };
         _db.Add(binding);
         _db.Add(new ExecutionEvidenceBindingUsage { BindingId = binding.Id });
@@ -145,8 +149,10 @@ internal sealed partial class ExecutionEvidenceService(
             if (usage.OriginCount >= _options.MaximumOriginsPerBinding) { throw new ExecutionEvidencePressureException(); }
             origin = new ImportedExecutionEvidenceOrigin
             {
-                BindingId = binding.Id, IdentitySha256 = envelope.Origin.IdentitySha256,
-                BootSessionId = envelope.Origin.BootSessionId, SoftwareVersion = envelope.Origin.SoftwareVersion,
+                BindingId = binding.Id,
+                IdentitySha256 = envelope.Origin.IdentitySha256,
+                BootSessionId = envelope.Origin.BootSessionId,
+                SoftwareVersion = envelope.Origin.SoftwareVersion,
                 FirstReceivedAtUtc = now
             };
             _db.Add(origin);
@@ -169,8 +175,11 @@ internal sealed partial class ExecutionEvidenceService(
                     RequireCapacity(usage, 512, conflict: true);
                     conflict = new ImportedExecutionEvidenceConflict
                     {
-                        BindingId = binding.Id, UnitId = stored.Id, SubmittedEvidenceId = envelope.EvidenceId,
-                        SubmittedPayloadSha256 = envelope.PayloadSha256, OccurredAtUtc = now
+                        BindingId = binding.Id,
+                        UnitId = stored.Id,
+                        SubmittedEvidenceId = envelope.EvidenceId,
+                        SubmittedPayloadSha256 = envelope.PayloadSha256,
+                        OccurredAtUtc = now
                     };
                     _db.Add(conflict);
                     usage.ConflictCount++;
@@ -202,14 +211,23 @@ internal sealed partial class ExecutionEvidenceService(
                 RequireCapacity(usage, cost);
                 stored = new ImportedExecutionEvidenceUnit
                 {
-                    BindingId = binding.Id, OriginId = origin.Id, OriginSequence = envelope.OriginSequence,
-                    EvidenceId = envelope.EvidenceId, PayloadSha256 = envelope.PayloadSha256, Kind = envelope.Kind.ToString(),
+                    BindingId = binding.Id,
+                    OriginId = origin.Id,
+                    OriginSequence = envelope.OriginSequence,
+                    EvidenceId = envelope.EvidenceId,
+                    PayloadSha256 = envelope.PayloadSha256,
+                    Kind = envelope.Kind.ToString(),
                     RevisionId = envelope.GraphRevision?.RevisionId ?? envelope.Execution?.GraphRevisionId,
                     ExecutionId = envelope.Execution?.ExecutionId ?? envelope.Availability?.ExecutionId,
-                    CaptureId = envelope.Execution?.CaptureId, CorrectsEvidenceId = envelope.Correction?.CorrectsEvidenceId,
+                    CaptureId = envelope.Execution?.CaptureId,
+                    CorrectsEvidenceId = envelope.Correction?.CorrectsEvidenceId,
                     CorrectsOriginSequence = envelope.Correction?.CorrectsOriginSequence,
-                    ProducedAtUtc = envelope.ProducedAtUtc, ReceivedAtUtc = now, CanonicalBytes = bytes.ToArray(),
-                    Accepted = validation.IsValid, RejectionReasonCode = validation.ReasonCode, RejectionFieldPath = validation.FieldPath
+                    ProducedAtUtc = envelope.ProducedAtUtc,
+                    ReceivedAtUtc = now,
+                    CanonicalBytes = bytes.ToArray(),
+                    Accepted = validation.IsValid,
+                    RejectionReasonCode = validation.ReasonCode,
+                    RejectionFieldPath = validation.FieldPath
                 };
                 _db.Add(stored);
                 usage.UnitCount++;

@@ -118,11 +118,18 @@ internal sealed partial class ExecutionEvidenceService
     {
         var records = references.Select((reference, ordinal) => new ImportedExecutionEvidenceArtifact
         {
-            BindingId = bindingId, UnitId = unitId, Ordinal = ordinal,
-            ArtifactId = reference.ArtifactId, CaptureId = reference.CaptureId,
-            OutputIdentitySha256 = reference.OutputIdentitySha256, PayloadSha256 = reference.PayloadSha256,
-            DescriptorSha256 = reference.DescriptorSha256, PayloadLength = reference.PayloadLength,
-            MediaType = reference.MediaType, Role = reference.Role?.ToString(), Variant = reference.Variant
+            BindingId = bindingId,
+            UnitId = unitId,
+            Ordinal = ordinal,
+            ArtifactId = reference.ArtifactId,
+            CaptureId = reference.CaptureId,
+            OutputIdentitySha256 = reference.OutputIdentitySha256,
+            PayloadSha256 = reference.PayloadSha256,
+            DescriptorSha256 = reference.DescriptorSha256,
+            PayloadLength = reference.PayloadLength,
+            MediaType = reference.MediaType,
+            Role = reference.Role?.ToString(),
+            Variant = reference.Variant
         }).ToArray();
         _db.AddRange(records);
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);

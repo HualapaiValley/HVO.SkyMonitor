@@ -90,6 +90,13 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         Assert.AreEqual(0, pending.Facts.Length);
         Assert.AreEqual(1, pending.MissingRanges[0].FromSequence);
         Assert.AreEqual(2, pending.MissingRanges[0].ToSequence);
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var status = await scope.ServiceProvider.GetRequiredService<ExecutionEvidenceService>()
+                .GetStatusAsync(device.BindingId, device.OwnerId, null).ConfigureAwait(false);
+            Assert.AreEqual(1, status!.OriginsWithGaps);
+            Assert.IsNotNull(status.OldestGapDetectedAtUtc);
+        }
         using var revision = await PostAsync(client, device, Reorigin(await FixtureAsync("revision-local").ConfigureAwait(false), device)).ConfigureAwait(false);
         Assert.AreEqual(1, (await FeedbackAsync(revision).ConfigureAwait(false)).ContiguousThroughSequence);
         using var retry = await PostAsync(client, device, execution).ConfigureAwait(false);
@@ -98,7 +105,8 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         Assert.AreEqual(0, converged.MissingRanges.Length);
         var correction = GraphExecutionEvidenceJson.Seal(execution with
         {
-            OriginSequence = 4, EvidenceId = Guid.NewGuid(),
+            OriginSequence = 4,
+            EvidenceId = Guid.NewGuid(),
             Correction = new(ExecutionEvidenceCorrectionV1.CurrentSchemaVersion, Guid.NewGuid(), 3, "corrected")
         });
         using var missingPredecessor = await PostAsync(client, device, correction).ConfigureAwait(false);

@@ -93,7 +93,13 @@ internal sealed partial class ExecutionEvidenceService
         var units = await _db.Set<ImportedExecutionEvidenceUnit>().AsNoTracking().Where(u => u.OriginId == originId && u.OriginSequence > afterSequence)
             .OrderBy(u => u.OriginSequence).Take(take).Select(u => new
             {
-                u.EvidenceId, u.OriginSequence, u.PayloadSha256, u.ReceivedAtUtc, u.Accepted, u.RejectionReasonCode, u.RejectionFieldPath
+                u.EvidenceId,
+                u.OriginSequence,
+                u.PayloadSha256,
+                u.ReceivedAtUtc,
+                u.Accepted,
+                u.RejectionReasonCode,
+                u.RejectionFieldPath
             }).ToListAsync(cancellationToken).ConfigureAwait(false);
         var facts = ImmutableArray.CreateBuilder<ExecutionEvidenceFactV1>();
         foreach (var unit in units)

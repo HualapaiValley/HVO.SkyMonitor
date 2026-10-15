@@ -53,8 +53,12 @@ internal sealed class ExecutionEvidenceReconciler(ExecutionEvidenceDatabase data
                 check.ObjectGeneration = observation.Generation;
                 _db.Add(new ImportedExecutionEvidenceObservation
                 {
-                    BindingId = binding.Id, ArtifactReferenceId = id, State = observation.State,
-                    ReasonCode = observation.Reason, ObjectGeneration = observation.Generation, ObservedAtUtc = observedAt
+                    BindingId = binding.Id,
+                    ArtifactReferenceId = id,
+                    State = observation.State,
+                    ReasonCode = observation.Reason,
+                    ObjectGeneration = observation.Generation,
+                    ObservedAtUtc = observedAt
                 });
                 usage.ObservationCount++;
                 usage.StoredBytes += 512;

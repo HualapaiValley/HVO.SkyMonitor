@@ -150,7 +150,39 @@ public sealed partial class ExecutionEvidenceIntegrationTests
             $"UPDATE [ImportedExecutionEvidenceConflicts] SET [SubmittedPayloadSha256] = REPLICATE('B', 64) WHERE [BindingId] = {device.BindingId}")).ConfigureAwait(false);
         await Assert.ThrowsExactlyAsync<SqlException>(() => db.Database.ExecuteSqlInterpolatedAsync(
             $"DELETE FROM [ImportedExecutionEvidenceUnits] WHERE [BindingId] = {device.BindingId}")).ConfigureAwait(false);
+        var otherBinding = await SeedAsync().ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<SqlException>(() => db.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO [ImportedExecutionEvidenceUnits]
+                ([BindingId], [OriginId], [OriginSequence], [EvidenceId], [PayloadSha256], [Kind], [ProducedAtUtc], [ReceivedAtUtc], [CanonicalBytes], [Accepted])
+            SELECT {otherBinding.BindingId}, [OriginId], [OriginSequence] + 1, NEWID(), [PayloadSha256], [Kind], [ProducedAtUtc], [ReceivedAtUtc], [CanonicalBytes], 1
+            FROM [ImportedExecutionEvidenceUnits] WHERE [BindingId] = {device.BindingId}
+            """)).ConfigureAwait(false);
         Assert.IsFalse(db.Database.HasPendingModelChanges());
+    }
+
+    [TestMethod]
+    public async Task SqlOutageInIsolatedEvidencePoolCannotAcknowledgeOrAffectTheMainContext()
+    {
+        var device = await SeedAsync().ConfigureAwait(false);
+        var unit = Reorigin(await FixtureAsync("revision-local").ConfigureAwait(false), device);
+        using var client = AssemblyHooks.Fixture.Factory.CreateClient();
+        using var initial = await PostAsync(client, device, unit).ConfigureAwait(false);
+        var accepted = await FeedbackAsync(initial).ConfigureAwait(false);
+        await using var unavailableContext = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseSqlServer("Server=127.0.0.1,1;Database=EvidenceUnavailable;User Id=unavailable;Password=Unavailable_test1!;TrustServerCertificate=True;Connect Timeout=1").Options);
+        var options = Options.Create(new ExecutionEvidenceOptions { SqlTimeoutSeconds = 1 });
+        await using var evidenceDatabase = new ExecutionEvidenceDatabase(unavailableContext, options);
+        using var telemetry = new ExecutionEvidenceTelemetry();
+        var unavailable = new ExecutionEvidenceService(evidenceDatabase, options, TimeProvider.System, telemetry);
+        await Assert.ThrowsExactlyAsync<SqlException>(() => unavailable.ReceiveAsync(device.DeviceId, device.DeviceKey,
+            unit.Origin.IdentitySha256, new ReadOnlyMemory<byte>[] { GraphExecutionEvidenceJson.Serialize(unit) })).ConfigureAwait(false);
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        Assert.IsTrue(await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>().DeviceRegistrations
+            .AnyAsync(r => r.Id == device.RegistrationId).ConfigureAwait(false));
+        using var retried = await PostAsync(client, device, unit).ConfigureAwait(false);
+        var duplicate = await FeedbackAsync(retried).ConfigureAwait(false);
+        Assert.AreEqual(accepted.Facts[^1].OccurredAtUtc, duplicate.Facts[^1].OccurredAtUtc);
+        Assert.IsTrue(duplicate.Facts.All(f => f.Duplicate));
     }
 
     [TestMethod]
