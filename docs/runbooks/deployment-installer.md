@@ -249,7 +249,7 @@ the same pipeline, standard processing of that earlier work cannot run:
   earlier version quarantined for `processing-expired` is converted to
   abandoned, so it stops blocking ingress.
 - Genuinely corrupt or missing raw evidence still quarantines and refuses new
-  captures. That is unchanged and needs the evidence recovery path.
+  captures until an authorized operator releases each affected capture.
 - An archived replay accepted by the previous version, whose frozen plan this
   version no longer builds, is **abandoned** on its first claim. Its execution
   and work become `Expired` with `processing.plan-superseded`. Its unfinished
@@ -286,6 +286,64 @@ lost attempt still counts toward `ReplayMaximumAttempts`, so a replay that
 keeps killing its host cannot loop forever. Within its remaining attempts and
 deadline it retries on its own. When they are spent it fails terminally, as
 any replay does.
+
+Open **Quarantine → Raw evidence quarantine and releases**
+(`/operations/quarantine?kind=RawEvidence`). Review the capture identity and
+failure, then choose one of these audited actions:
+
+When the journal is valid but raw evidence is missing or corrupt, the host keeps
+the authenticated operator surface available while capture admission and lane
+processing wait for audited recovery. Configuration, schedule, named-rig and
+calibration metadata still initialize against the validated journal. Pending
+calibration-acquisition recovery waits for evidence release and preserves its
+job if the host stops meanwhile. A persisted capture pause remains paused after
+release; resume it explicitly when appropriate. Unsupported schemas and other
+integrity failures still fail startup.
+
+- **Revalidate:** recover the exact original payload and sidecar at their
+  committed paths from trusted recovery evidence. Preserve the quarantined
+  copies. The action verifies the complete manifest, capture identity, payload
+  length and SHA-256, synchronizes the recovered files, and durably records
+  actor, `evidence-restored`, and UTC time before releasing the failure. Merely
+  putting files back or restarting no longer releases an existing failure.
+  Evidence-failed standard work remains terminal and its lane is abandoned with
+  `raw-evidence-revalidated`; use explicitly requested archived replay for that
+  recovered capture. Other evidence-failed lanes return to their queue with their
+  original age and expiry rules. Unrelated quarantines remain unchanged.
+- **Write off:** explicitly acknowledge irrecoverable evidence or approved loss.
+  This records a terminal disposition with actor, controlled reason and UTC
+  time, abandons that capture's pending lanes, and preserves its original
+  identity and all remaining raw files. Written-off evidence stays protected
+  from retention and cannot be reaccepted or automatically recovered on restart.
+  This action does not reclaim disk space. A capture with a leased lane must
+  settle that lease before either action can apply.
+
+Both actions keep the released capture's raw evidence protected from ordinary
+retention, including after lane holds are recomputed. Revalidation also does not
+reclaim disk space.
+
+The owner-authenticated operations API exposes the same bounded history through
+`GET /api/v1/operations/raw-evidence?pageSize=25`. Use its action-specific token
+in `POST /api/v1/operations/raw-evidence/revalidate` or
+`POST /api/v1/operations/raw-evidence/write-off`, with JSON
+`{ "actionToken": "<token>", "reasonCode": "<controlled reason>" }`, an
+`Idempotency-Key` header, and the ordinary antiforgery token. Write-off reasons
+are `irrecoverable-evidence` and `operator-approved-loss`. A duplicate request
+returns the original audit receipt; reusing its key for another command
+conflicts. Paths are not returned by this API. Releases persist in the raw
+journal's reserved `raw-evidence-release.*` capture events, and write-off also
+records `raw-evidence-written-off` as its terminal disposition.
+
+The next admission attempt reinitializes ingress; other unresolved evidence
+failures continue to refuse captures. No release deletes or rewrites raw data.
+
+Audited recovery requires raw-journal version 15. A canonical v13 or v14 journal
+upgrades transactionally through the declared `canonical-v13-v14-to-v15`
+transition. The image and signed release must declare schema 15 and that
+migration. Older readers cannot preserve these dispositions, so installer
+preflight refuses rollback to an image declaring an earlier raw-journal version;
+the earlier runtime also refuses the v15 journal. Select a compatible image
+instead of deleting or resetting evidence to force a rollback.
 
 A Named active revision compiled by the earlier version cannot run any live work.
 In that case:

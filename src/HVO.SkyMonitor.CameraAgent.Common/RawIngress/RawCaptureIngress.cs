@@ -14,8 +14,9 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
-internal sealed class RawCaptureIngress :
+internal sealed partial class RawCaptureIngress :
     IRawCaptureIngress,
+    IRawEvidenceOperations,
     IRawIngressRetentionHolds,
     IRawIngressRecoveryControl,
     IRawIngressPressureReporter,
@@ -43,6 +44,7 @@ internal sealed class RawCaptureIngress :
     private readonly CapturePipelineTraceStore? _captureTraceStore;
     private bool _initialized;
     private bool _journalValidated;
+    private bool _evidenceUnavailable;
     private bool _capacityRevalidationRequired;
     private long _minimumRecoveryCapacityBytes;
     private FileStream? _processLock;
@@ -106,7 +108,8 @@ internal sealed class RawCaptureIngress :
             _lanePolicy,
             timeProvider,
             resolvedLaneFaultInjector,
-            laneTelemetry is null ? null : new Action<TimeSpan>(laneTelemetry.RecordLockWait));
+            laneTelemetry is null ? null : new Action<TimeSpan>(laneTelemetry.RecordLockWait),
+            InvalidateEvidence);
     }
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
@@ -135,6 +138,7 @@ internal sealed class RawCaptureIngress :
                 _processLock ??= AcquireProcessLock();
                 using var initializationActivity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.initialize");
                 Volatile.Write(ref _journalValidated, false);
+                Volatile.Write(ref _evidenceUnavailable, false);
                 await SqliteTransientRuntimeStore.ValidateExistingRuntimeSchemaAsync(
                     _options.RawIngressRoot,
                     _options.RawIngressSqliteBusyTimeoutSeconds,
@@ -194,6 +198,7 @@ internal sealed class RawCaptureIngress :
                 _state.SetProjectedSceneBacklog(projectedSceneBacklog);
                 if (baseAvailability == RawIngressAvailability.Unhealthy)
                 {
+                    Volatile.Write(ref _evidenceUnavailable, true);
                     throw new InvalidDataException("Raw ingress has committed records with missing evidence.");
                 }
                 _logger.RawIngressReconciled(
@@ -220,6 +225,12 @@ internal sealed class RawCaptureIngress :
             catch (OperationCanceledException)
             {
                 // Shutdown during initialization is not an integrity failure: no Critical log, availability untouched.
+                throw;
+            }
+            catch (InvalidDataException) when (_journalValidated && _evidenceUnavailable)
+            {
+                // The validated journal has already published its evidence health and retained quarantine.
+                _telemetry.RecordFailure("initialization", "evidence-unavailable");
                 throw;
             }
             catch (Exception exception)
@@ -294,8 +305,20 @@ internal sealed class RawCaptureIngress :
             {
                 await _laneStore.EnsureCanAcceptAsync(frame.PixelData.Length, cancellationToken).ConfigureAwait(false);
             }
+            _faultInjector.Inject(RawIngressFaultPoint.BeforeAcceptanceLifecycleLock);
             await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             lifecycleAcquired = true;
+            // An audited write-off can settle while a retry waits for this lock. Recheck the durable
+            // state before opening or publishing any old identity; fresh captures keep their single read.
+            if (existingCapture.Exists &&
+                !(await _journal.ReadCommittedCaptureStateAsync(stableIds.CaptureId, cancellationToken).ConfigureAwait(false)).EvidenceRetained)
+            {
+                throw new RawIngressConflictException("Committed capture evidence is no longer retained.");
+            }
+            if (!Volatile.Read(ref _initialized))
+            {
+                throw new InvalidDataException("Raw ingress requires reconciliation before accepting another capture.");
+            }
             if (!existingCapture.Exists)
             {
                 EnsureCapacity(frame.PixelData.Length);
