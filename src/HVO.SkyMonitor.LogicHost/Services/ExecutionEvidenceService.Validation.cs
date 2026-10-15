@@ -34,7 +34,10 @@ internal sealed partial class ExecutionEvidenceService
             if (revision.Assignment is { } assignment)
             {
                 var proposal = await _db.CentralProcessingGraphDeliveryProposals.AsNoTracking().Include(p => p.Revision)
-                    .Include(p => p.Assignment).SingleOrDefaultAsync(p => p.Id == assignment.ProposalId, cancellationToken).ConfigureAwait(false);
+                    .Include(p => p.Assignment).SingleOrDefaultAsync(p => p.Id == assignment.ProposalId &&
+                        p.RegistrationId == binding.RegistrationId && p.LogicalCameraInstallationId == binding.LogicalCameraInstallationId &&
+                        p.InstallationPublicId == binding.InstallationPublicId, cancellationToken).ConfigureAwait(false);
+                // An out-of-scope proposal must be indistinguishable from an absent dependency.
                 if (proposal is null) { return Invalid(GraphExecutionEvidenceReasonCodes.UnknownPredecessor, "graphRevision.assignment"); }
                 if (assignment.RegistrationId != binding.RegistrationId ||
                     assignment.LogicalCameraInstallationId != binding.LogicalCameraInstallationId || assignment.InstallationPublicId != binding.InstallationPublicId ||

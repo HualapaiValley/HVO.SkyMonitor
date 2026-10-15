@@ -176,6 +176,9 @@ public sealed class TimeLapseGenerationTests
             ["CameraAgent:TimeLapses:RigProfileSha256"] = RigProjectionContextFactory.CreateProfileHashSha256(Rig()),
             ["CameraAgent:TimeLapses:Frames:MaximumSaturatedMillionths"] = saturationGate?.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["CameraAgent:TimeLapses:MaximumPublishedBytes"] = publicationBudget.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            // The unavailable-encoder fixture has four small frames, not a production-sized encode workspace.
+            ["CameraAgent:TimeLapses:Encoder:MaximumScratchBytes"] = missingEncoder ? "67108864" : null,
+            ["CameraAgent:TimeLapses:Encoder:MaximumOutputBytes"] = missingEncoder ? "67108864" : null,
             ["CameraAgent:TimeLapses:Encoder:ExecutablePath"] = missingEncoder ? Path.Combine(root, "missing-ffmpeg") : "/usr/bin/ffmpeg"
         }).Build());
         services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(calendar ?? NightlyProductFixture.Calendar));

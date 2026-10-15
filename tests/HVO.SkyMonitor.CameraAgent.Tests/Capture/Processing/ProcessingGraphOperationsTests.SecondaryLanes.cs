@@ -110,6 +110,23 @@ public sealed partial class ProcessingGraphOperationsTests
             finally { File.Move(backup, payload); }
             if (!standardFirst)
             {
+                if (lane.Required)
+                {
+                    // Restored bytes still require the integrated authority's explicit audited quarantine release.
+                    var evidence = provider.GetRequiredService<IRawEvidenceOperations>();
+                    var item = (await evidence.ReadEvidencePageAsync(10, null, CancellationToken.None).ConfigureAwait(false))
+                        .Items.Single(item => item.Target.CaptureId == receipt.Manifest.Descriptor.Capture.CaptureId);
+                    Assert.AreEqual(receipt.CommittedManifestSha256, item.Target.ManifestSha256);
+                    Assert.AreEqual("quarantined", item.Target.State);
+                    Assert.AreEqual("lane-evidence-invalid", item.Target.FailureReason);
+                    var released = await evidence.ReleaseEvidenceAsync(item.Target, RawEvidenceReleaseAction.Revalidate,
+                        "secondary-evidence-revalidation", "secondary-lane-test", "evidence-restored", CancellationToken.None).ConfigureAwait(false);
+                    Assert.IsFalse(released.Duplicate);
+                    Assert.AreEqual(RawEvidenceReleaseAction.Revalidate, released.Audit.Action);
+                    Assert.AreEqual("secondary-lane-test", released.Audit.Actor);
+                    Assert.AreEqual("evidence-restored", released.Audit.Reason);
+                    await AssertSecondaryGraphUnchangedAsync(operations, expected).ConfigureAwait(false);
+                }
                 await CompleteLiveAsync(provider, configuration).ConfigureAwait(false);
                 Assert.IsNull(await operations.ReadOldestActiveExecutionKeyAsync(CancellationToken.None).ConfigureAwait(false));
             }
