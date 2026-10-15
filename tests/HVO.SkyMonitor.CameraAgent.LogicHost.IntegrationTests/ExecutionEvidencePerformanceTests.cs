@@ -41,12 +41,13 @@ public sealed class ExecutionEvidencePerformanceTests
             "TestResults", "issue-538", source.Sha, source.Dirty ? source.DirtyFingerprintSha256 : "clean");
         Directory.CreateDirectory(destination);
         using var counters = new ExecutionEvidencePerformanceCounters(Fixture.HostFixture.SqlServerConnectionString);
+        // The idle bracket must precede the large metadata histories and their real reconciliation work.
+        var interference = await MeasureInterferenceAsync(counters, destination, source).ConfigureAwait(false);
+        var comparisons = Compare(interference.Phases);
         var metadata = await MeasureMetadataAsync(counters).ConfigureAwait(false);
         await SaveIntermediateAsync(destination, "metadata-initial-baseline", source, metadata).ConfigureAwait(false);
         var concurrency = await MeasureMetadataConcurrencyAsync(counters).ConfigureAwait(false);
         await SaveIntermediateAsync(destination, "metadata-concurrency", source, concurrency).ConfigureAwait(false);
-        var interference = await MeasureInterferenceAsync(counters, destination, source).ConfigureAwait(false);
-        var comparisons = Compare(interference.Phases);
         var evidence = new
         {
             Schema = "hvo-issue538-execution-evidence-acceptance-v1",
@@ -75,6 +76,7 @@ public sealed class ExecutionEvidencePerformanceTests
             },
             Workload = new
             {
+                StageOrder = "I (idle-before/active/denied/idle-after) on the fresh fixture, then M, then C",
                 E538M = "W3M: 10,000 one-artifact availability observations derived from a real exported execution; 64-unit batches, 100-row keyset pages.",
                 E538C = "Metadata requests at concurrency 1/4/8, 20 warmup and 200 measured logical requests per level; 50% duplicate attempts. This is not payload W4.",
                 E538I = new
@@ -329,7 +331,7 @@ public sealed class ExecutionEvidencePerformanceTests
                 {
                     await edge.EnlistAvailabilityHistoryAsync(64, $"active-{sequence++}").ConfigureAwait(false);
                 }
-                await edge.RunCycleAsync().ConfigureAwait(false);
+                await edge.RunCycleAsync(token).ConfigureAwait(false);
                 await Task.Delay(100, token).ConfigureAwait(false);
             }
         }
@@ -353,12 +355,13 @@ public sealed class ExecutionEvidencePerformanceTests
             if (raw.CapturedAtUtc >= phaseStart) { warmup.Add(raw.CaptureId); }
         }
         // Delimit acquisition as well as upload: no raw acquired during warmup can enter the measured set.
-        await edge.PauseCaptureAndWaitForTerminalAsync().ConfigureAwait(false);
+        await edge.PauseCaptureAndWaitForTerminalAsync(deadline.Token).ConfigureAwait(false);
         _ = await central.ConvergeUploadsAndJobsAsync(deadline.Token).ConfigureAwait(false);
         var rows = new List<InterferenceOperation>();
         var telemetry = edge.Agent.Services.GetRequiredService<ICaptureTelemetryProvider>();
         var ingress = edge.Agent.Services.GetRequiredService<RawIngressTelemetry>();
         var ingressBefore = Ingress(ingress);
+        var statusBefore = await central.ReadStatusAsync(deadline.Token).ConfigureAwait(false);
         var sqlBefore = await SqlContainerAsync().ConfigureAwait(false);
         var processBefore = counters.BeginMeasurement();
         var exchangeOffset = edge.Http.Exchanges.Count;
@@ -398,6 +401,7 @@ public sealed class ExecutionEvidencePerformanceTests
         var elapsed = Stopwatch.GetElapsedTime(started);
         var processAfter = counters.Snapshot();
         var sqlAfter = await SqlContainerAsync().ConfigureAwait(false);
+        var statusAfter = await central.ReadStatusAsync(deadline.Token).ConfigureAwait(false);
         Assert.HasCount(Measured, rows.Select(row => row.Raw.CaptureId).Distinct().ToArray());
         Assert.HasCount(Measured, rows.Select(row => row.CaptureStartedUtc).Distinct().ToArray());
         CollectionAssert.AreEqual(Enumerable.Range(0, Measured).Select(index => rows[0].Raw.CaptureSequence + index).ToArray(),
@@ -423,7 +427,7 @@ public sealed class ExecutionEvidencePerformanceTests
             LatencyEvidence.From(rows.Select(row => row.Raw.UploadMilliseconds)),
             LatencyEvidence.From(rows.Select(row => row.Job.ClaimAndExecuteMilliseconds)),
             processBefore.Delta(processAfter), sqlBefore, sqlAfter, ingressBefore, Ingress(ingress), backlog,
-            healthBefore, healthSamples,
+            healthBefore, healthSamples, statusBefore, statusAfter,
             exchanges.Sum(item => (long)item.Request.Length), exchanges.Sum(item => (long)item.Response.Length),
             Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(
                 Path.Combine(edge.Root, "cameraagent.integration.json")).ConfigureAwait(false))));
@@ -514,6 +518,7 @@ internal sealed record InterferencePhase(string Name, IReadOnlyList<Guid> Warmup
     object Process, SqlContainerSnapshot SqlBefore, SqlContainerSnapshot SqlAfter,
     object IngressBefore, object IngressAfter, ExecutionEvidenceBacklog Backlog,
     EdgeHealthEvidence HealthBefore, IReadOnlyList<EdgeHealthEvidence> HealthSamples,
+    ExecutionEvidenceStatusView StatusBefore, ExecutionEvidenceStatusView StatusAfter,
     long EvidenceRequestEntityBytes, long EvidenceResponseEntityBytes, string EffectiveConfigurationSha256);
 internal sealed record RegressionComparison(string Metric, string Phase, double Baseline, double Candidate,
     double IdleBracketDriftFraction, double ToleranceFraction, string Outcome);

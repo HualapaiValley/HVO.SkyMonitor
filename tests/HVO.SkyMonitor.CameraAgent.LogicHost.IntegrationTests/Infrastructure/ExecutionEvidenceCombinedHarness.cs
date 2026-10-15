@@ -108,10 +108,11 @@ internal sealed class ExecutionEvidenceCombinedHarness : IAsyncDisposable
         }
     }
 
-    internal async Task WaitForRealExecutionAsync()
+    internal async Task WaitForRealExecutionAsync(CancellationToken cancellationToken = default)
         => await WaitUntilAsync(async () =>
-            (await Source.ReadTerminalExecutionsAsync(0, string.Empty, 1, CancellationToken.None)
-                .ConfigureAwait(false)).Count != 0, "a terminal real edge execution").ConfigureAwait(false);
+            (await Source.ReadTerminalExecutionsAsync(0, string.Empty, 1, cancellationToken)
+                .ConfigureAwait(false)).Count != 0, "a terminal real edge execution",
+            cancellationToken: cancellationToken).ConfigureAwait(false);
 
     /// <summary>Only finite backlog/fault cases stop capture. Live independence/performance cases never call this.</summary>
     internal async Task StopCaptureAndWaitForTerminalAsync()
@@ -122,19 +123,20 @@ internal sealed class ExecutionEvidenceCombinedHarness : IAsyncDisposable
         await capture.StopAsync(timeout.Token).ConfigureAwait(false);
     }
 
-    internal async Task PauseCaptureAndWaitForTerminalAsync()
+    internal async Task PauseCaptureAndWaitForTerminalAsync(CancellationToken cancellationToken = default)
     {
-        await WaitForRealExecutionAsync().ConfigureAwait(false);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        await WaitForRealExecutionAsync(cancellationToken).ConfigureAwait(false);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(60));
         // StopAsync cancels acquisition and may leave a just-accepted execution for restart recovery. Close normal
         // admission first, let its publication finish, and only stop the capture host after durable work is terminal.
         var admission = Agent.Services.GetRequiredService<CaptureAdmissionCoordinator>();
         var paused = await admission.PauseAsync($"issue538-pause-{Guid.NewGuid():N}", null,
-            "issue538-test-owner", "finite-evidence-source", timeout.Token).ConfigureAwait(false);
+            "issue538-test-owner", "finite-evidence-source", timeout.Token).WaitAsync(timeout.Token).ConfigureAwait(false);
         Assert.AreEqual(CaptureAdmissionState.Paused, paused.State);
         await WaitUntilAsync(async () =>
-            await Source.ReadOldestActiveExecutionKeyAsync(CancellationToken.None).ConfigureAwait(false) is null,
-            "all in-flight edge executions terminal after capture stop").ConfigureAwait(false);
+            await Source.ReadOldestActiveExecutionKeyAsync(timeout.Token).ConfigureAwait(false) is null,
+            "all in-flight edge executions terminal after capture stop", cancellationToken: timeout.Token).ConfigureAwait(false);
     }
 
     internal async Task ResumeCaptureAsync(CancellationToken cancellationToken)
@@ -145,10 +147,10 @@ internal sealed class ExecutionEvidenceCombinedHarness : IAsyncDisposable
         Assert.AreEqual(CaptureAdmissionState.Running, resumed.State);
     }
 
-    internal async Task RunCycleAsync()
+    internal async Task RunCycleAsync(CancellationToken cancellationToken = default)
     {
         Clock.Advance(TimeSpan.FromSeconds(2));
-        await _exporter.RunCycleOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        await _exporter.RunCycleOnceAsync(cancellationToken).ConfigureAwait(false);
     }
 
     internal void RestartExporter()

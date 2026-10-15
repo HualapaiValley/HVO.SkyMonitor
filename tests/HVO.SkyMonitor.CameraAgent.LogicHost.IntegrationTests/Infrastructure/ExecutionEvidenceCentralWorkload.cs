@@ -26,6 +26,8 @@ internal sealed class ExecutionEvidenceCentralWorkload(
     internal ExecutionEvidenceBindingView Binding { get; } = binding;
     internal Guid CentralRevisionId { get; } = centralRevisionId;
     internal string OwnerUserId { get; } = ownerUserId;
+    // RawCaptureIngress constructs SqliteRawCaptureJournal with this journal subdirectory.
+    private string RawJournalPath => Path.Combine(edge.Root, "journal", "raw-ingress.db");
 
     internal static async Task<ExecutionEvidenceCentralWorkload> BindAsync(
         CameraAgentIntegrationFixture fixture, ExecutionEvidenceCombinedHarness edge)
@@ -146,7 +148,7 @@ internal sealed class ExecutionEvidenceCentralWorkload(
     {
         using var local = new SqliteConnection(new SqliteConnectionStringBuilder
         {
-            DataSource = Path.Combine(edge.Root, "raw-ingress.db"),
+            DataSource = RawJournalPath,
             Mode = SqliteOpenMode.ReadOnly,
             Pooling = false
         }.ToString());
@@ -190,6 +192,15 @@ internal sealed class ExecutionEvidenceCentralWorkload(
             pendingReader.GetInt64(0), pendingReader.GetInt64(1), pendingJobs, failedJobs,
             await edge.Agent.Services.GetRequiredService<IArtifactOutbox>()
                 .GetSnapshotAsync(edge.Root, cancellationToken).ConfigureAwait(false));
+    }
+
+    internal async Task<ExecutionEvidenceStatusView> ReadStatusAsync(CancellationToken cancellationToken)
+    {
+        using var scope = fixture.CreateHostScope();
+        var status = await scope.ServiceProvider.GetRequiredService<ExecutionEvidenceService>()
+            .GetStatusAsync(Binding.Id, OwnerUserId, Binding.ObservatoryId, cancellationToken).ConfigureAwait(false);
+        Assert.IsNotNull(status);
+        return status;
     }
 
     internal static void AssertHealthy(EdgeHealthEvidence baseline, EdgeHealthEvidence current)
@@ -282,7 +293,7 @@ internal sealed class ExecutionEvidenceCentralWorkload(
             Assert.AreEqual(ArtifactOutboxStatus.Acknowledged, stored.Status);
             using var local = new SqliteConnection(new SqliteConnectionStringBuilder
             {
-                DataSource = Path.Combine(edge.Root, "raw-ingress.db"),
+                DataSource = RawJournalPath,
                 Mode = SqliteOpenMode.ReadOnly,
                 Pooling = false
             }.ToString());
