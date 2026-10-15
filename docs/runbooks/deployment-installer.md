@@ -264,8 +264,11 @@ the same pipeline, standard processing of that earlier work cannot run:
   comparison that abandons the accepted one.
 - Abandonment needs intact evidence. Before abandoning, the replay checks its
   own raw capture and every historical raw input frozen for a window step. If
-  any is missing or damaged, the replay fails instead, as it would under a
-  current plan, and counts in `ReplayTerminalCount`.
+  any is missing or damaged, the replay is not abandoned. It retries as
+  `processing.replay-exception`, because no step may run under the old plan to
+  find the damage, then fails once its attempts are spent and counts in
+  `ReplayTerminalCount`. That is the same outcome as damage under a current
+  plan, where the window step finds it and records `processing.step-exception`.
 - A replay whose frozen configuration this version cannot build at all, for
   example because a step was removed, is not abandoned. It retries as
   `processing.replay-exception` and fails terminally once its attempts are

@@ -709,6 +709,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     [DataRow("revision")]
     [DataRow("execution")]
+    [DataRow("current")]
     public async Task SupersededReplayWithDamagedHistoricalInputFailsRatherThanAbandons(string frozenRecord)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-superseded-window");
@@ -762,8 +763,12 @@ public sealed class ProcessingGraphOperationsTests
                 executionId = replay.Execution.ExecutionId;
                 var snapshot = await operations.ReadRevisionSnapshotAsync(registry.ActiveRevisionId, CancellationToken.None)
                     .ConfigureAwait(false);
-                await RecordSupersededFrozenPlanAsync(root, registry.ActiveRevisionId, executionId, snapshot, frozenRecord)
-                    .ConfigureAwait(false);
+                // The "current" row keeps the plan this version builds, as the control for the recorded reason.
+                if (frozenRecord != "current")
+                {
+                    await RecordSupersededFrozenPlanAsync(root, registry.ActiveRevisionId, executionId, snapshot, frozenRecord)
+                        .ConfigureAwait(false);
+                }
             }
 
             using (var provider = CreateProvider(root, settings))
@@ -782,7 +787,12 @@ public sealed class ProcessingGraphOperationsTests
                 var detail = await RunReplayToCompletionAsync(provider, executionId).ConfigureAwait(false);
 
                 Assert.AreEqual(ProcessingGraphExecutionStatus.Failed, detail.Execution.Status, detail.Execution.FailureReason);
-                Assert.AreNotEqual(ProcessingReplayReasons.PlanSuperseded, detail.Execution.FailureReason);
+                // Under a superseded plan no step may run, so the damage is found before the window node's attempt and
+                // recorded as a replay exception; under the current plan that attempt finds it as a step exception.
+                // Either way the replay fails and counts as terminal.
+                Assert.AreEqual(
+                    frozenRecord == "current" ? "processing.step-exception" : "processing.replay-exception",
+                    detail.Execution.FailureReason);
                 Assert.AreEqual(damagedHash, Sha256OfFile(damaged), "Damaged evidence is kept as found.");
                 Assert.AreEqual(primaryHash, Sha256OfFile(receipts[^1].StoredFrame.AbsolutePath));
                 Assert.AreEqual(("Failed", 0L), ReadReplayWorkStateAndHeldPins(root, executionId));
