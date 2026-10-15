@@ -46,6 +46,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private const string ExpectedScheduleSha256 = "6A5E298C74CA520E3EB3EEE6CE67D30A8BDFC1340ACC2FE1AA5DDDF0F6F9CFDD";
     private const string ExpectedDesiredGraphSha256 = "9B21B31E30070315093EE6F53727813840CDF3F75008838342B5446A4F488069";
     private const string ExpectedEffectiveGraphSha256 = "114F1E0A994BAE76B0D5B6B9D2A7145F9D7B624E65436192D2B3FA28BEA3B339";
+    private const int ExpectedMonoNodeCount = 5; // Includes the durable ProjectedScene producer.
     private const string ExpectedMonoAgentId = "cameraagent-standalone-w6-asi174-mono8";
     private const string ExpectedMonoRigSha256 = "FBF90275979743BC7B13128808CBE079D206F9D5435EB45F55D9AC956118A479";
     private const string ExpectedMonoProcessingSha256 = "4C8ECBAB017F1EDBF0C008ADA5D31EDEAA2B816C2C3B468F426FB83497553106";
@@ -611,7 +612,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             TimeSpan.FromMinutes(3),
             ExpectedMonoAgentId,
             ExpectedMonoRoles,
-            4).ConfigureAwait(false);
+            ExpectedMonoNodeCount).ConfigureAwait(false);
         Assert.HasCount(1, warmup.Captures);
         using var sampler = new DockerResourceSampler(container, runtimeRoot, session);
         var measuredWindow = await CaptureExactWindowAsync(
@@ -622,7 +623,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
             TimeSpan.FromMinutes(3),
             ExpectedMonoAgentId,
             ExpectedMonoRoles,
-            4,
+            ExpectedMonoNodeCount,
             sampler).ConfigureAwait(false);
         sampler.WriteCsv(Path.Combine(evidenceRoot, "process.csv"));
         sampler.WriteQueueCsv(Path.Combine(evidenceRoot, "durable-queues.csv"));
@@ -4988,7 +4989,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
         var evidence = new List<MonoReadoutEvidence>(captures.Length);
         foreach (var capture in captures)
         {
-            Assert.HasCount(4, capture.ProcessingNodes);
+            Assert.HasCount(ExpectedMonoNodeCount, capture.ProcessingNodes);
             Assert.IsFalse(capture.ProcessingNodes.Any(static node => node.NodeId is "calibration" or "rolling"));
             foreach (var artifact in capture.Artifacts)
             {
