@@ -49,16 +49,25 @@ mutate nobuild '/unit\/cameraagent-integration/ s# --no-build##'
 expect_fail 'lacks --no-build' --workflow "$scratch/nobuild.yml"
 
 # Supplemental runs are TRX-only; a canonical slot must keep collecting coverage.
-mutate collect '/unit\/catalog-sqlite-performance/ s#--logger#--settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --logger#'
-expect_fail 'supplemental runs must be TRX-only' --workflow "$scratch/collect.yml"
+mutate collect '/unit\/catalog-sqlite-performance/ s#--logger#--collect:"XPlat Code Coverage" --logger#'
+expect_fail 'collects coverage that the Coverage job never merges' --workflow "$scratch/collect.yml"
 mutate uncollected '/unit\/imaging --logger/ s#--settings tests/coverage.runsettings --collect:"XPlat Code Coverage" ##'
 expect_fail 'canonical coverage slot but its command does not collect' --workflow "$scratch/uncollected.yml"
 
 # A selection that exists but may never execute, or whose evidence is not its own, fails.
 mutate stepif '/- name: Run Docker-disabled supplemental Unit suites/ a\        if: needs.changes.outputs.complete == '"'"'false'"'"''
-expect_fail 'step with if: or continue-on-error:' --workflow "$scratch/stepif.yml"
+expect_fail 'unsupported key' --workflow "$scratch/stepif.yml"
 mutate stepcoe '/- name: Run Docker-disabled supplemental Unit suites/ a\        continue-on-error: true'
-expect_fail 'step with if: or continue-on-error:' --workflow "$scratch/stepcoe.yml"
+expect_fail 'unsupported key' --workflow "$scratch/stepcoe.yml"
+# Reordered keys, a spaced colon and a first-key spelling do not slip past the key check.
+mutate stepiffirst 's#^      - name: Run Docker-disabled supplemental Unit suites#      - if: needs.changes.outputs.complete == '"'"'false'"'"'\n        name: Run Docker-disabled supplemental Unit suites#'
+expect_fail 'unsupported key' --workflow "$scratch/stepiffirst.yml"
+mutate stepifspaced '/- name: Run Docker-disabled supplemental Unit suites/ a\        if : needs.changes.outputs.complete == '"'"'false'"'"''
+expect_fail 'unsupported key' --workflow "$scratch/stepifspaced.yml"
+mutate stepcoefirst 's#^      - name: Run Docker-disabled supplemental Unit suites#      - continue-on-error: true\n        name: Run Docker-disabled supplemental Unit suites#'
+expect_fail 'unsupported key' --workflow "$scratch/stepcoefirst.yml"
+mutate stepflow 's#^      - name: Run Docker-disabled supplemental Unit suites#      - { name: Run Docker-disabled supplemental Unit suites, if: false }#'
+expect_fail 'unsupported key' --workflow "$scratch/stepflow.yml"
 mutate settings '/unit\/catalog-sqlite-performance/ s#--logger#--settings tests/coverage.runsettings --logger#'
 expect_fail 'passes --settings' --workflow "$scratch/settings.yml"
 mutate sharedslot '/unit\/logichost-integration/ s#unit/logichost-integration#unit/cameraagent-integration#; /unit-logichost-integration.trx/ s#unit-logichost-integration.trx#unit-cameraagent-integration.trx#'

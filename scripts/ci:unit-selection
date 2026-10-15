@@ -101,8 +101,15 @@ for project in "${!expected[@]}"; do
   fi
   command="${matches[0]}"
   step="$(step_of "$command")"
-  if grep -qE '^        (if|continue-on-error):' <<<"$step"; then
-    fail "$project command sits in a step with if: or continue-on-error:, so its selection may not run"
+  # Only plain keys that cannot skip or soften the step are accepted. An `if:` or
+  # `continue-on-error:` in any position or spelling, or a flow-style step, is outside
+  # that set and rejected rather than parsed.
+  unsupported="$(awk -v ok='^(name|id|run|env|shell|timeout-minutes|working-directory):' '
+    /^      - / { line = $0; sub(/^      - /, "", line); if (line !~ ok) print $0; next }
+    /^        [^ #]/ { line = $0; sub(/^        /, "", line); if (line !~ ok) print $0 }
+  ' <<<"$step")"
+  if [[ -n "$unsupported" ]]; then
+    fail "$project command sits in a step with an unsupported key, so its selection may not run: ${unsupported%%$'\n'*}"
   fi
   # The needles are literal command text, including the unexpanded $UNIT_FILTER.
   # shellcheck disable=SC2016
@@ -124,11 +131,11 @@ for project in "${!expected[@]}"; do
     fail "$project slot $slot is a canonical coverage slot but its command does not collect coverage"
   fi
   if ! $canonical && [[ "$command" == *' --collect'* && "$slot" != processing-runner ]]; then
-    fail "$project slot $slot collects coverage that the Coverage job never merges; supplemental runs must be TRX-only"
+    fail "$project slot $slot collects coverage that the Coverage job never merges"
   fi
   if ! $canonical && [[ "$slot" != processing-runner ]]; then
-    [[ "$command" != *' --settings'* ]] || fail "$project slot $slot passes --settings; supplemental runs must be TRX-only"
-    grep -qxF '          DOCKER_HOST: unix:///tmp/hvo-no-docker.sock' <<<"$step" ||
+    [[ "$command" != *' --settings'* ]] || fail "$project slot $slot passes --settings; supplemental runs take none"
+    grep -qE '^[[:space:]]+DOCKER_HOST:[[:space:]]+unix:///tmp/hvo-no-docker\.sock[[:space:]]*$' <<<"$step" ||
       fail "$project slot $slot must run in a step with DOCKER_HOST unix:///tmp/hvo-no-docker.sock, the endpoint its assembly hook treats as Docker-disabled"
   fi
   [[ "$command" == *" --logger \"trx;LogFileName=unit-$slot.trx\""* ]] ||
