@@ -39,6 +39,7 @@ public sealed class OperatorSettingsFile : IDisposable
     private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
 
     private readonly Action _reload;
+    private bool _reloadPending;
     private readonly Func<IEnumerable<string>, IReadOnlyList<string>> _findOverriddenKeys;
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -131,6 +132,16 @@ public sealed class OperatorSettingsFile : IDisposable
             var next = SerializeFile(root);
             if (bytes is not null && next.AsSpan().SequenceEqual(bytes))
             {
+                // Visibility alone does not prove that an earlier replacement crossed its durability barrier.
+                EnsureNotLink();
+                var directory = Path.GetDirectoryName(FilePath)!;
+                RawIngressFileStore.SyncFile(directory, FilePath);
+                SyncPublishedDirectory(directory);
+                if (_reloadPending)
+                {
+                    _reload();
+                    _reloadPending = false;
+                }
                 return new(OperatorSettingsWriteStatus.Unchanged, current);
             }
 
@@ -140,6 +151,7 @@ public sealed class OperatorSettingsFile : IDisposable
                 return new(OperatorSettingsWriteStatus.Conflict, changed);
             }
             _reload();
+            _reloadPending = false;
             OperatorSettingsLog.Written(_logger, actor, string.Join(", ", values.Keys));
             return new(OperatorSettingsWriteStatus.Applied, Parse(next));
         }
@@ -341,6 +353,7 @@ public sealed class OperatorSettingsFile : IDisposable
                 return onDisk;
             }
             CameraAgentFileSystem.PublishPrepared(directory, temporaryPath, FilePath, overwrite: true);
+            _reloadPending = true;
             SyncPublishedDirectory(directory);
             return null;
         }

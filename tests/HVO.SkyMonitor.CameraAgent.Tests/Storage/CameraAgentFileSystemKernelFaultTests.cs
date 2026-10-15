@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Storage;
@@ -29,15 +30,15 @@ public sealed class CameraAgentFileSystemKernelFaultTests
     [TestMethod]
     public async Task RawPublication_DirectoryFsyncFailurePreservesPublishedEvidenceWithoutSuccess()
     {
-        if (!OperatingSystem.IsLinux() || string.IsNullOrEmpty(Environment.GetEnvironmentVariable("HVO_ISSUE587_FSYNC_ROOT")))
-            Assert.Inconclusive("Requires strace directory-fsync EIO injection filtered to HVO_ISSUE587_FSYNC_ROOT/frames/1970/01/01/Raw.");
-        var root = Environment.GetEnvironmentVariable("HVO_ISSUE587_FSYNC_ROOT")!;
-        Assert.StartsWith($"{Path.GetTempPath()}hvo-issue587-fsync-", root);
+        var control = DurableCaptureProcessingTests.RequireKernelRetryControl();
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-issue587-fsync-{Guid.NewGuid():N}");
         var flushes = 0;
         var syncs = 0;
-        var store = new RawIngressFileStore(root, new NullRawIngressFaultInjector(), () => flushes++, () => syncs++);
+        var injector = new PublicationFaultInjector(control);
+        var store = new RawIngressFileStore(root, injector, () => flushes++, () => syncs++);
         var paths = store.GetPaths(DateTimeOffset.UnixEpoch, Guid.NewGuid());
         Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
+        injector.Directory = Path.GetDirectoryName(paths.PayloadAbsolutePath)!;
         try
         {
             var failure = await Assert.ThrowsExactlyAsync<IOException>(() =>
@@ -105,6 +106,16 @@ public sealed class CameraAgentFileSystemKernelFaultTests
         {
             File.SetUnixFileMode(directory, originalMode);
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class PublicationFaultInjector(string control) : IRawIngressFaultInjector
+    {
+        internal string Directory { get; set; } = string.Empty;
+        public void Inject(RawIngressFaultPoint point)
+        {
+            if (point == RawIngressFaultPoint.PayloadPublished)
+                DurableCaptureProcessingTests.ArmKernelRetryFault(control, Directory);
         }
     }
 }

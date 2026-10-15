@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 
@@ -283,7 +284,11 @@ public sealed class OperatorSettingsFileTests
 
     [TestMethod]
     public async Task UnchangedRetryMustSettlePreviouslyFailedDirectorySynchronization()
+        => await VerifyUnchangedRetryAsync(kernelFault: false).ConfigureAwait(false);
+
+    internal async Task VerifyUnchangedRetryAsync(bool kernelFault)
     {
+        var control = kernelFault ? DurableCaptureProcessingTests.RequireKernelRetryControl() : null;
         var fail = true;
         var attempts = 0;
         using var file = new OperatorSettingsFile(SettingsPath, () => _reloads++, _ => [])
@@ -291,7 +296,11 @@ public sealed class OperatorSettingsFileTests
             SyncPublishedDirectory = directory =>
             {
                 attempts++;
-                if (fail) throw new IOException("Injected settings directory fsync EIO.", 5);
+                if (fail)
+                {
+                    if (control is null) throw new IOException("Injected settings directory fsync EIO.", 5);
+                    if (attempts == 1) DurableCaptureProcessingTests.ArmKernelRetryFault(control, directory);
+                }
                 HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawIngressFileStore.SyncDirectory(directory);
             }
         };
@@ -303,6 +312,7 @@ public sealed class OperatorSettingsFileTests
             await WriteAsync(file, visible.Version, LimitKey, 900).ConfigureAwait(false)).ConfigureAwait(false);
         Assert.AreEqual(2, attempts);
         Assert.AreEqual(0, _reloads);
+        if (control is not null) DurableCaptureProcessingTests.WaitForKernelController(control + ".released");
         fail = false;
         var settled = await WriteAsync(file, visible.Version, LimitKey, 900).ConfigureAwait(false);
         Assert.AreEqual(OperatorSettingsWriteStatus.Unchanged, settled.Status);
@@ -327,4 +337,18 @@ public sealed class OperatorSettingsFileTests
             new Dictionary<string, JsonNode?>(StringComparer.Ordinal) { [key] = value },
             "owner-id",
             CancellationToken.None);
+}
+
+[TestClass]
+[TestCategory("Manual")]
+public sealed class OperatorSettingsKernelFaultTests
+{
+    [TestMethod]
+    public async Task UnchangedSettingsRetryWithRealFsyncFailure()
+    {
+        var fixture = new OperatorSettingsFileTests();
+        fixture.Initialize();
+        try { await fixture.VerifyUnchangedRetryAsync(kernelFault: true).ConfigureAwait(false); }
+        finally { fixture.Cleanup(); }
+    }
 }

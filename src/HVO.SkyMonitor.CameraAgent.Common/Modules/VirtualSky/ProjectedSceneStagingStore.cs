@@ -335,8 +335,11 @@ internal sealed class ProjectedSceneStagingStore :
                 if (OperatingSystem.IsLinux())
                 {
                     using var directory = OpenLinuxStageDirectory(create: false);
-                    if (directory is not null && LinuxUnlink(directory, $"{stageKey}.json"))
+                    if (directory is not null)
+                    {
+                        _ = LinuxUnlink(directory, $"{stageKey}.json");
                         SyncLinuxDirectory(directory);
+                    }
                 }
                 else
                 {
@@ -379,6 +382,8 @@ internal sealed class ProjectedSceneStagingStore :
                 {
                     using var completed = LinuxOpenAtFile(directory, completedName);
                     if (completed is not null) EnsureLinuxRegularFile(completed);
+                    // A visible completion or absence can follow a failed rename/unlink barrier.
+                    SyncLinuxDirectory(directory);
                     return;
                 }
                 if (!TryRenameNoReplace(directory, activeName, completedName, out var exists))
@@ -436,7 +441,11 @@ internal sealed class ProjectedSceneStagingStore :
             if (OperatingSystem.IsLinux())
             {
                 using var directory = OpenLinuxStageDirectory(create: false);
-                if (directory is not null && LinuxUnlink(directory, name)) SyncLinuxDirectory(directory);
+                if (directory is not null)
+                {
+                    _ = LinuxUnlink(directory, name);
+                    SyncLinuxDirectory(directory);
+                }
                 return;
             }
             var path = Path.Combine(_root, name);
@@ -736,7 +745,11 @@ internal sealed class ProjectedSceneStagingStore :
         if (OperatingSystem.IsLinux())
         {
             using var directory = OpenLinuxStageDirectory(create: false);
-            if (directory is not null && LinuxUnlink(directory, name)) SyncLinuxDirectory(directory);
+            if (directory is not null)
+                {
+                    _ = LinuxUnlink(directory, name);
+                    SyncLinuxDirectory(directory);
+                }
             return;
         }
         var path = Path.Combine(_root, name);
