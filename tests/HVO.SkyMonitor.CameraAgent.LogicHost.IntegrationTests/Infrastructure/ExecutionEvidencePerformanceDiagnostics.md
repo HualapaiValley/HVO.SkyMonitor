@@ -4,8 +4,12 @@ Enable only for the existing Manual method with `HVO_ISSUE_538_DIAGNOSTICS=1` af
 Counter-only diagnostic commit `cb392a616df10e21d4922066a03168904ee850d5` passed the focused Release build
 and scoped format verification, then completed the declared 140 selections with the intended inconclusive
 result. Its archived report localizes early latency to render but does not establish a causal JIT explanation.
-The EventPipe handshake changes below are an **uncompiled, unformatted, uncommitted draft**. No EventPipe
-invocation or acceptance result is claimed. A later build/format slot and a separate diagnostic slot are required.
+The EventPipe handshake below is committed test-only preparation. Its initial focused Release build identified
+CA1861 on a constant marker-name array; the correction shares that array without changing the protocol. Scoped
+full format verification, the offline reader Release build and Python syntax-only validation passed. Final
+corrected-source build status and exact source/binary hashes are retained under
+`TestResults/issue-538/eventpipe-preparation-8980447e/`. No EventPipe invocation or acceptance result is claimed;
+a separate diagnostic slot is still required.
 
 The exact diagnostic repeat command (for a later authorized slot) is:
 
@@ -199,7 +203,7 @@ the complete JSON and four groups of 5+30. Finalized trace remains analysis-pend
 
 ## Offline reader and conclusions it can support
 
-The uncompiled draft reader `/tmp/issue538-eventpipe-draft/TraceReader.csproj` references the installed TraceEvent
+The prepared reader `/tmp/issue538-eventpipe-draft/TraceReader.csproj` references the installed TraceEvent
 and FastSerialization assemblies directly. `Program.cs` converts the **finalized** trace to ETLX after collection,
 retains actual event names/IDs/versions/PIDs/thread IDs/timestamps and named payloads, and resolves managed sample
 stacks from method/load/rundown metadata. It emits provenance in every JSON/JSONL and reports:
@@ -217,8 +221,9 @@ These guards are proposed, not run. The RSS guard does not limit virtual address
 The external `/tmp/issue538-eventpipe-draft/analyze.py` drafts those guards at 100 ms polling; the RSS/log
 thresholds are polling guards with possible overshoot, not hard memory ceilings. It records actual peak RSS and
 retains partial output on timeout/resource/reader failure. It never collects, builds, retries or acquires a lock.
-The reader has not been built, so assembly/API/event-name compatibility remains explicitly unverified. Only
-following a separate authorized compile and offline-analysis capacity grant, the reproducible analysis form is:
+The reader's Release build passed against those installed assemblies; no trace has been opened, so actual event,
+payload and stack visibility remain unverified. Following a separate offline-analysis capacity grant, the
+reproducible analysis form is:
 
 ```bash
 python3 /tmp/issue538-eventpipe-draft/analyze.py --reader-dll /tmp/issue538-eventpipe-draft/bin/Release/net10.0/TraceReader.dll --trace <finalized-capture.nettrace> --request <attach/pid.json> --retention <diagnostic-producer-runtime-retention.json> --out <fresh-reader-evidence> --execute-authorized-analysis

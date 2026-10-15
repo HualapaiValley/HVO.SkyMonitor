@@ -23,6 +23,7 @@ internal sealed class ExecutionEvidenceDiagnosticCollector : IDisposable
     private const int TraceAttachSeconds = 90;
     private const int TraceDetachSeconds = 120;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+    private static readonly string[] TraceMarkerNames = ["pid", "enabled", "attached", "detached", "failed"];
     private const int MaximumPendingFrames = 512;
     private const int MaximumSelectedFrames = 4 * (5 + 30);
     private const int MaximumRuntimeSamples = 24_000;
@@ -81,7 +82,7 @@ internal sealed class ExecutionEvidenceDiagnosticCollector : IDisposable
         Assert.IsTrue(IsEnabled, "EventPipe attach requires explicit diagnostic mode.");
         Assert.IsTrue(Path.IsPathFullyQualified(directory) && Directory.Exists(directory), "The external runner must create a fresh absolute handshake directory.");
         Assert.AreEqual("0xA", Environment.GetEnvironmentVariable(TraceSamplingEnvironmentVariable), "Request ten milliseconds using CoreCLR hexadecimal config encoding; observed spacing is reported separately.");
-        Assert.IsFalse(new[] { "pid", "enabled", "attached", "detached", "failed" }.Any(name => File.Exists(Path.Combine(directory, name + ".json"))),
+        Assert.IsFalse(TraceMarkerNames.Any(name => File.Exists(Path.Combine(directory, name + ".json"))),
             "Never reuse an EventPipe handshake directory.");
         _traceDirectory = directory;
         _traceRunId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
