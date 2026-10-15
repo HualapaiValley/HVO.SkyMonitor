@@ -393,7 +393,8 @@ internal sealed class RawIngressFileStore(
     internal static void SyncFile(string root, string path)
     {
         EnsureNoSymbolicLinks(root, path);
-        using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var handle = File.OpenHandle(path, FileMode.Open,
+                OperatingSystem.IsWindows() ? FileAccess.ReadWrite : FileAccess.Read, FileShare.Read);
         try
         {
             DurableSync.File(handle, path);

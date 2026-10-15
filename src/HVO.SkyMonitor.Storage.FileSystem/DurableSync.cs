@@ -85,7 +85,8 @@ public static class DurableSync
         }
         try
         {
-            using var handle = System.IO.File.OpenHandle(absolutePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var handle = System.IO.File.OpenHandle(absolutePath, FileMode.Open,
+                OperatingSystem.IsWindows() ? FileAccess.ReadWrite : FileAccess.Read, FileShare.Read);
             File(handle, absolutePath);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
