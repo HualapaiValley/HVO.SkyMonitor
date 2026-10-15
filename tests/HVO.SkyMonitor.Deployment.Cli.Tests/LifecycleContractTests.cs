@@ -648,6 +648,26 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    public void CatalogTransition_RequiresImageDeclaringCatalogIndependentReplay()
+    {
+        var declared = new LifecycleContinuity("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0,
+            ReplayPending: 3, ReplayLeased: 1, ReplayCatalogIndependent: true);
+        CatalogLifecycleManager.EnsureReplayCatalogIndependent(declared, LifecycleOperationKind.CatalogSelect);
+        CatalogLifecycleManager.EnsureReplayCatalogIndependent(declared, LifecycleOperationKind.CatalogRollback);
+
+        // The declaration is refused even with no replay visible: the summary counts are a periodic refresh, so an
+        // empty count cannot prove nothing was accepted under the current catalog.
+        var undeclared = declared with { ReplayPending = 0, ReplayLeased = 0, ReplayCatalogIndependent = false };
+        var selection = Assert.ThrowsExactly<InstallerException>(() =>
+            CatalogLifecycleManager.EnsureReplayCatalogIndependent(undeclared, LifecycleOperationKind.CatalogSelect));
+        StringAssert.Contains(selection.Message, "Catalog selection refused", StringComparison.Ordinal);
+        StringAssert.Contains(selection.Message, "does not declare catalog-independent archived replay", StringComparison.Ordinal);
+        var rollback = Assert.ThrowsExactly<InstallerException>(() =>
+            CatalogLifecycleManager.EnsureReplayCatalogIndependent(undeclared, LifecycleOperationKind.CatalogRollback));
+        StringAssert.Contains(rollback.Message, "Catalog rollback refused", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CatalogSelectAndRollback_CurrentContractsConverge()
     {
@@ -692,9 +712,24 @@ public sealed class LifecycleContractTests
             fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId, fixture.Uid, fixture.Gid);
 
-        // Archived replay never builds a scene from the mounted catalog; a retained annotation node without a
-        // projected-scene dependency fails closed in replay. A switch cannot change what accepted replay produces, so
-        // replay pending or leased at the boundary does not refuse the selection the way uncommitted live work does.
+        // An image that does not declare catalog-independent archived replay may annotate accepted replay from the newly
+        // mounted catalog, so the selection is refused before the setting or the container changes.
+        var settingPath = Path.Combine(fixture.Paths.ConfigRoot, "secrets", "Catalog__RequiredPackageVersion");
+        var undeclared = new FakeLifecycleClient();
+        undeclared.RecoveryContinuity = undeclared.RecoveryContinuity with { ReplayCatalogIndependent = false };
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = selected.PackageVersion },
+            fixture.Runner, _ => undeclared, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid,
+            CancellationToken.None));
+        StringAssert.Contains(refusal.Message, "does not declare catalog-independent archived replay", StringComparison.Ordinal);
+        Assert.AreEqual(previous.PackageVersion, await File.ReadAllTextAsync(settingPath));
+        Assert.AreEqual(0, undeclared.PauseCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeUpCount);
+
+        // Archived replay never builds a scene from the mounted catalog; a retained annotation node with neither a
+        // projected-scene dependency nor scene provenance recorded with the frame fails closed in replay. A switch cannot
+        // change what accepted replay produces, so replay pending or leased at the boundary does not refuse the selection
+        // the way uncommitted live work does.
         var selectedResult = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = selected.PackageVersion },
             fixture.Runner, _ => new FakeLifecycleClient { DrainedReplayPending = 2, DrainedReplayLeased = 1 },
@@ -3066,7 +3101,8 @@ public sealed class LifecycleContractTests
         public bool RejectRecoveryRead { get; set; }
         public TimeSpan RecoveryReceiptClockOffset { get; set; }
         public HashSet<Guid> RecoveryCommands { get; } = [];
-        public LifecycleContinuity RecoveryContinuity { get; set; } = new("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0);
+        public LifecycleContinuity RecoveryContinuity { get; set; } =
+            new("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true);
 
         public Task<LifecycleContinuity> ReadContinuityAsync(string verificationToken, CancellationToken cancellationToken)
         {

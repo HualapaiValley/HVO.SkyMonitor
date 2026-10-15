@@ -29,7 +29,8 @@ internal sealed record LifecycleContinuity(
     long OutboxLeased,
     bool CaptureInitialized = true,
     long ReplayPending = 0,
-    long ReplayLeased = 0);
+    long ReplayLeased = 0,
+    bool ReplayCatalogIndependent = false);
 
 // Time budgets for one lifecycle exchange with a CameraAgent. A command shares
 // the drain deadline with the boundary poll that confirms it, because the
@@ -425,7 +426,10 @@ internal sealed class CameraAgentLifecycleClient(
             // fast-fail contract on "Unavailable".
             !control.TryGetProperty("isInitialized", out var initialized) || initialized.GetBoolean(),
             replay?.GetProperty("pendingCount").GetInt64() ?? 0,
-            replay?.GetProperty("leasedCount").GetInt64() ?? 0);
+            replay?.GetProperty("leasedCount").GetInt64() ?? 0,
+            // An image that predates the replay guard omits the declaration, so its archived replay may still
+            // annotate from whichever catalog is mounted when it runs.
+            root.TryGetProperty("archivedReplayCatalogIndependent", out var independent) && independent.GetBoolean());
     }
 
     private static JsonElement Value(JsonElement root, string name) => root.GetProperty(name).GetProperty("value");

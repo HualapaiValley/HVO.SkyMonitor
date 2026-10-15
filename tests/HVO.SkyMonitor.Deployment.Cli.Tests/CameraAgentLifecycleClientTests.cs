@@ -593,6 +593,26 @@ public sealed class CameraAgentLifecycleClientTests
     }
 
     [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task RecoveryRead_ReportsTheImagesReplayCatalogDeclaration(bool declared)
+    {
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(State("Paused", 2, catalogIndependent: declared)));
+        var result = await new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets)
+            .ReadContinuityAsync("lifecycle-token", CancellationToken.None);
+        Assert.AreEqual(declared, result.ReplayCatalogIndependent);
+    }
+
+    [TestMethod]
+    public async Task RecoveryRead_TreatsAnImageWithoutTheReplayDeclarationAsCatalogDependent()
+    {
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(State("Paused", 2)));
+        var result = await new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets)
+            .ReadContinuityAsync("lifecycle-token", CancellationToken.None);
+        Assert.IsFalse(result.ReplayCatalogIndependent);
+    }
+
+    [TestMethod]
     [DataRow(401)]
     [DataRow(503)]
     public async Task RecoveryRead_FailsClosedOnRejectedCredentialOrUnavailableState(int status)
@@ -661,11 +681,16 @@ public sealed class CameraAgentLifecycleClientTests
         long processingLeased = 0,
         bool archivedReplay = true,
         long replayPending = 0,
-        long replayLeased = 0)
+        long replayLeased = 0,
+        bool? catalogIndependent = null)
     {
         // An image that predates the archived-replay section omits it.
         var replay = archivedReplay
             ? $$""" "archivedReplay": { "value": { "pendingCount": {{replayPending}}, "leasedCount": {{replayLeased}} } },"""
+            : string.Empty;
+        // An image that predates the replay guard omits the declaration.
+        var independence = catalogIndependent is { } declared
+            ? $$""" "archivedReplayCatalogIndependent": {{(declared ? "true" : "false")}},"""
             : string.Empty;
         var json = $$"""
             {
@@ -673,7 +698,7 @@ public sealed class CameraAgentLifecycleClientTests
               "rawIngress": { "value": { "pendingCount": 0, "leasedCount": {{rawLeased}} } },
               "captureLanes": { "value": { "pendingCount": 0, "leasedCount": 0 } },
               "captureProcessing": { "value": { "pendingCount": {{processingLeased}}, "leasedCount": {{processingLeased}} } },
-              "artifactOutbox": { "value": { "pendingCount": 0, "leasedCount": 0 } },{{replay}}
+              "artifactOutbox": { "value": { "pendingCount": 0, "leasedCount": 0 } },{{replay}}{{independence}}
               "captureSequence": {{captureSequence}}
             }
             """;
