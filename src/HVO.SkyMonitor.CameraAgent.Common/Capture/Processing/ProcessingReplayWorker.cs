@@ -31,6 +31,11 @@ internal sealed class ProcessingReplayWorker(
         LogLevel.Warning,
         new EventId(2262, "ProcessingReplayLeaseLost"),
         "Processing replay {ExecutionId} lost its lease.");
+    private static readonly Action<ILogger, Guid, string, string, Exception?> PlanSuperseded =
+        LoggerMessage.Define<Guid, string, string>(
+            LogLevel.Warning,
+            new EventId(2263, "ProcessingReplayPlanSuperseded"),
+            "Processing replay {ExecutionId} for graph revision {RevisionId} was abandoned because this version no longer builds its frozen plan: {Detail}");
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
         => Task.WhenAll(Enumerable.Range(0, _options.ReplayMaximumConcurrency)
@@ -94,7 +99,6 @@ internal sealed class ProcessingReplayWorker(
         try
         {
             using var graph = new ReplayGraph(pipelineFactory.CreateRetainedGraph(lease.Configuration));
-            VerifyFrozenPlan(graph.Value, lease.Revision);
             var execution = new ProcessingExecutionContext(
                 lease.Execution.ExecutionId,
                 ProcessingGraphExecutionClass.Replay,
@@ -123,12 +127,23 @@ internal sealed class ProcessingReplayWorker(
                 _options.ReplayMaximumAttempts,
                 timeProvider,
                 durableAttempt: lease.ClaimCount,
-                cancellationDisposition: () => ReplayCancellationResult(livePreemptionToken))
+                cancellationDisposition: () => ReplayCancellationResult(livePreemptionToken),
+                frozenPlanSuperseded: !MatchesFrozenPlan(graph.Value, lease.Revision))
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (processingCancellation.IsCancellationRequested)
         {
             result = ReplayCancellationResult(livePreemptionToken);
+        }
+        catch (ProcessingPlanSupersededException exception)
+        {
+            // The frozen revision names plans this version no longer builds, so no retry can ever run it. As for live
+            // work under a superseded plan, the replay is abandoned rather than failed: its raw evidence is intact and
+            // untouched, it spends no further attempts, and it does not count as a terminal replay failure. The
+            // operator submits a new replay against a revision this version compiles.
+            PlanSuperseded(
+                logger, lease.Execution.ExecutionId, lease.Execution.GraphRevisionId, exception.Message, null);
+            result = CaptureLaneHandlerResult.Abandon(ProcessingReplayReasons.PlanSuperseded);
         }
         catch (Exception exception)
         {
@@ -206,23 +221,20 @@ internal sealed class ProcessingReplayWorker(
             ? CaptureLaneHandlerResult.Wait("processing.replay-live-priority")
             : CaptureLaneHandlerResult.Retry("processing.replay-interrupted");
 
-    private static void VerifyFrozenPlan(
+    // The runtime graph is built from the frozen configuration, so a difference from the frozen revision means the
+    // running code compiles that configuration into different plans, for example after an upgrade.
+    private static bool MatchesFrozenPlan(
         CaptureProcessingGraph graph,
         ProcessingGraphRevisionSnapshot revision)
-    {
-        if (graph.Nodes.Count != revision.Nodes.Length ||
-            graph.Nodes.Where((node, index) =>
+        => graph.Nodes.Count == revision.Nodes.Length &&
+            !graph.Nodes.Where((node, index) =>
                     !string.Equals(node.Id, revision.Nodes[index].NodeId, StringComparison.Ordinal) ||
                     !string.Equals(node.PlanSha256, revision.Nodes[index].PlanSha256, StringComparison.Ordinal) ||
                     !string.Equals(
                         node.SharedPlanNodeIdentitySha256,
                         revision.Nodes[index].SharedPlanNodeIdentitySha256,
                         StringComparison.Ordinal))
-                .Any())
-        {
-            throw new InvalidDataException("The replay runtime graph differs from its frozen revision.");
-        }
-    }
+                .Any();
 
     private sealed class ReplayGraph(CaptureProcessingGraph value) : IDisposable
     {

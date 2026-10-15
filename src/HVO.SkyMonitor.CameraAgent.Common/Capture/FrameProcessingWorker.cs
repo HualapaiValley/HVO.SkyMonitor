@@ -117,7 +117,8 @@ internal sealed class FrameProcessingWorker
         TimeProvider? timeProvider = null,
         ICaptureProcessingFaultInjector? faultInjector = null,
         int? durableAttempt = null,
-        Func<CaptureLaneHandlerResult>? cancellationDisposition = null)
+        Func<CaptureLaneHandlerResult>? cancellationDisposition = null,
+        bool frozenPlanSuperseded = false)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(telemetry);
@@ -157,6 +158,13 @@ internal sealed class FrameProcessingWorker
             if (persistence is not null)
             {
                 await persistence.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            }
+            if (frozenPlanSuperseded)
+            {
+                // Abandonment is reserved for intact evidence; damaged raw payload fails as it would under a current plan.
+                await context.EnsureRawFrameAsync(cancellationToken).ConfigureAwait(false);
+                throw new ProcessingPlanSupersededException(
+                    "The runtime graph differs from the frozen revision this execution was accepted under.");
             }
             if (persistence is not null && captureId is { } persistedCaptureId)
             {

@@ -232,6 +232,30 @@ the same pipeline, standard processing of that earlier work cannot run:
   abandoned, so it stops blocking ingress.
 - Genuinely corrupt or missing raw evidence still quarantines and refuses new
   captures. That is unchanged and needs the evidence recovery path.
+- An archived replay accepted by the previous version, whose frozen plan this
+  version no longer builds, is **abandoned** on its first claim. Its execution
+  and work become `Expired` with `processing.plan-superseded`. It spends no
+  further attempt, releases its pinned inputs, and leaves its raw evidence
+  untouched. It is counted in `ReplayAbandonedCount` on the
+  `capture-processing` health check (gauge
+  `camera_agent.processing.replay.abandoned`), not in `ReplayTerminalCount`,
+  so it does not degrade health. The replay page explains this. To run that
+  capture again, submit a new replay against a revision this version compiles.
+  A replay submitted against the old revision is refused.
+- A replay whose frozen configuration this version cannot build at all, for
+  example because a step was removed, is not abandoned. It retries as
+  `processing.replay-exception` and fails terminally once its attempts are
+  spent. That failure counts in `ReplayTerminalCount` and leaves health
+  **Degraded** with `replay-terminal`.
+
+A replay whose host stopped without releasing its lease, for example after a
+crash or a kill, is recovered once the lease expires. The execution returns to
+`Pending` with `processing.replay-lease-expired`, and every node attempt the
+dead lease left `Running` is recorded as `Interrupted` with that reason. The
+lost attempt still counts toward `ReplayMaximumAttempts`, so a replay that
+keeps killing its host cannot loop forever. Within its remaining attempts and
+deadline it retries on its own. When they are spent it fails terminally, as
+any replay does.
 
 A Named active revision compiled by the earlier version cannot run any live work.
 In that case:

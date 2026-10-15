@@ -1,5 +1,6 @@
 using Bunit;
 using Bunit.JSInterop;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -74,6 +75,37 @@ public sealed class ReplayExecutionPageTests
                 Assert.IsFalse(action.Contains(forbidden, StringComparison.OrdinalIgnoreCase), action);
             }
         }
+    }
+
+    [TestMethod]
+    [DataRow(ProcessingGraphExecutionStatus.Expired, ProcessingReplayReasons.PlanSuperseded, CameraAgentReplayUiService.PlanSupersededGuidance)]
+    [DataRow(ProcessingGraphExecutionStatus.Pending, ProcessingReplayReasons.LeaseExpired, CameraAgentReplayUiService.LeaseExpiredGuidance)]
+    [DataRow(ProcessingGraphExecutionStatus.Running, ProcessingReplayReasons.LeaseExpired, CameraAgentReplayUiService.LeaseExpiredGuidance)]
+    [DataRow(ProcessingGraphExecutionStatus.Expired, "processing.replay-deadline", null)]
+    [DataRow(ProcessingGraphExecutionStatus.Failed, "processing.replay-attempts-exhausted", null)]
+    [DataRow(ProcessingGraphExecutionStatus.Completed, null, null)]
+    public void Guidance_ExplainsOnlyAbandonedAndInterruptedReplay(
+        ProcessingGraphExecutionStatus status, string? reason, string? expected)
+        => Assert.AreEqual(expected, CameraAgentReplayUiService.Guidance(status, reason));
+
+    [TestMethod]
+    public void Render_ForAnAbandonedReplay_ShowsWhatItMeansAndTheNextAction()
+    {
+        using var context = Configure(new ReplayUiService(
+            ReplayUiTestData.Execution("Expired", terminal: true) with
+            {
+                FailureReason = ProcessingReplayReasons.PlanSuperseded,
+                Guidance = CameraAgentReplayUiService.PlanSupersededGuidance
+            }), out _);
+
+        var cut = Render(context);
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.IsTrue(cut.Markup.Contains(ProcessingReplayReasons.PlanSuperseded, StringComparison.Ordinal));
+            Assert.AreEqual(
+                CameraAgentReplayUiService.PlanSupersededGuidance, cut.Find(".execution-guidance").TextContent);
+        });
     }
 
     [TestMethod]

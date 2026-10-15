@@ -57,6 +57,10 @@
                 <div><dt>Started</dt><dd>@(_execution.StartedUtc is null ? "Not started" : SiteTime.Format(_execution.StartedUtc.Value))</dd></div>
                 <div><dt>Completed</dt><dd>@(_execution.CompletedUtc is null ? "Not completed" : SiteTime.Format(_execution.CompletedUtc.Value))</dd></div>
                 <div class="wide"><dt>Failure reason</dt><dd>@(_execution.FailureReason ?? "None recorded")</dd></div>
+                @if (_execution.Guidance is not null)
+                {
+                    <div class="wide"><dt>What this means</dt><dd class="execution-guidance">@_execution.Guidance</dd></div>
+                }
                 <div class="wide"><dt>Graph revision</dt><dd><code>@_execution.GraphRevisionId</code></dd></div>
                 <div class="wide"><dt>Definition identity SHA-256</dt><dd><code>@_execution.GraphDefinitionIdentitySha256</code></dd></div>
                 <div class="wide"><dt>Shared plan identity SHA-256</dt><dd><code>@_execution.SharedPlanIdentitySha256</code></dd></div>
