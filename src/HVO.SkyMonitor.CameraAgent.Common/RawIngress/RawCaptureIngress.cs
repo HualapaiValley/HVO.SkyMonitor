@@ -308,6 +308,10 @@ internal sealed partial class RawCaptureIngress :
             {
                 throw new RawIngressConflictException("Committed capture evidence is no longer retained.");
             }
+            if (!Volatile.Read(ref _initialized))
+            {
+                throw new InvalidDataException("Raw ingress requires reconciliation before accepting another capture.");
+            }
             if (!existingCapture.Exists)
             {
                 EnsureCapacity(frame.PixelData.Length);

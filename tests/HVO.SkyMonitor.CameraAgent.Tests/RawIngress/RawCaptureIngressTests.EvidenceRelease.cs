@@ -5,6 +5,49 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 public sealed partial class RawCaptureIngressTests
 {
     [TestMethod]
+    public async Task EvidenceRelease_PartialWriteOffCannotAdmitFreshCaptureAlreadyWaitingForLifecycleLock()
+    {
+        var root = CreateRoot();
+        using var fault = new EvidenceRetryPause();
+        var ingress = CreateIngress(root, new(TimeProvider.System), fault);
+        Task<RawCaptureReceipt?>? waiting = null;
+        try
+        {
+            var first = await ingress.AcceptAsync(CreateConfiguration(), CreateSubmission(Timestamp(1), [1, 2, 3, 4]), CancellationToken.None).ConfigureAwait(false);
+            var second = await ingress.AcceptAsync(CreateConfiguration(), CreateSubmission(Timestamp(2), [1, 2, 3, 4]), CancellationToken.None).ConfigureAwait(false);
+            fault.Arm();
+            waiting = Task.Run(async () => await ingress.AcceptAsync(CreateConfiguration(), CreateSubmission(Timestamp(7), [1, 2, 3, 4]), CancellationToken.None).ConfigureAwait(false));
+            Assert.IsTrue(fault.Entered.Wait(TimeSpan.FromSeconds(10)), "Fresh capture did not reach its pre-lock snapshot.");
+            var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+            var gate = HVO.SkyMonitor.CameraAgent.Common.Storage.RawIngressLifecycleLock.ForRoot(root);
+            await gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await journal.MarkEvidenceFailureAsync(first!.Manifest.Descriptor.Capture.CaptureId, "missing_evidence", "required-file-missing", CancellationToken.None).ConfigureAwait(false);
+                await journal.MarkEvidenceFailureAsync(second!.Manifest.Descriptor.Capture.CaptureId, "missing_evidence", "required-file-missing", CancellationToken.None).ConfigureAwait(false);
+            }
+            finally { gate.Release(); }
+            var target = (await ingress.ReadEvidencePageAsync(10, null, CancellationToken.None).ConfigureAwait(false)).Items.Single(item => item.CaptureSequence == 1).Target;
+            await ingress.ReleaseEvidenceAsync(target, RawEvidenceReleaseAction.WriteOff, "partial-race", "owner", "operator-approved-loss", CancellationToken.None).ConfigureAwait(false);
+            fault.Release();
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => waiting).ConfigureAwait(false);
+            using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(2L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM raw_capture_assignments;").ConfigureAwait(false));
+        }
+        finally
+        {
+            fault.Release();
+            if (waiting is not null)
+            {
+                try { await waiting.ConfigureAwait(false); }
+                catch (InvalidDataException) { }
+            }
+            ingress.Dispose();
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
     public async Task EvidenceRelease_WriteOffWinsAgainstRetryWaitingForLifecycleLock()
     {
         var root = CreateRoot();
