@@ -14,6 +14,7 @@ public sealed class ArchitectureBoundaryTests
     private const string Imaging = "HVO.SkyMonitor.Imaging";
     private const string FleetContracts = "HVO.SkyMonitor.Fleet.Contracts";
     private const string Processing = "HVO.SkyMonitor.Processing";
+    private const string VideoFFmpeg = "HVO.SkyMonitor.Video.FFmpeg";
     private const string Catalog = "HVO.SkyMonitor.Catalog.Sqlite";
     private const string Common = "HVO.SkyMonitor.Common";
     private const string CameraAgentCommon = "HVO.SkyMonitor.CameraAgent.Common";
@@ -62,17 +63,18 @@ public sealed class ArchitectureBoundaryTests
             [Imaging] = Set(AgentCore, Astronomy),
             [FleetContracts] = Set(),
             [Processing] = Set(AgentCore, Astronomy, Imaging),
+            [VideoFFmpeg] = Set(Processing, StorageFileSystem),
             [Catalog] = Set(Astronomy),
             [Common] = Set(),
             [StorageFileSystem] = Set(),
-            [CameraAgentCommon] = Set(AgentCore, Astronomy, Imaging, Processing, FleetContracts, CameraAgentReplay, StorageFileSystem),
+            [CameraAgentCommon] = Set(AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, FleetContracts, CameraAgentReplay, StorageFileSystem),
             [CameraAgentZwo] = Set(AgentCore),
             [CameraAgentReplay] = Set(AgentCore, Processing),
             [CameraAgentReplayRunner] = Set(Processing, CameraAgentReplay),
             [ProcessingRunnerContracts] = Set(AgentCore, Processing),
             [ProcessingRunner] = Set(AgentCore, Processing, ProcessingRunnerContracts),
             [CameraAgent] = Set(CameraAgentCommon, CameraAgentZwo, Catalog, Common),
-            [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, ProcessingRunnerContracts, FleetContracts, Catalog, Common, StorageFileSystem),
+            [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, ProcessingRunnerContracts, FleetContracts, Catalog, Common, StorageFileSystem),
             [DeploymentContracts] = Set(),
             [DeploymentDistribution] = Set(DeploymentContracts),
             [DeploymentCli] = Set(AgentCore, Catalog, DeploymentContracts, DeploymentDistribution)
@@ -173,7 +175,7 @@ public sealed class ArchitectureBoundaryTests
             .Select(candidate => candidate.Name)
             .Order(StringComparer.Ordinal)
             .ToArray();
-        var permittedConsumers = new[] { CameraAgentCommon, LogicHost };
+        var permittedConsumers = new[] { CameraAgentCommon, LogicHost, VideoFFmpeg };
         Assert.IsEmpty(consumers.Except(permittedConsumers, StringComparer.Ordinal).ToArray(),
             $"Only {string.Join(" and ", permittedConsumers)} may reference {StorageFileSystem}: {string.Join(", ", consumers)}");
     }

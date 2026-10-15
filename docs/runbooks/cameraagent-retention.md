@@ -128,13 +128,28 @@ OAuth client-credentials bearer authentication is the supported upload mode.
 An API key, rejected bearer identity, or inactive registration results in an
 `authentication-rejected` quarantine rather than an infinite retry.
 
-To resolve quarantined work, authenticate as the configured local site owner and
-list `/api/v1/operations/outboxes/artifacts?storage=<alias>`. Use only the opaque,
+To inspect artifact retries or resolve quarantined work, authenticate as the
+configured local site owner and list `/api/v1/operations/outboxes/artifacts?storage=<alias>`. Use only the opaque,
 time-limited action token returned by that owner-only API when posting a bounded
 reason code to `/api/v1/operations/outboxes/artifacts/replay` or
 `/api/v1/operations/outboxes/artifacts/abandon`; do not expose a storage root,
 SQLite record ID, or idempotency key in an operator URL. Replay is allowed only
-for valid deliverable evidence. Abandonment releases the delivery hold only
+for quarantined records with valid deliverable evidence. Retry records are also
+listed in the Quarantine and retry browser (`/operations/quarantine`) with their
+artifact age, age since the latest durable update, attempt count, next attempt
+and last reason. Artifact age uses the immutable manifest creation timestamp;
+the latest-update age uses the outbox status timestamp. These remain meaningful
+for newly queued archived payloads and survive retry and restart. The API names
+them `artifactAgeSeconds` and `lastUpdateAgeSeconds` beside `createdUtc` and
+`updatedUtc`. First-enqueue time is not retained by the current outbox. All retries are
+visible, so a persistent failure needs no arbitrary age threshold to become
+operable. Automatic retry and its backoff remain unchanged; retry records do not
+have a replay action.
+
+The owner may abandon either a quarantined or retry record. The terminal update
+requires that status at commit: a record already leased or acknowledged rejects
+the action without an abandonment receipt. Refresh after an active delivery
+finishes before retrying the decision. Abandonment releases the delivery hold only
 after the actor, UTC time, and reason commit to the audit table. Preserve or
 export the payload, sidecar, journal, and conflict evidence before abandonment.
 
@@ -158,6 +173,21 @@ storage. The authoritative journal is
 files while CameraAgent is running. `/health` reports `raw-ingress` as healthy
 only after schema verification, integrity checking, reconciliation, and a
 passive checkpoint complete.
+
+Schema inspection uses a read-only SQLite transaction over the main database and
+its committed WAL, with a bounded page cache and memory mapping disabled. It does
+not copy the journal into temporary storage. All schema queries in an inspection
+share the same committed image; contention remains a transient startup failure,
+while canonical-schema drift and integrity failures still fail closed.
+
+Raw reconciliation, projected-scene stage ownership, and recovered live-execution
+binding visit one retained manifest at a time. Reconciliation releases each SQLite reader before checking
+payload files or repairing state, so payload scanning does not pin a WAL reader
+for the whole history. Compact path and stage-key sets still scale with capture
+count; manifest bytes and decoded scene objects do not accumulate with history.
+Startup continues to read and checksum retained payloads and sidecars, and its
+I/O duration therefore scales with retained bytes. No resource default, schema,
+retention policy, or evidence-validation rule changes.
 
 The protected deployment-location history, the protected manual-coordinate record
 `manual-deployment-location.v1.protected` that carries the governing local seed

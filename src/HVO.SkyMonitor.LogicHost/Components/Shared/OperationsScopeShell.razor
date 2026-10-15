@@ -1,0 +1,123 @@
+<section class="scope-shell" @ref="root" aria-busy="@(state == ScopeState.Loading || refreshing ? "true" : "false")">
+    <div class="scope-toolbar">
+        <a href="/app">Network operations dashboard</a>
+        <button type="button" class="btn btn-sm btn-outline-light" disabled="@(state == ScopeState.Loading || refreshing)" @onclick="RefreshAsync">Refresh access</button>
+    </div>
+
+    @if (state == ScopeState.Loading)
+    {
+        <h1 id="scope-heading" tabindex="-1">Network workspace</h1>
+        <p role="status">Checking scope access…</p>
+    }
+    else if (state != ScopeState.Ready)
+    {
+        <h1 id="scope-heading" tabindex="-1">Network workspace</h1>
+        <div class="scope-state" role="status">
+            <p>@StateMessage</p>
+            @if (state == ScopeState.InvalidPage)
+            {
+                <a href="@FirstPageUrl">Start from the first page</a>
+            }
+            <a href="/app/network">Choose an accessible scope</a>
+        </div>
+    }
+    else
+    {
+        <nav aria-label="Breadcrumb" class="scope-breadcrumbs">
+            <ol>
+                <li><a href="@NetworkUrl" aria-current="@(observatory is null ? "page" : null)">Network</a></li>
+                @if (observatory is not null)
+                {
+                    <li><a href="@ObservatoryUrl(observatory.ObservatoryId)" aria-current="@(camera is null ? "page" : null)">@observatory.Name</a></li>
+                }
+                @if (camera is not null)
+                {
+                    <li><span aria-current="page">@camera.Name</span></li>
+                }
+            </ol>
+        </nav>
+        <div class="scope-grid">
+            <div class="scope-content">
+                <header>
+                    <p class="scope-eyebrow">Protected network workspace</p>
+                    <h1 id="scope-heading" tabindex="-1">@(camera?.Name ?? observatory?.Name ?? "Network")</h1>
+                    @if (observatory is not null)
+                    {
+                        <p class="scope-role">@observatory.Role access · @observatory.Name</p>
+                    }
+                </header>
+                <nav aria-label="Workspace sections" class="scope-tabs">
+                    <a href="@CurrentScopeUrl" aria-current="page">Scope overview</a>
+                    @if (camera is not null)
+                    {
+                        <a href="@($"/app/cameras/{camera.LogicalCameraId:D}")">Installation and capture history</a>
+                    }
+                    else if (observatory is not null)
+                    {
+                        <a href="@($"/app/observatories/{observatory.ObservatoryId:D}")">Observatory operations</a>
+                    }
+                    else
+                    {
+                        <a href="/app/observatories">Observatory operations</a>
+                    }
+                </nav>
+                @if (ChildContent is not null)
+                {
+                    @ChildContent
+                }
+                else
+                {
+                    <p class="scope-guidance">Choose a scope to move through your network. Use the available section links to open its existing operations.</p>
+                }
+            </div>
+            <details open class="scope-picker">
+                <summary>Choose observatory and camera</summary>
+                <nav aria-label="Observatory scopes" class="scope-list">
+                    <h2 id="scope-observatories" tabindex="-1">Observatories</h2>
+                    @if (observatories.Count == 0)
+                    {
+                        <p>No accessible observatories on this page.</p>
+                    }
+                    @foreach (var item in observatories)
+                    {
+                        <a id="@($"scope-observatory-{item.ObservatoryId:D}")" href="@ObservatoryUrl(item.ObservatoryId)" aria-current="@(item.ObservatoryId == ObservatoryId ? "true" : null)">@item.Name</a>
+                    }
+                    <div class="scope-pagination">
+                        @if (ObservatoryPage is not null)
+                        {
+                            <a href="@PageUrl(null, CameraPage, "observatories")">First observatory page</a>
+                        }
+                        @if (nextObservatoryPage is not null)
+                        {
+                            <a href="@PageUrl(nextObservatoryPage, CameraPage, "observatories")">Next observatory page</a>
+                        }
+                    </div>
+                </nav>
+                @if (observatory is not null)
+                {
+                    <nav aria-label="Camera scopes" class="scope-list">
+                        <h2 id="scope-cameras" tabindex="-1">Cameras</h2>
+                        @if (cameras.Count == 0)
+                        {
+                            <p>No accessible cameras on this page.</p>
+                        }
+                        @foreach (var item in cameras)
+                        {
+                            <a id="@($"scope-camera-{item.LogicalCameraId:D}")" href="@CameraUrl(item.LogicalCameraId)" aria-current="@(item.LogicalCameraId == CameraId ? "true" : null)">@item.Name</a>
+                        }
+                        <div class="scope-pagination">
+                            @if (CameraPage is not null)
+                            {
+                                <a href="@PageUrl(ObservatoryPage, null, "cameras")">First camera page</a>
+                            }
+                            @if (nextCameraPage is not null)
+                            {
+                                <a href="@PageUrl(ObservatoryPage, nextCameraPage, "cameras")">Next camera page</a>
+                            }
+                        </div>
+                    </nav>
+                }
+            </details>
+        </div>
+    }
+</section>

@@ -361,7 +361,7 @@ require_source_reference '"api.owner.write"' src/HVO.SkyMonitor.LogicHost/Progra
 require_source_reference 'ArtifactManifestV2.CurrentSchemaVersion' src/HVO.SkyMonitor.LogicHost/Services/ArtifactIngestService.cs
 require_required_check_row '\*\*Unit Tests\*\*' "${category_unit} Unit cases"
 require_required_check_row '\*\*Integration Tests\*\*' "${category_integration} Integration-category cases"
-require_source_reference "Current discovery is \`Unit=${category_unit}\`, \`Integration=${category_integration}\`, \`Manual=${category_manual}\`, \`Soak=${category_soak}\`, \`External=${category_external}\`, and \`Hardware=${category_hardware}\`." docs/runbooks/ci-pipeline.md
+require_source_reference "Current declared inventory is \`Unit=${category_unit}\`, \`Integration=${category_integration}\`, \`Manual=${category_manual}\`, \`Soak=${category_soak}\`, \`External=${category_external}\`, and \`Hardware=${category_hardware}\`." docs/runbooks/ci-pipeline.md
 # Both halves of the architecture sentence are the architecture project's own
 # category discovery totals, so both are derived here. Pinned as the English word
 # "seven", the first of these asserted that the document said seven and never that

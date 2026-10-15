@@ -1,0 +1,46 @@
+@inherits SiteTimeComponent
+@using HVO.SkyMonitor.CameraAgent.Services
+@page "/archive/products/time-lapse/{ProductId:guid}"
+@using HVO.SkyMonitor.CameraAgent.Authorization
+@using HVO.SkyMonitor.CameraAgent.Components.Presentation
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@rendermode InteractiveServer
+
+<PageTitle>Time-lapse</PageTitle>
+<main class="time-lapse-detail">
+    <a href="/archive/products">Generated products</a>
+    <h1>Time-lapse</h1>
+    @if (_loading) { <p role="status">Loading and verifying the video…</p> }
+    else if (_view is not { } view) { <p role="status">@_message</p> }
+    else
+    {
+        var product = view.Product;
+        <h2>@(product.IsDaily ? "Daily" : "Hourly") · @product.ReportDate.ToString("yyyy-MM-dd")</h2>
+        <p>Final generation · @(product.HasGaps ? "partial capture coverage, visible gaps" : "complete timeline coverage"). Local-only video.</p>
+        @if (view.VerifiedAvailable)
+        {
+            <TimeLapsePlayer Source="@TimeLapseLinks.Video(product.ProductId)" MediaType="video/mp4" Width="@product.Encoding.Media.Width"
+                Height="@product.Encoding.Media.Height" Label="Generated time-lapse" Caption="Verified H.264 video. Use the player controls for fullscreen." />
+        }
+        else { <p role="status">The product was generated, but its video file is missing or failed checksum verification. Its recorded provenance remains available.</p> }
+        <dl>
+            <dt>Planned capture period</dt><dd>@WindowLabel(product.StartUtc, product.EndUtc)</dd>
+            <dt>Video</dt><dd>@product.Encoding.Media.Width × @product.Encoding.Media.Height · @DurationLabel(product.Encoding.Media.DurationTicks) · @product.Encoding.Media.Packets.Count frames</dd>
+            <dt>Capture timing</dt><dd>Frame holds follow capture timestamps. Exposure and rolling-stack integration do not set playback speed.</dd>
+            <dt>Generation</dt><dd>@SiteTime.Format(product.CreatedUtc) · @product.Encoding.Profile</dd>
+            <dt>Checksum readiness</dt><dd>@(view.VerifiedAvailable ? "Published checksum verified against the retained file" : "Published checksum recorded; retained file unverified")</dd>
+            <dt>SHA-256</dt><dd class="checksum">@product.Encoding.PayloadSha256</dd>
+        </dl>
+        <p><a href="@TimeLapseLinks.Provenance(product.ProductId)" download>Download provenance and timing</a></p>
+        @if (product.Exclusions.Count > 0)
+        {
+            <h3>Excluded inputs</h3><ul>@foreach (var item in product.Exclusions) { <li>@item.Key: @item.Value</li> }</ul>
+        }
+        @if (product.SegmentProductIds.Count > 0)
+        {
+            <h3>Hourly sources</h3><p>The daily video reuses these encoded segments.</p>
+            <ul>@foreach (var id in product.SegmentProductIds) { <li><a href="@TimeLapseLinks.Provenance(id)">Segment provenance @id</a></li> }</ul>
+        }
+    }
+</main>

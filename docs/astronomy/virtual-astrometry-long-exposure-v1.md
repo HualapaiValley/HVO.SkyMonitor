@@ -1,0 +1,1093 @@
+# Virtual all-sky astrometry qualification — long exposures (v1)
+
+Issue [#1168](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1168), under epic
+[#520](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/520), adds the exposure axis to the virtual
+astrometry envelope. The #1106 envelope ([v1](virtual-astrometry-qualification-v1.md)) and the #1126
+projection-family envelope ([v2](virtual-astrometry-qualification-v2.md)) were measured on 1 s frames. This report
+runs the same #1102, #1103, #1104 and #1105 harnesses, with the trail-aware v2 measurer, on 20 s and 60 s VirtualSky
+sensor-pixel frames, using the [#1168 manifest](../validation/issue-1168-qualification-manifest.json), its
+[runner](../validation/issue-1168-qualification.sh) and its [metrics](../validation/issue-1168-metrics.sh). It is
+the single statement of which exposures the virtual milestone supports. v2 remains the 1 s projection-family
+envelope.
+
+**Status: measured, including the revision rerun.**
+
+- **Declared before measurement.** The matrix, refusals, withheld cells, tolerances, floor rule and continuity
+  rules below were committed in the manifest at `27c611dc`, before any continuity, tuning or held-out run.
+- **Re-frozen once.** The first continuity run found two harness declaration defects. Their correction re-froze the
+  manifest before any evidence run; see [harness defects found on continuity](#harness-defects-found-on-continuity).
+- **Measured.** Continuity, tuning and the single held-out pack then ran on the re-frozen manifest; see
+  [results](#results). Three held-out uncertainty processes failed, so covariance above 1 s is withheld from the
+  [supported envelope](#supported-envelope).
+- **Continuity tightened after review, twice.** The independent r0 review found two gaps in the continuity rules,
+  and r1 found that one of them was only partly closed. Each correction changed only the manifest's continuity
+  section; see [continuity](#continuity-with-1126). `continuity-f7e69d99` was scored under the rules before r0.
+  The r1 correction only adds rejections. The sealed rerun packs were checked again under it, not rerun.
+- **Rerun once.** `development/v1` then changed paths that this manifest's revision-rerun rule covers. The
+  [revision rerun](#revision-rerun) ran once, at the synchronized head `99301c2d`:
+  - Continuity under the tightened rules passed, and passed again when re-scored under the r1 rules. That pack is the
+    continuity evidence of record.
+  - The final pack reproduced every process outcome of the held-out pack, including the same three uncertainty
+    failures. The envelope claims only cells that pass in both.
+
+This is a virtual qualification only. It makes no claim about physical accuracy, and no profile here is a physical
+lens certification. No product code changed: this branch changes no `src/` path relative to its `development/v1`
+merge base, `87f947c6`.
+
+## Reference time: the exposure midpoint
+
+A long exposure's stars trail across the sensor. Every frame here is rendered at its exposure midpoint, and solved,
+scored and mapped there:
+
+- The renderer's scene time is `start + exposure / 2`.
+- `AstrometricFrameContext.MidpointUtc` equals the rendered scene time exactly. Every case records
+  `midpointDeltaTicks`, which must be 0.
+- `CameraFrame` timestamps are the exposure **start**, not the midpoint.
+
+**Consumer obligation.** A consumer of this envelope, first #1169 (registered stacking), must bind the solve and
+every cross-frame mapping to the exposure midpoint, not to the frame timestamp. The pixel harness's negative
+control binds start-UTC instead. It reports the resulting pose error and start-time sky displacement against the
+predicted half-exposure sidereal motion, so the size of the mistake is on record. The negative control is a
+diagnostic, not a pass condition; its numbers are under [results](#negative-control-start-utc-binding).
+
+## Frozen matrix
+
+Every cell uses gain 150, a PSF of σ 1 px with a 4 px radius, and the shared HYG 4.2 snapshot
+`hyg-v4.2-p3-s2-r1` (119,625 rows, database SHA-256 `b51d18b7…b0f9e2`). The solver catalog is unchanged at
+magnitude 5 (1,637 entries) and owned by #1167. The `product-depth` variant deepens only the render; no
+deeper-catalog claim is made.
+
+Families:
+- `equidistant`: the v1 fisheye, mono (ASI174) and CFA (`cfa-native`, ASI178MC).
+- `rectilinear`: the v2 Kowa LM6HC 6 mm substitution, mono.
+
+Every other v2 family stays qualified at 1 s only. Long exposure is not qualified for them.
+
+| Harness | Cells |
+| --- | --- |
+| Pixels, blind/warm/readouts (#1102) | equidistant and rectilinear at 1, 20 and 60 s with no variant; equidistant at 20 and 60 s under each variant |
+| Measured stars (#1103) | equidistant at 1, 20 and 60 s; rectilinear at 1 and 20 s |
+| Session optical calibration (#1104) | as measured stars |
+| Astrometric uncertainty (#1105) | as measured stars |
+| Configured-resolution resources | equidistant 1, 20, 60, 60, 20, 1 s, then rectilinear 1, 20, 20, 1 s, in one session |
+| Renderer capacity | the rectilinear boundary and every 60 s refusal, once |
+
+Each runs as a tuning pack, then once as a held-out pack, except resources and renderer capacity, which run only in
+the held-out pack. Pixels and resources run the v2 measurer.
+
+### Variants
+
+Each variant other than `none` renders only `mono-native` and `cfa-native`, on equidistant.
+
+| Variant | Render depth | Max results | Background (e⁻/s) | Clouds | Expected outcome |
+| --- | --- | --- | --- | --- | --- |
+| `none` | mag 5 | 2,000 | 2 | — | accepted |
+| `product-depth` | mag 6.5 | 32,768 | 2 | — | accepted or fail-closed |
+| `bright-background` | mag 5 | 2,000 | 20 | — | accepted or fail-closed |
+| `clouds-partial` | mag 5 | 2,000 | 2 | 40% coverage, opacity ≤ 0.9 | accepted or fail-closed |
+| `overcast` | mag 5 | 2,000 | 2 | full coverage, opacity 1 | rejected |
+
+"Fail-closed" means every case either accepts and passes or rejects; nothing is accepted wrongly. An accepted
+assessment with association precision below 1, pose error above 0.06° or focal relative error above 0.001 is a
+failure in every variant.
+
+### Declared refusals and withheld cells
+
+Each refusal is listed in the manifest with its exact exception type, message and stage. The harnesses catch only
+that refusal, in that cell. Any other exception, or a refusal in an unlisted cell, fails the run.
+
+| Cells | Disposition | Stage | Exception |
+| --- | --- | --- | --- |
+| Every mono view of a cloud variant | unsupported-render-refused | initialize | `NotSupportedException`: the native mono readout does not support clouds |
+| Rectilinear full-frame views (`mono-native`, `mono-bin2`, `mono-mirror`, `mono-roll`) at 60 s | unsupported-render-refused | capture | `InvalidOperationException`: `stellar-exposure-temporal-budget-exceeded` |
+| Measured stars, calibration and uncertainty for rectilinear at 60 s | withheld-render-refused | — | Not run: these harnesses render the refused full-frame views |
+
+## Renderer capacity
+
+The renderer integrates each star's trail in temporal slots:
+
+- Each slot moves the star at most 0.15 px: the configured bound, which the σ 1 px PSF does not tighten.
+- A source needs `ceil(exposureSeconds × speedBound / 0.15)` slots, where `speedBound` is its fastest sensor-plane
+  motion.
+- More than 64 slots refuses the capture.
+
+On the rectilinear 6 mm `mono-native` view, the fastest source moves 0.16882 px/s. That view renders at 56 s
+(64 slots) and refuses at 57 s (65 slots); 60 s would need 68. The derived maximum exposure is 56.86 s. The
+renderer-capacity run measures this boundary, and
+[#1179](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1179) tracks raising it. The rectilinear `mono-roi` and
+`mono-roi-bin2` views are not refused at 60 s, and the renderer-capacity run renders them.
+
+## Tolerances
+
+Every #1106/#1126 tolerance is unchanged. Nothing is weakened. The manifest names these additions:
+
+- Same-frame and cross-frame round trips within 1e-4 px. Points that leave the horizon or aperture are counted as
+  excluded, not failed.
+  - Near the optical axis the fisheye projectors take θ = acos(Up). A ray whose Up returns k ulps below 1 lands
+    about √(2kε)·f px off axis, with ε = 2⁻⁵³, so one ulp is f·2⁻²⁶ px.
+  - The bound covers a single-ulp axis error only while f ≤ 6,711 px/rad. The matrix satisfies that: its largest
+    fitted focal is 735.6 px/rad, where one ulp is 1.096e-5 px and the bound admits 83 ulps.
+  - The bound is 7,500 times below the unchanged 0.75 px mapping tolerance.
+  - The report records the maximum round-trip error for each destination, so the typical value and the on-axis value
+    are both visible.
+- Truth is the midpoint of each star's rendered trail. A trail truncated by the horizon, the aperture or the frame
+  is excluded from scoring and counted.
+- Saturated detections are scored unless excluded as `saturated-excessive`. Every exclusion reason is counted per
+  cell.
+- An unmodeled-source association is a failure. That is an association whose source lies more than 1.5 px from
+  its catalog star's trail and nearer another rendered star, for example a fainter `product-depth` star matched to a
+  catalog star.
+- Measured stars: the v1 recall, centroid-regression and time-ratio comparisons gate only 1 s. At 20 s and 60 s,
+  v1 is reported, not compared. `no-candidate` is a reported missed-star category, not a failure.
+- Trail metadata, for truth trails of at least 3 px:
+  - length error p95 within max(0.5 px, 15%);
+  - angle error p95 within 10°.
+
+  This gates only the trail-metadata envelope row, never solving.
+- Resources: capture p95 within the #522 renderer budgets:
+
+  | Exposure | Mono | CFA |
+  | --- | --- | --- |
+  | 1 s | 10 s | 20 s |
+  | 20 s, 60 s | 10 s | 40 s |
+
+  Warm solve stays within 500 ms.
+
+### Uncertainty floors
+
+The #1105 floors are declared for 1 s only. The 20 s and 60 s floors are derived on the tuning pack by the #1105
+rule, then committed in one commit before held-out:
+
+- Each tuning frame reports its required floor: the floor that brings χ² per degree of freedom to 1.
+- Within each format group (mono, mono 2×2, CFA), take the median across every tuned family at that exposure.
+- Round half-up to 0.001 px. Null floors are excluded and counted.
+
+The tuning runs at 20 s and 60 s estimate at the provisional 1 s floors only to report each frame's required
+floor. Their coverage outcome is not a result. A held-out coverage miss is recorded, and covariance for that
+exposure is withheld; it is never retuned.
+
+The declared floors come from tuning pack `tuning-f7e69d99` alone: revision `f7e69d99`, `SHA256SUMS` sha
+`c8d9c647ff486f45e34df29b52e8268ad8c511b4034cc2f0d57b9554ac6b697d`. Running `issue-1168-metrics.sh floors` on that
+pack reproduces them. Its output is committed as
+[`issue-1168-floors.json`](../validation/issue-1168-floors.json). The C# initializer it prints is committed unchanged
+in `VirtualAstrometricUncertaintyQualificationTests`.
+
+| Exposure | Group | Families | Frames | Excluded | Median (px) | Declared (px) |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| 20 s | mono | equidistant, rectilinear | 64 | 0 | 0.014950 | 0.015 |
+| 20 s | mono 2×2 | equidistant, rectilinear | 32 | 0 | 0.018835 | 0.019 |
+| 20 s | CFA | equidistant | 8 | 0 | 0.044229 | 0.044 |
+| 60 s | mono | equidistant | 32 | 0 | 0.022492 | 0.022 |
+| 60 s | mono 2×2 | equidistant | 16 | 0 | 0.015683 | 0.016 |
+| 60 s | CFA | equidistant | 8 | 0 | 0.038144 | 0.038 |
+
+The 60 s mono median, 0.0224921 px, is 7.9e-6 px below the 0.0225 half-up tie. The rounding to 0.022 is still
+unambiguous.
+
+Rectilinear at 60 s is refused, so the 60 s floors are equidistant only. The three provisional processes failed
+pooled coverage checks: 3 for equidistant 20 s (56 frames), 4 for equidistant 60 s (56) and 4 for rectilinear
+20 s (48). Every one is over-coverage, between 0.929 and 1.000 against 0.6827. That is the expected result when
+the 1 s floors are larger than these exposures require. The processes recorded no other failure. As declared,
+these are not outcomes. The 1 s floors are unchanged.
+
+## Continuity with #1126
+
+With every selector unset, the harnesses reproduce the #1126 1 s v1 equidistant matrix. The continuity run builds a
+base revision and this head in Release. It then runs every #1126 manifest entry on base and then on head, in one
+heavy-lock session. The base is `0639e27d`; the [revision rerun](#revision-rerun) uses `development/v1` at
+`87f947c6`. No `src/` path differs between base and head.
+
+**Tightened in response to r0.** The independent r0 review of `39119200` found two ways continuity could pass on
+evidence it should reject:
+- F1: a head-only allocation miss passed as a timing difference. The allocation tripwire was a stated condition, but
+  the runner did not enforce it.
+- F2: any difference under the measured-stars scorer prefixes passed as `scorer-by-design`, whatever its size.
+
+Before any evidence existed for the corrected head, the manifest's `continuity` section was changed in exactly two
+ways: the runner now enforces the allocation tripwire, and scorer-by-design became an enumerated list of exact paths,
+each checked against a #1126 point-rule score. Nothing else in the manifest changed. The matrix, refusals,
+tolerances, floors and held-out criteria are byte-identical.
+
+**Tightened again in response to r1.** The r1 review of `fc10e61d` found that F2 was only partly closed (N1). An
+enumerated scorer path still accepted any value, and its deletion, whenever its legacy counterpart did not differ:
+- Removing `eligibleTruthStars` from a head report passed as scorer-by-design.
+- So did a scorer defect that halved every trail-aware `eligibleStars` and `recovered` count and kept recall. The
+  invariants receive per-star eligibility and recovery, not the emitted scores, so they never saw it.
+
+The rerun packs already existed, so this tightening came after evidence. It only adds ways to reject. The manifest's
+`continuity` section changed in exactly two ways, and the measured-stars harness gained one check:
+- **Scorer evidence.** Every measured-stars report must carry complete, self-consistent scores, on both sides and in
+  the head's `legacy` block; see [scorer evidence](#scorer-evidence).
+- **Sparse scorer leaves.** A scorer leaf present on one side only can be scorer-by-design only under
+  `v2.missedEligibleReasonCounts`, whose keys are the reasons that occur. Any other one-sided scorer leaf, such as a
+  deleted count, is unclassified.
+- **Score check.** The harness checks every emitted score against the population the invariants check; see
+  [score check](#score-check).
+
+Nothing else in the manifest changed. The matrix, refusals, tolerances, floors and held-out criteria are still
+byte-identical.
+
+| Manifest | SHA-256 |
+| --- | --- |
+| Before, at `39119200`; the first three packs under [results](#results) | `cd04647689fb1ab40b2c1f9513d8f61fb7bb3c33dc776a58e8a281a6359cfe65` |
+| Tightened after r0, at `fc10e61d`; the two revision-rerun packs | `42fb87dda2c72ed81c031855c4aeb09313e39faa9066991b968f3bcb027d1e05` |
+| Tightened after r1, at `b1cde08a`; the [checks after r1](#checked-again-after-r1) | `c3dc62a7d6c3e9a5767d7f68d65ec07c8ebf10b05638c314d6aa01e3d1ba052e` |
+
+A pair passes only when all of these hold:
+
+- Both processes complete, with every listed report present.
+- **Pinned base failures.** The base's deterministic failures equal exactly the set the manifest pins for that pair,
+  and none for any other pair. Only `pixels-tuning` has a pinned set: the two #1126 tuning failures v2 records,
+  `02-mono-roi-bin2-0` rejected as ambiguous and `02-mono-roi-bin2-1` expected Warm.
+- **Same deterministic failures.** The head's deterministic failures equal the base's, with the same case IDs and
+  reason codes.
+- **Explained outcomes.** A process that records no failure passes. A failed process fails with exactly its
+  harness's final `Assert.IsEmpty(failures)` message, listing its report's failures in order. The `pixels-tuning`
+  base is the one exception: it must fail with exactly the pinned #1126 grid-count assertion, 725 of 750, as v2
+  records. The head counts only accepted sources there, so it reaches `Assert.IsEmpty`.
+- **No head-only allocation miss**, under the allocation tripwire below.
+- **Scorer evidence.** Every report with a [scorer-evidence](#scorer-evidence) rule passes it on both sides.
+- Every differing report leaf is classified, and the [legacy score](#legacy-point-rule-score) is identical.
+
+A base that records any other deterministic failure, or fails any other way, invalidates the run as environment or
+setup. That pair is `invalid`, the pack is incomplete, and it is not a continuity pass.
+
+**Timing is kept apart.** A report failure that matches one of the manifest's anchored resource-failure patterns is
+a timing or resource outcome, not output: a measured time, allocation or working set over its declared budget.
+
+- The patterns cover the pixel solve time budget, and the measured-stars, resources, calibration and uncertainty
+  time, allocation and working-set budgets.
+- None matches a solve mode, reason code, association, accuracy, coverage, count, mapping or round-trip failure.
+- With no `src/` change, a resource failure that appears or disappears between revisions is a classified timing
+  difference. Both revisions' elapsed seconds are recorded, and every resource failure is listed by pair, with its
+  message.
+- **Allocation tripwire.** A head allocation miss fails the pair, with reason `head-only-allocation-miss`, unless the
+  base records a miss in the same report, on the same allocation pattern, with the same subject: the text before the
+  first colon. The allocation patterns are the measured-stars B/pixel budgets, per case and under window pressure,
+  and the calibration and uncertainty-estimator allocation budgets. They are matched in every failures list of the
+  report, nested ones included.
+  Each miss is recorded under the pair's `allocationTripwire`, with its report and message.
+- Working-set and time misses are listed, never failed.
+- A deterministic failure that appears or disappears always fails continuity.
+
+Every report leaf that differs must be classified. Array indices collapse to `N`.
+
+| Class | Meaning |
+| --- | --- |
+| identity | The revision fields. |
+| run-varying | Timing and resource fields. |
+| resource-outcome | A resource failure, split out of `failures` before classification. |
+| declared-changed | An exact base and head value named in the manifest, such as the schema versions. |
+| declared-added | A new field, such as `exposureSeconds`, `cases`, `cells` or `negativeControl`. |
+| scorer-by-design | A leaf whose exact path is listed under its report's `scorer`: a trail-aware eligibility, recovery or recall count, or a missed-reason count. Its legacy counterpart, the same path under `reports.N.legacy`, must not differ. It must be identical on both sides, or absent from both, because missed-reason counts list only the reasons that occur. A scorer leaf present on one side only must be a missed-reason count. Scorer-by-design passes only with its report's scorer evidence. Only the measured-stars reports list any. |
+
+A leaf present on one side only must be head-only under a declared-added prefix, a resource outcome, or a
+scorer-by-design missed-reason count. A deleted count is unclassified. Any unclassified leaf fails continuity. So does
+any legacy difference, any incomplete or inconsistent scorer evidence, and any difference in solver, measurement,
+mapping, uncertainty or identity hashes.
+
+### Legacy point-rule score
+
+The measured-stars head report carries `reports.N.legacy`. It holds the eligible truth stars, the v1 baseline, the
+v2 candidate and the v2 missed-reason counts, scored by the #1126 point rule, verbatim from `0639e27d`:
+
+- Over the visible stars, those whose mid-exposure sample projects, in the same order.
+- **Legacy-eligible:** the star's mid-exposure pixel is more than 6 px inside the nominal frame border, more than
+  12 px inside a circular aperture, and more than 12 px from every other visible star's mid-exposure pixel.
+- **Legacy-recovered:** a detection lies within 1.5 px of that pixel.
+- The scores and missed reasons use the base `Score` and `MissedReasons` code.
+
+The base harness already scores by this rule. So the runner synthesizes the base's `legacy` block from that base
+report's own fields, the manifest's `legacyMirrors`, and refuses a base that already has one. Legacy equality is
+exact: any difference fails the pair, and no legacy leaf or case is ever dropped.
+
+The legacy score is computed by test and harness code only. `src/` is unchanged.
+
+**Invariants.** The measured-stars harness checks three invariants at every exposure, in every pack that runs it:
+continuity, tuning, final and the revision rerun. A violation is a harness failure, `<caseId>: invariant <n>: …`. It
+matches no resource-failure pattern, so it fails its process and its pack. The invariants may not be narrowed after
+evidence.
+
+1. Every trail-eligible star is legacy-eligible.
+2. For v1 and for v2, a trail-eligible star recovered at its mid-exposure point, by a detection within 1.5 px, is
+   recovered on its trail, by a detection within 1.5 px of the trail polyline.
+3. A reclassified star, legacy-eligible but not trail-eligible, has a geometric cause within its reach `r`.
+   - `r` is the largest distance from its mid-exposure pixel to any of its nine samples above the horizon, projected
+     without image-circle or readout clipping, plus 1e-9 px.
+   - At least one of these holds:
+     - its mid-exposure pixel fails the point rule's interior test with both margins widened by `r`: more than
+       6 + `r` px inside the nominal frame border, and more than 12 + `r` px inside the aperture;
+     - another visible star's mid-exposure pixel lies within 12 + `r` + that star's reach;
+     - a sample lies at or below the horizon;
+     - a sample above the horizon lies outside the projection's supported domain.
+
+### Scorer evidence
+
+The runner checks the scores each measured-stars report emits. Each `reports[i]`, and on the head its
+`reports[i].legacy`, must be:
+- **Complete.** `eligibleTruthStars`, and the v1 `baseline` and v2 `candidate` `eligibleStars` and `recovered`, are
+  non-negative integers. Each `recall` is a number, and `v2.missedEligibleReasonCounts` is an object of positive
+  integers. A field that is missing, null or of another JSON type fails the pair with reason `scorer-incomplete`.
+- **Consistent.** Both `eligibleStars` equal `eligibleTruthStars`, and each `recovered` is at most its
+  `eligibleStars`. Each `recall` is exactly `recovered / eligibleStars`, or 0 when none is eligible.
+  System.Text.Json writes doubles that round-trip, so there is no tolerance. The missed-reason counts sum to the v2
+  `eligibleStars` minus `recovered`. A complete block that breaks any of these fails the pair with reason
+  `scorer-inconsistent`.
+
+Every finding is recorded in the pair's `scorerEvidence`, with its side, case ID and exact path. The runner's
+`scorer-check` mode applies the same check to any measured-stars report, and exits 0 only when every report passes.
+
+**What the runner cannot see.** The report carries no per-star data. A rewrite that keeps every scorer number
+self-consistent passes this check: for example, halving `eligibleTruthStars` together with every count that follows
+from it. The runner cannot reject that. The harness does.
+
+### Score check
+
+At every exposure, in every pack that runs it, the measured-stars harness checks each emitted score against the
+population the invariants check. Each `eligibleTruthStars`, `eligibleStars`, `recovered`, `recall` and v2
+missed-reason total, trail-aware and legacy, must equal the count from the same stars by the same predicates. A
+mismatch is a harness failure, `<caseId>: score: <name> is <emitted>, not <expected>`. Like an invariant violation,
+it matches no resource-failure pattern, so it fails its process and its pack.
+
+The check applies the scorers' own predicates to the scorers' own stars:
+- trail eligibility is each truth star's `Eligible`, and legacy eligibility is its legacy counterpart's `Eligible`,
+  matched one to one by ID;
+- recovery uses the same 1.5 px point and trail thresholds, over the same v1 and v2 detections;
+- each unrecovered eligible star has exactly one missed reason, and recall is the same expression.
+
+So on honest data it is an identity. It cannot fire on, or throw for, a report its scorers emitted correctly. A Unit
+test pins it: a consistent population passes, while halved, self-consistently rewritten and misstated scores each
+fail with their exact messages.
+
+### Harness defects found on continuity
+
+The first continuity run, at `27c611dc`, found two harness declaration defects. Neither is a product change, and
+neither changed a deterministic output between base and head. That run is kept as a labelled diagnostic, not as
+evidence:
+
+- Pack `continuity-27c611dc`, status `failed`.
+- Archive `continuity-27c611dc.diagnostic.tar.zst`, SHA-256
+  `9e3512d122f12a83fc5168b5b55cf02c6f42270f21fcf38e209244396b20d0bd`.
+
+The correction changes only the test's tolerance constant, the manifest, the runner, the metrics script and this
+report. Every continuity pair is rerun from scratch on the re-frozen manifest, including the six that passed.
+
+1. **Round-trip tolerance.**
+   - Cause: the declared 1e-6 px bound was below the projectors' conditioning on the optical axis. 16 head round
+     trips, in `pixels-tuning` and `actual-pixels-blind-warm-readouts`, missed it at 2.83e-6 to 1.096e-5 px. Each
+     equals f·2⁻²⁶ for its source's fitted focal (189.7, 379.3 or 735.6 px/rad) to within 1e-8 relative: one ulp of
+     Up at a grid point on the axis. Every other round trip was at most 1.8e-10 px.
+   - Correction: the 1e-4 px bound [derived above](#tolerances).
+   - Check: the largest diagnostic error is 9 times below the new bound.
+2. **Process-status equality.**
+   - Cause: continuity required equal process status on both revisions. Two #1126 outcomes break that without any
+     output difference:
+     - A timing budget can fail on one revision only. The `measured-stars-held-out` base failed
+       `01-mono-roi-bin2: v2 measurement 44 ms vs v1 10 ms`, the time-ratio miss v2 records; the head passed.
+     - The frozen #1126 pixel harness stops on its grid-count assertion before its failure list.
+   - Correction: the pinned base failures, the exact process-outcome rule and the resource-outcome class above.
+   - Check: applied to all nine diagnostic pairs, the corrected rules explain every base and head process outcome,
+     and every base matches its pinned set. `measured-stars-held-out` passes with two `resource-outcome` leaves. The
+     only remaining failures are the 16 round-trip misses that the first correction removes. Truncated, reordered and
+     wrong failure messages are rejected.
+
+## Reproduction
+
+On an idle host with the verified snapshot installed:
+
+```bash
+export HVO_ASTROMETRY_CATALOG_ROOT=<snapshot root> HVO_HEAVY_LOCK=/tmp/hvo-520-heavy.lock
+docs/validation/issue-1168-qualification.sh continuity <new pack directory>
+docs/validation/issue-1168-qualification.sh tuning <new pack directory>
+docs/validation/issue-1168-metrics.sh floors <tuning pack>
+docs/validation/issue-1168-qualification.sh final <new pack directory>
+docs/validation/issue-1168-metrics.sh summary <pack>
+docs/validation/issue-1168-qualification.sh scorer-check <measured-stars report>...
+```
+
+The runner refuses a dirty tree and runs one process per declared cell. It records the host, the load average at
+the start and end of each process, the TRX counters and the harness source blobs. Every pack is sealed with
+`SHA256SUMS`.
+
+For the revision rerun, `HVO_CONTINUITY_BASE=<revision>` replaces the continuity base. `rescore <continuity pack>
+<new pack directory>` builds and runs nothing. It verifies a sealed continuity pack against its `SHA256SUMS` and
+classifies its recorded pairs again under this head's manifest.
+
+## Revision rerun
+
+The #520 coordinator pre-declared this rule at 2026-10-07T08:08:39Z, before any rerun data. It was committed here
+before the branch was synchronized with `development/v1`.
+
+**Trigger.** Manifest rule 10 requires a revision rerun: after `350044f8`, `development/v1` changed paths in
+`revisionRerunPaths`.
+- #1170's `58f7b095`, merged in `f7d19865`, changes `src/HVO.SkyMonitor.Imaging/Linear16ArithmeticMean.cs` and
+  `Mono16DisplayStretch.cs`.
+- PR #1176 (#518), not yet merged when the rule was declared, changes AgentCore, Astronomy, Imaging and VirtualSky
+  module paths.
+
+**What runs.** The rerun runs once, after #518 merges, at this branch's synchronized head:
+1. Continuity: the new `development/v1` base against the synchronized head, under the continuity rules above, as
+   tightened in response to r0.
+   - The runner takes that base from `HVO_CONTINUITY_BASE`.
+   - It refuses a base that does not descend from the manifest base `0639e27d`, or is not an ancestor of the head.
+   - It also refuses one that does not carry every declared base input and the #1126 manifest at the same blobs.
+2. The complete final manifest set, all 40 processes, with the committed floors unchanged.
+
+There is no tuning rerun. This is a revision rerun, not a re-roll.
+
+**Both-packs rule.**
+- The envelope claims support only for a cell that passes in both `final-350044f8` and the rerun pack.
+- A cell whose outcome differs between the packs is listed with both outcomes and the code change that explains it.
+- An unexplained difference stops the work and is reported. It is not settled by another run.
+- [List, don't absorb](#continuity-result) and the [allocation tripwire](#continuity-result) apply to the rerun
+  pack as they did to the held-out pack.
+
+**Outcome.** The rerun ran once, after #518 merged, at `99301c2d`. That head merges `development/v1` at `87f947c6`
+and changes no `src/` path relative to it.
+- **Continuity.** `continuity-99301c2d`, base `87f947c6` against head `99301c2d`, passed under the tightened rules. It
+  passed again when re-scored under the r1 rules; see [continuity result](#continuity-result).
+- **Final.** In `final-99301c2d`, 37 of 40 processes passed. The same three uncertainty processes failed as in
+  `final-350044f8`, with the same failure messages; see [results](#results).
+- **Both packs.** No cell's outcome differs between the packs, so no difference needs a code explanation. The envelope
+  claims the 37 cells that pass in both. Nothing was rerun, and no floor, tolerance or partition changed.
+
+## Results
+
+Every pack ran sequentially under the heavy lock, from a clean tree on hvo-dev-02: an Intel Core Ultra 9 285H, 8
+logical processors, SDK 10.0.401.
+- **The first three packs** used manifest SHA-256
+  `cd04647689fb1ab40b2c1f9513d8f61fb7bb3c33dc776a58e8a281a6359cfe65`, before the continuity criteria were
+  [tightened in response to r0](#continuity-with-1126). They ran while another measured workload ran on a VM that
+  probably shares this host.
+- **The two revision-rerun packs** used the tightened manifest,
+  `42fb87dda2c72ed81c031855c4aeb09313e39faa9066991b968f3bcb027d1e05`. Both VMs' heavy locks were held for their whole
+  window, and the other VM was idle. After r1 they were [checked again](#checked-again-after-r1) under manifest
+  `c3dc62a7`.
+
+See [measurement environment](#measurement-environment).
+
+Each pack is sealed by its `SHA256SUMS`, and the table gives that file's SHA-256. Times are UTC on 2026-10-07.
+
+| Pack | Revision | Time | Outcome | `SHA256SUMS` SHA-256 |
+| --- | --- | --- | --- | --- |
+| `continuity-f7e69d99` | `f7e69d99` against base `0639e27d` | 05:22:25–06:05:30 | passed, 9 of 9 pairs, under the rules before r0 | `63a1d0efc58af4cac6d65171600c61f5c6e991e115498249600388978caa5dac` |
+| `tuning-f7e69d99` | `f7e69d99` | 06:07:02–06:28:14 | 26 of 29 processes passed; the 3 failures are the provisional uncertainty runs, which are not outcomes | `c8d9c647ff486f45e34df29b52e8268ad8c511b4034cc2f0d57b9554ac6b697d` |
+| `final-350044f8` | `350044f8` | 06:30:36–07:59:38 | `status: failed`: 37 of 40 processes passed and 3 uncertainty processes failed | `ef50c44284f28eb38ea2193efece64350881a0a8d3d6f69d9a188f01d6c6d690` |
+| `continuity-99301c2d` | `99301c2d` against base `87f947c6` | 09:55:22–10:35:21 | passed, 9 of 9 pairs, under the tightened rules | `dee550a847772bef4b150bf6822aae8ef539b64b3633445e4d8999a50a410d66` |
+| `final-99301c2d` | `99301c2d` | 10:36:10–11:58:07 | `status: failed`: 37 of 40 processes passed and the same 3 uncertainty processes failed | `4ef63347ff98c2f66e67a3574b5091e3c3e8a353cbcedf180aa428d572177eeb` |
+
+**The held-out pack.**
+- `350044f8` adds only the declared floors to `f7e69d99`: the C# initializer, `issue-1168-floors.json` and the
+  floors table above.
+- Held-out ran once at `350044f8`. Nothing was re-run, and no floor, tolerance or partition changed afterwards. The
+  pack stays failed.
+- Every run executed exactly its expected test and attached exactly one report.
+
+**Its metrics summary.**
+- It was extracted with `issue-1168-metrics.sh summary` at `6b545747`, which changes only that script. The script
+  had passed whole reports to jq as arguments, which exceeded the argument-length limit; it now passes them through
+  files.
+- Both versions produce byte-identical output on packs small enough for the old one to read.
+- The summary's SHA-256 is `42010f94113d100ba568d2cd0b913db86b02c1d1bdb9f90e928f91371db261cc`.
+- An earlier `summary` invocation, over the tuning pack, ran on hvo-dev-02 from 06:31:14Z to 06:31:18Z and failed
+  on that argument limit. That was during the held-out pack's build, before its first measured process started at
+  06:34:00Z.
+
+**Independent verification.** The #520 coordinator independently verified:
+- the pack hashes, the index and every run's report and test counts;
+- that no held-out failure matches a resource-failure pattern;
+- the floors, re-derived from the tuning pack's reports: they are bit-identical medians with the same declared
+  values.
+
+**The revision rerun pack, `final-99301c2d`.**
+- `99301c2d` carries the floors of `350044f8` unchanged. Neither `issue-1168-floors.json` nor
+  `VirtualAstrometricUncertaintyQualificationTests.cs`, blob `79fad2bb`, differs between them. The manifest changed
+  only in its `continuity` section.
+- **Process outcomes.** Every run executed exactly its expected test and attached exactly one report. The 40 process
+  names, their order and their statuses equal those of `final-350044f8`. The three failed processes are
+  `astrometric-uncertainty-held-out` for equidistant 20 s, equidistant 60 s and rectilinear 20 s. Their TRX failure
+  messages are byte-identical to those in `final-350044f8`.
+- **Metrics.** The `issue-1168-metrics.sh summary` of each pack was compared run by run, over every summary field
+  except the revision and elapsed seconds.
+  - The two summaries' SHA-256s are `42010f94…` for `final-350044f8`, and
+    `f1b3cd93b1372756f41adc9aec19798ee684b9a87d2b544e1062716205c7e686` for `final-99301c2d`.
+  - 29 of the 40 runs are identical in every compared field. These include every pixel, readout, measured-star,
+    calibration and uncertainty run, every disposition, refusal and negative-control field.
+  - The other 11 are the 10 resource runs and the renderer-capacity run. They differ only in measured times,
+    operations per second, the probes' elapsed milliseconds, and the median allocated bytes. The median allocated
+    bytes differ by at most 35,160 bytes, 0.015%.
+  - The summary does not include CPU time or working set, so those were not compared.
+  - The comparison's SHA-256 is `c657a8058dab101f4537fc878470871a6949d19284c393890088cfadde0b564f`.
+- **Independent verification.** The #520 coordinator independently verified:
+  - the seal;
+  - the index;
+  - the failed set;
+  - the per-run TRX message hashes against `final-350044f8`;
+  - that the manifest change is confined to `continuity`;
+  - that `issue-1168-floors.json` is unchanged.
+
+### Measurement environment
+
+hvo-dev-02 and hvo-dev-03 are both 8-vCPU KVM guests on an Intel Core Ultra 9 285H and probably share one physical
+host. The 285H is a hybrid part, so a busy neighbour can slow a guest without visible steal time.
+
+- **Before the rerun.** Every #1168 run on hvo-dev-02 overlapped #1167's measured matrix on hvo-dev-03, which ran
+  from 03:58:50 to 08:18:01.
+- **The revision rerun.** By then the two VMs were treated as one measurement domain. Both VMs' heavy locks were
+  held from 09:42:13 and 09:42:16 to 12:00:11 and 12:00:14. hvo-dev-03 was held idle under the #520 coordinator's
+  window; its load average at release was 0.00, 0.00, 0.00.
+  - In `final-99301c2d`, the 1-minute load average at each process's start and end was at most 1.51.
+  - In `continuity-99301c2d`, it was at most 12.86, at the start of the first process. That was the decaying load of
+    this window's own base and head builds; from the eighth process on it was at most 1.08.
+
+| Run on hvo-dev-02 | Time | hvo-dev-03 |
+| --- | --- | --- |
+| `continuity-27c611dc`, a diagnostic | 04:26:59–05:11:33 | #1167 measuring |
+| `continuity-f7e69d99` | 05:22:25–06:05:30 | #1167 measuring |
+| `tuning-f7e69d99` | 06:07:02–06:28:14 | #1167 measuring |
+| `final-350044f8` | 06:30:36–07:59:38 | #1167 measuring |
+| `continuity-99301c2d` | 09:55:22–10:35:21 | idle, lock held |
+| `final-99301c2d` | 10:36:10–11:58:07 | idle, lock held |
+
+Every result here falls in one of five classes.
+
+**Decided by geometry or determinism.** No boundary or claim is derived from a timing measurement:
+- **Renderer capacity.** The slot count is `ceil(exposureSeconds × speedBound / 0.15)`. The renderer's "temporal
+  budget" is that slot count, not a clock. Rectilinear `mono-native` renders at 56 s and refuses at 57 s whatever
+  the elapsed time.
+- **Uncertainty floors.** They come from tuning residuals and coverage, with no timing input.
+- **Budgets.** The capture and warm-solve budgets are the declared #522 and #1126 values, not derived from these runs.
+
+**Timing-independent.** The product solver has cooperative wall-clock budgets: cold, warm (500 ms) and the
+calibration session budget.
+- Exceeding one can only turn an acceptance into a rejection, `time-budget` or `resource-limit`. It never alters an
+  accepted solution.
+- So the accuracy, coverage and uncertainty of accepted solves are timing-independent.
+- Acceptance and rejection counts are timing-independent only where no case hit a budget. In `final-350044f8`, and
+  identically in `final-99301c2d`:
+  - The 720 pixel dispositions are 570 `accepted` and 150 `rejected-acquisition-or-quality-failed`, with no
+    `rejected-time-budget` or `rejected-resource-limit`. Every fail-closed rejection there is deterministic.
+  - None of the 30 uncertainty failures is `solve not accepted`.
+- **Continuity acceptance counts are not claimed timing-independent.** One continuity case hit a time budget:
+  `02-mono-roi-bin2-1: solve exceeded declared cold/warm time budget` in `pixels-tuning`. It occurred on both base
+  and head, in both continuity packs. Its case's deterministic failure is pinned from #1126.
+- **Raw reports searched.** Every text file in the raw reports of four packs was searched for `time-budget`,
+  `resource-limit` and `solve not accepted`:
+  - `tuning-f7e69d99` and `continuity-f7e69d99`, on 2026-10-07 at 09:53:06Z;
+  - `continuity-99301c2d` and `final-99301c2d`, at 12:08:13Z.
+
+  No file in any of them matches. A control search, for `solve exceeded declared cold/warm time budget`, matches 9
+  files in each continuity pack and none in the tuning or final pack. All 9 in each are in the `pixels-tuning` pair,
+  and every occurrence names `02-mono-roi-bin2-1`. The results are recorded in the PR ledger.
+
+**Compared within one session.** Both sides of each comparison ran under roughly the same neighbour load:
+- continuity elapsed seconds, base against head, since each pair ran base then head;
+- the measured-stars v1 against v2 time-ratio gate at 1 s, with both measurers in one process;
+- the resources table's statements across exposures, such as the solve medians, since its cells ran in sequence in
+  one pack.
+
+**Contended absolute milliseconds.** The resources table's capture, detection, solve and CPU times were measured
+under contention, and so were the time-budget checks of every harness.
+- Each passing check passed by a wide margin: capture p95 at most 1,137 ms against 10 s or 40 s, and solve p95 at
+  most 11.3 ms against 500 ms. Under contention a pass is conservative.
+- The absolute values are not comparable with figures from a quiet host.
+- `final-99301c2d` measured the same resource cells with hvo-dev-03 idle.
+  - Its largest capture p95 is 931 ms, and its largest solve p95 is 11.5 ms.
+  - Per cell, its capture, detection and solve medians and p95s differ from `final-350044f8`'s by −46% to +74%. The
+    extremes are rectilinear solve p95s under 4 ms.
+  - No timing conclusion is drawn from this comparison.
+- Allocation is set by the program, and working set is local to the VM. Neither follows neighbour CPU load. Both were
+  measured on the shared host. The median allocations of the two final packs agree within 0.015%.
+
+**Not evidence.** The `continuity-27c611dc` diagnostic. Its base-only `v2 measurement 44 ms vs v1 10 ms` miss was
+plausibly contention.
+
+### Continuity result
+
+**Evidence of record: `continuity-99301c2d`.** It compared base `87f947c6` with head `99301c2d` on the #1126
+manifest (`issue-1126-qualification-manifest.json`, SHA-256
+`8b12ad63bc564b80ef3752ddbe53fbf97b5c2ceccb887a16a7399f5410cbacee`). Under the [tightened
+rules](#continuity-with-1126) of manifest `42fb87dd`, its verdict is `passed`. [Re-scored](#checked-again-after-r1)
+under manifest `c3dc62a7` after r1, it passes again, with the same classification:
+- Every pair passes, with no recorded reason. Every differing report leaf is classified, and none is unclassified.
+- No solver, measurement, mapping, uncertainty or identity hash differs.
+- **Legacy score.** No `reports.N.legacy` leaf differs.
+- **Scorer-by-design.** `measured-stars-held-out` has 38 leaves, the same 7 enumerated paths as before:
+  - `eligibleTruthStars` and the v1 and v2 `eligibleStars` and `recovered`, 6 each;
+  - v1 `recall`, 6;
+  - v2 `recall`, 2.
+
+  Each has an identical legacy counterpart.
+- **Allocation tripwire.** It recorded no allocation miss in any pair.
+
+| Pair | Base / head | Elapsed base / head (s) | Identical leaves | Classified differing leaves |
+| --- | --- | ---: | ---: | --- |
+| `pixels-tuning` | failed / failed | 42 / 51 | 462,641 | declared-added 3,672, declared-changed 2, identity 1, run-varying 90 |
+| `measured-stars-tuning` | passed / passed | 42 / 42 | 2,098 | declared-added 62, declared-changed 1, identity 1, run-varying 73 |
+| `optical-calibration-tuning` | passed / passed | 42 / 42 | 12,259 | declared-added 1, identity 1, run-varying 40 |
+| `astrometric-uncertainty-tuning` | passed / passed | 74 / 74 | 2,416 | declared-added 2, identity 1, run-varying 390 |
+| `actual-pixels-blind-warm-readouts` | passed / passed | 132 / 148 | 1,406,999 | declared-added 10,973, declared-changed 2, identity 1, run-varying 270 |
+| `actual-configured-resolution-resources` | passed / passed | 62 / 67 | 2,662 | declared-added 1,208, identity 2, run-varying 733 |
+| `measured-stars-held-out` | passed / passed | 107 / 116 | 6,061 | declared-added 174, declared-changed 1, identity 1, run-varying 201, scorer-by-design 38 |
+| `optical-calibration-held-out` | passed / passed | 116 / 120 | 36,420 | declared-added 1, identity 1, run-varying 115 |
+| `astrometric-uncertainty-held-out` | passed / passed | 350 / 351 | 14,682 | declared-added 2, identity 1, run-varying 3,018 |
+
+- **`pixels-tuning`.** Base and head each record exactly the pinned deterministic failures:
+  - `02-mono-roi-bin2-0: Ambiguous: multiple independently verified orientations`
+  - `02-mono-roi-bin2-1: expected Warm solve`
+- **Resource failures listed.** The only one in the pack is `02-mono-roi-bin2-1: solve exceeded declared cold/warm
+  time budget` in `pixels-tuning`, on both base and head. No pair has a `resource-outcome` leaf.
+
+#### Checked again after r1
+
+`continuity-99301c2d` and both final packs ran before the [r1 tightening](#continuity-with-1126), under manifest
+`42fb87dd`, and their harness had no [score check](#score-check). They were checked again under manifest `c3dc62a7`,
+not rerun:
+- **Rescore.** `issue-1168-qualification.sh rescore` re-classified `continuity-99301c2d` at `823518f1`, from 14:12:52Z
+  to 14:13:47Z. The runner and the manifest are unchanged since `b1cde08a`. Its verdict is `passed`: 9 of 9 pairs, with
+  no recorded reason and no allocation miss.
+  - The copied pack verified against its `SHA256SUMS`: all 334 listed files, and no unlisted file.
+  - The scorer evidence is complete and consistent in all 84 blocks. Those are the base, head and head `legacy` blocks
+    of the 7 tuning and 21 held-out cases.
+  - Every pair's classification is unchanged, including the 38 scorer-by-design leaves. Apart from the new, empty
+    `scorerEvidence`, each pair's record equals the original.
+  - Pack `rescore-continuity-99301c2d-823518f1`, `SHA256SUMS` SHA-256
+    `6bdf18b72099423688b866eb0b91a6d4793e32a9993366823daeabf89591ade8`.
+- **Scorer check.** `issue-1168-qualification.sh scorer-check`, at `48e82c6b`, on the five held-out measured-stars
+  reports of each final pack. Each run had 0 failures and exit status 0.
+  - `final-99301c2d`: 99 cases, each with a `legacy` block, and each block checked too.
+  - `final-350044f8`: 99 cases. They predate the legacy score, so only the trail-aware scores are checked.
+- **Score check, by static equivalence.** At `48e82c6b` the harness emits the same values as at `99301c2d`:
+  - The score check reads the reclassified stars the invariants already compute.
+  - The two emitted `eligibleTruthStars` counts are the same expressions, moved into locals.
+  - The check can only add failures, and on honest data it adds none.
+
+  So these packs' reports are what `48e82c6b` would emit, and the check would pass on them.
+- **Wiring run.** The one path no Unit test reaches is the score check inside a real harness run. One tuning-partition
+  run exercised it at `48e82c6b`: equidistant, 1 s, in a scratch directory, never a qualification pack.
+  - It passed, with exit status 0, in 40 s: 1 report, 7 cases, each with a `legacy` block.
+  - Its failures list is empty, so it has no `: score:` and no `: invariant` entry. `scorer-check` on the report had 0
+    failures.
+  - A first attempt failed at setup, before any render: the catalog root pointed one level above the snapshot. It is
+    not evidence, and it is recorded.
+- **Both packs.** Recomputed from the two metrics summaries, the both-packs comparison is unchanged. 37 of 40
+  processes pass in each pack, and the same 3 uncertainty processes fail. 29 runs are identical and 11 differ only in
+  timing and resource fields.
+
+**Earlier pack: `continuity-f7e69d99`.** It compared base `0639e27d` with head `f7e69d99` on the same #1126
+manifest. Under the continuity rules of manifest `cd046476`, before r0, its verdict is `passed`:
+- Every pair passes, and every differing report leaf is classified.
+- No solver, measurement, mapping, uncertainty or identity hash differs.
+
+It is not continuity evidence under the tightened rules. Its head, `f7e69d99`, predates the legacy score, so its
+measured-stars reports carry no `legacy` block.
+
+`issue-1168-qualification.sh rescore` re-scored it under manifest `42fb87dd`, at `99301c2d`, from 09:53:49Z to
+09:54:36Z. That is supporting evidence only. The rescore's verdict is `failed`, with reason `unclassified-leaves`, in
+two pairs:
+- `measured-stars-tuning`: 113 unclassified leaves, every one under `reports.N.legacy`, present at base only.
+- `measured-stars-held-out`: 376 unclassified leaves:
+  - 338 under `reports.N.legacy`;
+  - the 38 scorer leaves above, which cannot be scorer-by-design without a head legacy counterpart.
+
+The other seven pairs pass with the same counts as before.
+
+| Pair | Base / head | Elapsed base / head (s) | Identical leaves | Classified differing leaves |
+| --- | --- | ---: | ---: | --- |
+| `pixels-tuning` | failed / failed | 49 / 53 | 462,641 | declared-added 3,672, declared-changed 2, identity 1, run-varying 90 |
+| `measured-stars-tuning` | passed / passed | 40 / 43 | 1,985 | declared-added 62, declared-changed 1, identity 1, run-varying 73 |
+| `optical-calibration-tuning` | passed / passed | 46 / 43 | 12,260 | declared-added 1, identity 1, run-varying 39 |
+| `astrometric-uncertainty-tuning` | passed / passed | 76 / 79 | 2,419 | declared-added 2, identity 1, run-varying 387 |
+| `actual-pixels-blind-warm-readouts` | passed / passed | 143 / 161 | 1,406,999 | declared-added 10,973, declared-changed 2, identity 1, run-varying 270 |
+| `actual-configured-resolution-resources` | passed / passed | 64 / 72 | 2,662 | declared-added 1,208, identity 2, run-varying 733 |
+| `measured-stars-held-out` | passed / passed | 113 / 117 | 5,717 | declared-added 174, declared-changed 1, identity 1, run-varying 207, scorer-by-design 38 |
+| `optical-calibration-held-out` | passed / passed | 129 / 128 | 36,421 | declared-added 1, identity 1, run-varying 114 |
+| `astrometric-uncertainty-held-out` | passed / passed | 376 / 382 | 14,843 | declared-added 2, identity 1, run-varying 2,857 |
+
+- **`pixels-tuning`.** Base and head each record exactly the two pinned deterministic failures.
+- **Two conditions set before this run reported:**
+  - **List, don't absorb.** The verdict lists every resource failure by pair, with its message and both revisions'
+    values, even though none fails continuity.
+  - **Allocation tripwire.** A head-only allocation miss, with the base within budget, stops the run for review. It
+    does not pass as a timing difference. Working-set and time misses are listed. When this pack ran, the tripwire
+    was a stated condition that the runner did not enforce; r0's F1.
+- **Resource failures listed.** The only one in the pack is `02-mono-roi-bin2-1: solve exceeded declared cold/warm
+  time budget` in `pixels-tuning`. It appears on both base and head, so it creates no differing leaf. No pair has a
+  `resource-outcome` leaf or a recorded reason. With no head-only resource failure of any kind, there is no head-only
+  allocation miss.
+
+### Tuning result
+
+All 29 tuning processes completed with their reports. Every pixel, measured-star and calibration process passed.
+The three provisional uncertainty processes failed as described under [uncertainty floors](#uncertainty-floors),
+and they are not outcomes. The declared floors were committed at `350044f8`, before the held-out pack.
+
+### Held-out pixels
+
+Each pixel case is one blind or warm solve; the blind count is in brackets. Variant cells render `mono-native` and
+the four `cfa-*` views.
+
+| Cell | Views rendered | Cases (blind) | Accepted | Rejected | Worst pose error | Worst focal relative error | Worst withheld p95 | Max round trip (px) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| equidistant 1 s | 10 | 90 (30) | 90 | 0 | 0.0038° | 5.3e-5 | 0.022 px | 5.65e-6 |
+| equidistant 20 s | 10 | 90 (30) | 90 | 0 | 0.0032° | 4.3e-5 | 0.016 px | 1.096e-5 |
+| equidistant 60 s | 10 | 90 (30) | 90 | 0 | 0.0034° | 4.2e-5 | 0.018 px | 1.096e-5 |
+| rectilinear 1 s | 6 | 54 (18) | 54 | 0 | 0.0025° | 5.7e-5 | 0.034 px | 7.9e-12 |
+| rectilinear 20 s | 6 | 54 (18) | 54 | 0 | 0.0015° | 1.3e-5 | 0.021 px | 7.9e-12 |
+| rectilinear 60 s | 2 of 6 | 18 (6) | 18 | 0 | 0.0022° | 6.0e-6 | 0.021 px | 3.7e-12 |
+| `product-depth` 20 s | 5 | 45 (21) | 36 | 9 | 0.0015° | 2.1e-5 | 0.032 px | 2.0e-10 |
+| `product-depth` 60 s | 5 | 45 (37) | 12 | 33 | 0.0008° | 7.6e-6 | 0.016 px | 1.7e-10 |
+| `bright-background` 20 s | 5 | 45 (15) | 45 | 0 | 0.0013° | 1.3e-5 | 0.013 px | 1.096e-5 |
+| `bright-background` 60 s | 5 | 45 (39) | 9 | 36 | 0.0012° | 1.3e-5 | 0.010 px | 1.8e-12 |
+| `clouds-partial` 20 s | 4 of 5 | 36 (12) | 36 | 0 | 0.0010° | 6.3e-6 | 0.015 px | 1.096e-5 |
+| `clouds-partial` 60 s | 4 of 5 | 36 (12) | 36 | 0 | 0.0014° | 2.5e-5 | 0.037 px | 1.9e-10 |
+| `overcast` 20 s | 4 of 5 | 36 (36) | 0 | 36 | — | — | — | — |
+| `overcast` 60 s | 4 of 5 | 36 (36) | 0 | 36 | — | — | — | — |
+
+**Every cell:**
+- met its expected outcome, and recorded no failure;
+- association precision 1, no missing mapping and a midpoint delta of 0 ticks;
+- ambiguity rate 0, rejected-underconstrained rate 0 and no unmodeled-source association.
+
+**Rejections and refusals.** Every rejection is `rejected-acquisition-or-quality-failed`. The refusals occurred
+exactly as declared, and nowhere else:
+- **Rectilinear 60 s.** `mono-native`, `mono-bin2`, `mono-mirror` and `mono-roll` were refused at capture with
+  `stellar-exposure-temporal-budget-exceeded`. That is 3 cases × 3 months × 4 views, 36 refusals.
+- **Cloud variants.** `mono-native` was refused at initialize with `NotSupportedException`, once per month in each of
+  the four cells.
+
+**Accuracy.** The worst accepted pose error, 0.0038°, is 16 times inside the 0.06° tolerance. The worst focal
+relative error, 5.7e-5, is 17 times inside 0.001.
+
+**Variant outcomes by view.** Each entry is accepted cases out of 9. "Fail-closed" means at least one case rejected
+and none failed.
+
+| Variant | Exposure | `mono-native` | `cfa-native` and each `cfa-derived-phase-*` view |
+| --- | --- | --- | --- |
+| `product-depth` | 20 s | fail-closed, 0/9 | accepted, 9/9 |
+| `product-depth` | 60 s | fail-closed, 0/9 | fail-closed, 3/9 |
+| `bright-background` | 20 s | accepted, 9/9 | accepted, 9/9 |
+| `bright-background` | 60 s | accepted, 9/9 | fail-closed, 0/9 |
+| `clouds-partial` | 20 s, 60 s | refused | accepted, 9/9 |
+| `overcast` | 20 s, 60 s | refused | fail-closed, 0/9 |
+
+**Round trips.**
+- The report records 202 per-destination maxima. 172 of them are at most 3.49e-10 px.
+- The other 30 are each one ulp of Up on the optical axis, as [derived above](#tolerances):
+  - 17 at f 379.32 px/rad, 5.65e-6 px;
+  - 13 at f 735.55 px/rad, 1.096e-5 px.
+- The largest is 9 times inside the 1e-4 px bound.
+
+**Trails, truncations and exclusions.** Exclusions are the measurer's excluded candidates by reason, summed over the
+cell's cases. Trail lengths are each case's median truth trail, then the longest truth trail; both are maxima over the
+cell's cases. Associations count the solver's associations whose detection is flagged saturated or trailed.
+
+| Cell | Trail median / max (px) | Truncated | Max midpoint bias (px) | Saturated / trailed associations | Saturated-excessive | Trail-too-long | Crowded | Blended | Low SNR | Hot pixel or cosmic ray | Masked or edge | Other |
+| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| equidistant 1 s | 0.05 / 0.07 | 0 | 1.3e-6 | 271 / 1,151 | 8 | 4 | 9,013 | 1,463 | 9,754 | 45,935 | 1,099 | 0 |
+| equidistant 20 s | 1.06 / 1.33 | 50 | 1.3e-4 | 14,964 / 0 | 852 | 48 | 9,715 | 2,893 | 2,518 | 12,334 | 871 | 12 |
+| equidistant 60 s | 3.19 / 4.00 | 114 | 1.2e-3 | 31,096 / 11,938 | 6,221 | 18 | 9,688 | 2,398 | 2,230 | 11,624 | 926 | 0 |
+| rectilinear 1 s | 0.08 / 0.15 | 0 | 3.4e-6 | 33 / 248 | 0 | 0 | 173 | 6 | 4 | 44 | 131 | 0 |
+| rectilinear 20 s | 1.67 / 3.00 | 17 | 4.1e-4 | 1,103 / 2 | 49 | 0 | 218 | 51 | 13 | 60 | 164 | 0 |
+| rectilinear 60 s | 4.49 / 6.58 | 16 | 2.0e-3 | 590 / 917 | 76 | 0 | 88 | 20 | 0 | 6 | 58 | 0 |
+| `product-depth` 20 s | 1.06 / 1.35 | 139 | 1.3e-4 | 8,350 / 956 | 743 | 440 | 39,903 | 13,959 | 1,926 | 9,749 | 1,451 | 263 |
+| `product-depth` 60 s | 3.17 / 4.04 | 359 | 1.2e-3 | 4,255 / 2,778 | 5,880 | 971 | 39,620 | 14,163 | 1,630 | 8,856 | 1,527 | 519 |
+| `bright-background` 20 s | 1.06 / 1.33 | 26 | 1.3e-4 | 14,703 / 8 | 939 | 12 | 2,442 | 731 | 1,723 | 9,058 | 232 | 0 |
+| `bright-background` 60 s | 3.19 / 4.00 | 52 | 1.2e-3 | 3,614 / 0 | 8,695 | 0 | 2,023 | 225 | 830 | 5,211 | 235 | 2 |
+| `clouds-partial` 20 s | 1.06 / 1.33 | 22 | 1.3e-4 | 8,114 / 55 | 488 | 14 | 1,659 | 508 | 1,688 | 9,009 | 317 | 68 |
+| `clouds-partial` 60 s | 3.19 / 4.00 | 40 | 1.2e-3 | 15,012 / 11,724 | 3,428 | 0 | 1,468 | 268 | 1,275 | 6,127 | 238 | 64 |
+| `overcast` 20 s | 1.06 / 1.33 | 22 | 1.3e-4 | — | 12 | 0 | 198 | 81 | 8,336 | 39,371 | 1,039 | 0 |
+| `overcast` 60 s | 3.19 / 4.00 | 40 | 1.2e-3 | — | 132 | 11 | 479 | 66 | 6,426 | 30,182 | 771 | 270 |
+
+- "Other" is too-broad, unconverged and extended.
+- The midpoint bias is the largest distance, over whole truth trails, between a trail's mid-exposure position and
+  the mean of its rendered samples. That is the bias an integrated centroid carries relative to the midpoint the
+  solver binds. At most 2.0e-3 px, it is negligible against the 0.75 px mapping tolerance.
+- Truncated trails and associations are summed over the cell's cases.
+
+### Negative control: start-UTC binding
+
+The pixel harness takes the accepted blind case of `mono-native`, `mono-roi` and `cfa-native`, where rendered, and
+solves it a second time with its frame context bound to the exposure start instead of the midpoint. That gives 61
+control cases. The table gives one row per cell, with each value's range across the cell's control cases.
+
+| Cell | Cases | Predicted half-exposure rotation | Midpoint ground pose error, max | Start-UTC ground pose error | Start-time sky through the midpoint solve, RMS (px) | Truth half-exposure motion, median (px) |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| equidistant 1 s | 9 | 0.0018° | 0.0016° | 0.0012–0.0025° | 0.014–0.028 | 0.013–0.027 |
+| equidistant 20 s | 9 | 0.0364° | 0.0010° | 0.0356–0.0368° | 0.246–0.503 | 0.256–0.531 |
+| equidistant 60 s | 9 | 0.1093° | 0.0013° | 0.1080–0.1092° | 0.739–1.506 | 0.768–1.593 |
+| rectilinear 1 s | 6 | 0.0018° | 0.0011° | 0.0013–0.0027° | 0.028–0.051 | 0.035–0.041 |
+| rectilinear 20 s | 6 | 0.0364° | 0.0012° | 0.0363–0.0367° | 0.708–0.819 | 0.692–0.812 |
+| rectilinear 60 s | 3 | 0.1093° | 0.0013° | 0.1092–0.1095° | 2.116–2.268 | 2.075–2.245 |
+| `product-depth` 20 s | 3 | 0.0364° | 0.0011° | 0.0364–0.0371° | 0.483–0.489 | 0.503–0.531 |
+| `product-depth` 60 s | 1 | 0.1093° | 0.0008° | 0.1099° | 1.472 | 1.569 |
+| `bright-background` 20 s | 6 | 0.0364° | 0.0010° | 0.0358–0.0368° | 0.249–0.501 | 0.259–0.531 |
+| `bright-background` 60 s | 3 | 0.1093° | 0.0011° | 0.1082–0.1093° | 0.743–0.752 | 0.778–0.800 |
+| `clouds-partial` 20 s | 3 | 0.0364° | 0.0007° | 0.0360–0.0363° | 0.492–0.505 | 0.503–0.531 |
+| `clouds-partial` 60 s | 3 | 0.1093° | 0.0012° | 0.1087–0.1093° | 1.473–1.512 | 1.509–1.593 |
+
+**What the solver does with start-UTC.**
+- All 61 start-UTC solves are still `Accepted`, and each one's sky pose equals the midpoint solve's to within
+  1.1e-11°.
+- Its ground pose is wrong by the predicted half-exposure rotation: 0.036° at 20 s and 0.109° at 60 s. Bound to the
+  midpoint, the ground pose error is at most 0.0016°.
+- The mapping test takes each star's horizontal position at the exposure start, converts it to sky coordinates at
+  the midpoint and maps it through the midpoint solve. It lands about as far from the trail midpoint as the star's
+  true half-exposure motion: up to 2.3 px RMS at rectilinear 60 s.
+
+The solver cannot detect the wrong reference time from the pixels. Binding the midpoint is therefore the consumer's
+obligation: #1169 first, as stated under [reference time](#reference-time-the-exposure-midpoint), with these numbers
+as the size of the mistake.
+
+### Held-out measured stars
+
+| Cell | Cases | v1 compared | Min v2 recall | Min v1 recall | Worst v2 centroid p95 (px) | False associations | Truncated | Missed eligible stars | Trail metadata |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| equidistant 1 s | 21 | yes | 0.992 | 0.809 | 0.170 | 0 | 0 | crowded 9, masked 1, saturated-excessive 1 | not applicable |
+| equidistant 20 s | 21 | no | 0.960 | 0.451 | 0.125 | 0 | 12 | crowded 49, edge 2, no-candidate 21, saturated-excessive 49 | not applicable |
+| equidistant 60 s | 21 | no | 0.804 | 0 | 0.139 | 0 | 17 | crowded 62, edge 1, no-candidate 57, saturated-excessive 445 | **not met** |
+| rectilinear 1 s | 18 | yes | 1.000 | 0.791 | 0.175 | 0 | 0 | none | not applicable |
+| rectilinear 20 s | 18 | no | 0.983 | 0.769 | 0.050 | 0 | 6 | no-candidate 10, saturated-excessive 4 | not applicable |
+
+- Every measured-stars process passed. At 20 s and 60 s v1 is reported, not compared.
+- v1 is not trail-aware, and it loses the trailed stars: its minimum recall falls to 0.451 at 20 s and 0 at 60 s.
+  The trail-aware v2 measurer keeps at least 0.804.
+
+**Trail metadata.** Only equidistant 60 s has scored trails, on CFA; its 18 mono cases have none. All three CFA
+cases miss the length row:
+
+| Case | Scored trails | Reported | Recovered without metadata | Not recovered | Normalized length error p95 | Angle error p95 | Status |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `01-cfa-native` | 382 | 307 | 0 | 75 | 1.197 | 2.91° | not met |
+| `05-cfa-native` | 345 | 263 | 1 | 81 | 1.117 | 3.00° | not met |
+| `09-cfa-native` | 313 | 256 | 0 | 57 | 1.216 | 2.93° | not met |
+
+- **What is scored.** Truth trails of at least 3 px. The length error is `|reported − truth| / max(0.5, 0.15 ×
+  truth)`.
+- **When the row is met.** Every recovered trail reports metadata, the length p95 is at most 1 and the angle p95 is
+  at most 10°.
+- **What it gates.** Only the trail-metadata envelope row. Solving is never gated on it.
+
+### Held-out session optical calibration
+
+Every calibration process passed. Each cell has 3 cases, all `Accepted`, and 9 withheld-frame scores.
+
+| Cell | Worst withheld pose error | Worst withheld p95 |
+| --- | ---: | ---: |
+| equidistant 1 s | 0.0040° | 0.019 px |
+| equidistant 20 s | 0.0037° | 0.017 px |
+| equidistant 60 s | 0.0046° | 0.022 px |
+| rectilinear 1 s | 0.0029° | 0.051 px |
+| rectilinear 20 s | 0.0014° | 0.029 px |
+
+### Held-out astrometric uncertainty
+
+Held-out estimated at the declared floor for its exposure in every cell, using the
+`enu-rotation-vector-radians-then-log-focal-scale` convention:
+
+| Index | Parameter |
+| --- | --- |
+| 0 | ENU rotation vector, east component |
+| 1 | ENU rotation vector, north component |
+| 2 | ENU rotation vector, up component |
+| 3 | log focal scale |
+
+| Cell | Status | Floors | Frames | Released | Withheld | Mean χ²/dof | Held-out χ²/dof | Pooled ellipsoid coverage at 0.6827 / 0.95 / 0.99 | Failures |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| equidistant 1 s | passed | `declared-1s` | 420 | 420 | 0 | 0.972 | 0.977 | 0.707 / 0.943 / 0.986 | 0 |
+| equidistant 20 s | **failed** | `declared-20s` | 420 | 359 | 61 | 1.014 | 1.042 | 0.616 / 0.944 / 0.983 | 7 |
+| equidistant 60 s | **failed** | `declared-60s` | 420 | 292 | 128 | 0.990 | 1.052 | 0.589 / 0.935 / 0.976 | 18 |
+| rectilinear 1 s | passed | `declared-1s` | 360 | 360 | 0 | 0.971 | 0.967 | 0.681 / 0.956 / 0.992 | 0 |
+| rectilinear 20 s | **failed** | `declared-20s` | 360 | 339 | 21 | 0.898 | 0.964 | 0.720 / 0.950 / 0.991 | 5 |
+
+**Released and withheld.**
+- A frame is *released* when the estimator's own validity gate marks its covariance `available`. A *withheld* frame
+  carries `model-invalid-residual-excess` or `model-invalid-held-out-prediction`.
+- Coverage is computed over released frames only.
+
+The harness turns withholding into a failure per profile and pooled. These quotations are verbatim from
+`VirtualAstrometricUncertaintyQualificationTests.cs` at `350044f8`, the held-out revision, blob `79fad2bb`, with
+the leading indentation removed. Line 30:
+
+```csharp
+private const double MaximumFalseWithholdFraction = .02;
+```
+
+Lines 130–131:
+
+```csharp
+if (withheld > MaximumFalseWithholdFraction * all.Length + 1)
+    failures.Add($"{label}: {withheld} of {all.Length} accepted frames withheld: {string.Join(",", all.Where(f => f.Status != AstrometricUncertaintyEstimator.Available).Select(f => f.ReasonCode).Distinct())}");
+```
+
+At 60 frames a profile fails at 3 withheld. Pooled, it fails at 10 of 420 or 9 of 360.
+
+It fails a coverage level when the coverage of released frames misses that level by more than this bound, line 136:
+
+```csharp
+var bound = CoverageToleranceSigma * Math.Sqrt(Levels[level] * (1 - Levels[level]) / n);
+```
+
+That uses `CoverageToleranceSigma = 3.5` and `Levels = [.6827, .95, .99]`, lines 23–24, over `n` released frames.
+
+**The 30 failures:**
+
+- **Equidistant 20 s: 7 failures, all withholding.**
+  - Profiles over the limit: `mono-native` 15 of 60, `mono-roi` 15, `mono-mirror` 13, `mono-roll` 14 and
+    `cfa-native` 4.
+  - Pooled: 61 of 420.
+  - Session chain: one total withheld, `05-session-roi: total withheld model-invalid-residual-excess
+    model-invalid-residual-excess`.
+  - `mono-bin2` and `mono-roi-bin2` withheld none.
+- **Equidistant 60 s: 18 failures.**
+  - Withholding, 12 failures:
+    - profiles: `mono-native` 23 of 60, `mono-roi` 18, `mono-bin2` 8, `mono-roi-bin2` 8, `mono-mirror` 22,
+      `mono-roll` 24 and `cfa-native` 25;
+    - pooled: 128 of 420;
+    - session chain: 4 totals withheld, native and ROI for months 01 and 09.
+  - Log-focal-scale (parameter 3) interval coverage below its level, 6 failures:
+
+    | Profile | Coverage | Level | Bound | Released frames (n) |
+    | --- | ---: | ---: | ---: | ---: |
+    | `mono-roi` | 0.810 | 0.95 | 0.118 | 42 |
+    | `mono-mirror` | 0.895 | 0.99 | 0.056 | 38 |
+    | `mono-roll` | 0.778 | 0.95 | 0.127 | 36 |
+    | `mono-roll` | 0.889 | 0.99 | 0.058 | 36 |
+    | pooled | 0.880 | 0.95 | 0.045 | 292 |
+    | pooled | 0.949 | 0.99 | 0.020 | 292 |
+
+- **Rectilinear 20 s: 5 failures.**
+  - Withholding: `mono-native` 10 of 60, `mono-roi` 3, `mono-mirror` 6, and pooled 21 of 360. `mono-roll` withheld
+    2, within the limit; `mono-bin2` and `mono-roi-bin2` withheld none.
+  - One coverage failure: on `mono-bin2`, the up-component (parameter 2) interval coverage is 0.917 at 0.6827
+    (bound 0.210, n 60, none withheld).
+
+**The estimator released overconfident covariance at 60 s.** The 60 s coverage failures are on *released* frames:
+- pooled n 292 = 420 − 128 withheld;
+- `mono-roi` 42, `mono-mirror` 38, `mono-roll` 36.
+
+The estimator's validity gate passed those frames and released log-focal-scale intervals that are too narrow. Pooled,
+0.880 of the 0.95 intervals contain the truth; the harness accepts no fewer than 0.905 = 0.95 − 0.045. At 0.99,
+0.949 do, against at least 0.970. Withholding did not contain the miscalibration at 60 s.
+
+The pooled 60 s ellipsoid coverage at 0.6827 is also low: 0.589, inside its bound of 0.095 (n 292) by 0.002. It is
+not a failure.
+
+**The rectilinear 20 s miss is over-coverage.** The `mono-bin2` up-component intervals are too wide: 0.917 contain
+the truth at 0.6827. That is a conservative miscalibration, not overconfidence.
+
+**What is withheld.** By the manifest's held-out rule, a held-out coverage miss withholds covariance for that
+exposure. Two misses apply:
+- 60 s: the equidistant overconfidence.
+- 20 s: the rectilinear 20 s over-coverage, which withholds 20 s for every family. Equidistant 20 s failed on
+  withholding alone.
+
+So covariance is withheld at 20 s and 60 s in every family, and uncertainty is supported at 1 s only. Nothing was
+retuned. [#1179](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1179) tracks requalification and whether
+the product should gate covariance release by exposure.
+
+### Held-out resources
+
+All 10 resource processes passed, in the declared order, at concurrency 1:
+- 30 measured operations after 5 warm-up operations;
+- route `existing-production-through-qualified-pixel-harness`;
+- backlog not applicable: bounded stateless capture and measurement, no queue.
+
+The working-set figures are the process working set and cumulative process peak, not memory retained by the
+operation.
+
+| Order | Cell | Capture p95 (ms) | Detection median (ms) | Solve median / p95 (ms) | CPU median (ms) | Allocated median (MiB) | Peak working set (MiB) |
+| ---: | --- | ---: | ---: | --- | ---: | ---: | ---: |
+| 1 | equidistant 1 s mono | 160 | 144 | 6.3 / 6.9 | 316 | 103 | 343 |
+| 1 | equidistant 1 s CFA | 924 | 1,023 | 7.2 / 10.5 | 1,955 | 540 | 1,382 |
+| 2 | equidistant 20 s mono | 163 | 162 | 6.2 / 6.9 | 338 | 105 | 435 |
+| 2 | equidistant 20 s CFA | 848 | 1,009 | 7.1 / 10.6 | 1,880 | 541 | 1,377 |
+| 3 | equidistant 60 s mono | 195 | 178 | 6.0 / 6.8 | 388 | 109 | 365 |
+| 3 | equidistant 60 s CFA | 1,137 | 1,125 | 7.2 / 9.7 | 2,194 | 554 | 1,378 |
+| 4 | equidistant 60 s mono | 197 | 179 | 6.1 / 6.7 | 388 | 109 | 439 |
+| 4 | equidistant 60 s CFA | 945 | 1,029 | 6.6 / 9.2 | 1,994 | 554 | 1,376 |
+| 5 | equidistant 20 s mono | 158 | 157 | 5.9 / 6.6 | 328 | 105 | 337 |
+| 5 | equidistant 20 s CFA | 838 | 997 | 7.8 / 11.3 | 1,834 | 541 | 1,380 |
+| 6 | equidistant 1 s mono | 191 | 176 | 7.6 / 8.4 | 380 | 103 | 402 |
+| 6 | equidistant 1 s CFA | 880 | 980 | 6.9 / 10.3 | 1,877 | 540 | 1,386 |
+| 7 | rectilinear 1 s | 197 | 240 | 1.4 / 3.6 | 452 | 72 | 958 |
+| 8 | rectilinear 20 s | 188 | 256 | 1.4 / 1.5 | 459 | 74 | 1,003 |
+| 9 | rectilinear 20 s | 200 | 263 | 1.4 / 1.5 | 477 | 74 | 985 |
+| 10 | rectilinear 1 s | 204 | 244 | 1.5 / 2.0 | 466 | 72 | 984 |
+
+**Against budget.**
+- The largest capture p95 is 1,137 ms (equidistant 60 s CFA), against 40 s. The largest mono capture p95 is 204 ms,
+  against 10 s.
+- The largest solve p95 is 11.3 ms, against the 500 ms warm-solve budget.
+- Equidistant allocation grows with exposure: mono from 103 to 109 MiB (6%), CFA from 540 to 554 MiB (3%).
+- Solve medians stay between 5.9 and 7.8 ms on equidistant and between 1.4 and 1.5 ms on rectilinear, at every
+  exposure.
+
+### Renderer capacity
+
+The renderer-capacity process passed in 8 s with no failures. On rectilinear `mono-native`:
+- fastest source speed 0.1688246568 px/s;
+- 64 slots at 56 s, 65 at 57 s and 68 at 60 s, against at most 64 slots of 0.15 px;
+- derived maximum exposure 56.8637 s;
+- last rendered exposure 56 s and first refused 57 s.
+
+**Probes that rendered** under the 64-slot ceiling. The report records that ceiling, `maximumTemporalSamples` 64,
+which is the configured `MaximumStellarSamples`, not a slot count each probe used. An actual slot count is derived
+only for the rectilinear boundary, above.
+
+| Probe | Max motion per slot (px) |
+| --- | ---: |
+| Rectilinear boundary that fits | 0.1477 |
+| Rectilinear 60 s `mono-roi` and `mono-roi-bin2` | 0.1494 |
+| Equidistant 60 s `mono-native` | 0.1460 |
+| Equidistant 60 s `cfa-native` | 0.1493 |
+| Equidistant clouds `cfa-native` | 0.1493 |
+
+**Probes refused as declared:**
+- the rectilinear boundary that exceeds;
+- rectilinear 60 s `mono-native`, `mono-bin2`, `mono-mirror` and `mono-roll`;
+- equidistant clouds `mono-native`.
+
+## Supported envelope
+
+This table is the single statement of which exposures the virtual milestone supports. Every row is virtual-only and
+makes no physical claim. Support stands only for a cell that passes in both `final-350044f8` and the
+[revision rerun](#revision-rerun)'s `final-99301c2d`. Every cell's outcome is the same in both packs.
+
+| Family | Exposure | Supported | Not supported or limited |
+| --- | --- | --- | --- |
+| equidistant, mono and CFA | 1 s | Blind and warm acquisition, readouts, configured-resolution resources, measured stars, optical calibration and uncertainty, as the [v2](virtual-astrometry-qualification-v2.md) equidistant row, with the trail-aware v2 measurer | As v2 |
+| equidistant, mono and CFA | 20 s | Blind and warm acquisition, readouts, resources, measured stars and optical calibration | **Covariance withheld.** Withholding at the declared floors fails on four mono profiles and on CFA, and the rectilinear 20 s coverage miss withholds 20 s for every family |
+| equidistant, mono and CFA | 60 s | Blind and warm acquisition, readouts, resources, measured stars and optical calibration | **Covariance withheld.** The estimator released overconfident log-focal-scale intervals: pooled 0.880 at 0.95. **Trail metadata not supported** on CFA: length p95 1.12–1.22 against 1 |
+| rectilinear 6 mm, mono | 1 s | As the v2 rectilinear row | As v2 |
+| rectilinear 6 mm, mono | 20 s | Blind and warm acquisition, readouts, resources, measured stars and optical calibration, inside the v2 distortion domain | **Covariance withheld.** `mono-bin2` up-component over-coverage, and withholding on three profiles |
+| rectilinear 6 mm, mono | 60 s | Blind and warm acquisition on `mono-roi` and `mono-roi-bin2` only | **Full-frame views refused** at capture: the renderer's limit is 56 s. Measured stars, calibration and uncertainty are not run; resources are not measured at 60 s |
+| equidistant `product-depth`, mag 6.5 render | 20 s, 60 s | Fail-closed: nothing accepted wrongly. CFA accepts 9 of 9 at 20 s | `mono-native` rejects every case at 20 s and 60 s. CFA accepts 3 of 9 per view at 60 s |
+| equidistant `bright-background`, 20 e⁻/s | 20 s, 60 s | All views accept at 20 s; `mono-native` accepts at 60 s | CFA rejects every case at 60 s (fail-closed) |
+| equidistant `clouds-partial` | 20 s, 60 s | CFA views accept every case | **Mono refused** at initialize: the native mono readout does not support clouds |
+| equidistant `overcast` | 20 s, 60 s | Rejected, as declared | Mono refused, as for `clouds-partial` |
+| other v2 families | 20 s, 60 s | — | Not qualified for long exposure |
+
+**Consumer constraints**, first for #1169 (registered stacking):
+- **Covariance.** Treat astrometric covariance above 1 s as unsupported, even when the estimator marks it
+  `available`. At 60 s the estimator released overconfident intervals, so its validity gate is not sufficient.
+- **Reference time.** Bind the solve and every cross-frame mapping to the exposure midpoint, not the `CameraFrame`
+  timestamp. A start-UTC binding is accepted silently and shifts the ground pose by 0.036° at 20 s and 0.109° at
+  60 s.
+
+Neither constraint blocks #1168, which changes no product code.
+[#1179](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1179) tracks requalifying long-exposure uncertainty
+and every limit in this table.
+
+## Observations
+
+- The equidistant projector's θ = acos(Up) loses about 1.5e-8 rad on the optical axis, where atan2(hypot(x, y), z)
+  would not. The product impact is at most about 1e-5 px, 75,000 times below the mapping tolerance. The product is
+  unchanged and no issue is filed.
+
+## Not claimed
+
+- Physical accuracy, or any physical lens.
+- A deeper solver catalog. #1167 owns solver catalog depth; #1168 owns render depth and exposure.
+- Long exposure for the equisolid, stereographic, orthographic and rectilinear 8 mm families.
+- Gains other than 150.

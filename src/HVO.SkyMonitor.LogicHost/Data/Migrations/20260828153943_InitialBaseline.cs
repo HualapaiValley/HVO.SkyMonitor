@@ -54,6 +54,35 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "CentralElasticRunnerInstances",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    Provider = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    HostName = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
+                    InstanceId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    RunnerId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    KeepWarm = table.Column<bool>(type: "bit", nullable: false),
+                    OwnerHeartbeatAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    ProcessId = table.Column<int>(type: "int", nullable: true),
+                    ProcessArchitecture = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    RuntimeImage = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
+                    State = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    Reason = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
+                    StartedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    RegisteredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
+                    LastBusyAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
+                    StoppedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
+                    ColdStartMilliseconds = table.Column<int>(type: "int", nullable: true),
+                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralElasticRunnerInstances", x => x.Id);
+                    table.CheckConstraint("CK_CentralElasticRunnerInstances_State", "[State] IN (N'Starting', N'Running', N'Stopping', N'Stopped', N'Orphaned', N'Abandoned')");
+                });
+
+            migrationBuilder.CreateTable(
                 name: "CentralObjectRecoveryDispositions",
                 columns: table => new
                 {
@@ -86,6 +115,120 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "CentralProcessingGraphRevisions",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    Name = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    Revision = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    DefinitionJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    DefinitionIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: false),
+                    PortablePlanIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: false),
+                    EdgePlanIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: true),
+                    CentralPlanIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: true),
+                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    CreatedByUserId = table.Column<string>(type: "nvarchar(450)", maxLength: 450, nullable: false),
+                    PublishedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
+                    PublishedByUserId = table.Column<string>(type: "nvarchar(450)", maxLength: 450, nullable: true),
+                    RetiredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
+                    RetiredByUserId = table.Column<string>(type: "nvarchar(450)", maxLength: 450, nullable: true),
+                    RetirementReasonCode = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralProcessingGraphRevisions", x => x.Id);
+                    table.CheckConstraint("CK_CentralProcessingGraphRevisions_Lifecycle", "([PublishedAtUtc] IS NULL AND [PublishedByUserId] IS NULL AND [RetiredAtUtc] IS NULL AND [RetiredByUserId] IS NULL AND [RetirementReasonCode] IS NULL) OR ([PublishedAtUtc] IS NOT NULL AND [PublishedByUserId] IS NOT NULL AND (([RetiredAtUtc] IS NULL AND [RetiredByUserId] IS NULL AND [RetirementReasonCode] IS NULL) OR ([RetiredAtUtc] >= [PublishedAtUtc] AND [RetiredByUserId] IS NOT NULL AND [RetirementReasonCode] IS NOT NULL)))");
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralProcessingRunners",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    RunnerId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    ClientSubject = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
+                    DisplayName = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
+                    OperatingSystem = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
+                    OsArchitecture = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ProcessArchitecture = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    RuntimeIdentifier = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    FrameworkDescription = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    ProcessorCount = table.Column<int>(type: "int", nullable: false),
+                    TotalMemoryBytes = table.Column<long>(type: "bigint", nullable: false),
+                    ResourceClass = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    GpuAvailable = table.Column<bool>(type: "bit", nullable: false),
+                    LatencyClass = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    CapabilitiesJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    EligibleRecipesJson = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: false),
+                    MaxConcurrency = table.Column<int>(type: "int", nullable: false),
+                    MaxTransferBytes = table.Column<long>(type: "bigint", nullable: false),
+                    WarmState = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
+                    Status = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
+                    ProcessId = table.Column<int>(type: "int", nullable: false),
+                    ProcessStartedUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    Generation = table.Column<int>(type: "int", nullable: false),
+                    AvailableSlots = table.Column<int>(type: "int", nullable: false),
+                    RegisteredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    LastHeartbeatAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    RetiredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
+                    RowVersion = table.Column<byte[]>(type: "rowversion", rowVersion: true, nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralProcessingRunners", x => x.Id);
+                    table.CheckConstraint("CK_CentralProcessingRunners_Capacity", "[MaxConcurrency] >= 1 AND [MaxConcurrency] <= 32 AND [AvailableSlots] >= 0 AND [AvailableSlots] <= [MaxConcurrency] AND [MaxTransferBytes] >= 1 AND [ProcessorCount] >= 1 AND [TotalMemoryBytes] >= 0 AND [Generation] >= 1");
+                    table.CheckConstraint("CK_CentralProcessingRunners_Status", "[Status] IN (N'Active', N'Stale', N'Retired')");
+                    table.CheckConstraint("CK_CentralProcessingRunners_Timestamps", "[UpdatedAtUtc] >= [RegisteredAtUtc] AND [LastHeartbeatAtUtc] >= [RegisteredAtUtc] AND (([Status] = N'Retired' AND [RetiredAtUtc] IS NOT NULL) OR ([Status] <> N'Retired' AND [RetiredAtUtc] IS NULL))");
+                    table.CheckConstraint("CK_CentralProcessingRunners_WarmState", "[WarmState] IN (N'Cold', N'Warming', N'Warm', N'Degraded')");
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralProcessingUsageRecords",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ObservatoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    DevicePublicId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    CentralDerivativeJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    AttemptNumber = table.Column<int>(type: "int", nullable: false),
+                    RecipeName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    ResourceClass = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    WorkerId = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
+                    Outcome = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ReasonCode = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
+                    LeaseAcquiredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    EndedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    InputBytes = table.Column<long>(type: "bigint", nullable: false),
+                    OutputBytes = table.Column<long>(type: "bigint", nullable: false),
+                    RecipeDurationTicks = table.Column<long>(type: "bigint", nullable: false),
+                    RecordedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralProcessingUsageRecords", x => x.Id);
+                    table.CheckConstraint("CK_CentralProcessingUsageRecords_Counters", "[AttemptNumber] >= 1 AND [InputBytes] >= 0 AND [OutputBytes] >= 0 AND [RecipeDurationTicks] >= 0 AND [EndedAtUtc] >= [LeaseAcquiredAtUtc]");
+                    table.CheckConstraint("CK_CentralProcessingUsageRecords_Outcome", "[Outcome] IN (N'Completed', N'RetryableFailure', N'TerminalFailure', N'LeaseExpired', N'Canceled', N'Skipped', N'Quarantined', N'Superseded')");
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralProcessingUsageRollups",
+                columns: table => new
+                {
+                    ObservatoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ResourceClass = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    Outcome = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    Attempts = table.Column<long>(type: "bigint", nullable: false),
+                    InputBytes = table.Column<long>(type: "bigint", nullable: false),
+                    OutputBytes = table.Column<long>(type: "bigint", nullable: false),
+                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralProcessingUsageRollups", x => new { x.ObservatoryId, x.ResourceClass, x.Outcome });
+                });
+
+            migrationBuilder.CreateTable(
                 name: "CentralRecoveryCheckpoints",
                 columns: table => new
                 {
@@ -110,6 +253,37 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_CentralRecoveryCheckpoints", x => x.Id);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralTimeLapseJobs",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    DevicePublicId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ObservatoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ReportDate = table.Column<DateOnly>(type: "date", nullable: false),
+                    StartUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    EndUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    IsDaily = table.Column<bool>(type: "bit", nullable: false),
+                    DiscoveryIdentity = table.Column<string>(type: "nchar(64)", fixedLength: true, maxLength: 64, nullable: true),
+                    RequestJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    RequestSha256 = table.Column<string>(type: "nchar(64)", fixedLength: true, maxLength: 64, nullable: false),
+                    State = table.Column<string>(type: "nvarchar(24)", maxLength: 24, nullable: false),
+                    ReasonCode = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
+                    ExclusionsJson = table.Column<string>(type: "nvarchar(max)", nullable: true),
+                    ExclusionsSha256 = table.Column<string>(type: "nchar(64)", fixedLength: true, maxLength: 64, nullable: true),
+                    ProductId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    LeaseToken = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    LeaseExpiresUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
+                    AttemptCount = table.Column<int>(type: "int", nullable: false),
+                    CreatedUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    UpdatedUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    RowVersion = table.Column<byte[]>(type: "rowversion", rowVersion: true, nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralTimeLapseJobs", x => x.Id);
                 });
 
             migrationBuilder.CreateTable(
@@ -384,6 +558,57 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         principalTable: "AspNetUsers",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralTimeLapseDependencies",
+                columns: table => new
+                {
+                    JobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    HourlyJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralTimeLapseDependencies", x => new { x.JobId, x.HourlyJobId });
+                    table.ForeignKey(
+                        name: "FK_CentralTimeLapseDependencies_CentralTimeLapseJobs_HourlyJobId",
+                        column: x => x.HourlyJobId,
+                        principalTable: "CentralTimeLapseJobs",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CentralTimeLapseDependencies_CentralTimeLapseJobs_JobId",
+                        column: x => x.JobId,
+                        principalTable: "CentralTimeLapseJobs",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralTimeLapseVideos",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    JobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    DevicePublicId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ObservatoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ReportDate = table.Column<DateOnly>(type: "date", nullable: false),
+                    IsDaily = table.Column<bool>(type: "bit", nullable: false),
+                    IsGapFiller = table.Column<bool>(type: "bit", nullable: false),
+                    ProductJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    ProductSha256 = table.Column<string>(type: "nchar(64)", fixedLength: true, maxLength: 64, nullable: false),
+                    PayloadBytes = table.Column<long>(type: "bigint", nullable: false),
+                    CreatedUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralTimeLapseVideos", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_CentralTimeLapseVideos_CentralTimeLapseJobs_JobId",
+                        column: x => x.JobId,
+                        principalTable: "CentralTimeLapseJobs",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
                 });
 
             migrationBuilder.CreateTable(
@@ -1249,6 +1474,48 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "CentralProcessingGraphAssignments",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    RevisionId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    TargetHost = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
+                    Scope = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ObservatoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    LogicalCameraId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    EffectiveFromUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    EffectiveUntilUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
+                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    ActorUserId = table.Column<string>(type: "nvarchar(450)", maxLength: 450, nullable: false),
+                    ReasonCode = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralProcessingGraphAssignments", x => x.Id);
+                    table.CheckConstraint("CK_CentralProcessingGraphAssignments_EffectiveWindow", "[EffectiveUntilUtc] IS NULL OR [EffectiveUntilUtc] > [EffectiveFromUtc]");
+                    table.CheckConstraint("CK_CentralProcessingGraphAssignments_Scope", "([Scope] = N'GlobalDefault' AND [ObservatoryId] IS NULL AND [LogicalCameraId] IS NULL) OR ([Scope] = N'Observatory' AND [ObservatoryId] IS NOT NULL AND [LogicalCameraId] IS NULL) OR ([Scope] = N'LogicalCamera' AND [ObservatoryId] IS NOT NULL AND [LogicalCameraId] IS NOT NULL)");
+                    table.CheckConstraint("CK_CentralProcessingGraphAssignments_TargetHost", "[TargetHost] IN (N'Edge', N'Central')");
+                    table.ForeignKey(
+                        name: "FK_CentralProcessingGraphAssignments_CentralProcessingGraphRevisions_RevisionId",
+                        column: x => x.RevisionId,
+                        principalTable: "CentralProcessingGraphRevisions",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CentralProcessingGraphAssignments_LogicalCameras_LogicalCameraId",
+                        column: x => x.LogicalCameraId,
+                        principalTable: "LogicalCameras",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CentralProcessingGraphAssignments_Observatories_ObservatoryId",
+                        column: x => x.ObservatoryId,
+                        principalTable: "Observatories",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "LogicalCameraInstallations",
                 columns: table => new
                 {
@@ -1700,6 +1967,88 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "CentralProcessingGraphDeliveryProposals",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    AssignmentId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    RevisionId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    RegistrationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    LogicalCameraInstallationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    InstallationPublicId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ExpectedActiveLocalRevisionId = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: true),
+                    CapabilitySnapshotSha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: false),
+                    IssuedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    ExpiresAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralProcessingGraphDeliveryProposals", x => x.Id);
+                    table.CheckConstraint("CK_CentralProcessingGraphDeliveryProposals_Expiry", "[ExpiresAtUtc] > [IssuedAtUtc]");
+                    table.ForeignKey(
+                        name: "FK_CentralProcessingGraphDeliveryProposals_CentralProcessingGraphAssignments_AssignmentId",
+                        column: x => x.AssignmentId,
+                        principalTable: "CentralProcessingGraphAssignments",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CentralProcessingGraphDeliveryProposals_CentralProcessingGraphRevisions_RevisionId",
+                        column: x => x.RevisionId,
+                        principalTable: "CentralProcessingGraphRevisions",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CentralProcessingGraphDeliveryProposals_DeviceRegistrations_RegistrationId",
+                        column: x => x.RegistrationId,
+                        principalTable: "DeviceRegistrations",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CentralProcessingGraphDeliveryProposals_LogicalCameraInstallations_LogicalCameraInstallationId",
+                        column: x => x.LogicalCameraInstallationId,
+                        principalTable: "LogicalCameraInstallations",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "ExecutionEvidenceBindings",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ObservatoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    RegistrationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    LogicalCameraInstallationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    InstallationPublicId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    OriginInstallationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    AgentInstanceId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    CreatedByUserId = table.Column<string>(type: "nvarchar(450)", maxLength: 450, nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_ExecutionEvidenceBindings", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_ExecutionEvidenceBindings_DeviceRegistrations_RegistrationId",
+                        column: x => x.RegistrationId,
+                        principalTable: "DeviceRegistrations",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_ExecutionEvidenceBindings_LogicalCameraInstallations_LogicalCameraInstallationId",
+                        column: x => x.LogicalCameraInstallationId,
+                        principalTable: "LogicalCameraInstallations",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_ExecutionEvidenceBindings_Observatories_ObservatoryId",
+                        column: x => x.ObservatoryId,
+                        principalTable: "Observatories",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "DeploymentLocationReconciliationWork",
                 columns: table => new
                 {
@@ -1941,6 +2290,86 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "CentralProcessingGraphDeliveryFacts",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ProposalId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    Kind = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
+                    OccurredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    RecordedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    Source = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
+                    LocalRevisionId = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: true),
+                    DefinitionIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: true),
+                    SharedPlanIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: true),
+                    LocalPlanIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: true),
+                    ReasonCode = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralProcessingGraphDeliveryFacts", x => x.Id);
+                    table.CheckConstraint("CK_CentralProcessingGraphDeliveryFacts_Kind", "[Kind] IN (N'Retrieved', N'Accepted', N'Rejected', N'Activated', N'RolledBack', N'Expired', N'Superseded')");
+                    table.CheckConstraint("CK_CentralProcessingGraphDeliveryFacts_Source", "[Source] IN (N'LogicHost', N'CameraAgent')");
+                    table.ForeignKey(
+                        name: "FK_CentralProcessingGraphDeliveryFacts_CentralProcessingGraphDeliveryProposals_ProposalId",
+                        column: x => x.ProposalId,
+                        principalTable: "CentralProcessingGraphDeliveryProposals",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "ExecutionEvidenceBindingUsage",
+                columns: table => new
+                {
+                    BindingId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    StoredBytes = table.Column<long>(type: "bigint", nullable: false),
+                    UnitCount = table.Column<int>(type: "int", nullable: false),
+                    OriginCount = table.Column<int>(type: "int", nullable: false),
+                    ConflictCount = table.Column<int>(type: "int", nullable: false),
+                    ObservationCount = table.Column<int>(type: "int", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_ExecutionEvidenceBindingUsage", x => x.BindingId);
+                    table.CheckConstraint("CK_ExecutionEvidenceBindingUsage_Nonnegative", "[StoredBytes] >= 0 AND [UnitCount] >= 0 AND [OriginCount] >= 0 AND [ConflictCount] >= 0 AND [ObservationCount] >= 0");
+                    table.ForeignKey(
+                        name: "FK_ExecutionEvidenceBindingUsage_ExecutionEvidenceBindings_BindingId",
+                        column: x => x.BindingId,
+                        principalTable: "ExecutionEvidenceBindings",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "ImportedExecutionEvidenceOrigins",
+                columns: table => new
+                {
+                    Id = table.Column<long>(type: "bigint", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    BindingId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    IdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    BootSessionId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    SoftwareVersion = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    FirstReceivedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    HighestSeenSequence = table.Column<long>(type: "bigint", nullable: false),
+                    ContiguousThroughSequence = table.Column<long>(type: "bigint", nullable: false),
+                    GapDetectedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_ImportedExecutionEvidenceOrigins", x => x.Id);
+                    table.UniqueConstraint("AK_ImportedExecutionEvidenceOrigins_Id_BindingId", x => new { x.Id, x.BindingId });
+                    table.CheckConstraint("CK_ImportedExecutionEvidenceOrigins_Sequence", "[ContiguousThroughSequence] >= 0 AND [HighestSeenSequence] >= [ContiguousThroughSequence]");
+                    table.ForeignKey(
+                        name: "FK_ImportedExecutionEvidenceOrigins_ExecutionEvidenceBindings_BindingId",
+                        column: x => x.BindingId,
+                        principalTable: "ExecutionEvidenceBindings",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "DeploymentLocationReconciliationCaptures",
                 columns: table => new
                 {
@@ -2152,32 +2581,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 });
 
             migrationBuilder.CreateTable(
-                name: "CentralProcessingGraphRevisions",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    Name = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
-                    Revision = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
-                    DefinitionJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
-                    DefinitionIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: false),
-                    PortablePlanIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: false),
-                    EdgePlanIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: true),
-                    CentralPlanIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: true),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    CreatedByUserId = table.Column<string>(type: "nvarchar(450)", maxLength: 450, nullable: false),
-                    PublishedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
-                    PublishedByUserId = table.Column<string>(type: "nvarchar(450)", maxLength: 450, nullable: true),
-                    RetiredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
-                    RetiredByUserId = table.Column<string>(type: "nvarchar(450)", maxLength: 450, nullable: true),
-                    RetirementReasonCode = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralProcessingGraphRevisions", x => x.Id);
-                    table.CheckConstraint("CK_CentralProcessingGraphRevisions_Lifecycle", "([PublishedAtUtc] IS NULL AND [PublishedByUserId] IS NULL AND [RetiredAtUtc] IS NULL AND [RetiredByUserId] IS NULL AND [RetirementReasonCode] IS NULL) OR ([PublishedAtUtc] IS NOT NULL AND [PublishedByUserId] IS NOT NULL AND (([RetiredAtUtc] IS NULL AND [RetiredByUserId] IS NULL AND [RetirementReasonCode] IS NULL) OR ([RetiredAtUtc] >= [PublishedAtUtc] AND [RetiredByUserId] IS NOT NULL AND [RetirementReasonCode] IS NOT NULL)))");
-                });
-
-            migrationBuilder.CreateTable(
                 name: "CentralProcessingGraphExecutions",
                 columns: table => new
                 {
@@ -2234,6 +2637,12 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
+                        name: "FK_CentralProcessingGraphExecutions_CentralProcessingGraphAssignments_AssignmentId",
+                        column: x => x.AssignmentId,
+                        principalTable: "CentralProcessingGraphAssignments",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
                         name: "FK_CentralProcessingGraphExecutions_CentralProcessingGraphExecutions_PredecessorExecutionId",
                         column: x => x.PredecessorExecutionId,
                         principalTable: "CentralProcessingGraphExecutions",
@@ -2261,6 +2670,159 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         column: x => x.ObservatoryId,
                         principalTable: "Observatories",
                         principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralStructuredProcessingProducts",
+                columns: table => new
+                {
+                    CentralArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    OutputIdentitySha256 = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    ProductKind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ProductSchemaVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    ContentIdentitySha256 = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
+                    AlgorithmsJson = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: false),
+                    CompatibilityJson = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: false),
+                    DescriptorJson = table.Column<string>(type: "nvarchar(max)", maxLength: 65536, nullable: false),
+                    TotalIntegrationTicks = table.Column<long>(type: "bigint", nullable: false),
+                    SourceIdentitySha256 = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
+                    PresentationWidthPixels = table.Column<int>(type: "int", nullable: true),
+                    PresentationHeightPixels = table.Column<int>(type: "int", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralStructuredProcessingProducts", x => x.CentralArtifactId);
+                    table.CheckConstraint("CK_CentralStructuredProcessingProducts_DescriptorJson_Length", "LEN([DescriptorJson]) <= 65536");
+                    table.ForeignKey(
+                        name: "FK_CentralStructuredProcessingProducts_CentralArtifacts_CentralArtifactId",
+                        column: x => x.CentralArtifactId,
+                        principalTable: "CentralArtifacts",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralTimeLapseInputs",
+                columns: table => new
+                {
+                    JobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    CentralArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralTimeLapseInputs", x => new { x.JobId, x.CentralArtifactId });
+                    table.ForeignKey(
+                        name: "FK_CentralTimeLapseInputs_CentralArtifacts_CentralArtifactId",
+                        column: x => x.CentralArtifactId,
+                        principalTable: "CentralArtifacts",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CentralTimeLapseInputs_CentralTimeLapseJobs_JobId",
+                        column: x => x.JobId,
+                        principalTable: "CentralTimeLapseJobs",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralTransientObservationSources",
+                columns: table => new
+                {
+                    ObservationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    CentralArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    EvidenceSchemaVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    EvidenceId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    LocatorSchemaVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    LocatorKind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ArtifactRole = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ArtifactVariant = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    ArtifactRecipeIdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    ArtifactChecksumSha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    ObservationStartedUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    ObservationEndedUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    TimingQuality = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    TimingProvenanceSource = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    TimingProvenanceVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2")
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralTransientObservationSources", x => x.ObservationId);
+                    table.UniqueConstraint("AK_CentralTransientObservationSources_ObservationId_EvidenceId_CentralArtifactId_ArtifactId_ArtifactChecksumSha256_ObservationS~", x => new { x.ObservationId, x.EvidenceId, x.CentralArtifactId, x.ArtifactId, x.ArtifactChecksumSha256, x.ObservationStartedUtc, x.ObservationEndedUtc });
+                    table.CheckConstraint("CK_CentralTransientObservationSources_ObservedInterval", "[ObservationStartedUtc] <= [ObservationEndedUtc]");
+                    table.ForeignKey(
+                        name: "FK_CentralTransientObservationSources_CentralArtifacts_CentralArtifactId",
+                        column: x => x.CentralArtifactId,
+                        principalTable: "CentralArtifacts",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "ImportedExecutionEvidenceRanges",
+                columns: table => new
+                {
+                    OriginId = table.Column<long>(type: "bigint", nullable: false),
+                    FromSequence = table.Column<long>(type: "bigint", nullable: false),
+                    ToSequence = table.Column<long>(type: "bigint", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_ImportedExecutionEvidenceRanges", x => new { x.OriginId, x.FromSequence });
+                    table.CheckConstraint("CK_ImportedExecutionEvidenceRanges_Order", "[FromSequence] > 0 AND [ToSequence] >= [FromSequence]");
+                    table.ForeignKey(
+                        name: "FK_ImportedExecutionEvidenceRanges_ImportedExecutionEvidenceOrigins_OriginId",
+                        column: x => x.OriginId,
+                        principalTable: "ImportedExecutionEvidenceOrigins",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "ImportedExecutionEvidenceUnits",
+                columns: table => new
+                {
+                    Id = table.Column<long>(type: "bigint", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    BindingId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    OriginId = table.Column<long>(type: "bigint", nullable: false),
+                    OriginSequence = table.Column<long>(type: "bigint", nullable: false),
+                    EvidenceId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    PayloadSha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    Kind = table.Column<string>(type: "varchar(32)", unicode: false, maxLength: 32, nullable: false),
+                    RevisionId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true, collation: "Latin1_General_100_BIN2"),
+                    ExecutionId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    CaptureId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    CorrectsEvidenceId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    CorrectsOriginSequence = table.Column<long>(type: "bigint", nullable: true),
+                    ProducedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    ReceivedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    CanonicalBytes = table.Column<byte[]>(type: "varbinary(max)", nullable: false),
+                    Accepted = table.Column<bool>(type: "bit", nullable: false),
+                    RejectionReasonCode = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
+                    RejectionFieldPath = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_ImportedExecutionEvidenceUnits", x => x.Id);
+                    table.UniqueConstraint("AK_ImportedExecutionEvidenceUnits_Id_BindingId", x => new { x.Id, x.BindingId });
+                    table.CheckConstraint("CK_ImportedExecutionEvidenceUnits_Bytes", "DATALENGTH([CanonicalBytes]) BETWEEN 1 AND 8388608");
+                    table.CheckConstraint("CK_ImportedExecutionEvidenceUnits_Disposition", "([Accepted] = 1 AND [RejectionReasonCode] IS NULL AND [RejectionFieldPath] IS NULL) OR ([Accepted] = 0 AND [RejectionReasonCode] IS NOT NULL)");
+                    table.CheckConstraint("CK_ImportedExecutionEvidenceUnits_Kind", "[Kind] IN ('GraphRevision', 'GraphExecution', 'ArtifactAvailability')");
+                    table.CheckConstraint("CK_ImportedExecutionEvidenceUnits_Sequence", "[OriginSequence] > 0");
+                    table.ForeignKey(
+                        name: "FK_ImportedExecutionEvidenceUnits_ExecutionEvidenceBindings_BindingId",
+                        column: x => x.BindingId,
+                        principalTable: "ExecutionEvidenceBindings",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_ImportedExecutionEvidenceUnits_ImportedExecutionEvidenceOrigins_OriginId_BindingId",
+                        columns: x => new { x.OriginId, x.BindingId },
+                        principalTable: "ImportedExecutionEvidenceOrigins",
+                        principalColumns: new[] { "Id", "BindingId" },
                         onDelete: ReferentialAction.Restrict);
                 });
 
@@ -2342,12 +2904,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
-                        name: "FK_CentralDerivativeJobs_CentralProcessingGraphExecutions_GraphExecutionId",
-                        column: x => x.GraphExecutionId,
-                        principalTable: "CentralProcessingGraphExecutions",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
                         name: "FK_CentralDerivativeJobs_CentralDerivativeJobs_PredecessorJobId",
                         column: x => x.PredecessorJobId,
                         principalTable: "CentralDerivativeJobs",
@@ -2357,6 +2913,12 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         column: x => x.SupersededByJobId,
                         principalTable: "CentralDerivativeJobs",
                         principalColumn: "Id");
+                    table.ForeignKey(
+                        name: "FK_CentralDerivativeJobs_CentralProcessingGraphExecutions_GraphExecutionId",
+                        column: x => x.GraphExecutionId,
+                        principalTable: "CentralProcessingGraphExecutions",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
                 });
 
             migrationBuilder.CreateTable(
@@ -2397,160 +2959,108 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 });
 
             migrationBuilder.CreateTable(
-                name: "CentralDerivativeJobOutputs",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    CentralDerivativeJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    Ordinal = table.Column<int>(type: "int", nullable: false),
-                    Role = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    Variant = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    ProductKind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    ContractJson = table.Column<string>(type: "varchar(max)", unicode: false, nullable: false),
-                    ContractIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: false),
-                    ResultCentralArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                    ResultOutputIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: true),
-                    BoundAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
-                    RowVersion = table.Column<byte[]>(type: "rowversion", rowVersion: true, nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralDerivativeJobOutputs", x => x.Id);
-                    table.UniqueConstraint("AK_CentralDerivativeJobOutputs_CentralDerivativeJobId_Ordinal", x => new { x.CentralDerivativeJobId, x.Ordinal });
-                    table.CheckConstraint("CK_CentralDerivativeJobOutputs_Binding", "([ResultCentralArtifactId] IS NULL AND [ResultOutputIdentitySha256] IS NULL AND [BoundAtUtc] IS NULL) OR ([ResultCentralArtifactId] IS NOT NULL AND [ResultOutputIdentitySha256] IS NOT NULL AND [BoundAtUtc] IS NOT NULL)");
-                    table.CheckConstraint("CK_CentralDerivativeJobOutputs_ContractIdentity", "ISJSON([ContractJson]) = 1 AND [ContractJson] NOT LIKE '%[^ -~]%' COLLATE Latin1_General_100_BIN2 AND [ContractIdentitySha256] = CONVERT(varchar(64), HASHBYTES('SHA2_256', [ContractJson]), 2)");
-                    table.CheckConstraint("CK_CentralDerivativeJobOutputs_Ordinal", "[Ordinal] >= 0");
-                    table.CheckConstraint("CK_CentralDerivativeJobOutputs_ProductKind", "[ProductKind] IN (N'PixelData', N'Metadata')");
-                    table.CheckConstraint("CK_CentralDerivativeJobOutputs_Role", "[Role] IN (N'Raw', N'Calibrated', N'Combined', N'Preview', N'AnnotatedPreview', N'Metadata')");
-                    table.ForeignKey(
-                        name: "FK_CentralDerivativeJobOutputs_CentralArtifacts_ResultCentralArtifactId",
-                        column: x => x.ResultCentralArtifactId,
-                        principalTable: "CentralArtifacts",
-                        principalColumn: "Id");
-                    table.ForeignKey(
-                        name: "FK_CentralDerivativeJobOutputs_CentralDerivativeJobs_CentralDerivativeJobId",
-                        column: x => x.CentralDerivativeJobId,
-                        principalTable: "CentralDerivativeJobs",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                });
-
-            migrationBuilder.CreateTable(
-                name: "CentralDerivativeJobDependencies",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    ExecutionId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    ConsumerJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    Ordinal = table.Column<int>(type: "int", nullable: false),
-                    Kind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    Required = table.Column<bool>(type: "bit", nullable: false),
-                    ProducerJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                    ProducerSourceId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                    ProducerOutputOrdinal = table.Column<int>(type: "int", nullable: true),
-                    ConsumerInputOrdinal = table.Column<int>(type: "int", nullable: true),
-                    ConsumerBindingName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true, collation: "Latin1_General_100_BIN2"),
-                    ConsumerBindingKind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: true)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralDerivativeJobDependencies", x => x.Id);
-                    table.UniqueConstraint("AK_CentralDerivativeJobDependencies_ConsumerJobId_Id", x => new { x.ConsumerJobId, x.Id });
-                    table.CheckConstraint("CK_CentralDerivativeJobDependencies_Binding", "([Kind] IN (N'Outcome', N'Ordering') AND [ProducerOutputOrdinal] IS NULL AND [ConsumerInputOrdinal] IS NULL AND [ConsumerBindingName] IS NULL AND [ConsumerBindingKind] IS NULL) OR ([Kind] IN (N'Artifact', N'CanonicalJson', N'Annotation') AND [ProducerOutputOrdinal] >= 0 AND [ConsumerInputOrdinal] >= 0 AND [ConsumerBindingName] IS NOT NULL AND [ConsumerBindingKind] IS NOT NULL)");
-                    table.CheckConstraint("CK_CentralDerivativeJobDependencies_BindingKind", "[ConsumerBindingKind] IS NULL OR [ConsumerBindingKind] IN (N'PrimaryArtifact', N'AuxiliaryArtifact', N'CanonicalJson', N'Annotation')");
-                    table.CheckConstraint("CK_CentralDerivativeJobDependencies_CompatibleBinding", "[Kind] IN (N'Outcome', N'Ordering') OR ([Kind] = N'Artifact' AND [ConsumerBindingKind] IN (N'PrimaryArtifact', N'AuxiliaryArtifact')) OR ([Kind] = N'CanonicalJson' AND [ConsumerBindingKind] = N'CanonicalJson') OR ([Kind] = N'Annotation' AND [ConsumerBindingKind] = N'Annotation')");
-                    table.CheckConstraint("CK_CentralDerivativeJobDependencies_Kind", "[Kind] IN (N'Artifact', N'CanonicalJson', N'Annotation', N'Outcome', N'Ordering')");
-                    table.CheckConstraint("CK_CentralDerivativeJobDependencies_Ordinal", "[Ordinal] >= 0");
-                    table.CheckConstraint("CK_CentralDerivativeJobDependencies_Producer", "([ProducerJobId] IS NOT NULL AND [ProducerSourceId] IS NULL) OR ([ProducerJobId] IS NULL AND [ProducerSourceId] IS NOT NULL)");
-                    table.ForeignKey(
-                        name: "FK_CentralDerivativeJobDependencies_CentralDerivativeJobOutputs_ProducerJobId_ProducerOutputOrdinal",
-                        columns: x => new { x.ProducerJobId, x.ProducerOutputOrdinal },
-                        principalTable: "CentralDerivativeJobOutputs",
-                        principalColumns: new[] { "CentralDerivativeJobId", "Ordinal" });
-                    table.ForeignKey(
-                        name: "FK_CentralDerivativeJobDependencies_CentralDerivativeJobs_ConsumerJobId",
-                        column: x => x.ConsumerJobId,
-                        principalTable: "CentralDerivativeJobs",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_CentralDerivativeJobDependencies_CentralDerivativeJobs_ProducerJobId",
-                        column: x => x.ProducerJobId,
-                        principalTable: "CentralDerivativeJobs",
-                        principalColumn: "Id");
-                    table.ForeignKey(
-                        name: "FK_CentralDerivativeJobDependencies_CentralProcessingGraphExecutions_ExecutionId",
-                        column: x => x.ExecutionId,
-                        principalTable: "CentralProcessingGraphExecutions",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_CentralDerivativeJobDependencies_CentralProcessingGraphExecutionSources_ProducerSourceId",
-                        column: x => x.ProducerSourceId,
-                        principalTable: "CentralProcessingGraphExecutionSources",
-                        principalColumn: "Id");
-                });
-
-            migrationBuilder.CreateTable(
-                name: "CentralStructuredProcessingProducts",
-                columns: table => new
-                {
-                    CentralArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    OutputIdentitySha256 = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
-                    ProductKind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    ProductSchemaVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
-                    ContentIdentitySha256 = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
-                    AlgorithmsJson = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: false),
-                    CompatibilityJson = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: false),
-                    DescriptorJson = table.Column<string>(type: "nvarchar(max)", maxLength: 65536, nullable: false),
-                    TotalIntegrationTicks = table.Column<long>(type: "bigint", nullable: false),
-                    SourceIdentitySha256 = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
-                    PresentationWidthPixels = table.Column<int>(type: "int", nullable: true),
-                    PresentationHeightPixels = table.Column<int>(type: "int", nullable: true)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralStructuredProcessingProducts", x => x.CentralArtifactId);
-                    table.CheckConstraint("CK_CentralStructuredProcessingProducts_DescriptorJson_Length", "LEN([DescriptorJson]) <= 65536");
-                    table.ForeignKey(
-                        name: "FK_CentralStructuredProcessingProducts_CentralArtifacts_CentralArtifactId",
-                        column: x => x.CentralArtifactId,
-                        principalTable: "CentralArtifacts",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Cascade);
-                });
-
-            migrationBuilder.CreateTable(
-                name: "CentralTransientObservationSources",
+                name: "CentralTransientObservations",
                 columns: table => new
                 {
                     ObservationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    CentralArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    EvidenceSchemaVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
-                    EvidenceId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    LocatorSchemaVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
-                    LocatorKind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    ArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    ArtifactRole = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    ArtifactVariant = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    ArtifactRecipeIdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    ArtifactChecksumSha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    ObservationStartedUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    ObservationEndedUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    TimingQuality = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    TimingProvenanceSource = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    TimingProvenanceVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2")
+                    CentralTransientEventId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    DetectorInputIdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    CalibrationIdentity = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    MaskIdentity = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    ProcessingProfileIdentity = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    OriginatingCandidateId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    ExtractionProducerSchemaVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    ExtractionProducerKind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ExtractionProducerName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    ExtractionProducerVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    ExtractionRecipeIdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    ExtractionReceiptIdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    GeometryJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    FeaturesJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    SourceReferenceId = table.Column<Guid>(type: "uniqueidentifier", nullable: false)
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_CentralTransientObservationSources", x => x.ObservationId);
-                    table.UniqueConstraint("AK_CentralTransientObservationSources_ObservationId_EvidenceId_CentralArtifactId_ArtifactId_ArtifactChecksumSha256_ObservationS~", x => new { x.ObservationId, x.EvidenceId, x.CentralArtifactId, x.ArtifactId, x.ArtifactChecksumSha256, x.ObservationStartedUtc, x.ObservationEndedUtc });
-                    table.CheckConstraint("CK_CentralTransientObservationSources_ObservedInterval", "[ObservationStartedUtc] <= [ObservationEndedUtc]");
+                    table.PrimaryKey("PK_CentralTransientObservations", x => x.ObservationId);
+                    table.UniqueConstraint("AK_CentralTransientObservations_CentralTransientEventId_ObservationId", x => new { x.CentralTransientEventId, x.ObservationId });
+                    table.CheckConstraint("CK_CentralTransientObservations_SourceReference", "[SourceReferenceId] = [ObservationId]");
                     table.ForeignKey(
-                        name: "FK_CentralTransientObservationSources_CentralArtifacts_CentralArtifactId",
-                        column: x => x.CentralArtifactId,
-                        principalTable: "CentralArtifacts",
+                        name: "FK_CentralTransientObservations_CentralTransientEvents_CentralTransientEventId",
+                        column: x => x.CentralTransientEventId,
+                        principalTable: "CentralTransientEvents",
                         principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CentralTransientObservations_CentralTransientObservationSources_SourceReferenceId",
+                        column: x => x.SourceReferenceId,
+                        principalTable: "CentralTransientObservationSources",
+                        principalColumn: "ObservationId",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "ImportedExecutionEvidenceArtifacts",
+                columns: table => new
+                {
+                    Id = table.Column<long>(type: "bigint", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    BindingId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    UnitId = table.Column<long>(type: "bigint", nullable: false),
+                    Ordinal = table.Column<int>(type: "int", nullable: false),
+                    ArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    CaptureId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    OutputIdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: true, collation: "Latin1_General_100_BIN2"),
+                    PayloadSha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: true, collation: "Latin1_General_100_BIN2"),
+                    DescriptorSha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: true, collation: "Latin1_General_100_BIN2"),
+                    PayloadLength = table.Column<long>(type: "bigint", nullable: true),
+                    MediaType = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
+                    Role = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: true),
+                    Variant = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_ImportedExecutionEvidenceArtifacts", x => x.Id);
+                    table.UniqueConstraint("AK_ImportedExecutionEvidenceArtifacts_Id_BindingId", x => new { x.Id, x.BindingId });
+                    table.ForeignKey(
+                        name: "FK_ImportedExecutionEvidenceArtifacts_ExecutionEvidenceBindings_BindingId",
+                        column: x => x.BindingId,
+                        principalTable: "ExecutionEvidenceBindings",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_ImportedExecutionEvidenceArtifacts_ImportedExecutionEvidenceUnits_UnitId_BindingId",
+                        columns: x => new { x.UnitId, x.BindingId },
+                        principalTable: "ImportedExecutionEvidenceUnits",
+                        principalColumns: new[] { "Id", "BindingId" },
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "ImportedExecutionEvidenceConflicts",
+                columns: table => new
+                {
+                    Id = table.Column<long>(type: "bigint", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    BindingId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    UnitId = table.Column<long>(type: "bigint", nullable: false),
+                    SubmittedEvidenceId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    SubmittedPayloadSha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    OccurredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_ImportedExecutionEvidenceConflicts", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_ImportedExecutionEvidenceConflicts_ExecutionEvidenceBindings_BindingId",
+                        column: x => x.BindingId,
+                        principalTable: "ExecutionEvidenceBindings",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_ImportedExecutionEvidenceConflicts_ImportedExecutionEvidenceUnits_UnitId_BindingId",
+                        columns: x => new { x.UnitId, x.BindingId },
+                        principalTable: "ImportedExecutionEvidenceUnits",
+                        principalColumns: new[] { "Id", "BindingId" },
                         onDelete: ReferentialAction.Restrict);
                 });
 
@@ -2625,54 +3135,42 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 });
 
             migrationBuilder.CreateTable(
-                name: "CentralDerivativeJobInputRequirements",
+                name: "CentralDerivativeJobOutputs",
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     CentralDerivativeJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     Ordinal = table.Column<int>(type: "int", nullable: false),
-                    BindingName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
-                    GraphDependencyId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                    GraphInputOrdinal = table.Column<int>(type: "int", nullable: true),
-                    GraphInputBindingKind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: true),
-                    SourceKind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    SequenceOffset = table.Column<int>(type: "int", nullable: true),
-                    IsRequired = table.Column<bool>(type: "bit", nullable: false),
-                    SelectorJson = table.Column<string>(type: "nvarchar(2048)", maxLength: 2048, nullable: false),
-                    CompatibilityMode = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    ExpectedAgentId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
-                    ExpectedRigId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
-                    ExpectedCaptureSequence = table.Column<long>(type: "bigint", nullable: true),
-                    ExpectedCentralArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                    ResolutionState = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    ResolutionReasonCode = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
-                    ResolvedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true)
+                    Role = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    Variant = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    ProductKind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ContractJson = table.Column<string>(type: "varchar(max)", unicode: false, nullable: false),
+                    ContractIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: false),
+                    ResultCentralArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    ResultOutputIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: true),
+                    BoundAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
+                    RowVersion = table.Column<byte[]>(type: "rowversion", rowVersion: true, nullable: false)
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_CentralDerivativeJobInputRequirements", x => x.Id);
-                    table.UniqueConstraint("AK_CentralDerivativeJobInputRequirements_CentralDerivativeJobId_Id", x => new { x.CentralDerivativeJobId, x.Id });
-                    table.CheckConstraint("CK_CentralDerivativeJobInputRequirements_GraphBinding", "([GraphDependencyId] IS NULL AND [GraphInputOrdinal] IS NULL AND [GraphInputBindingKind] IS NULL) OR ([GraphDependencyId] IS NOT NULL AND [GraphInputOrdinal] >= 0 AND [GraphInputBindingKind] IS NOT NULL)");
-                    table.CheckConstraint("CK_CentralDerivativeJobInputRequirements_GraphInputBindingKind", "[GraphInputBindingKind] IS NULL OR [GraphInputBindingKind] IN (N'PrimaryArtifact', N'AuxiliaryArtifact', N'CanonicalJson', N'Annotation')");
-                    table.CheckConstraint("CK_CentralDerivativeJobInputRequirements_GraphResolution", "[GraphDependencyId] IS NULL OR ([ResolutionState] = N'Waiting' AND [ExpectedCentralArtifactId] IS NULL AND [ResolvedAtUtc] IS NULL) OR ([ResolutionState] = N'Resolved' AND [ResolvedAtUtc] IS NOT NULL AND (([SourceKind] = N'Artifact' AND [ExpectedCentralArtifactId] IS NOT NULL) OR ([SourceKind] <> N'Artifact' AND [ExpectedCentralArtifactId] IS NULL))) OR ([ResolutionState] IN (N'Missing', N'Incompatible') AND [ExpectedCentralArtifactId] IS NULL AND [ResolvedAtUtc] IS NOT NULL AND LEN([ResolutionReasonCode]) > 0)");
-                    table.CheckConstraint("CK_CentralDerivativeJobInputRequirements_Ordinal", "[Ordinal] >= 0");
+                    table.PrimaryKey("PK_CentralDerivativeJobOutputs", x => x.Id);
+                    table.UniqueConstraint("AK_CentralDerivativeJobOutputs_CentralDerivativeJobId_Ordinal", x => new { x.CentralDerivativeJobId, x.Ordinal });
+                    table.CheckConstraint("CK_CentralDerivativeJobOutputs_Binding", "([ResultCentralArtifactId] IS NULL AND [ResultOutputIdentitySha256] IS NULL AND [BoundAtUtc] IS NULL) OR ([ResultCentralArtifactId] IS NOT NULL AND [ResultOutputIdentitySha256] IS NOT NULL AND [BoundAtUtc] IS NOT NULL)");
+                    table.CheckConstraint("CK_CentralDerivativeJobOutputs_ContractIdentity", "ISJSON([ContractJson]) = 1 AND [ContractJson] NOT LIKE '%[^ -~]%' COLLATE Latin1_General_100_BIN2 AND [ContractIdentitySha256] = CONVERT(varchar(64), HASHBYTES('SHA2_256', [ContractJson]), 2)");
+                    table.CheckConstraint("CK_CentralDerivativeJobOutputs_Ordinal", "[Ordinal] >= 0");
+                    table.CheckConstraint("CK_CentralDerivativeJobOutputs_ProductKind", "[ProductKind] IN (N'PixelData', N'Metadata')");
+                    table.CheckConstraint("CK_CentralDerivativeJobOutputs_Role", "[Role] IN (N'Raw', N'Calibrated', N'Combined', N'Preview', N'AnnotatedPreview', N'Metadata')");
                     table.ForeignKey(
-                        name: "FK_CentralDerivativeJobInputRequirements_CentralArtifacts_ExpectedCentralArtifactId",
-                        column: x => x.ExpectedCentralArtifactId,
+                        name: "FK_CentralDerivativeJobOutputs_CentralArtifacts_ResultCentralArtifactId",
+                        column: x => x.ResultCentralArtifactId,
                         principalTable: "CentralArtifacts",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
+                        principalColumn: "Id");
                     table.ForeignKey(
-                        name: "FK_CentralDerivativeJobInputRequirements_CentralDerivativeJobDependencies_CentralDerivativeJobId_GraphDependencyId",
-                        columns: x => new { x.CentralDerivativeJobId, x.GraphDependencyId },
-                        principalTable: "CentralDerivativeJobDependencies",
-                        principalColumns: new[] { "ConsumerJobId", "Id" });
-                    table.ForeignKey(
-                        name: "FK_CentralDerivativeJobInputRequirements_CentralDerivativeJobs_CentralDerivativeJobId",
+                        name: "FK_CentralDerivativeJobOutputs_CentralDerivativeJobs_CentralDerivativeJobId",
                         column: x => x.CentralDerivativeJobId,
                         principalTable: "CentralDerivativeJobs",
                         principalColumn: "Id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.Restrict);
                 });
 
             migrationBuilder.CreateTable(
@@ -2843,121 +3341,197 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 });
 
             migrationBuilder.CreateTable(
-                name: "CentralTransientObservations",
+                name: "CentralTransientAssessmentObservations",
                 columns: table => new
                 {
-                    ObservationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    CentralTransientEventId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    DetectorInputIdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    CalibrationIdentity = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    MaskIdentity = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    ProcessingProfileIdentity = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    OriginatingCandidateId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                    ExtractionProducerSchemaVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
-                    ExtractionProducerKind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    ExtractionProducerName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    ExtractionProducerVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    ExtractionRecipeIdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    ExtractionReceiptIdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    GeometryJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
-                    FeaturesJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
-                    SourceReferenceId = table.Column<Guid>(type: "uniqueidentifier", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralTransientObservations", x => x.ObservationId);
-                    table.UniqueConstraint("AK_CentralTransientObservations_CentralTransientEventId_ObservationId", x => new { x.CentralTransientEventId, x.ObservationId });
-                    table.CheckConstraint("CK_CentralTransientObservations_SourceReference", "[SourceReferenceId] = [ObservationId]");
-                    table.ForeignKey(
-                        name: "FK_CentralTransientObservations_CentralTransientEvents_CentralTransientEventId",
-                        column: x => x.CentralTransientEventId,
-                        principalTable: "CentralTransientEvents",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_CentralTransientObservations_CentralTransientObservationSources_SourceReferenceId",
-                        column: x => x.SourceReferenceId,
-                        principalTable: "CentralTransientObservationSources",
-                        principalColumn: "ObservationId",
-                        onDelete: ReferentialAction.Restrict);
-                });
-
-            migrationBuilder.CreateTable(
-                name: "CentralDerivativeJobCanonicalInputs",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    CentralDerivativeJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    CentralDerivativeJobInputRequirementId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    AssessmentId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     Ordinal = table.Column<int>(type: "int", nullable: false),
-                    SchemaVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
-                    IdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false),
-                    CanonicalJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
-                    ByteLength = table.Column<int>(type: "int", nullable: false),
-                    EnvironmentalObservationRecordId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                    SelectedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                    CentralTransientEventId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ObservationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false)
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_CentralDerivativeJobCanonicalInputs", x => x.Id);
-                    table.CheckConstraint("CK_CentralDerivativeJobCanonicalInputs_ByteLength", "[ByteLength] > 0");
-                    table.CheckConstraint("CK_CentralDerivativeJobCanonicalInputs_Ordinal", "[Ordinal] >= 0");
+                    table.PrimaryKey("PK_CentralTransientAssessmentObservations", x => new { x.AssessmentId, x.Ordinal });
+                    table.CheckConstraint("CK_CentralTransientAssessmentObservations_Ordinal", "[Ordinal] >= 0");
                     table.ForeignKey(
-                        name: "FK_CentralDerivativeJobCanonicalInputs_CentralDerivativeJobInputRequirements_CentralDerivativeJobId_CentralDerivativeJobInputRe~",
-                        columns: x => new { x.CentralDerivativeJobId, x.CentralDerivativeJobInputRequirementId },
-                        principalTable: "CentralDerivativeJobInputRequirements",
-                        principalColumns: new[] { "CentralDerivativeJobId", "Id" });
-                    table.ForeignKey(
-                        name: "FK_CentralDerivativeJobCanonicalInputs_CentralDerivativeJobs_CentralDerivativeJobId",
-                        column: x => x.CentralDerivativeJobId,
-                        principalTable: "CentralDerivativeJobs",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Cascade);
-                    table.ForeignKey(
-                        name: "FK_CentralDerivativeJobCanonicalInputs_EnvironmentalObservations_EnvironmentalObservationRecordId",
-                        column: x => x.EnvironmentalObservationRecordId,
-                        principalTable: "EnvironmentalObservations",
-                        principalColumn: "Id",
+                        name: "FK_CentralTransientAssessmentObservations_CentralTransientAssessments_CentralTransientEventId_AssessmentId",
+                        columns: x => new { x.CentralTransientEventId, x.AssessmentId },
+                        principalTable: "CentralTransientAssessments",
+                        principalColumns: new[] { "CentralTransientEventId", "AssessmentId" },
                         onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CentralTransientAssessmentObservations_CentralTransientObservations_CentralTransientEventId_ObservationId",
+                        columns: x => new { x.CentralTransientEventId, x.ObservationId },
+                        principalTable: "CentralTransientObservations",
+                        principalColumns: new[] { "CentralTransientEventId", "ObservationId" });
                 });
 
             migrationBuilder.CreateTable(
-                name: "CentralDerivativeJobInputs",
+                name: "CentralTransientEventVersionObservations",
+                columns: table => new
+                {
+                    EventVersionId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    Ordinal = table.Column<int>(type: "int", nullable: false),
+                    CentralTransientEventId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ObservationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralTransientEventVersionObservations", x => new { x.EventVersionId, x.Ordinal });
+                    table.CheckConstraint("CK_CentralTransientEventVersionObservations_Ordinal", "[Ordinal] >= 0");
+                    table.ForeignKey(
+                        name: "FK_CentralTransientEventVersionObservations_CentralTransientEventVersions_CentralTransientEventId_EventVersionId",
+                        columns: x => new { x.CentralTransientEventId, x.EventVersionId },
+                        principalTable: "CentralTransientEventVersions",
+                        principalColumns: new[] { "CentralTransientEventId", "EventVersionId" },
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CentralTransientEventVersionObservations_CentralTransientObservations_CentralTransientEventId_ObservationId",
+                        columns: x => new { x.CentralTransientEventId, x.ObservationId },
+                        principalTable: "CentralTransientObservations",
+                        principalColumns: new[] { "CentralTransientEventId", "ObservationId" });
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralTransientObservationBackgrounds",
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    CentralDerivativeJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    CentralDerivativeJobInputRequirementId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ObservationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     Ordinal = table.Column<int>(type: "int", nullable: false),
                     CentralArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    CaptureSequence = table.Column<long>(type: "bigint", nullable: true),
-                    CompatibilityJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
-                    CompatibilitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false),
-                    ByteLength = table.Column<long>(type: "bigint", nullable: false),
-                    SelectedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                    ArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ArtifactRole = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ArtifactVariant = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    ArtifactRecipeIdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    ArtifactChecksumSha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2")
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_CentralDerivativeJobInputs", x => x.Id);
-                    table.CheckConstraint("CK_CentralDerivativeJobInputs_ByteLength", "[ByteLength] >= 0");
-                    table.CheckConstraint("CK_CentralDerivativeJobInputs_Ordinal", "[Ordinal] >= 0");
+                    table.PrimaryKey("PK_CentralTransientObservationBackgrounds", x => x.Id);
+                    table.UniqueConstraint("AK_CentralTransientObservationBackgrounds_ObservationId_Ordinal_CentralArtifactId_ArtifactId_ArtifactChecksumSha256", x => new { x.ObservationId, x.Ordinal, x.CentralArtifactId, x.ArtifactId, x.ArtifactChecksumSha256 });
+                    table.CheckConstraint("CK_CentralTransientObservationBackgrounds_Ordinal", "[Ordinal] >= 0");
                     table.ForeignKey(
-                        name: "FK_CentralDerivativeJobInputs_CentralArtifacts_CentralArtifactId",
+                        name: "FK_CentralTransientObservationBackgrounds_CentralArtifacts_CentralArtifactId",
                         column: x => x.CentralArtifactId,
                         principalTable: "CentralArtifacts",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
-                        name: "FK_CentralDerivativeJobInputs_CentralDerivativeJobInputRequirements_CentralDerivativeJobId_CentralDerivativeJobInputRequirement~",
-                        columns: x => new { x.CentralDerivativeJobId, x.CentralDerivativeJobInputRequirementId },
-                        principalTable: "CentralDerivativeJobInputRequirements",
-                        principalColumns: new[] { "CentralDerivativeJobId", "Id" });
+                        name: "FK_CentralTransientObservationBackgrounds_CentralTransientObservations_ObservationId",
+                        column: x => x.ObservationId,
+                        principalTable: "CentralTransientObservations",
+                        principalColumn: "ObservationId",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "ExecutionEvidenceArtifactChecks",
+                columns: table => new
+                {
+                    ArtifactReferenceId = table.Column<long>(type: "bigint", nullable: false),
+                    BindingId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    Version = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    NextCheckAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    State = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: true),
+                    ReasonCode = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
+                    ObjectGeneration = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_ExecutionEvidenceArtifactChecks", x => x.ArtifactReferenceId);
                     table.ForeignKey(
-                        name: "FK_CentralDerivativeJobInputs_CentralDerivativeJobs_CentralDerivativeJobId",
-                        column: x => x.CentralDerivativeJobId,
+                        name: "FK_ExecutionEvidenceArtifactChecks_ImportedExecutionEvidenceArtifacts_ArtifactReferenceId_BindingId",
+                        columns: x => new { x.ArtifactReferenceId, x.BindingId },
+                        principalTable: "ImportedExecutionEvidenceArtifacts",
+                        principalColumns: new[] { "Id", "BindingId" },
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "ImportedExecutionEvidenceObservations",
+                columns: table => new
+                {
+                    Id = table.Column<long>(type: "bigint", nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
+                    BindingId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ArtifactReferenceId = table.Column<long>(type: "bigint", nullable: false),
+                    State = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ReasonCode = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    ObservedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    ObjectGeneration = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_ImportedExecutionEvidenceObservations", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_ImportedExecutionEvidenceObservations_ExecutionEvidenceBindings_BindingId",
+                        column: x => x.BindingId,
+                        principalTable: "ExecutionEvidenceBindings",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_ImportedExecutionEvidenceObservations_ImportedExecutionEvidenceArtifacts_ArtifactReferenceId_BindingId",
+                        columns: x => new { x.ArtifactReferenceId, x.BindingId },
+                        principalTable: "ImportedExecutionEvidenceArtifacts",
+                        principalColumns: new[] { "Id", "BindingId" },
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralDerivativeJobDependencies",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ExecutionId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    ConsumerJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    Ordinal = table.Column<int>(type: "int", nullable: false),
+                    Kind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    Required = table.Column<bool>(type: "bit", nullable: false),
+                    ProducerJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    ProducerSourceId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    ProducerOutputOrdinal = table.Column<int>(type: "int", nullable: true),
+                    ConsumerInputOrdinal = table.Column<int>(type: "int", nullable: true),
+                    ConsumerBindingName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true, collation: "Latin1_General_100_BIN2"),
+                    ConsumerBindingKind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralDerivativeJobDependencies", x => x.Id);
+                    table.UniqueConstraint("AK_CentralDerivativeJobDependencies_ConsumerJobId_Id", x => new { x.ConsumerJobId, x.Id });
+                    table.CheckConstraint("CK_CentralDerivativeJobDependencies_Binding", "([Kind] IN (N'Outcome', N'Ordering') AND [ProducerOutputOrdinal] IS NULL AND [ConsumerInputOrdinal] IS NULL AND [ConsumerBindingName] IS NULL AND [ConsumerBindingKind] IS NULL) OR ([Kind] IN (N'Artifact', N'CanonicalJson', N'Annotation') AND [ProducerOutputOrdinal] >= 0 AND [ConsumerInputOrdinal] >= 0 AND [ConsumerBindingName] IS NOT NULL AND [ConsumerBindingKind] IS NOT NULL)");
+                    table.CheckConstraint("CK_CentralDerivativeJobDependencies_BindingKind", "[ConsumerBindingKind] IS NULL OR [ConsumerBindingKind] IN (N'PrimaryArtifact', N'AuxiliaryArtifact', N'CanonicalJson', N'Annotation')");
+                    table.CheckConstraint("CK_CentralDerivativeJobDependencies_CompatibleBinding", "[Kind] IN (N'Outcome', N'Ordering') OR ([Kind] = N'Artifact' AND [ConsumerBindingKind] IN (N'PrimaryArtifact', N'AuxiliaryArtifact')) OR ([Kind] = N'CanonicalJson' AND [ConsumerBindingKind] = N'CanonicalJson') OR ([Kind] = N'Annotation' AND [ConsumerBindingKind] = N'Annotation')");
+                    table.CheckConstraint("CK_CentralDerivativeJobDependencies_Kind", "[Kind] IN (N'Artifact', N'CanonicalJson', N'Annotation', N'Outcome', N'Ordering')");
+                    table.CheckConstraint("CK_CentralDerivativeJobDependencies_Ordinal", "[Ordinal] >= 0");
+                    table.CheckConstraint("CK_CentralDerivativeJobDependencies_Producer", "([ProducerJobId] IS NOT NULL AND [ProducerSourceId] IS NULL) OR ([ProducerJobId] IS NULL AND [ProducerSourceId] IS NOT NULL)");
+                    table.ForeignKey(
+                        name: "FK_CentralDerivativeJobDependencies_CentralDerivativeJobOutputs_ProducerJobId_ProducerOutputOrdinal",
+                        columns: x => new { x.ProducerJobId, x.ProducerOutputOrdinal },
+                        principalTable: "CentralDerivativeJobOutputs",
+                        principalColumns: new[] { "CentralDerivativeJobId", "Ordinal" });
+                    table.ForeignKey(
+                        name: "FK_CentralDerivativeJobDependencies_CentralDerivativeJobs_ConsumerJobId",
+                        column: x => x.ConsumerJobId,
                         principalTable: "CentralDerivativeJobs",
                         principalColumn: "Id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CentralDerivativeJobDependencies_CentralDerivativeJobs_ProducerJobId",
+                        column: x => x.ProducerJobId,
+                        principalTable: "CentralDerivativeJobs",
+                        principalColumn: "Id");
+                    table.ForeignKey(
+                        name: "FK_CentralDerivativeJobDependencies_CentralProcessingGraphExecutionSources_ProducerSourceId",
+                        column: x => x.ProducerSourceId,
+                        principalTable: "CentralProcessingGraphExecutionSources",
+                        principalColumn: "Id");
+                    table.ForeignKey(
+                        name: "FK_CentralDerivativeJobDependencies_CentralProcessingGraphExecutions_ExecutionId",
+                        column: x => x.ExecutionId,
+                        principalTable: "CentralProcessingGraphExecutions",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
                 });
 
             migrationBuilder.CreateTable(
@@ -3090,116 +3664,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 });
 
             migrationBuilder.CreateTable(
-                name: "CentralTransientValidationOutcomeVersions",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    CentralDerivativeJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    Version = table.Column<int>(type: "int", nullable: false),
-                    State = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    ReasonCode = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    EvidenceJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
-                    EvidenceIdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    RecordedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralTransientValidationOutcomeVersions", x => x.Id);
-                    table.CheckConstraint("CK_CentralTransientValidationOutcomeVersions_Version", "[Version] > 0");
-                    table.ForeignKey(
-                        name: "FK_CentralTransientValidationOutcomeVersions_CentralTransientValidationJobs_CentralDerivativeJobId",
-                        column: x => x.CentralDerivativeJobId,
-                        principalTable: "CentralTransientValidationJobs",
-                        principalColumn: "CentralDerivativeJobId",
-                        onDelete: ReferentialAction.Restrict);
-                });
-
-            migrationBuilder.CreateTable(
-                name: "CentralTransientAssessmentObservations",
-                columns: table => new
-                {
-                    AssessmentId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    Ordinal = table.Column<int>(type: "int", nullable: false),
-                    CentralTransientEventId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    ObservationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralTransientAssessmentObservations", x => new { x.AssessmentId, x.Ordinal });
-                    table.CheckConstraint("CK_CentralTransientAssessmentObservations_Ordinal", "[Ordinal] >= 0");
-                    table.ForeignKey(
-                        name: "FK_CentralTransientAssessmentObservations_CentralTransientAssessments_CentralTransientEventId_AssessmentId",
-                        columns: x => new { x.CentralTransientEventId, x.AssessmentId },
-                        principalTable: "CentralTransientAssessments",
-                        principalColumns: new[] { "CentralTransientEventId", "AssessmentId" },
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_CentralTransientAssessmentObservations_CentralTransientObservations_CentralTransientEventId_ObservationId",
-                        columns: x => new { x.CentralTransientEventId, x.ObservationId },
-                        principalTable: "CentralTransientObservations",
-                        principalColumns: new[] { "CentralTransientEventId", "ObservationId" });
-                });
-
-            migrationBuilder.CreateTable(
-                name: "CentralTransientEventVersionObservations",
-                columns: table => new
-                {
-                    EventVersionId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    Ordinal = table.Column<int>(type: "int", nullable: false),
-                    CentralTransientEventId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    ObservationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralTransientEventVersionObservations", x => new { x.EventVersionId, x.Ordinal });
-                    table.CheckConstraint("CK_CentralTransientEventVersionObservations_Ordinal", "[Ordinal] >= 0");
-                    table.ForeignKey(
-                        name: "FK_CentralTransientEventVersionObservations_CentralTransientEventVersions_CentralTransientEventId_EventVersionId",
-                        columns: x => new { x.CentralTransientEventId, x.EventVersionId },
-                        principalTable: "CentralTransientEventVersions",
-                        principalColumns: new[] { "CentralTransientEventId", "EventVersionId" },
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_CentralTransientEventVersionObservations_CentralTransientObservations_CentralTransientEventId_ObservationId",
-                        columns: x => new { x.CentralTransientEventId, x.ObservationId },
-                        principalTable: "CentralTransientObservations",
-                        principalColumns: new[] { "CentralTransientEventId", "ObservationId" });
-                });
-
-            migrationBuilder.CreateTable(
-                name: "CentralTransientObservationBackgrounds",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    ObservationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    Ordinal = table.Column<int>(type: "int", nullable: false),
-                    CentralArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    ArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    ArtifactRole = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    ArtifactVariant = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    ArtifactRecipeIdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    ArtifactChecksumSha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2")
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralTransientObservationBackgrounds", x => x.Id);
-                    table.UniqueConstraint("AK_CentralTransientObservationBackgrounds_ObservationId_Ordinal_CentralArtifactId_ArtifactId_ArtifactChecksumSha256", x => new { x.ObservationId, x.Ordinal, x.CentralArtifactId, x.ArtifactId, x.ArtifactChecksumSha256 });
-                    table.CheckConstraint("CK_CentralTransientObservationBackgrounds_Ordinal", "[Ordinal] >= 0");
-                    table.ForeignKey(
-                        name: "FK_CentralTransientObservationBackgrounds_CentralArtifacts_CentralArtifactId",
-                        column: x => x.CentralArtifactId,
-                        principalTable: "CentralArtifacts",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_CentralTransientObservationBackgrounds_CentralTransientObservations_ObservationId",
-                        column: x => x.ObservationId,
-                        principalTable: "CentralTransientObservations",
-                        principalColumn: "ObservationId",
-                        onDelete: ReferentialAction.Restrict);
-                });
-
-            migrationBuilder.CreateTable(
                 name: "CentralTransientValidationIdentitySlots",
                 columns: table => new
                 {
@@ -3252,6 +3716,82 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         principalTable: "CentralTransientValidationJobs",
                         principalColumn: "CentralDerivativeJobId",
                         onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralTransientValidationOutcomeVersions",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    CentralDerivativeJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    Version = table.Column<int>(type: "int", nullable: false),
+                    State = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ReasonCode = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    EvidenceJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    EvidenceIdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
+                    RecordedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralTransientValidationOutcomeVersions", x => x.Id);
+                    table.CheckConstraint("CK_CentralTransientValidationOutcomeVersions_Version", "[Version] > 0");
+                    table.ForeignKey(
+                        name: "FK_CentralTransientValidationOutcomeVersions_CentralTransientValidationJobs_CentralDerivativeJobId",
+                        column: x => x.CentralDerivativeJobId,
+                        principalTable: "CentralTransientValidationJobs",
+                        principalColumn: "CentralDerivativeJobId",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralDerivativeJobInputRequirements",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    CentralDerivativeJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    Ordinal = table.Column<int>(type: "int", nullable: false),
+                    BindingName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    GraphDependencyId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    GraphInputOrdinal = table.Column<int>(type: "int", nullable: true),
+                    GraphInputBindingKind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: true),
+                    SourceKind = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    SequenceOffset = table.Column<int>(type: "int", nullable: true),
+                    IsRequired = table.Column<bool>(type: "bit", nullable: false),
+                    SelectorJson = table.Column<string>(type: "nvarchar(2048)", maxLength: 2048, nullable: false),
+                    CompatibilityMode = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ExpectedAgentId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    ExpectedRigId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
+                    ExpectedCaptureSequence = table.Column<long>(type: "bigint", nullable: true),
+                    ExpectedCentralArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    ResolutionState = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ResolutionReasonCode = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
+                    ResolvedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralDerivativeJobInputRequirements", x => x.Id);
+                    table.UniqueConstraint("AK_CentralDerivativeJobInputRequirements_CentralDerivativeJobId_Id", x => new { x.CentralDerivativeJobId, x.Id });
+                    table.CheckConstraint("CK_CentralDerivativeJobInputRequirements_GraphBinding", "([GraphDependencyId] IS NULL AND [GraphInputOrdinal] IS NULL AND [GraphInputBindingKind] IS NULL) OR ([GraphDependencyId] IS NOT NULL AND [GraphInputOrdinal] >= 0 AND [GraphInputBindingKind] IS NOT NULL)");
+                    table.CheckConstraint("CK_CentralDerivativeJobInputRequirements_GraphInputBindingKind", "[GraphInputBindingKind] IS NULL OR [GraphInputBindingKind] IN (N'PrimaryArtifact', N'AuxiliaryArtifact', N'CanonicalJson', N'Annotation')");
+                    table.CheckConstraint("CK_CentralDerivativeJobInputRequirements_GraphResolution", "[GraphDependencyId] IS NULL OR ([ResolutionState] = N'Waiting' AND [ExpectedCentralArtifactId] IS NULL AND [ResolvedAtUtc] IS NULL) OR ([ResolutionState] = N'Resolved' AND [ResolvedAtUtc] IS NOT NULL AND (([SourceKind] = N'Artifact' AND [ExpectedCentralArtifactId] IS NOT NULL) OR ([SourceKind] <> N'Artifact' AND [ExpectedCentralArtifactId] IS NULL))) OR ([ResolutionState] IN (N'Missing', N'Incompatible') AND [ExpectedCentralArtifactId] IS NULL AND [ResolvedAtUtc] IS NOT NULL AND LEN([ResolutionReasonCode]) > 0)");
+                    table.CheckConstraint("CK_CentralDerivativeJobInputRequirements_Ordinal", "[Ordinal] >= 0");
+                    table.ForeignKey(
+                        name: "FK_CentralDerivativeJobInputRequirements_CentralArtifacts_ExpectedCentralArtifactId",
+                        column: x => x.ExpectedCentralArtifactId,
+                        principalTable: "CentralArtifacts",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CentralDerivativeJobInputRequirements_CentralDerivativeJobDependencies_CentralDerivativeJobId_GraphDependencyId",
+                        columns: x => new { x.CentralDerivativeJobId, x.GraphDependencyId },
+                        principalTable: "CentralDerivativeJobDependencies",
+                        principalColumns: new[] { "ConsumerJobId", "Id" });
+                    table.ForeignKey(
+                        name: "FK_CentralDerivativeJobInputRequirements_CentralDerivativeJobs_CentralDerivativeJobId",
+                        column: x => x.CentralDerivativeJobId,
+                        principalTable: "CentralDerivativeJobs",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.CreateTable(
@@ -3358,6 +3898,84 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         principalTable: "CentralTransientExtractionReceipts",
                         principalColumn: "CentralDerivativeJobId",
                         onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralDerivativeJobCanonicalInputs",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    CentralDerivativeJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    CentralDerivativeJobInputRequirementId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    Ordinal = table.Column<int>(type: "int", nullable: false),
+                    SchemaVersion = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
+                    IdentitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false),
+                    CanonicalJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    ByteLength = table.Column<int>(type: "int", nullable: false),
+                    EnvironmentalObservationRecordId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
+                    SelectedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralDerivativeJobCanonicalInputs", x => x.Id);
+                    table.CheckConstraint("CK_CentralDerivativeJobCanonicalInputs_ByteLength", "[ByteLength] > 0");
+                    table.CheckConstraint("CK_CentralDerivativeJobCanonicalInputs_Ordinal", "[Ordinal] >= 0");
+                    table.ForeignKey(
+                        name: "FK_CentralDerivativeJobCanonicalInputs_CentralDerivativeJobInputRequirements_CentralDerivativeJobId_CentralDerivativeJobInputRe~",
+                        columns: x => new { x.CentralDerivativeJobId, x.CentralDerivativeJobInputRequirementId },
+                        principalTable: "CentralDerivativeJobInputRequirements",
+                        principalColumns: new[] { "CentralDerivativeJobId", "Id" });
+                    table.ForeignKey(
+                        name: "FK_CentralDerivativeJobCanonicalInputs_CentralDerivativeJobs_CentralDerivativeJobId",
+                        column: x => x.CentralDerivativeJobId,
+                        principalTable: "CentralDerivativeJobs",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey(
+                        name: "FK_CentralDerivativeJobCanonicalInputs_EnvironmentalObservations_EnvironmentalObservationRecordId",
+                        column: x => x.EnvironmentalObservationRecordId,
+                        principalTable: "EnvironmentalObservations",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "CentralDerivativeJobInputs",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    CentralDerivativeJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    CentralDerivativeJobInputRequirementId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    Ordinal = table.Column<int>(type: "int", nullable: false),
+                    CentralArtifactId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    CaptureSequence = table.Column<long>(type: "bigint", nullable: true),
+                    CompatibilityJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
+                    CompatibilitySha256 = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: false),
+                    ByteLength = table.Column<long>(type: "bigint", nullable: false),
+                    SelectedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_CentralDerivativeJobInputs", x => x.Id);
+                    table.CheckConstraint("CK_CentralDerivativeJobInputs_ByteLength", "[ByteLength] >= 0");
+                    table.CheckConstraint("CK_CentralDerivativeJobInputs_Ordinal", "[Ordinal] >= 0");
+                    table.ForeignKey(
+                        name: "FK_CentralDerivativeJobInputs_CentralArtifacts_CentralArtifactId",
+                        column: x => x.CentralArtifactId,
+                        principalTable: "CentralArtifacts",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Restrict);
+                    table.ForeignKey(
+                        name: "FK_CentralDerivativeJobInputs_CentralDerivativeJobInputRequirements_CentralDerivativeJobId_CentralDerivativeJobInputRequirement~",
+                        columns: x => new { x.CentralDerivativeJobId, x.CentralDerivativeJobInputRequirementId },
+                        principalTable: "CentralDerivativeJobInputRequirements",
+                        principalColumns: new[] { "CentralDerivativeJobId", "Id" });
+                    table.ForeignKey(
+                        name: "FK_CentralDerivativeJobInputs_CentralDerivativeJobs_CentralDerivativeJobId",
+                        column: x => x.CentralDerivativeJobId,
+                        principalTable: "CentralDerivativeJobs",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.CreateTable(
@@ -3538,285 +4156,10 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         principalColumns: new[] { "CentralTransientEventId", "ObservationId" });
                 });
 
-            migrationBuilder.CreateTable(
-                name: "CentralProcessingGraphAssignments",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    RevisionId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    TargetHost = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
-                    Scope = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    ObservatoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                    LogicalCameraId = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                    EffectiveFromUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    EffectiveUntilUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    ActorUserId = table.Column<string>(type: "nvarchar(450)", maxLength: 450, nullable: false),
-                    ReasonCode = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralProcessingGraphAssignments", x => x.Id);
-                    table.CheckConstraint("CK_CentralProcessingGraphAssignments_EffectiveWindow", "[EffectiveUntilUtc] IS NULL OR [EffectiveUntilUtc] > [EffectiveFromUtc]");
-                    table.CheckConstraint("CK_CentralProcessingGraphAssignments_Scope", "([Scope] = N'GlobalDefault' AND [ObservatoryId] IS NULL AND [LogicalCameraId] IS NULL) OR ([Scope] = N'Observatory' AND [ObservatoryId] IS NOT NULL AND [LogicalCameraId] IS NULL) OR ([Scope] = N'LogicalCamera' AND [ObservatoryId] IS NOT NULL AND [LogicalCameraId] IS NOT NULL)");
-                    table.CheckConstraint("CK_CentralProcessingGraphAssignments_TargetHost", "[TargetHost] IN (N'Edge', N'Central')");
-                    table.ForeignKey(
-                        name: "FK_CentralProcessingGraphAssignments_CentralProcessingGraphRevisions_RevisionId",
-                        column: x => x.RevisionId,
-                        principalTable: "CentralProcessingGraphRevisions",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_CentralProcessingGraphAssignments_LogicalCameras_LogicalCameraId",
-                        column: x => x.LogicalCameraId,
-                        principalTable: "LogicalCameras",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_CentralProcessingGraphAssignments_Observatories_ObservatoryId",
-                        column: x => x.ObservatoryId,
-                        principalTable: "Observatories",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                });
-
-            migrationBuilder.AddForeignKey(
-                name: "FK_CentralProcessingGraphExecutions_CentralProcessingGraphAssignments_AssignmentId",
-                table: "CentralProcessingGraphExecutions",
-                column: "AssignmentId",
-                principalTable: "CentralProcessingGraphAssignments",
-                principalColumn: "Id",
-                onDelete: ReferentialAction.Restrict);
-
-            migrationBuilder.CreateTable(
-                name: "CentralProcessingGraphDeliveryProposals",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    AssignmentId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    RevisionId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    RegistrationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    LogicalCameraInstallationId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    InstallationPublicId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    ExpectedActiveLocalRevisionId = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: true),
-                    CapabilitySnapshotSha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: false),
-                    IssuedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    ExpiresAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralProcessingGraphDeliveryProposals", x => x.Id);
-                    table.CheckConstraint("CK_CentralProcessingGraphDeliveryProposals_Expiry", "[ExpiresAtUtc] > [IssuedAtUtc]");
-                    table.ForeignKey(
-                        name: "FK_CentralProcessingGraphDeliveryProposals_CentralProcessingGraphAssignments_AssignmentId",
-                        column: x => x.AssignmentId,
-                        principalTable: "CentralProcessingGraphAssignments",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_CentralProcessingGraphDeliveryProposals_CentralProcessingGraphRevisions_RevisionId",
-                        column: x => x.RevisionId,
-                        principalTable: "CentralProcessingGraphRevisions",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_CentralProcessingGraphDeliveryProposals_DeviceRegistrations_RegistrationId",
-                        column: x => x.RegistrationId,
-                        principalTable: "DeviceRegistrations",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_CentralProcessingGraphDeliveryProposals_LogicalCameraInstallations_LogicalCameraInstallationId",
-                        column: x => x.LogicalCameraInstallationId,
-                        principalTable: "LogicalCameraInstallations",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                });
-
-            migrationBuilder.CreateTable(
-                name: "CentralProcessingGraphDeliveryFacts",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    ProposalId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    Kind = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
-                    OccurredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    RecordedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    Source = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
-                    LocalRevisionId = table.Column<string>(type: "varchar(64)", unicode: false, maxLength: 64, nullable: true),
-                    DefinitionIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: true),
-                    SharedPlanIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: true),
-                    LocalPlanIdentitySha256 = table.Column<string>(type: "char(64)", unicode: false, fixedLength: true, maxLength: 64, nullable: true),
-                    ReasonCode = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralProcessingGraphDeliveryFacts", x => x.Id);
-                    table.CheckConstraint("CK_CentralProcessingGraphDeliveryFacts_Kind", "[Kind] IN (N'Retrieved', N'Accepted', N'Rejected', N'Activated', N'RolledBack', N'Expired', N'Superseded')");
-                    table.CheckConstraint("CK_CentralProcessingGraphDeliveryFacts_Source", "[Source] IN (N'LogicHost', N'CameraAgent')");
-                    table.ForeignKey(
-                        name: "FK_CentralProcessingGraphDeliveryFacts_CentralProcessingGraphDeliveryProposals_ProposalId",
-                        column: x => x.ProposalId,
-                        principalTable: "CentralProcessingGraphDeliveryProposals",
-                        principalColumn: "Id",
-                        onDelete: ReferentialAction.Restrict);
-                });
-
             migrationBuilder.InsertData(
                 table: "CentralRecoveryCheckpoints",
                 columns: new[] { "Id", "FindingBytes", "FindingCount", "Generation", "InventoryStartedAtUtc", "LastCompletedAtUtc", "LastCycleAtUtc", "LastFailureAtUtc", "LastProgressAtUtc", "LeaseExpiresAtUtc", "LeaseToken", "NextInventoryAtUtc", "ObjectCursor", "ObjectPartition", "Phase", "StagingCursor", "StagingPartition" },
                 values: new object[] { 1, 0L, 0L, 0L, null, null, null, null, null, null, null, new DateTimeOffset(new DateTime(1970, 1, 1, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)), null, 0, "Idle", null, 0 });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphExecutions_AnchorSourceCentralArtifactId",
-                table: "CentralProcessingGraphExecutions",
-                column: "AnchorSourceCentralArtifactId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphExecutions_AssignmentId",
-                table: "CentralProcessingGraphExecutions",
-                column: "AssignmentId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphExecutions_ExpandedAtUtc",
-                table: "CentralProcessingGraphExecutions",
-                column: "ExpandedAtUtc",
-                filter: "[ExpandedAtUtc] IS NULL");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphExecutions_ExecutionClass_ActorId_IdempotencyKey",
-                table: "CentralProcessingGraphExecutions",
-                columns: new[] { "ExecutionClass", "ActorId", "IdempotencyKey" },
-                unique: true);
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphExecutions_LogicalCameraId",
-                table: "CentralProcessingGraphExecutions",
-                column: "LogicalCameraId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphExecutions_LogicalCameraInstallationId_CreatedAtUtc_Id",
-                table: "CentralProcessingGraphExecutions",
-                columns: new[] { "LogicalCameraInstallationId", "CreatedAtUtc", "Id" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphExecutions_ObservatoryId",
-                table: "CentralProcessingGraphExecutions",
-                column: "ObservatoryId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphExecutions_PredecessorExecutionId",
-                table: "CentralProcessingGraphExecutions",
-                column: "PredecessorExecutionId",
-                unique: true,
-                filter: "[PredecessorExecutionId] IS NOT NULL");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphExecutions_RequestIdentitySha256",
-                table: "CentralProcessingGraphExecutions",
-                column: "RequestIdentitySha256",
-                unique: true);
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphExecutions_RevisionId",
-                table: "CentralProcessingGraphExecutions",
-                column: "RevisionId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphExecutions_Status_CreatedAtUtc_Id",
-                table: "CentralProcessingGraphExecutions",
-                columns: new[] { "Status", "CreatedAtUtc", "Id" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphExecutionSources_CentralArtifactId_ExecutionId",
-                table: "CentralProcessingGraphExecutionSources",
-                columns: new[] { "CentralArtifactId", "ExecutionId" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphExecutionSources_ExecutionId_Ordinal",
-                table: "CentralProcessingGraphExecutionSources",
-                columns: new[] { "ExecutionId", "Ordinal" },
-                unique: true);
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphExecutionSources_ExecutionId_SourceId_OutputOrdinal",
-                table: "CentralProcessingGraphExecutionSources",
-                columns: new[] { "ExecutionId", "SourceId", "OutputOrdinal" },
-                unique: true);
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphAssignments_LogicalCameraId",
-                table: "CentralProcessingGraphAssignments",
-                column: "LogicalCameraId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphAssignments_ObservatoryId",
-                table: "CentralProcessingGraphAssignments",
-                column: "ObservatoryId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphAssignments_RevisionId",
-                table: "CentralProcessingGraphAssignments",
-                column: "RevisionId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphAssignments_TargetHost_EffectiveFromUtc_Id",
-                table: "CentralProcessingGraphAssignments",
-                columns: new[] { "TargetHost", "EffectiveFromUtc", "Id" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphAssignments_TargetHost_LogicalCameraId_EffectiveFromUtc_Id",
-                table: "CentralProcessingGraphAssignments",
-                columns: new[] { "TargetHost", "LogicalCameraId", "EffectiveFromUtc", "Id" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphAssignments_TargetHost_ObservatoryId_EffectiveFromUtc_Id",
-                table: "CentralProcessingGraphAssignments",
-                columns: new[] { "TargetHost", "ObservatoryId", "EffectiveFromUtc", "Id" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphDeliveryFacts_ProposalId",
-                table: "CentralProcessingGraphDeliveryFacts",
-                column: "ProposalId",
-                unique: true,
-                filter: "[Kind] IN (N'Accepted', N'Rejected', N'Expired', N'Superseded')");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphDeliveryFacts_ProposalId_RecordedAtUtc_Id",
-                table: "CentralProcessingGraphDeliveryFacts",
-                columns: new[] { "ProposalId", "RecordedAtUtc", "Id" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphDeliveryProposals_AssignmentId_RegistrationId_LogicalCameraInstallationId_CapabilitySnapshotSha256_Exp~",
-                table: "CentralProcessingGraphDeliveryProposals",
-                columns: new[] { "AssignmentId", "RegistrationId", "LogicalCameraInstallationId", "CapabilitySnapshotSha256", "ExpectedActiveLocalRevisionId" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphDeliveryProposals_LogicalCameraInstallationId",
-                table: "CentralProcessingGraphDeliveryProposals",
-                column: "LogicalCameraInstallationId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphDeliveryProposals_RegistrationId_LogicalCameraInstallationId_IssuedAtUtc_Id",
-                table: "CentralProcessingGraphDeliveryProposals",
-                columns: new[] { "RegistrationId", "LogicalCameraInstallationId", "IssuedAtUtc", "Id" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphDeliveryProposals_RevisionId",
-                table: "CentralProcessingGraphDeliveryProposals",
-                column: "RevisionId");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphRevisions_DefinitionIdentitySha256",
-                table: "CentralProcessingGraphRevisions",
-                column: "DefinitionIdentitySha256",
-                unique: true);
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingGraphRevisions_Name_Revision",
-                table: "CentralProcessingGraphRevisions",
-                columns: new[] { "Name", "Revision" },
-                unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "IX_ApiKeys_HashedKey",
@@ -4035,36 +4378,15 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
-                name: "IX_CentralDerivativeJobDependencies_ConsumerJobId_Ordinal",
-                table: "CentralDerivativeJobDependencies",
-                columns: new[] { "ConsumerJobId", "Ordinal" },
+                name: "IX_CentralDerivativeJobAttempts_CentralDerivativeJobId_AttemptNumber",
+                table: "CentralDerivativeJobAttempts",
+                columns: new[] { "CentralDerivativeJobId", "AttemptNumber" },
                 unique: true);
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralDerivativeJobDependencies_ExecutionId_ConsumerJobId",
-                table: "CentralDerivativeJobDependencies",
-                columns: new[] { "ExecutionId", "ConsumerJobId" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralDerivativeJobDependencies_ProducerJobId_ProducerOutputOrdinal",
-                table: "CentralDerivativeJobDependencies",
-                columns: new[] { "ProducerJobId", "ProducerOutputOrdinal" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralDerivativeJobDependencies_ProducerSourceId",
-                table: "CentralDerivativeJobDependencies",
-                column: "ProducerSourceId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_CentralDerivativeJobAttempts_EndedAtUtc",
                 table: "CentralDerivativeJobAttempts",
                 column: "EndedAtUtc");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralDerivativeJobAttempts_CentralDerivativeJobId_AttemptNumber",
-                table: "CentralDerivativeJobAttempts",
-                columns: new[] { "CentralDerivativeJobId", "AttemptNumber" },
-                unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "IX_CentralDerivativeJobAttempts_Outcome_LeaseExpiresAtUtc",
@@ -4089,16 +4411,37 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 column: "EnvironmentalObservationRecordId");
 
             migrationBuilder.CreateIndex(
-                name: "IX_CentralDerivativeJobInputRequirements_CentralDerivativeJobId_Ordinal",
-                table: "CentralDerivativeJobInputRequirements",
-                columns: new[] { "CentralDerivativeJobId", "Ordinal" },
+                name: "IX_CentralDerivativeJobDependencies_ConsumerJobId_Ordinal",
+                table: "CentralDerivativeJobDependencies",
+                columns: new[] { "ConsumerJobId", "Ordinal" },
                 unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralDerivativeJobDependencies_ExecutionId_ConsumerJobId",
+                table: "CentralDerivativeJobDependencies",
+                columns: new[] { "ExecutionId", "ConsumerJobId" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralDerivativeJobDependencies_ProducerJobId_ProducerOutputOrdinal",
+                table: "CentralDerivativeJobDependencies",
+                columns: new[] { "ProducerJobId", "ProducerOutputOrdinal" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralDerivativeJobDependencies_ProducerSourceId",
+                table: "CentralDerivativeJobDependencies",
+                column: "ProducerSourceId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_CentralDerivativeJobInputRequirements_CentralDerivativeJobId_GraphDependencyId",
                 table: "CentralDerivativeJobInputRequirements",
                 columns: new[] { "CentralDerivativeJobId", "GraphDependencyId" },
                 filter: "[GraphDependencyId] IS NOT NULL");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralDerivativeJobInputRequirements_CentralDerivativeJobId_Ordinal",
+                table: "CentralDerivativeJobInputRequirements",
+                columns: new[] { "CentralDerivativeJobId", "Ordinal" },
+                unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "IX_CentralDerivativeJobInputRequirements_ExpectedAgentId_ExpectedCaptureSequence_ResolutionState_CentralDerivativeJobId",
@@ -4213,6 +4556,22 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 column: "SupersededByJobId");
 
             migrationBuilder.CreateIndex(
+                name: "IX_CentralElasticRunnerInstances_InstanceId",
+                table: "CentralElasticRunnerInstances",
+                column: "InstanceId",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralElasticRunnerInstances_Provider_State",
+                table: "CentralElasticRunnerInstances",
+                columns: new[] { "Provider", "State" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralElasticRunnerInstances_StartedAtUtc",
+                table: "CentralElasticRunnerInstances",
+                column: "StartedAtUtc");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_CentralFrames_AgentId_CapturedAtUtc",
                 table: "CentralFrames",
                 columns: new[] { "AgentId", "CapturedAtUtc" });
@@ -4293,6 +4652,157 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 columns: new[] { "State", "UpdatedAtUtc", "Id" });
 
             migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphAssignments_LogicalCameraId",
+                table: "CentralProcessingGraphAssignments",
+                column: "LogicalCameraId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphAssignments_ObservatoryId",
+                table: "CentralProcessingGraphAssignments",
+                column: "ObservatoryId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphAssignments_RevisionId",
+                table: "CentralProcessingGraphAssignments",
+                column: "RevisionId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphAssignments_TargetHost_EffectiveFromUtc_Id",
+                table: "CentralProcessingGraphAssignments",
+                columns: new[] { "TargetHost", "EffectiveFromUtc", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphAssignments_TargetHost_LogicalCameraId_EffectiveFromUtc_Id",
+                table: "CentralProcessingGraphAssignments",
+                columns: new[] { "TargetHost", "LogicalCameraId", "EffectiveFromUtc", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphAssignments_TargetHost_ObservatoryId_EffectiveFromUtc_Id",
+                table: "CentralProcessingGraphAssignments",
+                columns: new[] { "TargetHost", "ObservatoryId", "EffectiveFromUtc", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphDeliveryFacts_ProposalId",
+                table: "CentralProcessingGraphDeliveryFacts",
+                column: "ProposalId",
+                unique: true,
+                filter: "[Kind] IN (N'Accepted', N'Rejected', N'Expired', N'Superseded')");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphDeliveryFacts_ProposalId_RecordedAtUtc_Id",
+                table: "CentralProcessingGraphDeliveryFacts",
+                columns: new[] { "ProposalId", "RecordedAtUtc", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphDeliveryProposals_AssignmentId_RegistrationId_LogicalCameraInstallationId_CapabilitySnapshotSha256_Exp~",
+                table: "CentralProcessingGraphDeliveryProposals",
+                columns: new[] { "AssignmentId", "RegistrationId", "LogicalCameraInstallationId", "CapabilitySnapshotSha256", "ExpectedActiveLocalRevisionId" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphDeliveryProposals_LogicalCameraInstallationId",
+                table: "CentralProcessingGraphDeliveryProposals",
+                column: "LogicalCameraInstallationId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphDeliveryProposals_RegistrationId_LogicalCameraInstallationId_IssuedAtUtc_Id",
+                table: "CentralProcessingGraphDeliveryProposals",
+                columns: new[] { "RegistrationId", "LogicalCameraInstallationId", "IssuedAtUtc", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphDeliveryProposals_RevisionId",
+                table: "CentralProcessingGraphDeliveryProposals",
+                column: "RevisionId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphExecutions_AnchorSourceCentralArtifactId",
+                table: "CentralProcessingGraphExecutions",
+                column: "AnchorSourceCentralArtifactId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphExecutions_AssignmentId",
+                table: "CentralProcessingGraphExecutions",
+                column: "AssignmentId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphExecutions_ExecutionClass_ActorId_IdempotencyKey",
+                table: "CentralProcessingGraphExecutions",
+                columns: new[] { "ExecutionClass", "ActorId", "IdempotencyKey" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphExecutions_ExpandedAtUtc",
+                table: "CentralProcessingGraphExecutions",
+                column: "ExpandedAtUtc",
+                filter: "[ExpandedAtUtc] IS NULL");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphExecutions_LogicalCameraId",
+                table: "CentralProcessingGraphExecutions",
+                column: "LogicalCameraId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphExecutions_LogicalCameraInstallationId_CreatedAtUtc_Id",
+                table: "CentralProcessingGraphExecutions",
+                columns: new[] { "LogicalCameraInstallationId", "CreatedAtUtc", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphExecutions_ObservatoryId",
+                table: "CentralProcessingGraphExecutions",
+                column: "ObservatoryId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphExecutions_PredecessorExecutionId",
+                table: "CentralProcessingGraphExecutions",
+                column: "PredecessorExecutionId",
+                unique: true,
+                filter: "[PredecessorExecutionId] IS NOT NULL");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphExecutions_RequestIdentitySha256",
+                table: "CentralProcessingGraphExecutions",
+                column: "RequestIdentitySha256",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphExecutions_RevisionId",
+                table: "CentralProcessingGraphExecutions",
+                column: "RevisionId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphExecutions_Status_CreatedAtUtc_Id",
+                table: "CentralProcessingGraphExecutions",
+                columns: new[] { "Status", "CreatedAtUtc", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphExecutionSources_CentralArtifactId_ExecutionId",
+                table: "CentralProcessingGraphExecutionSources",
+                columns: new[] { "CentralArtifactId", "ExecutionId" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphExecutionSources_ExecutionId_Ordinal",
+                table: "CentralProcessingGraphExecutionSources",
+                columns: new[] { "ExecutionId", "Ordinal" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphExecutionSources_ExecutionId_SourceId_OutputOrdinal",
+                table: "CentralProcessingGraphExecutionSources",
+                columns: new[] { "ExecutionId", "SourceId", "OutputOrdinal" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphRevisions_DefinitionIdentitySha256",
+                table: "CentralProcessingGraphRevisions",
+                column: "DefinitionIdentitySha256",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingGraphRevisions_Name_Revision",
+                table: "CentralProcessingGraphRevisions",
+                columns: new[] { "Name", "Revision" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
                 name: "IX_CentralProcessingOverrideVersions_ObservatoryId",
                 table: "CentralProcessingOverrideVersions",
                 column: "ObservatoryId",
@@ -4306,9 +4816,82 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingRunners_ClientSubject",
+                table: "CentralProcessingRunners",
+                column: "ClientSubject");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingRunners_RunnerId",
+                table: "CentralProcessingRunners",
+                column: "RunnerId",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingRunners_Status_LastHeartbeatAtUtc",
+                table: "CentralProcessingRunners",
+                columns: new[] { "Status", "LastHeartbeatAtUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingUsageRecords_CentralDerivativeJobId_AttemptNumber",
+                table: "CentralProcessingUsageRecords",
+                columns: new[] { "CentralDerivativeJobId", "AttemptNumber" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingUsageRecords_DevicePublicId_EndedAtUtc",
+                table: "CentralProcessingUsageRecords",
+                columns: new[] { "DevicePublicId", "EndedAtUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingUsageRecords_ObservatoryId_EndedAtUtc",
+                table: "CentralProcessingUsageRecords",
+                columns: new[] { "ObservatoryId", "EndedAtUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralProcessingUsageRecords_RecordedAtUtc",
+                table: "CentralProcessingUsageRecords",
+                column: "RecordedAtUtc");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_CentralStructuredProcessingProducts_OutputIdentitySha256",
                 table: "CentralStructuredProcessingProducts",
                 column: "OutputIdentitySha256");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralTimeLapseDependencies_HourlyJobId",
+                table: "CentralTimeLapseDependencies",
+                column: "HourlyJobId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralTimeLapseInputs_CentralArtifactId",
+                table: "CentralTimeLapseInputs",
+                column: "CentralArtifactId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralTimeLapseJobs_DevicePublicId_ReportDate_CreatedUtc",
+                table: "CentralTimeLapseJobs",
+                columns: new[] { "DevicePublicId", "ReportDate", "CreatedUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralTimeLapseJobs_DevicePublicId_ReportDate_DiscoveryIdentity_CreatedUtc",
+                table: "CentralTimeLapseJobs",
+                columns: new[] { "DevicePublicId", "ReportDate", "DiscoveryIdentity", "CreatedUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralTimeLapseJobs_State_IsDaily_CreatedUtc",
+                table: "CentralTimeLapseJobs",
+                columns: new[] { "State", "IsDaily", "CreatedUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralTimeLapseVideos_DevicePublicId_ReportDate_CreatedUtc",
+                table: "CentralTimeLapseVideos",
+                columns: new[] { "DevicePublicId", "ReportDate", "CreatedUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_CentralTimeLapseVideos_JobId",
+                table: "CentralTimeLapseVideos",
+                column: "JobId",
+                unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "IX_CentralTransientAssessmentObservations_AssessmentId_ObservationId",
@@ -5181,6 +5764,164 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 columns: new[] { "SiteId", "AgentId", "RigId", "Kind" });
 
             migrationBuilder.CreateIndex(
+                name: "IX_ExecutionEvidenceArtifactChecks_ArtifactReferenceId_BindingId",
+                table: "ExecutionEvidenceArtifactChecks",
+                columns: new[] { "ArtifactReferenceId", "BindingId" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ExecutionEvidenceArtifactChecks_BindingId_NextCheckAtUtc_ArtifactReferenceId",
+                table: "ExecutionEvidenceArtifactChecks",
+                columns: new[] { "BindingId", "NextCheckAtUtc", "ArtifactReferenceId" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ExecutionEvidenceArtifactChecks_NextCheckAtUtc_ArtifactReferenceId",
+                table: "ExecutionEvidenceArtifactChecks",
+                columns: new[] { "NextCheckAtUtc", "ArtifactReferenceId" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ExecutionEvidenceBindings_LogicalCameraInstallationId",
+                table: "ExecutionEvidenceBindings",
+                column: "LogicalCameraInstallationId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ExecutionEvidenceBindings_ObservatoryId",
+                table: "ExecutionEvidenceBindings",
+                column: "ObservatoryId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ExecutionEvidenceBindings_OriginInstallationId_AgentInstanceId",
+                table: "ExecutionEvidenceBindings",
+                columns: new[] { "OriginInstallationId", "AgentInstanceId" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ExecutionEvidenceBindings_RegistrationId_Id",
+                table: "ExecutionEvidenceBindings",
+                columns: new[] { "RegistrationId", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceArtifacts_BindingId_ArtifactId_Id",
+                table: "ImportedExecutionEvidenceArtifacts",
+                columns: new[] { "BindingId", "ArtifactId", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceArtifacts_BindingId_Id",
+                table: "ImportedExecutionEvidenceArtifacts",
+                columns: new[] { "BindingId", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceArtifacts_UnitId_BindingId",
+                table: "ImportedExecutionEvidenceArtifacts",
+                columns: new[] { "UnitId", "BindingId" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceArtifacts_UnitId_Ordinal",
+                table: "ImportedExecutionEvidenceArtifacts",
+                columns: new[] { "UnitId", "Ordinal" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceConflicts_BindingId_Id",
+                table: "ImportedExecutionEvidenceConflicts",
+                columns: new[] { "BindingId", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceConflicts_UnitId_BindingId",
+                table: "ImportedExecutionEvidenceConflicts",
+                columns: new[] { "UnitId", "BindingId" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceConflicts_UnitId_SubmittedPayloadSha256",
+                table: "ImportedExecutionEvidenceConflicts",
+                columns: new[] { "UnitId", "SubmittedPayloadSha256" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceObservations_ArtifactReferenceId_BindingId",
+                table: "ImportedExecutionEvidenceObservations",
+                columns: new[] { "ArtifactReferenceId", "BindingId" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceObservations_ArtifactReferenceId_Id",
+                table: "ImportedExecutionEvidenceObservations",
+                columns: new[] { "ArtifactReferenceId", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceObservations_BindingId_Id",
+                table: "ImportedExecutionEvidenceObservations",
+                columns: new[] { "BindingId", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceOrigins_BindingId_GapDetectedAtUtc",
+                table: "ImportedExecutionEvidenceOrigins",
+                columns: new[] { "BindingId", "GapDetectedAtUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceOrigins_BindingId_Id",
+                table: "ImportedExecutionEvidenceOrigins",
+                columns: new[] { "BindingId", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceOrigins_IdentitySha256",
+                table: "ImportedExecutionEvidenceOrigins",
+                column: "IdentitySha256",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceRanges_OriginId_ToSequence",
+                table: "ImportedExecutionEvidenceRanges",
+                columns: new[] { "OriginId", "ToSequence" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceUnits_BindingId_Id",
+                table: "ImportedExecutionEvidenceUnits",
+                columns: new[] { "BindingId", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceUnits_BindingId_Kind_ExecutionId_Accepted_Id",
+                table: "ImportedExecutionEvidenceUnits",
+                columns: new[] { "BindingId", "Kind", "ExecutionId", "Accepted", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceUnits_BindingId_Kind_Id",
+                table: "ImportedExecutionEvidenceUnits",
+                columns: new[] { "BindingId", "Kind", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceUnits_BindingId_Kind_RevisionId_Accepted_Id",
+                table: "ImportedExecutionEvidenceUnits",
+                columns: new[] { "BindingId", "Kind", "RevisionId", "Accepted", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceUnits_BindingId_OriginId_Id",
+                table: "ImportedExecutionEvidenceUnits",
+                columns: new[] { "BindingId", "OriginId", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceUnits_BindingId_OriginId_Kind_Id",
+                table: "ImportedExecutionEvidenceUnits",
+                columns: new[] { "BindingId", "OriginId", "Kind", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceUnits_OriginId_BindingId",
+                table: "ImportedExecutionEvidenceUnits",
+                columns: new[] { "OriginId", "BindingId" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceUnits_OriginId_EvidenceId",
+                table: "ImportedExecutionEvidenceUnits",
+                columns: new[] { "OriginId", "EvidenceId" },
+                unique: true,
+                filter: "[Accepted] = 1");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceUnits_OriginId_OriginSequence",
+                table: "ImportedExecutionEvidenceUnits",
+                columns: new[] { "OriginId", "OriginSequence" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
                 name: "IX_LogicalCameraInstallations_InstallationPublicId",
                 table: "LogicalCameraInstallations",
                 column: "InstallationPublicId",
@@ -5448,177 +6189,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 name: "IX_RegisteredUserTransientEventBookmarks_UserId_CreatedUtc_CentralTransientEventId",
                 table: "RegisteredUserTransientEventBookmarks",
                 columns: new[] { "UserId", "CreatedUtc", "CentralTransientEventId" });
-
-            migrationBuilder.CreateTable(
-                name: "CentralProcessingRunners",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    RunnerId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    ClientSubject = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
-                    DisplayName = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
-                    OperatingSystem = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
-                    OsArchitecture = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    ProcessArchitecture = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    RuntimeIdentifier = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
-                    FrameworkDescription = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
-                    ProcessorCount = table.Column<int>(type: "int", nullable: false),
-                    TotalMemoryBytes = table.Column<long>(type: "bigint", nullable: false),
-                    ResourceClass = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
-                    GpuAvailable = table.Column<bool>(type: "bit", nullable: false),
-                    LatencyClass = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
-                    CapabilitiesJson = table.Column<string>(type: "nvarchar(max)", nullable: false),
-                    EligibleRecipesJson = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: false),
-                    MaxConcurrency = table.Column<int>(type: "int", nullable: false),
-                    MaxTransferBytes = table.Column<long>(type: "bigint", nullable: false),
-                    WarmState = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
-                    Status = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
-                    ProcessId = table.Column<int>(type: "int", nullable: false),
-                    ProcessStartedUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    Generation = table.Column<int>(type: "int", nullable: false),
-                    AvailableSlots = table.Column<int>(type: "int", nullable: false),
-                    RegisteredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    LastHeartbeatAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    RetiredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
-                    RowVersion = table.Column<byte[]>(type: "rowversion", rowVersion: true, nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralProcessingRunners", x => x.Id);
-                    table.CheckConstraint("CK_CentralProcessingRunners_Capacity", "[MaxConcurrency] >= 1 AND [MaxConcurrency] <= 32 AND [AvailableSlots] >= 0 AND [AvailableSlots] <= [MaxConcurrency] AND [MaxTransferBytes] >= 1 AND [ProcessorCount] >= 1 AND [TotalMemoryBytes] >= 0 AND [Generation] >= 1");
-                    table.CheckConstraint("CK_CentralProcessingRunners_Status", "[Status] IN (N'Active', N'Stale', N'Retired')");
-                    table.CheckConstraint("CK_CentralProcessingRunners_Timestamps", "[UpdatedAtUtc] >= [RegisteredAtUtc] AND [LastHeartbeatAtUtc] >= [RegisteredAtUtc] AND (([Status] = N'Retired' AND [RetiredAtUtc] IS NOT NULL) OR ([Status] <> N'Retired' AND [RetiredAtUtc] IS NULL))");
-                    table.CheckConstraint("CK_CentralProcessingRunners_WarmState", "[WarmState] IN (N'Cold', N'Warming', N'Warm', N'Degraded')");
-                });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingRunners_ClientSubject",
-                table: "CentralProcessingRunners",
-                column: "ClientSubject");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingRunners_RunnerId",
-                table: "CentralProcessingRunners",
-                column: "RunnerId",
-                unique: true);
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingRunners_Status_LastHeartbeatAtUtc",
-                table: "CentralProcessingRunners",
-                columns: new[] { "Status", "LastHeartbeatAtUtc" });
-
-            migrationBuilder.CreateTable(
-                name: "CentralProcessingUsageRecords",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    ObservatoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    DevicePublicId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    CentralDerivativeJobId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    AttemptNumber = table.Column<int>(type: "int", nullable: false),
-                    RecipeName = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
-                    ResourceClass = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
-                    WorkerId = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
-                    Outcome = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    ReasonCode = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
-                    LeaseAcquiredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    EndedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    InputBytes = table.Column<long>(type: "bigint", nullable: false),
-                    OutputBytes = table.Column<long>(type: "bigint", nullable: false),
-                    RecipeDurationTicks = table.Column<long>(type: "bigint", nullable: false),
-                    RecordedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralProcessingUsageRecords", x => x.Id);
-                    table.CheckConstraint("CK_CentralProcessingUsageRecords_Counters", "[AttemptNumber] >= 1 AND [InputBytes] >= 0 AND [OutputBytes] >= 0 AND [RecipeDurationTicks] >= 0 AND [EndedAtUtc] >= [LeaseAcquiredAtUtc]");
-                    table.CheckConstraint("CK_CentralProcessingUsageRecords_Outcome", "[Outcome] IN (N'Completed', N'RetryableFailure', N'TerminalFailure', N'LeaseExpired', N'Canceled', N'Skipped', N'Quarantined', N'Superseded')");
-                });
-
-            migrationBuilder.CreateTable(
-                name: "CentralElasticRunnerInstances",
-                columns: table => new
-                {
-                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    Provider = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
-                    HostName = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
-                    InstanceId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
-                    RunnerId = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false, collation: "Latin1_General_100_BIN2"),
-                    KeepWarm = table.Column<bool>(type: "bit", nullable: false),
-                    OwnerHeartbeatAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    ProcessId = table.Column<int>(type: "int", nullable: true),
-                    ProcessArchitecture = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    RuntimeImage = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
-                    State = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    Reason = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
-                    StartedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
-                    RegisteredAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
-                    LastBusyAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
-                    StoppedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true),
-                    ColdStartMilliseconds = table.Column<int>(type: "int", nullable: true),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralElasticRunnerInstances", x => x.Id);
-                    table.CheckConstraint("CK_CentralElasticRunnerInstances_State", "[State] IN (N'Starting', N'Running', N'Stopping', N'Stopped', N'Orphaned', N'Abandoned')");
-                });
-
-            migrationBuilder.CreateTable(
-                name: "CentralProcessingUsageRollups",
-                columns: table => new
-                {
-                    ObservatoryId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                    ResourceClass = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
-                    Outcome = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                    Attempts = table.Column<long>(type: "bigint", nullable: false),
-                    InputBytes = table.Column<long>(type: "bigint", nullable: false),
-                    OutputBytes = table.Column<long>(type: "bigint", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("PK_CentralProcessingUsageRollups", x => new { x.ObservatoryId, x.ResourceClass, x.Outcome });
-                });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralElasticRunnerInstances_InstanceId",
-                table: "CentralElasticRunnerInstances",
-                column: "InstanceId",
-                unique: true);
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralElasticRunnerInstances_Provider_State",
-                table: "CentralElasticRunnerInstances",
-                columns: new[] { "Provider", "State" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralElasticRunnerInstances_StartedAtUtc",
-                table: "CentralElasticRunnerInstances",
-                column: "StartedAtUtc");
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingUsageRecords_CentralDerivativeJobId_AttemptNumber",
-                table: "CentralProcessingUsageRecords",
-                columns: new[] { "CentralDerivativeJobId", "AttemptNumber" },
-                unique: true);
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingUsageRecords_DevicePublicId_EndedAtUtc",
-                table: "CentralProcessingUsageRecords",
-                columns: new[] { "DevicePublicId", "EndedAtUtc" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingUsageRecords_ObservatoryId_EndedAtUtc",
-                table: "CentralProcessingUsageRecords",
-                columns: new[] { "ObservatoryId", "EndedAtUtc" });
-
-            migrationBuilder.CreateIndex(
-                name: "IX_CentralProcessingUsageRecords_RecordedAtUtc",
-                table: "CentralProcessingUsageRecords",
-                column: "RecordedAtUtc");
-
             BaselineTriggerSql.CreateAll(migrationBuilder);
         }
 
@@ -5626,26 +6196,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             ArgumentNullException.ThrowIfNull(migrationBuilder);
-
-            migrationBuilder.DropTable(
-                name: "CentralProcessingUsageRecords");
-
-            migrationBuilder.DropTable(
-                name: "CentralProcessingUsageRollups");
-
-            migrationBuilder.DropTable(
-                name: "CentralElasticRunnerInstances");
-
-
-            migrationBuilder.DropTable(
-                name: "CentralProcessingRunners");
-
-
-            migrationBuilder.DropTable(
-                name: "CentralProcessingGraphDeliveryFacts");
-
-            migrationBuilder.DropTable(
-                name: "CentralProcessingGraphDeliveryProposals");
 
             migrationBuilder.DropTable(
                 name: "ApiKeys");
@@ -5711,16 +6261,40 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 name: "CentralDerivativeJobInputs");
 
             migrationBuilder.DropTable(
+                name: "CentralElasticRunnerInstances");
+
+            migrationBuilder.DropTable(
                 name: "CentralObjectRecoveryDispositions");
 
             migrationBuilder.DropTable(
+                name: "CentralProcessingGraphDeliveryFacts");
+
+            migrationBuilder.DropTable(
                 name: "CentralProcessingOverrideVersions");
+
+            migrationBuilder.DropTable(
+                name: "CentralProcessingRunners");
+
+            migrationBuilder.DropTable(
+                name: "CentralProcessingUsageRecords");
+
+            migrationBuilder.DropTable(
+                name: "CentralProcessingUsageRollups");
 
             migrationBuilder.DropTable(
                 name: "CentralRecoveryCheckpoints");
 
             migrationBuilder.DropTable(
                 name: "CentralStructuredProcessingProducts");
+
+            migrationBuilder.DropTable(
+                name: "CentralTimeLapseDependencies");
+
+            migrationBuilder.DropTable(
+                name: "CentralTimeLapseInputs");
+
+            migrationBuilder.DropTable(
+                name: "CentralTimeLapseVideos");
 
             migrationBuilder.DropTable(
                 name: "CentralTransientAssessmentObservations");
@@ -5795,6 +6369,21 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 name: "EnvironmentalObservationLineage");
 
             migrationBuilder.DropTable(
+                name: "ExecutionEvidenceArtifactChecks");
+
+            migrationBuilder.DropTable(
+                name: "ExecutionEvidenceBindingUsage");
+
+            migrationBuilder.DropTable(
+                name: "ImportedExecutionEvidenceConflicts");
+
+            migrationBuilder.DropTable(
+                name: "ImportedExecutionEvidenceObservations");
+
+            migrationBuilder.DropTable(
+                name: "ImportedExecutionEvidenceRanges");
+
+            migrationBuilder.DropTable(
                 name: "ObservatoryInvitationDispositions");
 
             migrationBuilder.DropTable(
@@ -5840,13 +6429,10 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 name: "CentralDerivativeJobInputRequirements");
 
             migrationBuilder.DropTable(
-                name: "CentralDerivativeJobDependencies");
+                name: "CentralProcessingGraphDeliveryProposals");
 
             migrationBuilder.DropTable(
-                name: "CentralDerivativeJobOutputs");
-
-            migrationBuilder.DropTable(
-                name: "CentralProcessingGraphExecutionSources");
+                name: "CentralTimeLapseJobs");
 
             migrationBuilder.DropTable(
                 name: "CentralTransientDerivativeSources");
@@ -5873,6 +6459,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 name: "EnvironmentalObservations");
 
             migrationBuilder.DropTable(
+                name: "ImportedExecutionEvidenceArtifacts");
+
+            migrationBuilder.DropTable(
                 name: "ObservatoryInvitations");
 
             migrationBuilder.DropTable(
@@ -5880,6 +6469,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
             migrationBuilder.DropTable(
                 name: "AspNetUsers");
+
+            migrationBuilder.DropTable(
+                name: "CentralDerivativeJobDependencies");
 
             migrationBuilder.DropTable(
                 name: "CentralTransientDerivatives");
@@ -5897,7 +6489,16 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 name: "EnvironmentalObservationSources");
 
             migrationBuilder.DropTable(
+                name: "ImportedExecutionEvidenceUnits");
+
+            migrationBuilder.DropTable(
                 name: "OpenIddictApplications");
+
+            migrationBuilder.DropTable(
+                name: "CentralDerivativeJobOutputs");
+
+            migrationBuilder.DropTable(
+                name: "CentralProcessingGraphExecutionSources");
 
             migrationBuilder.DropTable(
                 name: "CentralTransientDerivativeOutputIntents");
@@ -5912,34 +6513,40 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 name: "ObservatoryLocationVersions");
 
             migrationBuilder.DropTable(
+                name: "ImportedExecutionEvidenceOrigins");
+
+            migrationBuilder.DropTable(
                 name: "CentralTransientDerivativeJobs");
 
             migrationBuilder.DropTable(
                 name: "CentralTransientAssessments");
 
             migrationBuilder.DropTable(
+                name: "ExecutionEvidenceBindings");
+
+            migrationBuilder.DropTable(
                 name: "CentralDerivativeJobs");
-
-            migrationBuilder.DropTable(
-                name: "CentralProcessingGraphExecutions");
-
-            migrationBuilder.DropTable(
-                name: "CentralProcessingGraphAssignments");
-
-            migrationBuilder.DropTable(
-                name: "CentralProcessingGraphRevisions");
 
             migrationBuilder.DropTable(
                 name: "CentralTransientEventVersions");
 
             migrationBuilder.DropTable(
-                name: "CentralArtifacts");
+                name: "CentralProcessingGraphExecutions");
 
             migrationBuilder.DropTable(
                 name: "CentralTransientEvents");
 
             migrationBuilder.DropTable(
+                name: "CentralArtifacts");
+
+            migrationBuilder.DropTable(
+                name: "CentralProcessingGraphAssignments");
+
+            migrationBuilder.DropTable(
                 name: "CentralFrames");
+
+            migrationBuilder.DropTable(
+                name: "CentralProcessingGraphRevisions");
 
             migrationBuilder.DropTable(
                 name: "DeviceRigProfiles");

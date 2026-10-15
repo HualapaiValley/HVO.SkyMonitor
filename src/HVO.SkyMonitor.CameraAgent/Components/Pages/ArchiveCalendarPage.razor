@@ -1,3 +1,4 @@
+@using HVO.SkyMonitor.Astronomy
 @page "/archive/calendar"
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Common.Gallery
@@ -104,7 +105,8 @@
                                     <span class="calendar-products" aria-hidden="true">
                                         @if (ShowsNightlyProducts)
                                         {
-                                            <i class="unavailable" title="@TimeLapseDescription">T</i>
+                                            var videoBadge = VideoBadge(cell.Date);
+                                            <i class="@videoBadge.CssClass" title="@videoBadge.Description" data-video-state="@videoBadge.State">T</i>
                                             @foreach (var badge in Badges(cell))
                                             {
                                                 <i class="@badge.CssClass" title="@badge.Description" data-nightly-state="@badge.State">@badge.Letter</i>
@@ -128,7 +130,7 @@
             <span><i class="calendar-legend__unavailable" aria-hidden="true"></i>Not generated or unavailable</span>
             @if (ShowsNightlyProducts)
             {
-                <span class="calendar-legend__badges">T time-lapse (not yet generated) · S star trail · K keogram · ! local candidate. <i class="calendar-legend__produced" aria-hidden="true"></i> nightly product · <i class="calendar-legend__partial" aria-hidden="true"></i> hourly only · struck through: evaluated, not produced. Badges count only the sunrise period each date resolves to now.</span>
+                <span class="calendar-legend__badges">T time-lapse · S star trail · K keogram · ! local candidate. <i class="calendar-legend__produced" aria-hidden="true"></i> nightly product · <i class="calendar-legend__partial" aria-hidden="true"></i> hourly only · struck through: evaluated, not produced. Badges count only the sunrise period each date resolves to now.</span>
             }
             else
             {
@@ -150,7 +152,7 @@
             }
             else
             {
-                <article><p class="eyebrow">Nights with nightly products</p><strong>@NightlyProductNights</strong><small>@NightlyProductCount(NightlyProductKind.StarTrail) star trail · @NightlyProductCount(NightlyProductKind.Keogram) keogram; time-lapse not yet generated@(OtherPeriodNights > 0 ? FormattableString.Invariant($". {OtherPeriodNights} {(OtherPeriodNights == 1 ? "night has" : "nights have")} evaluations under another source period, not counted") : "")</small></article>
+                <article><p class="eyebrow">Nights with nightly products</p><strong>@NightlyProductNights</strong><small>@NightlyProductCount(NightlyProductKind.StarTrail) star trail · @NightlyProductCount(NightlyProductKind.Keogram) keogram; @(VideoNights == 0 ? "time-lapse not yet generated" : $"{VideoNights} time-lapse")@(OtherPeriodNights > 0 ? FormattableString.Invariant($". {OtherPeriodNights} {(OtherPeriodNights == 1 ? "night has" : "nights have")} evaluations under another source period, not counted") : "")</small></article>
             }
             <article><p class="eyebrow">Detected candidates</p><strong>@TotalCandidates.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)</strong><small>durable local candidates</small></article>
         </section>

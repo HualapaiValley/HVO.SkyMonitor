@@ -130,7 +130,7 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             ? ProcessingGraphInputBindingKind.PrimaryArtifact
             : ProcessingGraphInputBindingKind.AuxiliaryArtifact);
 
-    private static ProcessingArtifact CreateArtifact(ReconstructionDescriptor descriptor)
+    internal static ProcessingArtifact CreateArtifact(ReconstructionDescriptor descriptor)
     {
         var observation = ResolveObservationBounds(descriptor);
         return new ProcessingArtifact(
@@ -148,7 +148,8 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
             descriptor.Artifact.SourceArtifactIds,
             observation.StartedUtc,
             observation.EndedUtc,
-            CreateConditions(descriptor));
+            CreateConditions(descriptor))
+        { CaptureId = descriptor.Capture.CaptureId };
     }
 
     private static ProcessingCaptureConditions CreateConditions(ReconstructionDescriptor descriptor)

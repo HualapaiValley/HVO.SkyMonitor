@@ -1,5 +1,18 @@
 # Virtual all-sky astrometry qualification — final report (v1)
 
+> **Superseded for projection families.** This report remains the record of the #1106 measurement. Issue
+> [#1126](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1126) publishes the projection-family envelope in
+> [v2](virtual-astrometry-qualification-v2.md), which is the current statement of supported lens projections.
+>
+> **Note, 2026-10-06.** #1126 ran this envelope's tuning partition for the first time and found one fail-closed
+> `ambiguous` blind rejection on the mono ROI+2×2 readout. See
+> [pre-existing finding against the v1 equidistant envelope](virtual-astrometry-qualification-v2.md#pre-existing-finding-against-the-v1-equidistant-envelope).
+> The held-out measurements below are unchanged.
+>
+> **Long exposures.** This envelope was measured on 1 s frames. Issue
+> [#1168](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1168) states which longer exposures are supported in
+> [virtual-astrometry-long-exposure-v1](virtual-astrometry-long-exposure-v1.md).
+
 Issue [#1106](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1106) (V7 of epic
 [#1098](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1098)) reruns every delivered qualification harness
 at one integrated `development/v1` revision and audits the epic's nine completion criteria against delivered code
@@ -13,7 +26,8 @@ and the 0.99 ellipsoid coverage on `mono-roi-bin2` (11.0 % of its binomial bound
 only. It makes no claim about physical accuracy, and the hardware evidence it does not provide is listed for #1107.
 
 **Not included:**
-- physical cameras, lenses or sky, and any claim of physical accuracy. These stay with #1107 under #523.
+- physical cameras, lenses or sky, and any claim of physical accuracy. These stay with #1107, which moved from #523
+  to the physical-qualification epic #1166 on 2026-10-06.
 - new production consumers: astrometry recipes, compact persistence, calculators, registered stacking or
   FITS/WCS export. The handoff below names their seams; it does not implement them.
 - deployment or promotion to `main`
@@ -323,10 +337,12 @@ FITS/WCS export stays with #141 and #523. `ProjectedSceneV1` still has no measur
 
 ## Physical-hardware handoff (#1107)
 
-[#1107](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1107) owns physical qualification under #523
-and is not authorized to start. Simulation shows that the process works under declared simulation assumptions. It
-does not identify the installed lens, measure its distortion or certify real-camera accuracy. #1107 needs the
-following evidence:
+[#1107](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1107) owns physical qualification. On 2026-10-06 it
+moved from #523 to the downstream physical-qualification epic
+[#1166](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1166), and it is not authorized to start. The
+criterion 9 row above records ownership as it stood when this report merged. Simulation shows that the process works
+under declared simulation assumptions. It does not identify the installed lens, measure its distortion or certify
+real-camera accuracy. #1107 needs the following evidence:
 
 | Virtual result | Why it does not transfer | Hardware evidence #1107 needs |
 | --- | --- | --- |

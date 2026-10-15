@@ -18,7 +18,11 @@ public sealed record CaptureProcessingSnapshot(
     long ReplayRetryCount = 0,
     long ReplayTerminalCount = 0,
     DateTimeOffset? OldestReplayPendingUtc = null,
-    long ReplayPendingBytes = 0);
+    long ReplayPendingBytes = 0,
+    string? SupersededActiveRevisionId = null,
+    long LeasedCount = 0,
+    long ReplayLeasedCount = 0,
+    long ReplayAbandonedCount = 0);
 
 /// <summary>
 /// The outcome of the most recent derived-product reconciliation pass. A failed pass records no counts; its
@@ -37,6 +41,7 @@ public sealed class CaptureProcessingState
 {
     private readonly object _gate = new();
     private long _pending;
+    private long _leased;
     private long _retry;
     private long _terminal;
     private long _quarantine;
@@ -46,10 +51,13 @@ public sealed class CaptureProcessingState
     private bool _reconciliationFailed;
     private bool _hasDurableSnapshot;
     private long _replayPending;
+    private long _replayLeased;
     private long _replayRetry;
     private long _replayTerminal;
     private long _replayPendingBytes;
+    private long _replayAbandoned;
     private DateTimeOffset? _oldestReplay;
+    private string? _supersededActiveRevision;
 
     public CaptureProcessingSnapshot Snapshot { get { lock (_gate) return Compose(); } }
 
@@ -73,12 +81,13 @@ public sealed class CaptureProcessingState
         }
     }
 
-    internal void SetDurable(long pending, long retry, long terminal, DateTimeOffset? oldestPendingUtc)
+    internal void SetDurable(long pending, long leased, long retry, long terminal, DateTimeOffset? oldestPendingUtc)
     {
         lock (_gate)
         {
             _hasDurableSnapshot = true;
             _pending = pending;
+            _leased = leased;
             _retry = retry;
             _terminal = terminal;
             _oldest = oldestPendingUtc;
@@ -89,20 +98,25 @@ public sealed class CaptureProcessingState
     internal void SetRefreshFailure() { lock (_gate) _durableUnavailable = true; }
     internal void SetReplayDurable(
         long pending,
+        long leased,
         long retry,
         long terminal,
         DateTimeOffset? oldestPendingUtc,
-        long pendingBytes)
+        long pendingBytes,
+        long abandoned)
     {
         lock (_gate)
         {
             _replayPending = pending;
+            _replayLeased = leased;
             _replayRetry = retry;
             _replayTerminal = terminal;
             _oldestReplay = oldestPendingUtc;
             _replayPendingBytes = pendingBytes;
+            _replayAbandoned = abandoned;
         }
     }
+    internal void SetActiveRevisionSuperseded(string? revisionId) { lock (_gate) _supersededActiveRevision = revisionId; }
     internal void SetReconciliationFailure(bool failed) { lock (_gate) _reconciliationFailed = failed; }
     private DerivedProductReconciliationReport? _lastReconciliation;
     public DerivedProductReconciliationReport? LastReconciliation => Volatile.Read(ref _lastReconciliation);
@@ -126,11 +140,13 @@ public sealed class CaptureProcessingState
         if (_reconciliationFailed) reasons.Add("reconciliation-failed");
         if (_replayTerminal > 0) reasons.Add("replay-terminal");
         if (_replayRetry > 0) reasons.Add("replay-retry");
+        if (_supersededActiveRevision is not null) reasons.Add("active-revision-superseded");
         var availability = _terminal > 0 ? CaptureProcessingAvailability.Unhealthy :
             reasons.Count > 0 ? CaptureProcessingAvailability.Degraded : CaptureProcessingAvailability.Healthy;
         return new(availability, _pending, _retry, _terminal,
             reasons.Count == 0 ? "completed" : string.Join(';', reasons), _oldest, DateTimeOffset.UtcNow,
             _quarantine, _missing, _durableUnavailable, _reconciliationFailed,
-            _replayPending, _replayRetry, _replayTerminal, _oldestReplay, _replayPendingBytes);
+            _replayPending, _replayRetry, _replayTerminal, _oldestReplay, _replayPendingBytes,
+            _supersededActiveRevision, _leased, _replayLeased, _replayAbandoned);
     }
 }

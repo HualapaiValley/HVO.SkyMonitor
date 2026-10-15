@@ -11,6 +11,7 @@
     <Project Path="src/HVO.SkyMonitor.Imaging/HVO.SkyMonitor.Imaging.csproj" />
     <Project Path="src/HVO.SkyMonitor.Fleet.Contracts/HVO.SkyMonitor.Fleet.Contracts.csproj" />
     <Project Path="src/HVO.SkyMonitor.Processing/HVO.SkyMonitor.Processing.csproj" />
+    <Project Path="src/HVO.SkyMonitor.Video.FFmpeg/HVO.SkyMonitor.Video.FFmpeg.csproj" />
     <Project Path="src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj" />
     <Project Path="src/HVO.SkyMonitor.ProcessingRunner.Contracts/HVO.SkyMonitor.ProcessingRunner.Contracts.csproj" />
     <Project Path="src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj" />

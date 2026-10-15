@@ -1,6 +1,7 @@
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using Microsoft.Extensions.Logging;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -90,7 +91,7 @@ internal sealed class StandardCaptureLaneHandler(
                 if (_graph is null || !string.Equals(_pipelineKey, pipelineKey, StringComparison.Ordinal))
                 {
                     _graph?.DisposeSteps();
-                    _graph = _pipelineFactory.CreateGraph(item.Config);
+                    _graph = _pipelineFactory.CreateRetainedGraph(item.Config);
                     _pipelineKey = pipelineKey;
                 }
                 graph = _graph;
@@ -114,6 +115,13 @@ internal sealed class StandardCaptureLaneHandler(
                 !cancellationToken.IsCancellationRequested)
             {
                 result = CaptureLaneHandlerResult.Retry("processing.live-deadline");
+            }
+            catch (ProcessingPlanSupersededException exception)
+            {
+                // The raw evidence is intact; only the plan it was accepted under is gone. Abandoning the row keeps
+                // the ordered lane and ingress moving, and leaves the raw to its upload lane and archived replay.
+                _logger.CaptureProcessingPlanSuperseded(item.Execution?.GraphRevisionId, exception.Message);
+                result = CaptureLaneHandlerResult.Abandon(ProcessingPlanSupersededException.LaneReason);
             }
             catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
             {

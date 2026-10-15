@@ -60,6 +60,7 @@ public sealed class CentralDerivativeWorkerTelemetryTests
         telemetry.RecordWindowPinDuration("rolling-mean", TimeSpan.FromSeconds(3));
         telemetry.RecordWindowRejection("rolling-mean", "profile", "skip");
         telemetry.RecordWindowDeadline("rolling-mean", "skipped");
+        telemetry.RecordWindowResolutionFault("database");
         telemetry.RecordGraphExpansion("Replay", "created", TimeSpan.FromMilliseconds(2), 3);
         telemetry.RecordGraphConvergence("Live", "CompletedWithOptionalFailures", TimeSpan.FromMilliseconds(1));
         telemetry.RecordGraphRecoveryPoll(DateTimeOffset.UtcNow, 1);
@@ -98,6 +99,7 @@ public sealed class CentralDerivativeWorkerTelemetryTests
             "skymonitor.central.derivative.window.notifications",
             "skymonitor.central.derivative.window.compatibility_rejections",
             "skymonitor.central.derivative.window.deadlines",
+            "skymonitor.central.derivative.window.resolution_faults",
             "skymonitor.central.derivative.window.selected_inputs",
             "skymonitor.central.derivative.window.expected_inputs",
             "skymonitor.central.derivative.window.missing_inputs",

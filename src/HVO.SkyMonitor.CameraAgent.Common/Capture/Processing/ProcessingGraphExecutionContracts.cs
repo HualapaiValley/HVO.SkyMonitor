@@ -183,7 +183,24 @@ internal sealed record ProcessingGraphRevisionSnapshot(
     byte[] PipelineJson,
     byte[] DefinitionJson,
     byte[] FrozenPlanJson,
-    ImmutableArray<ProcessingExecutionNodeSeed> Nodes);
+    ImmutableArray<ProcessingExecutionNodeSeed> Nodes)
+{
+    // Admission and replay execution share this test, so a revision accepted for queueing is never one the worker
+    // then abandons as superseded. Nodes are keyed by id; each must keep both its plan and its shared identity.
+    internal bool IsCompiledBy(CaptureProcessingGraph graph)
+    {
+        if (graph.Nodes.Count != Nodes.Length)
+        {
+            return false;
+        }
+        var stored = Nodes.ToDictionary(static node => node.NodeId, StringComparer.Ordinal);
+        return graph.Nodes.All(node =>
+            stored.TryGetValue(node.Id, out var saved) &&
+            string.Equals(saved.PlanSha256, node.PlanSha256, StringComparison.Ordinal) &&
+            string.Equals(
+                saved.SharedPlanNodeIdentitySha256, node.SharedPlanNodeIdentitySha256, StringComparison.Ordinal));
+    }
+}
 
 internal sealed record ProcessingExecutionNodeSeed(
     string NodeId,
@@ -329,6 +346,24 @@ public interface IProcessingGraphOperations
         string actor,
         string? reason,
         CancellationToken cancellationToken);
+}
+
+/// <summary>A new operator command selected a revision whose saved plans this build cannot execute.</summary>
+public sealed class ProcessingGraphRevisionSupersededException : InvalidOperationException
+{
+    public const string SafeMessage = "This revision uses a processing plan that the installed version no longer supports. Create or select a compatible revision.";
+
+    public ProcessingGraphRevisionSupersededException() : base(SafeMessage)
+    {
+    }
+
+    public ProcessingGraphRevisionSupersededException(string message) : base(message)
+    {
+    }
+
+    public ProcessingGraphRevisionSupersededException(string message, Exception innerException) : base(message, innerException)
+    {
+    }
 }
 
 public sealed class ProcessingGraphStoreConflictException : InvalidOperationException

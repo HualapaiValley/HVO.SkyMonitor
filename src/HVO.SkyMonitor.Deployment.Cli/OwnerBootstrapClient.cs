@@ -2,12 +2,14 @@ using System.Net;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Diagnostics.CodeAnalysis;
+using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
 
 internal interface IOwnerBootstrapClient
 {
-    Task WaitForHealthAsync(CancellationToken cancellationToken, TimeSpan? timeout = null);
+    /// <summary>Waits until the host is alive and its catalog health check reports <paramref name="expectedCatalog"/>.</summary>
+    Task WaitForHealthAsync(ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null);
     Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken);
     Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken);
     Task<string> VerifyInstallationAsync(
@@ -48,8 +50,10 @@ internal sealed class OwnerBootstrapClient(
         RegexOptions.CultureInvariant | RegexOptions.Compiled,
         TimeSpan.FromSeconds(1));
 
-    public async Task WaitForHealthAsync(CancellationToken cancellationToken, TimeSpan? timeout = null)
+    public async Task WaitForHealthAsync(
+        ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null)
     {
+        ArgumentNullException.ThrowIfNull(expectedCatalog);
         using var handler = new HttpClientHandler
         {
             AllowAutoRedirect = false,
@@ -76,11 +80,14 @@ internal sealed class OwnerBootstrapClient(
                     var catalog = document.RootElement.GetProperty("checks").EnumerateArray().Single(item =>
                         item.GetProperty("name").GetString() == "catalog");
                     var data = catalog.GetProperty("data");
-                    if (data.GetProperty("CatalogId").GetString() == ProductionCatalog.CatalogId &&
-                        data.GetProperty("CatalogVersion").GetString() == "4.2" &&
-                        data.GetProperty("SchemaVersion").GetString() == "2" &&
-                        data.GetProperty("PreprocessingVersion").GetString() == "3" &&
-                        data.GetProperty("RowCount").GetInt64() == ProductionCatalog.RowCount)
+                    // A host predating issue #521 does not report PackageVersion; when present it must be this lineage's.
+                    if (data.GetProperty("CatalogId").GetString() == expectedCatalog.CatalogId &&
+                        data.GetProperty("CatalogVersion").GetString() == expectedCatalog.CatalogVersion &&
+                        data.GetProperty("SchemaVersion").GetString() == expectedCatalog.SchemaVersion &&
+                        data.GetProperty("PreprocessingVersion").GetString() == expectedCatalog.PreprocessingVersion &&
+                        data.GetProperty("RowCount").GetInt64() == expectedCatalog.RowCount &&
+                        (!data.TryGetProperty("PackageVersion", out var packageVersion) ||
+                         expectedCatalog.IsPackageVersion(packageVersion.GetString())))
                     {
                         return;
                     }

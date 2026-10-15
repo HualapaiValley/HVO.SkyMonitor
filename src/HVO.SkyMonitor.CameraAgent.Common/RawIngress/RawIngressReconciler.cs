@@ -65,7 +65,6 @@ internal sealed class RawIngressReconciler(
             cleaned++;
         }
 
-        var entries = await _journal.ReadAllAsync(cancellationToken).ConfigureAwait(false);
         Dictionary<Guid, List<string>> indexedArtifacts;
         try
         {
@@ -76,11 +75,17 @@ internal sealed class RawIngressReconciler(
             indexedArtifacts = [];
             indexProjectionFailures++;
         }
-        var claimedPayloads = new HashSet<string>(entries.Select(static entry => entry.PayloadRelativePath), StringComparer.Ordinal);
-        var claimedSidecars = new HashSet<string>(entries.Select(static entry => entry.SidecarRelativePath), StringComparer.Ordinal);
-        foreach (var entry in entries)
+        var claimedPayloads = new HashSet<string>(StringComparer.Ordinal);
+        var claimedSidecars = new HashSet<string>(StringComparer.Ordinal);
+        await foreach (var entry in _journal.EnumerateAsync(cancellationToken).ConfigureAwait(false))
         {
+            claimedPayloads.Add(entry.PayloadRelativePath);
+            claimedSidecars.Add(entry.SidecarRelativePath);
             cancellationToken.ThrowIfCancellationRequested();
+            if (entry.EvidenceWrittenOff)
+            {
+                continue;
+            }
             inspected++;
             var expectedPaths = RawIngressFileStore.GetPaths(_root, entry.ExposureStartedUtc, entry.ArtifactId);
             var payloadPath = Resolve(entry.PayloadRelativePath);
@@ -117,9 +122,10 @@ internal sealed class RawIngressReconciler(
                 quarantineBytes += moved;
                 continue;
             }
+            // Recovered bytes do not discharge an evidence quarantine without an audited operator release.
             if (!string.Equals(entry.State, "committed", StringComparison.Ordinal))
             {
-                await _journal.MarkCommittedAsync(entry.CaptureId, cancellationToken).ConfigureAwait(false);
+                continue;
             }
             if (!await TryEnsureCompatibilityIndexAsync(
                     entry.ManifestJson, indexedArtifacts, cancellationToken).ConfigureAwait(false))
@@ -335,7 +341,7 @@ internal sealed class RawIngressReconciler(
         }
     }
 
-    private static async Task<bool> MatchesCommittedEntryAsync(
+    internal static async Task<bool> MatchesCommittedEntryAsync(
         RawIngressJournalEntry entry,
         string payloadPath,
         string sidecarPath,

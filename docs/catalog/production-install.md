@@ -5,6 +5,13 @@ Application startup and normal installation never fetch or rebuild catalog data.
 The same verified bundle is copied to LogicHost and every CameraAgent, including
 ARM64 targets, and installed without network access.
 
+This runbook covers the HYG 4.2 package `hyg-v4.2-p3-s2-r1` and its shell
+installer. HYG 4.4 (`hyg-v44-production`, package `hyg-v4.4-p4-s3-r1`) is a
+separate approved lineage installed beside it with the deployment CLI. Its
+identities, build, selection, rollback and health behavior are in
+[HYG 4.4 catalog snapshot](hyg-v44.md). Installing 4.4 never changes a 4.2 root
+or selection.
+
 ## Prerequisites
 
 The scripts require GNU-compatible Bash tools, `sha256sum`, and exactly

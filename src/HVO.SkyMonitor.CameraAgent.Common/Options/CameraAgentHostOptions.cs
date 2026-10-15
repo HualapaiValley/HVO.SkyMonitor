@@ -69,6 +69,8 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     [Required]
     public NightlyProductOptions NightlyProducts { get; init; } = new();
 
+    public TimeLapseOptions TimeLapses { get; init; } = new();
+
     [Required]
     public TimeLapseSampleOptions TimeLapseSample { get; init; } = new();
 
@@ -296,6 +298,7 @@ public sealed class CameraAgentHostOptions : IValidatableObject
         }
 
         var sampleResults = new List<ValidationResult>();
+        Validator.TryValidateObject(TimeLapses, new ValidationContext(TimeLapses), sampleResults, validateAllProperties: true);
         Validator.TryValidateObject(
             TimeLapseSample,
             new ValidationContext(TimeLapseSample),

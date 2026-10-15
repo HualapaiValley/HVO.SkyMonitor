@@ -87,9 +87,10 @@ internal static class OwnerRecoveryManager
         }
 
         var instanceId = request.InstanceId!.Value;
-        var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.CatalogId);
+        var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.DefaultCatalogId);
         var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(paths.ManifestPath, cancellationToken)
             .ConfigureAwait(false);
+        paths = paths.WithCatalog(manifest.Catalog.CatalogId);
         var installation = await CameraAgentLifecycleManager.ReadResultAsync(paths.ResultPath, cancellationToken)
             .ConfigureAwait(false);
         ValidateInstance(paths, instanceId, manifest, installation, uid, gid);

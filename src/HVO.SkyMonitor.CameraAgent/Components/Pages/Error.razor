@@ -1,5 +1,6 @@
 ﻿@page "/Error"
 @layout MainLayout
+@attribute [ExcludeFromInteractiveRouting]
 
 <PageTitle>Something went wrong</PageTitle>
 
@@ -10,8 +11,7 @@
     <div class="error-page__content">
         <h1 id="error-page-title" class="error-page__title">We hit a snag</h1>
         <p class="error-page__description">
-            An unexpected error occurred while processing your request. Try refreshing the page, or return to the
-            dashboard.
+            An unexpected error occurred while processing your request. Return home to continue.
         </p>
 
         <div class="error-page__meta">
@@ -32,8 +32,7 @@
         </div>
 
         <div class="error-page__actions">
-            <button type="button" class="btn btn-primary" @onclick="Reload">Reload page</button>
-            <a class="btn btn-outline-light" href="/">Return home</a>
+            <a class="btn btn-primary" href="/">Return home</a>
         </div>
     </div>
 </section>

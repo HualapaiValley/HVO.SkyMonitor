@@ -56,7 +56,7 @@ internal static class PrivilegedPreparation
         {
             return 2;
         }
-        Prepare(InstallationPaths.Create(productRoot, instanceId, ProductionCatalog.CatalogId), uid, gid, requireRoot: true);
+        Prepare(InstallationPaths.Create(productRoot, instanceId, ProductionCatalog.DefaultCatalogId), uid, gid, requireRoot: true);
         return 0;
     }
 
@@ -97,7 +97,10 @@ internal static class PrivilegedPreparation
             CreateOrValidateRootDirectory(directory);
         }
         CreateOrValidateRuntimeDirectory(paths.InstanceRoot, uid, gid);
-        CreateOrValidateRuntimeDirectory(paths.CatalogRoot, uid, gid);
+        // The root helper's argument contract names no catalog, so it prepares the side-by-side root of every
+        // approved catalog; the runtime user cannot create one beneath the root-owned catalogs directory later.
+        foreach (var catalogPaths in paths.ForEveryApprovedCatalog())
+            CreateOrValidateRuntimeDirectory(catalogPaths.CatalogRoot, uid, gid);
         CreateOrValidateRuntimeDirectory(paths.OperationsRoot, uid, gid);
     }
 

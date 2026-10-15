@@ -17,9 +17,11 @@ public sealed partial class MainLayoutNavigation : ComponentBase, IDisposable
 
     private static readonly IReadOnlyList<NavigationLink> OperationsLinks =
     [
+        new NavigationLink("/app/network", "Network", "bi bi-globe-americas", NavLinkMatch.Prefix),
         new NavigationLink("/app", "Dashboard", "bi bi-grid-1x2", NavLinkMatch.All),
         new NavigationLink("/app/observatories", "Observatories", "bi bi-building-gear", NavLinkMatch.Prefix),
         new NavigationLink("/app/captures", "Captures", "bi bi-images", NavLinkMatch.Prefix),
+        new NavigationLink("/app/time-lapses", "Time-lapses", "bi bi-film", NavLinkMatch.Prefix),
         new NavigationLink("/app/processing", "Processing", "bi bi-diagram-3", NavLinkMatch.Prefix),
         new NavigationLink("/app/events", "Events", "bi bi-lightning-charge", NavLinkMatch.Prefix)
     ];

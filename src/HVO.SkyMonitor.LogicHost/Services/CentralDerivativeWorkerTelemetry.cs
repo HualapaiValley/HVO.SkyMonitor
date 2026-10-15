@@ -22,6 +22,7 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
     private readonly Counter<long> _windowNotifications;
     private readonly Counter<long> _windowRejections;
     private readonly Counter<long> _windowDeadlines;
+    private readonly Counter<long> _windowResolutionFaults;
     private readonly Counter<long> _transientOutcomes;
     private readonly Counter<long> _transientClassifications;
     private readonly Histogram<long> _transientCandidates;
@@ -70,6 +71,8 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
             "skymonitor.central.derivative.window.compatibility_rejections", "{rejection}");
         _windowDeadlines = _meter.CreateCounter<long>(
             "skymonitor.central.derivative.window.deadlines", "{deadline}");
+        _windowResolutionFaults = _meter.CreateCounter<long>(
+            "skymonitor.central.derivative.window.resolution_faults", "{fault}");
         _transientOutcomes = _meter.CreateCounter<long>(
             "skymonitor.central.transient.outcomes", "{outcome}");
         _transientClassifications = _meter.CreateCounter<long>(
@@ -328,6 +331,13 @@ internal sealed class CentralDerivativeWorkerTelemetry : IDisposable
         {
             { "recipe", NormalizeRecipe(recipe) },
             { "outcome", outcome }
+        });
+
+    /// <summary>A periodic resolver pass contained one job's fault.</summary>
+    public void RecordWindowResolutionFault(string cause)
+        => _windowResolutionFaults.Add(1, new TagList
+        {
+            { "cause", cause is "database" or "concurrency" or "timeout" ? cause : "other" }
         });
 
     public void RecordTransientValidation(

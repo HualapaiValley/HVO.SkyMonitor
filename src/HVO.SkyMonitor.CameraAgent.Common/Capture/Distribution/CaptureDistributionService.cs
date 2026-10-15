@@ -38,6 +38,8 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
         });
     private readonly CancellationTokenSource _abort = new();
     private readonly List<Task> _workers = [];
+    private readonly SemaphoreSlim _recoveryGate = new(1, 1);
+    private bool _executionBindingsReady;
     private CameraModuleConfig? _configuration;
     private volatile bool _draining;
     private static readonly Action<ILogger, string, Exception?> ClaimFailed = LoggerMessage.Define<string>(
@@ -94,14 +96,7 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
                 throw new InvalidOperationException($"Capture lane '{lane.Name}' has no registered handler.");
             }
         }
-        await _rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
-        if (_graphOperations is not null)
-        {
-            _ = await _graphOperations.EnsureConfiguredBasicAsync(_configuration, cancellationToken)
-                .ConfigureAwait(false);
-            await _rawIngress.BindRecoveredLiveExecutionsAsync(_configuration, cancellationToken).ConfigureAwait(false);
-        }
-        await _store.InitializeLanesAsync(cancellationToken).ConfigureAwait(false);
+        _ = await InitializeProcessingAsync(cancellationToken).ConfigureAwait(false);
         foreach (var lane in _policy.Definitions.Where(static lane => lane.Enabled))
         {
             var handler = _handlers[lane.Name];
@@ -200,6 +195,12 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
             CaptureLaneLease? lease;
             try
             {
+                if (!await InitializeProcessingAsync(_abort.Token).ConfigureAwait(false))
+                {
+                    if (_draining) return;
+                    await WaitForSignalAsync(signal, _abort.Token).ConfigureAwait(false);
+                    continue;
+                }
                 lease = await _store.ClaimAsync(
                     lane,
                     owner,
@@ -251,6 +252,26 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
                 await DelayAsync(_options.PollIntervalMilliseconds, _abort.Token).ConfigureAwait(false);
             }
         }
+    }
+
+    private async ValueTask<bool> InitializeProcessingAsync(CancellationToken cancellationToken)
+    {
+        if (!await _rawIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false)) return false;
+        if (Volatile.Read(ref _executionBindingsReady)) return true;
+        await _recoveryGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_executionBindingsReady) return true;
+            if (_graphOperations is not null)
+            {
+                _ = await _graphOperations.EnsureConfiguredBasicAsync(_configuration!, cancellationToken).ConfigureAwait(false);
+                await _rawIngress.BindRecoveredLiveExecutionsAsync(_configuration!, cancellationToken).ConfigureAwait(false);
+            }
+            await _store.InitializeLanesAsync(cancellationToken).ConfigureAwait(false);
+            Volatile.Write(ref _executionBindingsReady, true);
+            return true;
+        }
+        finally { _recoveryGate.Release(); }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Handler exceptions are converted into durable retry state so one lane cannot terminate another.")]
@@ -403,6 +424,7 @@ internal sealed class CaptureDistributionService : IHostedService, ICaptureDistr
 
     public void Dispose()
     {
+        _recoveryGate.Dispose();
         _abort.Dispose();
     }
 }

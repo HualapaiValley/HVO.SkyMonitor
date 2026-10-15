@@ -669,7 +669,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
                 root, "reference-calibration-profile.json", SearchOption.AllDirectories));
             Assert.IsEmpty(await fixture.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false));
 
-            var service = new VirtualCalibrationAcquisitionRecoveryService(fixture.Coordinator);
+            using var service = new VirtualCalibrationAcquisitionRecoveryService(fixture.Coordinator);
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
 
             var job = await fixture.Store.ReadPendingAcquisitionJobAsync(CancellationToken.None).ConfigureAwait(false);
@@ -680,6 +680,37 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
         {
             DeleteRoot(root);
         }
+    }
+
+    [TestMethod]
+    public async Task RecoveryService_DefersPendingJobUntilEvidenceRecoveryAndRetainsItOnStop()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var fixture = await Fixture.CreateAsync(
+                root, new OneShotCancellationFaultInjector(CalibrationPublicationFaultPoint.AfterProfilePublished))
+                .ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<OperationCanceledException>(() =>
+                fixture.Coordinator.AcquireAsync(Request("recover-after-evidence-release"), CancellationToken.None))
+                .ConfigureAwait(false);
+            var readiness = new InitializingIngress(root) { EvidenceReady = false };
+            using (var interrupted = new VirtualCalibrationAcquisitionRecoveryService(fixture.Coordinator, readiness))
+            {
+                await interrupted.StartAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(await fixture.Store.ReadPendingAcquisitionJobAsync(CancellationToken.None).ConfigureAwait(false));
+                await interrupted.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(await fixture.Store.ReadPendingAcquisitionJobAsync(CancellationToken.None).ConfigureAwait(false));
+            }
+            using var service = new VirtualCalibrationAcquisitionRecoveryService(fixture.Coordinator, readiness);
+            await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(await fixture.Store.ReadPendingAcquisitionJobAsync(CancellationToken.None).ConfigureAwait(false));
+            readiness.EvidenceReady = true;
+            await service.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            Assert.IsNull(await fixture.Store.ReadPendingAcquisitionJobAsync(CancellationToken.None).ConfigureAwait(false));
+            Assert.HasCount(1, await fixture.Store.GetBundlesAsync(10, CancellationToken.None).ConfigureAwait(false));
+        }
+        finally { DeleteRoot(root); }
     }
 
     [TestMethod]
@@ -708,7 +739,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
             }
 
             using var recovered = await Fixture.CreateAsync(root).ConfigureAwait(false);
-            var service = new VirtualCalibrationAcquisitionRecoveryService(recovered.Coordinator);
+            using var service = new VirtualCalibrationAcquisitionRecoveryService(recovered.Coordinator);
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
 
             Assert.IsNull(await recovered.Store.ReadPendingAcquisitionJobAsync(CancellationToken.None)
@@ -821,7 +852,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
 
             var blocker = new BlockingFaultInjector(CalibrationPublicationFaultPoint.BeforePayloadWrite);
             using var recovered = await Fixture.CreateAsync(root, blocker).ConfigureAwait(false);
-            var service = new VirtualCalibrationAcquisitionRecoveryService(recovered.Coordinator);
+            using var service = new VirtualCalibrationAcquisitionRecoveryService(recovered.Coordinator);
             var recovery = Task.Run(() => service.StartAsync(CancellationToken.None));
             await blocker.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
             var queuedJobId = await JobIdForKeyAsync(root, "queued-camera-two").ConfigureAwait(false);
@@ -896,7 +927,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
             }
 
             using var restarted = await Fixture.CreateAsync(root).ConfigureAwait(false);
-            var service = new VirtualCalibrationAcquisitionRecoveryService(restarted.Coordinator);
+            using var service = new VirtualCalibrationAcquisitionRecoveryService(restarted.Coordinator);
             await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
 
             var cancelled = await restarted.Coordinator.CancelAsync(
@@ -1245,6 +1276,19 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
 
     private sealed class InitializingIngress(string root) : IRawCaptureIngress
     {
+        private int _evidenceReady = 1;
+        internal bool EvidenceReady
+        {
+            get => Volatile.Read(ref _evidenceReady) == 1;
+            set => Volatile.Write(ref _evidenceReady, value ? 1 : 0);
+        }
+
+        async ValueTask<bool> IRawCaptureIngress.InitializeForOperationsAsync(CancellationToken cancellationToken)
+        {
+            await InitializeAsync(cancellationToken).ConfigureAwait(false);
+            return EvidenceReady;
+        }
+
         public async ValueTask InitializeAsync(CancellationToken cancellationToken)
             => await new SqliteRawCaptureJournal(
                 Path.Combine(root, "journal", "raw-ingress.db"), 1)

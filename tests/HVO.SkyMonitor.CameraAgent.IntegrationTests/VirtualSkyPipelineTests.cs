@@ -6,6 +6,7 @@ using System.Diagnostics.Metrics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
@@ -337,6 +338,7 @@ public sealed class VirtualSkyPipelineTests
         AssertLineageReachesRaw(defaultPreview.Parsed.Document.Manifest.Descriptor, manifests);
 
         var pending = new List<ArtifactManifestV2>();
+        var pendingScenes = new List<StructuredProcessingProductManifestV1>();
         using (var outbox = new SqliteConnection(
             $"Data Source={Path.Combine(Fixture.StorageRoot, "outbox", "artifact-outbox.db")}"))
         {
@@ -349,9 +351,22 @@ public sealed class VirtualSkyPipelineTests
             {
                 while (await reader.ReadAsync().ConfigureAwait(false))
                 {
-                    var parsed = CaptureContractJson.ParseManifest((byte[])reader[0]);
-                    Assert.IsTrue(parsed.IsValid, parsed.Validation.ReasonCode);
-                    pending.Add(parsed.Document!.Manifest);
+                    var bytes = (byte[])reader[0];
+                    var parsed = CaptureContractJson.ParseManifest(bytes);
+                    if (parsed.IsValid)
+                    {
+                        pending.Add(parsed.Document!.Manifest);
+                    }
+                    else
+                    {
+                        // Both public contracts use the existing v2 SQLite storage discriminator.
+                        var structured = StructuredProcessingProductManifestJson.Parse(bytes);
+                        Assert.IsTrue(structured.IsValid, structured.Validation.ReasonCode);
+                        Assert.IsNotNull(structured.Manifest);
+                        Assert.AreEqual(SceneProvenance.RetainedProjectedSceneSchemaVersion,
+                            structured.Manifest.Descriptor.ProductSchemaVersion);
+                        pendingScenes.Add(structured.Manifest);
+                    }
                 }
             }
             outboxCommand.CommandText = "SELECT COUNT(*) FROM artifact_outbox_records WHERE status = 'pending' AND manifest_kind != 'v2';";
@@ -359,11 +374,14 @@ public sealed class VirtualSkyPipelineTests
                 await outboxCommand.ExecuteScalarAsync().ConfigureAwait(false),
                 System.Globalization.CultureInfo.InvariantCulture));
         }
+        Assert.AreEqual(pendingScenes.Count,
+            pendingScenes.Select(static item => item.Descriptor.SourceCapture.Capture.CaptureId).Distinct().Count(),
+            "A capture must not queue duplicate projected geometry variants.");
         Assert.IsNotEmpty(pending);
         Assert.IsTrue(pending.All(item => item.Descriptor.Artifact.Role == FrameArtifactRole.Raw));
         Assert.IsTrue(pending.All(item => item.Descriptor.Capture.AgentId == "cameraagent-integration-test"));
         Assert.IsTrue(pending.All(item => File.Exists(Path.Combine(Fixture.StorageRoot, item.RelativeArtifactPath))));
-        Assert.IsTrue(pending.Any(item => item.Scene is not null));
+        Assert.IsTrue(pending.Any(item => item.Scene?.RequiresProjectedScene == true));
         Assert.IsTrue(pending.All(item => item.Descriptor.Capture.CaptureId != item.Descriptor.Artifact.ArtifactId));
 
         // The agent never stops capturing, so no global "nothing is in flight" state is guaranteed to occur.
@@ -383,6 +401,22 @@ public sealed class VirtualSkyPipelineTests
         Assert.IsTrue(
             pending.All(item => item.Descriptor.Capture.CaptureSequence <= fence.Watermark),
             "Outbox subjects are outside the settled prefix; the fence proved nothing about them.");
+        var scenePersistence = services.GetRequiredService<CaptureProcessingPersistence>();
+        var artifactOutbox = services.GetRequiredService<IArtifactOutbox>();
+        foreach (var compactRaw in pending.Where(static item => item.Scene?.RequiresProjectedScene == true))
+        {
+            Assert.IsNull(compactRaw.Scene!.Objects);
+            Assert.IsNull(compactRaw.Scene.Segments);
+            var sceneManifest = await scenePersistence.FindCommittedSceneUploadAsync(
+                compactRaw.Descriptor, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(sceneManifest);
+            var sceneRecord = await artifactOutbox.ReadAsync(Fixture.StorageRoot, sceneManifest.IdempotencyKey,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(sceneRecord, "A settled compact raw upload must include its required canonical scene.");
+            Assert.IsNotNull(sceneRecord.ProductManifest);
+            CollectionAssert.AreEqual(StructuredProcessingProductManifestJson.Serialize(sceneManifest),
+                sceneRecord.ManifestBytes.ToArray());
+        }
         Assert.IsTrue(
             manifests.All(item => item.Parsed.Document!.Manifest.Descriptor.Capture.CaptureSequence <= fence.Watermark),
             "Stored-manifest subjects are outside the settled prefix; the fence proved nothing about them.");

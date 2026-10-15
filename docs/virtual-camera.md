@@ -404,13 +404,14 @@ position and distance, NASA mean radii (Sun 695,700 km; Moon 1,737.4 km), and th
 pinned Astronomy Engine lunar illuminated fraction. The bright limb points
 toward the actual Sun. It is a uniform bright hemisphere, not a lunar texture
 or photometric surface model; phase fraction is geocentric while disk position,
-size and limb orientation are topocentric. Atmospheric refraction, extinction,
-earthshine, eclipses, lunar occultation of background sources and optical
-bloom/flare are not modeled. Disks use bounded deterministic surface quadrature
-and bilinear sensor deposition, without the stellar Gaussian PSF. Both disks
-are sampled at the exposure's recorded celestial midpoint; sequence motion is
-truthful, but long-exposure disk trails are not integrated. Sun/Moon entries in
-`solarSystemBodies` are not rendered a second time as point sources.
+size and limb orientation are topocentric. Extinction, earthshine, eclipses,
+lunar occultation of background sources and optical bloom/flare are not
+modeled. VirtualSky scenes keep refraction disabled, so their disks and
+footprints are unrefracted; see the #518 section below for the refraction the
+shared contract supports. Both disks are sampled at the exposure's recorded
+celestial midpoint; sequence motion is truthful, but long-exposure disk trails
+are not integrated. Sun/Moon entries in `solarSystemBodies` are not rendered a
+second time as point sources.
 
 The opt-in disk identities and complete angular/phase geometry are recorded in
 frame metadata and the scene identity. At 640 pixels across a 180-degree field,
@@ -430,6 +431,81 @@ display pixels. Auto-stretched previews are not absolute-brightness evidence.
 This prototype is available for the explicitly authorized #1134 preparation
 route; production qualification still requires the complete candidate and PR
 gates and the recorded sample disposition.
+
+### Resolved Sun and Moon footprints (#518)
+
+`solar-lunar-resolved-psf-v4-resolved-footprints` replaces the #1131 disk
+raster. Surface samples use the same `ResolvedSourceFrame` and scene projector
+as the projected footprint. They pass the scene horizon policy and refraction
+one sample at a time and are deposited bilinearly onto a grid padded by the PSF
+radius. The grid is convolved with the configured stellar Gaussian PSF, the
+same sigma and cutoff that point sources use, and only then clipped to the
+sensor and aperture. The magnitude-derived source rate is normalized over the
+illuminated surface before horizon, PSF and sensor clipping. Light outside the
+frame or aperture is lost and never renormalized. `SourceElectronRate`,
+`VisibleElectronRate` and `RetainedElectronRate` record the budget at each
+stage. Sparse pixels and kernel visits are bounded
+(`MaximumSparsePixels`, `MaximumKernelCellVisits`).
+`SolarDiskChecksumGoldenTests` pins a Sun and quarter-Moon render in Mono16,
+RGB24 and Bayer RGGB16 to SHA-256 fixtures. A renderer change that moves them
+must bump the algorithm version and re-pin them.
+
+When at least one disk has a visible limb, `VisibleScene.WithResolvedBodies`
+attaches a `resolved-footprint-v1` outline to the scene, and the staged scene
+is `projected-scene-v2`. Every other scene stays byte-identical
+`projected-scene-v1`. The contract, its units and frames, and its
+uncertainty fields are defined in
+[`docs/astronomy/resolved-footprint.md`](astronomy/resolved-footprint.md).
+
+Annotations draw the footprint, not a fixed marker:
+
+- The Annotation raster (`projected-annotation-raster-v4-resolved-footprints`)
+  and the presentation layers (`projected-scene-presentation-v10-resolved-footprints`)
+  draw the outline padded outward by 4 px from its centre.
+- The body's label starts beyond the padded outline. In the presentation
+  layers, other labels that would fall on the disc are dropped.
+- A footprint whose padded half-extent fits inside the point marker keeps the
+  released marker and label, byte for byte.
+- A capture without resolved footprints (`projected-scene-v1`) keeps the
+  `projected-annotation-raster-v3` algorithm version and the same annotation
+  identity, so a retry of work retained before the upgrade reproduces the same
+  output under the same key.
+- Unresolved planets and stars keep the fixed minimum marker. Annotation size
+  never implies a planetary diameter.
+- Open outline parts left by the frame, aperture or horizon are drawn without a
+  closing chord.
+
+The outline is transformed through readout binning, crop, mirror and rotation
+once, by the projected-scene transforms. The annotation step maps it into
+display pixels together with the point objects. Inputs without footprints,
+including every `projected-scene-v1` scene and the standalone CameraAgent path,
+render the released bytes. Golden hashes pin this.
+
+Reference values come from offline JPL Horizons responses in
+`tests/fixtures/horizons/issue-518/`:
+
+- API `1.2`, DE441, retrieved `2026-10-06`, with a manifest of query parameters
+  and a SHA-256 for each response.
+- The Sun at the 2026 perihelion and aphelion from HVO.
+- The Moon at the January 2026 perigee from La Palma and Sutherland, and near
+  the apogee from HVO and Cerro Tololo.
+- Each case has an airless and a refracted response.
+
+Tests verify every hash before reading and never use the network. They require
+the following agreement:
+
+| Quantity | Tolerance |
+| --- | --- |
+| Topocentric direction | within 0.5′ |
+| Angular diameter | within 0.1% |
+| Range | within 0.02% |
+| Illuminated fraction | within 0.009: the analytic bound ½·sin(i)·π_max with the Moon's maximum horizontal parallax π_max ≈ 61.5′ (≈ 0.0089), because Horizons is topocentric and the engine fraction is geocentric. A physical bound, not a fitted value. |
+| Bennett refraction against the Horizons refracted elevation | within 5″, at 22–68° |
+
+They also check the perihelion/aphelion and perigee/apogee size ordering and
+the lunar parallax between two sites at one instant. Astronomy Engine and
+Bennett refraction remain visualization models, and the fixtures are not
+physical lens qualification.
 
 ### Exposure-aware stellar visibility and motion
 

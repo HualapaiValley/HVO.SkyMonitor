@@ -1,0 +1,74 @@
+{
+  "recordedUtc": "2026-10-05T11:56:36Z",
+  "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) T3Code(Nightly)/0.0.46-nightly.20261004.2648 Chrome/152.0.7977.130 Electron/44.4.2 Safari/537.36",
+  "small": [
+    {
+      "dropped": 0,
+      "duration": 1.666667,
+      "ended": true,
+      "error": null,
+      "frames": 15,
+      "height": 1280,
+      "id": "production-mono-1280",
+      "width": 1280
+    },
+    {
+      "dropped": 0,
+      "duration": 1.666667,
+      "ended": true,
+      "error": null,
+      "frames": 15,
+      "height": 760,
+      "id": "production-asi174",
+      "width": 1210
+    },
+    {
+      "dropped": 0,
+      "duration": 1.666667,
+      "ended": true,
+      "error": null,
+      "frames": 60,
+      "height": 1280,
+      "id": "production-day-1280",
+      "width": 1280
+    }
+  ],
+  "nativeSoftware": {
+    "dropped": 2,
+    "duration": 1.666667,
+    "ended": true,
+    "error": null,
+    "frames": 15,
+    "height": 3552,
+    "id": "production-color-3552",
+    "readyState": 4,
+    "state": {
+      "state": "playing-direct"
+    },
+    "time": 1.666667,
+    "width": 3552
+  },
+  "nativeNvidia": {
+    "dropped": 0,
+    "duration": 1.666667,
+    "ended": true,
+    "error": null,
+    "frames": 30,
+    "height": 3552,
+    "id": "production-nvidia-3552",
+    "readyState": 4,
+    "state": {
+      "state": "playing"
+    },
+    "time": 1.666667,
+    "width": 3552
+  },
+  "limitations": [
+    "Only this T3/Electron/Chrome browser instance is qualified here.",
+    "Native-size clips required buffering; a three-second cold-start wait was insufficient.",
+    "The initial native software playback completed without a media error and reported two dropped display frames.",
+    "The NVIDIA frame count is cumulative across two completed plays.",
+    "Blob URLs were blocked by the T3 URL policy; successful playback used served HTTP URLs.",
+    "A later optional repeated native-play script exceeded T3's 15-second evaluate timeout. It is not accepted additional evidence."
+  ]
+}

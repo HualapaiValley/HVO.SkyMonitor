@@ -174,6 +174,7 @@ internal sealed record DurableRawProcessingInput(
 
 internal sealed record CaptureProcessingOperationalState(
     long PendingCount,
+    long LeasedCount,
     long RetryCount,
     long TerminalCount,
     DateTimeOffset? OldestPendingUtc,
@@ -181,7 +182,9 @@ internal sealed record CaptureProcessingOperationalState(
     long ReplayRetryCount,
     long ReplayTerminalCount,
     DateTimeOffset? OldestReplayPendingUtc,
-    long ReplayPendingBytes);
+    long ReplayPendingBytes,
+    long ReplayLeasedCount,
+    long ReplayAbandonedCount);
 
 internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 {
@@ -483,7 +486,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         }
         if (unavailable.Count == 0) return UnavailableNodeResolution.None;
         var deterministic = unavailable.All(static output =>
-            string.Equals(output.Schema, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal));
+            ProjectedSceneV1.IsSupportedSchemaVersion(output.Schema));
         foreach (var output in unavailable)
         {
             using var history = connection.CreateCommand();
@@ -684,6 +687,29 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Returns why the capture's standard processing was abandoned, or <see langword="null"/> while that work can
+    /// still produce outputs. Abandoned standard work never commits a scene, so a scene-dependent consumer stops waiting.
+    /// </summary>
+    internal async ValueTask<string?> ReadAbandonedStandardWorkReasonAsync(
+        Guid captureId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(captureId, Guid.Empty);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COALESCE(work.failure_reason, 'abandoned')
+            FROM capture_lane_work work
+            JOIN raw_captures raw ON raw.raw_capture_row_id = work.raw_capture_row_id
+            WHERE raw.capture_id = $capture_id AND work.lane_name = 'standard' AND work.state = 'abandoned'
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+    }
+
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The selected query is one of two fixed internal statements and all values remain parameterized.")]
     internal async ValueTask<IReadOnlyList<DurableCaptureProduct>> ReadCaptureProductsAsync(
         Guid captureId,
@@ -823,7 +849,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             SELECT DISTINCT capture_id
             FROM processing_outputs INDEXED BY ix_processing_outputs_product
             WHERE capture_id IN ({placeholders})
-              AND product_schema_version = 'projected-scene-v1'
+              AND product_schema_version IN ('projected-scene-v1', 'projected-scene-v2', 'projected-scene-v3')
               AND product_kind = 'Metadata'
               AND content_identity_sha256 IS NOT NULL
               AND availability_state = 'Available'
@@ -1175,7 +1201,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 await diagnostic.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
         }
-        var deterministic = string.Equals(productSchema, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal);
+        var deterministic = ProjectedSceneV1.IsSupportedSchemaVersion(productSchema);
         using (var update = connection.CreateCommand())
         {
             update.Transaction = transaction;
@@ -2366,7 +2392,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 SUM(CASE WHEN work.state IN ('pending', 'leased', 'retry_wait') THEN 1 ELSE 0 END),
                 SUM(CASE WHEN work.state = 'retry_wait' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN work.state = 'quarantined' THEN 1 ELSE 0 END),
-                MIN(CASE WHEN work.state IN ('pending', 'leased', 'retry_wait') THEN raw.exposure_started_unix_ms END)
+                MIN(CASE WHEN work.state IN ('pending', 'leased', 'retry_wait') THEN raw.exposure_started_unix_ms END),
+                SUM(CASE WHEN work.state = 'leased' THEN 1 ELSE 0 END)
             FROM capture_lane_work AS work
             JOIN raw_captures AS raw ON raw.raw_capture_row_id = work.raw_capture_row_id
             WHERE work.lane_name = 'standard';
@@ -2379,18 +2406,25 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         var oldest = await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false)
             ? (DateTimeOffset?)null
             : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3));
+        var leased = await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ? 0 : reader.GetInt64(4);
         await reader.DisposeAsync().ConfigureAwait(false);
         using var replay = connection.CreateCommand();
+        // A replay abandoned because this version no longer builds its frozen plan is final but not a failure: it
+        // is counted separately and never as terminal, so it does not degrade capture processing health.
         replay.CommandText = """
             SELECT
-                SUM(CASE WHEN state IN ('Pending', 'Leased', 'RetryWait') THEN 1 ELSE 0 END),
-                SUM(CASE WHEN state = 'RetryWait' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN state IN ('Failed', 'Expired') THEN 1 ELSE 0 END),
+                SUM(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN 1 ELSE 0 END),
+                SUM(CASE WHEN work.state = 'RetryWait' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN work.state = 'Failed' OR (work.state = 'Expired'
+                    AND COALESCE(execution.failure_reason, '') <> $abandoned) THEN 1 ELSE 0 END),
                 MIN(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.accepted_unix_ms END),
-                SUM(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.payload_bytes ELSE 0 END)
+                SUM(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.payload_bytes ELSE 0 END),
+                SUM(CASE WHEN work.state = 'Leased' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN work.state = 'Expired' AND execution.failure_reason = $abandoned THEN 1 ELSE 0 END)
             FROM processing_replay_work work
             JOIN processing_executions execution ON execution.execution_id = work.execution_id;
             """;
+        replay.Parameters.AddWithValue("$abandoned", ProcessingReplayReasons.PlanSuperseded);
         using var replayReader = await replay.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         await replayReader.ReadAsync(cancellationToken).ConfigureAwait(false);
         var replayPending = await replayReader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false) ? 0 : replayReader.GetInt64(0);
@@ -2402,9 +2436,13 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         var replayPendingBytes = await replayReader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false)
             ? 0
             : replayReader.GetInt64(4);
+        var replayLeased = await replayReader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? 0 : replayReader.GetInt64(5);
+        var replayAbandoned = await replayReader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false)
+            ? 0
+            : replayReader.GetInt64(6);
         return new CaptureProcessingOperationalState(
-            pending, retry, terminal, oldest, replayPending, replayRetry, replayTerminal, replayOldest,
-            replayPendingBytes);
+            pending, leased, retry, terminal, oldest, replayPending, replayRetry, replayTerminal, replayOldest,
+            replayPendingBytes, replayLeased, replayAbandoned);
     }
 
     private async ValueTask<bool> InsertOutputAsync(
@@ -3384,12 +3422,17 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         // Every processing connection uses its own page cache. With a shared cache the availability reader's
         // table-level read lock on processing_outputs makes the node writer fail immediately with SQLite error 6
         // ("database table is locked") instead of coexisting with it under WAL, which stalled capture admission (#698).
+        // Private caches are still pooled, as the raw journal and lane store pooling the same file already are: an
+        // unpooled open re-read and re-parsed the whole schema before its first PRAGMA, which was the largest single
+        // CPU cost per frame (#1170). Pooled reuse carries no state between callers: the gallery rank function is
+        // re-registered per open, the window-candidate temp table is emptied before each use, and the migration temp
+        // tables are created and dropped inside the migration transaction.
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = _databasePath,
             Mode = SqliteOpenMode.ReadWrite,
             Cache = SqliteCacheMode.Private,
-            Pooling = false,
+            Pooling = true,
             DefaultTimeout = _busyTimeoutSeconds
         }.ToString());
         try

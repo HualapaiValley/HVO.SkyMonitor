@@ -92,6 +92,8 @@ public static class OpticalCalibrationSession
 
         if (!catalog.IsCompleteForRequestedMagnitude || catalog.CompletenessMagnitudeLimit < solverOptions.MaximumCatalogMagnitude)
             return Result(OpticalCalibrationStatus.Unavailable, "catalog-incomplete", "Catalog source does not declare complete coverage through the requested magnitude ceiling; no fit was attempted.", ["catalog-incomplete"]);
+        if (catalog.Stars.Count > solverOptions.CatalogEntryBound)
+            return Result(OpticalCalibrationStatus.Unavailable, "catalog-selection-unsupported", $"Catalog selection exceeds the {solverOptions.CatalogEntryBound}-entry bound of the requested selection profile; no fit was attempted.", ["catalog-selection-unsupported"]);
         if (catalog.CoordinateModel != AstrometricConventions.CoordinateModel)
             return Result(OpticalCalibrationStatus.Unavailable, "coordinate-model-unsupported", "Only explicitly declared fixed-position J2000 precession is supported.", ["coordinate-model-unsupported"]);
         if (frames.Count < options.MinimumFrames)
@@ -557,7 +559,7 @@ public static class OpticalCalibrationSession
                 result.Covariance = new(OpticalCalibrationCovariance.ResidualScaledMarginal,
                     Array.AsReadOnly(sharedIndex.Select(i => CovarianceNames[i]).ToArray()), Array.AsReadOnly(block));
                 var eigen = AstrometricLinearAlgebra.SymmetricEigenvalues(correlation, m, 1e-24);
-                result.ConditionNumber = eigen.Min() > 0 ? eigen.Max() / eigen.Min() : double.PositiveInfinity;
+                result.ConditionNumber = SpectralConditionNumber(eigen.Min(), eigen.Max());
                 if (!(result.ConditionNumber <= o.MaximumConditionNumber)) result.Rejections.Add("ill-conditioned");
                 var limits = new[] { o.MaximumFocalScaleStandardError, o.MaximumPrincipalPointStandardErrorPixels, o.MaximumPrincipalPointStandardErrorPixels, o.MaximumRadialDistortionStandardError };
                 for (var a = 0; a < m; a++)
@@ -577,6 +579,15 @@ public static class OpticalCalibrationSession
                 Math.Abs(bin.MeanRadialResidualPixels.Value) > o.RadialBiasSignificance * bin.StandardErrorPixels!.Value)
                 result.Rejections.Add($"radial-bias:{bin.Bin}");
         return result;
+    }
+
+    // An unsupported spectrum is an unavailable diagnostic, not a JSON number. The caller still rejects it as
+    // ill-conditioned; finite spectra retain their existing value and result identity.
+    internal static double? SpectralConditionNumber(double smallest, double largest)
+    {
+        if (!(smallest > 0) || !double.IsFinite(largest) || largest < smallest) return null;
+        var condition = largest / smallest;
+        return double.IsFinite(condition) ? condition : null;
     }
 
     /// <summary>Catalog stars whose candidate projection lies inside the readout margin with no projected neighbour within 12 px.</summary>

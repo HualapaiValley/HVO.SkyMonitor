@@ -95,7 +95,8 @@ public sealed record ReplayExecutionView(
     DateTimeOffset? StartedUtc,
     DateTimeOffset? CompletedUtc,
     string? FailureReason,
-    IReadOnlyList<ReplayExecutionNodeView> Nodes);
+    IReadOnlyList<ReplayExecutionNodeView> Nodes,
+    string? Guidance = null);
 
 public sealed record ReplayExecutionNodeView(
     string NodeId,
@@ -364,6 +365,10 @@ internal sealed class CameraAgentReplayUiService(
         {
             return Unavailable<T>(CapacityMessage);
         }
+        catch (ProcessingGraphRevisionSupersededException)
+        {
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Conflict, ProcessingGraphRevisionSupersededException.SafeMessage);
+        }
         catch (ProcessingGraphStoreConflictException)
         {
             return OperatorUiResult<T>.Failure(OperatorUiResultKind.Conflict, ConflictMessage);
@@ -442,8 +447,31 @@ internal sealed class CameraAgentReplayUiService(
             execution.StartedUtc,
             execution.CompletedUtc,
             Sanitize(execution.FailureReason),
-            nodes is null ? [] : [.. nodes.Select(ProjectNode)]);
+            nodes is null ? [] : [.. nodes.Select(ProjectNode)],
+            Guidance(execution.Status, execution.FailureReason));
     }
+
+    internal const string PlanSupersededGuidance =
+        "Abandoned, not failed: this version no longer builds the plan this replay was accepted under, for example " +
+        "after an upgrade. The raw evidence is intact, and this does not count as a terminal replay failure. Submit " +
+        "a new replay against a revision this version compiles.";
+
+    internal const string LeaseExpiredGuidance =
+        "An earlier attempt stopped before it completed, for example because the host restarted, and its lease " +
+        "expired. That attempt counts toward the limit. The replay retries automatically while attempts and its " +
+        "deadline remain.";
+
+    /// <summary>
+    /// The operator reading of a recorded reason. An abandoned replay reads Expired, like a deadline expiry, but it is
+    /// not a failure and only a new submission can run it.
+    /// </summary>
+    internal static string? Guidance(ProcessingGraphExecutionStatus status, string? reason) => (status, reason) switch
+    {
+        (ProcessingGraphExecutionStatus.Expired, ProcessingReplayReasons.PlanSuperseded) => PlanSupersededGuidance,
+        (ProcessingGraphExecutionStatus.Pending or ProcessingGraphExecutionStatus.Running,
+            ProcessingReplayReasons.LeaseExpired) => LeaseExpiredGuidance,
+        _ => null
+    };
 
     private static ReplayExecutionNodeView ProjectNode(ProcessingGraphExecutionNodeState node)
         => new(

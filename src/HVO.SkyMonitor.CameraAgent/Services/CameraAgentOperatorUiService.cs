@@ -368,7 +368,8 @@ internal sealed class CameraAgentOperatorUiService(
     ILogger<CameraAgentOperatorUiService> logger,
     ISiteProfileStore? siteProfileStore = null,
     RawIngressState? rawIngressState = null,
-    CaptureProcessingState? captureProcessingState = null) : ICameraAgentOperatorUiService
+    CaptureProcessingState? captureProcessingState = null,
+    IRawEvidenceOperations? rawEvidenceOperations = null) : ICameraAgentOperatorUiService
 {
     private const int MaximumQuarantineItems = 8;
     private const int QuarantineReadSize = 50;
@@ -514,7 +515,8 @@ internal sealed class CameraAgentOperatorUiService(
         if (pageSize is < 1 or > 50 ||
             !string.Equals(kind, "Artifact", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(kind, "Environmental", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(kind, "TransientRuntime", StringComparison.OrdinalIgnoreCase))
+            !string.Equals(kind, "TransientRuntime", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(kind, "RawEvidence", StringComparison.OrdinalIgnoreCase))
         {
             return OperatorUiResult<OperatorOutboxPage>.Failure(
                 OperatorUiResultKind.Invalid,
@@ -523,6 +525,27 @@ internal sealed class CameraAgentOperatorUiService(
 
         try
         {
+            if (string.Equals(kind, "RawEvidence", StringComparison.OrdinalIgnoreCase))
+            {
+                long? rawCursor = null;
+                if (rawEvidenceOperations is null || !string.IsNullOrWhiteSpace(storageAlias) ||
+                    cursor is not null && !tokens.TryReadRawEvidenceCursor(cursor, out rawCursor))
+                    return OperatorUiResult<OperatorOutboxPage>.Failure(OperatorUiResultKind.Invalid, "The raw evidence query is invalid.");
+                var rawPage = await rawEvidenceOperations.ReadEvidencePageAsync(pageSize, rawCursor, cancellationToken).ConfigureAwait(false);
+                return OperatorUiResult<OperatorOutboxPage>.Success(new("RawEvidence", [], null,
+                    rawPage.Items.Select(item => new OperatorOutboxItem(
+                        "RawEvidence", item.WrittenOff ? "WrittenOff" : item.Target.State, null, "Raw evidence", 0,
+                        item.PayloadBytes, item.LatestAudit?.OccurredUtc ?? item.CreatedUtc,
+                        OutboxOperationsReasonCodes.Sanitize(item.Target.FailureReason),
+                        item.WrittenOff || item.Target.State == "committed" ? null : tokens.ProtectRawEvidenceAction(RawEvidenceReleaseAction.Revalidate, item.Target),
+                        item.WrittenOff || item.Target.State == "committed" ? null : tokens.ProtectRawEvidenceAction(RawEvidenceReleaseAction.WriteOff, item.Target),
+                        item.CreatedUtc, AuditSummary: item.LatestAudit is null ? null :
+                            $"{item.LatestAudit.Action}: {item.LatestAudit.Reason}; actor {item.LatestAudit.Actor}; {item.LatestAudit.OccurredUtc:O}",
+                        AgentId: item.AgentId, CaptureId: item.Target.CaptureId, ArtifactId: item.ArtifactId,
+                        CaptureSequence: item.CaptureSequence, ManifestSha256: item.Target.ManifestSha256)).ToArray(),
+                    rawPage.NextCursor is null ? null : tokens.ProtectRawEvidenceCursor(rawPage.NextCursor.Value)));
+            }
+
             if (string.Equals(kind, "TransientRuntime", StringComparison.OrdinalIgnoreCase))
             {
                 if (!string.IsNullOrWhiteSpace(storageAlias))
@@ -1360,6 +1383,18 @@ internal sealed class CameraAgentOperatorUiService(
 
         try
         {
+            if (string.Equals(kind, "RawEvidence", StringComparison.Ordinal) && rawEvidenceOperations is not null)
+            {
+                var rawAction = action == OutboxOperationAction.Replay ? RawEvidenceReleaseAction.Revalidate : RawEvidenceReleaseAction.WriteOff;
+                if (!tokens.TryReadRawEvidenceAction(rawAction, actionToken, out var target) || target is null)
+                    return NotFound<OperatorCommandReceipt>("The raw evidence action expired or is no longer available.");
+                var receipt = await rawEvidenceOperations.ReleaseEvidenceAsync(
+                    target, rawAction, idempotencyKey, actor, reasonCode, cancellationToken).ConfigureAwait(false);
+                return OperatorUiResult<OperatorCommandReceipt>.Success(new(
+                    rawAction == RawEvidenceReleaseAction.Revalidate ? "Revalidate raw evidence" : "Write off raw evidence",
+                    receipt.Duplicate ? "Duplicate receipt" : "Applied",
+                    rawAction == RawEvidenceReleaseAction.Revalidate ? "Revalidated" : "WrittenOff", null, receipt.Audit.OccurredUtc));
+            }
             OutboxOperationDisposition disposition;
             if (string.Equals(kind, "Artifact", StringComparison.Ordinal) &&
                 tokens.TryReadArtifactAction(action, actionToken, out var alias, out var recordKey))

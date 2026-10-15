@@ -240,7 +240,7 @@ public sealed class W6RollingWindowCaptureTimingTests
     private static CameraModuleConfig CreateConfiguration()
         => new(
             new ObservatoryLocation(0, 0, 0, "UTC"),
-            new CameraModuleDescriptor("VirtualSky"),
+            new CameraModuleDescriptor("Test"), // Payloads are supplied by this fixture, without a virtual sky scene.
             new CameraRigConfig(
                 new SensorProfile("w6-timing", Width, Height, 1, SensorColorMode.Color, CameraPixelFormat.BayerRggb16),
                 new OpticsProfile("w6-timing", 1, 1, 0),

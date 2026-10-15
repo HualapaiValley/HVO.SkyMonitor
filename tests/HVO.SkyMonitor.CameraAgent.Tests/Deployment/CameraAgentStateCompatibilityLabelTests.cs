@@ -38,7 +38,7 @@ public sealed class CameraAgentStateCompatibilityLabelTests
         Assert.AreEqual(
             SqliteRawCaptureJournal.CurrentSchemaVersion.ToString(CultureInfo.InvariantCulture),
             labels["io.hvo.skymonitor.raw-ingress-schema"]);
-        Assert.AreEqual(RawIngressV13Schema.MigrationContract, labels["io.hvo.skymonitor.raw-ingress-migration"]);
+        Assert.AreEqual(RawIngressV13Schema.RecoveryMigrationContract, labels["io.hvo.skymonitor.raw-ingress-migration"]);
     }
 
     [TestMethod]
@@ -66,9 +66,12 @@ public sealed class CameraAgentStateCompatibilityLabelTests
         var labels = ReadImageLabels();
 
         Assert.AreEqual(
-            CatalogSnapshotResolver.SupportedManifestVersion.ToString(CultureInfo.InvariantCulture),
+            ApprovedCatalogSpecifications.Get("hyg-v44-production").ManifestVersion.ToString(CultureInfo.InvariantCulture),
             labels["io.hvo.skymonitor.catalog-manifest-version"]);
-        Assert.AreEqual("hyg-v42-production-p3-s2", labels["io.hvo.skymonitor.catalog-contract"]);
+        Assert.AreEqual("hvo-approved-catalogs-v1", labels["io.hvo.skymonitor.catalog-contract"]);
+        Assert.AreEqual(
+            ApprovedCatalogSpecifications.Get("hyg-v42-production").ManifestVersion.ToString(CultureInfo.InvariantCulture),
+            labels["io.hvo.skymonitor.catalog-manifest-version"]);
     }
 
     private static Dictionary<string, string> ReadImageLabels()

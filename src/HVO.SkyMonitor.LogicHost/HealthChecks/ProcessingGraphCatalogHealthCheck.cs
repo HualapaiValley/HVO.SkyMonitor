@@ -1,5 +1,6 @@
 using System.Text;
 using HVO.SkyMonitor.LogicHost.Data;
+using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -8,6 +9,7 @@ namespace HVO.SkyMonitor.LogicHost.HealthChecks;
 
 internal sealed class ProcessingGraphCatalogHealthCheck(
     ApplicationDbContext dbContext,
+    ICentralProcessingGraphNodeRegistry nodeRegistry,
     TimeProvider timeProvider) : IHealthCheck
 {
     public async Task<HealthCheckResult> CheckHealthAsync(
@@ -61,6 +63,20 @@ internal sealed class ProcessingGraphCatalogHealthCheck(
                 StringComparison.Ordinal))
         {
             return HealthCheckResult.Unhealthy("The canonical processing graph identities are inconsistent.");
+        }
+
+        var stale = await CanonicalCentralGraphSeedDiagnostics.FindStaleAssignmentsAsync(
+            dbContext, nodeRegistry, now, cancellationToken).ConfigureAwait(false);
+        if (stale.Count > 0)
+        {
+            return HealthCheckResult.Degraded(
+                $"{stale.Count} active central processing graph assignments resolve revisions this binary cannot " +
+                "expand; frames they cover fail ingest with HTTP 500 and accumulate on the edge until reassigned.",
+                data: new Dictionary<string, object>
+                {
+                    ["staleAssignmentCount"] = stale.Count,
+                    ["staleAssignmentIds"] = string.Join(',', stale.Select(static item => item.AssignmentId))
+                });
         }
 
         return HealthCheckResult.Healthy("The processing graph catalog is available and internally consistent.");

@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.Astronomy;
 using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;

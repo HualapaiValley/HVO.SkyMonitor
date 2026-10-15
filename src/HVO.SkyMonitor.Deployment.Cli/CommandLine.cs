@@ -235,8 +235,9 @@ internal static class CommandLine
             ["catalog", "select", ..] => (LifecycleOperationKind.CatalogSelect, 2),
             ["catalog", "rollback", ..] => (LifecycleOperationKind.CatalogRollback, 2),
             ["catalog", "gc", ..] => (LifecycleOperationKind.CatalogGarbageCollect, 2),
+            ["catalog", "check", ..] => (LifecycleOperationKind.CatalogCheck, 2),
             _ => throw new InstallUsageException(
-                "Usage: hvo-skymonitor status|cameraagent <install|recover-owner|preflight|reset-state|upgrade|rollback|reinstall|uninstall|purge>|catalog <install|select|rollback|gc> [options]")
+                "Usage: hvo-skymonitor status|cameraagent <install|recover-owner|preflight|reset-state|upgrade|rollback|reinstall|uninstall|purge>|catalog <install|select|rollback|gc|check> [options]")
         };
         var values = new Dictionary<string, string?>(StringComparer.Ordinal);
         var flags = new HashSet<string>(StringComparer.Ordinal);

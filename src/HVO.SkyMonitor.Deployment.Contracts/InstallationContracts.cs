@@ -80,7 +80,8 @@ public enum LifecycleOperationKind
     CatalogInstall,
     CatalogSelect,
     CatalogRollback,
-    CatalogGarbageCollect
+    CatalogGarbageCollect,
+    CatalogCheck
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<LifecycleOperationPhase>))]
@@ -230,7 +231,9 @@ public sealed record LifecycleContinuityBoundary(
     long OutboxPending,
     long OutboxLeased,
     DateTimeOffset RecordedUtc,
-    bool CaptureInitialized = true);
+    bool CaptureInitialized = true,
+    long ReplayPending = 0,
+    long ReplayLeased = 0);
 
 public sealed record BackupFileIdentity(
     string RelativePath,

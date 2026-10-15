@@ -296,7 +296,7 @@ public sealed class RetentionBackgroundService(
             .ThenBy(static policy => policy.RecipeName, StringComparer.Ordinal)
             .ToArray();
 
-    private static bool IsFileStorageStep(string? typeName)
+    internal static bool IsFileStorageStep(string? typeName)
     {
         if (string.IsNullOrWhiteSpace(typeName))
         {

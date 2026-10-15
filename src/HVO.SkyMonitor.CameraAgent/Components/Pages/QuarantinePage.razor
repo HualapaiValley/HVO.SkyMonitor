@@ -11,12 +11,13 @@
 
 <div class="quarantine-page">
     <header class="page-heading">
-        <div><p class="eyebrow">Protected durable recovery</p><h1>Quarantine browser</h1><p>Cursor-paged artifact, environmental, and transient-runtime records. Results remain bounded and storage paths are never disclosed.</p></div>
+        <div><p class="eyebrow">Protected durable recovery</p><h1>Quarantine and retry browser</h1><p>Review raw evidence quarantines and audited releases, artifact retries, environmental records, and transient work. Artifact retries continue automatically. Results remain bounded and storage paths are never disclosed.</p></div>
         @if (_page is not null) { <span class="result-count">@_page.Items.Count record@(_page.Items.Count == 1 ? string.Empty : "s")</span> }
     </header>
 
     <nav class="source-nav" aria-label="Quarantine source">
-        <a class="@SourceClass("Artifact")" aria-current="@SourceCurrent("Artifact")" href="/operations/quarantine">Artifact quarantine</a>
+        <a class="@SourceClass("RawEvidence")" aria-current="@SourceCurrent("RawEvidence")" href="/operations/quarantine?kind=RawEvidence">Raw evidence quarantine and releases</a>
+        <a class="@SourceClass("Artifact")" aria-current="@SourceCurrent("Artifact")" href="/operations/quarantine">Artifact quarantine and retry</a>
         <a class="@SourceClass("Environmental")" aria-current="@SourceCurrent("Environmental")" href="/operations/quarantine?kind=Environmental">Environmental quarantine and terminal</a>
         <a class="@SourceClass("TransientRuntime")" aria-current="@SourceCurrent("TransientRuntime")" href="/operations/quarantine?kind=TransientRuntime">Transient runtime quarantine</a>
     </nav>
@@ -55,7 +56,7 @@
     {
         <dialog @ref="_dialog" class="confirmation" aria-labelledby="quarantine-confirm-heading" aria-describedby="quarantine-confirm-description" @oncancel="CancelAsync" @oncancel:preventDefault>
             <p class="eyebrow">Explicit confirmation</p>
-            <h2 id="quarantine-confirm-heading">@_pending.Action @OperationsPage.SplitWords(_pending.Item.Kind) item?</h2>
+            <h2 id="quarantine-confirm-heading">@ActionLabel @OperationsPage.SplitWords(_pending.Item.Kind) item?</h2>
             <p id="quarantine-confirm-description">@ConfirmationDescription</p>
             <dl>
                 <div><dt>Status</dt><dd>@OperationsPage.SplitWords(_pending.Item.Status)</dd></div>
@@ -101,7 +102,7 @@
                 }
                 else
                 {
-                    <button type="button" class="btn @(_pending.Action == OutboxOperationAction.Abandon ? "btn-danger" : "btn-primary")" disabled="@_isSubmitting" @onclick="ConfirmAsync">@(_isSubmitting ? "Submitting..." : $"Confirm {_pending.Action.ToString().ToLowerInvariant()}")</button>
+                    <button type="button" class="btn @(_pending.Action == OutboxOperationAction.Abandon ? "btn-danger" : "btn-primary")" disabled="@_isSubmitting" @onclick="ConfirmAsync">@(_isSubmitting ? "Submitting..." : $"Confirm {ActionLabel.ToLowerInvariant()}")</button>
                 }
             </div>
         </dialog>

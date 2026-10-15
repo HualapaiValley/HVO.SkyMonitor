@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.Astronomy;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;

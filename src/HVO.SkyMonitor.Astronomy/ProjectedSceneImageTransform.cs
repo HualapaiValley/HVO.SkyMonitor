@@ -3,7 +3,9 @@ namespace HVO.SkyMonitor.Astronomy;
 /// <summary>Transformed emitted-image geometry detached from optical projection metadata.</summary>
 public sealed record ProjectedSceneGeometrySnapshot(
     IReadOnlyList<ProjectedCelestialObject> Objects,
-    IReadOnlyList<ProjectedConstellationSegment> Segments);
+    IReadOnlyList<ProjectedConstellationSegment> Segments,
+    IReadOnlyList<ProjectedResolvedFootprint>? ResolvedFootprints = null,
+    ProjectedDeepSky? DeepSky = null);
 
 /// <summary>Applies the canonical emitted-image transform exactly once to continuous pixel-edge coordinates.</summary>
 public static class ProjectedSceneImageTransform
@@ -82,7 +84,92 @@ public static class ProjectedSceneImageTransform
                 });
             }
         }
-        return new(objects, segments);
+        var footprints = source.ResolvedFootprints
+            .Select(footprint => TransformFootprint(transform, footprint))
+            .OfType<ProjectedResolvedFootprint>()
+            .ToArray();
+        return new(objects, segments, footprints, source.DeepSky is { } deepSky ? TransformDeepSky(transform, deepSky) : null);
+    }
+
+    /// <summary>
+    /// Moves deep-sky geometry into emitted pixels. A pixel outside the crop becomes null; reconciling objects whose
+    /// drawn geometry the crop removed is left to the scene snapshot, which also sees normalization.
+    /// </summary>
+    private static ProjectedDeepSky TransformDeepSky(ProjectedSceneImageTransformV1 transform, ProjectedDeepSky deepSky)
+    {
+        var lengthScale = Math.Sqrt((double)transform.BinX * transform.BinY);
+        var outlines = new List<ProjectedDeepSkyOutline>();
+        foreach (var outline in deepSky.Outlines)
+        {
+            var parts = TransformParts(transform, outline.Parts);
+            if (parts.Count == 0) continue;
+            outlines.Add(outline with
+            {
+                Clipped = outline.Clipped || !ProjectedDeepSkyOutline.IsComplete(parts, outline.RingCount),
+                Bounds = ResolvedFootprintSampler.ComputeBounds(parts),
+                Parts = parts
+            });
+        }
+        return deepSky with
+        {
+            Objects = deepSky.Objects.Select(item => item with
+            {
+                Pixel = item.Pixel is { } pixel && ContainsCrop(transform, pixel) ? Apply(transform, pixel) : null,
+                MajorAxisPixels = item.MajorAxisPixels / lengthScale
+            }).ToArray(),
+            Outlines = outlines
+        };
+    }
+
+    private static ProjectedResolvedFootprint? TransformFootprint(
+        ProjectedSceneImageTransformV1 transform,
+        ProjectedResolvedFootprint footprint)
+    {
+        var parts = TransformParts(transform, footprint.Parts);
+        if (parts.Count == 0) return null;
+        return footprint with
+        {
+            CenterPixel = footprint.CenterPixel is { } center && ContainsCrop(transform, center)
+                ? Apply(transform, center)
+                : null,
+            Clipped = footprint.Clipped || !ResolvedFootprintSampler.IsSingleClosed(parts),
+            Bounds = ResolvedFootprintSampler.ComputeBounds(parts),
+            Parts = parts
+        };
+    }
+
+    /// <summary>Clips each part to the crop and maps it into emitted pixels; a part stays closed only when uncropped.</summary>
+    private static List<ResolvedFootprintPart> TransformParts(
+        ProjectedSceneImageTransformV1 transform,
+        IReadOnlyList<ResolvedFootprintPart> sourceParts)
+    {
+        var parts = new List<ResolvedFootprintPart>();
+        foreach (var part in sourceParts)
+        {
+            var chords = new List<(PixelPoint From, PixelPoint To)>();
+            var clippedByCrop = false;
+            var chordCount = part.Closed ? part.Points.Count : part.Points.Count - 1;
+            for (var index = 0; index < chordCount; index++)
+            {
+                var from = part.Points[index];
+                var to = part.Points[(index + 1) % part.Points.Count];
+                if (!TryClipToCrop(transform, from, to, out var clippedFrom, out var clippedTo))
+                {
+                    clippedByCrop = true;
+                    continue;
+                }
+                if (ResolvedFootprintSampler.Distance(clippedFrom, from) > ResolvedFootprintSampler.JoinTolerancePixels ||
+                    ResolvedFootprintSampler.Distance(clippedTo, to) > ResolvedFootprintSampler.JoinTolerancePixels)
+                    clippedByCrop = true;
+                chords.Add((clippedFrom, clippedTo));
+            }
+            parts.AddRange(ResolvedFootprintSampler.Stitch(chords, part.Closed && !clippedByCrop)
+                .Select(stitched => stitched with
+                {
+                    Points = stitched.Points.Select(point => Apply(transform, point)).ToArray()
+                }));
+        }
+        return parts;
     }
 
     public static void Validate(ProjectedSceneImageTransformV1 transform, int sourceWidthPixels, int sourceHeightPixels)
@@ -117,7 +204,7 @@ public static class ProjectedSceneImageTransform
         transform.BinX == 1 && transform.BinY == 1 && !transform.HorizontalMirror && !transform.VerticalMirror &&
         transform.Rotation == ProjectedSceneQuarterRotation.Degrees0;
 
-    private static bool ContainsCrop(ProjectedSceneImageTransformV1 transform, PixelPoint point) =>
+    internal static bool ContainsCrop(ProjectedSceneImageTransformV1 transform, PixelPoint point) =>
         point.X >= transform.CropX && point.X <= transform.CropX + transform.CropWidth &&
         point.Y >= transform.CropY && point.Y <= transform.CropY + transform.CropHeight;
 

@@ -287,6 +287,7 @@ public sealed partial class Program
                 metrics.AddMeter(OperatorUiTelemetry.MeterName);
                 metrics.AddMeter(ObjectStoreTelemetry.MeterName);
                 metrics.AddMeter(ProcessingGraphCatalogTelemetry.MeterName);
+                metrics.AddMeter(ExecutionEvidenceTelemetry.MeterName);
                 metrics.AddAspNetCoreInstrumentation();
             })
             .WithTracing(tracing => tracing
@@ -295,7 +296,8 @@ public sealed partial class Program
                 .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
                 .AddSource(OperatorUiTelemetry.ActivitySourceName)
                 .AddSource(ObjectStoreTelemetry.ActivitySourceName)
-                .AddSource(ProcessingGraphCatalogTelemetry.ActivitySourceName));
+                .AddSource(ProcessingGraphCatalogTelemetry.ActivitySourceName)
+                .AddSource(ExecutionEvidenceTelemetry.ActivitySourceName));
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
         {
@@ -827,6 +829,14 @@ public sealed partial class Program
         builder.Services.AddScoped<IDeviceRegistrationReadService, DeviceRegistrationReadService>();
         builder.Services.AddScoped<IDeviceCredentialValidator, DeviceCredentialValidator>();
         builder.Services.AddScoped<IDeviceHeartbeatService, DeviceHeartbeatService>();
+        builder.Services.AddOptions<ExecutionEvidenceOptions>()
+            .Bind(builder.Configuration.GetSection(ExecutionEvidenceOptions.SectionName)).ValidateDataAnnotations().ValidateOnStart();
+        builder.Services.AddScoped<ExecutionEvidenceDatabase>();
+        builder.Services.AddScoped<ExecutionEvidenceService>();
+        builder.Services.AddScoped<ExecutionEvidenceReconciler>();
+        builder.Services.AddHostedService<ExecutionEvidenceReconciliationWorker>();
+        builder.Services.AddSingleton<ExecutionEvidenceCapacity>();
+        builder.Services.AddSingleton<ExecutionEvidenceTelemetry>();
         builder.Services.AddSingleton<FleetStatusClassifier>();
         builder.Services.AddSingleton<FleetStatusTelemetry>();
         builder.Services.AddSingleton<FleetRetentionState>();
@@ -890,6 +900,7 @@ public sealed partial class Program
         builder.Services.AddScoped<ICentralProcessingGraphScheduler, CentralProcessingGraphScheduler>();
         builder.Services.AddScoped<ICentralProcessingGraphExecutionService, CentralProcessingGraphExecutionService>();
         builder.Services.AddScoped<ICentralDerivativeJobScheduler, CentralDerivativeJobScheduler>();
+        builder.Services.AddScoped<CentralProjectedSceneResolver>();
         builder.Services.AddScoped<ICentralDerivativeWindowResolver, CentralDerivativeWindowResolver>();
         builder.Services.AddScoped<CentralDerivativeJobService>();
         builder.Services.AddScoped<ICentralDerivativeJobService>(
@@ -928,6 +939,7 @@ public sealed partial class Program
         builder.Services.AddSingleton<CentralDerivativeWorkerTelemetry>();
         builder.Services.AddSingleton<CentralProcessingGraphConvergenceSignal>();
         builder.Services.AddHostedService<CentralDerivativeWorker>();
+        HVO.SkyMonitor.LogicHost.Services.TimeLapses.CentralTimeLapseServices.AddCentralTimeLapses(builder.Services, builder.Configuration);
         builder.Services.AddScoped<IDeviceRigProfileService, DeviceRigProfileService>();
         builder.Services.AddInstalledCelestialCatalog();
 
