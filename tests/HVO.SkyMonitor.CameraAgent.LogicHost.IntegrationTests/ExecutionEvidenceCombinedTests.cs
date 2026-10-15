@@ -54,19 +54,89 @@ public sealed class ExecutionEvidenceCombinedTests
     [TestMethod]
     public async Task MoreThan256PendingUnitsDrainAcrossExporterRestartWithOldOriginBytesPreserved()
     {
+        static long RangeSpan(IEnumerable<ExecutionEvidenceSequenceRangeV1> ranges)
+            => ranges.Sum(range => checked(range.ToSequence - range.FromSequence + 1));
+
         await using var edge = await ExecutionEvidenceCombinedHarness.CreateAsync(Fixture).ConfigureAwait(false);
         await edge.StopCaptureAndWaitForTerminalAsync().ConfigureAwait(false);
         var central = await ExecutionEvidenceCentralWorkload.BindAsync(Fixture, edge).ConfigureAwait(false);
         edge.Http.Fault = EvidenceHttpFault.Unavailable;
         await edge.RunCycleAsync().ConfigureAwait(false);
+        var source = edge.ReadLocalRows();
+        Assert.IsTrue(source.Any(row => row.Envelope.GraphRevision is not null));
+        Assert.IsTrue(source.Any(row => row.Envelope.Execution is { Nodes.Length: > 0 }));
         await edge.EnlistAvailabilityHistoryAsync(300, "restart").ConfigureAwait(false);
         var old = edge.ReadLocalRows();
         Assert.IsGreaterThan(256, old.Count);
+        Assert.AreEqual(source.Count + 300, old.Count);
+        Assert.IsTrue(old.All(row => row.Status == "pending"));
         var oldOrigin = old[0].Envelope.Origin.IdentitySha256;
-        edge.RestartExporter();
+        Assert.IsTrue(old.All(row => row.Envelope.Origin.IdentitySha256 == oldOrigin));
         edge.Http.Fault = EvidenceHttpFault.None;
+
+        var negotiation = await edge.Transport.NegotiateAsync(new(
+            ExecutionEvidenceNegotiationRequestV1.CurrentSchemaVersion, old[0].Envelope.Origin,
+            GraphExecutionEvidenceSchemaVersions.Supported), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(ExecutionEvidenceTransportDisposition.Completed, negotiation.Disposition);
+        var negotiated = negotiation.Response;
+        Assert.IsNotNull(negotiated);
+        Assert.AreEqual(64, negotiated.Limits.MaximumResyncUnits);
+        var receiverUnitLimit = negotiated.Limits.MaximumResyncUnits;
+
+        // Seed the exact real source prefix, including its revision/execution dependencies, over production HTTP.
+        // Including its real availability keeps unrelated early holes out of the controlled replay gaps below.
+        // These direct receipts never enter the exporter, so every local row must remain pending.
+        foreach (var batch in source.Chunk(receiverUnitLimit))
+        {
+            var seeded = await edge.Transport.SubmitAsync(oldOrigin, batch.Select(row => row.Bytes).ToArray(),
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(ExecutionEvidenceTransportDisposition.Completed, seeded.Disposition);
+            var feedback = seeded.Feedback;
+            Assert.IsNotNull(feedback);
+            foreach (var row in batch)
+            {
+                Assert.IsTrue(feedback.Facts.Any(fact => fact.Kind == ExecutionEvidenceFactKind.Acknowledged &&
+                    fact.EvidenceId == row.Envelope.EvidenceId && fact.OriginSequence == row.Envelope.OriginSequence &&
+                    fact.PayloadSha256 == row.Envelope.PayloadSha256));
+            }
+        }
+        var sourceThrough = source.Max(row => row.Envelope.OriginSequence);
+        var highest = old.MaxBy(row => row.Envelope.OriginSequence)!;
+        Assert.AreEqual(ExecutionEvidenceBodyKind.ArtifactAvailability, highest.Envelope.Kind);
+        Assert.AreEqual(299L, highest.Envelope.OriginSequence - sourceThrough - 1);
+        // An already-enlisted interior observation leaves 32 + 266 missing sequences. Clipping each range to 64
+        // would still request 96; the total range span must fit the negotiated receiver limit.
+        var anchor = old.Single(row => row.Envelope.OriginSequence == sourceThrough + receiverUnitLimit / 2 + 1);
+        Assert.AreEqual(ExecutionEvidenceBodyKind.ArtifactAvailability, anchor.Envelope.Kind);
+        EdgeEvidenceRow[] aheadRows = [anchor, highest];
+        var ahead = await edge.Transport.SubmitAsync(oldOrigin, aheadRows.Select(row => row.Bytes).ToArray(), CancellationToken.None)
+            .ConfigureAwait(false);
+        Assert.AreEqual(ExecutionEvidenceTransportDisposition.Completed, ahead.Disposition);
+        var gapFeedback = ahead.Feedback;
+        Assert.IsNotNull(gapFeedback);
+        foreach (var row in aheadRows)
+        {
+            Assert.IsTrue(gapFeedback.Facts.Any(fact => fact.Kind == ExecutionEvidenceFactKind.Acknowledged &&
+                fact.EvidenceId == row.Envelope.EvidenceId && fact.OriginSequence == row.Envelope.OriginSequence &&
+                fact.PayloadSha256 == row.Envelope.PayloadSha256));
+        }
+        Assert.AreEqual(sourceThrough, gapFeedback.ContiguousThroughSequence);
+        var stillPending = edge.ReadLocalRows();
+        Assert.HasCount(old.Count, stillPending);
+        Assert.IsTrue(stillPending.All(row => row.Status == "pending"));
+        var resync = GraphExecutionEvidenceJson.CreateResyncRequest(gapFeedback);
+        Assert.IsNotNull(resync);
+        Assert.IsGreaterThan(0L, RangeSpan(resync.Ranges));
+        Assert.IsLessThanOrEqualTo((long)receiverUnitLimit, RangeSpan(resync.Ranges),
+            "The generated replay ranges must fit the receiver's 64-unit cap even though MaximumUnits remains the shared 256 default.");
+        Assert.IsLessThanOrEqualTo((long)receiverUnitLimit, RangeSpan(gapFeedback.MissingRanges));
+        Assert.IsTrue(gapFeedback.MissingRangesTruncated, "The remaining 298 missing sequences need several bounded replies.");
+
+        var drainExchangeOffset = edge.Http.Exchanges.Count;
+        edge.RestartExporter();
         await edge.DrainAsync().ConfigureAwait(false);
         var final = edge.ReadLocalRows();
+        Assert.HasCount(old.Count, final);
         foreach (var before in old)
         {
             var after = final.Single(row => row.Envelope.EvidenceId == before.Envelope.EvidenceId);
@@ -80,8 +150,45 @@ public sealed class ExecutionEvidenceCombinedTests
         var submits = Submissions(edge).ToArray();
         Assert.IsTrue(submits.Any(exchange => ExecutionEvidenceBatchCodec.Decode(exchange.Request, 64).Count == 64));
         Assert.IsTrue(submits.All(exchange => GraphExecutionEvidenceJson.ParseFeedback(exchange.Response).Value!.Facts.Length <= 256));
+        foreach (var exchange in submits)
+        {
+            var feedback = GraphExecutionEvidenceJson.ParseFeedback(exchange.Response).Value!;
+            Assert.IsLessThanOrEqualTo(receiverUnitLimit, ExecutionEvidenceBatchCodec.Decode(exchange.Request, 256).Count);
+            Assert.IsLessThanOrEqualTo((long)receiverUnitLimit, RangeSpan(feedback.MissingRanges));
+            if (GraphExecutionEvidenceJson.CreateResyncRequest(feedback) is { } replay)
+            {
+                Assert.IsLessThanOrEqualTo((long)receiverUnitLimit, RangeSpan(replay.Ranges));
+            }
+        }
+        Assert.IsFalse(edge.Http.Exchanges.Any(exchange => exchange.Status == HttpStatusCode.BadRequest));
+        Assert.IsTrue(edge.Http.Exchanges.Where(exchange => exchange.Route == "/api/device/execution-evidence")
+            .All(exchange => exchange.Status == HttpStatusCode.OK));
+        Assert.IsGreaterThan(0L, edge.State.Snapshot.ResyncRequests, "The exporter must exercise its range-replay path.");
+        var drainFacts = edge.Http.Exchanges.Skip(drainExchangeOffset)
+            .Where(exchange => exchange.Route == "/api/device/execution-evidence" && exchange.Status == HttpStatusCode.OK)
+            .SelectMany(exchange => GraphExecutionEvidenceJson.ParseFeedback(exchange.Response).Value!.Facts).ToArray();
+        CollectionAssert.AreEquivalent(old.Select(row => row.Envelope.EvidenceId).ToArray(), drainFacts
+            .Where(fact => fact.Kind == ExecutionEvidenceFactKind.Acknowledged).Select(fact => fact.EvidenceId).Distinct().ToArray());
+        var closed = GraphExecutionEvidenceJson.ParseFeedback(submits[^1].Response).Value!;
+        Assert.AreEqual(oldOrigin, closed.OriginIdentitySha256);
+        Assert.AreEqual(highest.Envelope.OriginSequence, closed.ContiguousThroughSequence);
+        Assert.AreEqual(highest.Envelope.OriginSequence, closed.Retention.AcknowledgedThroughSequence);
+        Assert.IsEmpty(closed.MissingRanges);
+        Assert.IsFalse(closed.MissingRangesTruncated);
+        var backlog = await edge.Outbox.ReadBacklogAsync(edge.Root, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(0L, backlog.PendingCount + backlog.RetryCount + backlog.QuarantinedCount + backlog.AbandonedCount);
+        Assert.AreEqual((long)old.Count, backlog.AcknowledgedCount);
+        Assert.AreEqual(0L, backlog.ConflictCount + backlog.SourcePrunedEvents + backlog.ProjectionRejectedEvents);
         AssertExactAcknowledgements(edge, final);
         await central.AssertPersistedAsync(final).ConfigureAwait(false);
+        using var scope = Fixture.CreateHostScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var storedOrigin = await db.Set<ImportedExecutionEvidenceOrigin>().AsNoTracking()
+            .SingleAsync(origin => origin.BindingId == central.Binding.Id && origin.IdentitySha256 == oldOrigin)
+            .ConfigureAwait(false);
+        Assert.AreEqual(highest.Envelope.OriginSequence, storedOrigin.HighestSeenSequence);
+        Assert.AreEqual(highest.Envelope.OriginSequence, storedOrigin.ContiguousThroughSequence);
+        Assert.IsNull(storedOrigin.GapDetectedAtUtc);
     }
 
     [TestMethod]
