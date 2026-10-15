@@ -48,11 +48,11 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private const string ExpectedEffectiveGraphSha256 = "114F1E0A994BAE76B0D5B6B9D2A7145F9D7B624E65436192D2B3FA28BEA3B339";
     private const string ExpectedMonoAgentId = "cameraagent-standalone-w6-asi174-mono8";
     private const string ExpectedMonoRigSha256 = "FBF90275979743BC7B13128808CBE079D206F9D5435EB45F55D9AC956118A479";
-    private const string ExpectedMonoProcessingSha256 = "2F106F303DE1CD41AE1E1B8B001B15BD521A6121A9595BD3BB0D38B00DE30631";
-    private const string ExpectedMonoLocalProfileSha256 = "4546797C6EB0BBB0399723F83E471F7FFD5DC40395F54299ED4BFC5F25C9D320";
+    private const string ExpectedMonoProcessingSha256 = "4C8ECBAB017F1EDBF0C008ADA5D31EDEAA2B816C2C3B468F426FB83497553106";
+    private const string ExpectedMonoLocalProfileSha256 = "D59FA049B7A525571C3DB244C4BED80F7D6D4F4AD9AB15839F1F25A1962044BD";
     private const string ExpectedMonoScheduleSha256 = "99892B9195FDAF6800CB1B8D914B39A610A989B2775B2BD980E50EE8C15CCD80";
-    private const string ExpectedMonoDesiredGraphSha256 = "2538EB75560857DA6319DD4F20533C6F6B768E7DB47F95B661150B85D6ECFBAB";
-    private const string ExpectedMonoEffectiveGraphSha256 = "44A1253961E3BE879BF69C27DC57F24DD492FE4416232913EEB99E6273D7A7E5";
+    private const string ExpectedMonoDesiredGraphSha256 = "75717D0AF614FCABA0E482BB968DFE1B2DC9CED9FF85843D1CE1275CB65A6F90";
+    private const string ExpectedMonoEffectiveGraphSha256 = "0057FF63B73D26C31C376646EDD99C4C4BCCED9A7FDAD65849A8B8C45F6910D2";
     private const string CentralHandlerReadyRecord = "HVO211_HANDLER_READY";
     private const string CentralHandlerAttemptRecord = "HVO211_HANDLER_ATTEMPT";
     private static readonly string[] ExpectedCatalogRows = ["11734", "24378", "24549", "27919", "32263", "37173"];

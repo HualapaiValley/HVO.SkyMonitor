@@ -289,12 +289,20 @@ pipeline definition, validate it with the installed version, then activate it
 Validated revision does not replace its immutable saved plans. Configured-basic
 is an immediate alternative while preparing the replacement revision.
 
-Already-accepted archived replay retains its frozen hashes. At execution, an
-old hash fails the existing comparison with `ProcessingPlanSupersededException`;
-it cannot execute using this version's step implementation. This hash change
-does not change replay retry/terminal classification. Submit a new replay against
-a compatible revision after handling the old job through the supported replay
-operations. Raw evidence is never deleted to bypass the mismatch.
+Already-accepted archived replay retains its frozen hashes. Before any step
+executes, the replay worker's frozen-plan check rejects an old hash with
+`InvalidDataException`. The existing generic failure boundary records
+`processing.replay-exception`, consumes an attempt, and schedules `RetryWait`
+while the execution remains `Pending`. Repeated attempts eventually become
+`Failed`, or `Expired` when the replay deadline elapses. Adding version inputs
+does not change this replay classification.
+
+Activating a compatible revision cannot repair that job's immutable frozen plan.
+On the archived replay execution page, use **Request cancellation** while the
+old job is still pending or running, confirm it, then submit a fresh replay
+against a compatible revision. A terminal
+old job needs a fresh submission too. Raw evidence is never deleted to bypass
+the mismatch.
 
 The version inputs do not change recipe output keys or manifest bytes by
 themselves. They prevent an earlier frozen plan from running even when its
