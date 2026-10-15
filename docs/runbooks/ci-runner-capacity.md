@@ -80,33 +80,65 @@ expressed positively:
 - `gh-runner-06` stays general, so qualification can never occupy it.
 
 The replay below is a model, not a measurement. It replays the observed job
-durations through a FIFO queue with seeded random runner choice and in-run
-delay propagation, then injects a 316s ready PR (with and without a concurrent
-v1 push) every 30s through each observed qualification run. Seeds 0-2.
+durations on the explicit six-runner pool through a FIFO queue, with seeded
+random runner choice and in-run delay propagation. It then injects a 316s ready
+PR every 30s through each observed qualification run, in three arrival orders:
 
-| Window | Reserve | Injected ready-PR wait mean / p99 / max | Injected >60s | Isolated qualification makespan (mean) |
-| --- | ---: | ---: | ---: | ---: |
-| current | 0 | 3.2s / 80s / 87s | 18 of 810 | 1288s |
-| current | **1** | **0s / 0s / 0s** | **0 of 810** | **1337s (+3.8%)** |
-| current | 2 | 0s / 0s / 0s | 0 of 810 | 1482s (+15%) |
-| historical | 0 | 49.1s / 601s / 958s | 4134 of 20316 | 1290s |
-| historical | 1 | 16.6s / 590s / 958s | 840 of 20316 | 1325s (+2.7%) |
-| historical | 2 | 11.4s / 583s / 958s | 446 of 20316 | 1469s (+14%) |
+- `alone`: the ready PR arrives on its own;
+- `pr-then-push`: a v1 push arrives at the same moment, behind it;
+- `push-then-pr`: the v1 push arrives just ahead of it, as when the previous
+  merge's push is still dispatching.
 
-Decision: reserve one runner. In the current regime it removes modeled
-qualification contention for a single ready PR, at a cost of about 4%
-qualification makespan. Two reserved runners cost about 15% for no further
-modeled gain in the current regime.
+Each order is reported separately. Seeds 0-2.
 
-In the historical regime one reserved runner cuts injected waits over 60s by
-80%, but the tail stays near ten minutes. That tail comes from ready PRs and
-dispatches queuing behind one another during bursts. A single reserve cannot
-remove it; the finalization lock and the short v1 profile address it instead.
+Current window (405 probes per row):
+
+| Reserve | Arrival order | Injected ready-PR wait mean / p99 / max | >60s | Isolated qualification makespan (mean) |
+| ---: | --- | ---: | ---: | ---: |
+| 0 | alone, pr-then-push | 3.2s / 80s / 87s | 9 | 1288s |
+| 0 | push-then-pr | 40.0s / 300s / 317s | 84 | 1288s |
+| **1** | **alone, pr-then-push** | **0s / 0s / 0s** | **0** | **1337s (+3.8%)** |
+| **1** | **push-then-pr** | **40.0s / 300s / 316s** | **84** | **1337s (+3.8%)** |
+| 2 | all three | 0s / 0s / 0s | 0 | 1482s (+15%) |
+
+Historical window (10158 probes per row):
+
+| Reserve | Arrival order | Injected ready-PR wait mean / p99 / max | >60s | Isolated qualification makespan (mean) |
+| ---: | --- | ---: | ---: | ---: |
+| 0 | alone, pr-then-push | 49.1s / 601s / 958s | 2067 | 1290s |
+| 0 | push-then-pr | 94.6s / 723s / 1065s | 3330 | 1290s |
+| 1 | alone, pr-then-push | 16.6s / 590s / 958s | 420 | 1325s (+2.7%) |
+| 1 | push-then-pr | 92.1s / 735s / 1167s | 3492 | 1325s (+2.7%) |
+| 2 | alone, pr-then-push | 11.4s / 583s / 958s | 223 | 1469s (+14%) |
+| 2 | push-then-pr | 39.0s / 735s / 1167s | 1273 | 1469s (+14%) |
+
+Decision: trial one reserved runner.
+
+- In the current regime it removes modeled qualification contention for a ready
+  PR that arrives on its own or ahead of a concurrent push, at about 4%
+  qualification makespan.
+- It does not help a ready PR that arrives just behind a v1 push. The push takes
+  `gh-runner-06` first, and the ready PR waits for the push (316s) or for a
+  qualification job, exactly as without a reserve.
+- Two reserved runners remove that case too in the current regime, but cost
+  about 15% qualification makespan, four times the cost of one.
+
+Two reserved runners are therefore deferred, not rejected: the live acceptance
+in section 4 decides between one and two. With one reserve, the historical
+`push-then-pr` order is slightly worse than with none, because qualification runs
+longer and overlaps more probes.
+
+In the historical regime, one reserved runner cuts injected waits over 60s by
+80% for a lone ready PR, but the tail stays near ten minutes. That tail comes
+from ready PRs and dispatches queuing behind one another during bursts. A
+runner reserve cannot remove it; the finalization lock and the short v1 profile
+address it instead.
 
 What the reserve does not guarantee:
 
 - It does not make `gh-runner-06` exclusive. A v1 push, a second ready PR or an
-  HVO.AgentControl job can occupy it.
+  HVO.AgentControl job can occupy it, and the `push-then-pr` rows above show the
+  resulting wait.
 - It does not protect against an outage of `gh-runner-06`. `verify-labels`
   warns when no general runner is online.
 - It does not change the job count, timeouts, cancellation, exact-SHA checkout,
@@ -140,9 +172,19 @@ ref, which is `development/v1`. Therefore:
 3. Merge the workflow change into `development/v1`. It reaches `main` with the
    next promotion.
 4. After the next promotion window, collect that window and compare it with
-   section 2 (section 5). Keep the change if ready-PR and v1-push waits during
-   the qualification run stay under 60s and the qualification makespan stays
-   within the modeled +5%. Otherwise roll back and record the result on #849.
+   sections 2 and 3, using the commands in section 5. Use the same `--pool` even
+   if a runner ran nothing. Keep the change when both hold:
+   - every ready-PR or v1-push job that arrived during the qualification run,
+     while no other general job held `gh-runner-06`, started within 60s;
+   - the qualification makespan stays within the modeled +5%.
+
+   Attribute every longer wait from the collected input: either another v1 or
+   AgentControl job held `gh-runner-06`, which is the modeled `push-then-pr`
+   case, or something else, which is a defect. Then record the result on #849.
+   - Repeated `push-then-pr` waits are the evidence for two reserved runners:
+     delete the label from `gh-runner-05` and rerun `verify-labels` with
+     `gh-runner-05,gh-runner-06` as general.
+   - A makespan regression beyond +5%, or an unattributed wait, means roll back.
 
 Re-registering a runner (`config.sh`) replaces its labels. Re-register
 `gh-runner-01` .. `gh-runner-05` with `--labels ...,hvo-qualification`, then run
@@ -173,14 +215,21 @@ with step 2 of the rollout releases them.
 ./scripts/ci:runner-capacity collect --since 2026-10-04 --until 2026-10-14 \
   --repo HualapaiValley/HVO.SkyMonitor --repo HualapaiValley/HVO.AgentControl \
   --output capacity-input.json
-./scripts/ci:runner-capacity report --input capacity-input.json --summary
-./scripts/ci:runner-capacity report --input capacity-input.json > capacity-report.json
+pool=gh-runner-01,gh-runner-02,gh-runner-03,gh-runner-04,gh-runner-05,gh-runner-06
+./scripts/ci:runner-capacity report --input capacity-input.json --pool "$pool" --summary
+./scripts/ci:runner-capacity report --input capacity-input.json --pool "$pool" > capacity-report.json
 ```
 
 `collect` splits the window by UTC day and fails rather than writing a partial
-input when a listing is incomplete or at the 1000-run cap. `report` is
-deterministic for a given input; `--reserve`, `--seeds`, `--probe-seconds` and
-`--probe-step` select the model. `scripts/test:ci-runner-capacity` checks the
+input when a listing is incomplete, repeats an object, or is at the 1000-run
+cap.
+
+`report` takes the pool inventory explicitly through `--pool`. An idle runner
+still serves the replay, and the reserve is the last `N` names in sorted
+order, so `gh-runner-06` for one reserved runner. A pool job on a runner that
+`--pool` omits fails the report. The report is deterministic for a given input,
+and `--reserve`, `--seeds`, `--probe-seconds` and `--probe-step` select the
+model. `scripts/test:ci-runner-capacity` checks the
 tool against a hand-computed fixture and an offline `gh` substitute, and runs in
 the full-qualification Quality job.
 
@@ -192,7 +241,7 @@ evidence archive with SHA-256 manifests.
 | Option | Disposition |
 | --- | --- |
 | Reserve one general runner with `hvo-qualification` | Adopted as the trial (section 3) |
-| Reserve two runners | Rejected: +15% qualification makespan for no modeled ready-PR gain |
+| Reserve two runners | Deferred to the live acceptance (section 4). It also covers a ready PR arriving just behind a v1 push, at +15% qualification makespan against +3.8% for one |
 | Add runner VMs | Not measured. It depends on KVM host CPU, memory and I/O headroom, which this issue did not inventory, so it is out of scope for a reversible trial |
 | Runner-local or LAN content-addressed build store (#852 follow-up) | Recorded as an option, not adopted. #852 measured 527 MB packed per build and 398-709s per GitHub artifact hop against a 97s rebuild. A fleet-local store could remove the transfer, but it would add a cache-trust boundary shared by mutually untrusting jobs (poisoning, digest binding and eviction) and needs disk on the Docker volumes (38-61% used). It does not address the queue wait this issue measures |
 | Workflow priority or label exclusion | Not available in GitHub Actions |

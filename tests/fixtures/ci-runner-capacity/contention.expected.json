@@ -22,6 +22,19 @@
       0,
       1
     ],
+    "scenarios": {
+      "alone": [
+        "pr"
+      ],
+      "pr-then-push": [
+        "pr",
+        "push"
+      ],
+      "push-then-pr": [
+        "push",
+        "pr"
+      ]
+    },
     "seeds": 2
   },
   "observed": {
@@ -58,6 +71,7 @@
     }
   },
   "pool": {
+    "idleInWindow": [],
     "observedPeakConcurrent": 3,
     "runners": [
       "gh-runner-01",
@@ -135,13 +149,33 @@
   "stress": {
     "0": {
       "injectedReadyPrWait": {
-        "max": 100,
-        "mean": 55.0,
-        "n": 16,
-        "over60": 8,
-        "p50": 70,
-        "p90": 100,
-        "p99": 100
+        "alone": {
+          "max": 100,
+          "mean": 55.0,
+          "n": 8,
+          "over60": 4,
+          "p50": 70,
+          "p90": 100,
+          "p99": 100
+        },
+        "pr-then-push": {
+          "max": 100,
+          "mean": 55.0,
+          "n": 8,
+          "over60": 4,
+          "p50": 70,
+          "p90": 100,
+          "p99": 100
+        },
+        "push-then-pr": {
+          "max": 100,
+          "mean": 55.0,
+          "n": 8,
+          "over60": 4,
+          "p50": 70,
+          "p90": 100,
+          "p99": 100
+        }
       },
       "isolatedQualificationMakespan": {
         "max": 100,
@@ -154,13 +188,33 @@
     },
     "1": {
       "injectedReadyPrWait": {
-        "max": 30,
-        "mean": 7.5,
-        "n": 16,
-        "over60": 0,
-        "p50": 0,
-        "p90": 30,
-        "p99": 30
+        "alone": {
+          "max": 30,
+          "mean": 7.5,
+          "n": 8,
+          "over60": 0,
+          "p50": 0,
+          "p90": 30,
+          "p99": 30
+        },
+        "pr-then-push": {
+          "max": 30,
+          "mean": 7.5,
+          "n": 8,
+          "over60": 0,
+          "p50": 0,
+          "p90": 30,
+          "p99": 30
+        },
+        "push-then-pr": {
+          "max": 70,
+          "mean": 42.5,
+          "n": 8,
+          "over60": 2,
+          "p50": 50,
+          "p90": 70,
+          "p99": 70
+        }
       },
       "isolatedQualificationMakespan": {
         "max": 200,

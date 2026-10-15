@@ -4,15 +4,20 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tool="$repo_root/scripts/ci:runner-capacity"
 fixtures="$repo_root/tests/fixtures/ci-runner-capacity"
+pool=gh-runner-01,gh-runner-02,gh-runner-03
 
 fail() { printf '%s\n' "$1" >&2; exit 1; }
 
 # The contention fixture is small enough to replay by hand: three 100s
 # qualification jobs fill a three-runner pool at t=0 and a ready PR arrives at
 # t=10. With no reserve it waits 90s; reserving one runner removes the wait and
-# serializes the third qualification job, doubling the makespan to 200s.
-report="$("$tool" report --input "$fixtures/contention.json" --reserve 0,1 --seeds 2 \
-    --probe-seconds 50 --probe-step 30)"
+# serializes the third qualification job, doubling the makespan to 200s. The
+# 50s probes arrive at t=0, 30, 60 and 90. Without a reserve they wait for the
+# qualification jobs to finish at t=100. With one, a probe alone (or ahead of a
+# concurrent v1 push) waits only for the ready PR that holds gh-runner-03; a push
+# arriving just ahead takes the reserve first and the probe waits 50/70/40/10s.
+report="$("$tool" report --input "$fixtures/contention.json" --pool "$pool" --reserve 0,1 \
+    --seeds 2 --probe-seconds 50 --probe-step 30)"
 diff -u "$fixtures/contention.expected.json" <(jq -S . <<< "$report") ||
     fail 'Contention report changed.'
 jq -e '
@@ -21,21 +26,37 @@ jq -e '
   .replay["0"].waits["ready-pr"].max == 90 and .replay["1"].waits["ready-pr"].max == 0 and
   .replay["0"].qualificationMakespan.max == 100 and .replay["1"].qualificationMakespan.max == 200 and
   .replay["1"].generalOnlyRunners == ["gh-runner-03"] and
-  .stress["0"].injectedReadyPrWait.max == 100 and .stress["0"].injectedReadyPrWait.mean == 55 and
-  .stress["1"].injectedReadyPrWait.max == 30 and .stress["1"].injectedReadyPrWait.mean == 7.5 and
+  ([.stress["0"].injectedReadyPrWait[] | [.mean, .max]] | unique == [[55, 100]]) and
+  .stress["1"].injectedReadyPrWait.alone.mean == 7.5 and .stress["1"].injectedReadyPrWait.alone.max == 30 and
+  .stress["1"].injectedReadyPrWait["pr-then-push"].mean == 7.5 and
+  .stress["1"].injectedReadyPrWait["pr-then-push"].max == 30 and
+  .stress["1"].injectedReadyPrWait["push-then-pr"].mean == 42.5 and
+  .stress["1"].injectedReadyPrWait["push-then-pr"].max == 70 and
+  .stress["1"].injectedReadyPrWait["push-then-pr"].over60 == 2 and
   (.model.note | test("modeled"))
 ' <<< "$report" >/dev/null || fail 'Contention replay lost a hand-computed invariant.'
 
 for seed_run in 1 2; do
-    [[ "$("$tool" report --input "$fixtures/contention.json" --reserve 0,1 --seeds 2 \
-        --probe-seconds 50 --probe-step 30)" == "$report" ]] || fail "Replay is not deterministic ($seed_run)."
+    [[ "$("$tool" report --input "$fixtures/contention.json" --pool "$pool" --reserve 0,1 \
+        --seeds 2 --probe-seconds 50 --probe-step 30)" == "$report" ]] ||
+        fail "Replay is not deterministic ($seed_run)."
 done
 
-summary="$("$tool" report --input "$fixtures/contention.json" --reserve 0,1 --seeds 2 \
-    --probe-seconds 50 --probe-step 30 --summary)"
+summary="$("$tool" report --input "$fixtures/contention.json" --pool "$pool" --reserve 0,1 \
+    --seeds 2 --probe-seconds 50 --probe-step 30 --summary)"
 grep -Fq '| ready-pr | 1 | 90 | 90 | 90 | 90 | 1 |' <<< "$summary" || fail 'Summary lost observed waits.'
 grep -Fq 'Observed queue wait in seconds; modeled results follow.' <<< "$summary" ||
     fail 'Summary does not separate observed from modeled results.'
+grep -Fq '| 1 | push-then-pr | 42.5/70/70 | 2 of 8 | 200.0 |' <<< "$summary" ||
+    fail 'Summary does not report each arrival order separately.'
+
+# A runner that ran nothing in the window is still part of the pool. With an
+# idle fourth runner reserved, the qualification jobs keep their three runners.
+jq -e '.pool.idleInWindow == ["gh-runner-04"] and
+       .replay["1"].generalOnlyRunners == ["gh-runner-04"] and
+       .replay["1"].qualificationMakespan.max == 100 and .replay["1"].waits["ready-pr"].max == 0' \
+    <<< "$("$tool" report --input "$fixtures/contention.json" --pool "$pool,gh-runner-04" \
+        --reserve 1 --seeds 1)" >/dev/null || fail 'An idle pool runner was dropped from the replay.'
 
 work_root="$(mktemp -d)"
 trap 'rm -rf "$work_root"' EXIT
@@ -46,7 +67,7 @@ expect_failure() {
     if "$@" >"$work_root/out" 2>"$work_root/err"; then
         fail "$name reported success."
     fi
-    grep -Fq "$pattern" "$work_root/err" || {
+    grep -Fq -- "$pattern" "$work_root/err" || {
         cat "$work_root/err" >&2
         fail "$name failed for the wrong reason."
     }
@@ -54,16 +75,42 @@ expect_failure() {
 
 printf '%s\n' '{"schema":"other","jobs":[]}' > "$work_root/wrong-schema.json"
 expect_failure 'Wrong schema' 'not a hvo-runner-capacity-input-v1' \
-    "$tool" report --input "$work_root/wrong-schema.json"
+    "$tool" report --input "$work_root/wrong-schema.json" --pool "$pool"
+expect_failure 'Missing pool inventory' '--pool is required' \
+    "$tool" report --input "$fixtures/contention.json"
+expect_failure 'Runner outside the pool inventory' 'ran on gh-runner-03, which --pool does not list' \
+    "$tool" report --input "$fixtures/contention.json" --pool gh-runner-01,gh-runner-02
 expect_failure 'Reserve of the whole pool' 'must leave at least one qualification runner' \
-    "$tool" report --input "$fixtures/contention.json" --reserve 3
+    "$tool" report --input "$fixtures/contention.json" --pool "$pool" --reserve 3
 expect_failure 'Empty window' 'No completed pool jobs' \
-    "$tool" report --input "$fixtures/contention.json" --since 2026-10-11T00:00:00Z
+    "$tool" report --input "$fixtures/contention.json" --pool "$pool" --since 2026-10-11T00:00:00Z
 jq '.jobs[0].completedAt = "2026-10-10T11:59:00Z"' "$fixtures/contention.json" > "$work_root/reversed.json"
 expect_failure 'Completion before start' 'completes before it starts' \
-    "$tool" report --input "$work_root/reversed.json"
+    "$tool" report --input "$work_root/reversed.json" --pool "$pool"
 expect_failure 'Unknown option' 'Unknown argument: --reserves' \
-    "$tool" report --input "$fixtures/contention.json" --reserves 1
+    "$tool" report --input "$fixtures/contention.json" --pool "$pool" --reserves 1
+
+# In-run dependencies: qualification run 1 has two 100s jobs at t=0 and a 10s
+# job created when both completed. Reserving gh-runner-02 delays the second
+# first job to t=100-200, and the dependent job inherits that delay (makespan
+# 210s, not 110s). Run 2 holds two zero-length jobs created and completed
+# together; neither may become the other's predecessor.
+jq -n '
+  def at(s): "2026-10-10T12:00:00Z" | fromdateiso8601 + s | todateiso8601;
+  def job(run; id; runner; c; s; e): {repository: "example/HVO.SkyMonitor", workflow: "CI",
+    event: "push", headBranch: "main", run: run, attempt: 1, job: id, name: "job \(id)",
+    labels: ["self-hosted"], runner: runner, createdAt: at(c), startedAt: at(s),
+    completedAt: at(e), conclusion: "success", headSha: null};
+  {schema: "hvo-runner-capacity-input-v1", jobs: [
+    job(1; 11; "gh-runner-01"; 0; 0; 100), job(1; 12; "gh-runner-02"; 0; 0; 100),
+    job(1; 13; "gh-runner-01"; 100; 100; 110),
+    job(2; 21; "gh-runner-01"; 300; 300; 300), job(2; 22; "gh-runner-02"; 300; 300; 300)]}' \
+    > "$work_root/dependencies.json"
+jq -e '.replay["0"].qualificationMakespan == {n: 2, p50: 110, p90: 110, p99: 110, max: 110, mean: 55} and
+       .replay["1"].qualificationMakespan == {n: 2, p50: 210, p90: 210, p99: 210, max: 210, mean: 105}' \
+    <<< "$("$tool" report --input "$work_root/dependencies.json" --pool gh-runner-01,gh-runner-02 \
+        --reserve 0,1 --seeds 1 --probe-step 50)" >/dev/null ||
+    fail 'Replay mishandled in-run dependencies or zero-length jobs.'
 
 # An offline gh substitute serves the run listing, job pages and runner pool.
 mkdir -p "$work_root/bin"
@@ -83,7 +130,11 @@ if "/actions/runs?" in path:
     total = 1000 if scenario == "full-day" else 1
     count = 0 if scenario == "short" else 1
     run = {"id": 7, "name": "Development v1", "event": "pull_request", "head_branch": "x"}
-    print(json.dumps([{"total_count": total, "workflow_runs": [run] * count}]))
+    if scenario == "overlap":
+        # Two pages repeat one run and satisfy total_count while another is missing.
+        print(json.dumps([{"total_count": 2, "workflow_runs": [run]}] * 2))
+    else:
+        print(json.dumps([{"total_count": total, "workflow_runs": [run] * count}]))
 elif "/actions/runs/7/jobs?" in path:
     hosted = {"id": 1, "labels": ["ubuntu-24.04"], "name": "Development v1 / Preflight"}
     pool = {"id": 2, "labels": ["self-hosted", "linux", "x64", "hvo-skymonitor"],
@@ -127,11 +178,12 @@ if grep -Ev '^\["api", "--paginate", "--slurp", "[^"]+"\]$' "$work_root/calls.js
     fail 'Collect issued a non-GET or unexpected gh call.'
 fi
 
-for scenario in full-day short error; do
+for scenario in full-day short overlap error; do
     rm -f "$work_root/partial.json"
     case "$scenario" in
         full-day) reason='cannot prove completeness' ;;
         short) reason='Incomplete listing' ;;
+        overlap) reason='Duplicate or missing ids' ;;
         error) reason='Could not read' ;;
     esac
     expect_failure "Collect $scenario" "$reason" run_with_gh "$scenario" "$tool" collect \

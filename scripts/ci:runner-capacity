@@ -18,7 +18,8 @@ Usage:
                                      [--repo OWNER/REPO]... [--workers N]
   scripts/ci:runner-capacity verify-labels --org ORG --qualification NAME[,NAME...]
                                            --general NAME[,NAME...] [--label LABEL]
-  scripts/ci:runner-capacity report --input FILE [--since ISO8601] [--until ISO8601]
+  scripts/ci:runner-capacity report --input FILE --pool NAME[,NAME...]
+                                    [--since ISO8601] [--until ISO8601]
                                     [--pool-prefix PREFIX] [--reserve N[,N...]]
                                     [--seeds N] [--probe-seconds S] [--probe-step S]
                                     [--summary]
@@ -108,6 +109,11 @@ def pages(path, key, limit=None):
     if limit is not None and total >= limit:
         # A listing at its cap cannot be proven complete; fail rather than undercount.
         fail(f"{path} lists {total} items; the API cannot prove completeness.")
+    # Overlapping pages can repeat a record and still reach total_count while
+    # another record is missing, so every object must be distinct.
+    ids = [item.get("id") if isinstance(item, dict) else None for item in items]
+    if not all(isinstance(value, int) for value in ids) or len(set(ids)) != len(ids):
+        fail(f"Duplicate or missing ids in listing for {path}")
     if len(items) != total:
         fail(f"Incomplete listing for {path}: {len(items)} of {total}")
     return items, total
@@ -282,7 +288,7 @@ def summarize(values, waits=True):
     return result
 
 
-def load(values):
+def load(values, pool):
     try:
         with open(values["--input"]) as source:
             document = json.load(source)
@@ -303,6 +309,9 @@ def load(values):
                                        ("createdAt", "startedAt", "completedAt"))
         if not runner.startswith(prefix) or started is None or completed is None:
             continue
+        if runner not in pool:
+            # A pool runner missing from --pool would silently shrink the model.
+            fail(f"Job {raw.get('job')} ran on {runner}, which --pool does not list.")
         if created is None or not since <= created < until:
             continue
         # A failed-jobs re-run lists the jobs it reused from an earlier attempt
@@ -334,8 +343,10 @@ def load(values):
 def simulate(jobs, runners, reserve, seed):
     # Event-driven replay: FIFO dispatch over idle eligible runners, a seeded
     # random choice among ties, and in-run dependency delay propagation. A job
-    # created after an earlier job of its run completed waits for that job"s
-    # simulated completion, preserving the observed gap between them.
+    # created after an earlier job of its run completed waits for that job's
+    # simulated completion, preserving the observed gap between them. Only a
+    # job earlier in (created, position) order can be a predecessor, so short
+    # or zero-length jobs created together cannot depend on one another.
     rng = random.Random(seed)
     general_only = set(runners[len(runners) - reserve:]) if reserve else set()
     by_run = {}
@@ -346,7 +357,8 @@ def simulate(jobs, runners, reserve, seed):
     for members in by_run.values():
         for index in members:
             for other in members:
-                if other != index and jobs[other]["completed"] <= jobs[index]["created"] + 1:
+                earlier = (jobs[other]["created"], other) < (jobs[index]["created"], index)
+                if earlier and jobs[other]["completed"] <= jobs[index]["created"] + 1:
                     predecessors[index].append(other)
                     dependents[other].append(index)
     outstanding = [len(items) for items in predecessors]
@@ -407,8 +419,8 @@ def makespans(jobs, finish):
 
 
 def report(arguments):
-    values = options(arguments, ("--input", "--since", "--until", "--pool-prefix", "--reserve",
-                                 "--seeds", "--probe-seconds", "--probe-step"),
+    values = options(arguments, ("--input", "--pool", "--since", "--until", "--pool-prefix",
+                                 "--reserve", "--seeds", "--probe-seconds", "--probe-step"),
                      switches=("--summary",))
     if not values.get("--input"):
         fail("--input is required.")
@@ -418,8 +430,12 @@ def report(arguments):
     probe_step = int(values.get("--probe-step") or 30)
     if seeds < 1 or probe_seconds <= 0 or probe_step < 1:
         fail("--seeds, --probe-seconds and --probe-step must be positive.")
-    document, jobs, clamped, reused = load(values)
-    runners = sorted({job["runner"] for job in jobs})
+    # The pool is an explicit inventory: a runner that ran nothing in the window
+    # still serves jobs in the replay. The last `reserve` names stay general.
+    runners = sorted({name for name in (values.get("--pool") or "").split(",") if name})
+    if not runners:
+        fail("--pool is required: list every runner in the pool, busy or idle.")
+    document, jobs, clamped, reused = load(values, set(runners))
     if any(reserve < 0 or reserve >= len(runners) for reserve in reserves):
         fail(f"--reserve must leave at least one qualification runner of {len(runners)}.")
     classes = sorted({job["class"] for job in jobs})
@@ -447,40 +463,40 @@ def report(arguments):
             "qualificationMakespan": summarize(spans, waits=False),
         }
 
-    # Stress: inject a ready-PR Build and Unit (and optionally a concurrent v1
-    # push) every probe step through each observed qualification run.
+    # Stress: inject a ready-PR Build and Unit every probe step through each
+    # observed qualification run, alone and with a v1 push arriving at the same
+    # moment ahead of or behind it. Each arrival order is reported separately.
     qualification_runs = {}
     for job in jobs:
         if is_qualification(job["class"]):
             qualification_runs.setdefault(job["key"], []).append(job)
+    scenarios = {"alone": ("pr",), "pr-then-push": ("pr", "push"), "push-then-pr": ("push", "pr")}
     stress = {}
     for reserve in reserves:
-        probes, isolated = [], []
+        probes, isolated = {name: [] for name in scenarios}, []
         for key in sorted(qualification_runs, key=str):
             members = qualification_runs[key]
             first = min(job["created"] for job in members)
             last = max(job["completed"] for job in members)
             context = [job for job in jobs if job["created"] < last + 600 and job["completed"] > first - 600]
             for offset in range(0, max(1, int(last - first)), probe_step):
-                for concurrent_push in (False, True):
-                    injected = [{"key": ("probe", offset, "pr"), "id": "probe", "class": "ready-pr",
+                for scenario, order in scenarios.items():
+                    # Equal arrivals dispatch in id order, so the ids fix the order.
+                    injected = [{"key": ("probe", offset, kind), "id": f"probe-{position}",
+                                 "class": "ready-pr" if kind == "pr" else "v1-push",
                                  "created": first + offset, "completed": first + offset + probe_seconds,
-                                 "duration": probe_seconds}]
-                    if concurrent_push:
-                        injected.append({"key": ("probe", offset, "push"), "id": "probe-push",
-                                         "class": "v1-push", "created": first + offset,
-                                         "completed": first + offset + probe_seconds,
-                                         "duration": probe_seconds})
+                                 "duration": probe_seconds} for position, kind in enumerate(order)]
                     combined = sorted(context + injected, key=lambda job: (job["created"], str(job["id"])))
-                    probe = combined.index(injected[0])
+                    probe = combined.index(injected[order.index("pr")])
                     for seed in range(seeds):
                         arrival, start, _ = simulate(combined, runners, reserve, seed)
-                        probes.append(start[probe] - arrival[probe])
+                        probes[scenario].append(start[probe] - arrival[probe])
             for seed in range(seeds):
                 _, _, finish = simulate(sorted(members, key=lambda job: (job["created"], str(job["id"]))),
                                         runners, reserve, seed)
                 isolated.append(max(finish) - first)
-        stress[str(reserve)] = {"injectedReadyPrWait": summarize(probes),
+        stress[str(reserve)] = {"injectedReadyPrWait": {name: summarize(items)
+                                                        for name, items in probes.items()},
                                 "isolatedQualificationMakespan": summarize(isolated, waits=False)}
 
     result = {
@@ -488,13 +504,15 @@ def report(arguments):
         "input": {"schema": document["schema"], "window": document.get("window"),
                   "repositories": document.get("repositories"),
                   "selected": {"since": values.get("--since"), "until": values.get("--until")}},
-        "pool": {"runners": runners, "observedPeakConcurrent": peak},
+        "pool": {"runners": runners, "observedPeakConcurrent": peak,
+                 "idleInWindow": sorted(set(runners) - {job["runner"] for job in jobs})},
         "observed": {"jobs": len(jobs), "rerunCreatedClamped": clamped,
                      "reusedAttemptJobsDropped": reused, "waits": observed_waits,
                      "qualificationMakespan": summarize(
                          makespans(jobs, [job["completed"] for job in jobs]), waits=False)},
         "model": {"seeds": seeds, "reserves": reserves, "probeSeconds": probe_seconds,
                   "probeStep": probe_step, "dispatch": "fifo-random-eligible-runner",
+                  "scenarios": {name: list(order) for name, order in scenarios.items()},
                   "note": "modeled replay, not an observed measurement"},
         "replay": replay,
         "stress": stress,
@@ -505,13 +523,15 @@ def report(arguments):
             lines.append(f"| {cls} | {item['n']} | {item['p50']} | {item['p90']} | "
                          f"{item['p99']} | {item['max']} | {item['over60']} |")
         lines += ["", "Observed queue wait in seconds; modeled results follow.", "",
-                  "| Reserve | injected ready-PR p99/max | >60s | qualification makespan mean |",
-                  "|---:|---:|---:|---:|"]
+                  "| Reserve | Scenario | injected ready-PR mean/p99/max | >60s of n |"
+                  " qualification makespan mean |",
+                  "|---:|---|---:|---:|---:|"]
         for reserve in reserves:
-            probe = stress[str(reserve)]["injectedReadyPrWait"]
             span = stress[str(reserve)]["isolatedQualificationMakespan"]
-            lines.append(f"| {reserve} | {probe.get('p99')}/{probe.get('max')} | "
-                         f"{probe.get('over60')} | {span.get('mean')} |")
+            for scenario, probe in stress[str(reserve)]["injectedReadyPrWait"].items():
+                lines.append(f"| {reserve} | {scenario} | {probe.get('mean')}/{probe.get('p99')}/"
+                             f"{probe.get('max')} | {probe.get('over60')} of {probe.get('n')} | "
+                             f"{span.get('mean')} |")
         print("\n".join(lines))
     else:
         print(json.dumps(result, sort_keys=True))
