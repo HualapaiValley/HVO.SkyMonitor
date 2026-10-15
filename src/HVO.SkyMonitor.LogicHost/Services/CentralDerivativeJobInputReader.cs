@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services.Processing;
 using HVO.SkyMonitor.Processing;
@@ -69,13 +70,8 @@ internal sealed class CentralDerivativeJobInputReader(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(lease);
-        var leaseInputs = lease.Inputs is { Count: > 0 }
-            ? lease.Inputs
-            : [new CentralDerivativeJobLeaseInput(
-                0, Guid.Empty, lease.SourceDevicePublicId, lease.SourceArtifactId, lease.SourceRole,
-                lease.SourceRecipeVersion, lease.SourceChecksumSha256, lease.SourceMediaType, 0,
-                lease.FrameId, lease.AgentId, null, lease.CapturedAtUtc, string.Empty)];
-        var processingInputs = new List<LogicHostProcessingInput>(leaseInputs.Count);
+        var leaseInputs = ResolveLeaseInputs(lease);
+        var processingInputs = new List<LogicHostProcessingInput>(leaseInputs.Length);
         long totalBytes = 0;
         foreach (var leaseInput in leaseInputs.OrderBy(input => input.Ordinal))
         {
@@ -92,8 +88,8 @@ internal sealed class CentralDerivativeJobInputReader(
     {
         ArgumentNullException.ThrowIfNull(lease);
         var leaseInputs = ResolveLeaseInputs(lease);
-        var processingInputs = new List<LogicHostProcessingInput>(leaseInputs.Count);
-        var references = new List<CentralDerivativeJobInputReference>(leaseInputs.Count);
+        var processingInputs = new List<LogicHostProcessingInput>(leaseInputs.Length);
+        var references = new List<CentralDerivativeJobInputReference>(leaseInputs.Length);
         long totalBytes = 0;
         foreach (var leaseInput in leaseInputs.OrderBy(input => input.Ordinal))
         {
@@ -120,9 +116,9 @@ internal sealed class CentralDerivativeJobInputReader(
         return new CentralDerivativeJobInputDescriptions(processingInputs, references, totalBytes);
     }
 
-    private static IReadOnlyList<CentralDerivativeJobLeaseInput> ResolveLeaseInputs(CentralDerivativeJobLease lease)
+    private static CentralDerivativeJobLeaseInput[] ResolveLeaseInputs(CentralDerivativeJobLease lease)
         => lease.Inputs is { Count: > 0 }
-            ? lease.Inputs
+            ? CentralProjectedSceneResolver.RecipeInputs(lease).ToArray()
             : [new CentralDerivativeJobLeaseInput(
                 0, Guid.Empty, lease.SourceDevicePublicId, lease.SourceArtifactId, lease.SourceRole,
                 lease.SourceRecipeVersion, lease.SourceChecksumSha256, lease.SourceMediaType, 0,
@@ -232,6 +228,30 @@ internal sealed class CentralDerivativeJobInputReader(
     {
         if (artifact.Layout is null)
         {
+            if (artifact.StructuredProduct?.ProductSchemaVersion == ProjectedSceneV1.DeepSkySchemaVersion)
+            {
+                // An ingested scene carries authenticated processing evidence in its immutable descriptor;
+                // the separate job evidence row exists only for products published by central execution.
+                var structured = CentralReconstructionDescriptorFactory.CreateStructured(artifact);
+                var capture = structured.SourceCapture;
+                if (capture.Capture.CaptureId != artifact.Frame!.FrameId)
+                    throw new CentralDerivativeInputRejectedException("The retained scene capture evidence is inconsistent.");
+                var integration = TimeSpan.FromTicks(structured.TotalIntegrationTicks);
+                return new LogicHostProcessingInput(null, payload, leaseInput.BindingName,
+                    new ProcessingArtifact(structured.Artifact.ArtifactId, structured.Artifact.Role,
+                        structured.Artifact.Variant, ProcessingIdentity.CreateRecipeIdentity(structured.Artifact.Recipe).IdentitySha256,
+                        structured.Artifact.MediaType, null, payload, structured.Artifact.CreatedUtc,
+                        integration, structured.Compatibility, capture.Capture.CaptureSequence,
+                        structured.Artifact.SourceArtifactIds, capture.Timing.ExposureStartedUtc,
+                        ProcessingArtifact.ResolveObservationEndedUtc(capture.Timing.ExposureStartedUtc,
+                            capture.Timing.ExposureEndedUtc, integration))
+                    {
+                        CaptureId = capture.Capture.CaptureId,
+                        ProductKind = structured.Kind,
+                        SchemaVersion = structured.ProductSchemaVersion,
+                        ContentIdentitySha256 = structured.ContentIdentitySha256
+                    }, leaseInput.BindingKind);
+            }
             var evidence = await dbContext.CentralArtifactProcessingEvidence.AsNoTracking()
                 .SingleOrDefaultAsync(item => item.CentralArtifactId == artifact.Id, cancellationToken)
                 .ConfigureAwait(false)
@@ -264,7 +284,10 @@ internal sealed class CentralDerivativeJobInputReader(
                     ProcessingArtifact.ResolveObservationEndedUtc(
                         artifact.Frame.Timing.ExposureStartedUtc,
                         artifact.Frame.Timing.ExposureEndedUtc,
-                        TimeSpan.FromTicks(evidence.TotalIntegrationTicks))),
+                        TimeSpan.FromTicks(evidence.TotalIntegrationTicks)))
+                {
+                    CaptureId = artifact.Frame.FrameId
+                },
                 leaseInput.BindingKind);
         }
         return new LogicHostProcessingInput(
@@ -282,18 +305,19 @@ internal sealed class CentralDerivativeJobInputReader(
         var now = timeProvider.GetUtcNow();
         if (leaseInput.CentralArtifactId == Guid.Empty)
         {
-            return await dbContext.CentralDerivativeJobs.AsNoTracking()
-                .Where(candidate => candidate.Id == lease.JobId
-                    && candidate.Status == CentralDerivativeJobStatus.Leased
-                    && candidate.LeaseToken == lease.LeaseToken
-                    && candidate.LeaseOwner == lease.WorkerId
-                    && candidate.LeaseExpiresAtUtc > now
-                    && candidate.SourceArtifact!.ArtifactId == lease.SourceArtifactId
-                    && candidate.SourceArtifact.ObjectState == CentralArtifactObjectState.Available
-                    && candidate.SourceArtifact.ReconstructionState == CentralReconstructionState.Complete)
-                .Select(candidate => candidate.SourceArtifact!)
+            return await dbContext.CentralArtifacts.AsNoTracking()
+                .Where(artifact => artifact.ArtifactId == lease.SourceArtifactId
+                    && artifact.ObjectState == CentralArtifactObjectState.Available
+                    && artifact.ReconstructionState == CentralReconstructionState.Complete
+                    && dbContext.CentralDerivativeJobs.Any(candidate => candidate.Id == lease.JobId
+                        && candidate.Status == CentralDerivativeJobStatus.Leased
+                        && candidate.LeaseToken == lease.LeaseToken
+                        && candidate.LeaseOwner == lease.WorkerId
+                        && candidate.LeaseExpiresAtUtc > now
+                        && candidate.SourceCentralArtifactId == artifact.Id))
                 .Include(artifact => artifact.Layout)
                 .Include(artifact => artifact.Recipe)
+                .Include(artifact => artifact.StructuredProduct)
                 .Include(artifact => artifact.Sources)
                 .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
                 .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)
@@ -317,6 +341,7 @@ internal sealed class CentralDerivativeJobInputReader(
                         && input.Ordinal == leaseInput.Ordinal)))
             .Include(artifact => artifact.Layout)
             .Include(artifact => artifact.Recipe)
+            .Include(artifact => artifact.StructuredProduct)
             .Include(artifact => artifact.Sources)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Timing)
             .Include(artifact => artifact.Frame)!.ThenInclude(frame => frame!.Control)

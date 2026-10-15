@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.Astronomy;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -1358,7 +1359,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
     {
         if (availableCaptures.Contains(captureId)) return "Available";
         var state = nodes.SelectMany(static node => node.Outputs)
-            .Where(static output => string.Equals(output.ProductSchemaVersion, "projected-scene-v1", StringComparison.Ordinal))
+            .Where(static output => ProjectedSceneV1.IsSupportedSchemaVersion(output.ProductSchemaVersion))
             .Select(static output => output.AvailabilityState)
             .FirstOrDefault();
         return state is "Quarantined" or "Missing" ? state : "Unavailable";

@@ -165,6 +165,7 @@ grep -Fq 'Deployment reason: pull request does not change deployment-contract in
 verify_component_plan ".agents/skills/pr-lifecycle/resources/SKILL.md" full false true true true true true true
 
 verify_component_plan "tools/HVO.SkyMonitor.VirtualSkyPoc/Program.cs" full false true true true true true true
+verify_component_plan "tools/HVO.SkyMonitor.TimeLapseBenchmark/ProductionPath.cs" full false true true true true true true
 
 # Component ownership. Shared contracts select every consuming lane, host-private
 # paths stay in their own lane, and exported host seams add combined coverage.
@@ -188,7 +189,8 @@ verify_component_plan "src/HVO.SkyMonitor.CameraAgent/Components/Account/Login.r
 verify_component_plan "src/HVO.SkyMonitor.LogicHost/Components/Account/Login.razor"    full false false false false true  true  false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent/wwwroot/site.css"                full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Imaging/Filter.cs"        full false false false true  false false false
-verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Storage/LocalStore.cs"     full false false false true  false false false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Storage/LocalStore.cs"     full false false false true  false true  false
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Storage/StoragePressureState.cs" full false false false true false true false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Gallery/Thumbnail.cs"      full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/Module.cs"           full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Replay/Transport.cs"             full false false false true  false false false
@@ -252,6 +254,8 @@ verify_component_plan "deploy/split-host/compose.logichost.yml"                 
 verify_component_plan "deploy/sql/logichost-runtime-role.sql"                          full true  true  true  true  true  true  true
 verify_component_plan "deploy/split-host/camera-modules/allsky01.virtual-asi676mc.full.json" full true true true true true true true
 verify_component_plan "docs/catalog/hyg-v42-license.md"                                full false true  true  true  true  true  true
+verify_component_plan "docs/catalog/hyg-v44-attribution.md"                            full false true  true  true  true  true  true
+verify_component_plan "scripts/catalog/hyg-v44-common.sh"                              full true  true  true  true  true  true  true
 verify_component_plan "scripts/deploy/product-layout.sh"                               full true  true  true  true  true  true  true
 verify_component_plan "scripts/catalog/install-hyg-v42.sh"                             full true  true  true  true  true  true  true
 
@@ -429,9 +433,11 @@ printf '%s\n' "${link_records[@]}" | grep -E '^[^|]*\|(docs|deploy)/' >/dev/null
 # intentionally cross-cutting ones. A new project therefore cannot slip into a
 # narrow plan without an explicit decision here.
 # The standalone VirtualSky/product POC spans capture, projection and pinned
-# product composers; keep its changes on the complete matrix.
+# product composers; the timelapse harness qualifies shared rendering and both
+# host output profiles. Keep these cross-boundary tools on the complete matrix.
 complete_matrix_projects=(
   tools/HVO.SkyMonitor.VirtualSkyPoc
+  tools/HVO.SkyMonitor.TimeLapseBenchmark
   tests/HVO.SkyMonitor.Architecture.Tests
 )
 project_directory_count=0
@@ -517,14 +523,14 @@ base_sha="$(git -C "$work_root" rev-parse HEAD)"
 commit_file "src/HVO.SkyMonitor.CameraAgent.Common/Storage/Mixed.cs"
 commit_file "src/HVO.SkyMonitor.LogicHost/Components/Mixed.razor"
 head_sha="$(git -C "$work_root" rev-parse HEAD)"
-expect_components false false true true false false pull_request "$base_sha" "$head_sha"
+expect_components false false true true true false pull_request "$base_sha" "$head_sha"
 
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
 commit_file "docs/mixed.md"
 commit_file "src/HVO.SkyMonitor.CameraAgent.Common/Storage/DocsMixed.cs"
 head_sha="$(git -C "$work_root" rev-parse HEAD)"
 expect_plan full false pull_request "$base_sha" "$head_sha"
-expect_components false false true false false false pull_request "$base_sha" "$head_sha"
+expect_components false false true false true false pull_request "$base_sha" "$head_sha"
 
 deployment_paths=(
   ".env.template"

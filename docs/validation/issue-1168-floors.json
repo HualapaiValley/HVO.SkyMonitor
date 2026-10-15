@@ -1,0 +1,132 @@
+{
+  "tuningPack": {
+    "revision": "f7e69d99a0047d41c28656f52b613261f6effaa3",
+    "sha256sums": "c8d9c647ff486f45e34df29b52e8268ad8c511b4034cc2f0d57b9554ac6b697d"
+  },
+  "rule": "median per format group pooled across tuned families, half-up to 0.001 px",
+  "processes": [
+    {
+      "name": "astrometric-uncertainty-tuning-02-equidistant-20s",
+      "status": "failed",
+      "family": "equidistant",
+      "exposureSeconds": 20,
+      "frames": 56,
+      "coverageFailures": 3,
+      "otherFailures": []
+    },
+    {
+      "name": "astrometric-uncertainty-tuning-03-equidistant-60s",
+      "status": "failed",
+      "family": "equidistant",
+      "exposureSeconds": 60,
+      "frames": 56,
+      "coverageFailures": 4,
+      "otherFailures": []
+    },
+    {
+      "name": "astrometric-uncertainty-tuning-05-rectilinear-20s",
+      "status": "failed",
+      "family": "rectilinear",
+      "exposureSeconds": 20,
+      "frames": 48,
+      "coverageFailures": 4,
+      "otherFailures": []
+    }
+  ],
+  "floors": [
+    {
+      "exposureSeconds": 20,
+      "group": "mono",
+      "views": [
+        "mono-native",
+        "mono-roi",
+        "mono-mirror",
+        "mono-roll"
+      ],
+      "families": [
+        "equidistant",
+        "rectilinear"
+      ],
+      "frames": 64,
+      "excludedRequiredFloors": 0,
+      "median": 0.01495028380304575,
+      "declaredPixels": 0.015
+    },
+    {
+      "exposureSeconds": 20,
+      "group": "mono-2x2",
+      "views": [
+        "mono-bin2",
+        "mono-roi-bin2"
+      ],
+      "families": [
+        "equidistant",
+        "rectilinear"
+      ],
+      "frames": 32,
+      "excludedRequiredFloors": 0,
+      "median": 0.018834671936929226,
+      "declaredPixels": 0.019
+    },
+    {
+      "exposureSeconds": 20,
+      "group": "cfa",
+      "views": [
+        "cfa-native"
+      ],
+      "families": [
+        "equidistant"
+      ],
+      "frames": 8,
+      "excludedRequiredFloors": 0,
+      "median": 0.044228704646229744,
+      "declaredPixels": 0.044
+    },
+    {
+      "exposureSeconds": 60,
+      "group": "mono",
+      "views": [
+        "mono-native",
+        "mono-roi",
+        "mono-mirror",
+        "mono-roll"
+      ],
+      "families": [
+        "equidistant"
+      ],
+      "frames": 32,
+      "excludedRequiredFloors": 0,
+      "median": 0.022492134012281895,
+      "declaredPixels": 0.022
+    },
+    {
+      "exposureSeconds": 60,
+      "group": "mono-2x2",
+      "views": [
+        "mono-bin2",
+        "mono-roi-bin2"
+      ],
+      "families": [
+        "equidistant"
+      ],
+      "frames": 16,
+      "excludedRequiredFloors": 0,
+      "median": 0.015683160163462162,
+      "declaredPixels": 0.016
+    },
+    {
+      "exposureSeconds": 60,
+      "group": "cfa",
+      "views": [
+        "cfa-native"
+      ],
+      "families": [
+        "equidistant"
+      ],
+      "frames": 8,
+      "excludedRequiredFloors": 0,
+      "median": 0.0381437037140131,
+      "declaredPixels": 0.038
+    }
+  ]
+}

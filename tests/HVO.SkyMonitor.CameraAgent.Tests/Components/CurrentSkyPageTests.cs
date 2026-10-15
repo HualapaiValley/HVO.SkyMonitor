@@ -447,10 +447,16 @@ public sealed class CurrentSkyPageTests
         cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".restore-layers").HasAttribute("disabled")));
 
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Measured", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "not measured associations (#526)", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "not measured associations", StringComparison.Ordinal);
+        Assert.AreEqual("Sky annotations", cut.Find(".sky-layer-controls input[data-layer-target]").ParentElement!.QuerySelector("strong")!.TextContent);
+        Assert.AreEqual("Sky annotations", cut.Find(".fullscreen-layer-list strong").TextContent);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "may include catalog stars, Sun/Moon outlines and curated deep-sky labels/outlines", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sky context", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Diagnostics", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "arrives with #525", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "measured product not produced", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find(".scene-panel").TextContent.Contains("arrives with #525", StringComparison.Ordinal));
+        Assert.IsFalse(cut.Find(".scene-panel").TextContent.Contains("Sun footprint", StringComparison.Ordinal));
+        Assert.IsFalse(cut.Find(".scene-panel").TextContent.Contains("Moon footprint", StringComparison.Ordinal));
         StringAssert.Contains(cut.Find(".astrometry-card").TextContent, "arrives with #523", StringComparison.Ordinal);
         await cut.Find(".sky-layer-controls input[data-layer-target]").ChangeAsync(false).ConfigureAwait(false);
         Assert.AreEqual("0 selected", cut.Find(".scene-panel header > span").TextContent);
@@ -499,9 +505,11 @@ public sealed class CurrentSkyPageTests
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Measured", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sky context", StringComparison.Ordinal);
         StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Diagnostics", StringComparison.Ordinal);
-        Assert.HasCount(14, cut.FindAll(".scene-panel input:disabled"));
-        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Sun footprint", StringComparison.Ordinal);
-        StringAssert.Contains(cut.Find(".scene-panel").TextContent, "Moon footprint", StringComparison.Ordinal);
+        Assert.HasCount(12, cut.FindAll(".scene-panel input:disabled"));
+        var annotations = cut.FindAll(".scene-panel label").Single(label => label.QuerySelector("strong")?.TextContent == "Sky annotations");
+        StringAssert.Contains(annotations.TextContent, "expected / not retained for this capture", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find(".scene-panel").TextContent.Contains("Sun footprint", StringComparison.Ordinal));
+        Assert.IsFalse(cut.Find(".scene-panel").TextContent.Contains("Moon footprint", StringComparison.Ordinal));
         Assert.IsEmpty(cut.FindAll(".scene-panel input:not(:disabled)"));
     }
 

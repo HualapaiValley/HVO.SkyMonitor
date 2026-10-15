@@ -119,6 +119,27 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SelectionOfSupersededRevisionReturnsSafeRemedyAsync(bool rollback)
+    {
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        operations.Setup(value => value.ActivateRevisionAsync("rev-old", 6, "key", "owner-id", null, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ProcessingGraphRevisionSupersededException("private-plan-sentinel"));
+        operations.Setup(value => value.RollbackRevisionAsync("rev-old", 6, "key", "owner-id", null, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new ProcessingGraphRevisionSupersededException("private-plan-sentinel"));
+        var service = CreateService(operations.Object, authorized: true);
+
+        var result = rollback
+            ? await service.RollbackAsync("rev-old", 6, "key", null, CancellationToken.None).ConfigureAwait(false)
+            : await service.ActivateAsync("rev-old", 6, "key", null, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Conflict, result.Kind);
+        Assert.AreEqual(ProcessingGraphRevisionSupersededException.SafeMessage, result.Message);
+        Assert.IsFalse(result.Message!.Contains("private-plan-sentinel", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task Mutations_CarryTheOwnerActorAndMapConflictsAsync()
     {
         var registry = new ProcessingGraphRegistryState(ProcessingGraphRegistryMode.Named, "rev-2", "rev-1", 7, []);

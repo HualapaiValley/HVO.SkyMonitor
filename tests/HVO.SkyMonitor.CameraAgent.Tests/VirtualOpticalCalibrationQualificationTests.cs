@@ -57,6 +57,7 @@ public sealed class VirtualOpticalCalibrationQualificationTests
         var catalog = await snapshot.Catalog.ReadAsync(5, AstrometricCatalogData.MaximumEntries).ConfigureAwait(false);
         Assert.HasCount(1637, catalog.Stars); Assert.IsTrue(catalog.IsCompleteForRequestedMagnitude);
         if (!tuning) VirtualAstrometryQualificationTests.RequireRevision();
+        Assert.AreEqual(VirtualAstrometryFixture.Variants[0].Name, VirtualAstrometryFixture.Variant.Name, "Optical calibration renders only the unvaried scene.");
         var partitions = tuning
             ? new[] { (Month: 2, Day: 10, Seed: 110420, Truth: new Truth(1.010, 5, -4, -.007, new(82, 137, 13))) }
             : [(Month: 1, Day: 15, Seed: 110401, Truth: new Truth(1.008, 4.5, -3.5, -.008, new(78, 205, -21))),
@@ -180,7 +181,7 @@ public sealed class VirtualOpticalCalibrationQualificationTests
                     {
                         readout,
                         frame.Frame.CaptureId,
-                        score = VirtualAstrometryReference.Score(WithReadout(truthRig, readout), sceneUtc, calibration, catalog,
+                        score = VirtualAstrometryReference.Score(WithReadout(truthRig, readout), sceneUtc, VirtualAstrometryFixture.Exposure, calibration, catalog,
                             VirtualAstrometryFixture.Detections(measured), solved, failures, scoreId)
                     });
                 }
@@ -229,6 +230,8 @@ public sealed class VirtualOpticalCalibrationQualificationTests
         {
             schema = "virtual-optical-calibration-v1",
             partition,
+            projectionFamily = VirtualAstrometryFixture.Family.Name,
+            VirtualAstrometryFixture.ExposureSeconds,
             revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
             tieredCompilation = Environment.GetEnvironmentVariable("DOTNET_TieredCompilation"),
             runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
@@ -291,21 +294,29 @@ public sealed class VirtualOpticalCalibrationQualificationTests
 
     /// <summary>
     /// Largest native-pixel disagreement between the truth and calibrated intrinsic maps over the supported field,
-    /// evaluated with the reference equidistant form r = f theta (1 + k1 theta^2) rather than a production projector.
+    /// evaluated with the reference family form r = f g(theta) (1 + k1 g^2) rather than a production projector. The
+    /// field is the declared zenith domain where the truth pixel lies inside the truth native aperture. A sample is skipped
+    /// only when the truth's own supported distortion domain excludes it, where a negative k1 has folded the truth radius
+    /// back toward the axis; every sample inside the truth domain is compared whatever the calibrated optics do there.
     /// </summary>
     private static double MappingError(ProjectionContext truth, ProjectionContext calibrated)
     {
         var worst = 0d;
         for (var zenith = 0d; zenith <= MappingDomainZenithDegrees; zenith += 2.5)
         {
-            var theta = VirtualAstrometryReference.Radians(zenith);
-            var truthRadius = truth.FocalLengthXPixels * theta * (1 + truth.RadialDistortionK1 * theta * theta);
-            var calibratedRadius = calibrated.FocalLengthXPixels * theta * (1 + calibrated.RadialDistortionK1 * theta * theta);
+            if (VirtualAstrometryReference.IdealRadius(truth.Model, VirtualAstrometryReference.Radians(zenith)) is not { } g ||
+                !VirtualAstrometryReference.IsSupportedIdealRadius(g, truth.RadialDistortionK1)) continue;
+            var truthRadius = truth.FocalLengthXPixels * g * (1 + truth.RadialDistortionK1 * g * g);
+            var calibratedRadius = calibrated.FocalLengthXPixels * g * (1 + calibrated.RadialDistortionK1 * g * g);
             for (var azimuth = 0d; azimuth < 360; azimuth += 10)
             {
                 var phi = VirtualAstrometryReference.Radians(azimuth);
-                var dx = truth.PrincipalPointX + truthRadius * Math.Cos(phi) - calibrated.PrincipalPointX - calibratedRadius * Math.Cos(phi);
-                var dy = truth.PrincipalPointY - truthRadius * Math.Sin(phi) - calibrated.PrincipalPointY + calibratedRadius * Math.Sin(phi);
+                var truthX = truth.PrincipalPointX + truthRadius * Math.Cos(phi); var truthY = truth.PrincipalPointY - truthRadius * Math.Sin(phi);
+                var inside = truth.Aperture == ProjectionAperture.Circular ? truthRadius <= truth.ImageCircleRadiusPixels
+                    : truthX >= 0 && truthY >= 0 && truthX < truth.WidthPixels && truthY < truth.HeightPixels;
+                if (!inside) continue;
+                var dx = truthX - calibrated.PrincipalPointX - calibratedRadius * Math.Cos(phi);
+                var dy = truthY - calibrated.PrincipalPointY + calibratedRadius * Math.Sin(phi);
                 worst = Math.Max(worst, Math.Sqrt(dx * dx + dy * dy));
             }
         }

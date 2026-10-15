@@ -82,6 +82,10 @@ internal sealed class RawIngressReconciler(
             claimedPayloads.Add(entry.PayloadRelativePath);
             claimedSidecars.Add(entry.SidecarRelativePath);
             cancellationToken.ThrowIfCancellationRequested();
+            if (entry.EvidenceWrittenOff)
+            {
+                continue;
+            }
             inspected++;
             var expectedPaths = RawIngressFileStore.GetPaths(_root, entry.ExposureStartedUtc, entry.ArtifactId);
             var payloadPath = Resolve(entry.PayloadRelativePath);
@@ -118,9 +122,10 @@ internal sealed class RawIngressReconciler(
                 quarantineBytes += moved;
                 continue;
             }
+            // Recovered bytes do not discharge an evidence quarantine without an audited operator release.
             if (!string.Equals(entry.State, "committed", StringComparison.Ordinal))
             {
-                await _journal.MarkCommittedAsync(entry.CaptureId, cancellationToken).ConfigureAwait(false);
+                continue;
             }
             if (!await TryEnsureCompatibilityIndexAsync(
                     entry.ManifestJson, indexedArtifacts, cancellationToken).ConfigureAwait(false))
@@ -336,7 +341,7 @@ internal sealed class RawIngressReconciler(
         }
     }
 
-    private static async Task<bool> MatchesCommittedEntryAsync(
+    internal static async Task<bool> MatchesCommittedEntryAsync(
         RawIngressJournalEntry entry,
         string payloadPath,
         string sidecarPath,

@@ -17,7 +17,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.11")
+                .HasAnnotation("ProductVersion", "10.0.13")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -1570,6 +1570,94 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralElasticRunnerInstance", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int?>("ColdStartMilliseconds")
+                        .HasColumnType("int");
+
+                    b.Property<string>("HostName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("InstanceId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<bool>("KeepWarm")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTimeOffset?>("LastBusyAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("OwnerHeartbeatAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ProcessArchitecture")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<int?>("ProcessId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<DateTimeOffset?>("RegisteredAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("RunnerId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<string>("RuntimeImage")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<DateTimeOffset>("StartedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<DateTimeOffset?>("StoppedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("InstanceId")
+                        .IsUnique();
+
+                    b.HasIndex("StartedAtUtc");
+
+                    b.HasIndex("Provider", "State");
+
+                    b.ToTable("CentralElasticRunnerInstances", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_CentralElasticRunnerInstances_State", "[State] IN (N'Starting', N'Running', N'Stopping', N'Stopped', N'Orphaned', N'Abandoned')");
+                        });
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralFrame", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2598,6 +2686,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                             t.HasCheckConstraint("CK_CentralProcessingUsageRecords_Outcome", "[Outcome] IN (N'Completed', N'RetryableFailure', N'TerminalFailure', N'LeaseExpired', N'Canceled', N'Skipped', N'Quarantined', N'Superseded')");
                         });
+                });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralProcessingUsageRollup", b =>
                 {
@@ -2627,95 +2716,6 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasKey("ObservatoryId", "ResourceClass", "Outcome");
 
                     b.ToTable("CentralProcessingUsageRollups", (string)null);
-                });
-
-            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralElasticRunnerInstance", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<int?>("ColdStartMilliseconds")
-                        .HasColumnType("int");
-
-                    b.Property<string>("HostName")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)");
-
-                    b.Property<string>("InstanceId")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)");
-
-                    b.Property<bool>("KeepWarm")
-                        .HasColumnType("bit");
-
-                    b.Property<DateTimeOffset?>("LastBusyAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<DateTimeOffset>("OwnerHeartbeatAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("ProcessArchitecture")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("nvarchar(32)");
-
-                    b.Property<int?>("ProcessId")
-                        .HasColumnType("int");
-
-                    b.Property<string>("Provider")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("nvarchar(64)");
-
-                    b.Property<string>("Reason")
-                        .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)");
-
-                    b.Property<DateTimeOffset?>("RegisteredAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("RunnerId")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("nvarchar(128)")
-                        .UseCollation("Latin1_General_100_BIN2");
-
-                    b.Property<string>("RuntimeImage")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("nvarchar(256)");
-
-                    b.Property<DateTimeOffset>("StartedAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<string>("State")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("nvarchar(32)");
-
-                    b.Property<DateTimeOffset?>("StoppedAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("datetimeoffset");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("InstanceId")
-                        .IsUnique();
-
-                    b.HasIndex("StartedAtUtc");
-
-                    b.HasIndex("Provider", "State");
-
-                    b.ToTable("CentralElasticRunnerInstances", null, t =>
-                        {
-                            t.HasCheckConstraint("CK_CentralElasticRunnerInstances_State", "[State] IN (N'Starting', N'Running', N'Stopping', N'Stopped', N'Orphaned', N'Abandoned')");
-                        });
-                });
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralRecoveryCheckpoint", b =>
@@ -2854,6 +2854,197 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         {
                             t.HasCheckConstraint("CK_CentralStructuredProcessingProducts_DescriptorJson_Length", "LEN([DescriptorJson]) <= 65536");
                         });
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseDependency", b =>
+                {
+                    b.Property<Guid>("JobId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("HourlyJobId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("JobId", "HourlyJobId");
+
+                    b.HasIndex("HourlyJobId");
+
+                    b.ToTable("CentralTimeLapseDependencies", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralTimeLapseDependencies_Immutable");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseInput", b =>
+                {
+                    b.Property<Guid>("JobId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CentralArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("JobId", "CentralArtifactId");
+
+                    b.HasIndex("CentralArtifactId");
+
+                    b.ToTable("CentralTimeLapseInputs", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralTimeLapseInputs_Immutable");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseJob", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("DevicePublicId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("DiscoveryIdentity")
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .IsFixedLength();
+
+                    b.Property<DateTimeOffset>("EndUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ExclusionsJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ExclusionsSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .IsFixedLength();
+
+                    b.Property<bool>("IsDaily")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid?>("LeaseToken")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ProductId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateOnly>("ReportDate")
+                        .HasColumnType("date");
+
+                    b.Property<string>("RequestJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("RequestSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .IsFixedLength();
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
+
+                    b.Property<DateTimeOffset>("StartUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("nvarchar(24)");
+
+                    b.Property<DateTimeOffset>("UpdatedUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DevicePublicId", "ReportDate", "CreatedUtc");
+
+                    b.HasIndex("State", "IsDaily", "CreatedUtc");
+
+                    b.HasIndex("DevicePublicId", "ReportDate", "DiscoveryIdentity", "CreatedUtc");
+
+                    b.ToTable("CentralTimeLapseJobs", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralTimeLapseJobs_Identity");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseVideo", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("DevicePublicId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("IsDaily")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsGapFiller")
+                        .HasColumnType("bit");
+
+                    b.Property<Guid>("JobId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("PayloadBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ProductJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ProductSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .IsFixedLength();
+
+                    b.Property<DateOnly>("ReportDate")
+                        .HasColumnType("date");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("JobId")
+                        .IsUnique();
+
+                    b.HasIndex("DevicePublicId", "ReportDate", "CreatedUtc");
+
+                    b.ToTable("CentralTimeLapseVideos", null, t =>
+                        {
+                            t.HasTrigger("TR_CentralTimeLapseVideos_Immutable");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientAssessmentObservation", b =>
@@ -6311,6 +6502,478 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.ToTable("EnvironmentalObservationSources", (string)null);
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceArtifactCheck", b =>
+                {
+                    b.Property<long>("ArtifactReferenceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("BindingId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("NextCheckAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ObjectGeneration")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("State")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid>("Version")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("ArtifactReferenceId");
+
+                    b.HasIndex("ArtifactReferenceId", "BindingId")
+                        .IsUnique();
+
+                    b.HasIndex("NextCheckAtUtc", "ArtifactReferenceId");
+
+                    b.HasIndex("BindingId", "NextCheckAtUtc", "ArtifactReferenceId");
+
+                    b.ToTable("ExecutionEvidenceArtifactChecks", (string)null);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceBinding", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AgentInstanceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("CreatedByUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("nvarchar(450)");
+
+                    b.Property<Guid>("InstallationPublicId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("LogicalCameraInstallationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ObservatoryId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("OriginInstallationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("RegistrationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LogicalCameraInstallationId");
+
+                    b.HasIndex("ObservatoryId");
+
+                    b.HasIndex("OriginInstallationId", "AgentInstanceId")
+                        .IsUnique();
+
+                    b.HasIndex("RegistrationId", "Id");
+
+                    b.ToTable("ExecutionEvidenceBindings", null, t =>
+                        {
+                            t.HasTrigger("TR_ExecutionEvidenceBindings_Immutable");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceBindingUsage", b =>
+                {
+                    b.Property<Guid>("BindingId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("ConflictCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ObservationCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("OriginCount")
+                        .HasColumnType("int");
+
+                    b.Property<long>("StoredBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("UnitCount")
+                        .HasColumnType("int");
+
+                    b.HasKey("BindingId");
+
+                    b.ToTable("ExecutionEvidenceBindingUsage", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ExecutionEvidenceBindingUsage_Nonnegative", "[StoredBytes] >= 0 AND [UnitCount] >= 0 AND [OriginCount] >= 0 AND [ConflictCount] >= 0 AND [ObservationCount] >= 0");
+                        });
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceArtifact", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid>("ArtifactId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BindingId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CaptureId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("DescriptorSha256")
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<string>("MediaType")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("int");
+
+                    b.Property<string>("OutputIdentitySha256")
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<long?>("PayloadLength")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("PayloadSha256")
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<string>("Role")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<long>("UnitId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Variant")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BindingId", "Id");
+
+                    b.HasIndex("UnitId", "BindingId");
+
+                    b.HasIndex("UnitId", "Ordinal")
+                        .IsUnique();
+
+                    b.HasIndex("BindingId", "ArtifactId", "Id");
+
+                    b.ToTable("ImportedExecutionEvidenceArtifacts", null, t =>
+                        {
+                            t.HasTrigger("TR_ImportedExecutionEvidenceArtifacts_Immutable");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceConflict", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid>("BindingId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("OccurredAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("SubmittedEvidenceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("SubmittedPayloadSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<long>("UnitId")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BindingId", "Id");
+
+                    b.HasIndex("UnitId", "BindingId");
+
+                    b.HasIndex("UnitId", "SubmittedPayloadSha256")
+                        .IsUnique();
+
+                    b.ToTable("ImportedExecutionEvidenceConflicts", null, t =>
+                        {
+                            t.HasTrigger("TR_ImportedExecutionEvidenceConflicts_Immutable");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceObservation", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<long>("ArtifactReferenceId")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("BindingId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ObjectGeneration")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<DateTimeOffset>("ObservedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ArtifactReferenceId", "BindingId");
+
+                    b.HasIndex("ArtifactReferenceId", "Id");
+
+                    b.HasIndex("BindingId", "Id");
+
+                    b.ToTable("ImportedExecutionEvidenceObservations", null, t =>
+                        {
+                            t.HasTrigger("TR_ImportedExecutionEvidenceObservations_Immutable");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceOrigin", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid>("BindingId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("BootSessionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("ContiguousThroughSequence")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("FirstReceivedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("GapDetectedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<long>("HighestSeenSequence")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("IdentitySha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<string>("SoftwareVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IdentitySha256")
+                        .IsUnique();
+
+                    b.HasIndex("BindingId", "GapDetectedAtUtc");
+
+                    b.HasIndex("BindingId", "Id");
+
+                    b.ToTable("ImportedExecutionEvidenceOrigins", null, t =>
+                        {
+                            t.HasTrigger("TR_ImportedExecutionEvidenceOrigins_Identity");
+
+                            t.HasCheckConstraint("CK_ImportedExecutionEvidenceOrigins_Sequence", "[ContiguousThroughSequence] >= 0 AND [HighestSeenSequence] >= [ContiguousThroughSequence]");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceRange", b =>
+                {
+                    b.Property<long>("OriginId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("FromSequence")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ToSequence")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("OriginId", "FromSequence");
+
+                    b.HasIndex("OriginId", "ToSequence");
+
+                    b.ToTable("ImportedExecutionEvidenceRanges", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ImportedExecutionEvidenceRanges_Order", "[FromSequence] > 0 AND [ToSequence] >= [FromSequence]");
+                        });
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceUnit", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<bool>("Accepted")
+                        .HasColumnType("bit");
+
+                    b.Property<Guid>("BindingId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<byte[]>("CanonicalBytes")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<Guid?>("CaptureId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("CorrectsEvidenceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long?>("CorrectsOriginSequence")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("EvidenceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ExecutionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(32)");
+
+                    b.Property<long>("OriginId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("OriginSequence")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("PayloadSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<DateTimeOffset>("ProducedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("ReceivedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("RejectionFieldPath")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("RejectionReasonCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("RevisionId")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BindingId", "Id");
+
+                    b.HasIndex("OriginId", "BindingId");
+
+                    b.HasIndex("OriginId", "EvidenceId")
+                        .IsUnique()
+                        .HasFilter("[Accepted] = 1");
+
+                    b.HasIndex("OriginId", "OriginSequence")
+                        .IsUnique();
+
+                    b.HasIndex("BindingId", "Kind", "Id");
+
+                    b.HasIndex("BindingId", "OriginId", "Id");
+
+                    b.HasIndex("BindingId", "OriginId", "Kind", "Id");
+
+                    b.HasIndex("BindingId", "Kind", "ExecutionId", "Accepted", "Id");
+
+                    b.HasIndex("BindingId", "Kind", "RevisionId", "Accepted", "Id");
+
+                    b.ToTable("ImportedExecutionEvidenceUnits", null, t =>
+                        {
+                            t.HasTrigger("TR_ImportedExecutionEvidenceUnits_Immutable");
+
+                            t.HasCheckConstraint("CK_ImportedExecutionEvidenceUnits_Bytes", "DATALENGTH([CanonicalBytes]) BETWEEN 1 AND 8388608");
+
+                            t.HasCheckConstraint("CK_ImportedExecutionEvidenceUnits_Disposition", "([Accepted] = 1 AND [RejectionReasonCode] IS NULL AND [RejectionFieldPath] IS NULL) OR ([Accepted] = 0 AND [RejectionReasonCode] IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_ImportedExecutionEvidenceUnits_Kind", "[Kind] IN ('GraphRevision', 'GraphExecution', 'ArtifactAvailability')");
+
+                            t.HasCheckConstraint("CK_ImportedExecutionEvidenceUnits_Sequence", "[OriginSequence] > 0");
+                        });
+
+                    b.HasAnnotation("SqlServer:UseSqlOutputClause", false);
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.LogicalCamera", b =>
                 {
                     b.Property<Guid>("Id")
@@ -8127,6 +8790,53 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("Artifact");
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseDependency", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseJob", "HourlyJob")
+                        .WithMany()
+                        .HasForeignKey("HourlyJobId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseJob", "Job")
+                        .WithMany("Dependencies")
+                        .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("HourlyJob");
+
+                    b.Navigation("Job");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseInput", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralArtifact", "Artifact")
+                        .WithMany()
+                        .HasForeignKey("CentralArtifactId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseJob", "Job")
+                        .WithMany("Inputs")
+                        .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Artifact");
+
+                    b.Navigation("Job");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseVideo", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseJob", null)
+                        .WithMany()
+                        .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientAssessmentObservation", b =>
                 {
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.CentralTransientAssessmentRecord", "Assessment")
@@ -9044,6 +9754,128 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("Site");
                 });
 
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceArtifactCheck", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceArtifact", null)
+                        .WithOne()
+                        .HasForeignKey("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceArtifactCheck", "ArtifactReferenceId", "BindingId")
+                        .HasPrincipalKey("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceArtifact", "Id", "BindingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceBinding", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.LogicalCameraInstallation", null)
+                        .WithMany()
+                        .HasForeignKey("LogicalCameraInstallationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", null)
+                        .WithMany()
+                        .HasForeignKey("ObservatoryId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.DeviceRegistration", null)
+                        .WithMany()
+                        .HasForeignKey("RegistrationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceBindingUsage", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceBinding", null)
+                        .WithOne()
+                        .HasForeignKey("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceBindingUsage", "BindingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceArtifact", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceBinding", null)
+                        .WithMany()
+                        .HasForeignKey("BindingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceUnit", null)
+                        .WithMany()
+                        .HasForeignKey("UnitId", "BindingId")
+                        .HasPrincipalKey("Id", "BindingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceConflict", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceBinding", null)
+                        .WithMany()
+                        .HasForeignKey("BindingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceUnit", null)
+                        .WithMany()
+                        .HasForeignKey("UnitId", "BindingId")
+                        .HasPrincipalKey("Id", "BindingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceObservation", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceBinding", null)
+                        .WithMany()
+                        .HasForeignKey("BindingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceArtifact", null)
+                        .WithMany()
+                        .HasForeignKey("ArtifactReferenceId", "BindingId")
+                        .HasPrincipalKey("Id", "BindingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceOrigin", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceBinding", null)
+                        .WithMany()
+                        .HasForeignKey("BindingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceRange", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceOrigin", null)
+                        .WithMany()
+                        .HasForeignKey("OriginId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceUnit", b =>
+                {
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceBinding", null)
+                        .WithMany()
+                        .HasForeignKey("BindingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceOrigin", null)
+                        .WithMany()
+                        .HasForeignKey("OriginId", "BindingId")
+                        .HasPrincipalKey("Id", "BindingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.LogicalCamera", b =>
                 {
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.Observatory", "Observatory")
@@ -9528,6 +10360,13 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Navigation("Assignments");
 
                     b.Navigation("Executions");
+                });
+
+            modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTimeLapseJob", b =>
+                {
+                    b.Navigation("Dependencies");
+
+                    b.Navigation("Inputs");
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.CentralTransientAssessmentRecord", b =>

@@ -144,7 +144,10 @@ public enum LocalAutomationTaskKind
     EnvironmentalOnDemandAcquisition,
 
     /// <summary>A still-image producer supplied by an explicitly registered window task adapter.</summary>
-    StillImageGeneration
+    StillImageGeneration,
+
+    /// <summary>Queues local-only hourly or daily video through the bounded background producer.</summary>
+    TimeLapseGeneration
 }
 
 /// <summary>

@@ -15,6 +15,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -769,6 +770,81 @@ public sealed class CentralRecoveryIntegrationTests
                 .ConfigureAwait(false)).Should().Be(0);
         }
         state.Invocations.Should().Be(1);
+    }
+
+    [TestMethod]
+    public async Task IntegrityRejectionDuringScheduling_IsContainedPerArtifactAndKeepsTheHostRunning()
+    {
+        var rejectedKey = $"artifacts/b2/{Guid.NewGuid():N}.bin";
+        var followingKey = $"artifacts/b3/{Guid.NewGuid():N}.bin";
+        var rejectedId = await AddArtifactAsync(rejectedKey, [5, 1, 8], CentralArtifactObjectState.Pending,
+            CentralReconstructionState.Complete).ConfigureAwait(false);
+        var followingId = await AddArtifactAsync(followingKey, [5, 1, 9], CentralArtifactObjectState.Pending,
+            CentralReconstructionState.Complete).ConfigureAwait(false);
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            // Order the rejected artifact first so the following one proves the cycle is not blocked behind it.
+            await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>().CentralArtifacts
+                .Where(item => item.Id == followingId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    item => item.ReceivedAtUtc, DateTimeOffset.UnixEpoch.AddSeconds(1)))
+                .ConfigureAwait(false);
+        }
+        var scheduler = new IntegrityRejectingScheduler(rejectedId);
+        await using var services = CreateServices(scheduler);
+        await SetCheckpointAsync(CentralRecoveryPhases.Idle, nextInventoryAtUtc: DateTimeOffset.UtcNow.AddDays(1))
+            .ConfigureAwait(false);
+        using var telemetry = new CentralIngestTelemetry();
+        using var outcomes = new ReconciledOutcomeCollector();
+        var logger = new RecordingLogger<CentralArtifactReconciliationService>();
+        var reconciler = new CentralArtifactReconciliationService(services.GetRequiredService<IServiceScopeFactory>(),
+            TimeProvider.System, telemetry, logger);
+        using var host = new HostBuilder()
+            .ConfigureServices(hostServices => hostServices.AddHostedService(_ => reconciler))
+            .Build();
+        var stopping = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping
+            .Register(() => stopping.TrySetResult());
+
+        await host.StartAsync().ConfigureAwait(false);
+        Task settled;
+        try
+        {
+            settled = await Task.WhenAny(scheduler.ScheduledOther.Task, stopping.Task, Task.Delay(TimeSpan.FromMinutes(1)))
+                .ConfigureAwait(false);
+            stopping.Task.IsCompleted.Should().BeFalse("an integrity rejection for one artifact must not stop LogicHost");
+        }
+        finally
+        {
+            await host.StopAsync().ConfigureAwait(false);
+        }
+
+        settled.Should().BeSameAs(scheduler.ScheduledOther.Task,
+            "the cycle must continue to the next artifact after one artifact's scheduling is rejected");
+        reconciler.ExecuteTask!.IsFaulted.Should().BeFalse();
+        scheduler.InvocationsFor(rejectedId).Should().Be(1, "the rejection must not be retried within the generation");
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var rejected = await db.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == rejectedId)
+                .ConfigureAwait(false);
+            rejected.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+            rejected.ReconstructionState.Should().Be(CentralReconstructionState.Complete);
+            rejected.StateReasonCode.Should().Be("object.derivative-scheduling-rejected");
+            rejected.ObjectVerificationToken.Should().BeNull();
+            rejected.ReconciledAtUtc.Should().NotBeNull();
+            var following = await db.CentralArtifacts.AsNoTracking().SingleAsync(item => item.Id == followingId)
+                .ConfigureAwait(false);
+            following.ObjectState.Should().Be(CentralArtifactObjectState.Available);
+            following.StateReasonCode.Should().BeNull();
+        }
+        (await ReadObjectAsync(rejectedKey).ConfigureAwait(false)).Should().Equal(5, 1, 8);
+        var rejection = logger.Entries.Should().ContainSingle(entry => entry.EventId.Id == 2141).Subject;
+        rejection.Level.Should().Be(LogLevel.Error);
+        rejection.Message.Should().Contain("projected-scene.source-mismatch").And.NotContain(rejectedKey);
+        rejection.Exception.Should().BeNull();
+        logger.Entries.Should().NotContain(entry => entry.EventId.Id == 2122 || entry.EventId.Id == 2124);
+        outcomes.Outcomes.Count(outcome => outcome == "scheduling-rejected").Should().Be(1);
     }
 
     [TestMethod]
@@ -1642,6 +1718,57 @@ public sealed class CentralRecoveryIntegrationTests
     {
         public Task EnsureRequiredJobsAsync(CentralArtifact artifact, DateTimeOffset now, CancellationToken cancellationToken)
             => throw new InvalidOperationException("simulated scheduler failure");
+    }
+
+    private sealed class IntegrityRejectingScheduler(Guid rejectedArtifactId) : ICentralDerivativeJobScheduler
+    {
+        private readonly ConcurrentDictionary<Guid, int> invocations = new();
+        public TaskCompletionSource ScheduledOther { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int InvocationsFor(Guid artifactId) => invocations.GetValueOrDefault(artifactId);
+
+        public Task EnsureRequiredJobsAsync(CentralArtifact artifact, DateTimeOffset now, CancellationToken cancellationToken)
+        {
+            invocations.AddOrUpdate(artifact.Id, 1, static (_, count) => count + 1);
+            if (artifact.Id == rejectedArtifactId)
+            {
+                throw new CentralArtifactIntegrityException("projected-scene.source-mismatch");
+            }
+            ScheduledOther.TrySetResult();
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class ReconciledOutcomeCollector : IDisposable
+    {
+        private readonly MeterListener listener = new();
+        private readonly ConcurrentQueue<string> outcomes = new();
+        public IReadOnlyCollection<string> Outcomes => outcomes;
+
+        public ReconciledOutcomeCollector()
+        {
+            listener.InstrumentPublished = (instrument, current) =>
+            {
+                if (instrument.Meter.Name == CentralIngestTelemetry.MeterName
+                    && instrument.Name == "skymonitor.central.ingest.reconciled")
+                {
+                    current.EnableMeasurementEvents(instrument);
+                }
+            };
+            listener.SetMeasurementEventCallback<long>((_, _, tags, _) =>
+            {
+                foreach (var tag in tags)
+                {
+                    if (tag.Key == "outcome" && tag.Value is string outcome)
+                    {
+                        outcomes.Enqueue(outcome);
+                    }
+                }
+            });
+            listener.Start();
+        }
+
+        public void Dispose() => listener.Dispose();
     }
 
     private sealed class DurableSchedulerState

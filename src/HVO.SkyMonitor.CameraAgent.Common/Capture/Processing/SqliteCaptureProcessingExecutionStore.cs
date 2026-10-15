@@ -160,7 +160,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         string idempotencyKey,
         string actor,
         string? reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<ProcessingGraphRevisionSnapshot>? ensureCompatible = null)
     {
         ValidateRevisionId(revisionId);
         ValidateCommand(idempotencyKey, actor, reason);
@@ -189,6 +190,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         {
             throw new ProcessingGraphStoreConflictException("Only a validated processing graph revision can be activated.");
         }
+        // Acknowledged commands above remain replayable after compiler changes; only new selections are checked.
+        ensureCompatible?.Invoke(target);
         var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
         if (!string.Equals(state.ActiveRevisionId, revisionId, StringComparison.Ordinal))
         {
@@ -227,7 +230,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         string idempotencyKey,
         string actor,
         string? reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<ProcessingGraphRevisionSnapshot>? ensureCompatible = null)
     {
         ValidateRevisionId(revisionId);
         ValidateCommand(idempotencyKey, actor, reason);
@@ -260,6 +264,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             throw new ProcessingGraphStoreConflictException(
                 "Rollback requires the configured basic graph or a previously activated revision.");
         }
+        ensureCompatible?.Invoke(target);
         var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
         await SetRevisionLifecycleAsync(
             connection, transaction, current.State.RevisionId, ProcessingGraphRevisionLifecycle.Validated, now,
@@ -1510,7 +1515,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.CommandText = """
             UPDATE raw_captures SET retention_hold = CASE WHEN
                 EXISTS (SELECT 1 FROM capture_lane_work WHERE raw_capture_row_id = $raw
-                    AND ((required = 1 AND state != 'completed') OR state = 'leased'))
+                    AND ((required = 1 AND state NOT IN ('completed', 'abandoned')) OR state = 'leased'))
                 OR EXISTS (SELECT 1 FROM transient_candidate_sources source
                     JOIN transient_candidates candidate ON candidate.candidate_id = source.candidate_id
                     WHERE source.raw_capture_row_id = $raw AND candidate.source_hold_released = 0)

@@ -81,6 +81,15 @@ internal sealed class ArtifactIngestController(
         {
             return BadRequest(new ProblemDetails { Title = "Artifact integrity check failed", Detail = exception.Message });
         }
+        catch (ArtifactSceneReferencePendingException exception)
+        {
+            Response.Headers.RetryAfter = "5";
+            return StatusCode(425, new ProblemDetails
+            {
+                Title = "Artifact scene provenance awaits its canonical reference",
+                Detail = exception.Message
+            });
+        }
         catch (ArtifactIngestConflictException exception)
         {
             return Conflict(new ProblemDetails { Title = "Artifact idempotency conflict", Detail = exception.Message });
@@ -155,6 +164,15 @@ internal sealed class ArtifactIngestController(
         catch (ArtifactIntegrityException)
         {
             return NotFound(new ProblemDetails { Title = "Artifact payload must be uploaded again" });
+        }
+        catch (ArtifactSceneReferencePendingException exception)
+        {
+            Response.Headers.RetryAfter = "5";
+            return StatusCode(425, new ProblemDetails
+            {
+                Title = "Artifact scene provenance awaits its canonical reference",
+                Detail = exception.Message
+            });
         }
         catch (ArtifactIngestConflictException exception)
         {

@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class UpgradePreflightTests
+public sealed partial class UpgradePreflightTests
 {
     private const string CurrentIdentityMigration = "20260827053715_InitialIdentity";
     private const string LegacyIdentityMigration = "20251125021552_CreateLocalIdentity";
@@ -92,6 +92,30 @@ public sealed class UpgradePreflightTests
         Assert.AreEqual(0, report.Findings.Count);
         Assert.AreEqual("compatible", report.Outcome);
         Assert.AreEqual(CameraAgentStateContract.Current, report.CandidateStateContract);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(2, true)]
+    [DataRow(3, false)]
+    public void Evaluate_UndeclaredImageManifestVersionKeepsTheStarsOnlyBoundary(int manifestVersion, bool compatible)
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion);
+        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
+        fixture.CreateBindSources();
+
+        var report = Evaluate(fixture, CurrentRequirements with { CatalogManifestVersion = null });
+
+        Assert.AreEqual(compatible, report.Compatible, CameraAgentStatePreflight.Render(report));
+        if (!compatible)
+        {
+            var finding = report.Findings.Single(static item => item.Code == "catalog-manifest-version");
+            Assert.AreEqual("3", finding.Observed);
+            Assert.AreEqual("2", finding.Expected);
+            Assert.IsTrue(finding.Blocking);
+        }
     }
 
     [TestMethod]
@@ -812,7 +836,7 @@ public sealed class UpgradePreflightTests
             Root = Path.Combine(Path.GetTempPath(), $"hvo-preflight-{Guid.NewGuid():N}");
             InstanceId = Guid.NewGuid();
             InstallationId = Guid.NewGuid();
-            Paths = InstallationPaths.Create(Root, InstanceId, ProductionCatalog.CatalogId);
+            Paths = InstallationPaths.Create(Root, InstanceId, HygV42.CatalogId);
             foreach (var directory in new[]
             {
                 Paths.ProductRoot, Path.Combine(Paths.ProductRoot, "cameraagents"), Paths.InstanceRoot,
@@ -832,14 +856,14 @@ public sealed class UpgradePreflightTests
 
         public void WriteCatalogManifest(int manifestVersion)
         {
-            var versionRoot = Path.Combine(Paths.CatalogRoot, "versions", ProductionCatalog.PackageVersion);
+            var versionRoot = Path.Combine(Paths.CatalogRoot, "versions", HygV42.PackageVersion);
             SafeFileSystem.CreateOwnerDirectory(versionRoot);
             File.WriteAllText(
                 Path.Combine(versionRoot, "manifest.json"),
                 "{\"manifestVersion\":" + manifestVersion.ToString(System.Globalization.CultureInfo.InvariantCulture) +
-                ",\"catalog\":{\"id\":\"" + ProductionCatalog.CatalogId + "\"}}");
+                ",\"catalog\":{\"id\":\"" + HygV42.CatalogId + "\"}}");
             Directory.CreateSymbolicLink(
-                Path.Combine(Paths.CatalogRoot, "current"), $"versions/{ProductionCatalog.PackageVersion}");
+                Path.Combine(Paths.CatalogRoot, "current"), $"versions/{HygV42.PackageVersion}");
         }
 
         public void CreateBindSources()
@@ -985,8 +1009,8 @@ public sealed class UpgradePreflightTests
             var applicationIdentity = Guid.NewGuid();
             var daemon = new DockerDaemonIdentity("daemon", "host", "amd64", "29.7.2");
             var catalog = new CatalogInstallationIdentity(
-                ProductionCatalog.CatalogId, ProductionCatalog.PackageVersion, "2", "3",
-                ProductionCatalog.DatabaseSha256, ProductionCatalog.DatabaseLength, ProductionCatalog.RowCount,
+                HygV42.CatalogId, HygV42.PackageVersion, "2", "3",
+                HygV42.DatabaseSha256, HygV42.DatabaseLength, HygV42.RowCount,
                 Paths.CatalogRoot, new string('a', 64), "local-offline");
             var image = new ImageInstallationIdentity(
                 "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null,

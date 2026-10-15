@@ -59,7 +59,7 @@ This plan does not assert that an unmeasured profile is supported.
 | V5: virtual optical calibration | [#1104](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1104), coordinated with #523 | #1103 measurements and actual-pixel harness; controlled emulator optics | Explicit candidate review/accept/reject and retained virtual versions; no physical-rig writes |
 | V6: uncertainty and conventions | [#1105](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1105), scoped under #523 | #1103 centroid precision and #1104 calibration; new #1095 clock contracts only after merge | Existing geometric/catalog baseline; new proper-motion semantics require #521, no parallel clock implementation |
 | V7: integrated qualification and handoff | [#1106](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1106) | All V1–V6 integrated, including #522; pinned final test envelope | Final audit owns closure evidence, not a waiver of upstream requirements |
-| Later physical qualification | [#1107](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1107), under #523 | Physical hardware, trusted references and separate scheduling authorization | Does not block virtual completion; never absorbs unfinished supported virtual work |
+| Later physical qualification | [#1107](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1107), under #1166 since 2026-10-06 (previously #523) | Physical hardware, trusted references and separate scheduling authorization | Does not block virtual completion; never absorbs unfinished supported virtual work |
 
 The required combined-host validation exposed an existing nondeterministic
 transient fixture while qualifying #1101. [#1109](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1109)
@@ -142,7 +142,8 @@ records each criterion as met for the declared virtual envelope.
   validation is not success.
 
 #1106 may close #1098 only after auditing all nine criteria against delivered
-code and evidence. Physical success is not implied by simulation. #1107/#523
-remain open for real raw exposures, independent external astrometry, physical
-lens/sensor stability and real-profile application/rollback; unsupported virtual
-parameters must name the specific hardware evidence still required.
+code and evidence. Physical success is not implied by simulation. #1107, now
+under the physical-qualification epic #1166, remains open for real raw exposures,
+independent external astrometry, physical lens/sensor stability and real-profile
+application/rollback; unsupported virtual parameters must name the specific
+hardware evidence still required.

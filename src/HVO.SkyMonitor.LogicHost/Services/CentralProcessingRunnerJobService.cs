@@ -53,7 +53,8 @@ internal sealed partial class CentralProcessingRunnerJobService(
     IOptions<CentralProcessingRunnerOptions> options,
     CentralProcessingRunnerTelemetry telemetry,
     TimeProvider timeProvider,
-    ILogger<CentralProcessingRunnerJobService> logger) : ICentralProcessingRunnerJobService
+    ILogger<CentralProcessingRunnerJobService> logger,
+    CentralProjectedSceneResolver? projectedScenes = null) : ICentralProcessingRunnerJobService
 {
     internal const string ClaimBarrier = "processing-runner-claims";
     private readonly CentralProcessingRunnerOptions _options = options.Value;
@@ -323,7 +324,11 @@ internal sealed partial class CentralProcessingRunnerJobService(
         CentralDerivativeJobLease lease,
         CancellationToken cancellationToken)
     {
-        var (options, selector, annotation, canonicalInputs) = CentralDerivativeJobExecutor.CreateFrozenRequestInputs(lease);
+        var projectedAnnotation = lease.ProjectedScene is not null
+            ? await (projectedScenes ?? throw new CentralDerivativeJobStateException("Projected scene resolution is unavailable."))
+                .ResolveAsync(lease, jobService, cancellationToken).ConfigureAwait(false)
+            : null;
+        var (options, selector, annotation, canonicalInputs) = CentralDerivativeJobExecutor.CreateFrozenRequestInputs(lease, projectedAnnotation);
         var descriptions = await inputDescriber.DescribeAsync(lease, cancellationToken).ConfigureAwait(false);
         var (request, failure) = LogicHostRecipeExecutionAdapter.CreateRequest(
             descriptions.ProcessingInputs, lease.RecipeName, options, selector, lease.TargetVariant, annotation,

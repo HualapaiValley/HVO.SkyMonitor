@@ -297,10 +297,22 @@ public static class AstrometricResidualAnalyzer
         const double step = 1e-6;
         var optics = SolverOptics.From(calibration.Projection);
         var rotation = AstrometricRotation.FromPose(new(fit.BoresightAltitudeDegrees, fit.BoresightAzimuthDegrees, fit.RollDegrees));
-        var plus = new[] { (new AstrometricRayCamera(optics, fit.FocalScale), rotation.Increment(step, 0, 0)), (new AstrometricRayCamera(optics, fit.FocalScale), rotation.Increment(0, step, 0)),
-            (new AstrometricRayCamera(optics, fit.FocalScale), rotation.Increment(0, 0, step)), (new AstrometricRayCamera(optics, fit.FocalScale * Math.Exp(step)), rotation) };
-        var minus = new[] { (new AstrometricRayCamera(optics, fit.FocalScale), rotation.Increment(-step, 0, 0)), (new AstrometricRayCamera(optics, fit.FocalScale), rotation.Increment(0, -step, 0)),
-            (new AstrometricRayCamera(optics, fit.FocalScale), rotation.Increment(0, 0, -step)), (new AstrometricRayCamera(optics, fit.FocalScale * Math.Exp(-step)), rotation) };
+        AstrometricRayCamera camera, larger, smaller;
+        try
+        {
+            camera = new(optics, fit.FocalScale);
+            larger = new(optics, fit.FocalScale * Math.Exp(step));
+            smaller = new(optics, fit.FocalScale * Math.Exp(-step));
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            // A valid mapping at the physical lens limit need not have a supported two-sided derivative.
+            return new(fitting.Length, null, null, null, "unavailable-derivative-boundary");
+        }
+        var plus = new[] { (camera, rotation.Increment(step, 0, 0)), (camera, rotation.Increment(0, step, 0)),
+            (camera, rotation.Increment(0, 0, step)), (larger, rotation) };
+        var minus = new[] { (camera, rotation.Increment(-step, 0, 0)), (camera, rotation.Increment(0, -step, 0)),
+            (camera, rotation.Increment(0, 0, -step)), (smaller, rotation) };
         var normal = new double[16]; var used = 0;
         foreach (var star in fitting)
         {

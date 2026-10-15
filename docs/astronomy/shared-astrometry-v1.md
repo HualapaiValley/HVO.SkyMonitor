@@ -58,7 +58,7 @@ The requested Operations clock-health/time-sync controls are a separate UI/host 
 
 The production algorithms contain no synthetic catalog. They consume supplied immutable entries and metadata. The current in-memory triangle implementation retains deliberately bounded search limits inherited from the reviewed experiment:
 
-- At most2500 supplied catalog entries,1500 index stars,2million indexed triangles,10000 supplied detections
+- At most 2,500 requested and solved catalog entries (no deeper selection is qualified; see [Deep selection profile](#deep-selection-profile)) and an internal 8,192-entry catalog data capacity; 1,500 index stars, 2 million indexed triangles, 10,000 supplied detections
 - Up to120 brightest eligible stars for wide-field indexing; full eligible supplied set for perspective indexing
 - Default28 bright image detections,192 sampled triangles per scale,200000 hypotheses,32 retained candidates
 - Focal multiplier0.90–1.10 in0.01 steps; valid radial-domain floors enforced;20 local iterations
@@ -96,17 +96,25 @@ The installed `SqliteCelestialCatalog` also implements
 `IAstrometricCatalogSource`; `AddInstalledCelestialCatalog` resolves all catalog
 interfaces to the same validated immutable cache. Use the existing installed
 snapshot resolver, not a new catalog registry. `ReadAsync` accepts a finite
-magnitude (including negative values) and 1–2,500 entries, finds the exact
-matching count by binary search, and copies at most that bound. Cancellation
-is checked before selection, while copying and after bounded materialization.
+magnitude (including negative values) and any entry bound of at least 1, which
+is the caller's already validated request. It finds the exact matching count by
+binary search and copies the smaller of that count and the bound, so no
+allocation scales with the bound itself. `SolveAsync` requests 2,500 entries for
+every public settings value. A copied selection larger than the catalog data's
+internal capacity (8,192 entries) is rejected by `AstrometricCatalogData` with
+an `ArgumentException` for `stars`; before #1167 the reader rejected any bound
+above 2,500 with `ArgumentOutOfRangeException`.
+Cancellation is checked before selection, while copying and after bounded
+materialization.
 
 Only a resolver-validated production package with every requested matching row
 inside the bound reports `IsCompleteForRequestedMagnitude=true`. An overflowing
 selection still carries the requested magnitude ceiling but is explicitly
 incomplete; the solver returns `catalog-incomplete` before numerical fitting.
 Fixture packages and directly opened database files cannot assert production
-sky completeness. Invalid bounds/magnitudes throw argument exceptions; canceled
-reads throw `OperationCanceledException`.
+sky completeness. A non-finite magnitude or a bound below 1 throws
+`ArgumentOutOfRangeException`; canceled reads throw
+`OperationCanceledException`.
 
 Installed selections retain catalog ID, package version/kind and preprocessing
 version in `AstrometricCatalogProvenance`, alongside the existing data checksum,
@@ -123,7 +131,52 @@ magnitude <=5: 1,637 entries, below both the 2,500 solver bound and the current
 and VirtualSky `MaximumMagnitude` to 5 explicitly for that profile. The existing
 solver default of 7 selects 15,598 catalog rows and therefore remains unavailable
 through this bounded adapter; defaults are not silently reinterpreted. A
-magnitude <=5.5 request already has 2,865 rows and is incomplete at 2,500. These
+magnitude <=5.5 request already has 2,865 rows and is incomplete at the legacy
+2,500 bound, and no deeper selection is qualified (see below). These
 counts establish catalog selection, not detection sensitivity or actual-camera
 qualification (#1102/#1106). #522 still owns honest visibility/resource behavior
 for deeper production rendering profiles.
+
+### Deep selection profile
+
+Issue #1167 measured a complete deeper HYG selection under the profile
+`hyg-deep-selection-v1` (an 8,192-entry request bound, measured to magnitude
+6.0) and it is not qualified; the result and evidence are in
+[Deep HYG catalog selection](deep-catalog-selection-v1.md). Nothing is
+advertised:
+
+- No profile is declared, and no public member selects one.
+  `AstrometricCatalogSelectionProfile` and
+  `AstrometricSolverOptions.CatalogSelectionProfile` are internal, reachable
+  only through Astronomy's `InternalsVisibleTo` test assemblies so that the
+  evaluation harness stays runnable. The settings property has no setter, so
+  neither configuration nor deserialized settings can select a profile, and
+  the public `AstrometricSolverOptions` constructor is unchanged from before
+  #1167.
+- The name `hyg-deep-selection-v1` is burned. It records what was measured, it
+  is never declared, and any later attempt uses a new name.
+- For internal evaluation settings, `Validate` rejects an unknown name, and a
+  `MaximumCatalogMagnitude` above the profile's maximum. The profile name
+  serializes last in `IdentitySha256` when set and is omitted when null, so
+  every public settings identity is unchanged. The derived entry bound is
+  `[JsonIgnore]`. `SolverVersion` remains `spherical-triangle-astrometry-v2`,
+  and `SelectionIdentitySha256` is unchanged.
+- The catalog data container has an internal capacity of 8,192 entries
+  (`MaterializationCeiling`), independent of any profile. It is the hard
+  ceiling of the data constructor and the warm core, is not public, and
+  promises no solve.
+- A selection larger than the bound of its settings returns `Unavailable` with
+  `catalog-selection-unsupported` before any numerical work. That bound is
+  2,500 for every public settings value. The check follows
+  `catalog-incomplete`, and `OpticalCalibrationSession` applies the same check.
+- An accepted fit whose expected or retained (fitting plus withheld) star count
+  exceeds the 2,500-star assessment evidence bound returns `BudgetExceeded`
+  with `resource-limit` and proposes no mapping, so last-good evidence is not
+  replaced. Only a deep selection, and so only internal evaluation, can reach
+  this.
+
+Settings keep the legacy 2,500-entry bound. That bound admits any requested
+magnitude whose complete selection fits: on the HYG 4.2 production snapshot,
+up to magnitude 5.37 (2,483 rows; 5.38 selects 2,517 and is incomplete). Only
+magnitude 5 is qualified (#1098/#1126). The band above 5.0 up to 5.37 is
+admitted unqualified, exactly as before #1167.

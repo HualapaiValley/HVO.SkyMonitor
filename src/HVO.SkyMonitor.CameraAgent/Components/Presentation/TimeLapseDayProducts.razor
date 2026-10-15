@@ -1,0 +1,45 @@
+@using HVO.SkyMonitor.CameraAgent.Services
+@namespace HVO.SkyMonitor.CameraAgent.Components.Presentation
+@using HVO.SkyMonitor.CameraAgent.Common.TimeLapses
+
+<article class="time-lapse-day" data-product-kind="time-lapse" aria-label="Generated time-lapses">
+    <h3>Time-lapses</h3>
+    @if (Day.Jobs.Count == 0)
+    {
+        <p>@(Enabled ? "No time-lapse has been requested for this period." : "Time-lapse generation is disabled on this CameraAgent.")</p>
+        <a href="/operations/automations">Manage automations</a>
+    }
+    else
+    {
+        @foreach (var job in Day.Jobs.Where(job => job.ParentJobId is null).OrderBy(job => job.Window.StartUtc))
+        {
+            <p data-video-state="@job.State">
+                <strong>@(job.Window.Policy.Kind == Common.Automation.LocalAutomationSourceWindowKind.SunriseDay ? "Daily" : "Hourly")</strong>
+                @if (job.ProductId is { } id)
+                {
+                    <a href="@TimeLapseLinks.Detail(id)">Open video and details</a>
+                }
+                <span>@StateLabel(job.State)</span>
+                <small>@WindowLabel(job) @job.ReasonCode</small>
+                @if (_queued.Contains(job.JobId)) { <span>Retry queued</span> }
+                else if (job.State is CameraAgentTimeLapseState.Failed or CameraAgentTimeLapseState.Unavailable)
+                {
+                    <button type="button" class="btn btn-outline-light btn-sm" disabled="@_retrying" @onclick="() => RetryAsync(job)">Retry retained inputs</button>
+                }
+            </p>
+        }
+        @if (Day.Jobs.Any(job => job.ParentJobId.HasValue))
+        {
+            <details><summary>Hourly segments created for the daily video</summary>
+                @foreach (var job in Day.Jobs.Where(job => job.ParentJobId.HasValue).OrderBy(job => job.Window.StartUtc))
+                {
+                    <p><span>@WindowLabel(job) · @StateLabel(job.State)</span>
+                        @if (job.ProductId is { } id) { <a href="@TimeLapseLinks.Detail(id)">Open hour</a> }
+                    </p>
+                }
+            </details>
+        }
+        <p class="time-lapse-day__note">Videos stay on this CameraAgent. Refresh this day to update queued or working jobs.</p>
+        @if (_message is not null) { <p role="status">@_message</p> }
+    }
+</article>

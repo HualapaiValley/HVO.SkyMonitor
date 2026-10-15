@@ -133,6 +133,10 @@ else
                                                 case ArtifactOutboxStatus.Quarantined:
                                                     <a href="/operations/quarantine">Review in quarantine</a>
                                                     break;
+                                                case ArtifactOutboxStatus.Retry:
+                                                    @NextAction(record)
+                                                    <small><a href="/operations/quarantine">Review retry</a></small>
+                                                    break;
                                                 default:
                                                     @NextAction(record)
                                                     break;

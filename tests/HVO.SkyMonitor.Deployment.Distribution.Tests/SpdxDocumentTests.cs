@@ -30,7 +30,11 @@ public sealed partial class SpdxDocumentTests
     [TestMethod]
     public async Task CatalogRelease_SbomDocument_IsValidSpdx23()
     {
-        using var fixture = SpdxFixture.Create();
+        // The release tool validates the bundle's bytes against the approved registry, so this needs a real
+        // production bundle and is environment-gated like the other catalog transitions.
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
+        if (string.IsNullOrEmpty(bundle)) Assert.Inconclusive("Set HVO_PRODUCTION_CATALOG_BUNDLE to run the catalog release.");
+        using var fixture = SpdxFixture.Create(bundle);
         var output = Path.Combine(fixture.Root, "catalog");
 
         Assert.AreEqual(0, await ReleaseTool.Program.Main(fixture.CatalogArguments(output)));
@@ -165,7 +169,7 @@ public sealed partial class SpdxDocumentTests
         private string Notices { get; set; } = string.Empty;
         private ImageReleaseFixture Images { get; set; } = null!;
 
-        public static SpdxFixture Create()
+        public static SpdxFixture Create(string? catalogBundle = null)
         {
             var root = Path.Combine(Path.GetTempPath(), $"hvo-spdx-{Guid.NewGuid():N}");
             Directory.CreateDirectory(root);
@@ -176,7 +180,7 @@ public sealed partial class SpdxDocumentTests
                 Notices = Path.Combine(root, "notices.md")
             };
             File.WriteAllText(fixture.Notices, "test notices\n");
-            fixture.Bundle = CreateBundle(root);
+            fixture.Bundle = catalogBundle is null ? string.Empty : CopyBundle(root, catalogBundle);
             fixture.Images = ImageReleaseFixture.Create();
             return fixture;
         }
@@ -197,32 +201,17 @@ public sealed partial class SpdxDocumentTests
         public string[] ImageArguments(string output) => Images.CreateArguments(output);
 
         /// <summary>
-        /// Writes the smallest catalog bundle the release tool reads. The published catalog's own contents are
-        /// validated by the catalog train's tests; this fixture exists only to exercise the shared SPDX writer on
-        /// the catalog train's file set.
+        /// Copies an approved production bundle. The release tool resolves the bundle against the registry, which
+        /// pins the real database bytes, so a synthetic bundle can no longer stand in for one.
         /// </summary>
-        private static string CreateBundle(string root)
+        private static string CopyBundle(string root, string source)
         {
-            var bundle = Path.Combine(root, "hyg-v4.2-p3-s2-r1.bundle");
+            var bundle = Path.Combine(root, Path.GetFileName(Path.TrimEndingDirectorySeparator(source)));
             Directory.CreateDirectory(bundle);
-            File.WriteAllText(Path.Combine(bundle, "LICENSE-HYG.md"), "license\n");
-            File.WriteAllText(Path.Combine(bundle, "ATTRIBUTION-HYG.md"), "attribution\n");
-            File.WriteAllBytes(Path.Combine(bundle, "hyg_v42.sqlite"), "sqlite"u8.ToArray());
-            var manifest = new
+            foreach (var path in Directory.EnumerateFiles(source))
             {
-                manifestVersion = 2,
-                schemaVersion = "2",
-                preprocessingVersion = "3",
-                package = new { version = "hyg-v4.2-p3-s2-r1", kind = "production" },
-                catalog = new { id = "hyg-v42-production" },
-                database = new { sha256 = new string('c', 64), length = 6L, rowCount = 1L },
-                license = new { identifier = "CC-BY-SA-4.0" },
-                topology = new { identity = "hyg-v42-topology-1", sha256 = new string('d', 64) }
-            };
-            File.WriteAllText(
-                Path.Combine(bundle, "manifest.json"),
-                JsonSerializer.Serialize(manifest),
-                new UTF8Encoding(false));
+                File.Copy(path, Path.Combine(bundle, Path.GetFileName(path)));
+            }
             return bundle;
         }
 

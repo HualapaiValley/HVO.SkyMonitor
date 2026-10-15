@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.Astronomy;
 using System.Globalization;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;

@@ -15,8 +15,12 @@
             </p>
         }
         <div class="error-display__actions">
-            <button type="button" class="btn btn-primary" @onclick="Reload">Reload page</button>
-            <button type="button" class="btn btn-outline-light" @onclick="OnDismissClicked">Dismiss</button>
+            <a class="btn btn-primary" href="@NavigationManager.Uri" data-enhance-nav="false">Reload page</a>
+            @if (RendererInfo.IsInteractive && OnDismiss.HasDelegate)
+            {
+                <button type="button" class="btn btn-outline-light" @onclick="OnDismissClicked">Try again</button>
+            }
+            <a class="btn btn-outline-light" href="/">Return home</a>
         </div>
     </div>
 </div>

@@ -1,6 +1,8 @@
+using HVO.SkyMonitor.Astronomy;
 using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
+using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 
@@ -22,6 +24,8 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
     private Dictionary<(DateOnly Date, NightlyProductKind Kind), NightlyProductDateSummary> _nightly = [];
     private HashSet<(DateOnly Date, NightlyProductKind Kind)> _otherPeriods = [];
     private bool _nightlyUnavailable;
+    private Dictionary<DateOnly, CameraAgentTimeLapseDateSummary> _videos = [];
+    private bool _videosUnavailable;
     private string? _errorMessage;
     private readonly HashSet<Guid> _failedThumbnails = [];
     private bool _isLoading = true;
@@ -53,6 +57,19 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
     private static readonly NightlyProductKind[] BadgeKinds = [NightlyProductKind.StarTrail, NightlyProductKind.Keogram];
 
     private const string TimeLapseDescription = "Time-lapse not yet generated";
+
+    private NightlyBadge VideoBadge(DateOnly date)
+    {
+        if (_videosUnavailable) return new("T", NightlyBadgeState.Unavailable, "Time-lapse status unavailable");
+        if (!_videos.TryGetValue(date, out var summary)) return new("T", NightlyBadgeState.NotGenerated, TimeLapseDescription);
+        if (summary.DailyState == CameraAgentTimeLapseState.Produced) return new("T", NightlyBadgeState.Produced, "Daily time-lapse produced");
+        if (summary.HourlyProduced > 0) return new("T", NightlyBadgeState.Partial, FormattableString.Invariant($"{summary.HourlyProduced} hourly time-lapses; no final daily video"));
+        if (summary.HasPending) return new("T", NightlyBadgeState.Pending, "Time-lapse queued or working");
+        return new("T", NightlyBadgeState.NotProduced, "Time-lapse evaluated without a video; open the day for its reason");
+    }
+
+    private int VideoNights => _videos.Values.Count(value => value.DailyState == CameraAgentTimeLapseState.Produced &&
+        value.ReportDate.Month == MonthStart.Month && value.ReportDate.Year == MonthStart.Year);
 
     private bool ShowsNightlyProducts => _calendar?.CalendarVersion == SunriseReportingPeriod.CurrentVersion;
 
@@ -134,7 +151,8 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
     private int NightlyProductNights => _nightly.Values
         .Where(summary => summary.ObservingDate.Month == MonthStart.Month && summary.ObservingDate.Year == MonthStart.Year &&
             summary.DailyProductId is not null)
-        .Select(static summary => summary.ObservingDate).Distinct().Count();
+        .Select(static summary => summary.ObservingDate).Concat(_videos.Values.Where(summary => summary.DailyState == CameraAgentTimeLapseState.Produced &&
+            summary.ReportDate.Month == MonthStart.Month && summary.ReportDate.Year == MonthStart.Year).Select(summary => summary.ReportDate)).Distinct().Count();
 
     private int NightlyProductCount(NightlyProductKind kind) => _nightly.Values.Count(summary =>
         summary.Kind == kind && summary.DailyProductId is not null &&
@@ -145,7 +163,7 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
         .Select(static record => record.Date).Distinct().Count();
 
     private bool HasNightlyRecord(DateOnly date) =>
-        BadgeKinds.Any(kind => _nightly.ContainsKey((date, kind)) || _otherPeriods.Contains((date, kind)));
+        _videos.ContainsKey(date) || BadgeKinds.Any(kind => _nightly.ContainsKey((date, kind)) || _otherPeriods.Contains((date, kind)));
 
     private IReadOnlyList<NightlyBadge> Badges(CalendarCell cell) => [.. BadgeKinds.Select(kind => Badge(kind,
         _nightly.GetValueOrDefault((cell.Date, kind)), _otherPeriods.Contains((cell.Date, kind)), _nightlyUnavailable,
@@ -255,7 +273,7 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
             ? FormattableString.Invariant($"Observing day {cell.Date:MMMM d yyyy}, {day.CaptureCount:N0} captures, {day.CandidateCount:N0} candidates{(missingThumbnail ? ", preview unavailable" : string.Empty)}")
             : FormattableString.Invariant($"Observing day {cell.Date:MMMM d yyyy}, no retained captures");
         return ShowsBadges(cell)
-            ? label + ". " + string.Join(". ", Badges(cell).Select(static badge => badge.Description)) + ". " + TimeLapseDescription
+            ? label + ". " + string.Join(". ", Badges(cell).Select(static badge => badge.Description)) + ". " + VideoBadge(cell.Date).Description
             : label;
     }
 
@@ -301,9 +319,11 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
             var nightlyRead = SelectedCalendar.CalendarVersion != SunriseReportingPeriod.CurrentVersion
                 ? null
                 : NightlyProducts.SummarizeAsync(GridStart, GridEnd, cancellation.Token).AsTask();
+            var videoRead = nightlyRead is null ? null : NightlyProducts.SummarizeTimeLapsesAsync(GridStart, GridEnd, cancellation.Token).AsTask();
             var result = await OperatorService.GetArchiveCalendarAsync(
                 new CameraAgentGalleryCalendarQuery(GridStart, GridEnd, CalendarVersion: CalendarVersion), cancellation.Token);
             var nightly = nightlyRead is null ? null : await nightlyRead;
+            var videos = videoRead is null ? null : await videoRead;
             if (generation != Volatile.Read(ref _generation))
             {
                 return;
@@ -319,6 +339,9 @@ public sealed partial class ArchiveCalendarPage : ComponentBase, IAsyncDisposabl
             _otherPeriods = [.. summaries.Where(summary => !Matches(summary))
                 .Select(static summary => (summary.ObservingDate, summary.Kind))];
             _nightlyUnavailable = nightly is { IsSuccess: false };
+            _videosUnavailable = videos is { IsSuccess: false };
+            _videos = (videos?.Value ?? []).Where(summary => summary.ReportingPeriodIdentitySha256 == PeriodIdentity(summary.ReportDate))
+                .ToDictionary(summary => summary.ReportDate);
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
                 _calendar = null;

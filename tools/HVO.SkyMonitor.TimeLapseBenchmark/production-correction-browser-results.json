@@ -1,0 +1,31 @@
+{
+  "schema": "hvo-timelapse-correction-browser-v1",
+  "utc": "2026-10-05",
+  "scope": "Two changed production clips played in the operator's T3 Chromium browser. Playback counters are browser display evidence, distinct from exact encoded packet/decode proof. Historical console entries and preload aborts are not counted as failures of these completed runs.",
+  "results": [
+    {
+      "completed": true,
+      "droppedFrames": 0,
+      "duration": 1.666667,
+      "error": null,
+      "height": 804,
+      "id": "production-asi174",
+      "time": 1.666667,
+      "totalFrames": 15,
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) T3Code(Nightly)/0.0.46-nightly.20261004.2648 Chrome/152.0.7977.130 Electron/44.4.2 Safari/537.36",
+      "width": 1280
+    },
+    {
+      "completed": true,
+      "droppedFrames": 0,
+      "duration": 1.666667,
+      "error": null,
+      "height": 1280,
+      "id": "production-day-1280",
+      "time": 1.666667,
+      "totalFrames": 64,
+      "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) T3Code(Nightly)/0.0.46-nightly.20261004.2648 Chrome/152.0.7977.130 Electron/44.4.2 Safari/537.36",
+      "width": 1280
+    }
+  ]
+}

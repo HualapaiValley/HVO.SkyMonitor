@@ -1,0 +1,109 @@
+{
+  "schema": "virtual-astrometry-projection-family-qualification-manifest-v1",
+  "issue": 1126,
+  "epic": 520,
+  "base": "docs/validation/issue-1106-qualification-manifest.json",
+  "declaredBeforeMeasurement": true,
+  "rules": [
+    "The family/profile matrix is VirtualAstrometryFixture.Families and VirtualAstrometryFixture.Profiles at the measured revision, frozen in docs/astronomy/virtual-astrometry-qualification-v2.md before any tuning or held-out measurement. HVO_PROJECTION_FAMILY selects one family per process; an unknown name fails the run.",
+    "Every final run executes at one committed, clean revision built in Release; HVO_EVIDENCE_REVISION must equal that revision and each harness that checks the assembly InformationalVersion must accept it.",
+    "Tuning runs are not final evidence. They execute only the tuning partitions and exist so that the declared fallback decision, and any coordinator-approved algorithmic fix, are made before held-out data is seen. Held-out runs are never used to change a profile, the solver, a floor or a tolerance.",
+    "Seeds, sky times, readouts, partitions and numerical tolerances are those compiled into each #1102/#1103/#1104/#1105 harness, unchanged by this issue. Each harness source blob id is recorded in the evidence index.",
+    "Declared fallback: if the 6 mm rectilinear profile fails a tuning harness, a commit made before any held-out run replaces 'rectilinear' with 'rectilinear-8mm' in the final perProcess values and records the tuning failure. The fallback is not used for any other reason, and a held-out failure is never followed by the fallback.",
+    "A held-out failure of a family is retained and published as a named software gap with an unsupported disposition for that family. It is not retried, tuned against or excluded from the pack.",
+    "Every run must execute exactly expectedPassed tests, with zero failed and zero not-executed tests, in a fresh results directory, and must attach exactly one file named like each listed report. A run that matches no test fails the qualification.",
+    "Runs are sequential on an otherwise idle host. Docker is not required. The equidistant family is the #1106 regression baseline and is compared numerically with the #1106 evidence."
+  ],
+  "environment": {
+    "configuration": "Release",
+    "DOTNET_TieredCompilation": "0",
+    "HVO_ASTROMETRY_CATALOG_ROOT": "Installed, verified hyg-v42-production snapshot root (HYG 4.2, 119,625 rows, database SHA-256 B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2)"
+  },
+  "families": {
+    "variable": "HVO_PROJECTION_FAMILY",
+    "values": ["equidistant", "equisolid", "stereographic", "orthographic", "rectilinear"],
+    "declaredFallback": { "rectilinear": "rectilinear-8mm" }
+  },
+  "tuning": [
+    {
+      "id": "pixels-tuning",
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualAstrometryQualificationTests.TuningStationaryPixels",
+      "expectedPassed": 1,
+      "reports": ["virtual-astrometry-pixels.json"]
+    },
+    {
+      "id": "measured-stars-tuning",
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualMeasuredStarQualificationTests.TuningMeasuredStars",
+      "expectedPassed": 1,
+      "reports": ["virtual-measured-stars.json"]
+    },
+    {
+      "id": "optical-calibration-tuning",
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualOpticalCalibrationQualificationTests.TuningOpticalCalibration",
+      "expectedPassed": 1,
+      "reports": ["virtual-optical-calibration.json"]
+    },
+    {
+      "id": "astrometric-uncertainty-tuning",
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualAstrometricUncertaintyQualificationTests.TuningAstrometricUncertainty",
+      "expectedPassed": 1,
+      "reports": ["virtual-astrometric-uncertainty.json"]
+    }
+  ],
+  "runs": [
+    {
+      "id": "actual-pixels-blind-warm-readouts",
+      "criteria": [1, 3, 4],
+      "owner": 1102,
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualAstrometryQualificationTests.ActualPixelsBlindWarmReadouts",
+      "expectedPassed": 1,
+      "reports": ["virtual-astrometry-pixels.json"],
+      "acceptance": "docs/astronomy/virtual-camera-astrometry-baseline.md, with the rectangular-aperture outside-frame probes of docs/astronomy/virtual-astrometry-qualification-v2.md"
+    },
+    {
+      "id": "actual-configured-resolution-resources",
+      "criteria": [4],
+      "owner": 1102,
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualAstrometryResourceTests.ActualConfiguredResolutionResources",
+      "expectedPassed": 1,
+      "reports": ["virtual-astrometry-resources.json"],
+      "acceptance": "docs/astronomy/virtual-camera-astrometry-baseline.md (resources)"
+    },
+    {
+      "id": "measured-stars-held-out",
+      "criteria": [3, 4],
+      "owner": 1103,
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualMeasuredStarQualificationTests.HeldOutMeasuredStars",
+      "expectedPassed": 1,
+      "reports": ["virtual-measured-stars.json"],
+      "acceptance": "docs/astronomy/measured-star-diagnostics-v1.md"
+    },
+    {
+      "id": "optical-calibration-held-out",
+      "criteria": [3, 4],
+      "owner": 1104,
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualOpticalCalibrationQualificationTests.HeldOutOpticalCalibration",
+      "expectedPassed": 1,
+      "reports": ["virtual-optical-calibration.json"],
+      "acceptance": "docs/astronomy/session-optical-calibration-v1.md"
+    },
+    {
+      "id": "astrometric-uncertainty-held-out",
+      "criteria": [3, 4],
+      "owner": 1105,
+      "project": "tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj",
+      "filter": "FullyQualifiedName~VirtualAstrometricUncertaintyQualificationTests.HeldOutAstrometricUncertainty",
+      "expectedPassed": 1,
+      "reports": ["virtual-astrometric-uncertainty.json"],
+      "acceptance": "docs/astronomy/astrometric-uncertainty-v1.md"
+    }
+  ]
+}

@@ -256,7 +256,8 @@ internal static class ProcessingOutputWindowSelector
                (contract.Variants.IsDefaultOrEmpty || contract.Variants.Contains(output.Artifact.Variant, StringComparer.Ordinal)) &&
                (contract.RecipeNames.IsDefaultOrEmpty || contract.RecipeNames.Contains(output.Artifact.Recipe.Name, StringComparer.Ordinal)) &&
                (contract.SchemaVersions.IsDefaultOrEmpty || output.ProductSchemaVersion is not null &&
-                   contract.SchemaVersions.Contains(output.ProductSchemaVersion, StringComparer.Ordinal));
+                   contract.SchemaVersions.Any(declared =>
+                       StructuredProcessingProductContracts.SatisfiesDeclaredSchema(declared, output.ProductSchemaVersion)));
     }
 
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)

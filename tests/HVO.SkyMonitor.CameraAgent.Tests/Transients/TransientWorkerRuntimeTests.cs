@@ -1981,7 +1981,8 @@ public sealed class TransientWorkerRuntimeTests
         var module = new VirtualSkyCameraModule(
             TimeProvider.System,
             provider.GetRequiredService<ICelestialCatalog>(),
-            new ProjectedSceneStore());
+            new ProjectedSceneStore(),
+            stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
         await module.InitializeAsync(cameraConfiguration, CancellationToken.None).ConfigureAwait(false);
         var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
         var definitions = provider.GetRequiredService<CaptureLanePolicy>().Definitions;
@@ -2235,7 +2236,9 @@ public sealed class TransientWorkerRuntimeTests
                     TimeSpan.FromSeconds(1),
                     1,
                     1)),
-            CapturePipelineConfig.Empty,
+            new CapturePipelineConfig([
+                new CaptureProcessingStepConfig("ProjectedScene", "scene", 5, DependsOn: ["$raw"])
+            ]),
             AgentId: "transient-runtime-agent");
     }
 

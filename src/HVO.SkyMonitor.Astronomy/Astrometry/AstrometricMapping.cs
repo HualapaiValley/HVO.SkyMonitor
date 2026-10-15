@@ -73,6 +73,11 @@ public sealed class AstrometricMapping
 /// <summary>Canonical compact assessment JSON, with content identity and bounded strict parsing.</summary>
 public static class AstrometricEvidenceJson
 {
+    /// <summary>Largest expected or retained (fitting plus withheld) star count an accepted assessment may declare.</summary>
+    internal const int MaximumEvidenceStars = 2500;
+    /// <summary>Whether an accepted fit's expected or retained star count is beyond what an assessment may declare.</summary>
+    internal static bool ExceedsEvidenceBound(int expectedFittingStars, int fittingStars, int verificationStars) =>
+        expectedFittingStars > MaximumEvidenceStars || (long)fittingStars + verificationStars > MaximumEvidenceStars;
     private static readonly JsonSerializerOptions Options = new() { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow, MaxDepth = 16, AllowDuplicateProperties = false };
     public static byte[] Serialize(AstrometricFrameAssessment assessment) { Validate(assessment); return JsonSerializer.SerializeToUtf8Bytes(assessment, Options); }
     public static AstrometricFrameAssessment Parse(ReadOnlySpan<byte> utf8)
@@ -124,7 +129,7 @@ public static class AstrometricEvidenceJson
         {
             var quality = assessment.Quality!;
             if (assessment.AssociationIdentitySha256 is null || quality.InlierCount < 12 || quality.VerificationCount < 4 || quality.ExpectedIsolatedCount < quality.InlierCount ||
-                quality.ExpectedIsolatedCount > 2500 || (long)quality.InlierCount + quality.VerificationCount > 2500 ||
+                ExceedsEvidenceBound(quality.ExpectedIsolatedCount, quality.InlierCount, quality.VerificationCount) ||
                 quality.InlierCount / (double)Math.Max(1, quality.ExpectedIsolatedCount) < .5 || quality.FittingRmsPixels > .4 || quality.VerificationRmsPixels > .5 ||
                 quality.WidthCoverageFraction < .35 || quality.HeightCoverageFraction < .35)
                 throw new ArgumentException("Accepted assessment must retain the solver's independent evidence and coverage gates.", nameof(assessment));

@@ -59,7 +59,8 @@ internal static class OperatorUiTestData
                 .2,
                 samples,
                 0)),
-            Section(new OperationsConfigurationState(true, "validated", "agent-test", "VirtualSky", centralIntegration, "Off")));
+            Section(new OperationsConfigurationState(true, "validated", "agent-test", "VirtualSky", centralIntegration, "Off")),
+            Section(new OperationsArchivedReplayState("Healthy", 0, 0, 0, 0, 0, 0, null, 0)));
         return new CameraAgentOperationsView(summary, artifactQuarantine ?? [], [], DisplayName: "North Camera");
     }
 

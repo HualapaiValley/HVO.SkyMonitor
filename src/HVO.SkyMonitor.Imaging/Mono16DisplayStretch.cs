@@ -1,3 +1,6 @@
+using System.Buffers;
+using System.Runtime.InteropServices;
+
 namespace HVO.SkyMonitor.Imaging;
 
 /// <summary>Parameters for a robust preview-only nonlinear Mono16 stretch.</summary>
@@ -50,57 +53,97 @@ public static class Mono16DisplayStretch
             throw new ArgumentException("Pixel buffer does not contain the requested Mono16 layout.", nameof(pixelData));
         }
 
-        var histogram = new int[ushort.MaxValue + 1];
-        var pixels = pixelData.Span;
-        var activeCount = 0;
-        for (var y = 0; y < height; y++)
+        var histogram = ArrayPool<int>.Shared.Rent(ushort.MaxValue + 1);
+        byte[]? transfer = null;
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            for (var x = 0; x < width; x++)
+            Array.Clear(histogram, 0, ushort.MaxValue + 1);
+            var pixels = pixelData.Span;
+            for (var y = 0; y < height; y++)
             {
-                var offset = y * stride + x * 2;
-                var sample = pixels[offset] | pixels[offset + 1] << 8;
-                if (sample > 0)
+                cancellationToken.ThrowIfCancellationRequested();
+                var row = pixels.Slice(y * stride, packedStride);
+                if (BitConverter.IsLittleEndian)
                 {
-                    histogram[sample]++;
-                    activeCount++;
+                    foreach (var sample in MemoryMarshal.Cast<byte, ushort>(row))
+                    {
+                        histogram[sample]++;
+                    }
+                }
+                else
+                {
+                    for (var x = 0; x < width; x++)
+                    {
+                        histogram[row[x * 2] | row[x * 2 + 1] << 8]++;
+                    }
                 }
             }
-        }
 
-        var output = new byte[checked(width * height)];
-        if (activeCount == 0)
-        {
+            var output = new byte[checked(width * height)];
+            var activeCount = checked(width * height) - histogram[0];
+            if (activeCount == 0)
+            {
+                return output;
+            }
+
+            var black = Percentile(histogram, activeCount, options.BlackPercentile);
+            var white = Percentile(histogram, activeCount, options.WhitePercentile);
+            if (white <= black)
+            {
+                white = black;
+                black = 0;
+            }
+
+            // Every sample above white clamps to the same value as white, so the transfer has white - black + 1
+            // distinct inputs. When that is no larger than the frame, each is evaluated once with the same
+            // expression as the direct path and looked up; otherwise the direct path is cheaper. Both are exact.
+            var denominator = Math.Asinh(options.AsinhStrength);
+            var range = white - black;
+            if (range < width * height)
+            {
+                transfer = ArrayPool<byte>.Shared.Rent(range + 1);
+                transfer[0] = 0;
+                for (var offset = 1; offset <= range; offset++)
+                {
+                    transfer[offset] = Transfer(black + offset, black, white, options.AsinhStrength, denominator);
+                }
+            }
+
+            for (var y = 0; y < height; y++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var row = pixels.Slice(y * stride, packedStride);
+                var destination = output.AsSpan(y * width, width);
+                for (var x = 0; x < width; x++)
+                {
+                    var sample = row[x * 2] | row[x * 2 + 1] << 8;
+                    if (sample <= black)
+                    {
+                        continue;
+                    }
+
+                    destination[x] = transfer is null
+                        ? Transfer(sample, black, white, options.AsinhStrength, denominator)
+                        : transfer[Math.Min(sample, white) - black];
+                }
+            }
             return output;
         }
-
-        var black = Percentile(histogram, activeCount, options.BlackPercentile);
-        var white = Percentile(histogram, activeCount, options.WhitePercentile);
-        if (white <= black)
+        finally
         {
-            white = black;
-            black = 0;
-        }
-
-        var denominator = Math.Asinh(options.AsinhStrength);
-        for (var y = 0; y < height; y++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            for (var x = 0; x < width; x++)
+            ArrayPool<int>.Shared.Return(histogram);
+            if (transfer is not null)
             {
-                var offset = y * stride + x * 2;
-                var sample = pixels[offset] | pixels[offset + 1] << 8;
-                if (sample <= black)
-                {
-                    continue;
-                }
-
-                var normalized = Math.Clamp((sample - black) / (double)(white - black), 0, 1);
-                var stretched = Math.Asinh(options.AsinhStrength * normalized) / denominator;
-                output[y * width + x] = (byte)Math.Round(stretched * byte.MaxValue);
+                ArrayPool<byte>.Shared.Return(transfer);
             }
         }
-        return output;
+    }
+
+    private static byte Transfer(int sample, int black, int white, double strength, double denominator)
+    {
+        var normalized = Math.Clamp((sample - black) / (double)(white - black), 0, 1);
+        var stretched = Math.Asinh(strength * normalized) / denominator;
+        return (byte)Math.Round(stretched * byte.MaxValue);
     }
 
     private static int Percentile(int[] histogram, int sampleCount, double percentile)

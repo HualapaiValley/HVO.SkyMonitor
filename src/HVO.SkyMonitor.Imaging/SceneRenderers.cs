@@ -863,6 +863,10 @@ public static class Mono16SceneRenderer
             throw new ArgumentException("Sky illumination must bind the rendered projection.", nameof(options));
         if (options.SolarDisks is { } disks && disks.Projection != projection)
             throw new ArgumentException("Solar disks must bind the rendered projection.", nameof(options));
+        if (options.SolarDisks is { } bound && (bound.Settings.PsfSigmaPixels != options.PsfSigmaPixels ||
+            bound.Settings.PsfRadiusPixels != options.PsfRadiusPixels ||
+            bound.Settings.HorizonPolicy != scene.Request.HorizonPolicy || bound.Settings.Refraction != scene.Request.Refraction))
+            throw new ArgumentException("Solar disks must bind the rendered PSF, horizon policy and refraction.", nameof(options));
     }
 
     internal static bool InsideAperture(int x, int y, ProjectionContext projection)

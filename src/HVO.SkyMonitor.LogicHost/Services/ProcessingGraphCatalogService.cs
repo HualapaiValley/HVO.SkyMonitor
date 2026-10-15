@@ -548,8 +548,8 @@ internal sealed partial class ProcessingGraphCatalogService(
             }
             if (IsSeededRevision(entity.Id))
             {
-                // The canonical seed revision backs the global default central assignment; startup seeding and the
-                // catalog health check both require it to remain published, so its lifecycle is immutable.
+                // Every canonical seed revision, current or historical, backs a global default central assignment that
+                // startup seeding validates against recorded constants, so its lifecycle is immutable.
                 return Complete(new(CentralProcessingGraphMutationOutcome.Conflict, ReasonCode: SeededRevisionReasonCode));
             }
             entity.RetiredAtUtc = now;
@@ -626,7 +626,7 @@ internal sealed partial class ProcessingGraphCatalogService(
     }
 
     internal static bool IsSeededRevision(Guid revisionId)
-        => revisionId == DatabaseSeeder.BasicCentralProcessingGraphRevisionId;
+        => CanonicalCentralGraphSeedChain.IsSeededRevision(revisionId);
 
     private static bool ContainsSecretMaterial(ProcessingGraphDefinition definition)
     {

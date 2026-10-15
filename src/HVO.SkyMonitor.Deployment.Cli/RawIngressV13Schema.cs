@@ -9,9 +9,12 @@ namespace HVO.SkyMonitor.Deployment;
 internal static class RawIngressV13Schema
 {
     internal const string MigrationContract = "canonical-v13-to-v14";
+    internal const string RecoveryMigrationContract = "canonical-v13-v14-to-v15";
     internal const string Fingerprint = "937cceed13de8f13bf9263d7ece48d21e26388836551c78ccbd27d86aea638ce";
     // Frozen from the candidate v14 journal, not derived from the database under inspection.
     internal const string V14Fingerprint = "66046ff0772ff0ad91509efee1a343a3a73d36fc1e4d196ac3e2db2e66e29216";
+    // v15 changes durable reader semantics, not the canonical table definitions.
+    internal const string V15Fingerprint = V14Fingerprint;
     private static readonly HashSet<string> SharedObjects = new(StringComparer.Ordinal)
     {
         "capture_processing_schema", "processing_nodes", "processing_node_inputs", "processing_outputs",

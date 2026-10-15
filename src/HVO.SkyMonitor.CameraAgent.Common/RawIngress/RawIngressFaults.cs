@@ -24,7 +24,8 @@ internal enum RawIngressFaultPoint
     AfterJournalCommit,
     BeforeIndexProjection,
     AfterIndexProjection,
-    BeforeWakeUpNotification
+    BeforeWakeUpNotification,
+    BeforeAcceptanceLifecycleLock
 }
 
 internal interface IRawIngressFaultInjector

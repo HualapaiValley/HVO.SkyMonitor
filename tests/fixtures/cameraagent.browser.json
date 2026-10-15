@@ -72,6 +72,14 @@
         }
       },
       {
+        "id": "ProjectedScene",
+        "type": "ProjectedScene",
+        "order": 15,
+        "required": true,
+        "dependsOn": ["$raw"],
+        "publication": { "persistence": "durable-local" }
+      },
+      {
         "id": "Preview",
         "type": "Preview",
         "order": 50,
@@ -90,7 +98,7 @@
         "type": "Storage",
         "order": 100,
         "enabled": true,
-        "dependsOn": ["$raw", "Preview"],
+        "dependsOn": ["$raw", "Preview", "ProjectedScene"],
         "options": {
           "storageRoot": __STORAGE_ROOT__,
           "retentionDays": 1,

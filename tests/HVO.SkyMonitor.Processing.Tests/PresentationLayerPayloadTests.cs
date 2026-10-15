@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [TestClass]
 [TestCategory("Unit")]
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
-public sealed class PresentationLayerPayloadTests
+public sealed partial class PresentationLayerPayloadTests
 {
     [TestMethod]
     public void ExplicitAppearanceBindsIdentityRejectsUnboundedStylesAndKeepsV2Canonical()

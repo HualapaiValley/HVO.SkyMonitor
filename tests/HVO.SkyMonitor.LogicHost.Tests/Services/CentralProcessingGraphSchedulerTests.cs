@@ -33,6 +33,7 @@ public sealed class CentralProcessingGraphSchedulerTests
         Assert.IsTrue(compiled.IsValid);
         var plan = compiled.Plan!;
         Assert.IsTrue(registry.Validate(plan));
+        Assert.IsNull(registry.FindUnsupported(plan));
         CollectionAssert.AreEquivalent(
             new[]
             {
@@ -84,14 +85,23 @@ public sealed class CentralProcessingGraphSchedulerTests
                 node.Outputs, node.Window, node.CapabilityLabels, node.HostApplicability)]
         };
 
-        Assert.IsTrue(registry.Validate(ProcessingGraphCompiler.Compile(
-            baseline, new(ProcessingGraphHosts.LogicHost, registry.Capabilities)).Plan!));
-        foreach (var definition in new[] { multipleSourceOutputs, annotationBinding, canonicalJsonBinding, noPrimaryBinding })
+        var baselinePlan = ProcessingGraphCompiler.Compile(
+            baseline, new(ProcessingGraphHosts.LogicHost, registry.Capabilities)).Plan!;
+        Assert.IsTrue(registry.Validate(baselinePlan));
+        Assert.IsNull(registry.FindUnsupported(baselinePlan));
+        foreach (var (definition, unsupported) in new[]
+                 {
+                     (multipleSourceOutputs, ICentralProcessingGraphNodeRegistry.UnsupportedSources),
+                     (annotationBinding, node.StepAlias),
+                     (canonicalJsonBinding, ICentralProcessingGraphNodeRegistry.UnsupportedSources),
+                     (noPrimaryBinding, node.StepAlias)
+                 })
         {
             var compiled = ProcessingGraphCompiler.Compile(
                 definition, new(ProcessingGraphHosts.LogicHost, registry.Capabilities));
             Assert.IsTrue(compiled.IsValid, string.Join(Environment.NewLine, compiled.Diagnostics));
             Assert.IsFalse(registry.Validate(compiled.Plan!));
+            Assert.AreEqual(unsupported, registry.FindUnsupported(compiled.Plan!));
         }
     }
 
@@ -121,17 +131,21 @@ public sealed class CentralProcessingGraphSchedulerTests
                     node.Outputs, node.Window, node.CapabilityLabels, node.HostApplicability))]
         };
 
-        Assert.IsTrue(registry.Validate(ProcessingGraphCompiler.Compile(
-            baseline, new(ProcessingGraphHosts.LogicHost, registry.Capabilities)).Plan!));
+        var baselinePlan = ProcessingGraphCompiler.Compile(
+            baseline, new(ProcessingGraphHosts.LogicHost, registry.Capabilities)).Plan!;
+        Assert.IsTrue(registry.Validate(baselinePlan));
+        Assert.IsNull(registry.FindUnsupported(baselinePlan));
         var previewAuxiliary = ProcessingGraphCompiler.Compile(
             WithAuxiliaryOn("Preview"), new(ProcessingGraphHosts.LogicHost, registry.Capabilities));
         Assert.IsTrue(previewAuxiliary.IsValid, string.Join(Environment.NewLine, previewAuxiliary.Diagnostics));
         Assert.IsTrue(registry.Validate(previewAuxiliary.Plan!),
             "auxiliary artifact bindings remain host-compatible on non-annotation nodes");
+        Assert.IsNull(registry.FindUnsupported(previewAuxiliary.Plan!));
         var annotationAuxiliary = ProcessingGraphCompiler.Compile(
             WithAuxiliaryOn("Annotation"), new(ProcessingGraphHosts.LogicHost, registry.Capabilities));
         Assert.IsTrue(annotationAuxiliary.IsValid, string.Join(Environment.NewLine, annotationAuxiliary.Diagnostics));
         Assert.IsFalse(registry.Validate(annotationAuxiliary.Plan!));
+        Assert.AreEqual(BuiltInProcessingRecipes.Annotation, registry.FindUnsupported(annotationAuxiliary.Plan!));
     }
 
     [TestMethod]
@@ -539,6 +553,29 @@ public sealed class CentralProcessingGraphSchedulerTests
     }
 
     [TestMethod]
+    public async Task CompactSceneWithoutRetainedProductWaitsBeforeFreezingAnyAnnotationGraph()
+    {
+        await using var context = CreateContext();
+        var now = DateTimeOffset.UnixEpoch.AddYears(56);
+        var registry = new CentralProcessingGraphNodeRegistry(new CentralDerivativeRecipeCatalog());
+        var source = AddAssignedArtifact(context, "compact", CreateAnnotationConsumerGraph(), registry, now);
+        source.Frame!.SceneProvenanceJson = JsonSerializer.Serialize(new SceneProvenance(
+            "scene", "rig", "catalog", "1", new string('A', 64), "model", "1", "1", "1",
+            SceneUtc: now).WithoutProjectedGeometry());
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        using var telemetry = new CentralDerivativeWorkerTelemetry();
+        using var catalogTelemetry = new ProcessingGraphCatalogTelemetry(TimeProvider.System);
+        var scheduler = CreateScheduler(context, telemetry, catalogTelemetry, nodeRegistry: registry);
+
+        var result = await scheduler.ScheduleLiveAsync(source.Id, now, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(CentralProcessingGraphScheduleOutcome.AwaitingSources, result.Outcome);
+        Assert.AreEqual("projected-scene.awaiting-product", result.ReasonCode);
+        Assert.AreEqual(0, await context.CentralProcessingGraphExecutions.CountAsync().ConfigureAwait(false));
+        Assert.AreEqual(0, await context.CentralDerivativeJobs.CountAsync().ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public void ExpectedRecipeIdentityFreezesAnnotationOnlyForAnnotationBearingBuiltInNodes()
     {
         var provenance = JsonSerializer.Serialize(new SceneProvenance(
@@ -696,6 +733,7 @@ public sealed class CentralProcessingGraphSchedulerTests
             definition, new(ProcessingGraphHosts.LogicHost, registry.Capabilities));
         Assert.IsTrue(central.IsValid, string.Join(Environment.NewLine, central.Diagnostics));
         Assert.IsTrue(registry.Validate(central.Plan!));
+        Assert.IsNull(registry.FindUnsupported(central.Plan!));
         var revision = new CentralProcessingGraphRevision
         {
             Name = definition.Name,
@@ -1222,6 +1260,32 @@ public sealed class CentralProcessingGraphSchedulerTests
         Assert.IsTrue(CentralDerivativeWindowResolver.IsBelowMinimumInputCount(job));
         job.MinimumInputCount = null;
         Assert.IsFalse(CentralDerivativeWindowResolver.IsBelowMinimumInputCount(job), "no frozen minimum imposes none");
+    }
+
+    [TestMethod]
+    public void SettledGraphRequirementMirrorsTheImmutabilityGuard()
+    {
+        // The ApplicationDbContext guard treats a requirement as graph-owned when its job belongs to a graph execution
+        // or it is bound to a graph dependency, and freezes it once it leaves Waiting. The resolver uses the same rule.
+        var graphJob = new CentralDerivativeJob { GraphExecutionId = Guid.NewGuid() };
+        var legacyJob = new CentralDerivativeJob();
+        foreach (var state in Enum.GetValues<CentralDerivativeInputResolutionState>())
+        {
+            var requirement = new CentralDerivativeJobInputRequirement { ResolutionState = state };
+            var settled = state != CentralDerivativeInputResolutionState.Waiting;
+            Assert.AreEqual(settled, CentralDerivativeWindowResolver.IsSettledGraphRequirement(graphJob, requirement),
+                $"graph job, {state}");
+            Assert.IsFalse(CentralDerivativeWindowResolver.IsSettledGraphRequirement(legacyJob, requirement),
+                $"legacy windows re-enter resolution, {state}");
+            var dependencyBound = new CentralDerivativeJobInputRequirement
+            {
+                ResolutionState = state,
+                GraphDependencyId = Guid.NewGuid()
+            };
+            Assert.AreEqual(settled,
+                CentralDerivativeWindowResolver.IsSettledGraphRequirement(legacyJob, dependencyBound),
+                $"dependency-bound, {state}");
+        }
     }
 
     [TestMethod]
@@ -2662,6 +2726,9 @@ public sealed class CentralProcessingGraphSchedulerTests
             => stepAlias == handler.StepAlias ? handler : throw new InvalidOperationException("Unexpected step alias.");
 
         public bool Validate(ProcessingGraphExecutionPlan plan) => plan.Nodes.Length == 1;
+
+        public string? FindUnsupported(ProcessingGraphExecutionPlan plan)
+            => Validate(plan) ? null : plan.Nodes[^1].Definition.StepAlias;
     }
 
     private sealed class StubEnvironmentalQueryService : IEnvironmentalObservationQueryService

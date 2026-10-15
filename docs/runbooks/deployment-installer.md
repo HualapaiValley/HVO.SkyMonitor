@@ -214,8 +214,276 @@ can be evaluated against persisted state first without acquiring, loading, or st
 candidate's state migration and is required only when the candidate declares one.
 Do not add it to a routine upgrade; doing so defeats the gate it exists for.
 
+### Edge work persisted across an upgrade
+
+Node `PlanSha256` includes two explicit code version inputs as well as the step
+configuration: `ICaptureProcessingStep.ImplementationVersion` (initially `"1"`)
+and the resolved shared step version. The latter uses `SharedStepVersion` when
+provided, otherwise the built-in recipe's `ImplementationVersion`, otherwise
+`cameraagent-window-v2:<alias>` or `cameraagent-step-v2:<alias>`. Step authors must
+bump the step's `ImplementationVersion` for incompatible execution behaviour
+changes, including dependency handling and side effects; shared recipe/algorithm
+changes must bump their shared version. Neither version comes from operator
+options or the assembly/package version. Unchanged configuration and versions
+produce the same hash.
+
+Introducing these version inputs changes every earlier node hash once, even
+when the pipeline configuration is identical. Saved revisions containing
+processing nodes compiled before this upgrade become superseded; a graph with
+no enabled steps has no implementation plan to invalidate. There is no
+processing SQLite schema change (schema version 8). This one-time transition intentionally uses the
+standard-work abandon path described below. Raw evidence is retained.
+
+Captures accepted by the previous version keep their raw evidence and their
+frozen processing plan. When the new version builds a different node plan for
+the same pipeline, standard processing of that earlier work cannot run:
+
+- Each such capture's standard work is **abandoned** with reason
+  `plan-superseded`, and its execution is expired with
+  `processing.plan-superseded`. The raw stays held until its upload completes,
+  and a scene-required upload completes with the raw alone. Ingress keeps
+  accepting captures. Abandoned work is not a terminal failure and does not
+  quarantine the lane.
+- Live work that exceeds its maximum queue age is abandoned with
+  `processing-expired` instead of quarantined. On startup, standard work that an
+  earlier version quarantined for `processing-expired` is converted to
+  abandoned, so it stops blocking ingress.
+- Genuinely corrupt or missing raw evidence still quarantines and refuses new
+  captures until an authorized operator releases each affected capture.
+- An archived replay accepted by the previous version, whose frozen plan this
+  version no longer builds, is **abandoned** on its first claim. Its execution
+  and work become `Expired` with `processing.plan-superseded`. Its unfinished
+  nodes record `TerminalFailure` with the same reason; nodes it had already
+  completed keep their status. It spends no further attempt, releases its
+  pinned inputs, and leaves its raw evidence untouched. It is counted in
+  `ReplayAbandonedCount` on the `capture-processing` health check (gauge
+  `camera_agent.processing.replay.abandoned`) and in `abandonedCount` of the
+  `archivedReplay` section of the operations summary
+  (`/api/v1/operations/summary`), not in `ReplayTerminalCount` or
+  `terminalCount`, so it does not degrade health. The replay page explains
+  this. To run that capture again, submit a new replay against a revision this
+  version compiles.
+  A replay submitted against the old revision is refused, by the same plan
+  comparison that abandons the accepted one.
+- Abandonment needs intact evidence. Before abandoning, the replay checks its
+  own raw capture and every historical raw input frozen for a window step. If
+  any is missing or damaged, the replay is not abandoned. It retries as
+  `processing.replay-exception`, because no step may run under the old plan to
+  find the damage, then fails once its attempts are spent and counts in
+  `ReplayTerminalCount`. That is the same outcome as damage under a current
+  plan, where the window step finds it and records `processing.step-exception`.
+- A replay whose frozen configuration this version cannot build at all, for
+  example because a step was removed, is not abandoned. It retries as
+  `processing.replay-exception` and fails terminally once its attempts are
+  spent. That failure counts in `ReplayTerminalCount` and leaves health
+  **Degraded** with `replay-terminal`.
+
+A replay whose host stopped without releasing its lease, for example after a
+crash or a kill, is recovered once the lease expires. The execution returns to
+`Pending` with `processing.replay-lease-expired`, and every node attempt the
+dead lease left `Running` is recorded as `Interrupted` with that reason. The
+lost attempt still counts toward `ReplayMaximumAttempts`, so a replay that
+keeps killing its host cannot loop forever. Within its remaining attempts and
+deadline it retries on its own. When they are spent it fails terminally, as
+any replay does.
+
+Open **Quarantine → Raw evidence quarantine and releases**
+(`/operations/quarantine?kind=RawEvidence`). Review the capture identity and
+failure, then choose one of these audited actions:
+
+When the journal is valid but raw evidence is missing or corrupt, the host keeps
+the authenticated operator surface available while capture admission and lane
+processing wait for audited recovery. Configuration, schedule, named-rig and
+calibration metadata still initialize against the validated journal. Pending
+calibration-acquisition recovery waits for evidence release and preserves its
+job if the host stops meanwhile. A persisted capture pause remains paused after
+release; resume it explicitly when appropriate. Unsupported schemas and other
+integrity failures still fail startup.
+
+- **Revalidate:** recover the exact original payload and sidecar at their
+  committed paths from trusted recovery evidence. Preserve the quarantined
+  copies. The action verifies the complete manifest, capture identity, payload
+  length and SHA-256, synchronizes the recovered files, and durably records
+  actor, `evidence-restored`, and UTC time before releasing the failure. Merely
+  putting files back or restarting no longer releases an existing failure.
+  Evidence-failed standard work remains terminal and its lane is abandoned with
+  `raw-evidence-revalidated`; use explicitly requested archived replay for that
+  recovered capture. Other evidence-failed lanes return to their queue with their
+  original age and expiry rules. Unrelated quarantines remain unchanged.
+- **Write off:** explicitly acknowledge irrecoverable evidence or approved loss.
+  This records a terminal disposition with actor, controlled reason and UTC
+  time, abandons that capture's pending lanes, and preserves its original
+  identity and all remaining raw files. Written-off evidence stays protected
+  from retention and cannot be reaccepted or automatically recovered on restart.
+  This action does not reclaim disk space. A capture with a leased lane must
+  settle that lease before either action can apply.
+
+Both actions keep the released capture's raw evidence protected from ordinary
+retention, including after lane holds are recomputed. Revalidation also does not
+reclaim disk space.
+
+The owner-authenticated operations API exposes the same bounded history through
+`GET /api/v1/operations/raw-evidence?pageSize=25`. Use its action-specific token
+in `POST /api/v1/operations/raw-evidence/revalidate` or
+`POST /api/v1/operations/raw-evidence/write-off`, with JSON
+`{ "actionToken": "<token>", "reasonCode": "<controlled reason>" }`, an
+`Idempotency-Key` header, and the ordinary antiforgery token. Write-off reasons
+are `irrecoverable-evidence` and `operator-approved-loss`. A duplicate request
+returns the original audit receipt; reusing its key for another command
+conflicts. Paths are not returned by this API. Releases persist in the raw
+journal's reserved `raw-evidence-release.*` capture events, and write-off also
+records `raw-evidence-written-off` as its terminal disposition.
+
+The next admission attempt reinitializes ingress; other unresolved evidence
+failures continue to refuse captures. No release deletes or rewrites raw data.
+
+Audited recovery requires raw-journal version 15. A canonical v13 or v14 journal
+upgrades transactionally through the declared `canonical-v13-v14-to-v15`
+transition. The image and signed release must declare schema 15 and that
+migration. Older readers cannot preserve these dispositions, so installer
+preflight refuses rollback to an image declaring an earlier raw-journal version;
+the earlier runtime also refuses the v15 journal. Select a compatible image
+instead of deleting or resetting evidence to force a rollback.
+
+A Named active revision compiled by the earlier version cannot run any live work.
+In that case:
+
+- `capture-processing` health is **Degraded**, with reason
+  `active-revision-superseded` and the revision in `SupersededActiveRevisionId`.
+- CameraAgent logs one Error (event 2097) naming the node and both plan hashes.
+- Captures are still accepted and uploaded, but their standard processing is
+  abandoned.
+
+To recover, use the **Named graphs** page (`/operations/pipeline/graphs`)
+to do one of the following:
+
+- Create, validate and activate a revision of the same pipeline, which this
+  version compiles.
+- Roll back to configured-basic, which is recompiled from configuration at every
+  startup.
+
+Health clears within one refresh, and an Information entry (event 2098) records
+it. No restart is needed. Configured-basic is never reported as superseded.
+
+New activation, rollback selection and archived replay commands reject a saved
+revision whose node plans no longer match the installed compiler, including a
+changed node set or a pipeline the compiler can no longer build. The API returns
+HTTP 409 and the operator UI directs you to create or select a compatible
+revision. Refreshing the page alone does not repair an obsolete revision.
+Rejection leaves the registry, revision, replay queue and raw evidence unchanged.
+An exact retry of an already acknowledged command still returns its recorded
+result; it does not schedule new work or reapply the selection. Replay checks use
+the retained capture configuration, rather than the current camera settings.
+
+For a saved revision that was Validated before this upgrade, selecting it for
+activation, rollback or a new archived replay now returns the compatibility
+rejection above. On the Named graphs page, create a new revision from the same
+pipeline definition, validate it with the installed version, then activate it
+(or choose another revision compiled by this version). Re-validating an already
+Validated revision does not replace its immutable saved plans. Configured-basic
+is an immediate alternative while preparing the replacement revision.
+
+Already-accepted archived replay retains its frozen hashes, so after this
+upgrade it takes the archived replay abandonment path above. On its first
+claim it becomes `Expired` with `processing.plan-superseded`. It spends no
+further attempt and does not retry, and it counts in `ReplayAbandonedCount`
+rather than `ReplayTerminalCount`. A replay whose evidence is damaged fails
+instead, as described above.
+
+Activating a compatible revision cannot repair that job's immutable frozen plan.
+To run the capture again, submit a fresh replay against a compatible revision.
+You do not need to cancel the old job first, because it abandons itself on its
+first claim. Until then it holds one slot of `ReplayMaximumPendingCount`.
+**Request cancellation** on its execution page frees that slot sooner. Raw
+evidence is never deleted to bypass the mismatch.
+
+The version inputs do not change recipe output keys or manifest bytes by
+themselves. They prevent an earlier frozen plan from running even when its
+recipe identity is unchanged. Later implementation version bumps use the same
+supersession and recovery paths.
+
 Rollback continues to use the retained previous image identity and never
 consults a release train.
+
+### Archived replay across a lifecycle transition
+
+Lifecycle state (`/api/internal/deployment/lifecycle/state`) reports archived
+replay in its own `archivedReplay` section, separate from live
+`captureProcessing`. The section contains pending, leased, retry, terminal and
+abandoned counts, pending bytes and the oldest pending time. The operations
+summary carries the same section. Each recorded continuity boundary keeps the
+replay counts as `ReplayPending` and `ReplayLeased`. A
+lifecycle CLI reading an image that predates the section records zero.
+
+The pause-and-drain boundary deliberately does not wait for archived replay:
+
+- A capture pause stops new exposures, but accepted work keeps processing, and
+  that includes operator-requested replay. The replay queue can hold
+  `ReplayMaximumPendingCount` executions (1000 by default), each with a deadline
+  of `ReplayDeadlineSeconds` (one hour by default). Waiting for that queue could
+  hold any upgrade, rollback or catalog transition well past the two-minute
+  drain deadline.
+- When the host stops, in-flight replay is returned to its queue as deferred
+  work. Its node attempt is recorded as `Interrupted` with reason
+  `processing.replay-host-stopping`, and no replay attempt is consumed. A
+  replay limited to one attempt therefore still has that attempt after the
+  restart. Replay that loses its lease while the host keeps running is still a
+  retryable failure.
+- Catalog selection and rollback refuse uncommitted live processing, but not
+  pending archived replay. Archived replay has no dependency on the mounted
+  catalog. An annotation node in replay draws from the projected scene that
+  live processing committed and that submission pinned, or from scene
+  provenance recorded with the frame. It never builds a scene from whichever
+  catalog is mounted when it runs. A retained node that draws constellation
+  lines with neither a projected-scene dependency nor frame scene provenance
+  therefore fails closed in replay, with reason
+  `processing.missing-projected-scene`. A catalog switch cannot change what
+  an accepted replay produces, so replay pending at the boundary does not
+  refuse the transition.
+
+If a transition times out while it waits for the drain, the error message
+reports any replay pending or leased and states that the drain does not wait
+for it.
+
+That guarantee belongs to the running image, so the image declares it.
+Lifecycle state carries `archivedReplayCatalogIndependent: true` on every image
+that fails replay closed this way. Before catalog selection or rollback changes
+anything, the CLI reads lifecycle state and refuses the transition unless the
+running image declares it. The check assumes the running container uses the
+image the deployment retains, because every remount the transition performs,
+including failure recovery, recreates the retained image. An image that
+predates the guard omits the declaration and could still annotate accepted
+replay from the newly mounted catalog. The refusal happens before pause,
+before the catalog setting changes and before any container is recreated for
+the new catalog. Upgrade the CameraAgent image, then retry.
+The check reads the declaration, not the replay counts, because those counts
+are a periodic snapshot and an empty count does not prove that no replay was
+accepted under the current catalog.
+
+When `--resume` continues an interrupted catalog selection, the CLI first
+restores the original catalog and then applies the same check before it
+selects again. A refusal at that point leaves the original catalog mounted.
+
+Three paths stay outside the check:
+
+- **An image change after a catalog change.** Image upgrade and image rollback
+  keep the current catalog, and the CLI cannot read a declaration from an
+  image that is not running yet. Rolling back or downgrading to an image that
+  predates the declaration after a catalog transition can therefore run replay
+  accepted under the earlier catalog against the current one. Before such an
+  image change, let pending archived replay finish or cancel it.
+- **A selection interrupted by an older CLI on an older image.** Resuming it
+  with this CLI restores the original catalog, restarting the older image on
+  it, and only then refuses. Replay that image accepted under the interrupted
+  selection can run against the restored catalog in between. An older CLI
+  resuming its own operation performs no check.
+- **A running image that differs from the retained one.** The CLI reads the
+  declaration from the running container but does not compare that
+  container's image with the image the deployment retains. If a guarded image
+  is running while the deployment still retains an image that predates the
+  declaration, the check passes and the transition then recreates the older
+  image on the new catalog. Before a catalog transition, make sure the running
+  CameraAgent image is the one the deployment retains.
 
 ### Proving the signed lifecycle in the installer campaign
 
@@ -939,9 +1207,32 @@ hvo-skymonitor catalog install --catalog-bundle /owner-private/catalog.bundle
 hvo-skymonitor catalog select --instance-id <uuid> --catalog-version <version>
 hvo-skymonitor catalog rollback --instance-id <uuid>
 hvo-skymonitor catalog gc --catalog-version <version>
+hvo-skymonitor catalog check --catalog-manifest <signed-manifest-url-or-path>
 ```
 
-Mutating garbage collection requires one explicit version. It fails closed on
+Each approved catalog ID has its own root,
+`<productRoot>/catalogs/<catalogId>/versions/<package-version>`, so HYG 4.2
+(`hyg-v42-production`) and HYG 4.4 (`hyg-v44-production`) install side by side.
+`install` takes the catalog ID from the bundle manifest and refuses an ID,
+package version, lineage or hash that the embedded approved-catalog registry
+does not name. It never changes a selection. Package versions are unique across
+lineages, so `--catalog-version` names exactly one root. A `select` that changes
+the catalog ID rewrites `Catalog__RequiredCatalogId` and the `HVO_CATALOG_ROOT`
+mount and reauthenticates the Compose model. It requires an image whose catalog
+contract label is `hvo-approved-catalogs-v1`, retires the retained image
+rollback, and pins the previous identity as a historical reference. `rollback`
+returns to the previous selection across lineages. The exact identities and
+selection behavior are documented in
+[HYG 4.4 catalog snapshot](../catalog/hyg-v44.md).
+
+`catalog check` is read-only. It verifies the signed manifest or index, or the
+previously verified cached copy when offline, and reports `available` or
+`installed`. It takes no lock, downloads no bundle, and changes no catalog,
+selection, cache or rollback state. It refuses an installed version whose
+identity differs from the signed release.
+
+Mutating garbage collection requires one explicit version. A dry run without a
+version plans collection across every installed approved catalog ID. It fails closed on
 unknown instance roots, malformed selection pointers, active Docker mounts,
 manifests, backups, operations, rollback slots, or historical reconstruction
 references. Interrupted deletion continues from an authenticated tombstone and

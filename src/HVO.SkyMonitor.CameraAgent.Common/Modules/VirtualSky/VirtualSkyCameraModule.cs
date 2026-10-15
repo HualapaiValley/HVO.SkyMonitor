@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -29,6 +30,7 @@ public sealed class VirtualSkyCameraModule(
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
     private static readonly AstronomyEnginePlanetEphemeris SolarBackgroundEphemeris = new();
+    private static readonly JsonSerializerOptions SceneIdentitySerializerOptions = CreateSceneIdentitySerializerOptions();
     private static readonly VirtualSimulatedFocusOptions DefaultSimulatedFocus = new();
     private CameraModuleConfig? _config;
     private VirtualSkyCameraModuleOptions _options = new();
@@ -202,6 +204,9 @@ public sealed class VirtualSkyCameraModule(
             : VirtualSimulatedFocusOptions.RadiusPixels(_options.PsfRadiusPixels, psfSigmaPixels);
         var start = timeProvider.GetTimestamp();
         var config = _config ?? throw new InvalidOperationException("Module has not been initialized.");
+        if (preview is null && _options.CuratedAnnotations is { Enabled: true } &&
+            (!_stageProjectedScene || stagingStore is null))
+            throw new InvalidOperationException("Curated captures require a retained ProjectedScene step and staging store.");
         if (request.Mode != CaptureMode.Still)
         {
             throw new NotSupportedException("Virtual sky camera supports still captures only.");
@@ -282,7 +287,10 @@ public sealed class VirtualSkyCameraModule(
                 !_options.BackgroundElectronsPerSecond.HasValue ? new SolarSkyIllumination(renderProjection, sunDirection) : null,
             SolarDisks = _options.RenderSolarSystemDisks ? new SolarDiskRenderPlan(renderProjection,
                 [SolarDiskEphemeris.Get(SolarSystemBody.Sun, sceneUtc, diskSite), SolarDiskEphemeris.Get(SolarSystemBody.Moon, sceneUtc, diskSite)],
-                _options.MagnitudeZeroElectronsPerSecond, cancellationToken) : null
+                _options.MagnitudeZeroElectronsPerSecond,
+                // The scene below uses the geometric horizon without refraction; the renderer validates the binding.
+                new SolarDiskRenderSettings(initialRenderOptions.PsfSigmaPixels, initialRenderOptions.PsfRadiusPixels,
+                    HorizonPolicy.GeometricHorizon), cancellationToken) : null
         };
         var queryCeiling = StellarExposureRenderPlan.BestCaseMagnitudeCeiling(initialRenderOptions,
             _options.MinimumStellarSignalToNoise);
@@ -332,6 +340,17 @@ public sealed class VirtualSkyCameraModule(
         var renderScene = (await new VisibleSceneBuilder(catalog, constellationTopology, planetEphemeris)
             .BuildAsync(sceneRequest, cancellationToken).ConfigureAwait(false))
             .WithSelectedStars(stellarPlan.Sources.Select(static source => source.Source.Source.Id).ToHashSet(StringComparer.Ordinal));
+        if (initialRenderOptions.SolarDisks is { } resolvedDisks)
+        {
+            // Annotations outline the same topocentric disks the sensor receives.
+            renderScene = renderScene.WithResolvedBodies(resolvedDisks.Disks);
+        }
+        if (_options.CuratedAnnotations is { Enabled: true } curated)
+        {
+            var deepSky = (catalog as IDeepSkyCatalogSource)?.DeepSky
+                ?? throw new InvalidOperationException("Curated annotation requires an approved composed catalog.");
+            renderScene = renderScene.WithCuratedDeepSky(deepSky, curated.ToSelection());
+        }
         var referenceMilliseconds = Stopwatch.GetElapsedTime(referenceStarted).TotalMilliseconds;
         var referenceProcessCpuMilliseconds = (ReadProcessCpu() - referenceCpuStarted).TotalMilliseconds;
         var scene = useNativeReadout
@@ -363,6 +382,12 @@ public sealed class VirtualSkyCameraModule(
         // The full identity binds both logical clocks. Controlled fixed-field realizations use
         // a separate celestial identity so advancing transient time does not redraw quiet noise.
         var stellarNoiseIdentity = sceneId;
+        if (_options.CuratedAnnotations is { Enabled: true } curatedIdentity)
+        {
+            // Presentation changes its scene authority, never the seed of the raw star/noise renderer.
+            sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(
+                sceneId, "\ncurated-annotations-v1\n", JsonSerializer.Serialize(curatedIdentity.ToSelection())))));
+        }
         sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(sceneId, "\n",
             CaptureContractJson.ComputeCanonicalJsonSha256(virtualExposure)))));
         if (preview is not null)
@@ -457,6 +482,7 @@ public sealed class VirtualSkyCameraModule(
         var cloudProvenance = CreateCloudProvenance(_options.CloudScenario, timelineUtc, setpoint.Exposure);
         var transientProvenance = CreateTransientProvenance(
             _options.TransientScenario, timelineUtc, setpoint.Exposure);
+        var catalogIdentity = CatalogSceneProvenanceIdentity.For(catalog as ICelestialCatalogMetadataSource);
         var provenance = new SceneProvenance(
             sceneId,
             config.Rig.ProfileVersion,
@@ -471,9 +497,9 @@ public sealed class VirtualSkyCameraModule(
             metadata.License,
             metadata.SchemaVersion,
             (catalog as ICelestialCatalogMetadataSource)?.PreprocessingVersion,
-            scene.Objects.Select(static item => new ProjectedObjectProvenance(
+            stageKey is not null ? null : scene.Objects.Select(static item => new ProjectedObjectProvenance(
                 item.Id, item.DisplayName, item.Pixel.X, item.Pixel.Y, item.Magnitude)).ToArray(),
-            scene.Segments.Select(static item => new ProjectedSegmentProvenance(
+            stageKey is not null ? null : scene.Segments.Select(static item => new ProjectedSegmentProvenance(
                 item.ConstellationId, item.FromObjectId, item.ToObjectId,
                 item.FromPixel.X, item.FromPixel.Y, item.ToPixel.X, item.ToPixel.Y, item.PartIndex)).ToArray(),
             sceneRequest.SolarSystemBodies.Count > 0 ? planetEphemeris?.ModelVersion : null,
@@ -493,7 +519,10 @@ public sealed class VirtualSkyCameraModule(
                 ? null
                 : StagedProjectedSceneDocument.CurrentSchemaVersion,
             ProjectedSceneStageKey: stageKey,
-            VirtualExposure: virtualExposure);
+            VirtualExposure: virtualExposure,
+            ProjectedSceneSchemaVersion: stageKey is null ? null : scene.ProjectedSceneSchemaVersion,
+            CatalogId: catalogIdentity.CatalogId,
+            CatalogPackageVersion: catalogIdentity.PackageVersion);
         var extra = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["sceneId"] = sceneId,
@@ -1241,8 +1270,18 @@ public sealed class VirtualSkyCameraModule(
         SensorProfile sensor,
         string? ephemerisModelVersion,
         ConstellationTopologyMetadata? constellationTopologyMetadata)
+        => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(SerializeSceneIdentity(
+            request, setpoint, options, sensor, ephemerisModelVersion, constellationTopologyMetadata))));
+
+    private static string SerializeSceneIdentity(
+        VisibleSceneRequest request,
+        CaptureSetpoint setpoint,
+        VirtualSkyCameraModuleOptions options,
+        SensorProfile sensor,
+        string? ephemerisModelVersion,
+        ConstellationTopologyMetadata? constellationTopologyMetadata)
     {
-        var value = JsonSerializer.Serialize(new
+        return JsonSerializer.Serialize(new
         {
             request.Utc,
             request.Observer,
@@ -1271,8 +1310,24 @@ public sealed class VirtualSkyCameraModule(
             Sensor = sensor,
             EphemerisModelVersion = ephemerisModelVersion,
             ConstellationTopology = constellationTopologyMetadata
+        }, SceneIdentitySerializerOptions);
+    }
+
+    private static JsonSerializerOptions CreateSceneIdentitySerializerOptions()
+    {
+        // Raw noise identity keeps the original default typed order and scalar writers. Only immutable
+        // metadata is cached; annotation settings are bound separately after the raw identity is computed.
+        var resolver = new DefaultJsonTypeInfoResolver();
+        resolver.Modifiers.Add(static typeInfo =>
+        {
+            if (typeInfo.Type != typeof(VirtualSkyCameraModuleOptions)) return;
+            var annotation = typeInfo.Properties.Single(static property =>
+                property.Name == nameof(VirtualSkyCameraModuleOptions.CuratedAnnotations));
+            typeInfo.Properties.Remove(annotation);
         });
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+        var options = new JsonSerializerOptions { TypeInfoResolver = resolver };
+        options.MakeReadOnly();
+        return options;
     }
 
     private static long CreateDeterministicCaptureSequence(string sceneId)
@@ -1398,6 +1453,8 @@ public sealed class VirtualSkyCameraModuleOptions
     public string RigProfileVersion { get; init; } = "virtual-asi174-v1";
     public IReadOnlyList<string> ConstellationIds { get; init; } = Array.Empty<string>();
     public bool IncludeConstellationEndpointStars { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CuratedDeepSkyOptions? CuratedAnnotations { get; init; }
     public IReadOnlyList<string> SolarSystemBodies { get; init; } = Array.Empty<string>();
 
     /// <summary>Manual-focus preview model; unset uses the declared defaults and never affects ordinary captures.</summary>
@@ -1407,6 +1464,7 @@ public sealed class VirtualSkyCameraModuleOptions
     internal void Validate()
     {
         SimulatedFocus?.Validate(PsfSigmaPixels);
+        if (CuratedAnnotations is { } curated) _ = curated.ToSelection();
         new StellarExposureGeometryOptions(MaximumResults, MaximumStellarSamples, MaximumStellarStepPixels, PsfRadiusPixels).Validate();
         new StellarExposureRenderSettings(MinimumStellarSignalToNoise, MaximumStellarKernelCellVisits, MaximumStellarSparsePixels).Validate();
         if (!Enum.IsDefined(IlluminationMode) || !double.IsFinite(MaximumMagnitude) || MaximumResults is < 1 or > 100000 || BortleClass is < 1 or > 9 ||

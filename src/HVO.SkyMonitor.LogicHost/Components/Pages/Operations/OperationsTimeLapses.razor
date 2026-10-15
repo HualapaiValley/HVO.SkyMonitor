@@ -1,0 +1,39 @@
+@page "/app/time-lapses"
+@attribute [Authorize(Policy = HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.InteractiveUser)]
+
+<PageTitle>Time-lapses | Network Operations</PageTitle>
+<h1>Time-lapses</h1>
+<p>Hourly videos and sunrise-to-sunrise daily videos made here from received images.</p>
+<form method="get" action="/app/time-lapses" class="filters">
+    <label>Reporting date <input type="date" name="date" value="@Date" /></label>
+    <button class="btn btn-outline-light" type="submit">Apply</button>
+    <a href="/app/time-lapses">Latest</a>
+</form>
+@if (Error is not null)
+{
+    <p role="alert">@Error</p>
+}
+else if (Jobs is null)
+{
+    <p role="status">Loading time-lapses…</p>
+}
+else if (Jobs.Count == 0)
+{
+    <p>No time-lapse jobs are available for this selection. Generation requires a configured central time-lapse preset.</p>
+}
+else
+{
+    <p>Latest @Jobs.Count requests. Earlier revisions remain available by their product links.</p>
+    <div class="table-responsive"><table class="table"><thead><tr><th>Date</th><th>Source window (UTC)</th><th>Product</th><th>State</th></tr></thead>
+        <tbody>@foreach (var job in Jobs)
+        {
+            <tr><td>@job.ReportDate</td><td>@job.StartUtc.ToString("u") – @job.EndUtc.ToString("u")</td>
+                <td>@(job.IsDaily ? "Daily" : "Hourly")
+                    @if (job.ProductId is { } product && job.State == HVO.SkyMonitor.LogicHost.Services.TimeLapses.CentralTimeLapseState.Produced)
+                    { <a class="d-block" href="@($"/app/time-lapses/{product:D}")">View video</a> }
+                </td>
+                <td>@job.State @if (job.ReasonCode is not null) { <small class="d-block">@job.ReasonCode</small> }</td>
+            </tr>
+        }</tbody>
+    </table></div>
+}

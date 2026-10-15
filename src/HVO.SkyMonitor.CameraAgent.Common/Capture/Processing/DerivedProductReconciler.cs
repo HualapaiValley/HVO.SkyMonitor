@@ -383,7 +383,7 @@ internal sealed class DerivedProductReconciler(
         if (!string.Equals(ProcessingIdentity.ComputePayloadSha256(payload), manifest.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
             return "payload-checksum-mismatch";
         if (manifest is DurableTypedMetadataProductManifestV3 typed &&
-            string.Equals(typed.ProductSchemaVersion, ProjectedSceneV1.CurrentSchemaVersion, StringComparison.Ordinal))
+            ProjectedSceneV1.IsSupportedSchemaVersion(typed.ProductSchemaVersion))
         {
             var parsed = ProjectedSceneJson.Parse(payload);
             if (parsed.Scene is not { } scene) return "projected-scene-invalid";

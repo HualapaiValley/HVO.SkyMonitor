@@ -302,6 +302,10 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
         {
             return Problem(StatusCodes.Status404NotFound, "The processing graph revision, execution, or replay input was not found.");
         }
+        catch (ProcessingGraphRevisionSupersededException)
+        {
+            return Problem(StatusCodes.Status409Conflict, ProcessingGraphRevisionSupersededException.SafeMessage);
+        }
         catch (ProcessingGraphStoreConflictException)
         {
             return Problem(StatusCodes.Status409Conflict, "The processing graph command conflicts with durable state.");

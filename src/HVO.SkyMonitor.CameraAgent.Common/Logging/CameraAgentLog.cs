@@ -180,6 +180,18 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2056, Level = LogLevel.Warning, Message = "Capture lane {Lane} reached terminal outcome {Outcome} because {Reason}")]
     public static partial void CaptureLaneTerminal(this ILogger logger, string lane, string outcome, string reason);
 
+    [LoggerMessage(EventId = 2099, Level = LogLevel.Debug, Message = "Capture lane {Lane} abandoned work because {Reason}")]
+    public static partial void CaptureLaneAbandoned(this ILogger logger, string lane, string reason);
+
+    [LoggerMessage(EventId = 2096, Level = LogLevel.Debug, Message = "Processing work for graph revision {RevisionId} was abandoned because its plan was superseded: {Detail}")]
+    public static partial void CaptureProcessingPlanSuperseded(this ILogger logger, string? revisionId, string detail);
+
+    [LoggerMessage(EventId = 2097, Level = LogLevel.Error, Message = "Active processing graph revision {RevisionId} was compiled under plans the running code no longer builds (node {NodeId}: stored plan {StoredPlanSha256}, current plan {CurrentPlanSha256}). Captures are still accepted and uploaded, but standard processing is abandoned until an operator activates a revision compiled by this version or rolls back to configured-basic.")]
+    public static partial void ProcessingActiveRevisionSuperseded(this ILogger logger, string revisionId, string nodeId, string storedPlanSha256, string currentPlanSha256);
+
+    [LoggerMessage(EventId = 2098, Level = LogLevel.Information, Message = "Processing graph selection no longer uses superseded revision {RevisionId}; standard processing resumes")]
+    public static partial void ProcessingActiveRevisionSupersededCleared(this ILogger logger, string revisionId);
+
     [LoggerMessage(EventId = 2057, Level = LogLevel.Warning, Message = "Capture lane availability changed to {Availability} because {Reason}")]
     public static partial void CaptureLanePressureChanged(this ILogger logger, string availability, string reason);
 

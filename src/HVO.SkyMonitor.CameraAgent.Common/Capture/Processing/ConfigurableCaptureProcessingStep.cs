@@ -25,5 +25,8 @@ public abstract class ConfigurableCaptureProcessingStep<TOptions> : ICaptureProc
 
     public int Order => Metadata.Order;
 
+    /// <inheritdoc cref="ICaptureProcessingStep.ImplementationVersion" />
+    public virtual string ImplementationVersion => "1";
+
     public abstract ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken);
 }

@@ -73,6 +73,9 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             CollectionAssert.AreEqual(payload, staged.Result.Frame!.PixelData.ToArray());
             var provenance = staged.Result.Frame.Metadata.Scene;
             Assert.IsNotNull(provenance);
+            Assert.IsTrue(provenance.RequiresProjectedScene);
+            Assert.IsNull(provenance.Objects);
+            Assert.IsNull(provenance.Segments);
             Assert.AreEqual(StagedProjectedSceneDocument.CurrentSchemaVersion, provenance.ProjectedSceneStageSchemaVersion);
             Assert.HasCount(64, provenance.ProjectedSceneStageKey!);
             Assert.AreEqual(provenance.ProjectedSceneStageKey, provenance.SceneId);
@@ -175,6 +178,93 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             CollectionAssert.AreEqual(
                 scene.Objects.Select(static item => item.Pixel).ToArray(),
                 parsed.Scene.Objects.Select(static item => item.Pixel).ToArray());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task VirtualStageWithResolvedFootprintsProducesProjectedSceneV2OnlyWhenEvidenceAgrees()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var staging = CreateStaging(root);
+            var scene = await CreateSceneAsync(resolvedSun: true).ConfigureAwait(false);
+            Assert.HasCount(1, scene.ResolvedFootprints);
+            var stageKey = new string('1', 64);
+            var sceneId = new string('A', 64);
+            await staging.StageAsync(stageKey, sceneId, scene, CancellationToken.None).ConfigureAwait(false);
+            var step = CreateStep(staging);
+
+            var fixture = CreateContext(root, CreateStageProvenance(stageKey, sceneId) with
+            {
+                ProjectedSceneSchemaVersion = SceneProvenance.ResolvedFootprintProjectedSceneSchemaVersion
+            });
+            await step.ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(ProcessingOutcomeStatus.Produced, fixture.Context.ProcessingOutcomes.Single().Status,
+                $"{fixture.Context.ProcessingOutcomes.Single().ReasonCode}: {fixture.Context.ProcessingOutcomes.Single().Field}");
+            var product = fixture.Context.ProcessingProducts.Single();
+            Assert.AreEqual(ProjectedSceneV1.ResolvedFootprintSchemaVersion, product.SchemaVersion);
+            var parsed = ProjectedSceneJson.Parse(product.Payload);
+            Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
+            Assert.AreEqual(ProjectedSceneV1.ResolvedFootprintSchemaVersion, parsed.Scene!.SchemaVersion);
+            // The product carries the canonical (rounded) footprints the stage recorded.
+            var stage = await staging.ReadAsync(stageKey, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(JsonSerializer.Serialize(stage!.ResolvedFootprints),
+                JsonSerializer.Serialize(parsed.Scene.ResolvedFootprints));
+
+            // Capture evidence that promised a v1 scene cannot silently bind a stage that now carries footprints.
+            var stale = CreateContext(root, CreateStageProvenance(stageKey, sceneId) with
+            {
+                ProjectedSceneSchemaVersion = SceneProvenance.RetainedProjectedSceneSchemaVersion
+            });
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(
+                () => step.ProcessAsync(stale.Context, CancellationToken.None).AsTask()).ConfigureAwait(false);
+            Assert.IsEmpty(stale.Context.ProcessingProducts);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task ReplayRejectsAFrozenSceneWhoseSchemaDisagreesWithItsLabelOrEvidence()
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var staging = CreateStaging(root);
+            var resolved = await CreateSceneAsync(resolvedSun: true).ConfigureAwait(false);
+            var stageKey = new string('6', 64);
+            var sceneId = new string('F', 64);
+            var step = CreateStep(staging);
+
+            // A v2 payload stored under a v1 label is not the product submission pinned.
+            var mislabelled = CreateContext(root, CreateStageProvenance(stageKey, sceneId), CreateReplayExecution());
+            mislabelled.Context.BeginNode("projected-scene", [], ["$raw"]);
+            mislabelled.Context.SetFrozenAuxiliaryInputs([CreateFrozenSceneArtifact(mislabelled.Descriptor, resolved,
+                ProjectedSceneV1.CurrentSchemaVersion).Artifact]);
+            await step.ProcessAsync(mislabelled.Context, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidProjectedScene,
+                mislabelled.Context.ProcessingOutcomes.Single().ReasonCode);
+
+            // A correctly labelled v2 product still fails against capture evidence that declared v1.
+            var declaredV1 = CreateContext(root, CreateStageProvenance(stageKey, sceneId) with
+            {
+                ProjectedSceneSchemaVersion = SceneProvenance.RetainedProjectedSceneSchemaVersion
+            }, CreateReplayExecution());
+            declaredV1.Context.BeginNode("projected-scene", [], ["$raw"]);
+            declaredV1.Context.SetFrozenAuxiliaryInputs(
+                [CreateFrozenSceneArtifact(declaredV1.Descriptor, resolved).Artifact]);
+            await step.ProcessAsync(declaredV1.Context, CancellationToken.None).ConfigureAwait(false);
+            var outcome = declaredV1.Context.ProcessingOutcomes.Single();
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidProjectedScene, outcome.ReasonCode);
         }
         finally
         {
@@ -427,7 +517,9 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
     }
 
     [TestMethod]
-    public async Task PhysicalStageProjectedProductAndAnnotationCalculateSceneExactlyOnceWithExactLineage()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task PhysicalStageProjectedProductAndAnnotationCalculateSceneExactlyOnceWithExactLineage(bool curated)
     {
         var root = CreateRoot();
         try
@@ -442,7 +534,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                 Pipeline = new CapturePipelineConfig(
                 [
                     new CaptureProcessingStepConfig("ProjectedScene", Options: JsonSerializer.SerializeToElement(
-                        new ProjectedSceneCaptureProcessingStepOptions()), DependsOn: ["$raw"])
+                        new ProjectedSceneCaptureProcessingStepOptions { CuratedAnnotations = curated ? new(Enabled: true) : null }), DependsOn: ["$raw"])
                 ])
             };
             var startedUtc = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
@@ -451,6 +543,17 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             var catalog = new MetadataCatalog([
                 new CelestialCatalogObject("zenith", "Zenith", rightAscensionHours, 0, 0)
             ]);
+            if (curated)
+            {
+                var semantics = new DeepSkySemantics("OpenNGC", "v20260501", "36cb178a0f69dba8bfc03a99c10512831edf1c6b",
+                    new Uri("https://github.com/mattiaverga/OpenNGC"), "CC BY-SA 4.0", "equatorial-j2000-icrs-aligned",
+                    "J2000.0", "arcminute", "degrees-north-through-east-0-inclusive-to-180-exclusive",
+                    "1-widest-2-standard-3-narrowest", "b-mag-per-square-arcsecond-within-25-mag-isophote");
+                var item = new DeepSkyObject("NGC0224", "NGC 224", "M31", "G", rightAscensionHours, 0, "And",
+                    null, null, null, null, null, null, null, 31, null, null, null);
+                catalog.DeepSky = new DeepSkyCatalog(semantics, [item],
+                    [new("NGC 224", item.Id, DeepSkyAliasKinds.Designation), new("M31", item.Id, DeepSkyAliasKinds.Messier)], [], []);
+            }
             var layout = ReconstructableCaptureContractTests.CreateManifest(
                 CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]).Descriptor.Layout;
             var captureFrame = new CameraFrame(
@@ -534,7 +637,15 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                     CaptureProcessingContext.CreateArtifactId(sceneProduct.OutputIdentitySha256)
                 },
                 annotationProduct.SourceArtifactIds.ToArray());
-            Assert.IsTrue(annotationProduct.Payload.Span.Contains((byte)144));
+            if (curated)
+            {
+                Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, sceneProduct.SchemaVersion);
+                var retained = ProjectedSceneJson.Parse(sceneProduct.Payload).Scene!;
+                Assert.HasCount(1, retained.DeepSky!.Objects);
+                Assert.AreEqual(midpoint, retained.EffectiveUtc);
+                Assert.IsTrue(annotationProduct.Algorithms.Any(static value => value.Name == "curated-dso-overlay"));
+            }
+            else Assert.IsTrue(annotationProduct.Payload.Span.Contains((byte)144));
         }
         finally
         {
@@ -543,15 +654,40 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
     }
 
     [TestMethod]
-    public async Task ReplayConsumesFrozenProjectedSceneWithoutReadingStaging()
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(true, true)]
+    public async Task ReplayConsumesFrozenProjectedSceneWithoutReadingStaging(bool compact, bool curated)
     {
         var root = CreateRoot();
         try
         {
             using var staging = CreateStaging(root);
             var reader = new CountingStagingReader(staging);
-            var fixture = CreateContext(root, CreateStageProvenance(new string('5', 64), new string('E', 64)), CreateReplayExecution());
-            var frozen = CreateFrozenSceneArtifact(fixture.Descriptor, await CreateSceneAsync().ConfigureAwait(false));
+            var provenance = CreateStageProvenance(new string('5', 64), new string('E', 64));
+            if (compact) provenance = provenance with
+            {
+                ProjectedSceneSchemaVersion = curated ? SceneProvenance.DeepSkyProjectedSceneSchemaVersion :
+                    SceneProvenance.RetainedProjectedSceneSchemaVersion,
+                SceneUtc = DateTimeOffset.UnixEpoch,
+                RigProfileHashSha256 = new string('A', 64)
+            };
+            var fixture = CreateContext(root, provenance, CreateReplayExecution());
+            var visible = await CreateSceneAsync().ConfigureAwait(false);
+            if (curated)
+            {
+                var semantics = new DeepSkySemantics("OpenNGC", "v20260501", "36cb178a0f69dba8bfc03a99c10512831edf1c6b",
+                    new Uri("https://github.com/mattiaverga/OpenNGC"), "CC BY-SA 4.0", "equatorial-j2000-icrs-aligned",
+                    "J2000.0", "arcminute", "degrees-north-through-east-0-inclusive-to-180-exclusive",
+                    "1-widest-2-standard-3-narrowest", "b-mag-per-square-arcsecond-within-25-mag-isophote");
+                var item = new DeepSkyObject("NGC0224", "NGC 224", "M31", "G",
+                    AstronomyTime.LocalMeanSiderealDegrees(DateTimeOffset.UnixEpoch, 0) / 15, 0, "And",
+                    null, null, null, null, null, null, null, 31, null, null, null);
+                visible = visible.WithCuratedDeepSky(new DeepSkyCatalog(semantics, [item],
+                    [new("NGC 224", item.Id, DeepSkyAliasKinds.Designation), new("M31", item.Id, DeepSkyAliasKinds.Messier)], [], []), ProjectedSceneDeepSkySelection.Default);
+            }
+            var frozen = CreateFrozenSceneArtifact(fixture.Descriptor, visible);
+            if (curated) Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, frozen.Scene.SchemaVersion);
             fixture.Context.BeginNode("projected-scene", [], ["$raw"]);
             fixture.Context.SetFrozenAuxiliaryInputs([frozen.Artifact]);
             var step = CreateStep(staging, stagingReader: reader);
@@ -560,12 +696,48 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
 
             var outcome = fixture.Context.ProcessingOutcomes.Single();
             Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+            Assert.AreEqual(frozen.Artifact.ArtifactId,
+                ProcessingIdentity.CreateArtifactId(outcome.Products.Single().OutputIdentitySha256));
+            CollectionAssert.AreEqual(frozen.Artifact.Payload.ToArray(), outcome.Products.Single().Payload.ToArray());
             Assert.AreEqual(0, reader.ReadCount, "replay must never consult the transient stage");
         }
         finally
         {
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CompactReplayCannotPublishAnotherSceneIdentity(bool changedVariant)
+    {
+        var root = CreateRoot();
+        try
+        {
+            using var staging = CreateStaging(root);
+            var reader = new CountingStagingReader(staging);
+            var provenance = CreateStageProvenance(new string('5', 64), new string('E', 64)) with
+            {
+                ProjectedSceneSchemaVersion = SceneProvenance.RetainedProjectedSceneSchemaVersion,
+                SceneUtc = DateTimeOffset.UnixEpoch,
+                RigProfileHashSha256 = new string('A', 64)
+            };
+            var fixture = CreateContext(root, provenance, CreateReplayExecution());
+            var frozen = CreateFrozenSceneArtifact(fixture.Descriptor, await CreateSceneAsync().ConfigureAwait(false));
+            fixture.Context.BeginNode("projected-scene", [], ["$raw"]);
+            // The same-variant case deliberately uses a different immutable artifact identity; neither may duplicate geometry.
+            fixture.Context.SetFrozenAuxiliaryInputs([frozen.Artifact with
+            { Variant = changedVariant ? "another-scene" : frozen.Artifact.Variant,
+                ArtifactId = changedVariant ? frozen.Artifact.ArtifactId : Guid.NewGuid() }]);
+            await CreateStep(staging, stagingReader: reader).ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
+            var outcome = fixture.Context.ProcessingOutcomes.Single();
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidProjectedScene, outcome.ReasonCode);
+            Assert.IsEmpty(outcome.Products);
+            Assert.AreEqual(0, reader.ReadCount);
+        }
+        finally { Directory.Delete(root, recursive: true); }
     }
 
     [TestMethod]
@@ -619,6 +791,52 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
         }
     }
 
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RetainedAnnotationWithoutProjectedSceneNeverBuildsFromTheMountedCatalogInReplay(bool replay)
+    {
+        var root = CreateRoot();
+        try
+        {
+            // A retained node that draws constellation lines without a projected-scene dependency, over a capture with
+            // no scene provenance: live processing builds the scene from the mounted catalog, replay must not.
+            var fixture = CreateContext(root, provenance: null, replay ? CreateReplayExecution() : null);
+            fixture.Context.BeginNode("preview", ["$raw"]);
+            var previewFrame = new CameraFrame(
+                fixture.Descriptor.Timing.ExposureStartedUtc, 2, 2, CameraPixelFormat.Mono8, new byte[4],
+                new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0), 2);
+            fixture.Context.AddDerivative(FrameArtifactRole.Preview, previewFrame, "preview-v1");
+            fixture.Context.BeginNode("annotation", ["preview"]);
+            var provider = new CountingAnnotationSceneProvider();
+            var annotation = new AnnotationCaptureProcessingStep(
+                new CaptureProcessingStepMetadata("annotation", "Annotation", 70),
+                new AnnotationProcessingStepOptions { DrawConstellationLines = true, ConstellationIds = ["Ori"] },
+                new ProjectedSceneStore(), provider,
+                new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor()));
+
+            if (!replay)
+            {
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+                    () => annotation.ProcessAsync(fixture.Context, CancellationToken.None).AsTask()).ConfigureAwait(false);
+                Assert.AreEqual(1, provider.Calls);
+                return;
+            }
+            await annotation.ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(0, provider.Calls);
+            var outcome = fixture.Context.ProcessingOutcomes.Single();
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status);
+            Assert.AreEqual(ProcessingReasonCodes.MissingProjectedScene, outcome.ReasonCode);
+            Assert.IsFalse(fixture.Context.ProcessingProducts.Any(
+                static product => product.Role == FrameArtifactRole.AnnotatedPreview));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static ProcessingExecutionContext CreateReplayExecution() => new(
         Guid.NewGuid(),
         ProcessingGraphExecutionClass.Replay,
@@ -638,7 +856,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
         ProjectedSceneStageKey: stageKey);
 
     private static (ProcessingArtifact Artifact, ProjectedSceneV1 Scene) CreateFrozenSceneArtifact(
-        ReconstructionDescriptor descriptor, VisibleScene visible)
+        ReconstructionDescriptor descriptor, VisibleScene visible, string? labelledSchemaVersion = null)
     {
         var source = new ProjectedSceneSource(
             descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor));
@@ -646,13 +864,21 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             ProjectedSceneKind.VirtualRenderAuthoritative, visible, ProjectedSceneImageTransformV1.Identity(2, 2), source,
             "projection-v1", "projection-v1");
         var payload = ProjectedSceneJson.Serialize(scene);
+        var schemaVersion = labelledSchemaVersion ?? scene.SchemaVersion;
+        var recipe = BuiltInProcessingRecipes.CreateExecutionIdentity(BuiltInProcessingRecipes.ProjectedScene,
+            JsonSerializer.SerializeToElement(new Dictionary<string, object>()),
+            ProcessingInputSelector.Raw(descriptor.Artifact.Variant), auxiliaryInputs:
+            [new ProcessingAuxiliaryInput("scene", ProcessingAuxiliaryInputKind.CanonicalJson,
+                SchemaVersion: schemaVersion, IdentitySha256: scene.SceneIdentitySha256, Payload: payload)]);
+        var outputIdentity = ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Metadata, "projected-scene-v1",
+            recipe.IdentitySha256, [descriptor.Artifact.ArtifactId]);
         var artifact = new ProcessingArtifact(
-            Guid.NewGuid(), FrameArtifactRole.Metadata, "projected-scene-v1", new string('c', 64),
+            ProcessingIdentity.CreateArtifactId(outputIdentity), FrameArtifactRole.Metadata, "projected-scene-v1", recipe.IdentitySha256,
             StructuredProcessingProductContracts.ProjectedSceneMediaType, null, payload, DateTimeOffset.UnixEpoch,
             TimeSpan.Zero, CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor))
         {
             ProductKind = ProcessingProductKind.Metadata,
-            SchemaVersion = ProjectedSceneV1.CurrentSchemaVersion,
+            SchemaVersion = schemaVersion,
             ContentIdentitySha256 = scene.SceneIdentitySha256
         };
         return (artifact, scene);
@@ -683,7 +909,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
 
     private static (CaptureProcessingContext Context, ReconstructionDescriptor Descriptor, string PayloadPath) CreateContext(
         string root,
-        SceneProvenance provenance,
+        SceneProvenance? provenance,
         ProcessingExecutionContext? execution = null)
     {
         var payload = new byte[8];
@@ -758,15 +984,23 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
         return (new CaptureProcessingContext(contextConfig ?? config, submission, receipt), descriptor, payloadPath);
     }
 
-    private static ValueTask<VisibleScene> CreateSceneAsync() =>
-        new VisibleSceneBuilder(new InMemoryCelestialCatalog([
-            new CelestialCatalogObject("star", "Star", 0, 0, 1)
-        ])).BuildAsync(new VisibleSceneRequest(
+    private static async ValueTask<VisibleScene> CreateSceneAsync(bool resolvedSun = false)
+    {
+        var catalog = new InMemoryCelestialCatalog([new CelestialCatalogObject("star", "Star", 0, 0, 1)]);
+        var scene = await (resolvedSun
+            ? new VisibleSceneBuilder(catalog, null, new AstronomyEnginePlanetEphemeris())
+            : new VisibleSceneBuilder(catalog)).BuildAsync(new VisibleSceneRequest(
             DateTimeOffset.UnixEpoch, new ObserverLocation(0, 0, 0),
             new EquidistantProjectionContext(1, 1, 1, 1, WidthPixels: 2, HeightPixels: 2),
             new CatalogQuery(6.5, 10),
             new CatalogMetadata("test", "1", new Uri("https://example.invalid"), new string('0', 64), "test", "1"),
-            projectionVersion: "projection-v1", algorithmVersion: "astronomy-v1"));
+            projectionVersion: "projection-v1", algorithmVersion: "astronomy-v1",
+            solarSystemBodies: resolvedSun ? [SolarSystemBody.Sun] : null)).ConfigureAwait(false);
+        return resolvedSun
+            ? scene.WithResolvedBodies([new SolarDiskAppearance(SolarSystemBody.Sun, DateTimeOffset.UnixEpoch,
+                new AltAzPoint(80, 0), 5, 0, 1, 0, 149600000)])
+            : scene;
+    }
 
     private static ProjectedSceneStagingStore CreateStaging(string root) => new(
         Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }));
@@ -775,9 +1009,10 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
         => FileSystemTestPaths.CreatePhysicalTemporaryDirectory("skymonitor-tests");
 
     private sealed class MetadataCatalog(IEnumerable<CelestialCatalogObject> objects) :
-        ICelestialCatalog, ICelestialCatalogMetadataSource
+        ICelestialCatalog, ICelestialCatalogMetadataSource, IDeepSkyCatalogSource
     {
         private readonly InMemoryCelestialCatalog _inner = new(objects);
+        public IDeepSkyCatalog? DeepSky { get; set; }
 
         public CatalogMetadata Metadata { get; } = new(
             "test", "1", new Uri("https://example.invalid"), new string('0', 64), "test", "1");
@@ -812,6 +1047,23 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
 
         public ValueTask DeleteCompletedAsync(string stageKey, CancellationToken cancellationToken)
             => ValueTask.FromException(new IOException("delete-completed-failure"));
+    }
+
+    private sealed class CountingAnnotationSceneProvider : IAnnotationSceneProvider
+    {
+        public int Calls { get; private set; }
+
+        public ValueTask<AnnotationSceneResult> BuildAsync(
+            CameraModuleConfig config,
+            ReconstructionDescriptor? descriptor,
+            CameraFrame rawFrame,
+            IReadOnlyList<string> constellationIds,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return ValueTask.FromException<AnnotationSceneResult>(
+                new InvalidOperationException("The scene was built from the mounted catalog."));
+        }
     }
 
     private sealed class FailingAnnotationSceneProvider : IAnnotationSceneProvider
