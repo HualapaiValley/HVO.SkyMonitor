@@ -330,7 +330,8 @@ internal static class CatalogLifecycleManager
             }, cancellationToken).ConfigureAwait(false);
         }
         // An interrupted selection is restored above before this check, so refusing never strands a half-switched
-        // catalog. Every remount after this point, including failure recovery, runs this same verified image.
+        // catalog. The declaration comes from the running container, which is not compared with the retained image that
+        // every remount after this point, including failure recovery, recreates; the runbook documents that residual.
         EnsureReplayCatalogIndependent(
             await lifecycle.ReadContinuityAsync(lifecycleControlToken, cancellationToken).ConfigureAwait(false),
             request.Operation!.Value);
