@@ -440,7 +440,7 @@ public sealed partial class FilesystemObjectStoreFaultTests
         }
     }
 
-    private static string RequireKernelRetryControl()
+    internal static string RequireKernelRetryControl()
     {
         var control = Environment.GetEnvironmentVariable("HVO_ISSUE587_KERNEL_RETRY_CONTROL");
         if (!OperatingSystem.IsLinux() || string.IsNullOrEmpty(control))
@@ -449,13 +449,13 @@ public sealed partial class FilesystemObjectStoreFaultTests
         return control;
     }
 
-    private static void ArmKernelRetryFault(string control, string directory)
+    internal static void ArmKernelRetryFault(string control, string directory)
     {
         File.WriteAllText(control + ".ready", System.Text.Json.JsonSerializer.Serialize(new { pid = Environment.ProcessId, directory }));
         WaitForKernelController(control + ".attached");
     }
 
-    private static void WaitForKernelController(string path)
+    internal static void WaitForKernelController(string path)
     {
         var deadline = DateTime.UtcNow.AddSeconds(45);
         while (!File.Exists(path) && DateTime.UtcNow < deadline) Thread.Sleep(20);

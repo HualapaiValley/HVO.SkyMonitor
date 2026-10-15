@@ -20,6 +20,7 @@ public sealed class CalibrationLibraryReconciler(
     CalibrationTelemetry? telemetry = null)
 {
     private readonly SqliteCalibrationLibraryStore _store = store;
+    internal Action<string>? BeforeQuarantineDirectorySyncForTest { get; set; }
     private readonly string _root = Path.GetFullPath(options.Value.RawIngressRoot);
     private readonly CalibrationTelemetry? _telemetry = telemetry;
 
@@ -254,6 +255,7 @@ public sealed class CalibrationLibraryReconciler(
             RawIngressFileStore.SyncDirectoryHierarchy(_root, parent);
         }
         Directory.Move(source, destination);
+        BeforeQuarantineDirectorySyncForTest?.Invoke(Path.GetDirectoryName(source)!);
         RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(source)!);
         RawIngressFileStore.SyncDirectory(parent);
     }

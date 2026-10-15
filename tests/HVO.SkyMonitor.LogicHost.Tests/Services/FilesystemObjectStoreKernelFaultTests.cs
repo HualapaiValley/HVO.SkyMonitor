@@ -5,6 +5,15 @@ namespace HVO.SkyMonitor.LogicHost.Tests.Services;
 public sealed class FilesystemObjectStoreKernelFaultTests
 {
     [TestMethod]
+    public async Task CommittedRestoreMarkerRequiresRealFsyncBeforeRollbackDeletion()
+    {
+        var fixture = new FilesystemObjectBackupTests();
+        fixture.Initialize();
+        try { await fixture.VerifyCommittedMarkerDurabilityBeforeRollbackDeletionAsync(); }
+        finally { fixture.Cleanup(); }
+    }
+
+    [TestMethod]
     public async Task DeleteRetryWithRealDirectoryFsyncFailure()
     {
         var fixture = new FilesystemObjectStoreFaultTests();

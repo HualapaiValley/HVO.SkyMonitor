@@ -19,7 +19,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class SqliteCalibrationLibraryStoreTests
+public sealed partial class SqliteCalibrationLibraryStoreTests
 {
     [TestMethod]
     public async Task AdoptPublishedBundleAsync_IsRestartStableAndRetainsImmutableEvidence()

@@ -31,6 +31,20 @@ public sealed class AtomicPublisherTests
         => async (stream, ct) => await stream.WriteAsync(content, ct);
 
     [TestMethod]
+    public void EnsureDirectoryExistingPathDoesNotBypassUnsupportedSynchronization()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.IsFalse(DurableSync.SupportsDirectorySync);
+            return;
+        }
+        // procfs is an existing physical directory whose fsync returns EINVAL.
+        var root = PhysicalRoot.Open("/proc");
+        var failure = Assert.ThrowsExactly<FileSystemFaultException>(() => AtomicPublisher.EnsureDirectory(root, root.Path));
+        Assert.AreEqual(FileSystemFaultKind.Io, failure.Kind);
+    }
+
+    [TestMethod]
     [DataRow(PublicationPhase.FileFlushed, false)]
     [DataRow(PublicationPhase.Renamed, true)]
     [DataRow(PublicationPhase.DirectorySynced, true)]
