@@ -124,10 +124,11 @@ public sealed partial class RawCaptureIngressPerformanceTests
     private static async Task<W2Measurement> MeasureW2Async(
         string root,
         W2Input input,
-        CameraModuleConfig configuration)
+        CameraModuleConfig configuration,
+        TimeProvider? timeProvider = null)
     {
         var payload = input.Payload;
-        using var fixture = CreateIngress(root);
+        using var fixture = CreateIngress(root, timeProvider: timeProvider);
         for (var index = 0; index < WarmupCount; index++)
         {
             await fixture.Ingress.AcceptAsync(
@@ -195,7 +196,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
             Directory.EnumerateFiles(Path.Combine(root, "index"), "*.jsonl").Sum(static path => new FileInfo(path).Length),
             new FileInfo(databasePath).Length,
             File.Exists(walPath) ? new FileInfo(walPath).Length : 0,
-            "Flush, directory-sync, and transaction counts are recorded by the measured accept path; byte sizes are read from produced files.");
+            "Flush, directory-sync, and transaction counts are recorded by the measured accept path; byte sizes are read from produced files.") { SortedSamplesMilliseconds = samples };
     }
 
     private static async Task<object> MeasureW3MetadataAsync(
@@ -257,8 +258,8 @@ public sealed partial class RawCaptureIngressPerformanceTests
         var started = Stopwatch.GetTimestamp();
         for (var index = 1; index <= W3MetadataCount; index++)
         {
-            var captureId = Guid.NewGuid().ToString("N");
-            var artifactId = Guid.NewGuid().ToString("N");
+            var captureId = new Guid(index, 0, 0, new byte[8]).ToString("N");
+            var artifactId = new Guid(index, 1, 0, new byte[8]).ToString("N");
             var submission = CreateSubmission(index, input);
             var durableIngressUtc = submission.Result.Frame!.TimestampUtc.AddSeconds(21);
             var descriptor = RawCaptureDescriptorFactory.Create(
@@ -356,7 +357,8 @@ public sealed partial class RawCaptureIngressPerformanceTests
     private static async Task<object> MeasureW3PayloadAsync(
         string root,
         W2Input input,
-        CameraModuleConfig configuration)
+        CameraModuleConfig configuration,
+        TimeProvider? timeProvider = null)
     {
         var payload = input.Payload;
         var rssSamples = new List<long>();
@@ -371,7 +373,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
         long fileFlushes;
         long directorySyncs;
         RawCaptureReceipt? lastReceipt = null;
-        using (var fixture = CreateIngress(root))
+        using (var fixture = CreateIngress(root, timeProvider: timeProvider))
         {
             for (var index = 0; index < W3PayloadCount; index++)
             {
@@ -403,13 +405,22 @@ public sealed partial class RawCaptureIngressPerformanceTests
         for (var trial = 0; trial < recoverySamples.Length; trial++)
         {
             var recoveryStarted = Stopwatch.GetTimestamp();
-            using var restarted = CreateIngress(root);
+            using var restarted = CreateIngress(root, timeProvider: timeProvider);
             await restarted.Ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             recoverySamples[trial] = Stopwatch.GetElapsedTime(recoveryStarted).TotalMilliseconds;
             recoverySnapshot = restarted.State.Snapshot;
+            var reconciliation = restarted.State.LastReconciliation;
+            Assert.IsNotNull(reconciliation);
+            Assert.AreEqual(W3PayloadCount, reconciliation.Inspected);
+            Assert.AreEqual(0, reconciliation.MissingEvidence);
+            Assert.AreEqual(0, reconciliation.Quarantined);
+            Assert.AreEqual(0, reconciliation.IndexProjectionFailures);
             recoveryFileFlushes += restarted.Telemetry.FileFlushCount;
             recoveryDirectorySyncs += restarted.Telemetry.DirectorySyncCount;
         }
+        var recoveryCpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - recoveryCpuBefore).TotalMilliseconds;
+        var recoveryAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - recoveryAllocatedBefore;
+        await ValidateCommittedEvidenceAsync(root, W3PayloadCount, PayloadChecksum.ComputeSha256(payload), configuration).ConfigureAwait(false);
         Array.Sort(recoverySamples);
         var recoveryMedianMilliseconds = Percentile(recoverySamples, 0.50);
         Assert.AreEqual(W3PayloadCount, recoverySnapshot.PendingCount);
@@ -445,8 +456,8 @@ public sealed partial class RawCaptureIngressPerformanceTests
             RecoveryMinimumMilliseconds = recoverySamples[0],
             RecoveryMaximumMilliseconds = recoverySamples[^1],
             RecoveryCapturesPerSecond = recoveryRate,
-            RecoveryCpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - recoveryCpuBefore).TotalMilliseconds,
-            RecoveryAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - recoveryAllocatedBefore,
+            RecoveryCpuMilliseconds = recoveryCpuMilliseconds,
+            RecoveryAllocatedBytes = recoveryAllocatedBytes,
             RecoveryFileFlushes = recoveryFileFlushes,
             RecoveryDirectorySyncs = recoveryDirectorySyncs,
             InitialBacklogCount = initialSnapshot.PendingCount,
@@ -464,7 +475,8 @@ public sealed partial class RawCaptureIngressPerformanceTests
     private static async Task<object> MeasureFaultRecoveryAsync(
         string root,
         W2Input input,
-        CameraModuleConfig configuration)
+        CameraModuleConfig configuration,
+        TimeProvider? timeProvider = null)
     {
         var payload = input.Payload;
         var results = new List<object>();
@@ -515,9 +527,9 @@ public sealed partial class RawCaptureIngressPerformanceTests
         return new { Cases = results, Result = "Each interruption converged to one durable logical capture." };
     }
 
-    private static PerformanceIngress CreateIngress(string root, IRawIngressFaultInjector? faultInjector = null)
+    private static PerformanceIngress CreateIngress(string root, IRawIngressFaultInjector? faultInjector = null, TimeProvider? timeProvider = null)
     {
-        var state = new RawIngressState(TimeProvider.System);
+        var state = new RawIngressState(timeProvider ?? TimeProvider.System);
         var telemetry = new RawIngressTelemetry(state);
         var ingress = new RawCaptureIngress(
             Options.Create(new CameraAgentHostOptions
@@ -528,7 +540,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
             }),
             new UnlimitedCapacityProvider(),
             state,
-            TimeProvider.System,
+            timeProvider ?? TimeProvider.System,
             telemetry,
             NullLogger<RawCaptureIngress>.Instance,
             faultInjector ?? new NullRawIngressFaultInjector());
@@ -550,7 +562,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
         return await loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
-    private static async Task<W2Input> RenderCanonicalW2InputAsync(CameraModuleConfig configuration)
+    private static async Task<W2Input> RenderCanonicalW2InputAsync(CameraModuleConfig configuration, IProjectedSceneStagingStore? stagingStore = null)
     {
         var timestamp = new DateTimeOffset(2026, 7, 14, 0, 0, 0, TimeSpan.Zero);
         var rightAscension = AstronomyTime.LocalMeanSiderealDegrees(timestamp, -113.9119818) / 15d;
@@ -562,7 +574,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
                 -75d + index % 151,
                 -1d + index % 70 / 10d,
                 0.3 + index % 20 / 10d)));
-        var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
+        var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore(), stagingStore: stagingStore);
         await module.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
         var result = await module.CaptureAsync(
             new CaptureRequest(
@@ -785,7 +797,10 @@ public sealed partial class RawCaptureIngressPerformanceTests
         long CompatibilityIndexBytes,
         long DatabaseBytes,
         long WalBytes,
-        string MeasurementNotes);
+        string MeasurementNotes)
+    {
+        public double[] SortedSamplesMilliseconds { get; init; } = [];
+    }
 
 #if DEBUG
     private const string BuildConfiguration = "Debug";
