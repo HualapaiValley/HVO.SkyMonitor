@@ -592,13 +592,21 @@ public sealed partial class RawCaptureIngressPerformanceTests
     private static CaptureLoopSubmission CreateSubmission(int index, W2Input input)
     {
         var timestamp = new DateTimeOffset(2026, 7, 14, 0, 0, 0, TimeSpan.Zero).AddSeconds(index);
+        var metadata = input.Metadata;
+        if (input.FrozenExposure)
+        {
+            // Reuse one authentic exposure without forging its celestial/scenario clock.
+            // Distinct synthetic source IDs produce distinct durable captures of that fixture.
+            timestamp = input.Metadata.Scene!.VirtualExposure!.RequestedStartUtc;
+            metadata = metadata with { SourceId = $"{metadata.SourceId}-fixture-{index:D5}" };
+        }
         var frame = new CameraFrame(
             timestamp,
             W2Width,
             W2Height,
             CameraPixelFormat.BayerRggb16,
             input.Payload,
-            input.Metadata,
+            metadata,
             W2Stride);
         return new CaptureLoopSubmission(
             new CaptureRequest(timestamp, TimeSpan.FromSeconds(25), CaptureMode.Still, new CaptureSetpoint(TimeSpan.FromSeconds(20), 150, null, null)),
@@ -768,7 +776,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
         }
     }
 
-    private sealed record W2Input(byte[] Payload, FrameMetadata Metadata);
+    private sealed record W2Input(byte[] Payload, FrameMetadata Metadata, bool FrozenExposure = false);
 
     private sealed record W2Measurement(
         double MedianMilliseconds,

@@ -55,7 +55,11 @@ source/harness hashes, deployed DLL/native hashes, runtime, and host for each ru
 metadata, configuration and deployment location once on baseline production,
 using real authenticated projected-scene staging. Candidate reads those exact
 files; it does not rerender. Fixture hashes and retained scene document bind the
-input. A fixed TimeProvider makes durable timestamps comparable.
+input. A fixed TimeProvider makes durable timestamps comparable. Every operation
+retains the authentic frozen exposure timestamp and scene clock. Deterministic
+synthetic source IDs distinguish its captures; changing request timestamps while
+reusing that exposure would violate its provenance. This is an accelerated
+storage-service workload, not a new simulated observing campaign.
 
 W2 uses3096x2080 RGGB16,12,879,360bytes, seed2025, five warmups then30 operations,
 concurrency1. The configured arrival is0.04/s; serial accelerated measurement must

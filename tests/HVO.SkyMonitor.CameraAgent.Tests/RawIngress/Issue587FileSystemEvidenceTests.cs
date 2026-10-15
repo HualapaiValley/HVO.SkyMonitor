@@ -49,7 +49,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
         configurationFromFixture = configurationFromFixture with { DeploymentLocation = location };
         var frozenInput = new W2Input(
             await File.ReadAllBytesAsync(Path.Combine(fixtureRoot, "payload.bin")).ConfigureAwait(false),
-            JsonSerializer.Deserialize<FrameMetadata>(await File.ReadAllBytesAsync(Path.Combine(fixtureRoot, "metadata.json")).ConfigureAwait(false), FixtureOptions)!);
+            JsonSerializer.Deserialize<FrameMetadata>(await File.ReadAllBytesAsync(Path.Combine(fixtureRoot, "metadata.json")).ConfigureAwait(false), FixtureOptions)!, FrozenExposure: true);
         Assert.AreEqual(12_879_360, frozenInput.Payload.Length);
         var work = Path.Combine(output, "work");
         Assert.IsFalse(Directory.Exists(work), "Each trial requires a new output root.");
