@@ -10,6 +10,51 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 public sealed partial class RawCaptureIngressTests
 {
     [TestMethod]
+    public async Task StrictReinitializationPreservesValidationForRetentionHoldingLifecycleLock()
+    {
+        var root = CreateRoot();
+        var arrival = new InitializationLifecycleArrival();
+        try
+        {
+            RawCaptureReceipt receipt;
+            using (var original = CreateIngress(root, new(TimeProvider.System)))
+                receipt = (await original.AcceptAsync(CreateConfiguration(), CreateSubmission(Timestamp(1), [1, 2, 3, 4]), CancellationToken.None).ConfigureAwait(false))!;
+            File.Move(receipt.StoredFrame.AbsolutePath, Path.Combine(root, "retained-original.bin"));
+            using var restarted = CreateIngress(root, new(TimeProvider.System), arrival);
+            Assert.IsFalse(await ((IRawCaptureIngress)restarted).InitializeForOperationsAsync(CancellationToken.None).ConfigureAwait(false));
+            var lifecycle = HVO.SkyMonitor.CameraAgent.Common.Storage.RawIngressLifecycleLock.ForRoot(root);
+            await lifecycle.WaitAsync().ConfigureAwait(false);
+            Task? strict = null;
+            try
+            {
+                arrival.Arm();
+                strict = Task.Run(async () => await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false));
+                await arrival.Entered.Task.WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+                Assert.IsFalse(strict.IsCompleted);
+                var holds = await restarted.GetRetentionHoldsUnderLifecycleLockAsync(root, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(holds.Any(hold => hold.ArtifactId == receipt.Manifest.Descriptor.Artifact.ArtifactId));
+            }
+            finally
+            {
+                lifecycle.Release();
+                if (strict is not null) await Assert.ThrowsExactlyAsync<InvalidDataException>(() => strict).ConfigureAwait(false);
+            }
+        }
+        finally { DeleteRoot(root); }
+    }
+
+    private sealed class InitializationLifecycleArrival : IRawIngressFaultInjector
+    {
+        private bool _armed;
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void Arm() => Volatile.Write(ref _armed, true);
+        public void Inject(RawIngressFaultPoint point)
+        {
+            if (point == RawIngressFaultPoint.BeforeInitializationLifecycleLock && Volatile.Read(ref _armed)) Entered.TrySetResult();
+        }
+    }
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task RepeatedStrictAndOperationsCallersPreserveReadinessAndRecoveredEvidence(bool missingEvidence)

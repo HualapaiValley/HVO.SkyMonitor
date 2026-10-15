@@ -132,8 +132,6 @@ internal sealed partial class RawCaptureIngress :
             }
             // Recovery readiness belongs to this serialized validation result, never a later flag read.
             if (allowEvidenceUnavailable && _journalValidated && _evidenceUnavailable) return false;
-            Volatile.Write(ref _journalValidated, false);
-            Volatile.Write(ref _evidenceUnavailable, false);
             _faultInjector.Inject(RawIngressFaultPoint.BeforeInitializationLifecycleLock);
             lifecycleGate = RawIngressLifecycleLock.ForRoot(_options.RawIngressRoot);
             await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -141,6 +139,8 @@ internal sealed partial class RawCaptureIngress :
             var wasUnhealthy = _state.Snapshot.Availability == RawIngressAvailability.Unhealthy;
             try
             {
+                Volatile.Write(ref _journalValidated, false);
+                Volatile.Write(ref _evidenceUnavailable, false);
                 _faultInjector.AfterInitializationStateReset();
                 _files.EnsureRootIsPhysical();
                 _processLock ??= AcquireProcessLock();

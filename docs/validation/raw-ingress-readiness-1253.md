@@ -23,7 +23,8 @@ Its owner retains responsibility for overlay integration and acceptance.
 `InitializeCoreAsync` now makes the readiness decision and classifies failure
 under the initialization gate. Operations returns the captured result instead
 of reading mutable flags later. The recovery fast path also holds that gate.
-Each new validation attempt clears cached validation before root/lifecycle work,
+Each new validation attempt clears cached validation inside the lifecycle lock,
+before root validation,
 so an early failure cannot reuse earlier recovery readiness. No interface,
 journal schema, recovery policy, filesystem publication, or distribution change
 is required.
@@ -34,7 +35,8 @@ returned. They inject no exception or state and leave the publication fault
 inventory intact. The dedicated test uses task signals and bounded waits, real
 journal reconciliation, retained original bytes, and actual registered binding.
 It checks unhealthy state, no readiness/binding/acknowledgement, and retained data.
-Additional tests cover repeated/concurrent callers, cancellation and healthy
+Additional tests preserve retention reads already holding the lifecycle lock,
+and cover repeated/concurrent callers, cancellation and healthy
 retry, audited restoration, invalid journals, and failed root revalidation.
 The existing registered-host paused recovery cases remain unchanged.
 
