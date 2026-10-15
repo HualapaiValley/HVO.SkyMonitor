@@ -239,8 +239,12 @@ failure, then choose one of these audited actions:
 
 When the journal is valid but raw evidence is missing or corrupt, the host keeps
 the authenticated operator surface available while capture admission and lane
-processing wait for audited recovery. Unsupported schemas and other integrity
-failures still fail startup.
+processing wait for audited recovery. Configuration, schedule, named-rig and
+calibration metadata still initialize against the validated journal. Pending
+calibration-acquisition recovery waits for evidence release and preserves its
+job if the host stops meanwhile. A persisted capture pause remains paused after
+release; resume it explicitly when appropriate. Unsupported schemas and other
+integrity failures still fail startup.
 
 - **Revalidate:** recover the exact original payload and sidecar at their
   committed paths from trusted recovery evidence. Preserve the quarantined

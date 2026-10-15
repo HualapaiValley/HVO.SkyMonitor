@@ -227,6 +227,12 @@ internal sealed partial class RawCaptureIngress :
                 // Shutdown during initialization is not an integrity failure: no Critical log, availability untouched.
                 throw;
             }
+            catch (InvalidDataException) when (_journalValidated && _evidenceUnavailable)
+            {
+                // The validated journal has already published its evidence health and retained quarantine.
+                _telemetry.RecordFailure("initialization", "evidence-unavailable");
+                throw;
+            }
             catch (Exception exception)
             {
                 var reason = FailureReason(exception);

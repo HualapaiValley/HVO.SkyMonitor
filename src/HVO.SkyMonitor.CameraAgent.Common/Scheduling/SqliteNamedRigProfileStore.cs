@@ -90,7 +90,7 @@ public sealed class SqliteNamedRigProfileStore(
 
     public async Task<NamedRigCatalog> GetAsync(CancellationToken cancellationToken)
     {
-        await ingress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await ingress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         var result = await ReadAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
@@ -314,7 +314,7 @@ public sealed class SqliteNamedRigProfileStore(
         CaptureScheduleRevisionSnapshot active, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(active);
-        await ingress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await ingress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         var existing = await ReadAsync(connection, transaction, cancellationToken).ConfigureAwait(false);

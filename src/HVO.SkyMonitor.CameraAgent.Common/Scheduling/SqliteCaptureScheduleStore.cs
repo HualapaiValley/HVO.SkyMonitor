@@ -115,7 +115,8 @@ public sealed class SqliteCaptureScheduleStore(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(configuration);
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        // Configuration metadata remains available while validated raw evidence awaits audited recovery.
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -348,7 +349,7 @@ public sealed class SqliteCaptureScheduleStore(
 
     public async Task<CaptureScheduleStoreSnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
     {
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginRead(connection);
         var snapshot = await ReadSnapshotAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
