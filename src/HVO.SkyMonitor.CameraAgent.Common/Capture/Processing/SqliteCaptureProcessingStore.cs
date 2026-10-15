@@ -182,7 +182,8 @@ internal sealed record CaptureProcessingOperationalState(
     long ReplayRetryCount,
     long ReplayTerminalCount,
     DateTimeOffset? OldestReplayPendingUtc,
-    long ReplayPendingBytes);
+    long ReplayPendingBytes,
+    long ReplayLeasedCount);
 
 internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 {
@@ -2413,7 +2414,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 SUM(CASE WHEN state = 'RetryWait' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN state IN ('Failed', 'Expired') THEN 1 ELSE 0 END),
                 MIN(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.accepted_unix_ms END),
-                SUM(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.payload_bytes ELSE 0 END)
+                SUM(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.payload_bytes ELSE 0 END),
+                SUM(CASE WHEN work.state = 'Leased' THEN 1 ELSE 0 END)
             FROM processing_replay_work work
             JOIN processing_executions execution ON execution.execution_id = work.execution_id;
             """;
@@ -2428,9 +2430,10 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         var replayPendingBytes = await replayReader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false)
             ? 0
             : replayReader.GetInt64(4);
+        var replayLeased = await replayReader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? 0 : replayReader.GetInt64(5);
         return new CaptureProcessingOperationalState(
             pending, leased, retry, terminal, oldest, replayPending, replayRetry, replayTerminal, replayOldest,
-            replayPendingBytes);
+            replayPendingBytes, replayLeased);
     }
 
     private async ValueTask<bool> InsertOutputAsync(

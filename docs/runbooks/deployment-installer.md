@@ -312,6 +312,85 @@ supersession and recovery paths.
 Rollback continues to use the retained previous image identity and never
 consults a release train.
 
+### Archived replay across a lifecycle transition
+
+Lifecycle state (`/api/internal/deployment/lifecycle/state`) reports archived
+replay in its own `archivedReplay` section, separate from live
+`captureProcessing`. The section contains pending, leased, retry and terminal
+counts, pending bytes and the oldest pending time. Each recorded continuity
+boundary keeps the replay counts as `ReplayPending` and `ReplayLeased`. A
+lifecycle CLI reading an image that predates the section records zero.
+
+The pause-and-drain boundary deliberately does not wait for archived replay:
+
+- A capture pause stops new exposures, but accepted work keeps processing, and
+  that includes operator-requested replay. The replay queue can hold
+  `ReplayMaximumPendingCount` executions (1000 by default), each with a deadline
+  of `ReplayDeadlineSeconds` (one hour by default). Waiting for that queue could
+  hold any upgrade, rollback or catalog transition well past the two-minute
+  drain deadline.
+- When the host stops, in-flight replay is returned to its queue as deferred
+  work. Its node attempt is recorded as `Interrupted` with reason
+  `processing.replay-host-stopping`, and no replay attempt is consumed. A
+  replay limited to one attempt therefore still has that attempt after the
+  restart. Replay that loses its lease while the host keeps running is still a
+  retryable failure.
+- Catalog selection and rollback refuse uncommitted live processing, but not
+  pending archived replay. Archived replay has no dependency on the mounted
+  catalog. An annotation node in replay draws from the projected scene that
+  live processing committed and that submission pinned, or from scene
+  provenance recorded with the frame. It never builds a scene from whichever
+  catalog is mounted when it runs. A retained node that draws constellation
+  lines with neither a projected-scene dependency nor frame scene provenance
+  therefore fails closed in replay, with reason
+  `processing.missing-projected-scene`. A catalog switch cannot change what
+  an accepted replay produces, so replay pending at the boundary does not
+  refuse the transition.
+
+If a transition times out while it waits for the drain, the error message
+reports any replay pending or leased and states that the drain does not wait
+for it.
+
+That guarantee belongs to the running image, so the image declares it.
+Lifecycle state carries `archivedReplayCatalogIndependent: true` on every image
+that fails replay closed this way. Before catalog selection or rollback changes
+anything, the CLI reads lifecycle state and refuses the transition unless the
+running image declares it. The check assumes the running container uses the
+image the deployment retains, because every remount the transition performs,
+including failure recovery, recreates the retained image. An image that
+predates the guard omits the declaration and could still annotate accepted
+replay from the newly mounted catalog. The refusal happens before pause,
+before the catalog setting changes and before any container is recreated for
+the new catalog. Upgrade the CameraAgent image, then retry.
+The check reads the declaration, not the replay counts, because those counts
+are a periodic snapshot and an empty count does not prove that no replay was
+accepted under the current catalog.
+
+When `--resume` continues an interrupted catalog selection, the CLI first
+restores the original catalog and then applies the same check before it
+selects again. A refusal at that point leaves the original catalog mounted.
+
+Three paths stay outside the check:
+
+- **An image change after a catalog change.** Image upgrade and image rollback
+  keep the current catalog, and the CLI cannot read a declaration from an
+  image that is not running yet. Rolling back or downgrading to an image that
+  predates the declaration after a catalog transition can therefore run replay
+  accepted under the earlier catalog against the current one. Before such an
+  image change, let pending archived replay finish or cancel it.
+- **A selection interrupted by an older CLI on an older image.** Resuming it
+  with this CLI restores the original catalog, restarting the older image on
+  it, and only then refuses. Replay that image accepted under the interrupted
+  selection can run against the restored catalog in between. An older CLI
+  resuming its own operation performs no check.
+- **A running image that differs from the retained one.** The CLI reads the
+  declaration from the running container but does not compare that
+  container's image with the image the deployment retains. If a guarded image
+  is running while the deployment still retains an image that predates the
+  declaration, the check passes and the transition then recreates the older
+  image on the new catalog. Before a catalog transition, make sure the running
+  CameraAgent image is the one the deployment retains.
+
 ### Proving the signed lifecycle in the installer campaign
 
 `scripts/test:deployment-installer` proves the signed lifecycle against real

@@ -44,7 +44,9 @@ internal static class CameraAgentLifecycleEndpoints
             summary.CaptureLanes,
             summary.CaptureProcessing,
             summary.ArtifactOutbox,
-            captureSequence));
+            summary.ArchivedReplay,
+            captureSequence,
+            ArchivedReplayCatalogIndependent: true));
     }
 
     private static Task<IResult> PauseAsync(
@@ -116,5 +118,9 @@ internal static class CameraAgentLifecycleEndpoints
         OperationsSection<OperationsCaptureLanesState> CaptureLanes,
         OperationsSection<OperationsQueueState> CaptureProcessing,
         OperationsSection<OperationsQueueState> ArtifactOutbox,
-        long CaptureSequence);
+        OperationsSection<OperationsQueueState> ArchivedReplay,
+        long CaptureSequence,
+        // Declares that archived replay never builds a scene from the mounted catalog (the replay guard in
+        // AnnotationCaptureProcessingStep). The lifecycle CLI refuses catalog transitions on an image that omits it.
+        bool ArchivedReplayCatalogIndependent);
 }

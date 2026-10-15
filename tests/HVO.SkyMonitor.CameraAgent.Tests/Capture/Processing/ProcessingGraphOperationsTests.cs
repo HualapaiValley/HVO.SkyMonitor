@@ -2261,6 +2261,122 @@ public sealed class ProcessingGraphOperationsTests
     }
 
     [TestMethod]
+    public async Task HostStopDoesNotConsumeReplayAttempt()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-host-stop");
+        try
+        {
+            var barrier = new ReplayBarrierObservation();
+            using var provider = CreateProvider(root, new Dictionary<string, string?>
+            {
+                ["CameraAgent:ProcessingGraphs:ReplayMaximumAttempts"] = "1",
+                ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1"
+            }, configureServices: services =>
+            {
+                services.AddSingleton(barrier);
+                services.AddSingleton(new CaptureProcessingStepRegistration(
+                    "ReplayPreemptionBarrier", typeof(ReplayPreemptionBarrierStep),
+                    typeof(ReplayPreemptionBarrierOptions), AutoInclude: false));
+            });
+            var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+            await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var configuration = CreateConfiguration() with
+            {
+                Pipeline = new CapturePipelineConfig(
+                    [new CaptureProcessingStepConfig("ReplayPreemptionBarrier", "barrier", DependsOn: ["$raw"])],
+                    CapturePipelineSchemaVersions.ExplicitV2,
+                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
+            };
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None)
+                .ConfigureAwait(false);
+            var original = await ingress.AcceptAsync(
+                configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(original);
+            var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
+            await laneStore.InitializeLanesAsync(CancellationToken.None).ConfigureAwait(false);
+            var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(
+                static definition => definition.Name == "standard");
+            var handler = provider.GetServices<ICaptureLaneHandler>().Single(static value => value.Lane == "standard");
+            var originalLease = await laneStore.ClaimAsync(
+                standard, "host-stop-live-original", configuration, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(originalLease);
+            Assert.AreEqual(
+                CaptureLaneHandlerOutcome.Completed,
+                (await handler.HandleAsync(originalLease.Context, CancellationToken.None).ConfigureAwait(false)).Outcome);
+            await laneStore.CompleteAsync(originalLease, CancellationToken.None).ConfigureAwait(false);
+
+            var replay = await operations.SubmitReplayAsync(
+                new ProcessingReplaySubmission(
+                    original.Manifest.Descriptor.Capture.CaptureId,
+                    registry.ActiveRevisionId,
+                    original.Manifest.Descriptor.Artifact.ArtifactId),
+                "host-stop-replay-key", "owner-test", CancellationToken.None).ConfigureAwait(false);
+            barrier.BlockNextReplay();
+            var worker = provider.GetRequiredService<ProcessingReplayWorker>();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                await barrier.WaitUntilBlockedAsync(timeout.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                // An upgrade, catalog switch or restart stops the host without waiting for archived replay.
+                await worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+
+            Assert.AreEqual(1, barrier.CancellationCount);
+            var stopped = await operations.ReadExecutionAsync(
+                replay.Execution.ExecutionId, timeout.Token).ConfigureAwait(false);
+            Assert.IsNotNull(stopped);
+            Assert.AreEqual(ProcessingGraphExecutionStatus.Pending, stopped.Status);
+            Assert.AreEqual(0, stopped.AttemptCount);
+            var stoppedDetail = await operations.ReadExecutionDetailAsync(
+                replay.Execution.ExecutionId, timeout.Token).ConfigureAwait(false);
+            Assert.IsNotNull(stoppedDetail);
+            Assert.AreEqual("Pending", stoppedDetail.Nodes.Single().Status);
+            Assert.HasCount(1, stoppedDetail.Nodes.Single().Attempts);
+            Assert.AreEqual("Interrupted", stoppedDetail.Nodes.Single().Attempts[0].Status);
+            Assert.AreEqual(
+                "processing.replay-host-stopping",
+                stoppedDetail.Nodes.Single().Attempts[0].Reason);
+
+            // The restarted host still holds the replay's single attempt and completes it.
+            await worker.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                ProcessingGraphExecutionState? completed = null;
+                while (!timeout.IsCancellationRequested)
+                {
+                    completed = await operations.ReadExecutionAsync(
+                        replay.Execution.ExecutionId, timeout.Token).ConfigureAwait(false);
+                    if (completed?.Status == ProcessingGraphExecutionStatus.Completed) break;
+                    await Task.Delay(25, timeout.Token).ConfigureAwait(false);
+                }
+                Assert.IsNotNull(completed);
+                Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, completed.Status);
+                Assert.AreEqual(1, completed.AttemptCount);
+                var completedDetail = await operations.ReadExecutionDetailAsync(
+                    replay.Execution.ExecutionId, timeout.Token).ConfigureAwait(false);
+                Assert.IsNotNull(completedDetail);
+                CollectionAssert.AreEqual(
+                    PreemptionAttemptStatuses,
+                    completedDetail.Nodes.Single().Attempts.Select(static attempt => attempt.Status).ToArray());
+            }
+            finally
+            {
+                await worker.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task ReplayOldestAgeUsesImmutableAcceptanceTime()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-oldest");
