@@ -778,6 +778,30 @@ internal sealed partial class SqliteCaptureProcessingStore
         CancellationToken cancellationToken)
         => ReadFrozenExecutionRawInputsAsync(executionId, nodeId, cancellationToken);
 
+    internal async ValueTask<IReadOnlyList<(string NodeId, int InputCount)>> ReadFrozenExecutionRawInputNodesAsync(
+        Guid executionId,
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT node_id, COUNT(*)
+            FROM processing_execution_inputs
+            WHERE execution_id = $execution AND selected_flag = 1
+            GROUP BY node_id
+            ORDER BY node_id;
+            """;
+        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        var nodes = new List<(string NodeId, int InputCount)>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            nodes.Add((reader.GetString(0), reader.GetInt32(1)));
+        }
+        return nodes;
+    }
+
     internal async ValueTask<IReadOnlyList<DurableProcessingOutput>> ReadFrozenExecutionOutputsAsync(
         Guid executionId,
         string nodeId,
@@ -831,14 +855,34 @@ internal sealed partial class SqliteCaptureProcessingStore
         var now = _timeProvider.GetUtcNow();
         using (var recover = connection.CreateCommand())
         {
+            // A lease that expired without completing, for example because its host crashed, is a retryable
+            // interruption: the claimed attempt stays spent, so a replay that keeps killing its host still exhausts its
+            // budget, and the deadline is unchanged. The execution leaves Running and records why, and the attempts
+            // the dead lease left Running are closed, so the replay never reads as in progress while nothing runs it.
             recover.Transaction = transaction;
             recover.CommandText = """
+                UPDATE processing_executions
+                SET status = 'Pending', failure_reason = $reason
+                WHERE status = 'Running' AND execution_id IN (
+                    SELECT execution_id FROM processing_replay_work
+                    WHERE state = 'Leased' AND lease_expires_unix_ms <= $now);
+                UPDATE processing_node_attempts
+                SET status = 'Interrupted', completed_unix_ms = $now, reason = $reason
+                WHERE status = 'Running' AND execution_id IN (
+                    SELECT execution_id FROM processing_replay_work
+                    WHERE state = 'Leased' AND lease_expires_unix_ms <= $now);
+                UPDATE processing_execution_nodes
+                SET status = 'Pending', reason = $reason
+                WHERE status = 'Running' AND execution_id IN (
+                    SELECT execution_id FROM processing_replay_work
+                    WHERE state = 'Leased' AND lease_expires_unix_ms <= $now);
                 UPDATE processing_replay_work
                 SET state = 'RetryWait', available_unix_ms = $now,
                     lease_token = NULL, lease_owner = NULL, lease_expires_unix_ms = NULL,
                     updated_unix_ms = $now
                 WHERE state = 'Leased' AND lease_expires_unix_ms <= $now;
                 """;
+            recover.Parameters.AddWithValue("$reason", ProcessingReplayReasons.LeaseExpired);
             recover.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
             await recover.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -1112,20 +1156,23 @@ internal sealed partial class SqliteCaptureProcessingStore
         var cancelled = current.CancellationRequested;
         var expired = !cancelled && current.DeadlineUtc <= now;
         var deferred = result.Outcome == CaptureLaneHandlerOutcome.Deferred;
+        // Abandoned replay (a frozen plan this version no longer builds) is final but not a failure. It is recorded
+        // as Expired, exactly as live work under a superseded plan is, and keeps its reason code.
+        var abandoned = !cancelled && !expired && result.Outcome == CaptureLaneHandlerOutcome.Abandoned;
         var retry = !cancelled && !expired &&
             (deferred || result.Outcome == CaptureLaneHandlerOutcome.RetryableFailure &&
               current.AttemptCount < _executionOptions.ReplayMaximumAttempts) &&
             current.DeadlineUtc > now;
         var executionStatus = cancelled
             ? ProcessingGraphExecutionStatus.Cancelled
-            : expired
+            : expired || abandoned
                 ? ProcessingGraphExecutionStatus.Expired
             : retry
                 ? ProcessingGraphExecutionStatus.Pending
                 : result.Outcome == CaptureLaneHandlerOutcome.Completed
                     ? ProcessingGraphExecutionStatus.Completed
                     : ProcessingGraphExecutionStatus.Failed;
-        var workState = cancelled ? "Cancelled" : expired ? "Expired" : retry ? "RetryWait" : result.Outcome == CaptureLaneHandlerOutcome.Completed ? "Completed" : "Failed";
+        var workState = cancelled ? "Cancelled" : expired || abandoned ? "Expired" : retry ? "RetryWait" : result.Outcome == CaptureLaneHandlerOutcome.Completed ? "Completed" : "Failed";
         using (var update = connection.CreateCommand())
         {
             update.Transaction = transaction;

@@ -791,6 +791,52 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
         }
     }
 
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RetainedAnnotationWithoutProjectedSceneNeverBuildsFromTheMountedCatalogInReplay(bool replay)
+    {
+        var root = CreateRoot();
+        try
+        {
+            // A retained node that draws constellation lines without a projected-scene dependency, over a capture with
+            // no scene provenance: live processing builds the scene from the mounted catalog, replay must not.
+            var fixture = CreateContext(root, provenance: null, replay ? CreateReplayExecution() : null);
+            fixture.Context.BeginNode("preview", ["$raw"]);
+            var previewFrame = new CameraFrame(
+                fixture.Descriptor.Timing.ExposureStartedUtc, 2, 2, CameraPixelFormat.Mono8, new byte[4],
+                new FrameMetadata(TimeSpan.FromSeconds(1), 1, 0), 2);
+            fixture.Context.AddDerivative(FrameArtifactRole.Preview, previewFrame, "preview-v1");
+            fixture.Context.BeginNode("annotation", ["preview"]);
+            var provider = new CountingAnnotationSceneProvider();
+            var annotation = new AnnotationCaptureProcessingStep(
+                new CaptureProcessingStepMetadata("annotation", "Annotation", 70),
+                new AnnotationProcessingStepOptions { DrawConstellationLines = true, ConstellationIds = ["Ori"] },
+                new ProjectedSceneStore(), provider,
+                new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor()));
+
+            if (!replay)
+            {
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+                    () => annotation.ProcessAsync(fixture.Context, CancellationToken.None).AsTask()).ConfigureAwait(false);
+                Assert.AreEqual(1, provider.Calls);
+                return;
+            }
+            await annotation.ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(0, provider.Calls);
+            var outcome = fixture.Context.ProcessingOutcomes.Single();
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, outcome.Status);
+            Assert.AreEqual(ProcessingReasonCodes.MissingProjectedScene, outcome.ReasonCode);
+            Assert.IsFalse(fixture.Context.ProcessingProducts.Any(
+                static product => product.Role == FrameArtifactRole.AnnotatedPreview));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static ProcessingExecutionContext CreateReplayExecution() => new(
         Guid.NewGuid(),
         ProcessingGraphExecutionClass.Replay,
@@ -863,7 +909,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
 
     private static (CaptureProcessingContext Context, ReconstructionDescriptor Descriptor, string PayloadPath) CreateContext(
         string root,
-        SceneProvenance provenance,
+        SceneProvenance? provenance,
         ProcessingExecutionContext? execution = null)
     {
         var payload = new byte[8];
@@ -1001,6 +1047,23 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
 
         public ValueTask DeleteCompletedAsync(string stageKey, CancellationToken cancellationToken)
             => ValueTask.FromException(new IOException("delete-completed-failure"));
+    }
+
+    private sealed class CountingAnnotationSceneProvider : IAnnotationSceneProvider
+    {
+        public int Calls { get; private set; }
+
+        public ValueTask<AnnotationSceneResult> BuildAsync(
+            CameraModuleConfig config,
+            ReconstructionDescriptor? descriptor,
+            CameraFrame rawFrame,
+            IReadOnlyList<string> constellationIds,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return ValueTask.FromException<AnnotationSceneResult>(
+                new InvalidOperationException("The scene was built from the mounted catalog."));
+        }
     }
 
     private sealed class FailingAnnotationSceneProvider : IAnnotationSceneProvider

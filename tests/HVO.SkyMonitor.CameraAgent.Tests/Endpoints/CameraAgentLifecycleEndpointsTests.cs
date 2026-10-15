@@ -1,6 +1,16 @@
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Evidence;
+using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
+using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -214,6 +224,68 @@ public sealed class CameraAgentLifecycleEndpointsTests
         }
     }
 
+    [TestMethod]
+    public async Task State_DeclaresCatalogIndependentReplayToTheLifecycleClient()
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-lifecycle-state-");
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var cancellationToken = deadline.Token;
+        using var telemetry = new CaptureControlTelemetry();
+        var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root.FullName, RawIngressSqliteBusyTimeoutSeconds = 1 });
+        using var coordinator = new CaptureAdmissionCoordinator(
+            new JournalIngress(Path.Combine(root.FullName, "journal", "raw-ingress.db")), options, TimeProvider.System, telemetry);
+        WebApplication? app = null;
+        try
+        {
+            await coordinator.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            var configuration = new CameraAgentConfigurationAccessor();
+            var builder = WebApplication.CreateBuilder();
+            builder.Logging.ClearProviders();
+            builder.WebHost.UseUrls("http://127.0.0.1:0");
+            builder.Configuration["LifecycleControl:Token"] = "exact-token";
+            builder.Services.AddSingleton(coordinator);
+            builder.Services.AddSingleton(new CameraAgentOperationsSummaryProvider(
+                TimeProvider.System,
+                coordinator,
+                new RawIngressState(TimeProvider.System),
+                new NoQueueSnapshotRefresh(),
+                new CaptureLaneState(TimeProvider.System, options),
+                new CaptureProcessingState(),
+                new ArtifactOutboxState(),
+                new StoragePressureState(),
+                new FleetRuntimeState(TimeProvider.System),
+                new FleetHeartbeatState(),
+                new EnvironmentalObservationDeliveryState(),
+                new ExecutionEvidenceExportState(),
+                new TransientWorkerState(TimeProvider.System),
+                new CaptureTelemetrySink(),
+                configuration,
+                new CameraAgentStorageResolver(configuration, options),
+                options));
+            builder.Services.AddSingleton(new DeploymentContinuityReader());
+            builder.Services.AddSingleton(options);
+            app = builder.Build();
+            app.MapCameraAgentLifecycleEndpoints();
+            await app.StartAsync(cancellationToken).ConfigureAwait(false);
+
+            // The lifecycle CLI refuses catalog transitions unless it reads this declaration, so the wire name the host
+            // serializes and the name the client parses must agree.
+            var state = await new CameraAgentLifecycleClient(new Uri(app.Urls.Single()))
+                .ReadContinuityAsync("exact-token", cancellationToken).ConfigureAwait(false);
+
+            Assert.IsTrue(state.ReplayCatalogIndependent);
+        }
+        finally
+        {
+            if (app is not null)
+            {
+                await app.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                await app.DisposeAsync().ConfigureAwait(false);
+            }
+            root.Delete(recursive: true);
+        }
+    }
+
     private sealed class LostAcknowledgementHandler : DelegatingHandler
     {
         public LostAcknowledgementHandler() : base(new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false })
@@ -252,6 +324,11 @@ public sealed class CameraAgentLifecycleEndpointsTests
             CaptureLoopSubmission submission,
             CancellationToken cancellationToken)
             => ValueTask.FromResult<RawCaptureReceipt?>(null);
+    }
+
+    private sealed class NoQueueSnapshotRefresh : IOperationsQueueSnapshotRefresher
+    {
+        public ValueTask RefreshOperationsQueueSnapshotsAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
     }
 
     private sealed class RequestBodyDetectionFeature : IHttpRequestBodyDetectionFeature

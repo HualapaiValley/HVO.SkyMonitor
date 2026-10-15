@@ -229,7 +229,9 @@ internal static class CatalogLifecycleManager
         }
     }
 
-    private static async Task<LifecycleResult> SelectAsync(
+    // Internal so the transition after candidate validation is testable without the production catalog bundle that
+    // ValidateInstalled needs, which Development v1 CI does not restore.
+    internal static async Task<LifecycleResult> SelectAsync(
         LifecycleRequest request,
         InstallationPaths paths,
         InstanceManifest manifest,
@@ -327,6 +329,12 @@ internal static class CatalogLifecycleManager
                 Phase = LifecycleOperationPhase.Prepared
             }, cancellationToken).ConfigureAwait(false);
         }
+        // An interrupted selection is restored above before this check, so refusing never strands a half-switched
+        // catalog. The declaration comes from the running container, which is not compared with the retained image that
+        // every remount after this point, including failure recovery, recreates; the runbook documents that residual.
+        EnsureReplayCatalogIndependent(
+            await lifecycle.ReadContinuityAsync(lifecycleControlToken, cancellationToken).ConfigureAwait(false),
+            request.Operation!.Value);
         SafeFileSystem.WriteTextAtomic(previousSettingPath, originalSetting);
         SafeFileSystem.WriteTextAtomic(previousManifestPath, await File.ReadAllTextAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false));
         SafeFileSystem.WriteTextAtomic(previousResultPath, await File.ReadAllTextAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false));
@@ -462,6 +470,21 @@ internal static class CatalogLifecycleManager
                     : $"{processingRefusal} The prior exact selection was restored.",
                 exception);
         }
+    }
+
+    /// <summary>
+    /// Refuses a catalog transition unless the running image declares catalog-independent archived replay. Replay
+    /// accepted under the current catalog can run after the switch; an image without the declaration may annotate it
+    /// from the newly mounted catalog, which the image's catalog contract does not rule out.
+    /// </summary>
+    internal static void EnsureReplayCatalogIndependent(LifecycleContinuity state, LifecycleOperationKind operation)
+    {
+        if (state.ReplayCatalogIndependent) return;
+        var verb = operation == LifecycleOperationKind.CatalogRollback ? "rollback" : "selection";
+        throw new InstallerException(
+            $"Catalog {verb} refused: the running CameraAgent image does not declare catalog-independent archived " +
+            "replay, so a replay it has accepted could be annotated from the newly mounted catalog. Upgrade the " +
+            "CameraAgent image, then retry; the catalog selection was not changed.");
     }
 
     /// <summary>

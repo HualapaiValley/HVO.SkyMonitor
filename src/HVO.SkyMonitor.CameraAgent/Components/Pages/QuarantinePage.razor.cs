@@ -252,7 +252,7 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
         ? "Environmental quarantine and terminal records"
         : _page?.Kind == "TransientRuntime"
             ? "Transient runtime quarantine"
-            : $"Artifact quarantine / {_page?.StorageAlias ?? "no configured storage"}";
+            : $"Artifact quarantine and retry / {_page?.StorageAlias ?? "no configured storage"}";
 
     private string ActionLabel => _pending?.Item.Kind == "RawEvidence"
         ? _pending.Action == OutboxOperationAction.Abandon ? "Write off" : "Revalidate"
@@ -265,7 +265,7 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
         : _pending?.Item.Kind == "TransientRuntime"
         ? "Abandonment records an audited loss decision for this exact immutable source identity before recomputing its retention hold. Other required holds remain unchanged."
         : _pending?.Action == OutboxOperationAction.Abandon
-            ? "Abandonment releases the durable delivery hold and stops delivery by this outbox."
+            ? "Abandonment releases the durable delivery hold and stops delivery by this outbox. If delivery has already started, refresh the list and try again after it finishes."
             : "Replay returns the item to bounded delivery using its existing durable evidence.";
 
     private void ClearRenderedData()

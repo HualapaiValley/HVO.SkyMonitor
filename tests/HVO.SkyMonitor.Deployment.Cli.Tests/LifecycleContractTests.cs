@@ -648,14 +648,66 @@ public sealed class LifecycleContractTests
     }
 
     [TestMethod]
+    public void CatalogTransition_RequiresImageDeclaringCatalogIndependentReplay()
+    {
+        var declared = new LifecycleContinuity("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0,
+            ReplayPending: 3, ReplayLeased: 1, ReplayCatalogIndependent: true);
+        CatalogLifecycleManager.EnsureReplayCatalogIndependent(declared, LifecycleOperationKind.CatalogSelect);
+        CatalogLifecycleManager.EnsureReplayCatalogIndependent(declared, LifecycleOperationKind.CatalogRollback);
+
+        // The declaration is refused even with no replay visible: the summary counts are a periodic refresh, so an
+        // empty count cannot prove nothing was accepted under the current catalog.
+        var undeclared = declared with { ReplayPending = 0, ReplayLeased = 0, ReplayCatalogIndependent = false };
+        var selection = Assert.ThrowsExactly<InstallerException>(() =>
+            CatalogLifecycleManager.EnsureReplayCatalogIndependent(undeclared, LifecycleOperationKind.CatalogSelect));
+        StringAssert.Contains(selection.Message, "Catalog selection refused", StringComparison.Ordinal);
+        StringAssert.Contains(selection.Message, "does not declare catalog-independent archived replay", StringComparison.Ordinal);
+        var rollback = Assert.ThrowsExactly<InstallerException>(() =>
+            CatalogLifecycleManager.EnsureReplayCatalogIndependent(undeclared, LifecycleOperationKind.CatalogRollback));
+        StringAssert.Contains(rollback.Message, "Catalog rollback refused", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CatalogSelection_ImageWithoutCatalogIndependentReplay_RefusesBeforeMutation()
+    {
+        // Bundle-free coverage of the refusal inside the selection itself, so a lane without the production bundle
+        // still fails if the check is removed or moved after the pause. The candidate is synthetic: after candidate
+        // validation the selection reads only its identity, never its files, until the check has passed.
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        const string candidateVersion = "hyg-v4.2-p3-s2-r2";
+        var request = fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = candidateVersion };
+        var candidate = fixture.Manifest.Catalog with { PackageVersion = candidateVersion };
+        var result = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
+        var operation = await CameraAgentLifecycleManager.BeginAsync(
+            request, fixture.Paths, LifecycleOperationKind.CatalogSelect, fixture.Manifest, CancellationToken.None);
+        var undeclared = new FakeLifecycleClient();
+        undeclared.RecoveryContinuity = undeclared.RecoveryContinuity with { ReplayCatalogIndependent = false };
+
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CatalogLifecycleManager.SelectAsync(
+            request, fixture.Paths, fixture.Manifest, result,
+            CameraAgentLifecycleManager.ComposeFrom(fixture.Paths, fixture.Manifest, result), new DockerClient(fixture.Runner),
+            _ => undeclared, _ => new FakeOwnerClient(fixture.ApplicationIdentity), "lifecycle-token", "verification-token",
+            candidate, operation, CancellationToken.None));
+        StringAssert.Contains(refusal.Message, "does not declare catalog-independent archived replay", StringComparison.Ordinal);
+        Assert.AreEqual(fixture.Manifest.Catalog.PackageVersion, await File.ReadAllTextAsync(
+            Path.Combine(fixture.Paths.ConfigRoot, "secrets", "Catalog__RequiredPackageVersion")));
+        Assert.AreEqual(0, undeclared.PauseCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeUpCount);
+        Assert.IsFalse(File.Exists(Path.Combine(
+            fixture.Paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"), "previous-catalog-version")));
+    }
+
+    [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CatalogSelectAndRollback_CurrentContractsConverge()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
             InstanceLifecycleCondition.Installed, seedCatalogSelection: false);
-        // Deliberately environment-gated; see the note in InstallerFlowTests. The CI Unit lane
-        // restores the catalog bundle and asserts it exists before exporting this variable, so a
-        // skip there means the restore broke rather than that the gate is working as intended.
+        // Deliberately environment-gated; see the note in InstallerFlowTests. The full-qualification Unit lane in
+        // ci.yml restores the catalog bundle and asserts it exists before exporting this variable, so a skip there
+        // means the restore broke. Development v1 Build and Unit does not restore the bundle and skips this test;
+        // CatalogSelection_ImageWithoutCatalogIndependentReplay_RefusesBeforeMutation covers the refusal there.
         var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
         if (string.IsNullOrEmpty(bundle)) Assert.Inconclusive("Set HVO_PRODUCTION_CATALOG_BUNDLE to run catalog transitions.");
         var selected = CatalogInstaller.Install(bundle, fixture.Paths.CatalogRoot, Guid.NewGuid());
@@ -692,10 +744,28 @@ public sealed class LifecycleContractTests
             fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId, fixture.Uid, fixture.Gid);
 
+        // An image that does not declare catalog-independent archived replay may annotate accepted replay from the newly
+        // mounted catalog, so the selection is refused before the setting or the container changes.
+        var settingPath = Path.Combine(fixture.Paths.ConfigRoot, "secrets", "Catalog__RequiredPackageVersion");
+        var undeclared = new FakeLifecycleClient();
+        undeclared.RecoveryContinuity = undeclared.RecoveryContinuity with { ReplayCatalogIndependent = false };
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = selected.PackageVersion },
+            fixture.Runner, _ => undeclared, _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid,
+            CancellationToken.None));
+        StringAssert.Contains(refusal.Message, "does not declare catalog-independent archived replay", StringComparison.Ordinal);
+        Assert.AreEqual(previous.PackageVersion, await File.ReadAllTextAsync(settingPath));
+        Assert.AreEqual(0, undeclared.PauseCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeUpCount);
+
+        // Archived replay never builds a scene from the mounted catalog; a retained annotation node with neither a
+        // projected-scene dependency nor scene provenance recorded with the frame fails closed in replay. A switch cannot
+        // change what accepted replay produces, so replay pending or leased at the boundary does not refuse the selection
+        // the way uncommitted live work does.
         var selectedResult = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = selected.PackageVersion },
-            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None);
+            fixture.Runner, _ => new FakeLifecycleClient { DrainedReplayPending = 2, DrainedReplayLeased = 1 },
+            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
         Assert.AreEqual(selected.PackageVersion, selectedResult.Catalog!.PackageVersion);
 
         var rollbackResult = await CameraAgentLifecycleManager.ExecuteAsync(
@@ -922,7 +992,7 @@ public sealed class LifecycleContractTests
         var candidateImageId = $"sha256:{new string('8', 64)}";
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
-        var lifecycle = new FakeLifecycleClient { RejectNextResume = true };
+        var lifecycle = new FakeLifecycleClient { RejectNextResume = true, DrainedReplayPending = 4, DrainedReplayLeased = 1 };
         var request = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
             ImageReference = candidateReference,
@@ -940,6 +1010,9 @@ public sealed class LifecycleContractTests
         Assert.IsTrue(retained.MutationStarted);
         Assert.IsNotNull(retained.PreMutationContinuity);
         Assert.IsNotNull(retained.PostMutationContinuity);
+        // The drain does not wait for archived replay, so the boundary records what it left behind.
+        Assert.AreEqual(4, retained.PreMutationContinuity.ReplayPending);
+        Assert.AreEqual(1, retained.PreMutationContinuity.ReplayLeased);
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
             request with { Resume = true }, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
@@ -2243,6 +2316,7 @@ public sealed class LifecycleContractTests
     [DataRow("post-sequence")]
     [DataRow("negative-count")]
     [DataRow("negative-pre")]
+    [DataRow("negative-replay")]
     [DataRow("uninitialized")]
     [DataRow("receipt-missing")]
     [DataRow("receipt-version")]
@@ -2264,6 +2338,7 @@ public sealed class LifecycleContractTests
             "post-sequence" => operation with { PostMutationContinuity = operation.PostMutationContinuity! with { CaptureSequence = 1811 } },
             "negative-count" => operation with { PostMutationContinuity = operation.PostMutationContinuity! with { OutboxLeased = -1 } },
             "negative-pre" => operation with { PreMutationContinuity = operation.PreMutationContinuity! with { CaptureVersion = -1 } },
+            "negative-replay" => operation with { PreMutationContinuity = operation.PreMutationContinuity! with { ReplayLeased = -1 } },
             "uninitialized" => operation with { PostMutationContinuity = operation.PostMutationContinuity! with { CaptureInitialized = false } },
             "receipt-missing" => operation with { RestoreResumeReceipt = null },
             "receipt-version" => operation with { RestoreResumeReceipt = operation.RestoreResumeReceipt! with { Version = 5 } },
@@ -3048,6 +3123,8 @@ public sealed class LifecycleContractTests
     {
         public bool RejectNextResume { get; set; }
         public long DrainedProcessingPending { get; set; }
+        public long DrainedReplayPending { get; set; }
+        public long DrainedReplayLeased { get; set; }
         public int ResumeCount { get; private set; }
         public int PauseCount { get; private set; }
         public int ConfirmCount { get; private set; }
@@ -3056,7 +3133,8 @@ public sealed class LifecycleContractTests
         public bool RejectRecoveryRead { get; set; }
         public TimeSpan RecoveryReceiptClockOffset { get; set; }
         public HashSet<Guid> RecoveryCommands { get; } = [];
-        public LifecycleContinuity RecoveryContinuity { get; set; } = new("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0);
+        public LifecycleContinuity RecoveryContinuity { get; set; } =
+            new("Paused", 2, 1812, 0, 0, 0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true);
 
         public Task<LifecycleContinuity> ReadContinuityAsync(string verificationToken, CancellationToken cancellationToken)
         {
@@ -3092,14 +3170,16 @@ public sealed class LifecycleContractTests
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
             PauseCount++;
-            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, DrainedProcessingPending, 0, 0, 0));
+            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, DrainedProcessingPending, 0, 0, 0,
+                ReplayPending: DrainedReplayPending, ReplayLeased: DrainedReplayLeased));
         }
 
         public Task<LifecycleContinuity> ConfirmDrainedAsync(string verificationToken, CancellationToken cancellationToken)
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
             ConfirmCount++;
-            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0));
+            return Task.FromResult(new LifecycleContinuity("Paused", 42, 100, 0, 0, 0, 0, 0, 0, 0, 0,
+                ReplayPending: DrainedReplayPending, ReplayLeased: DrainedReplayLeased));
         }
 
         public Task ResumeAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken)

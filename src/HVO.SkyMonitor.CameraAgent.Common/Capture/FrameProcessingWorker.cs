@@ -117,7 +117,8 @@ internal sealed class FrameProcessingWorker
         TimeProvider? timeProvider = null,
         ICaptureProcessingFaultInjector? faultInjector = null,
         int? durableAttempt = null,
-        Func<CaptureLaneHandlerResult>? cancellationDisposition = null)
+        Func<CaptureLaneHandlerResult>? cancellationDisposition = null,
+        bool frozenPlanSuperseded = false)
     {
         ArgumentNullException.ThrowIfNull(graph);
         ArgumentNullException.ThrowIfNull(telemetry);
@@ -158,6 +159,12 @@ internal sealed class FrameProcessingWorker
             {
                 await persistence.InitializeAsync(cancellationToken).ConfigureAwait(false);
             }
+            if (frozenPlanSuperseded)
+            {
+                await EnsureEvidenceIntactAsync(context, persistence, item.Execution, cancellationToken).ConfigureAwait(false);
+                throw new ProcessingPlanSupersededException(
+                    "The runtime graph differs from the frozen revision this execution was accepted under.");
+            }
             if (persistence is not null && captureId is { } persistedCaptureId)
             {
                 foreach (var node in graph.Nodes)
@@ -170,8 +177,8 @@ internal sealed class FrameProcessingWorker
                     if (persistedNode is not null && !string.Equals(
                         persistedNode.PlanSha256, node.PlanSha256, StringComparison.Ordinal))
                     {
-                        // Abandonment is reserved for intact evidence; damaged raw payload must still quarantine.
-                        await context.EnsureRawFrameAsync(cancellationToken).ConfigureAwait(false);
+                        await EnsureEvidenceIntactAsync(
+                            context, persistence, item.Execution, cancellationToken).ConfigureAwait(false);
                         throw new ProcessingPlanSupersededException(
                             $"Committed processing node '{node.Id}' does not match the current graph plan.");
                     }
@@ -538,6 +545,22 @@ internal sealed class FrameProcessingWorker
                 Finish(CaptureLaneHandlerResult.Terminal("processing.unhandled"));
             }
             throw;
+        }
+    }
+
+    // Abandonment is reserved for intact evidence: damaged raw payload must still quarantine, and a replay checks
+    // every frozen historical input too, so damage anywhere fails as it would under a current plan.
+    private static async ValueTask EnsureEvidenceIntactAsync(
+        CaptureProcessingContext context,
+        CaptureProcessingPersistence? persistence,
+        ProcessingExecutionContext? execution,
+        CancellationToken cancellationToken)
+    {
+        await context.EnsureRawFrameAsync(cancellationToken).ConfigureAwait(false);
+        if (persistence is not null && execution is { ExecutionClass: ProcessingGraphExecutionClass.Replay })
+        {
+            await persistence.EnsureFrozenExecutionRawInputsIntactAsync(execution.ExecutionId, cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 

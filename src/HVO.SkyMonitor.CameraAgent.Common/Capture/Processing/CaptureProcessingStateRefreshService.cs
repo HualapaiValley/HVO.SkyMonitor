@@ -33,10 +33,12 @@ internal sealed class CaptureProcessingStateRefreshService(
             durable.OldestPendingUtc);
         state.SetReplayDurable(
             durable.ReplayPendingCount,
+            durable.ReplayLeasedCount,
             durable.ReplayRetryCount,
             durable.ReplayTerminalCount,
             durable.OldestReplayPendingUtc,
-            durable.ReplayPendingBytes);
+            durable.ReplayPendingBytes,
+            durable.ReplayAbandonedCount);
         state.SetProcessingEvidence(inventory.MissingCount, inventory.QuarantinedCount);
         if (graphOperations is not null)
         {
