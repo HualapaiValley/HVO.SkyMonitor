@@ -194,6 +194,7 @@ public sealed class OperationsScopeBrowserAcceptanceTests
         await reconnect.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Volatile.Read(ref socketCount).Should().BeGreaterThan(beforeReconnect);
         await page.WaitForFunctionAsync("window.scopeReconnectStates.includes('hide')", null, new() { Timeout = 10000 });
+        var reconnectStates = await page.EvaluateAsync<string[]>("window.scopeReconnectStates");
         await page.GetByText("Scope not found or access was removed.", new() { Exact = true })
             .WaitForAsync(new() { Timeout = 10000 });
         var reconnectWindowSeconds = Stopwatch.GetElapsedTime(lastNavigationStarted).TotalSeconds;
@@ -279,7 +280,7 @@ public sealed class OperationsScopeBrowserAcceptanceTests
             TenThousand = tenThousand,
             Reconnected = Volatile.Read(ref socketCount) > beforeReconnect,
             AutomaticReconnectRevalidation = true,
-            ReconnectStates = await page.EvaluateAsync<string[]>("window.scopeReconnectStates"),
+            ReconnectStates = reconnectStates,
             ReconnectWindowBeforeFirstPeriodicTickSeconds = reconnectWindowSeconds,
             PageErrors = pageErrors.ToArray(),
             ScopePairDenial = true,
