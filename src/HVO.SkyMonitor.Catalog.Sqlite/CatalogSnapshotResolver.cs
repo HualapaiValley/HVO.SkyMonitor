@@ -85,6 +85,7 @@ public static class CatalogSnapshotResolver
     public const int ComposedManifestVersion = 3;
     private const int Sha256HexLength = 64;
     private const int MaximumManifestLength = 65_536;
+    private const int HashBufferLength = 81_920;
     private const int MaximumCatalogIdLength = 32;
     private const int MaximumCatalogVersionLength = 64;
     private const uint StatxType = 0x00000001;
@@ -185,7 +186,7 @@ public static class CatalogSnapshotResolver
                 $"Catalog database length mismatch. Expected {manifest.Database.Length}, got {databaseFile.Stream.Length}.");
         }
 
-        var actualSha256 = ComputeSha256(databaseFile.Stream);
+        var actualSha256 = ComputeSha256(databaseFile.Stream, manifest.Database.Length, "Catalog database");
         RevalidateFile(databaseFile, "Catalog database");
         if (!CryptographicOperations.FixedTimeEquals(
                 Convert.FromHexString(actualSha256), Convert.FromHexString(manifest.Database.Sha256)))
@@ -428,16 +429,38 @@ public static class CatalogSnapshotResolver
         return new SnapshotPointer(packageVersion, snapshotDirectory);
     }
 
-    private static SnapshotManifest ReadManifest(AuthenticatedFile file)
+    /// <summary>
+    /// Reads the manifest from its start, never past one byte beyond the limit. Authentication fixes the file's
+    /// identity, not its length, so the bound is enforced on the bytes actually read rather than on a length reported
+    /// before the read.
+    /// </summary>
+    internal static ReadOnlyMemory<byte> ReadBoundedManifest(Stream stream)
     {
-        if (file.Stream.Length > MaximumManifestLength)
+        if (stream.Length > MaximumManifestLength)
         {
             throw new InvalidDataException($"Catalog manifest exceeds the {MaximumManifestLength}-byte limit.");
         }
+        stream.Position = 0;
+        var buffer = new byte[MaximumManifestLength + 1];
+        var length = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
+        if (length > MaximumManifestLength)
+        {
+            throw new InvalidDataException($"Catalog manifest exceeds the {MaximumManifestLength}-byte limit.");
+        }
+        return buffer.AsMemory(0, length);
+    }
+
+    private static SnapshotManifest ReadManifest(AuthenticatedFile file)
+    {
+        var manifest = ReadBoundedManifest(file.Stream);
+        if (manifest.Span.StartsWith(Utf8ByteOrderMark))
+        {
+            // Parsing the manifest stream skipped a leading byte-order mark; parsing its bounded bytes must too.
+            manifest = manifest[Utf8ByteOrderMark.Length..];
+        }
         try
         {
-            file.Stream.Position = 0;
-            using var document = JsonDocument.Parse(file.Stream, new JsonDocumentOptions
+            using var document = JsonDocument.Parse(manifest, new JsonDocumentOptions
             {
                 AllowTrailingCommas = false,
                 CommentHandling = JsonCommentHandling.Disallow,
@@ -1020,7 +1043,7 @@ public static class CatalogSnapshotResolver
                 $"{description} length mismatch. Expected {evidence.Length}, got {file.Stream.Length}.");
         }
 
-        var actualSha256 = ComputeSha256(file.Stream);
+        var actualSha256 = ComputeSha256(file.Stream, evidence.Length, description);
         RevalidateFile(file, description);
         if (!CryptographicOperations.FixedTimeEquals(
                 Convert.FromHexString(actualSha256), Convert.FromHexString(evidence.Sha256)))
@@ -1039,12 +1062,35 @@ public static class CatalogSnapshotResolver
         }
     }
 
-    private static string ComputeSha256(FileStream source)
+    private static ReadOnlySpan<byte> Utf8ByteOrderMark => [0xEF, 0xBB, 0xBF];
+
+    /// <summary>
+    /// Hashes the file from its start, never past one byte beyond the length already checked. Authentication fixes the
+    /// file's identity, not its length, so a file extended after its length check is rejected rather than hashed to
+    /// its end. A file truncated after the check hashes short and fails the checksum comparison.
+    /// </summary>
+    internal static string ComputeSha256(Stream source, long length, string description)
     {
         source.Position = 0;
-        var result = Convert.ToHexString(SHA256.HashData(source));
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[HashBufferLength];
+        var remaining = length;
+        while (remaining > 0)
+        {
+            var read = source.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining));
+            if (read == 0)
+            {
+                break;
+            }
+            hash.AppendData(buffer, 0, read);
+            remaining -= read;
+        }
+        if (remaining == 0 && source.Read(buffer, 0, 1) > 0)
+        {
+            throw new InvalidDataException($"{description} grew beyond its expected length of {length} bytes.");
+        }
         source.Position = 0;
-        return result;
+        return Convert.ToHexString(hash.GetHashAndReset());
     }
 
     internal static void InvokeValidationTestHook(string path, CatalogSnapshotValidationPoint point)
