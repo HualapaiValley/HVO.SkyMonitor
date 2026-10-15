@@ -35,7 +35,8 @@ internal sealed partial class ExecutionEvidenceService
             {
                 var proposal = await _db.CentralProcessingGraphDeliveryProposals.AsNoTracking().Include(p => p.Revision)
                     .Include(p => p.Assignment).SingleOrDefaultAsync(p => p.Id == assignment.ProposalId, cancellationToken).ConfigureAwait(false);
-                if (proposal is null || assignment.RegistrationId != binding.RegistrationId ||
+                if (proposal is null) { return Invalid(GraphExecutionEvidenceReasonCodes.UnknownPredecessor, "graphRevision.assignment"); }
+                if (assignment.RegistrationId != binding.RegistrationId ||
                     assignment.LogicalCameraInstallationId != binding.LogicalCameraInstallationId || assignment.InstallationPublicId != binding.InstallationPublicId ||
                     proposal.RegistrationId != binding.RegistrationId || proposal.LogicalCameraInstallationId != binding.LogicalCameraInstallationId ||
                     proposal.InstallationPublicId != binding.InstallationPublicId || proposal.AssignmentId != assignment.AssignmentId ||
@@ -51,7 +52,13 @@ internal sealed partial class ExecutionEvidenceService
                     f.LocalRevisionId == revision.RevisionId && f.DefinitionIdentitySha256 == revision.DefinitionIdentitySha256 &&
                     f.SharedPlanIdentitySha256 == revision.SharedPlanIdentitySha256 && f.LocalPlanIdentitySha256 == revision.LocalPlanIdentitySha256,
                     cancellationToken).ConfigureAwait(false);
-                if (!accepted) { return Invalid(GraphExecutionEvidenceReasonCodes.InvalidAssignment, "graphRevision.assignment"); }
+                if (!accepted)
+                {
+                    var conflicting = await _db.CentralProcessingGraphDeliveryFacts.AnyAsync(f => f.ProposalId == proposal.Id &&
+                        (f.Kind == "Accepted" || f.Kind == "Rejected"), cancellationToken).ConfigureAwait(false);
+                    return Invalid(conflicting ? GraphExecutionEvidenceReasonCodes.InvalidAssignment : GraphExecutionEvidenceReasonCodes.UnknownPredecessor,
+                        "graphRevision.assignment");
+                }
             }
         }
         if (envelope.Execution is { } execution)
@@ -72,6 +79,15 @@ internal sealed partial class ExecutionEvidenceService
             var frame = await _db.CentralFrames.AsNoTracking().SingleOrDefaultAsync(f =>
                 f.DevicePublicId == binding.InstallationPublicId && f.FrameId == execution.CaptureId, cancellationToken).ConfigureAwait(false);
             if (frame is not null && !Owns(binding, frame)) { return Invalid(GraphExecutionEvidenceReasonCodes.InvalidIdentity, "execution.captureId"); }
+        }
+        if (envelope.Availability is { } availability &&
+            !await _db.Set<ImportedExecutionEvidenceUnit>().AnyAsync(u => u.BindingId == binding.Id &&
+                u.Kind == nameof(ExecutionEvidenceBodyKind.GraphExecution) && u.ExecutionId == availability.ExecutionId && u.Accepted,
+                cancellationToken).ConfigureAwait(false))
+        {
+            // Execution identity is scoped to this approved installation. Artifact observations remain independent
+            // of that execution's output set: window inputs and later metadata are legitimate extra artifacts.
+            return Invalid(GraphExecutionEvidenceReasonCodes.UnknownPredecessor, "availability.executionId");
         }
         return ExecutionEvidenceValidationResult.Success;
     }
@@ -110,6 +126,6 @@ internal sealed partial class ExecutionEvidenceService
         }).ToArray();
         _db.AddRange(records);
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        _db.AddRange(records.Select(r => new ExecutionEvidenceArtifactCheck { ArtifactReferenceId = r.Id, NextCheckAtUtc = now }));
+        _db.AddRange(records.Select(r => new ExecutionEvidenceArtifactCheck { ArtifactReferenceId = r.Id, BindingId = bindingId, NextCheckAtUtc = now }));
     }
 }

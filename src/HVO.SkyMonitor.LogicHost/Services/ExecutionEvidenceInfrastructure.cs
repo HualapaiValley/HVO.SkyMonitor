@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.Processing;
@@ -37,6 +38,7 @@ internal sealed class ExecutionEvidenceDatabase : IDisposable, IAsyncDisposable
         {
             ApplicationName = "HVO.ExecutionEvidence",
             MaxPoolSize = options.Value.MaximumConcurrentRequests + 2,
+            MinPoolSize = 0,
             ConnectTimeout = options.Value.SqlTimeoutSeconds,
             Pooling = true
         };
@@ -57,28 +59,43 @@ internal sealed class ExecutionEvidenceCapacity(IOptions<ExecutionEvidenceOption
     public void Dispose() => _requests.Dispose();
 }
 
-internal sealed class ExecutionEvidenceTelemetry : IDisposable
+internal sealed partial class ExecutionEvidenceTelemetry : IDisposable
 {
-    private readonly Meter _meter = new("HVO.SkyMonitor.ExecutionEvidence", "1.0.0");
+    public const string MeterName = "HVO.SkyMonitor.ExecutionEvidence";
+    public const string ActivitySourceName = MeterName;
+    private static readonly ActivitySource ActivitySource = new(ActivitySourceName, "1.0.0");
+    private readonly Meter _meter = new(MeterName, "1.0.0");
+    private readonly ILogger<ExecutionEvidenceTelemetry>? _logger;
+    public static Activity? StartActivity(string name) => ActivitySource.StartActivity(name);
     private readonly Counter<long> _units;
     private readonly Counter<long> _requests;
     private readonly Histogram<double> _latency;
     private readonly Counter<long> _observations;
-    public ExecutionEvidenceTelemetry()
+    public ExecutionEvidenceTelemetry(ILogger<ExecutionEvidenceTelemetry>? logger = null)
     {
+        _logger = logger;
         _units = _meter.CreateCounter<long>("hvo.execution_evidence.units");
         _requests = _meter.CreateCounter<long>("hvo.execution_evidence.requests");
         _latency = _meter.CreateHistogram<double>("hvo.execution_evidence.request.duration", "ms");
         _observations = _meter.CreateCounter<long>("hvo.execution_evidence.observations");
     }
-    public void Unit(string outcome) => _units.Add(1, new KeyValuePair<string, object?>("outcome", outcome));
+    public void Unit(string outcome)
+    {
+        _units.Add(1, new KeyValuePair<string, object?>("outcome", outcome));
+        if (outcome == "conflict" && _logger is not null) { EvidenceConflict(_logger); }
+    }
     public void Request(string outcome, TimeSpan elapsed)
     {
+        if (outcome == "pressure" && _logger is not null) { EvidencePressure(_logger); }
         _requests.Add(1, new KeyValuePair<string, object?>("outcome", outcome));
         _latency.Record(elapsed.TotalMilliseconds, new KeyValuePair<string, object?>("outcome", outcome));
     }
     public void Observation(string state) => _observations.Add(1, new KeyValuePair<string, object?>("state", state));
     public void Dispose() => _meter.Dispose();
+    [LoggerMessage(EventId = 2481, Level = LogLevel.Warning, Message = "Execution evidence sequence conflict was durably audited; immutable accepted evidence was retained.")]
+    private static partial void EvidenceConflict(ILogger logger);
+    [LoggerMessage(EventId = 2482, Level = LogLevel.Warning, Message = "Execution evidence capacity is exhausted; new evidence remains retryable and retained history was preserved.")]
+    private static partial void EvidencePressure(ILogger logger);
 }
 
 internal sealed class ExecutionEvidenceDeniedException : Exception

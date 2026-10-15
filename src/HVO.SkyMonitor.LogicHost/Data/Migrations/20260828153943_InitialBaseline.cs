@@ -2353,11 +2353,13 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     SoftwareVersion = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false, collation: "Latin1_General_100_BIN2"),
                     FirstReceivedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
                     HighestSeenSequence = table.Column<long>(type: "bigint", nullable: false),
-                    ContiguousThroughSequence = table.Column<long>(type: "bigint", nullable: false)
+                    ContiguousThroughSequence = table.Column<long>(type: "bigint", nullable: false),
+                    GapDetectedAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: true)
                 },
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_ImportedExecutionEvidenceOrigins", x => x.Id);
+                    table.UniqueConstraint("AK_ImportedExecutionEvidenceOrigins_Id_BindingId", x => new { x.Id, x.BindingId });
                     table.CheckConstraint("CK_ImportedExecutionEvidenceOrigins_Sequence", "[ContiguousThroughSequence] >= 0 AND [HighestSeenSequence] >= [ContiguousThroughSequence]");
                     table.ForeignKey(
                         name: "FK_ImportedExecutionEvidenceOrigins_ExecutionEvidenceBindings_BindingId",
@@ -2805,6 +2807,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_ImportedExecutionEvidenceUnits", x => x.Id);
+                    table.UniqueConstraint("AK_ImportedExecutionEvidenceUnits_Id_BindingId", x => new { x.Id, x.BindingId });
                     table.CheckConstraint("CK_ImportedExecutionEvidenceUnits_Bytes", "DATALENGTH([CanonicalBytes]) BETWEEN 1 AND 8388608");
                     table.CheckConstraint("CK_ImportedExecutionEvidenceUnits_Disposition", "([Accepted] = 1 AND [RejectionReasonCode] IS NULL AND [RejectionFieldPath] IS NULL) OR ([Accepted] = 0 AND [RejectionReasonCode] IS NOT NULL)");
                     table.CheckConstraint("CK_ImportedExecutionEvidenceUnits_Kind", "[Kind] IN ('GraphRevision', 'GraphExecution', 'ArtifactAvailability')");
@@ -2816,10 +2819,10 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
-                        name: "FK_ImportedExecutionEvidenceUnits_ImportedExecutionEvidenceOrigins_OriginId",
-                        column: x => x.OriginId,
+                        name: "FK_ImportedExecutionEvidenceUnits_ImportedExecutionEvidenceOrigins_OriginId_BindingId",
+                        columns: x => new { x.OriginId, x.BindingId },
                         principalTable: "ImportedExecutionEvidenceOrigins",
-                        principalColumn: "Id",
+                        principalColumns: new[] { "Id", "BindingId" },
                         onDelete: ReferentialAction.Restrict);
                 });
 
@@ -3017,6 +3020,7 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_ImportedExecutionEvidenceArtifacts", x => x.Id);
+                    table.UniqueConstraint("AK_ImportedExecutionEvidenceArtifacts_Id_BindingId", x => new { x.Id, x.BindingId });
                     table.ForeignKey(
                         name: "FK_ImportedExecutionEvidenceArtifacts_ExecutionEvidenceBindings_BindingId",
                         column: x => x.BindingId,
@@ -3024,10 +3028,10 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
-                        name: "FK_ImportedExecutionEvidenceArtifacts_ImportedExecutionEvidenceUnits_UnitId",
-                        column: x => x.UnitId,
+                        name: "FK_ImportedExecutionEvidenceArtifacts_ImportedExecutionEvidenceUnits_UnitId_BindingId",
+                        columns: x => new { x.UnitId, x.BindingId },
                         principalTable: "ImportedExecutionEvidenceUnits",
-                        principalColumn: "Id",
+                        principalColumns: new[] { "Id", "BindingId" },
                         onDelete: ReferentialAction.Restrict);
                 });
 
@@ -3053,10 +3057,10 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
-                        name: "FK_ImportedExecutionEvidenceConflicts_ImportedExecutionEvidenceUnits_UnitId",
-                        column: x => x.UnitId,
+                        name: "FK_ImportedExecutionEvidenceConflicts_ImportedExecutionEvidenceUnits_UnitId_BindingId",
+                        columns: x => new { x.UnitId, x.BindingId },
                         principalTable: "ImportedExecutionEvidenceUnits",
-                        principalColumn: "Id",
+                        principalColumns: new[] { "Id", "BindingId" },
                         onDelete: ReferentialAction.Restrict);
                 });
 
@@ -3426,6 +3430,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 columns: table => new
                 {
                     ArtifactReferenceId = table.Column<long>(type: "bigint", nullable: false),
+                    BindingId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    Version = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     NextCheckAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
                     State = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: true),
                     ReasonCode = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
@@ -3435,10 +3441,10 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 {
                     table.PrimaryKey("PK_ExecutionEvidenceArtifactChecks", x => x.ArtifactReferenceId);
                     table.ForeignKey(
-                        name: "FK_ExecutionEvidenceArtifactChecks_ImportedExecutionEvidenceArtifacts_ArtifactReferenceId",
-                        column: x => x.ArtifactReferenceId,
+                        name: "FK_ExecutionEvidenceArtifactChecks_ImportedExecutionEvidenceArtifacts_ArtifactReferenceId_BindingId",
+                        columns: x => new { x.ArtifactReferenceId, x.BindingId },
                         principalTable: "ImportedExecutionEvidenceArtifacts",
-                        principalColumn: "Id",
+                        principalColumns: new[] { "Id", "BindingId" },
                         onDelete: ReferentialAction.Restrict);
                 });
 
@@ -3465,10 +3471,10 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Restrict);
                     table.ForeignKey(
-                        name: "FK_ImportedExecutionEvidenceObservations_ImportedExecutionEvidenceArtifacts_ArtifactReferenceId",
-                        column: x => x.ArtifactReferenceId,
+                        name: "FK_ImportedExecutionEvidenceObservations_ImportedExecutionEvidenceArtifacts_ArtifactReferenceId_BindingId",
+                        columns: x => new { x.ArtifactReferenceId, x.BindingId },
                         principalTable: "ImportedExecutionEvidenceArtifacts",
-                        principalColumn: "Id",
+                        principalColumns: new[] { "Id", "BindingId" },
                         onDelete: ReferentialAction.Restrict);
                 });
 
@@ -5758,6 +5764,17 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 columns: new[] { "SiteId", "AgentId", "RigId", "Kind" });
 
             migrationBuilder.CreateIndex(
+                name: "IX_ExecutionEvidenceArtifactChecks_ArtifactReferenceId_BindingId",
+                table: "ExecutionEvidenceArtifactChecks",
+                columns: new[] { "ArtifactReferenceId", "BindingId" },
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ExecutionEvidenceArtifactChecks_BindingId_NextCheckAtUtc_ArtifactReferenceId",
+                table: "ExecutionEvidenceArtifactChecks",
+                columns: new[] { "BindingId", "NextCheckAtUtc", "ArtifactReferenceId" });
+
+            migrationBuilder.CreateIndex(
                 name: "IX_ExecutionEvidenceArtifactChecks_NextCheckAtUtc_ArtifactReferenceId",
                 table: "ExecutionEvidenceArtifactChecks",
                 columns: new[] { "NextCheckAtUtc", "ArtifactReferenceId" });
@@ -5794,6 +5811,11 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 columns: new[] { "BindingId", "Id" });
 
             migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceArtifacts_UnitId_BindingId",
+                table: "ImportedExecutionEvidenceArtifacts",
+                columns: new[] { "UnitId", "BindingId" });
+
+            migrationBuilder.CreateIndex(
                 name: "IX_ImportedExecutionEvidenceArtifacts_UnitId_Ordinal",
                 table: "ImportedExecutionEvidenceArtifacts",
                 columns: new[] { "UnitId", "Ordinal" },
@@ -5805,10 +5827,20 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 columns: new[] { "BindingId", "Id" });
 
             migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceConflicts_UnitId_BindingId",
+                table: "ImportedExecutionEvidenceConflicts",
+                columns: new[] { "UnitId", "BindingId" });
+
+            migrationBuilder.CreateIndex(
                 name: "IX_ImportedExecutionEvidenceConflicts_UnitId_SubmittedPayloadSha256",
                 table: "ImportedExecutionEvidenceConflicts",
                 columns: new[] { "UnitId", "SubmittedPayloadSha256" },
                 unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceObservations_ArtifactReferenceId_BindingId",
+                table: "ImportedExecutionEvidenceObservations",
+                columns: new[] { "ArtifactReferenceId", "BindingId" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_ImportedExecutionEvidenceObservations_ArtifactReferenceId_Id",
@@ -5819,6 +5851,11 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 name: "IX_ImportedExecutionEvidenceObservations_BindingId_Id",
                 table: "ImportedExecutionEvidenceObservations",
                 columns: new[] { "BindingId", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceOrigins_BindingId_GapDetectedAtUtc",
+                table: "ImportedExecutionEvidenceOrigins",
+                columns: new[] { "BindingId", "GapDetectedAtUtc" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_ImportedExecutionEvidenceOrigins_BindingId_Id",
@@ -5850,6 +5887,11 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 name: "IX_ImportedExecutionEvidenceUnits_BindingId_Kind_RevisionId_Accepted_Id",
                 table: "ImportedExecutionEvidenceUnits",
                 columns: new[] { "BindingId", "Kind", "RevisionId", "Accepted", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceUnits_OriginId_BindingId",
+                table: "ImportedExecutionEvidenceUnits",
+                columns: new[] { "OriginId", "BindingId" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_ImportedExecutionEvidenceUnits_OriginId_EvidenceId",

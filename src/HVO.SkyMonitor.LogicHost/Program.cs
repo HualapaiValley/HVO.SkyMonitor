@@ -287,6 +287,7 @@ public sealed partial class Program
                 metrics.AddMeter(OperatorUiTelemetry.MeterName);
                 metrics.AddMeter(ObjectStoreTelemetry.MeterName);
                 metrics.AddMeter(ProcessingGraphCatalogTelemetry.MeterName);
+                metrics.AddMeter(ExecutionEvidenceTelemetry.MeterName);
                 metrics.AddAspNetCoreInstrumentation();
             })
             .WithTracing(tracing => tracing
@@ -295,7 +296,8 @@ public sealed partial class Program
                 .AddSource(DeploymentLocationTelemetry.ActivitySourceName)
                 .AddSource(OperatorUiTelemetry.ActivitySourceName)
                 .AddSource(ObjectStoreTelemetry.ActivitySourceName)
-                .AddSource(ProcessingGraphCatalogTelemetry.ActivitySourceName));
+                .AddSource(ProcessingGraphCatalogTelemetry.ActivitySourceName)
+                .AddSource(ExecutionEvidenceTelemetry.ActivitySourceName));
 
         builder.Services.Configure<AspNetCoreTraceInstrumentationOptions>(options =>
         {

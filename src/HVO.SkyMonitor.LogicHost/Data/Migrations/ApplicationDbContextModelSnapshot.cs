@@ -6507,6 +6507,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<long>("ArtifactReferenceId")
                         .HasColumnType("bigint");
 
+                    b.Property<Guid>("BindingId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<DateTimeOffset>("NextCheckAtUtc")
                         .HasColumnType("datetimeoffset");
 
@@ -6522,9 +6525,17 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)");
 
+                    b.Property<Guid>("Version")
+                        .HasColumnType("uniqueidentifier");
+
                     b.HasKey("ArtifactReferenceId");
 
+                    b.HasIndex("ArtifactReferenceId", "BindingId")
+                        .IsUnique();
+
                     b.HasIndex("NextCheckAtUtc", "ArtifactReferenceId");
+
+                    b.HasIndex("BindingId", "NextCheckAtUtc", "ArtifactReferenceId");
 
                     b.ToTable("ExecutionEvidenceArtifactChecks", (string)null);
                 });
@@ -6668,6 +6679,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.HasIndex("BindingId", "Id");
 
+                    b.HasIndex("UnitId", "BindingId");
+
                     b.HasIndex("UnitId", "Ordinal")
                         .IsUnique();
 
@@ -6711,6 +6724,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("BindingId", "Id");
+
+                    b.HasIndex("UnitId", "BindingId");
 
                     b.HasIndex("UnitId", "SubmittedPayloadSha256")
                         .IsUnique();
@@ -6756,6 +6771,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ArtifactReferenceId", "BindingId");
+
                     b.HasIndex("ArtifactReferenceId", "Id");
 
                     b.HasIndex("BindingId", "Id");
@@ -6788,6 +6805,9 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.Property<DateTimeOffset>("FirstReceivedAtUtc")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<DateTimeOffset?>("GapDetectedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<long>("HighestSeenSequence")
                         .HasColumnType("bigint");
 
@@ -6808,6 +6828,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.HasIndex("IdentitySha256")
                         .IsUnique();
+
+                    b.HasIndex("BindingId", "GapDetectedAtUtc");
 
                     b.HasIndex("BindingId", "Id");
 
@@ -6916,6 +6938,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("BindingId", "Id");
+
+                    b.HasIndex("OriginId", "BindingId");
 
                     b.HasIndex("OriginId", "EvidenceId")
                         .IsUnique()
@@ -9728,7 +9752,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 {
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceArtifact", null)
                         .WithOne()
-                        .HasForeignKey("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceArtifactCheck", "ArtifactReferenceId")
+                        .HasForeignKey("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceArtifactCheck", "ArtifactReferenceId", "BindingId")
+                        .HasPrincipalKey("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceArtifact", "Id", "BindingId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
@@ -9773,7 +9798,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceUnit", null)
                         .WithMany()
-                        .HasForeignKey("UnitId")
+                        .HasForeignKey("UnitId", "BindingId")
+                        .HasPrincipalKey("Id", "BindingId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
@@ -9788,22 +9814,24 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceUnit", null)
                         .WithMany()
-                        .HasForeignKey("UnitId")
+                        .HasForeignKey("UnitId", "BindingId")
+                        .HasPrincipalKey("Id", "BindingId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
 
             modelBuilder.Entity("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceObservation", b =>
                 {
-                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceArtifact", null)
-                        .WithMany()
-                        .HasForeignKey("ArtifactReferenceId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.ExecutionEvidenceBinding", null)
                         .WithMany()
                         .HasForeignKey("BindingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceArtifact", null)
+                        .WithMany()
+                        .HasForeignKey("ArtifactReferenceId", "BindingId")
+                        .HasPrincipalKey("Id", "BindingId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
@@ -9836,7 +9864,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
 
                     b.HasOne("HVO.SkyMonitor.LogicHost.Data.ImportedExecutionEvidenceOrigin", null)
                         .WithMany()
-                        .HasForeignKey("OriginId")
+                        .HasForeignKey("OriginId", "BindingId")
+                        .HasPrincipalKey("Id", "BindingId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });

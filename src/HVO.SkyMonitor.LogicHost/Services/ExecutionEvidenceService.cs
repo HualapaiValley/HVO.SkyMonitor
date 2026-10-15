@@ -26,7 +26,9 @@ internal sealed partial class ExecutionEvidenceService(
             !await ObservatoryMembershipAccess.ForOwner(_db, actorUserId)
                 .AnyAsync(m => m.ObservatoryId == request.ObservatoryId, cancellationToken).ConfigureAwait(false)) { return null; }
 
-        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = await _db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false);
+        if (!await ObservatoryMembershipAccess.ForOwner(_db, actorUserId)
+            .AnyAsync(m => m.ObservatoryId == request.ObservatoryId, cancellationToken).ConfigureAwait(false)) { return null; }
         var registration = await _db.DeviceRegistrations
             .FromSqlInterpolated($"SELECT * FROM [DeviceRegistrations] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] = {request.RegistrationId}")
             .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
@@ -79,6 +81,7 @@ internal sealed partial class ExecutionEvidenceService(
     public async Task<ExecutionEvidenceFeedbackV1> ReceiveAsync(string deviceId, string deviceKey,
         string originIdentitySha256, IReadOnlyList<ReadOnlyMemory<byte>> units, CancellationToken cancellationToken = default)
     {
+        using var activity = ExecutionEvidenceTelemetry.StartActivity("execution-evidence.receive");
         if (units.Count is < 1 or > ExecutionEvidenceOptions.MaximumBatchUnits || !ExecutionEvidencePlanValidator.IsHash(originIdentitySha256) ||
             units.Sum(x => (long)x.Length + 1) > ExecutionEvidenceOptions.MaximumRequestBytes)
         { throw new ExecutionEvidenceInvalidException(GraphExecutionEvidenceReasonCodes.LimitExceeded); }
@@ -92,7 +95,7 @@ internal sealed partial class ExecutionEvidenceService(
             if (result.Value is not { } envelope || !bytes.Span.SequenceEqual(GraphExecutionEvidenceJson.Serialize(envelope)))
             { throw new ExecutionEvidenceInvalidException(result.Validation.ReasonCode ?? GraphExecutionEvidenceReasonCodes.InvalidJson); }
             if (envelope.Origin.IdentitySha256 != originIdentitySha256) { throw new ExecutionEvidenceDeniedException(); }
-            binding = await AuthenticateAsync(deviceId, deviceKey, envelope.Origin, cancellationToken).ConfigureAwait(false);
+            binding ??= await AuthenticateAsync(deviceId, deviceKey, envelope.Origin, cancellationToken).ConfigureAwait(false);
             parsed.Add(envelope);
         }
         var facts = ImmutableArray.CreateBuilder<ExecutionEvidenceFactV1>();
@@ -221,6 +224,8 @@ internal sealed partial class ExecutionEvidenceService(
                 outcome = validation.IsValid ? "accepted" : "rejected";
             }
         }
+        origin.GapDetectedAtUtc = origin.ContiguousThroughSequence == origin.HighestSeenSequence
+            ? null : origin.GapDetectedAtUtc ?? now;
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         telemetry.Unit(outcome);

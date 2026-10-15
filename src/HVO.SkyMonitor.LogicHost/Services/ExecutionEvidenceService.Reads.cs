@@ -19,12 +19,23 @@ internal sealed partial class ExecutionEvidenceService
     {
         if (await AuthorizedBindingAsync(bindingId, userId, observatoryScope, cancellationToken).ConfigureAwait(false) is null) { return null; }
         var usage = await _db.Set<ExecutionEvidenceBindingUsage>().AsNoTracking().SingleAsync(u => u.BindingId == bindingId, cancellationToken).ConfigureAwait(false);
+        var originsWithGaps = _db.Set<ImportedExecutionEvidenceOrigin>().AsNoTracking()
+            .Where(o => o.BindingId == bindingId && o.GapDetectedAtUtc != null);
+        var gapCount = await originsWithGaps.CountAsync(cancellationToken).ConfigureAwait(false);
+        var oldestGap = await originsWithGaps.OrderBy(o => o.GapDetectedAtUtc).Select(o => o.GapDetectedAtUtc)
+            .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+        var now = timeProvider.GetUtcNow();
+        var due = await _db.Set<ExecutionEvidenceArtifactCheck>().AsNoTracking()
+            .Where(check => check.BindingId == bindingId && check.NextCheckAtUtc <= now)
+            .OrderBy(check => check.NextCheckAtUtc).ThenBy(check => check.ArtifactReferenceId)
+            .Select(check => check.NextCheckAtUtc).Take(1001).ToListAsync(cancellationToken).ConfigureAwait(false);
         return new(bindingId, usage.StoredBytes, usage.UnitCount, usage.OriginCount, usage.ConflictCount, usage.ObservationCount,
             usage.StoredBytes >= _options.MaximumStoredBytesPerBinding || usage.UnitCount >= _options.MaximumUnitsPerBinding ||
             usage.OriginCount >= _options.MaximumOriginsPerBinding || usage.ConflictCount >= _options.MaximumConflictsPerBinding ||
             usage.ObservationCount >= _options.MaximumObservationsPerBinding,
             _options.MaximumStoredBytesPerBinding, _options.MaximumUnitsPerBinding, _options.MaximumOriginsPerBinding,
-            _options.MaximumConflictsPerBinding, _options.MaximumObservationsPerBinding);
+            _options.MaximumConflictsPerBinding, _options.MaximumObservationsPerBinding, gapCount, oldestGap,
+            Math.Min(due.Count, 1000), due.Count > 1000, due.Count == 0 ? null : due[0]);
     }
 
     public async Task<IReadOnlyList<ExecutionEvidenceOriginView>?> ListOriginsAsync(Guid bindingId, string userId, Guid? observatoryScope,

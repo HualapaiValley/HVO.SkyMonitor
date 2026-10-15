@@ -30,10 +30,12 @@ internal static class ImportedExecutionEvidenceConfiguration
             t.HasCheckConstraint("CK_ImportedExecutionEvidenceOrigins_Sequence", "[ContiguousThroughSequence] >= 0 AND [HighestSeenSequence] >= [ContiguousThroughSequence]");
         });
         origin.HasKey(x => x.Id);
+        origin.HasAlternateKey(x => new { x.Id, x.BindingId });
         Hash(origin.Property(x => x.IdentitySha256));
         origin.Property(x => x.SoftwareVersion).HasMaxLength(64).UseCollation("Latin1_General_100_BIN2");
         origin.HasIndex(x => x.IdentitySha256).IsUnique();
         origin.HasIndex(x => new { x.BindingId, x.Id });
+        origin.HasIndex(x => new { x.BindingId, x.GapDetectedAtUtc });
         origin.HasOne<ExecutionEvidenceBinding>().WithMany().HasForeignKey(x => x.BindingId).OnDelete(DeleteBehavior.Restrict);
 
         var unit = builder.Entity<ImportedExecutionEvidenceUnit>();
@@ -46,6 +48,7 @@ internal static class ImportedExecutionEvidenceConfiguration
             t.HasCheckConstraint("CK_ImportedExecutionEvidenceUnits_Kind", "[Kind] IN ('GraphRevision', 'GraphExecution', 'ArtifactAvailability')");
         });
         unit.HasKey(x => x.Id);
+        unit.HasAlternateKey(x => new { x.Id, x.BindingId });
         Hash(unit.Property(x => x.PayloadSha256));
         unit.Property(x => x.Kind).HasMaxLength(32).IsUnicode(false);
         unit.Property(x => x.RevisionId).HasMaxLength(128).UseCollation("Latin1_General_100_BIN2");
@@ -56,7 +59,7 @@ internal static class ImportedExecutionEvidenceConfiguration
         unit.HasIndex(x => new { x.BindingId, x.Id });
         unit.HasIndex(x => new { x.BindingId, x.Kind, x.RevisionId, x.Accepted, x.Id });
         unit.HasIndex(x => new { x.BindingId, x.Kind, x.ExecutionId, x.Accepted, x.Id });
-        unit.HasOne<ImportedExecutionEvidenceOrigin>().WithMany().HasForeignKey(x => x.OriginId).OnDelete(DeleteBehavior.Restrict);
+        unit.HasOne<ImportedExecutionEvidenceOrigin>().WithMany().HasForeignKey(x => new { x.OriginId, x.BindingId }).HasPrincipalKey(x => new { x.Id, x.BindingId }).OnDelete(DeleteBehavior.Restrict);
         unit.HasOne<ExecutionEvidenceBinding>().WithMany().HasForeignKey(x => x.BindingId).OnDelete(DeleteBehavior.Restrict);
 
         var range = builder.Entity<ImportedExecutionEvidenceRange>();
@@ -71,12 +74,13 @@ internal static class ImportedExecutionEvidenceConfiguration
         Hash(conflict.Property(x => x.SubmittedPayloadSha256));
         conflict.HasIndex(x => new { x.UnitId, x.SubmittedPayloadSha256 }).IsUnique();
         conflict.HasIndex(x => new { x.BindingId, x.Id });
-        conflict.HasOne<ImportedExecutionEvidenceUnit>().WithMany().HasForeignKey(x => x.UnitId).OnDelete(DeleteBehavior.Restrict);
+        conflict.HasOne<ImportedExecutionEvidenceUnit>().WithMany().HasForeignKey(x => new { x.UnitId, x.BindingId }).HasPrincipalKey(x => new { x.Id, x.BindingId }).OnDelete(DeleteBehavior.Restrict);
         conflict.HasOne<ExecutionEvidenceBinding>().WithMany().HasForeignKey(x => x.BindingId).OnDelete(DeleteBehavior.Restrict);
 
         var artifact = builder.Entity<ImportedExecutionEvidenceArtifact>();
         Immutable(artifact, "ImportedExecutionEvidenceArtifacts");
         artifact.HasKey(x => x.Id);
+        artifact.HasAlternateKey(x => new { x.Id, x.BindingId });
         artifact.HasIndex(x => new { x.UnitId, x.Ordinal }).IsUnique();
         artifact.HasIndex(x => new { x.BindingId, x.Id });
         artifact.HasIndex(x => new { x.BindingId, x.ArtifactId, x.Id });
@@ -86,17 +90,18 @@ internal static class ImportedExecutionEvidenceConfiguration
         artifact.Property(x => x.MediaType).HasMaxLength(128);
         artifact.Property(x => x.Role).HasMaxLength(32);
         artifact.Property(x => x.Variant).HasMaxLength(128);
-        artifact.HasOne<ImportedExecutionEvidenceUnit>().WithMany().HasForeignKey(x => x.UnitId).OnDelete(DeleteBehavior.Restrict);
+        artifact.HasOne<ImportedExecutionEvidenceUnit>().WithMany().HasForeignKey(x => new { x.UnitId, x.BindingId }).HasPrincipalKey(x => new { x.Id, x.BindingId }).OnDelete(DeleteBehavior.Restrict);
         artifact.HasOne<ExecutionEvidenceBinding>().WithMany().HasForeignKey(x => x.BindingId).OnDelete(DeleteBehavior.Restrict);
 
         var check = builder.Entity<ExecutionEvidenceArtifactCheck>();
         check.ToTable("ExecutionEvidenceArtifactChecks");
         check.HasKey(x => x.ArtifactReferenceId);
         check.HasIndex(x => new { x.NextCheckAtUtc, x.ArtifactReferenceId });
+        check.HasIndex(x => new { x.BindingId, x.NextCheckAtUtc, x.ArtifactReferenceId });
         check.Property(x => x.State).HasMaxLength(32);
         check.Property(x => x.ReasonCode).HasMaxLength(128);
         check.Property(x => x.ObjectGeneration).HasMaxLength(256);
-        check.HasOne<ImportedExecutionEvidenceArtifact>().WithOne().HasForeignKey<ExecutionEvidenceArtifactCheck>(x => x.ArtifactReferenceId).OnDelete(DeleteBehavior.Restrict);
+        check.HasOne<ImportedExecutionEvidenceArtifact>().WithOne().HasForeignKey<ExecutionEvidenceArtifactCheck>(x => new { x.ArtifactReferenceId, x.BindingId }).HasPrincipalKey<ImportedExecutionEvidenceArtifact>(x => new { x.Id, x.BindingId }).OnDelete(DeleteBehavior.Restrict);
 
         var observation = builder.Entity<ImportedExecutionEvidenceObservation>();
         Immutable(observation, "ImportedExecutionEvidenceObservations");
@@ -106,7 +111,7 @@ internal static class ImportedExecutionEvidenceConfiguration
         observation.Property(x => x.State).HasMaxLength(32);
         observation.Property(x => x.ReasonCode).HasMaxLength(128);
         observation.Property(x => x.ObjectGeneration).HasMaxLength(256);
-        observation.HasOne<ImportedExecutionEvidenceArtifact>().WithMany().HasForeignKey(x => x.ArtifactReferenceId).OnDelete(DeleteBehavior.Restrict);
+        observation.HasOne<ImportedExecutionEvidenceArtifact>().WithMany().HasForeignKey(x => new { x.ArtifactReferenceId, x.BindingId }).HasPrincipalKey(x => new { x.Id, x.BindingId }).OnDelete(DeleteBehavior.Restrict);
         observation.HasOne<ExecutionEvidenceBinding>().WithMany().HasForeignKey(x => x.BindingId).OnDelete(DeleteBehavior.Restrict);
     }
 

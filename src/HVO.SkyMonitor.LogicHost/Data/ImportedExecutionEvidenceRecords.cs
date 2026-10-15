@@ -34,6 +34,7 @@ internal sealed class ImportedExecutionEvidenceOrigin
     public DateTimeOffset FirstReceivedAtUtc { get; set; }
     public long HighestSeenSequence { get; set; }
     public long ContiguousThroughSequence { get; set; }
+    public DateTimeOffset? GapDetectedAtUtc { get; set; }
 }
 
 internal sealed class ImportedExecutionEvidenceUnit
@@ -96,6 +97,8 @@ internal sealed class ImportedExecutionEvidenceArtifact
 internal sealed class ExecutionEvidenceArtifactCheck
 {
     public long ArtifactReferenceId { get; set; }
+    public Guid BindingId { get; set; }
+    public Guid Version { get; set; } = Guid.NewGuid();
     public DateTimeOffset NextCheckAtUtc { get; set; }
     public string? State { get; set; }
     public string? ReasonCode { get; set; }
