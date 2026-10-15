@@ -1,0 +1,175 @@
+{
+  "input": {
+    "repositories": [
+      "HualapaiValley/HVO.SkyMonitor"
+    ],
+    "schema": "hvo-runner-capacity-input-v1",
+    "selected": {
+      "since": null,
+      "until": null
+    },
+    "window": {
+      "since": "2026-10-10",
+      "until": "2026-10-10"
+    }
+  },
+  "model": {
+    "dispatch": "fifo-random-eligible-runner",
+    "note": "modeled replay, not an observed measurement",
+    "probeSeconds": 50.0,
+    "probeStep": 30,
+    "reserves": [
+      0,
+      1
+    ],
+    "seeds": 2
+  },
+  "observed": {
+    "jobs": 4,
+    "qualificationMakespan": {
+      "max": 100,
+      "mean": 100.0,
+      "n": 1,
+      "p50": 100,
+      "p90": 100,
+      "p99": 100
+    },
+    "rerunCreatedClamped": 0,
+    "reusedAttemptJobsDropped": 1,
+    "waits": {
+      "qualification-pull_request": {
+        "max": 0,
+        "mean": 0.0,
+        "n": 3,
+        "over60": 0,
+        "p50": 0,
+        "p90": 0,
+        "p99": 0
+      },
+      "ready-pr": {
+        "max": 90,
+        "mean": 90.0,
+        "n": 1,
+        "over60": 1,
+        "p50": 90,
+        "p90": 90,
+        "p99": 90
+      }
+    }
+  },
+  "pool": {
+    "observedPeakConcurrent": 3,
+    "runners": [
+      "gh-runner-01",
+      "gh-runner-02",
+      "gh-runner-03"
+    ]
+  },
+  "replay": {
+    "0": {
+      "generalOnlyRunners": [],
+      "qualificationMakespan": {
+        "max": 100,
+        "mean": 100.0,
+        "n": 2,
+        "p50": 100,
+        "p90": 100,
+        "p99": 100
+      },
+      "waits": {
+        "qualification-pull_request": {
+          "max": 0,
+          "mean": 0.0,
+          "n": 6,
+          "over60": 0,
+          "p50": 0,
+          "p90": 0,
+          "p99": 0
+        },
+        "ready-pr": {
+          "max": 90,
+          "mean": 90.0,
+          "n": 2,
+          "over60": 2,
+          "p50": 90,
+          "p90": 90,
+          "p99": 90
+        }
+      }
+    },
+    "1": {
+      "generalOnlyRunners": [
+        "gh-runner-03"
+      ],
+      "qualificationMakespan": {
+        "max": 200,
+        "mean": 200.0,
+        "n": 2,
+        "p50": 200,
+        "p90": 200,
+        "p99": 200
+      },
+      "waits": {
+        "qualification-pull_request": {
+          "max": 100,
+          "mean": 33.3,
+          "n": 6,
+          "over60": 2,
+          "p50": 0,
+          "p90": 100,
+          "p99": 100
+        },
+        "ready-pr": {
+          "max": 0,
+          "mean": 0.0,
+          "n": 2,
+          "over60": 0,
+          "p50": 0,
+          "p90": 0,
+          "p99": 0
+        }
+      }
+    }
+  },
+  "schema": "hvo-runner-capacity-v1",
+  "stress": {
+    "0": {
+      "injectedReadyPrWait": {
+        "max": 100,
+        "mean": 55.0,
+        "n": 16,
+        "over60": 8,
+        "p50": 70,
+        "p90": 100,
+        "p99": 100
+      },
+      "isolatedQualificationMakespan": {
+        "max": 100,
+        "mean": 100.0,
+        "n": 2,
+        "p50": 100,
+        "p90": 100,
+        "p99": 100
+      }
+    },
+    "1": {
+      "injectedReadyPrWait": {
+        "max": 30,
+        "mean": 7.5,
+        "n": 16,
+        "over60": 0,
+        "p50": 0,
+        "p90": 30,
+        "p99": 30
+      },
+      "isolatedQualificationMakespan": {
+        "max": 200,
+        "mean": 200.0,
+        "n": 2,
+        "p50": 200,
+        "p90": 200,
+        "p99": 200
+      }
+    }
+  }
+}

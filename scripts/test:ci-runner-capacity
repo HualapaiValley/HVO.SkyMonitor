@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+tool="$repo_root/scripts/ci:runner-capacity"
+fixtures="$repo_root/tests/fixtures/ci-runner-capacity"
+
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+
+# The contention fixture is small enough to replay by hand: three 100s
+# qualification jobs fill a three-runner pool at t=0 and a ready PR arrives at
+# t=10. With no reserve it waits 90s; reserving one runner removes the wait and
+# serializes the third qualification job, doubling the makespan to 200s.
+report="$("$tool" report --input "$fixtures/contention.json" --reserve 0,1 --seeds 2 \
+    --probe-seconds 50 --probe-step 30)"
+diff -u "$fixtures/contention.expected.json" <(jq -S . <<< "$report") ||
+    fail 'Contention report changed.'
+jq -e '
+  .observed.reusedAttemptJobsDropped == 1 and .observed.jobs == 4 and
+  .pool.observedPeakConcurrent == 3 and .observed.waits["ready-pr"].max == 90 and
+  .replay["0"].waits["ready-pr"].max == 90 and .replay["1"].waits["ready-pr"].max == 0 and
+  .replay["0"].qualificationMakespan.max == 100 and .replay["1"].qualificationMakespan.max == 200 and
+  .replay["1"].generalOnlyRunners == ["gh-runner-03"] and
+  .stress["0"].injectedReadyPrWait.max == 100 and .stress["0"].injectedReadyPrWait.mean == 55 and
+  .stress["1"].injectedReadyPrWait.max == 30 and .stress["1"].injectedReadyPrWait.mean == 7.5 and
+  (.model.note | test("modeled"))
+' <<< "$report" >/dev/null || fail 'Contention replay lost a hand-computed invariant.'
+
+for seed_run in 1 2; do
+    [[ "$("$tool" report --input "$fixtures/contention.json" --reserve 0,1 --seeds 2 \
+        --probe-seconds 50 --probe-step 30)" == "$report" ]] || fail "Replay is not deterministic ($seed_run)."
+done
+
+summary="$("$tool" report --input "$fixtures/contention.json" --reserve 0,1 --seeds 2 \
+    --probe-seconds 50 --probe-step 30 --summary)"
+grep -Fq '| ready-pr | 1 | 90 | 90 | 90 | 90 | 1 |' <<< "$summary" || fail 'Summary lost observed waits.'
+grep -Fq 'Observed queue wait in seconds; modeled results follow.' <<< "$summary" ||
+    fail 'Summary does not separate observed from modeled results.'
+
+work_root="$(mktemp -d)"
+trap 'rm -rf "$work_root"' EXIT
+
+expect_failure() {
+    local name="$1" pattern="$2"
+    shift 2
+    if "$@" >"$work_root/out" 2>"$work_root/err"; then
+        fail "$name reported success."
+    fi
+    grep -Fq "$pattern" "$work_root/err" || {
+        cat "$work_root/err" >&2
+        fail "$name failed for the wrong reason."
+    }
+}
+
+printf '%s\n' '{"schema":"other","jobs":[]}' > "$work_root/wrong-schema.json"
+expect_failure 'Wrong schema' 'not a hvo-runner-capacity-input-v1' \
+    "$tool" report --input "$work_root/wrong-schema.json"
+expect_failure 'Reserve of the whole pool' 'must leave at least one qualification runner' \
+    "$tool" report --input "$fixtures/contention.json" --reserve 3
+expect_failure 'Empty window' 'No completed pool jobs' \
+    "$tool" report --input "$fixtures/contention.json" --since 2026-10-11T00:00:00Z
+jq '.jobs[0].completedAt = "2026-10-10T11:59:00Z"' "$fixtures/contention.json" > "$work_root/reversed.json"
+expect_failure 'Completion before start' 'completes before it starts' \
+    "$tool" report --input "$work_root/reversed.json"
+expect_failure 'Unknown option' 'Unknown argument: --reserves' \
+    "$tool" report --input "$fixtures/contention.json" --reserves 1
+
+# An offline gh substitute serves the run listing, job pages and runner pool.
+mkdir -p "$work_root/bin"
+cat > "$work_root/bin/gh" <<'GH'
+#!/usr/bin/env python3
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["HVO_CAPACITY_CALLS"], "a") as log:
+    log.write(json.dumps(args) + "\n")
+scenario = os.environ["HVO_CAPACITY_SCENARIO"]
+if args[:3] != ["api", "--paginate", "--slurp"] or len(args) != 4:
+    sys.exit(41)
+path = args[3]
+if scenario == "error":
+    sys.exit(23)
+if "/actions/runs?" in path:
+    total = 1000 if scenario == "full-day" else 1
+    count = 0 if scenario == "short" else 1
+    run = {"id": 7, "name": "Development v1", "event": "pull_request", "head_branch": "x"}
+    print(json.dumps([{"total_count": total, "workflow_runs": [run] * count}]))
+elif "/actions/runs/7/jobs?" in path:
+    hosted = {"id": 1, "labels": ["ubuntu-24.04"], "name": "Development v1 / Preflight"}
+    pool = {"id": 2, "labels": ["self-hosted", "linux", "x64", "hvo-skymonitor"],
+            "name": "Development v1 / Build and Unit", "run_attempt": 1,
+            "runner_name": "gh-runner-01", "created_at": "2026-10-10T12:00:00Z",
+            "started_at": "2026-10-10T12:00:02Z", "completed_at": "2026-10-10T12:05:00Z",
+            "conclusion": "success", "head_sha": "a" * 40}
+    print(json.dumps([{"total_count": 2, "jobs": [hosted, pool]}]))
+elif "/actions/runners?" in path:
+    def runner(name, *extra):
+        base = ["self-hosted", "Linux", "X64", "hvo-skymonitor"]
+        if name in os.environ.get("HVO_CAPACITY_DROP_BASE", "").split(","):
+            base.remove("hvo-skymonitor")
+        return {"id": int(name[-1]), "name": name, "status": "online", "busy": False,
+                "labels": [{"name": label} for label in base + list(extra)]}
+    labelled = os.environ["HVO_CAPACITY_LABELLED"].split(",")
+    runners = [runner(f"gh-runner-0{index}", *(["hvo-qualification"]
+                      if f"gh-runner-0{index}" in labelled else [])) for index in range(1, 5)]
+    print(json.dumps([{"total_count": len(runners), "runners": runners}]))
+else:
+    sys.exit(42)
+GH
+chmod +x "$work_root/bin/gh"
+
+run_with_gh() {
+    local scenario="$1"
+    shift
+    : > "$work_root/calls.jsonl"
+    PATH="$work_root/bin:$PATH" HVO_CAPACITY_SCENARIO="$scenario" \
+        HVO_CAPACITY_CALLS="$work_root/calls.jsonl" HVO_RUNNER_CAPACITY_RETRY_DELAY=0 "$@"
+}
+
+run_with_gh ok "$tool" collect --since 2026-10-10 --until 2026-10-11 \
+    --repo example/HVO.SkyMonitor --output "$work_root/input.json" 2>/dev/null
+jq -e '.schema == "hvo-runner-capacity-input-v1" and .runs == 2 and (.jobs | length) == 2 and
+       all(.jobs[]; .runner == "gh-runner-01" and (.labels | index("self-hosted")))' \
+    "$work_root/input.json" >/dev/null || fail 'Collect did not keep only self-hosted jobs per day.'
+grep -Fq '"repos/example/HVO.SkyMonitor/actions/runs?created=2026-10-11&per_page=100"' \
+    "$work_root/calls.jsonl" || fail 'Collect did not split the window by UTC day.'
+if grep -Ev '^\["api", "--paginate", "--slurp", "[^"]+"\]$' "$work_root/calls.jsonl"; then
+    fail 'Collect issued a non-GET or unexpected gh call.'
+fi
+
+for scenario in full-day short error; do
+    rm -f "$work_root/partial.json"
+    case "$scenario" in
+        full-day) reason='cannot prove completeness' ;;
+        short) reason='Incomplete listing' ;;
+        error) reason='Could not read' ;;
+    esac
+    expect_failure "Collect $scenario" "$reason" run_with_gh "$scenario" "$tool" collect \
+        --since 2026-10-10 --until 2026-10-10 --output "$work_root/partial.json"
+    [[ ! -e "$work_root/partial.json" ]] || fail "Collect $scenario left a partial input."
+done
+
+verify() {
+    HVO_CAPACITY_LABELLED="$1" HVO_CAPACITY_DROP_BASE="${2:-}" run_with_gh ok "$tool" verify-labels \
+        --org example --qualification gh-runner-01,gh-runner-02,gh-runner-03 --general gh-runner-04
+}
+verify gh-runner-01,gh-runner-02,gh-runner-03 > "$work_root/labels.json"
+jq -e '.errors == [] and .onlineGeneral == ["gh-runner-04"] and
+       (.runners["gh-runner-01"].labels | index("hvo-qualification"))' \
+    "$work_root/labels.json" >/dev/null || fail 'Correct rollout was not verified.'
+expect_failure 'Missing qualification label' 'gh-runner-03: missing hvo-qualification' \
+    verify gh-runner-01,gh-runner-02
+expect_failure 'Reserve runner labelled' 'gh-runner-04: must stay general' \
+    verify gh-runner-01,gh-runner-02,gh-runner-03,gh-runner-04
+expect_failure 'General label lost' "gh-runner-02: lost general labels ['hvo-skymonitor']" \
+    verify gh-runner-01,gh-runner-02,gh-runner-03 gh-runner-02
+HVO_CAPACITY_LABELLED=gh-runner-01,gh-runner-04 expect_failure 'Unlisted labelled runner' \
+    "unlisted runners carry hvo-qualification: ['gh-runner-04']" run_with_gh ok "$tool" \
+    verify-labels --org example --qualification gh-runner-01 --general gh-runner-02
+expect_failure 'Overlapping sets' 'cannot be both' run_with_gh ok "$tool" verify-labels \
+    --org example --qualification gh-runner-01 --general gh-runner-01
+
+printf 'CI runner capacity tool contracts passed.\n'
