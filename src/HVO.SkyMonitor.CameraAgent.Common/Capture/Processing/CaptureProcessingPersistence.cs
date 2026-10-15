@@ -1012,13 +1012,12 @@ internal sealed class CaptureProcessingPersistence(
                 sourceId);
         var evidenceJson = DurableProcessingProductManifestJson.Serialize(manifest);
 
-        var directoryExisted = Directory.Exists(directory);
         Directory.CreateDirectory(directory);
         RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, directory);
-        if (!directoryExisted)
-        {
-            RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, directory);
-        }
+        // Visibility can be left behind by a failed earlier namespace barrier. Reestablish
+        // the entire owned directory chain before acknowledging an idempotent retry.
+        beforeDirectorySync?.Invoke(directory);
+        RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, directory);
         var existingEvidence = await ValidateExistingMetadataEvidenceAsync(
             payloadPath, sidecarPath, product.Payload, product.ChecksumSha256, evidenceJson, cancellationToken).ConfigureAwait(false);
         if (existingEvidence is not null)
@@ -1030,9 +1029,17 @@ internal sealed class CaptureProcessingPersistence(
         {
             await WriteAtomicallyAsync(storageRoot, payloadPath, product.Payload, beforeDirectorySync, cancellationToken).ConfigureAwait(false);
         }
+        else
+        {
+            RawIngressFileStore.SyncFile(storageRoot, payloadPath);
+        }
         if (!File.Exists(sidecarPath))
         {
             await WriteAtomicallyAsync(storageRoot, sidecarPath, evidenceJson, beforeDirectorySync, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            RawIngressFileStore.SyncFile(storageRoot, sidecarPath);
         }
 
         var typedManifest = manifest as DurableTypedMetadataProductManifestV3;
@@ -1231,12 +1238,13 @@ internal sealed class CaptureProcessingPersistence(
             }
             catch (IOException exception) when (!FileSystemFaultCompatibility.IsContainmentFailure(exception) && File.Exists(destinationPath))
             {
+                RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, destinationPath);
                 var existing = await File.ReadAllBytesAsync(destinationPath, cancellationToken).ConfigureAwait(false);
                 if (!existing.AsSpan().SequenceEqual(content.Span))
                 {
                     throw new InvalidDataException("Existing metadata evidence conflicts with immutable content.");
                 }
-                return;
+                RawIngressFileStore.SyncFile(storageRoot, destinationPath);
             }
             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, destinationPath);
             beforeDirectorySync?.Invoke(Path.GetDirectoryName(destinationPath)!);

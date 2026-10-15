@@ -363,8 +363,16 @@ internal sealed partial class FilesystemObjectStore : IObjectStore, IDisposable
                 {
                     _root.Verify(descriptorPath, "delete");
                     File.Delete(descriptorPath);
-                    BeforeDeleteDirectorySyncForTest?.Invoke(Path.GetDirectoryName(descriptorPath)!);
-                    DurableSync.Directory(Path.GetDirectoryName(descriptorPath)!);
+                }
+                // A previous unlink can be visible even though its directory sync failed.
+                // A missing key stays idempotent without creating a directory, but an existing
+                // key directory must cross the barrier again before deletion is acknowledged.
+                var directory = Path.GetDirectoryName(descriptorPath)!;
+                if (Directory.Exists(directory))
+                {
+                    _root.Verify(directory, "delete");
+                    BeforeDeleteDirectorySyncForTest?.Invoke(directory);
+                    DurableSync.Directory(directory);
                 }
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
