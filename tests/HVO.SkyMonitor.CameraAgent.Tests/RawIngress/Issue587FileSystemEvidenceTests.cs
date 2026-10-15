@@ -16,6 +16,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
 {
     private static readonly JsonSerializerOptions FixtureOptions = new(JsonSerializerDefaults.Web)
     {
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
         Converters = { new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false) }
     };
 
