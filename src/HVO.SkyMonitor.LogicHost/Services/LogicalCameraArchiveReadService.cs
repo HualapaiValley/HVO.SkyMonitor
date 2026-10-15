@@ -28,7 +28,7 @@ internal sealed record CameraArchivePage(IReadOnlyList<CameraArchiveCapture> Ite
 
 internal sealed record CameraCurrentSelection(
     string Status, CameraArchiveCapture? Capture, Guid? ArtifactId, string? ContentPath,
-    string? ChecksumSha256, int ExaminedCaptures, string? NextCursor);
+    string? ChecksumSha256, int ExaminedCaptures, int ExaminedArtifacts, string? NextCursor);
 
 internal interface ILogicalCameraArchiveReadService
 {
@@ -49,6 +49,7 @@ internal sealed class LogicalCameraArchiveReadService(
     ICentralArtifactObjectReader objects) : ILogicalCameraArchiveReadService
 {
     internal const int CurrentCaptureLimit = 5;
+    internal const int CurrentArtifactLimit = 5;
     internal const long MaximumPreviewBytes = 32 * 1024 * 1024;
     private readonly IDataProtector _cursorProtector = protection.CreateProtector("logical-camera-archive-v1");
 
@@ -81,57 +82,89 @@ internal sealed class LogicalCameraArchiveReadService(
             return null;
         var filter = new CameraArchiveFilter();
         var position = Decode(cursor, owner, observatoryId, cameraId, "current", filter);
-        var rows = await Project(Window(owner, observatoryId, cameraId, filter, position, CurrentCaptureLimit + 1))
-            .Take(CurrentCaptureLimit + 1).ToListAsync(cancellationToken).ConfigureAwait(false);
+        var rows = new List<CameraArchiveCapture>(CurrentCaptureLimit + 1);
+        if (position?.Preview is not null)
+        {
+            var anchor = await Project(Captures(owner, observatoryId, cameraId)
+                .Where(frame => frame.Id == position.CaptureId && frame.CapturedAtUtc == position.CapturedAtUtc))
+                .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+            if (anchor is not null) rows.Add(anchor);
+        }
+        var windowSize = CurrentCaptureLimit + 1 - rows.Count;
+        rows.AddRange(await Project(Window(owner, observatoryId, cameraId, filter, position, windowSize))
+            .Take(windowSize).ToListAsync(cancellationToken).ConfigureAwait(false));
         var more = rows.Count > CurrentCaptureLimit;
         if (more) rows.RemoveAt(rows.Count - 1);
         var examined = 0;
+        var examinedArtifacts = 0;
+        async Task<CameraCurrentSelection?> FinishAsync(string status, string? continuation)
+            => await CanReadAsync(owner, observatoryId, cameraId, cancellationToken).ConfigureAwait(false)
+                ? new(status, null, null, null, null, examined, examinedArtifacts, continuation) : null;
         foreach (var capture in rows)
         {
             examined++;
-            // One deterministic retained Preview per capture. Annotation and publication are optional.
-            // SQL eligibility is not a content lease; verify through the existing object reader below.
-            var candidate = await db.CentralArtifacts.AsNoTracking()
+            // Keep capture ordering authoritative while trying bounded, deterministic Preview siblings.
+            var candidatesQuery = db.CentralArtifacts.AsNoTracking()
                 .Where(artifact => artifact.CentralFrameId == capture.CaptureId &&
                     artifact.Role == FrameArtifactRole.Preview &&
                     artifact.ObjectState == CentralArtifactObjectState.Available &&
                     artifact.ReconstructionState == CentralReconstructionState.Complete &&
                     (artifact.MediaType == "image/jpeg" || artifact.MediaType == "image/png") &&
-                    artifact.ByteLength > 0 && artifact.ByteLength <= MaximumPreviewBytes)
-                .OrderByDescending(artifact => artifact.ReceivedAtUtc).ThenByDescending(artifact => artifact.ArtifactId)
-                .Select(artifact => new { artifact.DevicePublicId, artifact.ArtifactId })
-                .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-            if (candidate is null) continue;
-            var lookup = await retrieval.FindAsync(candidate.DevicePublicId, candidate.ArtifactId, principal, null,
-                cancellationToken).ConfigureAwait(false);
-            if (lookup.Status != CentralArtifactLookupStatus.Found || lookup.Artifact is not { } artifact) continue;
-            try
+                    artifact.ByteLength > 0 && artifact.ByteLength <= MaximumPreviewBytes);
+            if (position?.CaptureId == capture.CaptureId && position.Preview is { } preview)
+                candidatesQuery = candidatesQuery.Where(artifact => artifact.ReceivedAtUtc < preview.ReceivedAtUtc ||
+                    artifact.ReceivedAtUtc == preview.ReceivedAtUtc && artifact.ArtifactId.CompareTo(preview.ArtifactId) < 0);
+            var remaining = CurrentArtifactLimit - examinedArtifacts;
+            var candidates = await candidatesQuery.OrderByDescending(artifact => artifact.ReceivedAtUtc)
+                .ThenByDescending(artifact => artifact.ArtifactId)
+                .Select(artifact => new { artifact.DevicePublicId, artifact.ArtifactId, artifact.ReceivedAtUtc })
+                .Take(remaining + 1).ToListAsync(cancellationToken).ConfigureAwait(false);
+            var morePreviews = candidates.Count > remaining;
+            if (morePreviews) candidates.RemoveAt(candidates.Count - 1);
+            foreach (var candidate in candidates)
             {
-                var snapshot = await objects.VerifyAsync(artifact, cancellationToken).ConfigureAwait(false);
-                if (!await objects.IsCurrentGenerationAsync(artifact, snapshot.StorageETag, cancellationToken).ConfigureAwait(false))
+                examinedArtifacts++;
+                var lookup = await retrieval.FindAsync(candidate.DevicePublicId, candidate.ArtifactId, principal, null,
+                    cancellationToken).ConfigureAwait(false);
+                if (lookup.Status != CentralArtifactLookupStatus.Found || lookup.Artifact is not { } artifact) continue;
+                try
+                {
+                    var snapshot = await objects.VerifyAsync(artifact, cancellationToken).ConfigureAwait(false);
+                    if (!await objects.IsCurrentGenerationAsync(artifact, snapshot.StorageETag, cancellationToken).ConfigureAwait(false))
+                        continue;
+                }
+                catch (Exception exception) when (exception is CentralArtifactMissingException or CentralArtifactIntegrityException)
+                {
+                    // Read-only selection does not create another repair/reconciliation authority.
                     continue;
-            }
-            catch (Exception exception) when (exception is CentralArtifactMissingException or CentralArtifactIntegrityException)
-            {
-                // Read-only selection does not create another repair/reconciliation authority.
-                continue;
-            }
-            catch (CentralArtifactStorageException)
-            {
+                }
+                catch (CentralArtifactStorageException)
+                {
+                    return await FinishAsync("dependency-unavailable", cursor).ConfigureAwait(false);
+                }
+                if (!await db.CentralArtifacts.AsNoTracking().AnyAsync(item => item.Id == artifact.Id &&
+                    item.ObjectState == CentralArtifactObjectState.Available &&
+                    item.ReconstructionState == CentralReconstructionState.Complete, cancellationToken).ConfigureAwait(false)) continue;
                 if (!await CanReadAsync(owner, observatoryId, cameraId, cancellationToken).ConfigureAwait(false)) return null;
-                return new("dependency-unavailable", null, null, null, null, examined, cursor);
+                return new("found", capture, artifact.ArtifactId,
+                    FormattableString.Invariant($"/api/v1.0/devices/{artifact.DevicePublicId:D}/artifacts/{artifact.ArtifactId:D}/content"),
+                    artifact.ChecksumSha256, examined, examinedArtifacts, null);
             }
-            if (!await CanReadAsync(owner, observatoryId, cameraId, cancellationToken).ConfigureAwait(false)) return null;
-            if (!await db.CentralArtifacts.AsNoTracking().AnyAsync(item => item.Id == artifact.Id &&
-                item.ObjectState == CentralArtifactObjectState.Available &&
-                item.ReconstructionState == CentralReconstructionState.Complete, cancellationToken).ConfigureAwait(false)) continue;
-            return new("found", capture, artifact.ArtifactId,
-                FormattableString.Invariant($"/api/v1.0/devices/{artifact.DevicePublicId:D}/artifacts/{artifact.ArtifactId:D}/content"),
-                artifact.ChecksumSha256, examined, null);
+            if (morePreviews)
+            {
+                var last = candidates[^1];
+                return await FinishAsync("continue", Encode(capture, owner, observatoryId, cameraId, "current", filter,
+                    new(last.ReceivedAtUtc, last.ArtifactId))).ConfigureAwait(false);
+            }
+            if (examinedArtifacts == CurrentArtifactLimit)
+            {
+                var moreCaptures = more || examined < rows.Count;
+                return await FinishAsync(moreCaptures ? "continue" : "no-result", moreCaptures
+                    ? Encode(capture, owner, observatoryId, cameraId, "current", filter) : null).ConfigureAwait(false);
+            }
         }
-        if (!await CanReadAsync(owner, observatoryId, cameraId, cancellationToken).ConfigureAwait(false)) return null;
-        return new(more ? "continue" : "no-result", null, null, null, null, examined,
-            more ? Encode(rows[^1], owner, observatoryId, cameraId, "current", filter) : null);
+        return await FinishAsync(more ? "continue" : "no-result",
+            more ? Encode(rows[^1], owner, observatoryId, cameraId, "current", filter) : null).ConfigureAwait(false);
     }
 
     public async Task<OperationsCaptureDetail?> GetCaptureAsync(
@@ -284,9 +317,9 @@ internal sealed class LogicalCameraArchiveReadService(
         return filter with { FromUtc = filter.FromUtc?.ToUniversalTime(), UntilUtc = filter.UntilUtc?.ToUniversalTime(), Text = text };
     }
 
-    private string Encode(CameraArchiveCapture last, string owner, Guid observatory, Guid camera, string purpose, CameraArchiveFilter filter)
+    private string Encode(CameraArchiveCapture last, string owner, Guid observatory, Guid camera, string purpose, CameraArchiveFilter filter, PreviewPosition? preview = null)
         => _cursorProtector.Protect(JsonSerializer.Serialize(new ArchiveCursor(owner, observatory, camera, purpose,
-            filter, last.CapturedAtUtc, last.CaptureId)));
+            filter, last.CapturedAtUtc, last.CaptureId, preview)));
 
     private ArchiveCursor? Decode(string? cursor, string owner, Guid observatory, Guid camera, string purpose, CameraArchiveFilter filter)
     {
@@ -296,7 +329,8 @@ internal sealed class LogicalCameraArchiveReadService(
             if (cursor.Length > 4096) throw new FormatException();
             var value = JsonSerializer.Deserialize<ArchiveCursor>(_cursorProtector.Unprotect(cursor));
             if (value is null || value.Owner != owner || value.Observatory != observatory || value.Camera != camera ||
-                value.Purpose != purpose || value.Filter != filter || value.CaptureId == Guid.Empty) throw new FormatException();
+                value.Purpose != purpose || value.Filter != filter || value.CaptureId == Guid.Empty ||
+                value.Preview is { } preview && (purpose != "current" || preview.ArtifactId == Guid.Empty)) throw new FormatException();
             return value;
         }
         catch (Exception exception) when (exception is CryptographicException or JsonException or FormatException)
@@ -306,5 +340,7 @@ internal sealed class LogicalCameraArchiveReadService(
     }
 
     private sealed record ArchiveCursor(string Owner, Guid Observatory, Guid Camera, string Purpose,
-        CameraArchiveFilter Filter, DateTimeOffset CapturedAtUtc, Guid CaptureId);
+        CameraArchiveFilter Filter, DateTimeOffset CapturedAtUtc, Guid CaptureId, PreviewPosition? Preview = null);
+
+    private sealed record PreviewPosition(DateTimeOffset ReceivedAtUtc, Guid ArtifactId);
 }

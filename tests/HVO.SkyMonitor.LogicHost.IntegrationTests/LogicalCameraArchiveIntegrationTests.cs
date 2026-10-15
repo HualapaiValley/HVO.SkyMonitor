@@ -1,3 +1,4 @@
+using System.Data.SqlTypes;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -114,6 +115,83 @@ public sealed class LogicalCameraArchiveIntegrationTests
                 { await db.ObservatoryMemberships.Where(item => item.ObservatoryId == data.Observatory && item.UserId == data.Owner).ExecuteDeleteAsync().ConfigureAwait(false); }));
         (await revoking.SelectCurrentAsync(principal, data.Observatory, data.Camera, page.NextCursor).ConfigureAwait(false)).Should().BeNull();
         (await service.ListCapturesAsync(principal, data.Observatory, data.Camera, new(), 50, null).ConfigureAwait(false)).Items.Should().BeEmpty();
+    }
+
+    [TestMethod]
+    public async Task SqlServer_CurrentRetainsEligibleSiblingsBeforeAdvancingCapture()
+    {
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+        var db = services.GetRequiredService<ApplicationDbContext>();
+        var data = await SeedAsync(services, 2).ConfigureAwait(false);
+        _ = await AddPreviewAsync(services, data.Frames[1], put: true).ConfigureAwait(false);
+        var usable = await AddPreviewAsync(services, data.Frames[0], put: true).ConfigureAwait(false);
+        var preferred = await AddPreviewAsync(services, data.Frames[0], put: false).ConfigureAwait(false);
+        var received = DateTimeOffset.UtcNow;
+        usable.ReceivedAtUtc = received;
+        preferred.ReceivedAtUtc = received.AddSeconds(1);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        var service = services.GetRequiredService<ILogicalCameraArchiveReadService>();
+        var principal = Principal(data.Owner);
+        var selected = await service.SelectCurrentAsync(principal, data.Observatory, data.Camera, null).ConfigureAwait(false);
+        selected!.Status.Should().Be("found");
+        selected.Capture!.CaptureId.Should().Be(data.Frames[0].Id);
+        selected.ArtifactId.Should().Be(usable.ArtifactId);
+        // A same-length corrupt object is also ineligible, without hiding a usable sibling.
+        var corrupt = Preview.ToArray();
+        corrupt[0] ^= 255;
+        using (var stream = new MemoryStream(corrupt))
+            await services.GetRequiredService<IObjectStore>().PutAsync("skymonitor-artifacts", Key(preferred), stream,
+                corrupt.Length, "image/png", CancellationToken.None).ConfigureAwait(false);
+        selected = await service.SelectCurrentAsync(principal, data.Observatory, data.Camera, null).ConfigureAwait(false);
+        selected!.Capture!.CaptureId.Should().Be(data.Frames[0].Id);
+        selected.ArtifactId.Should().Be(usable.ArtifactId);
+        var tied = new[] { usable, preferred }.OrderBy(item => new SqlGuid(item.ArtifactId)).ToArray();
+        foreach (var item in tied)
+        {
+            item.ReceivedAtUtc = received;
+            await services.GetRequiredService<IObjectStore>().DeleteAsync("skymonitor-artifacts", Key(item), CancellationToken.None).ConfigureAwait(false);
+        }
+        usable = tied[0];
+        await PutAsync(services, usable).ConfigureAwait(false);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        selected = await service.SelectCurrentAsync(principal, data.Observatory, data.Camera, null).ConfigureAwait(false);
+        selected!.ArtifactId.Should().Be(usable.ArtifactId);
+        selected.ExaminedArtifacts.Should().Be(2);
+        // More siblings than the per-request budget must resume within this capture.
+        for (var index = 0; index < 6; index++)
+        {
+            var missing = await AddPreviewAsync(services, data.Frames[0], put: false).ConfigureAwait(false);
+            missing.ReceivedAtUtc = received.AddSeconds(10 + index);
+        }
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        var page = await service.SelectCurrentAsync(principal, data.Observatory, data.Camera, null).ConfigureAwait(false);
+        page!.Status.Should().Be("continue");
+        page.ExaminedCaptures.Should().Be(1);
+        page.ExaminedArtifacts.Should().Be(LogicalCameraArchiveReadService.CurrentArtifactLimit);
+        page.Capture.Should().BeNull();
+        page.ArtifactId.Should().BeNull();
+        page.NextCursor.Should().NotBeNull();
+        selected = await service.SelectCurrentAsync(principal, data.Observatory, data.Camera, page.NextCursor).ConfigureAwait(false);
+        selected!.Status.Should().Be("found");
+        selected.Capture!.CaptureId.Should().Be(data.Frames[0].Id);
+        selected.ArtifactId.Should().Be(usable.ArtifactId);
+        selected.ExaminedArtifacts.Should().Be(3);
+        var other = await SeedAsync(services, 1).ConfigureAwait(false);
+        Func<Task> changedScope = () => service.SelectCurrentAsync(principal, other.Observatory, other.Camera, page.NextCursor);
+        await changedScope.Should().ThrowAsync<ArgumentException>().ConfigureAwait(false);
+        Func<Task> changedPurpose = () => service.ListCapturesAsync(principal, data.Observatory, data.Camera, new(), 50, page.NextCursor);
+        await changedPurpose.Should().ThrowAsync<ArgumentException>().ConfigureAwait(false);
+        await db.ObservatoryMemberships.Where(item => item.ObservatoryId == data.Observatory && item.UserId == data.Owner)
+            .ExecuteDeleteAsync().ConfigureAwait(false);
+        (await service.SelectCurrentAsync(principal, data.Observatory, data.Camera, page.NextCursor).ConfigureAwait(false)).Should().BeNull();
+        // Exhausting exactly the budget is not evidence of another page.
+        for (var index = 0; index < LogicalCameraArchiveReadService.CurrentArtifactLimit; index++)
+            _ = await AddPreviewAsync(services, other.Frames[0], put: false).ConfigureAwait(false);
+        var exhausted = await service.SelectCurrentAsync(principal, other.Observatory, other.Camera, null).ConfigureAwait(false);
+        exhausted!.Status.Should().Be("no-result");
+        exhausted.ExaminedArtifacts.Should().Be(LogicalCameraArchiveReadService.CurrentArtifactLimit);
+        exhausted.NextCursor.Should().BeNull();
     }
 
     [TestMethod]

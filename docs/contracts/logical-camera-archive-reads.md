@@ -72,14 +72,18 @@ for newly arriving/reconciled records before the current boundary.
 
 One request examines at most five captures, with one extra scalar lookahead to
 report continuation. It does not automatically drain history. Within each capture,
-the selected presentation candidate is the latest SQL-eligible Preview by
+SQL-eligible Preview siblings are examined by
 `(ReceivedAtUtc, ArtifactId)` descending. Capture ordering never uses receipt,
 heartbeat, processing completion or publication time. The candidate must be a
 complete, available retained JPEG/PNG Preview of 1..32 MiB. Annotation, manifest
 and public release are optional. Raw, annotated-only, structured products and
 non-browser encoded preview formats remain archive metadata; this service does
-not add a compositor or decoder. It does not try older variants of the same
-capture when the selected candidate's bytes fail verification.
+not add a compositor or decoder. Missing or corrupt preferred variants do not hide
+usable siblings. At most five
+artifact candidates are attempted across the whole request, with one scalar
+lookahead. If siblings remain, a protected continuation resumes within that
+capture before advancing to older captures. Receipt-time/identity ordering also
+resolves equal artifact timestamps deterministically.
 
 The existing artifact retrieval authority and object reader verify exact length,
 SHA-256 and current storage generation. At most five payloads (160 MiB) are read,
@@ -92,8 +96,10 @@ archive or substitute image. Current persisted availability and membership are
 rechecked before returning a selection.
 
 Results are `found`, `continue`, `no-result` or `dependency-unavailable`, with the
-number of captures examined. `continue` includes the opaque next boundary and
-means only that this window found no eligible presentation. `no-result` means the
+numbers of captures and artifact candidates examined. `continue` includes the
+opaque next boundary and
+means only that this window found no eligible presentation; it can continue within
+a capture or after an exhausted capture. `no-result` means the
 window exhausted the history visible to this request. An outage retains the input
 continuation for an explicit retry. `found` returns exact capture/Preview identity,
 checksum and protected content path. It is a point-in-time observation, not a
@@ -109,11 +115,15 @@ ordering, interval/identity semantics, page bounds, scope/filter/actor/purpose
 substitution, same-time IDs, replacement history, credential restriction,
 Viewer/Manager/Owner, B-only/both/removed/unauthenticated users, exact metadata,
 late/missing bytes, state eligibility, outage and revocation during verification.
+A sibling regression covers missing/corrupt preferred variants, equal artifact
+timestamps, within-capture continuation, exact-budget exhaustion and revoked
+membership between windows.
 Existing retrieval/presentation suites retain image, raw-grant, checksum, layer,
 lineage and authorization boundary ownership.
 
 The Manual `LogicalCameraArchivePerformanceTests` uses W3M: 1,000/10,000 captures,
 two installations, two expired previews and one physically retained Preview;
+the sibling-continuation scenario adds six missing Preview records;
 concurrency 1, five warmups and thirty measured service/serialization requests per
 scenario, including an authentic continuation in the older half of history.
 It records exact dataset identities, source revision, SQL commands,

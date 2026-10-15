@@ -49,6 +49,7 @@ public sealed class LogicalCameraArchivePerformanceTests
             var olderPage = await service.ListCapturesAsync(principal, dataset.Observatory, dataset.Camera,
                 olderFilter, 50, null).ConfigureAwait(false);
             olderPage.NextCursor.Should().NotBeNull();
+            string? siblingCursor = null;
             var requests = new Dictionary<string, Func<Task<object>>>
             {
                 ["nearest-baseline-unfiltered"] = async () => await old.ListCapturesAsync(dataset.Owner, dataset.Observatory, dataset.Camera, 50, null).ConfigureAwait(false),
@@ -58,11 +59,27 @@ public sealed class LogicalCameraArchivePerformanceTests
                 ["archive-product-state"] = async () => await service.ListCapturesAsync(principal, dataset.Observatory, dataset.Camera,
                     new(Product: FrameArtifactRole.Preview, ObjectState: CentralArtifactObjectState.Expired), 50, null).ConfigureAwait(false),
                 ["archive-exact-missing"] = async () => await service.ListCapturesAsync(principal, dataset.Observatory, dataset.Camera, new(Text: "999999999"), 50, null).ConfigureAwait(false),
-                ["current-verified"] = async () => (await service.SelectCurrentAsync(principal, dataset.Observatory, dataset.Camera, null).ConfigureAwait(false))!
+                ["current-verified"] = async () => (await service.SelectCurrentAsync(principal, dataset.Observatory, dataset.Camera, null).ConfigureAwait(false))!,
+                ["current-siblings-continuation"] = async () => (await service.SelectCurrentAsync(principal, dataset.Observatory, dataset.Camera, siblingCursor).ConfigureAwait(false))!
             };
             foreach (var (name, request) in requests)
             {
                 capture.Enabled = false;
+                if (name == "current-siblings-continuation")
+                {
+                    var received = DateTimeOffset.UtcNow;
+                    for (var index = 0; index < 6; index++)
+                    {
+                        var missing = await LogicalCameraArchiveIntegrationTests.AddPreviewAsync(services, dataset.Frames[0], false).ConfigureAwait(false);
+                        missing.ReceivedAtUtc = received.AddSeconds(index + 1);
+                    }
+                    await seedDb.SaveChangesAsync().ConfigureAwait(false);
+                    var firstWindow = await service.SelectCurrentAsync(principal, dataset.Observatory, dataset.Camera, null).ConfigureAwait(false);
+                    firstWindow!.Status.Should().Be("continue");
+                    firstWindow.ExaminedArtifacts.Should().Be(5);
+                    siblingCursor = firstWindow.NextCursor;
+                    siblingCursor.Should().NotBeNull();
+                }
                 for (var warm = 0; warm < 5; warm++) _ = await request().ConfigureAwait(false);
                 var times = new List<double>();
                 var allocations = GC.GetTotalAllocatedBytes(true);
@@ -84,10 +101,15 @@ public sealed class LogicalCameraArchivePerformanceTests
                 capture.Enabled = true;
                 var observed = await request().ConfigureAwait(false);
                 capture.Enabled = false;
-                capture.Commands.Count.Should().BeLessThanOrEqualTo(name == "current-verified" ? 8 : 3);
+                capture.Commands.Count.Should().BeLessThanOrEqualTo(name switch
+                {
+                    "current-verified" => 8,
+                    "current-siblings-continuation" => 10,
+                    _ => 3
+                });
                 var plans = new List<Plan>();
                 foreach (var command in capture.Commands) plans.Add(await ExplainAsync(connectionString, command).ConfigureAwait(false));
-                plans.Max(item => item.ResultRows).Should().BeLessThanOrEqualTo(51);
+                plans.Max(item => item.ResultRows).Should().BeLessThanOrEqualTo(name.StartsWith("current-", StringComparison.Ordinal) ? 6 : 51);
                 plans.SelectMany(item => item.Indexes).Should().Contain("IX_CentralFrames_LogicalCameraInstallationId_CapturedAtUtc_Id");
                 if (observed is CameraArchivePage page)
                 {
@@ -105,6 +127,7 @@ public sealed class LogicalCameraArchivePerformanceTests
                     current.Status.Should().Be("found");
                     current.Capture!.CaptureId.Should().Be(dataset.Frames[0].Id);
                     current.ExaminedCaptures.Should().Be(1);
+                    current.ExaminedArtifacts.Should().Be(name == "current-siblings-continuation" ? 2 : 1);
                 }
                 times.Sort();
                 evidence.Add(new
@@ -124,7 +147,13 @@ public sealed class LogicalCameraArchivePerformanceTests
                     ResponseBytes = bytes,
                     SqlCommands = capture.Commands.Count,
                     Plans = plans,
-                    Dataset = new { dataset.Observatory, dataset.Camera, FirstCapture = dataset.Frames[0].Id }
+                    Dataset = new
+                    {
+                        dataset.Observatory,
+                        dataset.Camera,
+                        FirstCapture = dataset.Frames[0].Id,
+                        AdditionalMissingPreviews = name == "current-siblings-continuation" ? 6 : 0
+                    }
                 });
             }
         }
@@ -134,7 +163,7 @@ public sealed class LogicalCameraArchivePerformanceTests
         {
             Source = Environment.GetEnvironmentVariable("HVO_ISSUE1236_REVISION"),
             Utc = DateTimeOffset.UtcNow,
-            Workload = "W3M: 1K/10K metadata captures, two retained installations, two expired and one present Preview",
+            Workload = "W3M: 1K/10K metadata captures, two retained installations, two expired and one present Preview; continuation scenario adds six missing Preview siblings",
             Method = "5 warmup + 30 sequential end-to-end service/serialization operations; SQL plans from replay of exact parameterized production commands; process-wide allocations include fixture background work",
             Browser = "N/A: backend prerequisite, no UI changes",
             Results = evidence
