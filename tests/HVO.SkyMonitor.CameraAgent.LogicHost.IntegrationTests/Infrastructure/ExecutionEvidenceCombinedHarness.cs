@@ -6,6 +6,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -32,7 +33,11 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 /// </summary>
 internal sealed class ExecutionEvidenceCombinedHarness : IAsyncDisposable
 {
-    private static readonly JsonSerializerOptions DiagnosticJsonOptions = new() { WriteIndented = true };
+    private static readonly JsonSerializerOptions DiagnosticJsonOptions = new()
+    {
+        WriteIndented = true,
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals
+    };
     private readonly EvidenceHttpClientFactory _clients;
     private readonly IOptions<CameraAgentHostOptions> _options;
     private readonly ExecutionEvidenceExportTelemetry _telemetry;
@@ -239,6 +244,10 @@ internal sealed class ExecutionEvidenceCombinedHarness : IAsyncDisposable
                 rows[name] = items;
             }
             await using var backupStream = File.OpenRead(backupPath);
+            var journalBackupSha256 = Convert.ToHexString(await SHA256.HashDataAsync(backupStream).ConfigureAwait(false));
+            await File.WriteAllTextAsync(Path.Combine(directory, "durable-snapshot.json"),
+                JsonSerializer.Serialize(new { journalPath, journalBackupSha256, rows }, DiagnosticJsonOptions))
+                .ConfigureAwait(false);
             var snapshot = new
             {
                 observedAtUtc = DateTimeOffset.UtcNow,
@@ -260,7 +269,7 @@ internal sealed class ExecutionEvidenceCombinedHarness : IAsyncDisposable
                 lanes = Agent.Services.GetRequiredService<CaptureLaneState>().Snapshot,
                 ingress = Agent.Services.GetRequiredService<RawIngressState>().Snapshot,
                 captureTelemetry = Agent.Services.GetRequiredService<ICaptureTelemetryProvider>().GetSnapshot(),
-                journalBackupSha256 = Convert.ToHexString(await SHA256.HashDataAsync(backupStream).ConfigureAwait(false)),
+                journalBackupSha256,
                 rows
             };
             await File.WriteAllTextAsync(Path.Combine(directory, "snapshot.json"),
