@@ -27,6 +27,8 @@ public sealed partial class RawCaptureIngressPerformanceTests
     {
         var mode = Environment.GetEnvironmentVariable("HVO_ISSUE587_MODE");
         if (mode is not ("fixture" or "measure")) Assert.Inconclusive("Set HVO_ISSUE587_MODE=fixture|measure with isolated fixture/output roots.");
+        var selectedStage = Environment.GetEnvironmentVariable("HVO_ISSUE587_STAGE") ?? "all";
+        Assert.IsTrue(selectedStage is "all" or "derivative", "Only all stages or isolated derivative diagnosis is supported.");
         var fixtureRoot = RequiredEvidenceDirectory("HVO_ISSUE587_FIXTURE");
         var output = RequiredEvidenceDirectory("HVO_ISSUE587_OUTPUT");
         Directory.CreateDirectory(output);
@@ -60,28 +62,32 @@ public sealed partial class RawCaptureIngressPerformanceTests
         var stages = new Dictionary<string, object>(StringComparer.Ordinal);
         try
         {
-            var io = ReadIssue587Io();
-            var w2 = await MeasureW2Async(Path.Combine(work, "w2"), frozenInput, configurationFromFixture, clock).ConfigureAwait(false);
-            stages.Add("w2", new { Measurement = w2, IoDelta = IoDelta(io), Hashes = await HashTreeAsync(Path.Combine(work, "w2"), excludeSqlite: true).ConfigureAwait(false) });
-            io = ReadIssue587Io();
-            var w3m = await MeasureW3MetadataAsync(Path.Combine(work, "w3m"), frozenInput, configurationFromFixture).ConfigureAwait(false);
-            stages.Add("w3m", new { Measurement = w3m, IoDelta = IoDelta(io) });
-            io = ReadIssue587Io();
-            var w3p = await MeasureW3PayloadAsync(Path.Combine(work, "w3p"), frozenInput, configurationFromFixture, clock).ConfigureAwait(false);
-            stages.Add("w3p", new { Measurement = w3p, IoDelta = IoDelta(io), Hashes = await HashTreeAsync(Path.Combine(work, "w3p"), excludeSqlite: true).ConfigureAwait(false) });
-            var generatedSidecar = await File.ReadAllBytesAsync(Directory.EnumerateFiles(Path.Combine(work, "w2", "frames"), "*.json", SearchOption.AllDirectories).Order(StringComparer.Ordinal).First()).ConfigureAwait(false);
-            var publicationFixture = Path.Combine(fixtureRoot, "publication-sidecar.json");
-            if (!File.Exists(publicationFixture))
+            if (selectedStage == "all")
             {
-                Assert.AreEqual("71e3656aaf6a356e75c8481435bfef55a84c78fd", Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"));
-                await File.WriteAllBytesAsync(publicationFixture, generatedSidecar).ConfigureAwait(false);
+                var io = ReadIssue587Io();
+                var w2 = await MeasureW2Async(Path.Combine(work, "w2"), frozenInput, configurationFromFixture, clock).ConfigureAwait(false);
+                stages.Add("w2", new { Measurement = w2, IoDelta = IoDelta(io), Hashes = await HashTreeAsync(Path.Combine(work, "w2"), excludeSqlite: true).ConfigureAwait(false) });
+                io = ReadIssue587Io();
+                var w3m = await MeasureW3MetadataAsync(Path.Combine(work, "w3m"), frozenInput, configurationFromFixture).ConfigureAwait(false);
+                stages.Add("w3m", new { Measurement = w3m, IoDelta = IoDelta(io) });
+                io = ReadIssue587Io();
+                var w3p = await MeasureW3PayloadAsync(Path.Combine(work, "w3p"), frozenInput, configurationFromFixture, clock).ConfigureAwait(false);
+                stages.Add("w3p", new { Measurement = w3p, IoDelta = IoDelta(io), Hashes = await HashTreeAsync(Path.Combine(work, "w3p"), excludeSqlite: true).ConfigureAwait(false) });
+                var generatedSidecar = await File.ReadAllBytesAsync(Directory.EnumerateFiles(Path.Combine(work, "w2", "frames"), "*.json", SearchOption.AllDirectories).Order(StringComparer.Ordinal).First()).ConfigureAwait(false);
+                var publicationFixture = Path.Combine(fixtureRoot, "publication-sidecar.json");
+                if (!File.Exists(publicationFixture))
+                {
+                    Assert.AreEqual("71e3656aaf6a356e75c8481435bfef55a84c78fd", Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"));
+                    await File.WriteAllBytesAsync(publicationFixture, generatedSidecar).ConfigureAwait(false);
+                }
+                var frozenSidecar = await File.ReadAllBytesAsync(publicationFixture).ConfigureAwait(false);
+                CollectionAssert.AreEqual(frozenSidecar, generatedSidecar, "Publication isolation requires exact baseline sidecar bytes.");
+                stages.Add("publication", await MeasurePublicationAsync(Path.Combine(work, "publication"), frozenInput, frozenSidecar).ConfigureAwait(false));
             }
-            var frozenSidecar = await File.ReadAllBytesAsync(publicationFixture).ConfigureAwait(false);
-            CollectionAssert.AreEqual(frozenSidecar, generatedSidecar, "Publication isolation requires exact baseline sidecar bytes.");
-            stages.Add("publication", await MeasurePublicationAsync(Path.Combine(work, "publication"), frozenInput, frozenSidecar).ConfigureAwait(false));
             stages.Add("derivative", await MeasureDerivativeAsync(Path.Combine(work, "derivative"), frozenInput, configurationFromFixture).ConfigureAwait(false));
             await SaveFixtureJsonAsync(output, "evidence", new
             {
+                SelectedStage = selectedStage,
                 ProductionRevision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
                 FixtureHashes = await HashTreeAsync(fixtureRoot).ConfigureAwait(false),
                 HarnessSha256 = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(Path.Combine(GetRepositoryRoot(), "tests/HVO.SkyMonitor.CameraAgent.Tests/RawIngress/Issue587FileSystemEvidenceTests.cs")).ConfigureAwait(false))),
