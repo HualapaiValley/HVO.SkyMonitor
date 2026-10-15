@@ -123,6 +123,43 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         Assert.AreEqual(4, (await FeedbackAsync(supplied).ConfigureAwait(false)).Facts.Length);
         using var corrected = await PostAsync(client, device, correction).ConfigureAwait(false);
         Assert.AreEqual(4, (await FeedbackAsync(corrected).ConfigureAwait(false)).ContiguousThroughSequence);
+
+        // A stricter receiver must bound the missing ranges themselves: the shared producer helper's
+        // MaximumUnits is 256 and its replay path does not apply the negotiated normal-batch clamp.
+        foreach (var (sequence, expectedTruncated) in new[] { (65L, false), (66L, true), (long.MaxValue, true) })
+        {
+            var wideDevice = await SeedAsync().ConfigureAwait(false);
+            var highRevision = GraphExecutionEvidenceJson.Seal(
+                Reorigin(await FixtureAsync("revision-local").ConfigureAwait(false), wideDevice) with { OriginSequence = sequence });
+            using var high = await PostAsync(client, wideDevice, highRevision).ConfigureAwait(false);
+            var gap = await FeedbackAsync(high).ConfigureAwait(false);
+            Assert.AreEqual(0L, gap.ContiguousThroughSequence);
+            Assert.AreEqual(1, gap.MissingRanges.Length);
+            Assert.AreEqual(1L, gap.MissingRanges[0].FromSequence);
+            Assert.AreEqual(64L, gap.MissingRanges[0].ToSequence);
+            Assert.AreEqual(expectedTruncated, gap.MissingRangesTruncated);
+            var resync = GraphExecutionEvidenceJson.CreateResyncRequest(gap);
+            Assert.IsNotNull(resync);
+            Assert.AreEqual(64L, resync.Ranges.Sum(range => range.ToSequence - range.FromSequence + 1));
+        }
+
+        var sparseDevice = await SeedAsync().ConfigureAwait(false);
+        var sparseRevision = Reorigin(await FixtureAsync("revision-local").ConfigureAwait(false), sparseDevice);
+        foreach (var sequence in new[] { 1L, 34L, 67L, 100L })
+        {
+            var unit = GraphExecutionEvidenceJson.Seal(sparseRevision with { OriginSequence = sequence, EvidenceId = Guid.NewGuid() });
+            using var response = await PostAsync(client, sparseDevice, unit).ConfigureAwait(false);
+            var feedback = await FeedbackAsync(response).ConfigureAwait(false);
+            if (sequence != 100) { continue; }
+            Assert.AreEqual(1L, feedback.ContiguousThroughSequence);
+            Assert.AreEqual(2, feedback.MissingRanges.Length);
+            Assert.AreEqual(2L, feedback.MissingRanges[0].FromSequence);
+            Assert.AreEqual(33L, feedback.MissingRanges[0].ToSequence);
+            Assert.AreEqual(35L, feedback.MissingRanges[1].FromSequence);
+            Assert.AreEqual(66L, feedback.MissingRanges[1].ToSequence);
+            Assert.AreEqual(64L, feedback.MissingRanges.Sum(range => range.ToSequence - range.FromSequence + 1));
+            Assert.IsTrue(feedback.MissingRangesTruncated, "A later gap must stay visible as truncation when the first two consume 64 units.");
+        }
     }
 
     [TestMethod]
