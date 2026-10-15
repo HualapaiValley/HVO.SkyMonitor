@@ -2,9 +2,11 @@
 
 `hvo-cameraagent-execution-evidence-v1` is the transport-neutral, versioned
 contract a completed CameraAgent uses to expose its immutable graph revisions
-and graph executions to a future LogicHost receiver. It is a vocabulary and a
+and graph executions to LogicHost. It is a vocabulary and a
 set of rules, not a sender or a receiver: issue #536 defines it, #537 adds the
-CameraAgent durable exporter, and `RM-018` adds the LogicHost import half.
+CameraAgent durable exporter, and #538 adds the LogicHost import half. See the
+[LogicHost import runbook](../runbooks/logichost-execution-evidence.md) for
+authorization, receipt, reconciliation, and bounded read operations.
 
 The contract lives in `src/HVO.SkyMonitor.Processing`
 (`GraphExecutionEvidenceContracts.cs` and `GraphExecutionEvidenceJson.cs`), so
@@ -49,7 +51,7 @@ vocabulary as the bodies it carries.
 | Identity | Member | Notes |
 | --- | --- | --- |
 | Origin installation | `origin.originInstallationId` | The CameraAgent installation. |
-| Agent instance | `origin.agentInstanceId` | Matches the fleet heartbeat identity. |
+| Agent instance | `origin.agentInstanceId` | Exporter-local identity; the current default provider derives it from the configured agent ID. LogicHost explicitly binds it to the central registration; it is not the fleet heartbeat's centrally issued device-public ID. |
 | Boot session | `origin.bootSessionId` | Distinguishes restarts. |
 | Observatory | `origin.observatoryId` | Optional; absent for an unregistered agent. |
 | Logical camera installation | `origin.logicalCameraInstallationId` | Optional. |

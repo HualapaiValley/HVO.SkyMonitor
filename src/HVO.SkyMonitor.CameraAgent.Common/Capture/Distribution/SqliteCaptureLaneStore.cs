@@ -606,10 +606,13 @@ internal sealed class SqliteCaptureLaneStore(
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        var executionColumns = _hasExecutionSchema
+        // Secondary lanes share the raw capture, but only standard work owns its live graph execution.
+        var includeExecution = _hasExecutionSchema &&
+            string.Equals(lane.Name, "standard", StringComparison.Ordinal);
+        var executionColumns = includeExecution
             ? ", e.execution_id, e.graph_revision_id, e.local_plan_identity_sha256, e.allow_automatic_publication, e.accepted_unix_ms, e.deadline_unix_ms, e.started_unix_ms"
             : ", NULL, NULL, NULL, NULL, NULL, NULL, NULL";
-        var executionJoin = _hasExecutionSchema
+        var executionJoin = includeExecution
             ? "LEFT JOIN processing_executions e ON e.capture_id = r.capture_id AND e.execution_class = 'Live'"
             : string.Empty;
         var orderedSql = $"""

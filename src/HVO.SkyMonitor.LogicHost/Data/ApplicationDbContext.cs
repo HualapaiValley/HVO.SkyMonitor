@@ -143,6 +143,7 @@ public sealed class ApplicationDbContext(DbContextOptions<ApplicationDbContext> 
         builder.ApplyConfiguration(new DeviceRegistrationConfiguration());
         builder.ApplyConfiguration(new DeviceRigProfileConfiguration());
         DeviceFleetConfiguration.Configure(builder);
+        ImportedExecutionEvidenceConfiguration.Configure(builder);
         builder.ApplyConfiguration(new CentralFrameConfiguration());
         builder.ApplyConfiguration(new CentralArtifactConfiguration());
         builder.ApplyConfiguration(new CentralArtifactDownloadAuthorizationConfiguration());
