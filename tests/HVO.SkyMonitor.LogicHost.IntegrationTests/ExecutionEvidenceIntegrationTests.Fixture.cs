@@ -109,18 +109,21 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         var assignment = revision.Assignment!;
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        db.CentralProcessingGraphRevisions.Add(new CentralProcessingGraphRevision
+        if (!await db.CentralProcessingGraphRevisions.AnyAsync(r => r.Id == assignment.CatalogRevisionId).ConfigureAwait(false))
         {
-            Id = assignment.CatalogRevisionId,
-            Name = $"Evidence fixture {assignment.CatalogRevisionId:N}",
-            Revision = "fixture-1",
-            DefinitionJson = revision.CanonicalDefinition.GetRawText(),
-            DefinitionIdentitySha256 = revision.DefinitionIdentitySha256,
-            PortablePlanIdentitySha256 = revision.SharedPlanIdentitySha256,
-            EdgePlanIdentitySha256 = revision.SharedPlanIdentitySha256,
-            CreatedAtUtc = Epoch,
-            CreatedByUserId = device.OwnerId
-        });
+            db.CentralProcessingGraphRevisions.Add(new CentralProcessingGraphRevision
+            {
+                Id = assignment.CatalogRevisionId,
+                Name = $"Evidence fixture {assignment.CatalogRevisionId:N}",
+                Revision = "fixture-1",
+                DefinitionJson = revision.CanonicalDefinition.GetRawText(),
+                DefinitionIdentitySha256 = revision.DefinitionIdentitySha256,
+                PortablePlanIdentitySha256 = revision.SharedPlanIdentitySha256,
+                EdgePlanIdentitySha256 = revision.SharedPlanIdentitySha256,
+                CreatedAtUtc = Epoch,
+                CreatedByUserId = device.OwnerId
+            });
+        }
         db.CentralProcessingGraphAssignments.Add(new CentralProcessingGraphAssignment
         {
             Id = assignment.AssignmentId,
@@ -170,7 +173,6 @@ public sealed partial class ExecutionEvidenceIntegrationTests
             {
                 ProposalId = Guid.NewGuid(),
                 AssignmentId = Guid.NewGuid(),
-                CatalogRevisionId = Guid.NewGuid(),
                 RegistrationId = authority.RegistrationId,
                 LogicalCameraInstallationId = authority.InstallationId,
                 InstallationPublicId = authority.DevicePublicId
