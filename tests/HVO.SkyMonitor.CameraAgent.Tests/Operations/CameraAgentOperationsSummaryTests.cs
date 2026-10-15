@@ -54,7 +54,7 @@ public sealed class CameraAgentOperationsSummaryTests
         ]);
         var processing = new CaptureProcessingState();
         processing.SetDurable(5, 3, 2, 1, now.AddMinutes(-3));
-        processing.SetReplayDurable(6, 2, 1, 4, now.AddMinutes(-7), 600);
+        processing.SetReplayDurable(6, 2, 1, 4, now.AddMinutes(-7), 600, 3);
         var artifactOutbox = new ArtifactOutboxState();
         artifactOutbox.ReportUnavailable(root, "secret-outbox-exception");
         var storage = new StoragePressureState();
@@ -139,6 +139,7 @@ public sealed class CameraAgentOperationsSummaryTests
         Assert.AreEqual(2L, summary.ArchivedReplay.Value.LeasedCount, "Leased archived replay is reported for the lifecycle boundary.");
         Assert.AreEqual(1L, summary.ArchivedReplay.Value.RetryCount);
         Assert.AreEqual(4L, summary.ArchivedReplay.Value.TerminalCount);
+        Assert.AreEqual(3L, summary.ArchivedReplay.Value.AbandonedCount, "Abandoned archived replay is reported apart from terminal failures.");
         Assert.AreEqual(now.AddMinutes(-7), summary.ArchivedReplay.Value.OldestPendingUtc);
         Assert.AreEqual("Unavailable", summary.ArtifactOutbox.Value.Availability);
         Assert.AreEqual("raw-ingress", summary.Storage.Value[0].Alias);
@@ -159,6 +160,12 @@ public sealed class CameraAgentOperationsSummaryTests
         Assert.IsFalse(string.IsNullOrWhiteSpace(summary.RawIngress.Freshness));
 
         var json = JsonSerializer.Serialize(summary, SerializerOptions);
+        using (var response = JsonDocument.Parse(json))
+        {
+            var replay = response.RootElement.GetProperty("archivedReplay").GetProperty("value");
+            Assert.AreEqual(4L, replay.GetProperty("terminalCount").GetInt64());
+            Assert.AreEqual(3L, replay.GetProperty("abandonedCount").GetInt64());
+        }
         Assert.IsFalse(json.Contains(root, StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(json.Contains("secret-", StringComparison.OrdinalIgnoreCase));
         Assert.IsFalse(json.Contains("https://", StringComparison.OrdinalIgnoreCase));

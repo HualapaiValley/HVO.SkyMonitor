@@ -624,11 +624,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             throw new ProcessingGraphRevisionSupersededException(ProcessingGraphRevisionSupersededException.SafeMessage, exception);
         }
         using var graph = new DisposableProcessingGraph(compiled);
-        var stored = revision.Nodes.ToDictionary(static node => node.NodeId, StringComparer.Ordinal);
-        // Match the worker's node-plan comparison, also refusing a changed node set before queueing any work.
-        if (stored.Count != graph.Value.Nodes.Count || graph.Value.Nodes.Any(node =>
-                !stored.TryGetValue(node.Id, out var saved) ||
-                !string.Equals(saved.PlanSha256, node.PlanSha256, StringComparison.Ordinal)))
+        if (!revision.IsCompiledBy(graph.Value))
         {
             throw new ProcessingGraphRevisionSupersededException();
         }

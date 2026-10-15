@@ -50,6 +50,22 @@ public sealed record OperationsQueueState(
     long TerminalCount,
     DateTimeOffset? OldestPendingUtc);
 
+/// <summary>
+/// Archived replay in the queue shape of <see cref="OperationsQueueState"/>, plus the replays abandoned because this
+/// version no longer builds their frozen plan. Abandonment is final but not a failure, so it is never part of
+/// <see cref="TerminalCount"/>.
+/// </summary>
+public sealed record OperationsArchivedReplayState(
+    string Availability,
+    long PendingCount,
+    long PendingBytes,
+    long LeasedCount,
+    long RetryCount,
+    long QuarantineCount,
+    long TerminalCount,
+    DateTimeOffset? OldestPendingUtc,
+    long AbandonedCount);
+
 public sealed record OperationsLaneState(
     string Name,
     bool Required,
@@ -200,7 +216,7 @@ public sealed record CameraAgentOperationsSummary(
     OperationsSection<OperationsTransientWorkerState> TransientWorker,
     OperationsSection<OperationsCaptureTelemetryState> CaptureTelemetry,
     OperationsSection<OperationsConfigurationState> Configuration,
-    OperationsSection<OperationsQueueState> ArchivedReplay);
+    OperationsSection<OperationsArchivedReplayState> ArchivedReplay);
 
 public sealed class CameraAgentOperationsSummaryProvider(
     TimeProvider timeProvider,
@@ -364,10 +380,10 @@ public sealed class CameraAgentOperationsSummaryProvider(
                 hostOptions.Value.TransientDetection.Mode.ToString())),
             // Archived replay shares the processing refresh but is reported apart from live processing: the
             // lifecycle drain waits on live leases only, and records replay in its continuity boundary.
-            Section("durable-processing-refresh", processing.EvaluatedUtc, now, new OperationsQueueState(
+            Section("durable-processing-refresh", processing.EvaluatedUtc, now, new OperationsArchivedReplayState(
                 processing.Availability.ToString(), processing.ReplayPendingCount, processing.ReplayPendingBytes,
                 processing.ReplayLeasedCount, processing.ReplayRetryCount, 0, processing.ReplayTerminalCount,
-                processing.OldestReplayPendingUtc)));
+                processing.OldestReplayPendingUtc, processing.ReplayAbandonedCount)));
     }
 
     private static OperationsSection<T> Section<T>(

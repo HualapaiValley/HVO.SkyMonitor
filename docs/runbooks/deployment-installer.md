@@ -250,6 +250,42 @@ the same pipeline, standard processing of that earlier work cannot run:
   abandoned, so it stops blocking ingress.
 - Genuinely corrupt or missing raw evidence still quarantines and refuses new
   captures. That is unchanged and needs the evidence recovery path.
+- An archived replay accepted by the previous version, whose frozen plan this
+  version no longer builds, is **abandoned** on its first claim. Its execution
+  and work become `Expired` with `processing.plan-superseded`. Its unfinished
+  nodes record `TerminalFailure` with the same reason; nodes it had already
+  completed keep their status. It spends no further attempt, releases its
+  pinned inputs, and leaves its raw evidence untouched. It is counted in
+  `ReplayAbandonedCount` on the `capture-processing` health check (gauge
+  `camera_agent.processing.replay.abandoned`) and in `abandonedCount` of the
+  `archivedReplay` section of the operations summary
+  (`/api/v1/operations/summary`), not in `ReplayTerminalCount` or
+  `terminalCount`, so it does not degrade health. The replay page explains
+  this. To run that capture again, submit a new replay against a revision this
+  version compiles.
+  A replay submitted against the old revision is refused, by the same plan
+  comparison that abandons the accepted one.
+- Abandonment needs intact evidence. Before abandoning, the replay checks its
+  own raw capture and every historical raw input frozen for a window step. If
+  any is missing or damaged, the replay is not abandoned. It retries as
+  `processing.replay-exception`, because no step may run under the old plan to
+  find the damage, then fails once its attempts are spent and counts in
+  `ReplayTerminalCount`. That is the same outcome as damage under a current
+  plan, where the window step finds it and records `processing.step-exception`.
+- A replay whose frozen configuration this version cannot build at all, for
+  example because a step was removed, is not abandoned. It retries as
+  `processing.replay-exception` and fails terminally once its attempts are
+  spent. That failure counts in `ReplayTerminalCount` and leaves health
+  **Degraded** with `replay-terminal`.
+
+A replay whose host stopped without releasing its lease, for example after a
+crash or a kill, is recovered once the lease expires. The execution returns to
+`Pending` with `processing.replay-lease-expired`, and every node attempt the
+dead lease left `Running` is recorded as `Interrupted` with that reason. The
+lost attempt still counts toward `ReplayMaximumAttempts`, so a replay that
+keeps killing its host cannot loop forever. Within its remaining attempts and
+deadline it retries on its own. When they are spent it fails terminally, as
+any replay does.
 
 A Named active revision compiled by the earlier version cannot run any live work.
 In that case:
@@ -289,20 +325,19 @@ pipeline definition, validate it with the installed version, then activate it
 Validated revision does not replace its immutable saved plans. Configured-basic
 is an immediate alternative while preparing the replacement revision.
 
-Already-accepted archived replay retains its frozen hashes. Before any step
-executes, the replay worker's frozen-plan check rejects an old hash with
-`InvalidDataException`. The existing generic failure boundary records
-`processing.replay-exception`, consumes an attempt, and schedules `RetryWait`
-while the execution remains `Pending`. Repeated attempts eventually become
-`Failed`, or `Expired` when the replay deadline elapses. Adding version inputs
-does not change this replay classification.
+Already-accepted archived replay retains its frozen hashes, so after this
+upgrade it takes the archived replay abandonment path above. On its first
+claim it becomes `Expired` with `processing.plan-superseded`. It spends no
+further attempt and does not retry, and it counts in `ReplayAbandonedCount`
+rather than `ReplayTerminalCount`. A replay whose evidence is damaged fails
+instead, as described above.
 
 Activating a compatible revision cannot repair that job's immutable frozen plan.
-On the archived replay execution page, use **Request cancellation** while the
-old job is still pending or running, confirm it, then submit a fresh replay
-against a compatible revision. A terminal
-old job needs a fresh submission too. Raw evidence is never deleted to bypass
-the mismatch.
+To run the capture again, submit a fresh replay against a compatible revision.
+You do not need to cancel the old job first, because it abandons itself on its
+first claim. Until then it holds one slot of `ReplayMaximumPendingCount`.
+**Request cancellation** on its execution page frees that slot sooner. Raw
+evidence is never deleted to bypass the mismatch.
 
 The version inputs do not change recipe output keys or manifest bytes by
 themselves. They prevent an earlier frozen plan from running even when its
@@ -316,9 +351,10 @@ consults a release train.
 
 Lifecycle state (`/api/internal/deployment/lifecycle/state`) reports archived
 replay in its own `archivedReplay` section, separate from live
-`captureProcessing`. The section contains pending, leased, retry and terminal
-counts, pending bytes and the oldest pending time. Each recorded continuity
-boundary keeps the replay counts as `ReplayPending` and `ReplayLeased`. A
+`captureProcessing`. The section contains pending, leased, retry, terminal and
+abandoned counts, pending bytes and the oldest pending time. The operations
+summary carries the same section. Each recorded continuity boundary keeps the
+replay counts as `ReplayPending` and `ReplayLeased`. A
 lifecycle CLI reading an image that predates the section records zero.
 
 The pause-and-drain boundary deliberately does not wait for archived replay:

@@ -23,6 +23,7 @@ public sealed class CaptureProcessingHealthCheck(CaptureProcessingState state) :
             ["ReplayPendingCount"] = snapshot.ReplayPendingCount,
             ["ReplayRetryCount"] = snapshot.ReplayRetryCount,
             ["ReplayTerminalCount"] = snapshot.ReplayTerminalCount,
+            ["ReplayAbandonedCount"] = snapshot.ReplayAbandonedCount,
             ["OldestReplayPendingAgeSeconds"] = snapshot.OldestReplayPendingUtc is null
                 ? 0
                 : Math.Max(0, (DateTimeOffset.UtcNow - snapshot.OldestReplayPendingUtc.Value).TotalSeconds),
