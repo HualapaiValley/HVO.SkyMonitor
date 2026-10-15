@@ -448,7 +448,7 @@ protocol or integration seam unless it is explicitly host-private, so a new host
 directory fails closed into combined coverage. The host-private set is:
 
 - `src/HVO.SkyMonitor.CameraAgent/{Components,Properties,wwwroot}/**`, except `Components/Account/**`, which wires the identity endpoints the combined suite exercises, and `Properties/AssemblyInfo.cs`, whose `InternalsVisibleTo` grants are what let the combined suites compile
-- `src/HVO.SkyMonitor.CameraAgent.Common/{Background,Diagnostics,Frames,Gallery,Imaging,Logging,Properties,Reflection,Scheduling,SkyMap,Storage}/**`, except `Properties/AssemblyInfo.cs`, whose `InternalsVisibleTo` grant is what lets `CameraAgent.LogicHost.Tests` compile
+- `src/HVO.SkyMonitor.CameraAgent.Common/{Background,Diagnostics,Frames,Gallery,Imaging,Logging,Properties,Reflection,Scheduling,SkyMap}/**`, except `Properties/AssemblyInfo.cs`, whose `InternalsVisibleTo` grant is what lets `CameraAgent.LogicHost.Tests` compile
 - `src/HVO.SkyMonitor.CameraAgent.{Modules.Zwo,Replay,ReplayRunner}/**`
 - `src/HVO.SkyMonitor.LogicHost/{Components,Properties,wwwroot}/**`, with the same `Components/Account/**` and `Properties/AssemblyInfo.cs` exceptions
 - every `tests/**` path except `tests/HVO.SkyMonitor.LogicHost.TestInfrastructure/**`, which is the non-test fixture project both the LogicHost and combined suites compose
@@ -458,7 +458,9 @@ Everything else inside a host project, including its project root files,
 `Authorization`, `Security`, `Services`, `Data`, `Hosting`, `Infrastructure`,
 `Middleware`, `Models`, `Capture`, `Environmental`, `Transients`, `Modules`,
 `Fleet`, `Upload`, `Deployment`, `DeploymentLocation`, `Operations`, `Options`,
-`RawIngress`, `Telemetry`, and `DependencyInjection`, adds the combined lane.
+`RawIngress`, `Storage`, `Telemetry`, and `DependencyInjection`, adds the combined lane.
+The real evidence-exporter combined harness consumes `StoragePressureState`, so
+storage changes must reach that lane alongside CameraAgent coverage.
 
 The host-private set is not merely asserted. `scripts/test:ci-classification`
 extracts every `HVO.SkyMonitor.CameraAgent.Common.*` and
