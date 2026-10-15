@@ -26,7 +26,7 @@ public sealed class NetworkRouteTests
 
         Type[] operationsPages =
         [
-            typeof(OperationsDashboard), typeof(OperationsObservatories), typeof(OperationsObservatory),
+            typeof(OperationsWorkspace), typeof(OperationsDashboard), typeof(OperationsObservatories), typeof(OperationsObservatory),
             typeof(OperationsCamera), typeof(OperationsCaptures), typeof(OperationsCaptureDetail),
             typeof(OperationsProcessing), typeof(OperationsEvents), typeof(OperationsMembers),
             typeof(OperationsNotifications), typeof(OperationsEditorial), typeof(OperationsPublication),
@@ -40,6 +40,8 @@ public sealed class NetworkRouteTests
         }
         typeof(OperationsEditorial).GetCustomAttribute<AuthorizeAttribute>()!.Policy
             .Should().Be(AuthorizationPolicyNames.PlatformEditorialWrite);
+        typeof(OperationsWorkspace).GetCustomAttribute<AuthorizeAttribute>()!.Policy
+            .Should().Be(AuthorizationPolicyNames.InteractiveUser);
     }
 
     [TestMethod]
@@ -59,7 +61,7 @@ public sealed class NetworkRouteTests
 
         cut.WaitForAssertion(() =>
             cut.FindAll(".nav-badge").Select(link => link.TextContent.Trim()).Should()
-                .Equal("Dashboard", "Observatories", "Captures", "Time-lapses", "Processing", "Events"));
+                .Equal("Network", "Dashboard", "Observatories", "Captures", "Time-lapses", "Processing", "Events"));
         cut.Markup.Should().Contain("Network Operations").And.NotContain("Open Operations");
     }
 }
