@@ -360,7 +360,9 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     /// instead of the shared device, whose outbox backlog and central frames the other tests rely on, so it neither
     /// uploads the shared outbox head nor adds work to it.
     /// </summary>
-    public async Task<IsolatedCameraAgent> StartIsolatedCameraAgentAsync([CallerMemberName] string? consumer = null)
+    public async Task<IsolatedCameraAgent> StartIsolatedCameraAgentAsync(
+        [CallerMemberName] string? consumer = null,
+        bool w1Geometry = false)
     {
         EnsureInitialized();
         RecordConsumer(consumer);
@@ -386,11 +388,24 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         {
             throw new InvalidOperationException("The CameraAgent integration template no longer names the shared agent id.");
         }
-        await File.WriteAllTextAsync(configurationPath, template
+        var isolatedConfiguration = template
             .Replace(sharedAgentId, $"\"agentId\": \"{deviceId}\"", StringComparison.Ordinal)
             .Replace("__STORAGE_ROOT__", JsonSerializer.Serialize(storageRoot), StringComparison.Ordinal)
-            .Replace("__TRANSIENT_EPOCH_UTC__", JsonSerializer.Serialize(TransientEpochUtc), StringComparison.Ordinal))
-            .ConfigureAwait(false);
+            .Replace("__TRANSIENT_EPOCH_UTC__", JsonSerializer.Serialize(TransientEpochUtc), StringComparison.Ordinal);
+        if (w1Geometry)
+        {
+            // W1-sized issue #538 interference workload; retain the fixture's seed, catalog and short cadence.
+            var document = JsonNode.Parse(isolatedConfiguration)!;
+            var rig = document["rig"]!;
+            rig["sensor"]!["widthPixels"] = 1936;
+            rig["sensor"]!["heightPixels"] = 1216;
+            rig["sensor"]!["strideBytes"] = 3872;
+            rig["optics"]!["principalPointX"] = 968;
+            rig["optics"]!["principalPointY"] = 608;
+            rig["optics"]!["imageCircleRadiusPixels"] = 595.84;
+            isolatedConfiguration = document.ToJsonString();
+        }
+        await File.WriteAllTextAsync(configurationPath, isolatedConfiguration).ConfigureAwait(false);
         var agent = new IsolatedCameraAgent(new WebApplicationFactory<Program>(), storageRoot);
         try
         {
@@ -941,6 +956,8 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             ["Catalog:RequiredPackageKind"] = "Fixture",
             ["CameraAgent:ConfigFilePath"] = configurationPath,
             ["CameraAgent:RawIngressRoot"] = storageRoot,
+            // Combined evidence tests own a manually driven exporter. No hosted instance may race it.
+            ["CameraAgent:ExecutionEvidenceExport:Enabled"] = "false",
             ["CameraAgent:DiskPressureThresholdPercent"] = "1",
             ["CameraAgent:DiskPressureRecoveryPercent"] = "2",
             ["DeviceProvisioning:StateDirectory"] = Path.Combine(storageRoot, "provisioning")
