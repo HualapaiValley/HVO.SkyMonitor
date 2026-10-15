@@ -19,6 +19,22 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Controllers;
 public sealed class ProcessingGraphControllersTests
 {
     [TestMethod]
+    public async Task ExactRevisionControllerPreservesResultAndCancellation()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var catalog = new StubCatalogService(now);
+        var controller = new ProcessingGraphsController(catalog, new TestTimeProvider(now));
+        var found = await controller.GetRevisionAsync(catalog.Revision.Id, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreSame(catalog.Revision, Assert.IsInstanceOfType<OkObjectResult>(found.Result).Value);
+        Assert.IsInstanceOfType<NotFoundResult>(
+            (await controller.GetRevisionAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false)).Result);
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync().ConfigureAwait(false);
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            controller.GetRevisionAsync(catalog.Revision.Id, cancellation.Token)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task CatalogControllerMapsValidationAuthorityScopeAndMutationOutcomes()
     {
         var now = new DateTimeOffset(2026, 9, 3, 10, 0, 0, TimeSpan.Zero);
@@ -332,6 +348,14 @@ public sealed class ProcessingGraphControllersTests
             int maximumCount,
             CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<CentralProcessingGraphRevisionView>>([Revision]);
+
+        public Task<CentralProcessingGraphRevisionView?> GetRevisionAsync(
+            Guid revisionId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<CentralProcessingGraphRevisionView?>(revisionId == Revision.Id ? Revision : null);
+        }
 
         public Task<CentralProcessingGraphMutationResult<CentralProcessingGraphRevisionView>> CreateRevisionAsync(
             ProcessingGraphDefinition definition,
