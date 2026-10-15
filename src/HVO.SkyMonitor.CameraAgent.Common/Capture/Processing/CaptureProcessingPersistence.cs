@@ -33,6 +33,7 @@ internal sealed class CaptureProcessingPersistence(
 {
     private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
     internal string StorageRoot => _storageRoot;
+    internal Action<string>? BeforeMetadataDirectorySyncForTest { get; set; }
 
     internal async ValueTask<DurableProcessingOutput> RequireCommittedSceneAsync(
         Guid captureId, ProcessingProduct product, CancellationToken cancellationToken)
@@ -883,7 +884,7 @@ internal sealed class CaptureProcessingPersistence(
             sourceDescriptor,
             node.Id,
             product,
-            cancellationToken).ConfigureAwait(false);
+            BeforeMetadataDirectorySyncForTest, cancellationToken).ConfigureAwait(false);
 
     internal static async ValueTask<DurableProcessingOutput> CopyMetadataProductAsync(
         string storageRoot,
@@ -896,13 +897,14 @@ internal sealed class CaptureProcessingPersistence(
             sourceDescriptor,
             sourceId,
             product,
-            cancellationToken).ConfigureAwait(false);
+            null, cancellationToken).ConfigureAwait(false);
 
     private static async ValueTask<DurableProcessingOutput> PersistMetadataProductAsync(
         string storageRoot,
         ReconstructionDescriptor sourceDescriptor,
         string sourceId,
         ProcessingProduct product,
+        Action<string>? beforeDirectorySync,
         CancellationToken cancellationToken)
     {
         var checksum = ProcessingIdentity.ComputePayloadSha256(product.Payload);
@@ -1026,11 +1028,11 @@ internal sealed class CaptureProcessingPersistence(
         }
         if (!File.Exists(payloadPath))
         {
-            await WriteAtomicallyAsync(storageRoot, payloadPath, product.Payload, cancellationToken).ConfigureAwait(false);
+            await WriteAtomicallyAsync(storageRoot, payloadPath, product.Payload, beforeDirectorySync, cancellationToken).ConfigureAwait(false);
         }
         if (!File.Exists(sidecarPath))
         {
-            await WriteAtomicallyAsync(storageRoot, sidecarPath, evidenceJson, cancellationToken).ConfigureAwait(false);
+            await WriteAtomicallyAsync(storageRoot, sidecarPath, evidenceJson, beforeDirectorySync, cancellationToken).ConfigureAwait(false);
         }
 
         var typedManifest = manifest as DurableTypedMetadataProductManifestV3;
@@ -1204,6 +1206,7 @@ internal sealed class CaptureProcessingPersistence(
         string storageRoot,
         string destinationPath,
         ReadOnlyMemory<byte> content,
+        Action<string>? beforeDirectorySync,
         CancellationToken cancellationToken)
     {
         var temporaryPath = string.Concat(destinationPath, ".", Guid.NewGuid().ToString("N"), ".tmp");
@@ -1236,6 +1239,7 @@ internal sealed class CaptureProcessingPersistence(
                 return;
             }
             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, destinationPath);
+            beforeDirectorySync?.Invoke(Path.GetDirectoryName(destinationPath)!);
             RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(destinationPath)!);
         }
         finally

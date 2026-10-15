@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.LogicHost.Tests.Services;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class FilesystemObjectStoreFaultTests
+public sealed partial class FilesystemObjectStoreFaultTests
 {
     private const string Bucket = "skymonitor-artifacts";
     private string _temp = null!;
@@ -42,6 +42,44 @@ public sealed class FilesystemObjectStoreFaultTests
         => Path.Combine(_temp, FilesystemObjectLayout.DataRelativePath(Bucket, FilesystemObjectLayout.KeyHash(key), generation));
 
     private static readonly CancellationToken None = CancellationToken.None;
+
+    [TestMethod]
+    public async Task DeleteRetryMustSynchronizeAbsentDescriptorBeforeAcknowledging()
+        => await VerifyDeleteDurabilityRetryAsync(kernelFault: false);
+
+    internal Task VerifyDeleteKernelRetryAsync() => VerifyDeleteDurabilityRetryAsync(kernelFault: true);
+
+    private async Task VerifyDeleteDurabilityRetryAsync(bool kernelFault)
+    {
+        var control = kernelFault ? RequireKernelRetryControl() : null;
+        await _store.PutAsync(Bucket, "retry-delete", Bytes("retained data"), 13, "text/plain", None);
+        var descriptor = DescriptorPath("retry-delete");
+        var original = await _store.StatAsync(Bucket, "retry-delete", None);
+        var syncAttempts = 0;
+        var failure = new IOException("Injected unlink directory fsync EIO.", 5);
+        _store.BeforeDeleteDirectorySyncForTest = directory =>
+        {
+            syncAttempts++;
+            if (control is null) throw failure;
+            if (syncAttempts == 1) ArmKernelRetryFault(control, directory);
+        };
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var fault = await Assert.ThrowsExactlyAsync<ObjectStoreException>(() => _store.DeleteAsync(Bucket, "retry-delete", None));
+            Assert.AreEqual(ObjectStoreFailureKind.Transient, fault.Kind);
+            Assert.IsFalse(File.Exists(descriptor));
+        }
+        Assert.AreEqual(2, syncAttempts);
+        if (control is not null) WaitForKernelController(control + ".released");
+        _store.BeforeDeleteDirectorySyncForTest = _ => syncAttempts++;
+        await _store.DeleteAsync(Bucket, "retry-delete", None);
+        Assert.AreEqual(3, syncAttempts);
+        Assert.IsFalse(File.Exists(descriptor));
+        Assert.IsTrue(File.Exists(DataPath("retry-delete", original.Generation)), "Readers retain immutable data until reconciliation.");
+        var directories = Directory.GetDirectories(_temp, "*", SearchOption.AllDirectories);
+        await _store.DeleteAsync(Bucket, "never-created-key", None);
+        CollectionAssert.AreEquivalent(directories, Directory.GetDirectories(_temp, "*", SearchOption.AllDirectories));
+    }
 
     // ---- key mapping: no key segment is a physical segment ----
 
@@ -400,5 +438,27 @@ public sealed class FilesystemObjectStoreFaultTests
             _position += n;
             return n;
         }
+    }
+
+    private static string RequireKernelRetryControl()
+    {
+        var control = Environment.GetEnvironmentVariable("HVO_ISSUE587_KERNEL_RETRY_CONTROL");
+        if (!OperatingSystem.IsLinux() || string.IsNullOrEmpty(control))
+            Assert.Inconclusive("Requires the scoped strace retry-fault controller.");
+        Assert.StartsWith(Path.Combine(Path.GetTempPath(), "hvo-issue587-retry-"), control);
+        return control;
+    }
+
+    private static void ArmKernelRetryFault(string control, string directory)
+    {
+        File.WriteAllText(control + ".ready", System.Text.Json.JsonSerializer.Serialize(new { pid = Environment.ProcessId, directory }));
+        WaitForKernelController(control + ".attached");
+    }
+
+    private static void WaitForKernelController(string path)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(45);
+        while (!File.Exists(path) && DateTime.UtcNow < deadline) Thread.Sleep(20);
+        Assert.IsTrue(File.Exists(path), "The external scoped fault controller did not reach " + Path.GetExtension(path));
     }
 }

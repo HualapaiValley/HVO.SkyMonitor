@@ -40,6 +40,7 @@ internal sealed partial class FilesystemObjectStore : IObjectStore, IDisposable
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<FilesystemObjectStore> _logger;
     private readonly FileStream _runtimeLock;
+    internal Action<string>? BeforeDeleteDirectorySyncForTest { get; set; }
     internal bool DisableHardLinksForTest { get; set; }
     private long _hardLinkCopyCount;
     internal Func<Task>? AfterHardLinkForTest { get; set; }
@@ -362,6 +363,7 @@ internal sealed partial class FilesystemObjectStore : IObjectStore, IDisposable
                 {
                     _root.Verify(descriptorPath, "delete");
                     File.Delete(descriptorPath);
+                    BeforeDeleteDirectorySyncForTest?.Invoke(Path.GetDirectoryName(descriptorPath)!);
                     DurableSync.Directory(Path.GetDirectoryName(descriptorPath)!);
                 }
             }
