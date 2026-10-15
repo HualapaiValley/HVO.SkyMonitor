@@ -23,3 +23,52 @@ The browser performance gate seeds the exact deterministic `I107-P13-UI-v1` 1K/1
 Evidence is written beneath `TestResults/issue-107/<fingerprint>/<run-id>/`. The fingerprint includes the Git revision, tracked diff, status, and untracked-file checksums. Retained records include sanitized browser, dependency transition, logs, metrics, traces, health, process, SQL, map-request, and cardinality/leak evidence. Screenshots and raw browser traces are not retained because raw-download authorization URLs may contain short-lived credentials.
 
 The canonical runtime-signal contract is `docs/validation/logichost-ui-runtime-signals.json`. The UI adds no worker or queue health boundary; existing LogicHost dependency health checks remain authoritative.
+
+## Protected scope navigation (#1238)
+
+The **Network** entry in Network Operations opens `/app/network`. Observatory
+and logical-camera scope use nested paths:
+
+```text
+/app/network/observatories/{observatoryId}
+/app/network/observatories/{observatoryId}/cameras/{cameraId}
+```
+
+The shell checks current membership and the camera/observatory relationship
+before showing either scope's name or its content. Existing observatory
+operations and camera installation/capture history remain linked. The richer
+Current Sky, Archive, imported inspector and central workspace sections require
+their separately accepted implementation stories.
+
+Each scope selector displays one 25-item page. Next/first links replace that
+page; browser history retains the page cursors and restores the previously
+focused scope link. Navigation cursors are protected and bound to the actor,
+list and parent observatory. Invalid or obsolete pages offer an explicit reset.
+Authentication changes render the cleared/loading state before waiting for
+replacement authorization. Forward scope navigation focuses the completed
+heading when there is no valid saved or pagination focus target.
+Access is rechecked on navigation, authentication changes, refresh, browser
+focus/visibility/online changes, circuit reconnect and a 30-second interval.
+Denied or failed checks clear protected labels and child content. Read failures
+show a generic retry state; an empty authorized collection has a separate state.
+
+Run the focused component boundary and opt-in real-browser gate with the pinned
+SDK and a locally installed Playwright Chromium:
+
+```bash
+DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj --configuration Release --filter "FullyQualifiedName~OperationsScopeShellTests|FullyQualifiedName~NetworkRouteTests"
+dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --configuration Release --filter "FullyQualifiedName~OperationsScopeBrowserAcceptanceTests"
+```
+
+The browser case uses disposable SQL/Redis/Mailpit fixtures and the real Kestrel
+host. It exercises 64 observatories and 1K/10K camera scopes, complete-shell SQL
+command/reader bounds (including selected scope, choices and installation reads),
+URL/history/focus restoration, delayed forward reads, keyboard/touch navigation, accessible
+landmarks and names, desktop/portrait/short-landscape layouts, actual websocket
+reconnect with access revoked while disconnected, automatic clearing before the
+first periodic tick, role access, cross-scope denial and membership removal. Its attached
+`issue-1238/acceptance.json` records SQL commands/reader operations, HTML bytes,
+journey timings and Chromium heap samples. Set `HVO_EVIDENCE_REVISION` to the
+exact source revision or worktree fingerprint for retained candidate evidence.
+These scope measurements supplement the canonical #107 workload; they do not
+claim archive, image-transfer or multi-client qualification.
