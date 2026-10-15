@@ -166,30 +166,59 @@ internal sealed class LogicalCameraArchiveReadService(
     private IQueryable<CentralFrame> Window(string owner, Guid observatoryId, Guid cameraId,
         CameraArchiveFilter filter, ArchiveCursor? cursor, int limit)
     {
-        var from = Parameter("@from", SqlDbType.DateTimeOffset, filter.FromUtc);
-        var until = Parameter("@until", SqlDbType.DateTimeOffset, filter.UntilUtc);
-        var boundaryTime = Parameter("@boundaryTime", SqlDbType.DateTimeOffset, cursor?.CapturedAtUtc);
-        var boundaryId = Parameter("@boundaryId", SqlDbType.UniqueIdentifier, cursor?.CaptureId);
         if (filter.Product is not null || filter.ObjectState is not null || filter.ReconstructionState is not null || filter.Text is not null)
             return FilteredWindow(owner, observatoryId, cameraId, filter, cursor);
-        return db.CentralFrames.FromSqlInterpolated($"""
+        var parameters = new List<object>
+        {
+            Parameter("@observatory", SqlDbType.UniqueIdentifier, observatoryId),
+            Parameter("@camera", SqlDbType.UniqueIdentifier, cameraId),
+            Parameter("@limit", SqlDbType.Int, limit)
+        };
+        // Only fixed SQL fragments are composed. Every caller value stays a typed parameter.
+        // Nullable OR predicates turn deep keysets into residual scans on cached plans.
+        var dates = "";
+        if (filter.FromUtc is { } from)
+        {
+            dates += " AND frame.[CapturedAtUtc] >= @from";
+            parameters.Add(Parameter("@from", SqlDbType.DateTimeOffset, from));
+        }
+        if (filter.UntilUtc is { } until)
+        {
+            dates += " AND frame.[CapturedAtUtc] < @until";
+            parameters.Add(Parameter("@until", SqlDbType.DateTimeOffset, until));
+        }
+        string Seek(string boundary) => $"""
+            SELECT TOP (@limit) frame.*
+            FROM [CentralFrames] AS frame
+                WITH (INDEX([IX_CentralFrames_LogicalCameraInstallationId_CapturedAtUtc_Id]))
+            WHERE frame.[LogicalCameraInstallationId] = installation.[Id]
+                AND frame.[ObservatoryId] = @observatory {dates} {boundary}
+            ORDER BY frame.[CapturedAtUtc] DESC, frame.[Id] DESC
+            """;
+        var window = Seek("");
+        if (cursor is not null)
+        {
+            parameters.Add(Parameter("@boundaryTime", SqlDbType.DateTimeOffset, cursor.CapturedAtUtc));
+            parameters.Add(Parameter("@boundaryId", SqlDbType.UniqueIdentifier, cursor.CaptureId));
+            // Two disjoint index ranges also bound the equal-timestamp case before merging.
+            window = $"""
+                SELECT TOP (@limit) bounded.* FROM (
+                    SELECT older.* FROM ({Seek("AND frame.[CapturedAtUtc] < @boundaryTime")}) AS older
+                    UNION ALL
+                    SELECT sameTime.* FROM ({Seek("AND frame.[CapturedAtUtc] = @boundaryTime AND frame.[Id] < @boundaryId")}) AS sameTime
+                ) AS bounded
+                ORDER BY bounded.[CapturedAtUtc] DESC, bounded.[Id] DESC
+                """;
+        }
+        var sql = $"""
             SELECT candidate.*
             FROM [LogicalCameraInstallations] AS installation
             INNER JOIN [LogicalCameras] AS camera ON camera.[Id] = installation.[LogicalCameraId]
-            CROSS APPLY (
-                SELECT TOP ({limit}) frame.*
-                FROM [CentralFrames] AS frame
-                    WITH (INDEX([IX_CentralFrames_LogicalCameraInstallationId_CapturedAtUtc_Id]))
-                WHERE frame.[LogicalCameraInstallationId] = installation.[Id]
-                    AND frame.[ObservatoryId] = {observatoryId}
-                    AND ({from} IS NULL OR frame.[CapturedAtUtc] >= {from})
-                    AND ({until} IS NULL OR frame.[CapturedAtUtc] < {until})
-                    AND ({boundaryTime} IS NULL OR frame.[CapturedAtUtc] < {boundaryTime}
-                        OR frame.[CapturedAtUtc] = {boundaryTime} AND frame.[Id] < {boundaryId})
-                ORDER BY frame.[CapturedAtUtc] DESC, frame.[Id] DESC
-            ) AS candidate
-            WHERE camera.[Id] = {cameraId} AND camera.[ObservatoryId] = {observatoryId}
-            """).AsNoTracking().Where(frame => ObservatoryMembershipAccess.ForUser(db, owner)
+            CROSS APPLY ({window}) AS candidate
+            WHERE camera.[Id] = @camera AND camera.[ObservatoryId] = @observatory
+            """;
+        return db.CentralFrames.FromSqlRaw(sql, parameters.ToArray()).AsNoTracking()
+            .Where(frame => ObservatoryMembershipAccess.ForUser(db, owner)
                 .Any(membership => membership.ObservatoryId == frame.ObservatoryId));
     }
 

@@ -44,10 +44,17 @@ public sealed class LogicalCameraArchivePerformanceTests
                 ActivatorUtilities.CreateInstance<CentralArtifactRetrievalService>(services, db),
                 services.GetRequiredService<ICentralArtifactObjectReader>());
             var principal = LogicalCameraArchiveIntegrationTests.Principal(dataset.Owner);
+            // Obtain an authentic filtered continuation in the older half of retained history.
+            var olderFilter = new CameraArchiveFilter(UntilUtc: dataset.Frames[size / 2].CapturedAtUtc);
+            var olderPage = await service.ListCapturesAsync(principal, dataset.Observatory, dataset.Camera,
+                olderFilter, 50, null).ConfigureAwait(false);
+            olderPage.NextCursor.Should().NotBeNull();
             var requests = new Dictionary<string, Func<Task<object>>>
             {
                 ["nearest-baseline-unfiltered"] = async () => await old.ListCapturesAsync(dataset.Owner, dataset.Observatory, dataset.Camera, 50, null).ConfigureAwait(false),
                 ["archive-unfiltered"] = async () => await service.ListCapturesAsync(principal, dataset.Observatory, dataset.Camera, new(), 50, null).ConfigureAwait(false),
+                ["archive-older-keyset"] = async () => await service.ListCapturesAsync(principal, dataset.Observatory, dataset.Camera,
+                    olderFilter, 50, olderPage.NextCursor).ConfigureAwait(false),
                 ["archive-product-state"] = async () => await service.ListCapturesAsync(principal, dataset.Observatory, dataset.Camera,
                     new(Product: FrameArtifactRole.Preview, ObjectState: CentralArtifactObjectState.Expired), 50, null).ConfigureAwait(false),
                 ["archive-exact-missing"] = async () => await service.ListCapturesAsync(principal, dataset.Observatory, dataset.Camera, new(Text: "999999999"), 50, null).ConfigureAwait(false),
@@ -82,7 +89,17 @@ public sealed class LogicalCameraArchivePerformanceTests
                 foreach (var command in capture.Commands) plans.Add(await ExplainAsync(connectionString, command).ConfigureAwait(false));
                 plans.Max(item => item.ResultRows).Should().BeLessThanOrEqualTo(51);
                 plans.SelectMany(item => item.Indexes).Should().Contain("IX_CentralFrames_LogicalCameraInstallationId_CapturedAtUtc_Id");
-                if (observed is CameraArchivePage page) page.Items.Count.Should().BeLessThanOrEqualTo(50);
+                if (observed is CameraArchivePage page)
+                {
+                    page.Items.Count.Should().BeLessThanOrEqualTo(50);
+                    if (name == "archive-older-keyset")
+                    {
+                        page.Items.Should().HaveCount(50);
+                        page.Items.Select(item => item.CaptureId).Should().NotIntersectWith(olderPage.Items.Select(item => item.CaptureId));
+                        var boundary = olderPage.Items[^1].CapturedAtUtc;
+                        page.Items.Should().OnlyContain(item => item.CapturedAtUtc < boundary);
+                    }
+                }
                 if (observed is CameraCurrentSelection current)
                 {
                     current.Status.Should().Be("found");

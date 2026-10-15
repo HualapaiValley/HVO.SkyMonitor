@@ -51,7 +51,10 @@ Ordering is descending `(CapturedAtUtc, central capture Id)` using SQL Server's
 UUID ordering. Retired/replaced installations remain members through the immutable
 capture installation relationship; current registration does not rewrite history.
 The existing installation/capture-time/identity index is used. Ordered reads use
-parameterized SQL APPLY to bound each installation before the global merge;
+parameterized SQL APPLY to bound each installation before the global merge.
+Date bounds are explicit seek predicates; continuations merge two disjoint bounded
+index ranges (older timestamps and equal timestamp/lower identity), avoiding deep
+page residual scans from nullable predicates;
 selective product/state/identity filters retain a global indexed semi-join plan
 to avoid probing artifacts for every capture under an installation row goal. Selective predicates
 can require examining retained SQL index rows; `Take` bounds materialized rows,
@@ -112,7 +115,8 @@ lineage and authorization boundary ownership.
 The Manual `LogicalCameraArchivePerformanceTests` uses W3M: 1,000/10,000 captures,
 two installations, two expired previews and one physically retained Preview;
 concurrency 1, five warmups and thirty measured service/serialization requests per
-scenario. It records exact dataset identities, source revision, SQL commands,
+scenario, including an authentic continuation in the older half of history.
+It records exact dataset identities, source revision, SQL commands,
 actual-plan rows/indexes/logical reads, response bytes, median/p95/maximum latency,
 CPU, process allocation and working set. Baseline is the existing unfiltered
 `NetworkOperationsReadService`; filtered/current routes are new absolute baselines.
