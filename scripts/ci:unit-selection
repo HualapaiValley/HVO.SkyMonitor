@@ -66,6 +66,29 @@ grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCa
 
 mapfile -t commands < <(grep -E '^[[:space:]]+dotnet test tests/' <<<"$unit_job" || true)
 
+# Tag each line of a step read from stdin: ENV <entry> for an env scalar, BAD <line>
+# for anything outside the selecting-step grammar described at its use.
+validate_step() {
+  awk '
+    BEGIN {
+      command_pattern = "^          dotnet test tests/[A-Za-z0-9._/-]+[.]csproj "
+      logger_token = "\"trx;LogFileName=[A-Za-z0-9._-]+\""
+      shell_meta = "[;|&<>`#\\\\]|[$][(]"
+    }
+    NR == 1 { if ($0 !~ /^      - name: [^ ]/) print "BAD " $0; next }
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    $0 == "        env:" { if (seen_env || seen_run) print "BAD " $0; seen_env = 1; section = "env"; next }
+    $0 == "        run: |" { if (seen_run) print "BAD " $0; seen_run = 1; section = "run"; next }
+    section == "env" && /^          [A-Z][A-Z0-9_]*: [^ ]/ { print "ENV " substr($0, 11); next }
+    section == "run" && $0 ~ command_pattern {
+      rest = $0; gsub(logger_token, "", rest)
+      if (rest ~ shell_meta) print "BAD " $0
+      next
+    }
+    { print "BAD " $0 }
+  '
+}
+
 # The workflow step (from its `- name:` line to the next step) holding a command.
 step_of() {
   awk -v cmd="$1" '
@@ -101,15 +124,17 @@ for project in "${!expected[@]}"; do
   fi
   command="${matches[0]}"
   step="$(step_of "$command")"
-  # Only plain keys that cannot skip or soften the step are accepted. An `if:` or
-  # `continue-on-error:` in any position or spelling, or a flow-style step, is outside
-  # that set and rejected rather than parsed.
-  unsupported="$(awk -v ok='^(name|id|run|env|shell|timeout-minutes|working-directory):' '
-    /^      - / { line = $0; sub(/^      - /, "", line); if (line !~ ok) print $0; next }
-    /^        [^ #]/ { line = $0; sub(/^        /, "", line); if (line !~ ok) print $0 }
-  ' <<<"$step")"
+  # A selecting step must match a closed grammar: its `- name:` opening line, an
+  # optional `env:` mapping of plain scalars, then one `run: |` block holding only
+  # plain `dotnet test tests/<project>.csproj ...` lines. Anything else -- an `if:`
+  # or `continue-on-error:` key in any spelling, a reindented or flow-style step, a
+  # shell structure that could stop a line executing (heredoc, `||`, `;`, `&`) --
+  # is rejected rather than interpreted, so a complete list cannot hide a selection
+  # that never runs and an env-looking line inside a script is never read as env.
+  parsed="$(validate_step <<<"$step")"
+  unsupported="$(grep '^BAD ' <<<"$parsed" | head -1 || true)"
   if [[ -n "$unsupported" ]]; then
-    fail "$project command sits in a step with an unsupported key, so its selection may not run: ${unsupported%%$'\n'*}"
+    fail "$project command sits in a step outside the supported grammar, so its selection may not run: ${unsupported#BAD }"
   fi
   # The needles are literal command text, including the unexpanded $UNIT_FILTER.
   # shellcheck disable=SC2016
@@ -135,7 +160,7 @@ for project in "${!expected[@]}"; do
   fi
   if ! $canonical && [[ "$slot" != processing-runner ]]; then
     [[ "$command" != *' --settings'* ]] || fail "$project slot $slot passes --settings; supplemental runs take none"
-    grep -qE '^[[:space:]]+DOCKER_HOST:[[:space:]]+unix:///tmp/hvo-no-docker\.sock[[:space:]]*$' <<<"$step" ||
+    grep -qxF 'ENV DOCKER_HOST: unix:///tmp/hvo-no-docker.sock' <<<"$parsed" ||
       fail "$project slot $slot must run in a step with DOCKER_HOST unix:///tmp/hvo-no-docker.sock, the endpoint its assembly hook treats as Docker-disabled"
   fi
   [[ "$command" == *" --logger \"trx;LogFileName=unit-$slot.trx\""* ]] ||
