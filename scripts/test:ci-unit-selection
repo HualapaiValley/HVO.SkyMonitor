@@ -54,6 +54,20 @@ expect_fail 'supplemental runs must be TRX-only' --workflow "$scratch/collect.ym
 mutate uncollected '/unit\/imaging --logger/ s#--settings tests/coverage.runsettings --collect:"XPlat Code Coverage" ##'
 expect_fail 'canonical coverage slot but its command does not collect' --workflow "$scratch/uncollected.yml"
 
+# A selection that exists but may never execute, or whose evidence is not its own, fails.
+mutate stepif '/- name: Run Docker-disabled supplemental Unit suites/ a\        if: needs.changes.outputs.complete == '"'"'false'"'"''
+expect_fail 'step with if: or continue-on-error:' --workflow "$scratch/stepif.yml"
+mutate stepcoe '/- name: Run Docker-disabled supplemental Unit suites/ a\        continue-on-error: true'
+expect_fail 'step with if: or continue-on-error:' --workflow "$scratch/stepcoe.yml"
+mutate settings '/unit\/catalog-sqlite-performance/ s#--logger#--settings tests/coverage.runsettings --logger#'
+expect_fail 'passes --settings' --workflow "$scratch/settings.yml"
+mutate sharedslot '/unit\/logichost-integration/ s#unit/logichost-integration#unit/cameraagent-integration#; /unit-logichost-integration.trx/ s#unit-logichost-integration.trx#unit-cameraagent-integration.trx#'
+expect_fail 'share result slot cameraagent-integration' --workflow "$scratch/sharedslot.yml"
+mutate trxname '/unit\/catalog-sqlite-performance/ s#unit-catalog-sqlite-performance.trx#unit-other.trx#'
+expect_fail 'must write TRX unit-catalog-sqlite-performance.trx' --workflow "$scratch/trxname.yml"
+mutate stepdocker '/^          DOCKER_HOST: unix:\/\/\/tmp\/hvo-no-docker.sock/d'
+expect_fail 'DOCKER_HOST unix:///tmp/hvo-no-docker.sock' --workflow "$scratch/stepdocker.yml"
+
 # The Docker-disabled Unit environment is part of the contract.
 mutate docker '/hvo-unit-docker-must-not-exist/{0,/hvo-unit-docker-must-not-exist/ s#hvo-unit-docker-must-not-exist#hvo-docker#}'
 expect_fail 'invalid Docker endpoint' --workflow "$scratch/docker.yml"

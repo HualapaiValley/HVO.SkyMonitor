@@ -16,7 +16,15 @@ set -euo pipefail
 # A project whose command collects coverage must be a canonical slot of the
 # Coverage job, and a command without --collect is a supplemental run that must
 # not be one, so a supplemental TRX-only run can neither add a duplicate report
-# to the canonical merge nor drop a canonical one.
+# to the canonical merge nor drop a canonical one. A supplemental run also takes
+# no --settings, writes a result directory and TRX of its own, and runs under the
+# Docker endpoint the assembly hooks recognize as disabled.
+#
+# Every selecting command must sit in a step that always runs: an `if:` or
+# `continue-on-error:` on its step would let the list stay complete while the
+# selection never executes. This check covers only the full-qualification `unit`
+# job; the component lanes that run when the classifier returns complete=false
+# keep their own per-project commands and are not asserted here.
 #
 # Usage: scripts/ci:unit-selection [--workflow <path>] [--tests-root <dir>]
 
@@ -57,6 +65,16 @@ grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCa
   fail 'the Unit job must use the positive Unit filter'
 
 mapfile -t commands < <(grep -E '^[[:space:]]+dotnet test tests/' <<<"$unit_job" || true)
+
+# The workflow step (from its `- name:` line to the next step) holding a command.
+step_of() {
+  awk -v cmd="$1" '
+    function flush() { if (hit && !done) { printf "%s", buf; done = 1; exit } buf = "" }
+    /^      - / { flush() }
+    { buf = buf $0 "\n"; if ($0 ~ /^[[:space:]]+dotnet test tests\// && index($0, cmd)) hit = 1 }
+    END { flush() }
+  ' <<<"$unit_job"
+}
 mapfile -t coverage_slots < <(grep -oE "TestResults/unit/[a-z0-9-]+/\*/coverage\.cobertura\.xml" <<<"$coverage_job" | sed -E 's#TestResults/unit/([a-z0-9-]+)/.*#\1#' || true)
 
 declare -A expected=()
@@ -71,6 +89,7 @@ done < <(find "$tests_root" -mindepth 2 -maxdepth 2 -name test-categories.json |
 
 ((${#expected[@]} > 0)) || { printf 'Unit selection: no Unit-bearing inventory found under %s\n' "$tests_root" >&2; exit 1; }
 
+declare -A slot_owner=()
 for project in "${!expected[@]}"; do
   matches=()
   for command in "${commands[@]}"; do
@@ -81,6 +100,10 @@ for project in "${!expected[@]}"; do
     continue
   fi
   command="${matches[0]}"
+  step="$(step_of "$command")"
+  if grep -qE '^        (if|continue-on-error):' <<<"$step"; then
+    fail "$project command sits in a step with if: or continue-on-error:, so its selection may not run"
+  fi
   # The needles are literal command text, including the unexpanded $UNIT_FILTER.
   # shellcheck disable=SC2016
   for required in ' --no-build ' ' --configuration Release ' ' --filter "$UNIT_FILTER" ' ' --logger "trx;'; do
@@ -103,6 +126,17 @@ for project in "${!expected[@]}"; do
   if ! $canonical && [[ "$command" == *' --collect'* && "$slot" != processing-runner ]]; then
     fail "$project slot $slot collects coverage that the Coverage job never merges; supplemental runs must be TRX-only"
   fi
+  if ! $canonical && [[ "$slot" != processing-runner ]]; then
+    [[ "$command" != *' --settings'* ]] || fail "$project slot $slot passes --settings; supplemental runs must be TRX-only"
+    grep -qxF '          DOCKER_HOST: unix:///tmp/hvo-no-docker.sock' <<<"$step" ||
+      fail "$project slot $slot must run in a step with DOCKER_HOST unix:///tmp/hvo-no-docker.sock, the endpoint its assembly hook treats as Docker-disabled"
+  fi
+  [[ "$command" == *" --logger \"trx;LogFileName=unit-$slot.trx\""* ]] ||
+    fail "$project slot $slot must write TRX unit-$slot.trx"
+  if [[ -n "${slot_owner[$slot]:-}" ]]; then
+    fail "$project and ${slot_owner[$slot]} share result slot $slot, so one overwrites the other's evidence"
+  fi
+  slot_owner[$slot]="$project"
 done
 
 for command in "${commands[@]}"; do
@@ -114,4 +148,4 @@ if ((errors)); then
   printf 'Unit selection failed with %d error(s).\n' "$errors" >&2
   exit 1
 fi
-printf 'Unit selection passed: %d Unit-bearing project(s), each selected exactly once.\n' "${#expected[@]}"
+printf 'Unit selection passed: the full-qualification unit job selects each of %d Unit-bearing project(s) exactly once (component lanes are not asserted).\n' "${#expected[@]}"

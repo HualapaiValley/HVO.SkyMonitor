@@ -332,6 +332,10 @@ jobs:
         # tests/Directory.Build.props compile-links the ConnectionPoolClearContract Unit cases into
         # these assemblies, whose remaining cases are Integration or Manual. They run TRX-only: their
         # coverage is not a canonical Coverage slot, and scripts/ci:unit-selection enforces that.
+        # The LogicHost.IntegrationTests assembly hook skips its Testcontainers fixture only for
+        # this endpoint, so the step overrides the job-level one that those hooks do not recognize.
+        env:
+          DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
         run: |
           dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/cameraagent-integration --logger "trx;LogFileName=unit-cameraagent-integration.trx"
           dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/logichost-integration --logger "trx;LogFileName=unit-logichost-integration.trx"
