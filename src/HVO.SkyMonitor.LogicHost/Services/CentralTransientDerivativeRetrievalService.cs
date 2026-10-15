@@ -135,7 +135,8 @@ internal sealed class CentralTransientDerivativeRetrievalService(
                 current.StorageETag,
                 transferredLock);
         }
-        catch (ObjectStoreException exception) when (exception.Kind == ObjectStoreFailureKind.MissingObject)
+        catch (Exception exception) when (exception is ObjectStoreException or
+            CentralArtifactStorageException or IOException)
         {
             return new(CentralTransientDerivativeLookupStatus.Unavailable);
         }
