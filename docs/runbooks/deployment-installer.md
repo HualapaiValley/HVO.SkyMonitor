@@ -328,8 +328,10 @@ instead, as described above.
 
 Activating a compatible revision cannot repair that job's immutable frozen plan.
 To run the capture again, submit a fresh replay against a compatible revision.
-The old job needs no cancellation first, because abandonment releases its
-pinned inputs. Raw evidence is never deleted to bypass the mismatch.
+You do not need to cancel the old job first, because it abandons itself on its
+first claim. Until then it holds one slot of `ReplayMaximumPendingCount`.
+**Request cancellation** on its execution page frees that slot sooner. Raw
+evidence is never deleted to bypass the mismatch.
 
 The version inputs do not change recipe output keys or manifest bytes by
 themselves. They prevent an earlier frozen plan from running even when its
