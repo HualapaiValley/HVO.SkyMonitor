@@ -186,6 +186,11 @@ ref, which is `development/v1`. Therefore:
    | Waits hold, but the makespan exceeds +20% | Step down to one reserve: add the label to `gh-runner-05` (ID 20), then rerun `verify-labels` with `--qualification gh-runner-01,gh-runner-02,gh-runner-03,gh-runner-04,gh-runner-05 --general gh-runner-06`, and record the new split on #849. One reserve trades the `push-then-pr` protection for a 3.8% modeled cost |
    | Any wait over 60s not explained by other general jobs holding both reserves | Roll back: this is a defect, not modeled contention |
 
+   The +20% bound is the operational rollback ceiling for this bounded trial
+   only. Staying under it does not show that qualification or any other job
+   improved. It does not waive the 60s ready-PR condition either, and no
+   qualification run is dispatched merely to obtain the two samples.
+
    Attribute every wait over 60s from the collected input, using the `runner`,
    `startedAt` and `completedAt` fields of the jobs on `gh-runner-05` and
    `gh-runner-06` at the waiting job's `createdAt`.
