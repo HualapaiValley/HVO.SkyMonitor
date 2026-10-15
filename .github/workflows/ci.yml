@@ -136,6 +136,7 @@ jobs:
           ./scripts/test:smoke-env
           ./scripts/test:devcontainer
           bash ./scripts/test:ci-classification
+          ./scripts/test:ci-runner-capacity
           SQLSERVER_PASSWORD=validation-only REDIS_PASSWORD=validation-only CAMERA_AGENT_ADMIN_PASSWORD=validation-only-password CAMERA_AGENT_OAUTH_CLIENT_SECRET=validation-only-oauth-secret docker compose --env-file .env.template -f docker-compose.apps.yml config --quiet
           REDIS_PASSWORD=validation-only docker compose --env-file .env.template -f deploy/hvo-docker/docker-compose.shared-services.yml config --quiet
           HVO_RUN_ID=ci-validation HVO_INVENTORY_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa HVO_CONFIG_ROOT=/srv/hvo/config HVO_STATE_ROOT=/srv/hvo/state HVO_RUNTIME_UID=1000 HVO_RUNTIME_GID=1000 HVO_SQL_MEMORY=4G MSSQL_MEMORY_LIMIT_MB=3072 SQLSERVER_PORT=1433 REDIS_PORT=6379 SMTP_PORT=1025 MAILPIT_HTTP_PORT=8025 SQLSERVER_IMAGE=example/sql@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa REDIS_IMAGE=example/redis@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb MAILPIT_IMAGE=example/mailpit@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee SQL_DATABASE=hvo-test SQL_ADMIN_USER=sa SQL_INITIALIZER_USER=hvo-init SQL_RUNTIME_USER=hvo-runtime REDIS_RUNTIME_USER=hvo-runtime REDIS_PREFIX=hvo-test: docker compose -f deploy/split-host/compose.shared-services.yml --profile provision --profile test-smtp config --quiet
@@ -167,7 +168,7 @@ jobs:
     name: Deployment Contracts
     needs: [changes, catalog-contracts]
     if: needs.changes.outputs.deployment == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -245,7 +246,7 @@ jobs:
     name: Build
     needs: changes
     if: needs.changes.outputs.mode == 'full'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -269,7 +270,7 @@ jobs:
     name: Unit Tests
     needs: [changes, catalog-contracts]
     if: needs.changes.outputs.complete == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 20
     env:
       DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock
@@ -341,7 +342,7 @@ jobs:
     name: Integration Tests
     needs: changes
     if: needs.changes.outputs.complete == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 35
     env:
       INTEGRATION_FILTER: TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware
@@ -409,7 +410,7 @@ jobs:
     name: Architecture & Publish
     needs: changes
     if: needs.changes.outputs.mode == 'full'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -525,7 +526,7 @@ jobs:
     name: CameraAgent Migrations
     needs: changes
     if: needs.changes.outputs.mode == 'full'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -550,7 +551,7 @@ jobs:
     name: LogicHost Migrations
     needs: changes
     if: needs.changes.outputs.mode == 'full'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 15
     steps:
       - name: Checkout
@@ -595,7 +596,7 @@ jobs:
     name: Shared Libraries
     needs: changes
     if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.shared == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 45
     env:
       UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
@@ -651,7 +652,7 @@ jobs:
     name: CameraAgent Component
     needs: changes
     if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.cameraagent == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 45
     env:
       UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
@@ -701,7 +702,7 @@ jobs:
     name: LogicHost Component
     needs: changes
     if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.logichost == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 45
     env:
       UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
@@ -748,7 +749,7 @@ jobs:
     name: Combined Protocol & Integration
     needs: changes
     if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.combined == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 45
     env:
       UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
@@ -792,7 +793,7 @@ jobs:
     name: Delivery Component
     needs: [changes, catalog-contracts]
     if: needs.changes.outputs.complete == 'false' && needs.changes.outputs.delivery == 'true'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 30
     env:
       UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware
@@ -852,7 +853,7 @@ jobs:
 
   coverage:
     name: Coverage
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 10
     needs: [changes, unit, integration, architecture]
     if: needs.changes.outputs.complete == 'true'
@@ -947,7 +948,7 @@ jobs:
   badges:
     name: Coverage Badges
     if: github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]
     timeout-minutes: 5
     needs: coverage
     permissions: {}
