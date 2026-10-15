@@ -28,7 +28,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class ProcessingGraphOperationsTests
+public sealed partial class ProcessingGraphOperationsTests
 {
     [TestMethod]
     public void LocalPolicyVocabularyMatchesRegisteredProcessingAliases()
