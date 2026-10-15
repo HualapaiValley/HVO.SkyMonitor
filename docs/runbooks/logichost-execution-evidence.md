@@ -98,7 +98,7 @@ sequence gap into an unbounded list.
 
 ## Inspect imported evidence
 
-The owner-facing API applies observatory membership and credential scope before
+The read API applies observatory membership and credential scope before
 selecting records. Missing and unauthorized resources have the same result.
 List operations use increasing record IDs and bounded `take` values, rather
 than offsets or unbounded history reads.
@@ -140,6 +140,37 @@ have released its acknowledged copy and cannot be used to reconstruct a gap
 created by central retention. Investigate capacity and the approved retention
 policy before increasing quotas. Receiver failure must remain independent of
 capture, raw acceptance, artifact upload, and central processing.
+
+## Receiver limits
+
+Configure these values under LogicHost's `ExecutionEvidence` section. Defaults
+apply when the section is absent; invalid values fail startup validation.
+
+| Setting | Default | Allowed range |
+| --- | ---: | ---: |
+| `MaximumConcurrentRequests` | 2 | 1–8 |
+| `SqlTimeoutSeconds` | 5 | 1–30 |
+| `RequestTimeoutSeconds` | 30 | 1–120 |
+| `MaximumBindingsPerRegistration` | 4 | 1–16 |
+| `MaximumOriginsPerBinding` | 256 | 1–4,096 |
+| `MaximumUnitsPerBinding` | 100,000 | 1–1,000,000 |
+| `MaximumStoredBytesPerBinding` | 1,073,741,824 | 1–107,374,182,400 |
+| `MaximumConflictsPerBinding` | 256 | 1–4,096 |
+| `MaximumObservationsPerBinding` | 100,000 | 1–1,000,000 |
+| `ReconciliationIntervalSeconds` | 60 | 1–3,600 |
+
+The receiver has a separate SQL connection pool named `HVO.ExecutionEvidence`,
+bounded to `MaximumConcurrentRequests + 2` connections. Saturation, quota
+pressure, SQL failure, and the receiver's request timeout return HTTP 503 with
+`Retry-After: 5`. Device authentication failures return 401; an unapproved origin
+returns 403. Correct the binding or credentials before retrying an authorization
+failure. Do not clear the edge outbox or central evidence tables to recover a
+temporary outage.
+
+Submission has fixed protocol limits of 64 units and 16 MiB of envelope bytes
+plus LF separators. Reconciliation processes at most 32 references per sweep
+and performs object metadata I/O outside its SQL transaction. Quotas bound
+retained history; they are not an automatic retention or deletion schedule.
 
 LogicHost remains unreleased. Initialize an empty database with the candidate's
 single canonical baseline using the
