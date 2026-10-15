@@ -203,14 +203,15 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         await SeedAssignmentAsync(foreignObservatory, foreign.GraphRevision!).ConfigureAwait(false);
         await SeedAssignmentAsync(wrongInstallation, wrong.GraphRevision!).ConfigureAwait(false);
         var missing = Assigned(device);
-        var assignment = missing.GraphRevision!.Assignment!;
+        var missingRevision = missing.GraphRevision!;
+        var assignment = missingRevision.Assignment!;
         foreach (var proposalId in new[] { assignment.ProposalId, foreign.GraphRevision!.Assignment!.ProposalId,
             wrong.GraphRevision!.Assignment!.ProposalId })
         {
             // Every field except the untrusted proposal ID is identical, including origin/sequence/evidence ID.
             var probe = GraphExecutionEvidenceJson.Seal(missing with
             {
-                GraphRevision = missing.GraphRevision with { Assignment = assignment with { ProposalId = proposalId } }
+                GraphRevision = missingRevision with { Assignment = assignment with { ProposalId = proposalId } }
             });
             using var response = await PostAsync(client, device, probe).ConfigureAwait(false);
             var feedback = await FeedbackAsync(response).ConfigureAwait(false);
@@ -228,7 +229,7 @@ public sealed partial class ExecutionEvidenceIntegrationTests
                     u.EvidenceId == missing.EvidenceId).ConfigureAwait(false), "Hidden or missing dependencies cannot persist a terminal rejection.");
         }
         // A legitimately late proposal and acceptance still allow the exact previously pending bytes to converge.
-        await SeedAssignmentAsync(device, missing.GraphRevision).ConfigureAwait(false);
+        await SeedAssignmentAsync(device, missingRevision).ConfigureAwait(false);
         using var retry = await PostAsync(client, device, missing).ConfigureAwait(false);
         var acknowledged = await FeedbackAsync(retry).ConfigureAwait(false);
         Assert.HasCount(4, acknowledged.Facts);
