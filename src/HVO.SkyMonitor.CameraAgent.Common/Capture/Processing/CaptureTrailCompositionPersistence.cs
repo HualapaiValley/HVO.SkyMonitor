@@ -209,7 +209,8 @@ internal sealed partial class CaptureProcessingPersistence
         if (!TransientTrailPresentation.PreservesSourcePixels(output.Artifact.Role, output.Artifact.Recipe, output.Algorithms)) return false;
         var ids = descriptor.Artifact.SourceArtifactIds;
         if (ids.Count is < 1 or > 100 || ids.Distinct().Count() != ids.Count) return false;
-        if (output.Artifact.Recipe.Name is BuiltInProcessingRecipes.FixedPreview or BuiltInProcessingRecipes.EncodedPreview && ids.Count != 1)
+        if (output.Artifact.Recipe.Name is BuiltInProcessingRecipes.FixedPreview or BuiltInProcessingRecipes.EncodedPreview or
+            BuiltInProcessingRecipes.LinearNormalization && ids.Count != 1)
             return false;
         // Calibration's first canonical source is the science exposure; master references cannot establish its geometry.
         var candidates = output.Artifact.Recipe.Name == BuiltInProcessingRecipes.ReferenceCalibration ? ids.Take(1) : ids;

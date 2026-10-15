@@ -45,6 +45,17 @@ public sealed class TransientTrailPresentationTests
             [.. algorithms, new("downsample", "some-transform-v1")]));
         Assert.IsFalse(TransientTrailPresentation.PreservesSourcePixels(FrameArtifactRole.Preview, recipe,
             [new("display-stretch", "unknown-version")]));
+        var normalization = RecipeIdentityDescriptor.Create(BuiltInProcessingRecipes.LinearNormalization,
+            "1.0.0", "linear-normalization-none-v1", JsonSerializer.SerializeToElement(new { mode = "None" }));
+        ProcessingAlgorithmIdentity[] normalizationAlgorithms = [new("linear-normalization", "none-v1")];
+        Assert.IsTrue(TransientTrailPresentation.PreservesSourcePixels(FrameArtifactRole.Calibrated,
+            normalization, normalizationAlgorithms));
+        Assert.IsFalse(TransientTrailPresentation.PreservesSourcePixels(FrameArtifactRole.Calibrated,
+            normalization with { ImplementationVersion = "unknown" }, normalizationAlgorithms));
+        Assert.IsFalse(TransientTrailPresentation.PreservesSourcePixels(FrameArtifactRole.Calibrated,
+            normalization, [.. normalizationAlgorithms, new("resample", "v1")]));
+        Assert.IsFalse(TransientTrailPresentation.PreservesSourcePixels(FrameArtifactRole.Combined,
+            normalization, normalizationAlgorithms));
     }
 
     [TestMethod]
@@ -69,7 +80,40 @@ public sealed class TransientTrailPresentationTests
         Assert.IsNotNull(payload.Segments.Single().Stroke);
         Assert.AreEqual(0, payload.Ellipses.Count);
         Assert.AreEqual(0, payload.Markers.Count);
-        Assert.AreEqual(TransientTrailPresentation.PositionalUncertainty, payload.TextBlocks.Single().Lines.Single());
+        Assert.AreEqual(0, payload.TextBlocks.Count, "A two-pixel test raster cannot carry the uncertainty caption.");
+    }
+
+    [TestMethod]
+    [DataRow(64, 48)]
+    [DataRow(1936, 1216)]
+    public void UncertaintyCaptionFitsTheExactRasterUsingSharedFontGeometry(int width, int height)
+    {
+        var source = TransientTestData.CreateDetectorSource(CameraPixelFormat.Mono16);
+        var pixels = new byte[width * height * 2];
+        var artifact = source.Artifact with
+        {
+            Payload = pixels,
+            Layout = source.Artifact.Layout! with { Width = width, Height = height, StrideBytes = width * 2, ByteLength = pixels.Length }
+        };
+        var evidence = source.Source with
+        {
+            Locator = source.Source.Locator with
+            {
+                Artifact = source.Source.Locator.Artifact with { ChecksumSha256 = PayloadChecksum.ComputeSha256(pixels) }
+            }
+        };
+        var input = TransientDetectorInputFactory.Create(artifact, evidence, source.Levels).Input!;
+        var geometry = new TransientGeometryV1(evidence.EvidenceId, width, height,
+            new(0, 0, 2, 2), [new(0.5, 0.5), new(1.5, 1.5)]);
+        var payload = TransientTrailPresentation.CreatePayload(new string('A', 64), width, height,
+            [new(geometry, input.Descriptor, false)]);
+        var caption = payload.TextBlocks.Single();
+        Assert.AreEqual(TransientTrailPresentation.PositionalUncertainty, caption.Lines.Single());
+        using var font = PresentationFont.Create(caption, 0);
+        var origin = PresentationFont.LineOrigin(caption, width, height, font, caption.Lines.Single(), 0);
+        var bounds = PresentationFont.LineBounds(font, caption.Lines.Single(), origin.X, origin.Y);
+        Assert.IsTrue(bounds.Left >= 0 && bounds.Top >= 0 && bounds.Right <= width && bounds.Bottom <= height,
+            $"Caption bounds {bounds} exceed {width}x{height}.");
     }
 
     [TestMethod]

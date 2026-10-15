@@ -113,6 +113,13 @@ public sealed partial class DurableCaptureProcessingTests
             var optionalService = new CameraAgentLayeredPresentationService(store, artifacts, projection.Object, persistence);
             var baseline = await MeasureAsync(baselineService).ConfigureAwait(false);
             var none = await MeasureAsync(optionalService).ConfigureAwait(false);
+            var baselineConcurrent = new List<object>();
+            var noneConcurrent = new List<object>();
+            foreach (var readers in new[] { 4, 8 })
+            {
+                baselineConcurrent.Add(await MeasureAsync(baselineService, readers).ConfigureAwait(false));
+                noneConcurrent.Add(await MeasureAsync(optionalService, readers).ConfigureAwait(false));
+            }
             evidence = evidence with { State = "MeasuredEvidence", Trails = [trail] };
             var filesBefore = OutputFootprint();
             var publicationStart = Stopwatch.GetTimestamp();
@@ -126,13 +133,9 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsFalse(layer.EnabledByDefault);
             var measured = await MeasureAsync(optionalService).ConfigureAwait(false);
             var concurrent = new List<object>();
-            foreach (var readers in new[] { 1, 4, 8 })
+            foreach (var readers in new[] { 4, 8 })
             {
-                var started = Stopwatch.GetTimestamp();
-                var results = await Task.WhenAll(Enumerable.Range(0, readers).Select(_ =>
-                    optionalService.GetAsync(captureId, CancellationToken.None).AsTask())).ConfigureAwait(false);
-                Assert.IsTrue(results.All(result => result.Presentation?.ManifestIdentitySha256 == first.Presentation.ManifestIdentitySha256));
-                concurrent.Add(new { readers, milliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds });
+                concurrent.Add(await MeasureAsync(optionalService, readers).ConfigureAwait(false));
             }
             Assert.AreEqual(1, (await store.ReadCaptureProductsAsync(captureId, CaptureProcessingPersistence.TrailCompositionSchema,
                 2, CancellationToken.None).ConfigureAwait(false)).Count);
@@ -164,11 +167,16 @@ public sealed partial class DurableCaptureProcessingTests
                     measuredUtc = DateTimeOffset.UtcNow,
                     revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
                     workload = "W1",
+                    baselineDefinition = "Same binary, optional projection and composition dependencies absent; original presentation path.",
+                    candidateDefinition = "Same binary with optional projection and durable composition enabled.",
+                    limitation = "Projection is a bounded deterministic stub; measures composition overhead, not detector or SQLite candidate-query throughput. Real capture projection and browser acceptance run separately.",
                     width,
                     height,
                     rawBytes = pixels.Length,
                     baseline,
+                    baselineConcurrent,
                     none,
+                    noneConcurrent,
                     measured,
                     concurrent,
                     publicationMilliseconds,
@@ -199,7 +207,7 @@ public sealed partial class DurableCaptureProcessingTests
                 return new { files = files.Length, bytes = files.Sum(file => file.Length) };
             }
 
-            async Task<object> MeasureAsync(CameraAgentLayeredPresentationService service)
+            async Task<object> MeasureAsync(CameraAgentLayeredPresentationService service, int readers = 1)
             {
                 var firstReadStart = Stopwatch.GetTimestamp();
                 Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found,
@@ -212,16 +220,27 @@ public sealed partial class DurableCaptureProcessingTests
                 var process = Process.GetCurrentProcess();
                 var cpuStart = process.TotalProcessorTime;
                 var allocatedStart = GC.GetTotalAllocatedBytes(true);
-                for (var index = 0; index < values.Length; index++)
+                var measurementStart = Stopwatch.GetTimestamp();
+                for (var batch = 0; batch < values.Length; batch += readers)
                 {
-                    var started = Stopwatch.GetTimestamp();
-                    Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found,
-                        (await service.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false)).Status);
-                    values[index] = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                    await Task.WhenAll(Enumerable.Range(batch, Math.Min(readers, values.Length - batch))
+                        .Select(async index =>
+                        {
+                            var started = Stopwatch.GetTimestamp();
+                            var result = await service.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+                            Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, result.Status);
+                            Assert.IsNotNull(result.Presentation);
+                            values[index] = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                        })).ConfigureAwait(false);
                 }
+                var elapsedMilliseconds = Stopwatch.GetElapsedTime(measurementStart).TotalMilliseconds;
                 return new
                 {
                     measurements = values.Length,
+                    concurrency = readers,
+                    warmups = 20,
+                    elapsedMilliseconds,
+                    readsPerSecond = values.Length * 1000 / elapsedMilliseconds,
                     firstReadMilliseconds,
                     medianMilliseconds = Percentile(values, .5),
                     p95Milliseconds = Percentile(values, .95),

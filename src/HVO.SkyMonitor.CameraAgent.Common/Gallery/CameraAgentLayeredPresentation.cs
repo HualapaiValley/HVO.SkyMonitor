@@ -9,6 +9,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
@@ -62,7 +64,8 @@ internal sealed class CameraAgentLayeredPresentationService(
     SqliteCaptureProcessingStore processingStore,
     ICameraAgentArtifactService artifacts,
     ICameraAgentTransientOperatorProjection? trails = null,
-    CaptureProcessingPersistence? persistence = null) : ICameraAgentLayeredPresentationService
+    CaptureProcessingPersistence? persistence = null,
+    IOptions<CameraAgentHostOptions>? options = null) : ICameraAgentLayeredPresentationService
 {
     internal const int MaximumSvgBytes = GroupedSvgPresentationRenderer.MaximumSvgBytes;
     internal const int MaximumSvgElements = GroupedSvgPresentationRenderer.MaximumSvgElements;
@@ -133,7 +136,12 @@ internal sealed class CameraAgentLayeredPresentationService(
             var manifestArtifactId = manifestProduct.ArtifactId;
             var originalManifest = manifest;
             CameraAgentCaptureTrails? trailEvidence = null;
-            if (trails is not null && persistence is not null)
+            if (options?.Value.ArtifactRead.MeasuredTransientTrailsEnabled == false)
+            {
+                trailEvidence = new(captureId, "Disabled", [], false,
+                    "Measured transient trails are disabled by configuration.");
+            }
+            else if (trails is not null && persistence is not null)
             {
                 try
                 {

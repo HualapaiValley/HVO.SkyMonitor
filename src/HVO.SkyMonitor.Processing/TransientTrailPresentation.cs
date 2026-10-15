@@ -49,6 +49,9 @@ public static class TransientTrailPresentation
             BuiltInProcessingRecipes.RollingMean => role == FrameArtifactRole.Combined &&
                 recipe.ImplementationVersion == Linear16ArithmeticMean.AlgorithmVersion &&
                 algorithms.Count == 1 && algorithms[0] == new ProcessingAlgorithmIdentity("linear-mean", Linear16ArithmeticMean.AlgorithmVersion),
+            BuiltInProcessingRecipes.LinearNormalization => role == FrameArtifactRole.Calibrated &&
+                recipe.ImplementationVersion == "linear-normalization-none-v1" &&
+                algorithms.Count == 1 && algorithms[0] == new ProcessingAlgorithmIdentity("linear-normalization", "none-v1"),
             BuiltInProcessingRecipes.ReferenceCalibration => role == FrameArtifactRole.Calibrated &&
                 recipe.ImplementationVersion == "reference-calibration-linear16-v2" && algorithms.Count == 2 &&
                 algorithms.Any(value => value.Name == "linear16-reference-calibration" && value.Version == Linear16ReferenceCalibration.AlgorithmVersion) &&
@@ -110,8 +113,32 @@ public static class TransientTrailPresentation
             }
         }
         return PresentationLayerPayloadJson.Create(evidenceIdentitySha256, sourceWidth, sourceHeight,
-            segments: segments,
-            textBlocks: [new(PresentationTextAnchor.BottomLeft, new(0, 0), [PositionalUncertainty],
-                1, 4, 1, new(255, 201, 92))]);
+            segments: segments, textBlocks: CreateUncertaintyCaption(sourceWidth, sourceHeight));
+    }
+
+    private static IReadOnlyList<PresentationTextBlockV1> CreateUncertaintyCaption(int width, int height)
+    {
+        var inset = Math.Min(4, Math.Min(width, height) / 8);
+        var color = new PresentationColor(255, 201, 92);
+        var style = new PresentationTextStyleV3(PresentationFontFaceV3.MonoRegular,
+            3_500 * PresentationFont.FrameScale(width, height), 0, color, default, 0, 0);
+        using var initialFont = PresentationFont.Create(style);
+        var initialBounds = PresentationFont.LineBounds(initialFont, PositionalUncertainty, 0, 0);
+        var ratio = Math.Min(1, Math.Min((width - 2d * inset) / initialBounds.Width,
+            (height - 2d * inset) / initialBounds.Height));
+        style = style with { SizeMilliPixels = Math.Max(1_000, (int)Math.Floor(style.SizeMilliPixels * ratio)) };
+        // Font hinting rounds glyph advances, so scaling the initial bounds is only an estimate.
+        // Re-measure discrete sizes with the same pinned font used by both renderers.
+        while (true)
+        {
+            using var fittedFont = PresentationFont.Create(style);
+            var fittedBounds = PresentationFont.LineBounds(fittedFont, PositionalUncertainty, 0, 0);
+            if (fittedBounds.Width <= width - 2 * inset && fittedBounds.Height <= height - 2 * inset)
+                return [new(PresentationTextAnchor.BottomLeft, default, [PositionalUncertainty],
+                    1, inset, 1, color, Appearance: new(style))];
+            // Tiny rasters cannot carry a legible caption. The control and immutable evidence still disclose it.
+            if (style.SizeMilliPixels == 1_000) return [];
+            style = style with { SizeMilliPixels = Math.Max(1_000, style.SizeMilliPixels - 100) };
+        }
     }
 }

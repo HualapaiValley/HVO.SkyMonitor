@@ -5,7 +5,10 @@ presentation. The operator's acceptance clarification is recorded in
 [#1005 comment5991268350](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1005#issuecomment-5991268350):
 show measured trails, label positional uncertainty unavailable, and draw no
 uncertainty band. Trail width and classification confidence are not positional
-uncertainty. This feature performs no orbital correlation.
+uncertainty. The raster and SVG caption uses the shared pinned font and fits the
+source canvas; rasters too small for its minimum glyph size retain the disclosure
+in the operator control and immutable evidence. This feature performs no orbital
+correlation.
 
 ## Evidence and eligibility
 
@@ -44,8 +47,8 @@ Membership is checked through at most eight immutable processing lineage hops,
 with at most 100 source references per admitted window. Only pinned producer
 and algorithm versions known to preserve pixel coordinates are accepted:
 full-size fixed/encoded preview, unregistered linear arithmetic rolling mean,
-and per-pixel reference calibration. Calibration follows its first canonical
-science source; master references cannot establish trail geometry. Unknown
+no-correction row normalization, and per-pixel reference calibration. Calibration
+follows its first canonical science source; master references cannot establish trail geometry. Unknown
 versions, registration, resize, mismatched timing and opaque lineage disable
 the layer. A rolling base's accumulated integration is distinct from the
 linked candidate's recorded source exposure.
@@ -88,6 +91,12 @@ the authorized owner identity and the existing API antiforgery boundary. Raw
 paths and internal errors are not exposed in unavailable states. API timestamps
 and durable contracts remain UTC; operator timestamps use the observing-site
 time helper, including its labeled UTC fallback.
+
+Set `CameraAgent:ArtifactRead:MeasuredTransientTrailsEnabled=false` to disable
+measured-trail queries and supplemental publication, including historical captures.
+The original retained presentation remains available and reports the configuration
+opt-out explicitly. This is independent of detector mode: turning detection off
+does not invalidate already retained evidence.
 
 The measured layer starts off. Explicit evidence refresh preserves opt-out and
 other selected layer kinds across immutable identity changes. Capture generation

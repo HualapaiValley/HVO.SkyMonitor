@@ -264,7 +264,8 @@ internal static class CameraAgentGalleryEndpoints
 
         var presentation = result.Presentation;
         var etag = $"\"{presentation.SvgChecksumSha256}\"";
-        context.Response.Headers.CacheControl = "private, max-age=31536000, immutable";
+        // This capture URL can acquire a new immutable composition as evidence is finalized.
+        context.Response.Headers.CacheControl = "private, no-cache";
         context.Response.Headers.Vary = "Cookie";
         context.Response.Headers.ETag = etag;
         context.Response.Headers.XContentTypeOptions = "nosniff";

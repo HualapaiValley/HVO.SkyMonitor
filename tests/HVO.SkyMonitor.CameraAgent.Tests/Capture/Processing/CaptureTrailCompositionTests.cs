@@ -13,6 +13,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -107,6 +109,19 @@ public sealed partial class DurableCaptureProcessingTests
             var projection = new Mock<ICameraAgentTransientOperatorProjection>(MockBehavior.Strict);
             projection.Setup(value => value.GetCaptureTrailsAsync(captureId, It.IsAny<CancellationToken>()))
                 .Returns(() => ValueTask.FromResult(evidence));
+            var disabledProjection = new Mock<ICameraAgentTransientOperatorProjection>(MockBehavior.Strict);
+            var disabledService = new CameraAgentLayeredPresentationService(store, artifacts,
+                disabledProjection.Object, persistence, Options.Create(new CameraAgentHostOptions
+                {
+                    ArtifactRead = new() { MeasuredTransientTrailsEnabled = false }
+                }));
+            var disabled = await disabledService.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, disabled.Status);
+            Assert.AreEqual(originals[0].ArtifactId, disabled.Presentation!.ManifestArtifactId);
+            Assert.AreEqual("Disabled", disabled.Presentation.TrailEvidence!.State);
+            disabledProjection.VerifyNoOtherCalls();
+            Assert.AreEqual(0, (await store.ReadCaptureProductsAsync(captureId,
+                CaptureProcessingPersistence.TrailCompositionSchema, 2, CancellationToken.None).ConfigureAwait(false)).Count);
             var presentations = new CameraAgentLayeredPresentationService(store, artifacts, projection.Object, persistence);
             evidence = evidence with
             {
