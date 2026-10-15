@@ -28,7 +28,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
         var mode = Environment.GetEnvironmentVariable("HVO_ISSUE587_MODE");
         if (mode is not ("fixture" or "measure")) Assert.Inconclusive("Set HVO_ISSUE587_MODE=fixture|measure with isolated fixture/output roots.");
         var selectedStage = Environment.GetEnvironmentVariable("HVO_ISSUE587_STAGE") ?? "all";
-        Assert.IsTrue(selectedStage is "all" or "derivative", "Only all stages or isolated derivative diagnosis is supported.");
+        Assert.IsTrue(selectedStage is "all" or "derivative" or "durability", "Choose all, derivative, or affected durability stages.");
         var fixtureRoot = RequiredEvidenceDirectory("HVO_ISSUE587_FIXTURE");
         var output = RequiredEvidenceDirectory("HVO_ISSUE587_OUTPUT");
         Directory.CreateDirectory(output);
@@ -62,14 +62,17 @@ public sealed partial class RawCaptureIngressPerformanceTests
         var stages = new Dictionary<string, object>(StringComparer.Ordinal);
         try
         {
-            if (selectedStage == "all")
+            if (selectedStage != "derivative")
             {
                 var io = ReadIssue587Io();
                 var w2 = await MeasureW2Async(Path.Combine(work, "w2"), frozenInput, configurationFromFixture, clock).ConfigureAwait(false);
                 stages.Add("w2", new { Measurement = w2, IoDelta = IoDelta(io), Hashes = await HashTreeAsync(Path.Combine(work, "w2"), excludeSqlite: true).ConfigureAwait(false) });
                 io = ReadIssue587Io();
-                var w3m = await MeasureW3MetadataAsync(Path.Combine(work, "w3m"), frozenInput, configurationFromFixture).ConfigureAwait(false);
-                stages.Add("w3m", new { Measurement = w3m, IoDelta = IoDelta(io) });
+                if (selectedStage == "all")
+                {
+                    var w3m = await MeasureW3MetadataAsync(Path.Combine(work, "w3m"), frozenInput, configurationFromFixture).ConfigureAwait(false);
+                    stages.Add("w3m", new { Measurement = w3m, IoDelta = IoDelta(io) });
+                }
                 io = ReadIssue587Io();
                 var w3p = await MeasureW3PayloadAsync(Path.Combine(work, "w3p"), frozenInput, configurationFromFixture, clock).ConfigureAwait(false);
                 stages.Add("w3p", new { Measurement = w3p, IoDelta = IoDelta(io), Hashes = await HashTreeAsync(Path.Combine(work, "w3p"), excludeSqlite: true).ConfigureAwait(false) });
