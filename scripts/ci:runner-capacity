@@ -435,6 +435,13 @@ def report(arguments):
     runners = sorted({name for name in (values.get("--pool") or "").split(",") if name})
     if not runners:
         fail("--pool is required: list every runner in the pool, busy or idle.")
+    # Jobs are selected by prefix and must then belong to --pool, so every
+    # inventory name must carry the prefix; otherwise a listed runner would add
+    # capacity while its own work was silently excluded.
+    prefix = values.get("--pool-prefix") or "gh-runner-"
+    outside = [name for name in runners if not name.startswith(prefix)]
+    if outside:
+        fail(f"--pool names must start with --pool-prefix {prefix}: {outside}")
     document, jobs, clamped, reused = load(values, set(runners))
     if any(reserve < 0 or reserve >= len(runners) for reserve in reserves):
         fail(f"--reserve must leave at least one qualification runner of {len(runners)}.")

@@ -38,7 +38,7 @@ Change Classification, Catalog Contracts, Quality, Coverage Policy, and Required
 CI run on pinned `ubuntu-24.04` hosted runners. Deployment Contracts, Build, Unit
 Tests, Integration Tests, Architecture & Publish, both migration checks, every
 component lane, Coverage, and Coverage Badges remain on the labeled self-hosted
-runners and also require `hvo-qualification`. One x64 runner stays without that
+runners and also require `hvo-qualification`. Two x64 runners stay without that
 label so ready `development/v1` checks are not queued behind a qualification
 fan-out; see `docs/runbooks/ci-runner-capacity.md`. This allocation keeps the long
 deployment harness off hosted minutes. Quality performs .NET setup, restore,

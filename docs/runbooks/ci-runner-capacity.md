@@ -68,16 +68,17 @@ Reading the baseline:
   qualification runs fell inside the current window, so it seldom happened in
   the sample, but every promotion produces such a window.
 
-## 3. Trial: reserve one general runner (modeled)
+## 3. Trial: reserve two general runners (modeled)
 
 GitHub Actions cannot exclude a label or give one workflow priority. A
 `runs-on` list must match every label it names. The reserve is therefore
 expressed positively:
 
-- `gh-runner-01` .. `gh-runner-05` carry the additional label `hvo-qualification`;
+- `gh-runner-01` .. `gh-runner-04` carry the additional label `hvo-qualification`;
 - every self-hosted `ci.yml` job requires it;
 - `development-v1.yml` does not, so v1 jobs can still run on all six runners;
-- `gh-runner-06` stays general, so qualification can never occupy it.
+- `gh-runner-05` and `gh-runner-06` stay general, so qualification can never
+  occupy them.
 
 The replay below is a model, not a measurement. It replays the observed job
 durations on the explicit six-runner pool through a FIFO queue, with seeded
@@ -97,9 +98,9 @@ Current window (405 probes per row):
 | ---: | --- | ---: | ---: | ---: |
 | 0 | alone, pr-then-push | 3.2s / 80s / 87s | 9 | 1288s |
 | 0 | push-then-pr | 40.0s / 300s / 317s | 84 | 1288s |
-| **1** | **alone, pr-then-push** | **0s / 0s / 0s** | **0** | **1337s (+3.8%)** |
-| **1** | **push-then-pr** | **40.0s / 300s / 316s** | **84** | **1337s (+3.8%)** |
-| 2 | all three | 0s / 0s / 0s | 0 | 1482s (+15%) |
+| 1 | alone, pr-then-push | 0s / 0s / 0s | 0 | 1337s (+3.8%) |
+| 1 | push-then-pr | 40.0s / 300s / 316s | 84 | 1337s (+3.8%) |
+| **2** | **all three** | **0s / 0s / 0s** | **0** | **1482s (+15%)** |
 
 Historical window (10158 probes per row):
 
@@ -109,37 +110,38 @@ Historical window (10158 probes per row):
 | 0 | push-then-pr | 94.6s / 723s / 1065s | 3330 | 1290s |
 | 1 | alone, pr-then-push | 16.6s / 590s / 958s | 420 | 1325s (+2.7%) |
 | 1 | push-then-pr | 92.1s / 735s / 1167s | 3492 | 1325s (+2.7%) |
-| 2 | alone, pr-then-push | 11.4s / 583s / 958s | 223 | 1469s (+14%) |
-| 2 | push-then-pr | 39.0s / 735s / 1167s | 1273 | 1469s (+14%) |
+| **2** | **alone, pr-then-push** | **11.4s / 583s / 958s** | **223** | **1469s (+14%)** |
+| **2** | **push-then-pr** | **39.0s / 735s / 1167s** | **1273** | **1469s (+14%)** |
 
-Decision: trial one reserved runner.
+Decision: trial two reserved runners, at an explicit cost of about 15%
+qualification makespan (1288s to 1482s modeled, about 3.2 minutes per
+qualification run).
 
-- In the current regime it removes modeled qualification contention for a ready
-  PR that arrives on its own or ahead of a concurrent push, at about 4%
-  qualification makespan.
-- It does not help a ready PR that arrives just behind a v1 push. The push takes
-  `gh-runner-06` first, and the ready PR waits for the push (316s) or for a
-  qualification job, exactly as without a reserve.
-- Two reserved runners remove that case too in the current regime, but cost
-  about 15% qualification makespan, four times the cost of one.
+- A merge produces a v1 push, and the next ready PR often follows while that push
+  still runs. With one reserve the push takes the reserved runner first, and the
+  ready PR waits for the push (316s) or for a qualification job. That is the
+  same as with no reserve: mean 40s, max 316s in the current regime.
+- Two reserves remove that modeled wait as well as the lone-PR wait in the
+  current regime.
+- One reserve costs only 3.8% but protects only a ready PR that arrives alone or
+  ahead of a push. It remains the step-down if the makespan cost proves too high
+  (section 4). With one reserve, the historical `push-then-pr` order is
+  slightly worse than with none, because qualification runs longer and
+  overlaps more probes.
 
-Two reserved runners are therefore deferred, not rejected: the live acceptance
-in section 4 decides between one and two. With one reserve, the historical
-`push-then-pr` order is slightly worse than with none, because qualification runs
-longer and overlaps more probes.
-
-In the historical regime, one reserved runner cuts injected waits over 60s by
-80% for a lone ready PR, but the tail stays near ten minutes. That tail comes
-from ready PRs and dispatches queuing behind one another during bursts. A
-runner reserve cannot remove it; the finalization lock and the short v1 profile
-address it instead.
+In the historical regime, two reserved runners cut injected waits over 60s by
+89% for a lone ready PR and by 62% behind a push, but the tail stays near ten
+minutes. That tail comes from ready PRs and dispatches queuing behind one
+another during bursts. A runner reserve cannot remove it; the finalization lock
+and the short v1 profile address it instead.
 
 What the reserve does not guarantee:
 
-- It does not make `gh-runner-06` exclusive. A v1 push, a second ready PR or an
-  HVO.AgentControl job can occupy it, and the `push-then-pr` rows above show the
-  resulting wait.
-- It does not protect against an outage of `gh-runner-06`. `verify-labels`
+- It does not make `gh-runner-05` or `gh-runner-06` exclusive. v1 pushes, other
+  ready PRs and HVO.AgentControl jobs share them. When two such general jobs hold
+  both, the next ready PR waits as it would without a reserve. The model covers
+  one concurrent push, not a burst.
+- It does not protect against an outage of the general runners. `verify-labels`
   warns when no general runner is online.
 - It does not change the job count, timeouts, cancellation, exact-SHA checkout,
   required checks or the trust boundary of any workflow. Only the qualification
@@ -154,16 +156,16 @@ ref, which is `development/v1`. Therefore:
 1. Confirm that no qualification run is queued or in progress, and that the
    runners are idle or only finishing work. Labels can be added while a runner
    is busy, and no service restart is needed.
-2. Add the label to the five qualification runners. This is safe before the
-   workflow requires it.
+2. Add the label to the four qualification runners only. This is safe before
+   the workflow requires it.
 
    ```bash
-   for id in 16 17 18 19 20; do   # gh-runner-01 .. gh-runner-05
+   for id in 16 17 18 19; do   # gh-runner-01 .. gh-runner-04
      gh api -X POST "orgs/HualapaiValley/actions/runners/$id/labels" -f 'labels[]=hvo-qualification'
    done
    ./scripts/ci:runner-capacity verify-labels --org HualapaiValley \
-     --qualification gh-runner-01,gh-runner-02,gh-runner-03,gh-runner-04,gh-runner-05 \
-     --general gh-runner-06
+     --qualification gh-runner-01,gh-runner-02,gh-runner-03,gh-runner-04 \
+     --general gh-runner-05,gh-runner-06
    ```
 
    Confirm the runner IDs with
@@ -171,24 +173,27 @@ ref, which is `development/v1`. Therefore:
    first. IDs change when a runner is re-registered.
 3. Merge the workflow change into `development/v1`. It reaches `main` with the
    next promotion.
-4. After the next promotion window, collect that window and compare it with
-   sections 2 and 3, using the commands in section 5. Use the same `--pool` even
-   if a runner ran nothing. Keep the change when both hold:
-   - every ready-PR or v1-push job that arrived during the qualification run,
-     while no other general job held `gh-runner-06`, started within 60s;
-   - the qualification makespan stays within the modeled +5%.
+4. Observe from the merge through the next two complete qualification runs.
+   Collect that window with the commands in section 5, using the same
+   six-runner `--pool` even if a runner ran nothing. Compare it with sections 2
+   and 3 and record the result on #849. The baseline
+   is the observed current-window qualification makespan in section 2, a mean
+   of 1336s.
 
-   Attribute every longer wait from the collected input: either another v1 or
-   AgentControl job held `gh-runner-06`, which is the modeled `push-then-pr`
-   case, or something else, which is a defect. Then record the result on #849.
-   - Repeated `push-then-pr` waits are the evidence for two reserved runners:
-     delete the label from `gh-runner-05` and rerun `verify-labels` with
-     `gh-runner-05,gh-runner-06` as general.
-   - A makespan regression beyond +5%, or an unattributed wait, means roll back.
+   | Observation | Decision |
+   | --- | --- |
+   | Every ready-PR or v1-push job that arrived during a qualification run started within 60s, unless other general jobs held both `gh-runner-05` and `gh-runner-06` at its arrival, and the mean qualification makespan is at most +20% over baseline (1603s; modeled cost +15%) | Keep two reserves |
+   | Waits hold, but the makespan exceeds +20% | Step down to one reserve: add the label to `gh-runner-05` (ID 20), then rerun `verify-labels` with `--qualification gh-runner-01,gh-runner-02,gh-runner-03,gh-runner-04,gh-runner-05 --general gh-runner-06`. One reserve trades the `push-then-pr` protection for a 3.8% modeled cost |
+   | Any wait over 60s not explained by other general jobs holding both reserves | Roll back: this is a defect, not modeled contention |
+
+   Attribute every wait over 60s from the collected input, using the `runner`,
+   `startedAt` and `completedAt` fields of the jobs on `gh-runner-05` and
+   `gh-runner-06` at the waiting job's `createdAt`.
 
 Re-registering a runner (`config.sh`) replaces its labels. Re-register
-`gh-runner-01` .. `gh-runner-05` with `--labels ...,hvo-qualification`, then run
-`verify-labels`.
+`gh-runner-01` .. `gh-runner-04` with `--labels ...,hvo-qualification`, and
+`gh-runner-05` and `gh-runner-06` without it, then run `verify-labels` with the
+split currently in force.
 
 Rollback (reverse order):
 
@@ -198,7 +203,7 @@ Rollback (reverse order):
 2. Only then remove the label:
 
    ```bash
-   for id in 16 17 18 19 20; do
+   for id in 16 17 18 19; do   # add 20 if the one-reserve step-down applied it
      gh api -X DELETE "orgs/HualapaiValley/actions/runners/$id/labels/hvo-qualification"
    done
    ```
@@ -226,12 +231,13 @@ cap.
 
 `report` takes the pool inventory explicitly through `--pool`. An idle runner
 still serves the replay, and the reserve is the last `N` names in sorted
-order, so `gh-runner-06` for one reserved runner. A pool job on a runner that
+order, so `gh-runner-05` and `gh-runner-06` for two reserved runners. Every
+`--pool` name must start with `--pool-prefix`. A pool job on a runner that
 `--pool` omits fails the report. The report is deterministic for a given input,
 and `--reserve`, `--seeds`, `--probe-seconds` and `--probe-step` select the
-model. `scripts/test:ci-runner-capacity` checks the
-tool against a hand-computed fixture and an offline `gh` substitute, and runs in
-the full-qualification Quality job.
+model. `scripts/test:ci-runner-capacity` checks the tool against a
+hand-computed fixture and an offline `gh` substitute, and runs in the
+full-qualification Quality job.
 
 The inputs and reports behind sections 2 and 3 are retained in the #849
 evidence archive with SHA-256 manifests.
@@ -240,8 +246,8 @@ evidence archive with SHA-256 manifests.
 
 | Option | Disposition |
 | --- | --- |
-| Reserve one general runner with `hvo-qualification` | Adopted as the trial (section 3) |
-| Reserve two runners | Deferred to the live acceptance (section 4). It also covers a ready PR arriving just behind a v1 push, at +15% qualification makespan against +3.8% for one |
+| Reserve two general runners (`hvo-qualification` on four) | Adopted as the trial (section 3): it also protects a ready PR arriving just behind a v1 push, at +15% qualification makespan |
+| Reserve one runner | Not adopted: +3.8% makespan, but no modeled benefit behind a v1 push. It is the step-down in section 4 |
 | Add runner VMs | Not measured. It depends on KVM host CPU, memory and I/O headroom, which this issue did not inventory, so it is out of scope for a reversible trial |
 | Runner-local or LAN content-addressed build store (#852 follow-up) | Recorded as an option, not adopted. #852 measured 527 MB packed per build and 398-709s per GitHub artifact hop against a 97s rebuild. A fleet-local store could remove the transfer, but it would add a cache-trust boundary shared by mutually untrusting jobs (poisoning, digest binding and eviction) and needs disk on the Docker volumes (38-61% used). It does not address the queue wait this issue measures |
 | Workflow priority or label exclusion | Not available in GitHub Actions |

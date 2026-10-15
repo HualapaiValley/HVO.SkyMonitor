@@ -80,6 +80,11 @@ expect_failure 'Missing pool inventory' '--pool is required' \
     "$tool" report --input "$fixtures/contention.json"
 expect_failure 'Runner outside the pool inventory' 'ran on gh-runner-03, which --pool does not list' \
     "$tool" report --input "$fixtures/contention.json" --pool gh-runner-01,gh-runner-02
+expect_failure 'Pool name outside the prefix' "must start with --pool-prefix gh-runner-: ['other-02']" \
+    "$tool" report --input "$fixtures/contention.json" --pool "$pool,other-02"
+expect_failure 'Prefix narrower than the pool' \
+    "must start with --pool-prefix gh-runner-01: ['gh-runner-02', 'gh-runner-03']" \
+    "$tool" report --input "$fixtures/contention.json" --pool "$pool" --pool-prefix gh-runner-01
 expect_failure 'Reserve of the whole pool' 'must leave at least one qualification runner' \
     "$tool" report --input "$fixtures/contention.json" --pool "$pool" --reserve 3
 expect_failure 'Empty window' 'No completed pool jobs' \

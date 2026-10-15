@@ -85,14 +85,14 @@ def violations(short, full):
     )
     require("if: needs.changes.outputs.mode == 'full'" in qualification_build,
             "category audit belongs to full qualification")
-    # Issue #849 keeps one general x64 runner out of qualification so a ready v1
+    # Issue #849 keeps two general x64 runners out of qualification so a ready v1
     # PR is not queued behind a promotion fan-out. Qualification must opt in to
     # the hvo-qualification label on every self-hosted job; the v1 check must not.
     general = "[self-hosted, linux, x64, hvo-skymonitor]"
     reserved = "[self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]"
     # A selector is either a bare GitHub-hosted image or the exact reserved list;
     # anything else (a self-hosted list carrying an image label, a mapping or an
-    # expression) could reach gh-runner-06 and is rejected.
+    # expression) could reach the general runners and is rejected.
     selectors = [value.strip() for value in re.findall(r"^\s+runs-on:(.*)$", full, re.M)]
     require(reserved in selectors and all(
         value == reserved or re.fullmatch(r"ubuntu-(latest|\d+\.\d+)", value) for value in selectors),
