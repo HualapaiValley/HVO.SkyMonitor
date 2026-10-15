@@ -47,7 +47,9 @@ internal static class MeasuredTrailBrowserFixture
                     {
                         Extra = new Dictionary<string, string>(frame.Metadata.Extra ?? new Dictionary<string, string>())
                         {
-                            ["sensorAdcBitDepth"] = "16", ["blackLevelAdu"] = "0", ["whiteLevelAdu"] = "65535"
+                            ["sensorAdcBitDepth"] = "16",
+                            ["blackLevelAdu"] = "0",
+                            ["whiteLevelAdu"] = "65535"
                         }
                     },
                     Layout = frame.Layout! with { BlackLevel = 0, WhiteLevel = ushort.MaxValue }
@@ -151,7 +153,7 @@ internal static class MeasuredTrailBrowserFixture
                     1,
                     1)),
             new CapturePipelineConfig([
-                
+
                 Step("Calibration", "calibration", 1, ["$raw"], new { strategy = "None" }),
                 Step("ProjectedScene", "scene", 5, ["$raw"], new { }),
                 Step("RollingCombination", "rolling", 10, ["calibration"], new { windowSize = 1, outputVariant = "rolling-mean" }),

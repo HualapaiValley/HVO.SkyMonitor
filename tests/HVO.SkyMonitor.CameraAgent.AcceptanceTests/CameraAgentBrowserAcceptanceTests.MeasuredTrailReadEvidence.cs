@@ -42,11 +42,19 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
                 Array.Sort(samples);
                 results.Add(new
                 {
-                    operation, concurrency, warmups = 20, reads = samples.Length,
-                    firstMilliseconds, elapsedMilliseconds = elapsed,
-                    medianMilliseconds = samples[99], p95Milliseconds = samples[189],
-                    maximumMilliseconds = samples[^1], readsPerSecond = samples.Length * 1000 / elapsed,
-                    allocatedBytes = allocations, cpuMilliseconds, workingSetBytes = process.WorkingSet64
+                    operation,
+                    concurrency,
+                    warmups = 20,
+                    reads = samples.Length,
+                    firstMilliseconds,
+                    elapsedMilliseconds = elapsed,
+                    medianMilliseconds = samples[99],
+                    p95Milliseconds = samples[189],
+                    maximumMilliseconds = samples[^1],
+                    readsPerSecond = samples.Length * 1000 / elapsed,
+                    allocatedBytes = allocations,
+                    cpuMilliseconds,
+                    workingSetBytes = process.WorkingSet64
                 });
             }
         }
@@ -54,7 +62,9 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         {
             schemaVersion = "issue-1005-retained-read-performance-v1",
             revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
-            measuredUtc = DateTimeOffset.UtcNow, captureId, expectedManifestIdentity,
+            measuredUtc = DateTimeOffset.UtcNow,
+            captureId,
+            expectedManifestIdentity,
             limitation = "Real SQLite projection and composition from seven 64x48 VirtualSky captures; one actual candidate. Browser pages closed and background capture/finalization paused. Supplements W1 raster composition; not physical detector throughput or a before/after comparison.",
             results
         }, MeasuredTrailEvidenceJsonOptions), deadline.Token).ConfigureAwait(false);

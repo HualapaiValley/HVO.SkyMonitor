@@ -317,11 +317,15 @@ internal static class CameraAgentGalleryEndpoints
             TrailEvidence = presentation.TrailEvidence is { } evidence ? new
             {
                 SchemaVersion = HVO.SkyMonitor.CameraAgent.Common.Transients.CameraAgentCaptureTrails.SchemaVersion,
-                evidence.State, evidence.Incomplete, evidence.Reason,
+                evidence.State,
+                evidence.Incomplete,
+                evidence.Reason,
                 PositionalUncertainty = "Unavailable",
                 Trails = evidence.Trails.Select(static trail => new
                 {
-                    trail.CandidateId, trail.EventId, trail.State,
+                    trail.CandidateId,
+                    trail.EventId,
+                    trail.State,
                     SourceCaptureId = trail.SourceManifest.Descriptor.Capture.CaptureId,
                     SourceArtifactId = trail.SourceManifest.Descriptor.Artifact.ArtifactId,
                     trail.DetectorInput.Source.ObservationStartedUtc,

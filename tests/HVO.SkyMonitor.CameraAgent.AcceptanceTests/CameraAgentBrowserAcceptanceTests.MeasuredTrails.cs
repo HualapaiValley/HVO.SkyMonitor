@@ -40,7 +40,8 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await using var diagnostics = new PlaywrightDiagnostics(browser, TestContext);
         await using var context = await diagnostics.NewContextAsync(new()
         {
-            BaseURL = host.BaseAddress.ToString(), ColorScheme = ColorScheme.Dark,
+            BaseURL = host.BaseAddress.ToString(),
+            ColorScheme = ColorScheme.Dark,
             ViewportSize = new() { Width = 1440, Height = 1000 }
         }).ConfigureAwait(false);
         var page = await context.NewPageAsync().ConfigureAwait(false);
@@ -129,9 +130,11 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         var identities = Path.Combine(output, "identities.json");
         await File.WriteAllTextAsync(identities, JsonSerializer.Serialize(new
         {
-            captureId, measuredUtc = DateTimeOffset.UtcNow,
+            captureId,
+            measuredUtc = DateTimeOffset.UtcNow,
             revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
-            provisional, final,
+            provisional,
+            final,
             presentation.Presentation.ManifestIdentitySha256,
             presentation.Presentation.PresentationIdentitySha256,
             presentation.Presentation.SvgChecksumSha256,

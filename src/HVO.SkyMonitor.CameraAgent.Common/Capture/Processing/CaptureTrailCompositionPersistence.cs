@@ -57,9 +57,15 @@ internal sealed partial class CaptureProcessingPersistence
                 PositionalUncertainty = "Unavailable",
                 Trails = evidence.Trails.Select(static trail => new
                 {
-                    trail.CandidateId, trail.EventId, trail.State, trail.CandidateIdentitySha256,
-                    trail.ExtractionIdentitySha256, trail.AssessmentIdentitySha256, trail.FinalizationIdentitySha256,
-                    trail.DetectorInput, trail.Geometry
+                    trail.CandidateId,
+                    trail.EventId,
+                    trail.State,
+                    trail.CandidateIdentitySha256,
+                    trail.ExtractionIdentitySha256,
+                    trail.AssessmentIdentitySha256,
+                    trail.FinalizationIdentitySha256,
+                    trail.DetectorInput,
+                    trail.Geometry
                 }).ToArray()
             }));
             var snapshotBytes = Encoding.UTF8.GetBytes(snapshot.GetRawText());
@@ -76,7 +82,9 @@ internal sealed partial class CaptureProcessingPersistence
                 ProcessingIdentity.ComputePayloadSha256(snapshotBytes), recipe, [new("capture-trail-evidence", TrailEvidenceSchema)],
                 sourceIds, TimeSpan.Zero, baseOutput.Compatibility)
             {
-                Kind = ProcessingProductKind.Metadata, SchemaVersion = TrailEvidenceSchema, ContentIdentitySha256 = snapshotIdentity
+                Kind = ProcessingProductKind.Metadata,
+                SchemaVersion = TrailEvidenceSchema,
+                ContentIdentitySha256 = snapshotIdentity
             };
             var snapshotArtifact = ToArtifact(snapshotProduct);
             var payload = TransientTrailPresentation.CreatePayload(snapshotIdentity, source.Layout.Width, source.Layout.Height,
@@ -174,8 +182,10 @@ internal sealed partial class CaptureProcessingPersistence
                 source.Artifact.CreatedUtc, product.TotalIntegration, product.Compatibility,
                 source.Capture.CaptureSequence, product.SourceArtifactIds)
             {
-                CaptureId = captureId, ProductKind = product.Kind,
-                SchemaVersion = product.SchemaVersion, ContentIdentitySha256 = product.ContentIdentitySha256
+                CaptureId = captureId,
+                ProductKind = product.Kind,
+                SchemaVersion = product.SchemaVersion,
+                ContentIdentitySha256 = product.ContentIdentitySha256
             };
         }
         finally

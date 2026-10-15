@@ -61,7 +61,8 @@ public sealed partial class DurableCaptureProcessingTests
                 combinedProduct.Role, combinedProduct.Variant, combinedProduct.Recipe.IdentitySha256,
                 combinedProduct.MediaType, combinedProduct.Layout, combinedProduct.Payload, raw.CreatedUtc,
                 combinedProduct.TotalIntegration, combinedProduct.Compatibility, raw.CaptureSequence,
-                combinedProduct.SourceArtifactIds, raw.ObservationStartedUtc, raw.ObservationEndedUtc) { CaptureId = captureId };
+                combinedProduct.SourceArtifactIds, raw.ObservationStartedUtc, raw.ObservationEndedUtc)
+            { CaptureId = captureId };
             var preview = await executor.ExecuteAsync(new ProcessingExecutionRequest(
                 BuiltInProcessingRecipes.EncodedPreview, JsonSerializer.SerializeToElement(new EncodedPreviewOptions(OutputEncoding: "Packed")),
                 ProcessingInputSelector.Combined(), [combinedArtifact], "combined-preview"), CancellationToken.None).ConfigureAwait(false);
@@ -142,7 +143,8 @@ public sealed partial class DurableCaptureProcessingTests
             evidence = evidence with { Trails = [measured] };
             using (var faultConnection = new SqliteConnection(new SqliteConnectionStringBuilder
             {
-                DataSource = Path.Combine(root, "journal", "raw-ingress.db"), Pooling = false
+                DataSource = Path.Combine(root, "journal", "raw-ingress.db"),
+                Pooling = false
             }.ToString()))
             {
                 await faultConnection.OpenAsync().ConfigureAwait(false);
