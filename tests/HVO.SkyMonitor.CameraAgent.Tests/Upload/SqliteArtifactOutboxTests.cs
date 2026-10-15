@@ -379,6 +379,33 @@ public sealed class SqliteArtifactOutboxTests
     }
 
     [TestMethod]
+    public async Task RetryOperations_OldArtifactKeepsCreationAndLatestRetryUpdateAcrossRestart()
+    {
+        using var root = new TemporaryRoot();
+        var clock = new MutableTimeProvider(StartUtc);
+        var artifactCreated = StartUtc.AddDays(-30);
+        var manifest = CreateManifest(root.Path, "frames/archived-retry.bin", artifactCreated, 1);
+        using (var outbox = new SqliteArtifactOutbox(clock))
+        {
+            await outbox.EnqueueAsync(root.Path, manifest, CancellationToken.None).ConfigureAwait(false);
+            var lease = await outbox.ClaimAsync(root.Path, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            await outbox.RetryAsync(root.Path, lease, StartUtc.AddHours(1), "upstream-unavailable", CancellationToken.None).ConfigureAwait(false);
+        }
+        clock.Advance(TimeSpan.FromMinutes(5));
+        using var restarted = new SqliteArtifactOutbox(clock);
+        var item = await restarted.ReadOperationsDetailAsync(root.Path, manifest.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(item);
+        Assert.AreEqual(ArtifactOutboxStatus.Retry, item.Status);
+        Assert.AreEqual(artifactCreated, item.CreatedUtc);
+        Assert.AreEqual(StartUtc, item.UpdatedUtc);
+        Assert.AreEqual(TimeSpan.FromDays(30).Add(TimeSpan.FromMinutes(5)), clock.GetUtcNow() - item.CreatedUtc);
+        Assert.AreEqual(TimeSpan.FromMinutes(5), clock.GetUtcNow() - item.UpdatedUtc);
+        Assert.AreEqual(1, item.AttemptCount);
+        Assert.AreEqual("upstream-unavailable", item.ReasonCode);
+    }
+
+    [TestMethod]
     public async Task RetryOperations_AbandonCommitsTerminalAuditReceiptAndReleasesOnlyDeliveryHoldAcrossRestart()
     {
         using var root = new TemporaryRoot();

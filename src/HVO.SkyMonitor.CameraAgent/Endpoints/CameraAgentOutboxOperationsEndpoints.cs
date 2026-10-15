@@ -492,6 +492,7 @@ internal static class CameraAgentOutboxOperationsEndpoints
             item.CreatedUtc,
             Math.Max(0, (now - item.CreatedUtc).TotalSeconds),
             item.UpdatedUtc,
+            Math.Max(0, (now - item.UpdatedUtc).TotalSeconds),
             item.NextAttemptUtc,
             item.ReasonCode is null ? null : OutboxOperationsReasonCodes.Sanitize(item.ReasonCode),
             new OutboxAllowedActions(
@@ -557,8 +558,9 @@ internal static class CameraAgentOutboxOperationsEndpoints
         string? MediaType,
         string? Role,
         DateTimeOffset CreatedUtc,
-        double AgeSeconds,
+        double ArtifactAgeSeconds,
         DateTimeOffset UpdatedUtc,
+        double LastUpdateAgeSeconds,
         DateTimeOffset NextAttemptUtc,
         string? ReasonCode,
         OutboxAllowedActions AllowedActions);

@@ -21,11 +21,13 @@ public sealed partial class QuarantineList : SiteTimeComponent
         }
         var now = (SiteServices.GetService<TimeProvider>() ?? TimeProvider.System).GetUtcNow();
         var age = now > createdUtc.Value ? now - createdUtc.Value : TimeSpan.Zero;
-        return age.TotalMinutes < 90
-            ? FormattableString.Invariant($"{age.TotalMinutes:F0} min")
-            : age.TotalHours < 48
-                ? FormattableString.Invariant($"{age.TotalHours:F0} h")
-                : FormattableString.Invariant($"{age.TotalDays:F0} d");
+        return age.TotalSeconds < 90
+            ? FormattableString.Invariant($"{age.TotalSeconds:F0}s")
+            : age.TotalMinutes < 90
+                ? FormattableString.Invariant($"{age.TotalMinutes:F0} min")
+                : age.TotalHours < 48
+                    ? FormattableString.Invariant($"{age.TotalHours:F0} h")
+                    : FormattableString.Invariant($"{age.TotalDays:F0} d");
     }
 
     private Task Start(OperatorOutboxItem item, OutboxOperationAction action, string triggerId) =>

@@ -28,9 +28,12 @@ public sealed class OutboxOperationsEndpointTests
     [TestMethod]
     public async Task ArtifactRetryEndpointListsAgeAttemptsReasonAndOnlyAbandonAction()
     {
-        var outbox = new OperationalArtifactOutbox(ArtifactOutboxStatus.Retry);
+        var now = DateTimeOffset.UtcNow;
+        var outbox = new OperationalArtifactOutbox(ArtifactOutboxStatus.Retry, now.AddDays(-30), now);
         using var factory = AssemblyHooks.Fixture.CreateCameraAgentFactory(services =>
         {
+            services.RemoveAll<TimeProvider>();
+            services.AddSingleton<TimeProvider>(new FixedTimeProvider(now));
             services.RemoveAll<IArtifactOutbox>();
             services.AddSingleton<IArtifactOutbox>(outbox);
             services.RemoveAll<CameraAgentStorageResolver>();
@@ -68,7 +71,9 @@ public sealed class OutboxOperationsEndpointTests
         var item = page.RootElement.GetProperty("items")[0];
         Assert.AreEqual("Retry", item.GetProperty("status").GetString());
         Assert.AreEqual(3, item.GetProperty("attemptCount").GetInt32());
-        Assert.IsTrue(item.GetProperty("ageSeconds").GetDouble() > 0);
+        Assert.AreEqual(TimeSpan.FromDays(30).TotalSeconds, item.GetProperty("artifactAgeSeconds").GetDouble());
+        Assert.AreEqual(0d, item.GetProperty("lastUpdateAgeSeconds").GetDouble());
+        Assert.IsFalse(item.TryGetProperty("ageSeconds", out _));
         Assert.AreEqual("upstream-rejected", item.GetProperty("reasonCode").GetString());
         Assert.AreEqual(JsonValueKind.Null, item.GetProperty("allowedActions").GetProperty("replayToken").ValueKind);
         var abandon = item.GetProperty("allowedActions").GetProperty("abandonToken").GetString();
@@ -483,7 +488,15 @@ public sealed class OutboxOperationsEndpointTests
             => throw new NotSupportedException();
     }
 
-    private sealed class OperationalArtifactOutbox(ArtifactOutboxStatus status = ArtifactOutboxStatus.Quarantined) : IArtifactOutbox
+    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private sealed class OperationalArtifactOutbox(
+        ArtifactOutboxStatus status = ArtifactOutboxStatus.Quarantined,
+        DateTimeOffset? createdUtc = null,
+        DateTimeOffset? updatedUtc = null) : IArtifactOutbox
     {
         internal const string RecordKey = "private-artifact-idempotency-key";
         private readonly Dictionary<string, OperationRequest> _operations = new(StringComparer.Ordinal);
@@ -495,8 +508,8 @@ public sealed class OutboxOperationsEndpointTests
             4096,
             "image/fits",
             FrameArtifactRole.Raw,
-            DateTimeOffset.Parse("2026-07-20T01:00:00Z", System.Globalization.CultureInfo.InvariantCulture),
-            DateTimeOffset.Parse("2026-07-20T01:05:00Z", System.Globalization.CultureInfo.InvariantCulture),
+            createdUtc ?? DateTimeOffset.Parse("2026-07-20T01:00:00Z", System.Globalization.CultureInfo.InvariantCulture),
+            updatedUtc ?? DateTimeOffset.Parse("2026-07-20T01:05:00Z", System.Globalization.CultureInfo.InvariantCulture),
             DateTimeOffset.Parse("2026-07-20T01:06:00Z", System.Globalization.CultureInfo.InvariantCulture),
             "upstream-rejected",
             CanReplay: status == ArtifactOutboxStatus.Quarantined,

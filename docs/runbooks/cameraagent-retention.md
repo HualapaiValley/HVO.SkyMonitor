@@ -136,7 +136,12 @@ reason code to `/api/v1/operations/outboxes/artifacts/replay` or
 SQLite record ID, or idempotency key in an operator URL. Replay is allowed only
 for quarantined records with valid deliverable evidence. Retry records are also
 listed in the Quarantine and retry browser (`/operations/quarantine`) with their
-age since enqueue, attempt count, next attempt and last reason. All retries are
+artifact age, age since the latest durable update, attempt count, next attempt
+and last reason. Artifact age uses the immutable manifest creation timestamp;
+the latest-update age uses the outbox status timestamp. These remain meaningful
+for newly queued archived payloads and survive retry and restart. The API names
+them `artifactAgeSeconds` and `lastUpdateAgeSeconds` beside `createdUtc` and
+`updatedUtc`. First-enqueue time is not retained by the current outbox. All retries are
 visible, so a persistent failure needs no arbitrary age threshold to become
 operable. Automatic retry and its backoff remain unchanged; retry records do not
 have a replay action.
