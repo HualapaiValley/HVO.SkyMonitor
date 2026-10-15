@@ -109,6 +109,31 @@ public sealed class CameraAgentFileSystemKernelFaultTests
         }
     }
 
+    [TestMethod]
+    public void NestedRawRootRequiresEveryNewAncestorBarrier()
+    {
+        var control = DurableCaptureProcessingTests.RequireKernelRetryControl();
+        var parent = Path.Combine(Path.GetTempPath(), $"hvo-root-parent-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(parent);
+        try
+        {
+            var root = Path.Combine(parent, "new-ancestor", "raw");
+            var store = new RawIngressFileStore(root, new NullRawIngressFaultInjector());
+            DurableCaptureProcessingTests.ArmKernelRetryFault(control, parent);
+            var probe = Assert.ThrowsExactly<IOException>(() => RawIngressFileStore.SyncDirectory(parent));
+            Assert.AreEqual(5, probe.HResult & 0xffff);
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                var failure = Assert.ThrowsExactly<IOException>(store.EnsureRootIsPhysical);
+                Assert.AreEqual(5, failure.HResult & 0xffff);
+            }
+            DurableCaptureProcessingTests.WaitForKernelController(control + ".released");
+            store.EnsureRootIsPhysical();
+            Assert.IsTrue(Directory.Exists(Path.Combine(root, "journal")));
+        }
+        finally { Directory.Delete(parent, recursive: true); }
+    }
+
     private sealed class PublicationFaultInjector(string control) : IRawIngressFaultInjector
     {
         internal string Directory { get; set; } = string.Empty;

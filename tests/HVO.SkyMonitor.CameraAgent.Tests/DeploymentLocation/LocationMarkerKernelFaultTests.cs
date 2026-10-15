@@ -12,4 +12,12 @@ public sealed class LocationMarkerKernelFaultTests
         try { await fixture.VerifyLocationMarkerRetryAsync(kernelFault: true).ConfigureAwait(false); }
         finally { fixture.Cleanup(); }
     }
+    [TestMethod]
+    public async Task NestedLocationRootRequiresEveryNewAncestorBarrier()
+    {
+        var fixture = new ProtectedDeploymentLocationStoreTests();
+        fixture.Initialize();
+        try { await fixture.VerifyNestedLocationRootBarrierAsync().ConfigureAwait(false); }
+        finally { fixture.Cleanup(); }
+    }
 }

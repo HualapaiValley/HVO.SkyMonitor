@@ -105,6 +105,35 @@ public sealed class ProtectedDeploymentLocationStoreTests
         CollectionAssert.AreEqual(protectedBytes, await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
     }
 
+    internal async Task VerifyNestedLocationRootBarrierAsync()
+    {
+        var control = Capture.Processing.DurableCaptureProcessingTests.RequireKernelRetryControl();
+        _options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = Path.Combine(_root, "new-ancestor", "data"),
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+        });
+        // A catalog/store may create these names before configuration/location readiness.
+        Directory.CreateDirectory(_options.Value.RawIngressRoot);
+        using var store = CreateStore();
+        var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
+        Capture.Processing.DurableCaptureProcessingTests.ArmKernelRetryFault(control, _root);
+        var probe = Assert.ThrowsExactly<IOException>(() =>
+            HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawIngressFileStore.SyncDirectory(_root));
+        Assert.AreEqual(5, probe.HResult & 0xffff);
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var failure = await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.AreEqual(5, failure.HResult & 0xffff);
+            Assert.IsNull(store.Active);
+        }
+        Capture.Processing.DurableCaptureProcessingTests.WaitForKernelController(control + ".released");
+        var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1L, active.Version);
+        Assert.AreEqual(active, store.Active);
+    }
+
     [TestMethod]
     public async Task InitializeRestartAndChange_PreservesProtectedImmutableVersions()
     {
