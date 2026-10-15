@@ -829,7 +829,7 @@ public sealed class ProtectedDeploymentLocationStore(
         Directory.CreateDirectory(root);
         RawIngressFileStore.EnsureNoSymbolicLinks(parent, root);
         RestrictDirectory(root);
-        RawIngressFileStore.SyncDirectory(parent);
+        CameraAgentFileSystem.EnsureStorageRootDurable(root);
         var directory = Path.GetFullPath(Path.Combine(root, ".location"));
         Directory.CreateDirectory(directory);
         RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);

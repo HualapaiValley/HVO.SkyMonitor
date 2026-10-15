@@ -884,7 +884,7 @@ internal sealed class CaptureProcessingPersistence(
             sourceDescriptor,
             node.Id,
             product,
-            BeforeMetadataDirectorySyncForTest, cancellationToken).ConfigureAwait(false);
+            BeforeMetadataDirectorySyncForTest, provisionStorageRoot: false, cancellationToken).ConfigureAwait(false);
 
     internal static async ValueTask<DurableProcessingOutput> CopyMetadataProductAsync(
         string storageRoot,
@@ -892,12 +892,11 @@ internal sealed class CaptureProcessingPersistence(
         string sourceId,
         ProcessingProduct product,
         CancellationToken cancellationToken)
-        => await PersistMetadataProductAsync(
-            Path.GetFullPath(storageRoot),
-            sourceDescriptor,
-            sourceId,
-            product,
-            null, cancellationToken).ConfigureAwait(false);
+    {
+        storageRoot = Path.GetFullPath(storageRoot);
+        return await PersistMetadataProductAsync(
+            storageRoot, sourceDescriptor, sourceId, product, null, provisionStorageRoot: true, cancellationToken).ConfigureAwait(false);
+    }
 
     private static async ValueTask<DurableProcessingOutput> PersistMetadataProductAsync(
         string storageRoot,
@@ -905,6 +904,7 @@ internal sealed class CaptureProcessingPersistence(
         string sourceId,
         ProcessingProduct product,
         Action<string>? beforeDirectorySync,
+        bool provisionStorageRoot,
         CancellationToken cancellationToken)
     {
         var checksum = ProcessingIdentity.ComputePayloadSha256(product.Payload);
@@ -1012,6 +1012,7 @@ internal sealed class CaptureProcessingPersistence(
                 sourceId);
         var evidenceJson = DurableProcessingProductManifestJson.Serialize(manifest);
 
+        if (provisionStorageRoot) CameraAgentFileSystem.EnsureStorageRootDurable(storageRoot);
         Directory.CreateDirectory(directory);
         RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, directory);
         // Visibility can be left behind by a failed earlier namespace barrier. Reestablish

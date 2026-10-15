@@ -43,8 +43,11 @@ public sealed partial class DurableCaptureProcessingTests
                 new CaptureProcessingStepMetadata("storage", "Storage", 90),
                 new FileStorageCaptureProcessingStepOptions { StorageRoot = destination, RetentionDays = 1, QueueForUpload = false },
                 new LatestFrameAccessor(), frameStorage, outbox,
-                Options.Create(new CameraAgentHostOptions { RawIngressRoot = root,
-                    CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled } }),
+                Options.Create(new CameraAgentHostOptions
+                {
+                    RawIngressRoot = root,
+                    CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+                }),
                 NullLogger<FileStorageCaptureProcessingStep>.Instance, persistence);
             var annotation = new PackedAnnotationProducingStep();
             var producer = pixels

@@ -313,13 +313,7 @@ internal sealed class RawIngressFileStore(
 
     internal void EnsureRootIsPhysical()
     {
-        Directory.CreateDirectory(_root);
-        EnsureNoSymbolicLinks(_root, _root);
-        if (OperatingSystem.IsLinux())
-        {
-            FlushDirectoryTracked(_root);
-            FlushDirectoryTracked(Path.GetDirectoryName(_root)!);
-        }
+        CameraAgentFileSystem.EnsureStorageRootDurable(_root, _directorySyncRecorder);
         foreach (var child in TopLevelDirectories)
         {
             var childPath = Path.Combine(_root, child);

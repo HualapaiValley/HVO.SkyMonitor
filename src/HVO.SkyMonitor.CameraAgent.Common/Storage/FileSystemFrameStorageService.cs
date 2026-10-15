@@ -93,6 +93,7 @@ public sealed class FileSystemFrameStorageService(
         var relativePayloadPath = Path.GetRelativePath(storageRoot, payloadPath);
         ValidateVersionedDescriptorAgreement(descriptor, artifact, frame);
 
+        CameraAgentFileSystem.EnsureStorageRootDurable(storageRoot);
         Directory.CreateDirectory(directory);
         RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, directory);
         RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, directory);

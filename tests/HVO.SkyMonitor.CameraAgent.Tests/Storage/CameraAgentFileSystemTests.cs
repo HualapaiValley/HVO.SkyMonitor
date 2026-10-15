@@ -72,4 +72,22 @@ public sealed class CameraAgentFileSystemTests
         CameraAgentFileSystem.FlushFile(stream);
         CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, File.ReadAllBytes(path));
     }
+
+    [TestMethod]
+    public void StorageRoot_PreservesTrustedAncestorLinksButRejectsALinkedRoot()
+    {
+        var target = Path.Combine(_root, "physical", "parent");
+        Directory.CreateDirectory(target);
+        var alias = Path.Combine(_root, "alias");
+        Directory.CreateSymbolicLink(alias, target);
+        var root = Path.Combine(alias, "new", "storage");
+        CameraAgentFileSystem.EnsureStorageRootDurable(root);
+        CameraAgentFileSystem.EnsureStorageRootDurable(root);
+        Assert.IsTrue(Directory.Exists(Path.Combine(target, "new", "storage")));
+        var linkedRoot = Path.Combine(_root, "linked-root");
+        Directory.CreateSymbolicLink(linkedRoot, root);
+        var failure = Assert.ThrowsExactly<IOException>(() => CameraAgentFileSystem.EnsureStorageRootDurable(linkedRoot));
+        Assert.IsTrue(FileSystemFaultCompatibility.IsContainmentFailure(failure));
+        Assert.IsNotNull(new DirectoryInfo(alias).LinkTarget);
+    }
 }
