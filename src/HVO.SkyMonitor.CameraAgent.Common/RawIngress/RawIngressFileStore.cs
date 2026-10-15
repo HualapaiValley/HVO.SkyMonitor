@@ -313,10 +313,9 @@ internal sealed class RawIngressFileStore(
 
     internal void EnsureRootIsPhysical()
     {
-        var rootExisted = Directory.Exists(_root);
         Directory.CreateDirectory(_root);
         EnsureNoSymbolicLinks(_root, _root);
-        if (!rootExisted && OperatingSystem.IsLinux())
+        if (OperatingSystem.IsLinux())
         {
             FlushDirectoryTracked(_root);
             FlushDirectoryTracked(Path.GetDirectoryName(_root)!);
@@ -324,10 +323,9 @@ internal sealed class RawIngressFileStore(
         foreach (var child in TopLevelDirectories)
         {
             var childPath = Path.Combine(_root, child);
-            var childExisted = Directory.Exists(childPath);
             Directory.CreateDirectory(childPath);
             EnsureNoSymbolicLinks(_root, childPath);
-            if (!childExisted && OperatingSystem.IsLinux())
+            if (OperatingSystem.IsLinux())
             {
                 FlushDirectoryTracked(childPath);
                 FlushDirectoryTracked(_root);

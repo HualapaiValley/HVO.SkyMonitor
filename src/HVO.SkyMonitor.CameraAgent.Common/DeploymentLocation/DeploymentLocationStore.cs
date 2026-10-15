@@ -824,23 +824,15 @@ public sealed class ProtectedDeploymentLocationStore(
         var parent = Path.GetDirectoryName(root)
             ?? throw new InvalidOperationException("CameraAgent data root has no parent directory.");
         RawIngressFileStore.EnsureNoSymbolicLinks(parent, root);
-        var rootExisted = Directory.Exists(root);
         Directory.CreateDirectory(root);
         RawIngressFileStore.EnsureNoSymbolicLinks(parent, root);
         RestrictDirectory(root);
-        if (!rootExisted)
-        {
-            RawIngressFileStore.SyncDirectory(parent);
-        }
+        RawIngressFileStore.SyncDirectory(parent);
         var directory = Path.GetFullPath(Path.Combine(root, ".location"));
-        var directoryExisted = Directory.Exists(directory);
         Directory.CreateDirectory(directory);
         RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
         RestrictDirectory(directory);
-        if (!directoryExisted)
-        {
-            RawIngressFileStore.SyncDirectoryHierarchy(root, directory);
-        }
+        RawIngressFileStore.SyncDirectoryHierarchy(root, directory);
         var path = Path.GetFullPath(Path.Combine(directory, "deployment-location.v1.protected"));
         // The manual record is a separate protected file rather than a field of the history document:
         // the history schema stays byte-compatible so an installer rollback to a baseline image can

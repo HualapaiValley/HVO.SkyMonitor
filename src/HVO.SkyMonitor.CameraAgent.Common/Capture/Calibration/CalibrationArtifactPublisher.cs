@@ -199,13 +199,9 @@ public sealed class CalibrationArtifactPublisher(
         CancellationToken cancellationToken)
     {
         var directory = Path.GetDirectoryName(path)!;
-        var existed = Directory.Exists(directory);
         Directory.CreateDirectory(directory);
         EnsureSafePath(path);
-        if (!existed)
-        {
-            RawIngressFileStore.SyncDirectoryHierarchy(_root, directory);
-        }
+        RawIngressFileStore.SyncDirectoryHierarchy(_root, directory);
         if (File.Exists(path))
         {
             if (!await FileMatchesAsync(path, bytes, cancellationToken).ConfigureAwait(false))

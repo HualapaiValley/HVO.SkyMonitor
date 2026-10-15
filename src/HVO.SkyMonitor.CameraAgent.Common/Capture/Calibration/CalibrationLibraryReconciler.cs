@@ -235,26 +235,22 @@ public sealed class CalibrationLibraryReconciler(
         }
         var source = ResolveSafePath(operation.SourceRelativePath);
         var destination = ResolveSafePath(operation.QuarantineRelativePath);
-        if (!Directory.Exists(source))
+        var sourceExists = Directory.Exists(source);
+        var destinationExists = Directory.Exists(destination);
+        if (!sourceExists && !destinationExists)
         {
-            if (Directory.Exists(destination))
-            {
-                return;
-            }
             throw new IOException("Planned calibration quarantine evidence is missing.");
         }
-        if (Directory.Exists(destination))
+        if (sourceExists && destinationExists)
         {
             throw new IOException("Planned calibration quarantine destination already exists.");
         }
         var parent = Path.GetDirectoryName(destination)!;
-        var parentExisted = Directory.Exists(parent);
         Directory.CreateDirectory(parent);
-        if (!parentExisted)
-        {
-            RawIngressFileStore.SyncDirectoryHierarchy(_root, parent);
-        }
-        Directory.Move(source, destination);
+        RawIngressFileStore.SyncDirectoryHierarchy(_root, parent);
+        if (sourceExists) Directory.Move(source, destination);
+        // A visible destination can be the result of a rename whose sync failed. Keep
+        // the SQLite operation planned until both namespaces are durable, including retries.
         BeforeQuarantineDirectorySyncForTest?.Invoke(Path.GetDirectoryName(source)!);
         RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(source)!);
         RawIngressFileStore.SyncDirectory(parent);

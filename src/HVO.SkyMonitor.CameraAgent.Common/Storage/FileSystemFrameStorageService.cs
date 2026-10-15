@@ -93,13 +93,9 @@ public sealed class FileSystemFrameStorageService(
         var relativePayloadPath = Path.GetRelativePath(storageRoot, payloadPath);
         ValidateVersionedDescriptorAgreement(descriptor, artifact, frame);
 
-        var directoryExisted = Directory.Exists(directory);
         Directory.CreateDirectory(directory);
         RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, directory);
-        if (!directoryExisted)
-        {
-            RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, directory);
-        }
+        RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, directory);
         var payloadExists = File.Exists(payloadPath);
         var sidecarExists = File.Exists(metadataPath);
         var upgradeProducerSidecar = await ValidateExistingVersionedEvidenceAsync(
@@ -138,12 +134,8 @@ public sealed class FileSystemFrameStorageService(
             }
 
             var indexDirectory = Path.Combine(storageRoot, "index");
-            var indexDirectoryExisted = Directory.Exists(indexDirectory);
             Directory.CreateDirectory(indexDirectory);
-            if (!indexDirectoryExisted)
-            {
-                RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, indexDirectory);
-            }
+            RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, indexDirectory);
             var indexPath = Path.Combine(indexDirectory, $"frames_{timestamp:yyyy-MM-dd}.jsonl");
             var indexGate = FrameIndexLock.ForRoot(storageRoot);
             await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);

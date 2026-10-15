@@ -142,14 +142,13 @@ public static class AtomicPublisher
 
     /// <summary>
     /// Create <paramref name="absoluteDirectory"/> and any missing ancestors inside the root,
-    /// verifying containment, and flush the created chain so the entries are durable. Existing
-    /// directories are left as found.
+    /// verifying containment, and flush the chain so the entries are durable. Existing
+    /// directories are synchronized too: visibility does not prove a prior attempt synced them.
     /// </summary>
     public static void EnsureDirectory(PhysicalRoot root, string absoluteDirectory)
     {
         ArgumentNullException.ThrowIfNull(root);
         root.Verify(absoluteDirectory, "ensure-directory");
-        var existed = Directory.Exists(absoluteDirectory);
         try
         {
             Directory.CreateDirectory(absoluteDirectory);
@@ -159,10 +158,7 @@ public static class AtomicPublisher
             throw FileSystemFaultException.From("ensure-directory", absoluteDirectory, exception);
         }
         root.Verify(absoluteDirectory, "ensure-directory");
-        if (!existed)
-        {
-            DurableSync.DirectoryChain(root, absoluteDirectory);
-        }
+        DurableSync.DirectoryChain(root, absoluteDirectory);
     }
 
     /// <summary>

@@ -630,11 +630,10 @@ internal sealed class ProjectedSceneStagingStore :
 
     private void EnsurePhysicalDirectory()
     {
-        var existed = Directory.Exists(_root);
         EnsureAncestorChainHasNoLinks(_root);
         Directory.CreateDirectory(_root);
         EnsureAncestorChainHasNoLinks(_root);
-        if (!existed) RawIngressFileStore.SyncDirectoryHierarchy(_durableRoot, _root);
+        RawIngressFileStore.SyncDirectoryHierarchy(_durableRoot, _root);
     }
 
     private static void EnsurePhysicalFile(string path)
