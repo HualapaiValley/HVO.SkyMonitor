@@ -103,9 +103,12 @@ Traps recorded on SkyMonitor:
   drop-in did not move, the first ARM64 run fails at that gate.
 
 Keep the existing labels so no `runs-on` line needs to change. On the x64 pool,
-`gh-runner-01` .. `gh-runner-04` also carry `hvo-qualification`, and
-`gh-runner-05` and `gh-runner-06` must not; re-register with the same split and verify it with
-`scripts/ci:runner-capacity verify-labels` (`docs/runbooks/ci-runner-capacity.md`).
+some runners also carry `hvo-qualification` and at least `gh-runner-06` must
+not: `gh-runner-01` .. `gh-runner-04` during the two-reserve trial, or
+`gh-runner-01` .. `gh-runner-05` after its recorded step-down. Re-register with
+the split currently in force, as tabulated in section 4 of
+`docs/runbooks/ci-runner-capacity.md`, and verify it with
+`scripts/ci:runner-capacity verify-labels`.
 
 ## 4. Transfer and re-establish
 

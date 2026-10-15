@@ -183,17 +183,25 @@ ref, which is `development/v1`. Therefore:
    | Observation | Decision |
    | --- | --- |
    | Every ready-PR or v1-push job that arrived during a qualification run started within 60s, unless other general jobs held both `gh-runner-05` and `gh-runner-06` at its arrival, and the mean qualification makespan is at most +20% over baseline (1603s; modeled cost +15%) | Keep two reserves |
-   | Waits hold, but the makespan exceeds +20% | Step down to one reserve: add the label to `gh-runner-05` (ID 20), then rerun `verify-labels` with `--qualification gh-runner-01,gh-runner-02,gh-runner-03,gh-runner-04,gh-runner-05 --general gh-runner-06`. One reserve trades the `push-then-pr` protection for a 3.8% modeled cost |
+   | Waits hold, but the makespan exceeds +20% | Step down to one reserve: add the label to `gh-runner-05` (ID 20), then rerun `verify-labels` with `--qualification gh-runner-01,gh-runner-02,gh-runner-03,gh-runner-04,gh-runner-05 --general gh-runner-06`, and record the new split on #849. One reserve trades the `push-then-pr` protection for a 3.8% modeled cost |
    | Any wait over 60s not explained by other general jobs holding both reserves | Roll back: this is a defect, not modeled contention |
 
    Attribute every wait over 60s from the collected input, using the `runner`,
    `startedAt` and `completedAt` fields of the jobs on `gh-runner-05` and
    `gh-runner-06` at the waiting job's `createdAt`.
 
-Re-registering a runner (`config.sh`) replaces its labels. Re-register
-`gh-runner-01` .. `gh-runner-04` with `--labels ...,hvo-qualification`, and
-`gh-runner-05` and `gh-runner-06` without it, then run `verify-labels` with the
-split currently in force.
+Re-registering a runner (`config.sh`) replaces its labels, so re-register with
+the split currently in force. That split is the last decision recorded on #849,
+and it must match the runner's labels before re-registration:
+
+| Split in force | `hvo-qualification` | General |
+| --- | --- | --- |
+| Two-reserve trial (initial rollout) | `gh-runner-01` .. `gh-runner-04` | `gh-runner-05`, `gh-runner-06` |
+| One reserve, after the step-down | `gh-runner-01` .. `gh-runner-05` | `gh-runner-06` |
+
+`gh-runner-06` never carries the label. Pass `--labels ...,hvo-qualification`
+only to the runners in the qualification column, then run `verify-labels` with
+the same split.
 
 Rollback (reverse order):
 
