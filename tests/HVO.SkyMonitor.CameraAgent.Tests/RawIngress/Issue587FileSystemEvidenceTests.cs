@@ -7,6 +7,8 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 
@@ -69,6 +71,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
             stages.Add("w3p", new { Measurement = w3p, IoDelta = IoDelta(io), Hashes = await HashTreeAsync(Path.Combine(work, "w3p"), excludeSqlite: true).ConfigureAwait(false) });
             stages.Add("publication", await MeasurePublicationAsync(Path.Combine(work, "publication"), frozenInput,
                 await File.ReadAllBytesAsync(Directory.EnumerateFiles(Path.Combine(work, "w2", "frames"), "*.json", SearchOption.AllDirectories).Order(StringComparer.Ordinal).First()).ConfigureAwait(false)).ConfigureAwait(false));
+            stages.Add("derivative", await MeasureDerivativeAsync(Path.Combine(work, "derivative"), frozenInput, configurationFromFixture).ConfigureAwait(false));
             await SaveFixtureJsonAsync(output, "evidence", new
             {
                 ProductionRevision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
@@ -130,6 +133,64 @@ public sealed partial class RawCaptureIngressPerformanceTests
         foreach (var path in Directory.EnumerateFiles(root, "*.json", SearchOption.AllDirectories))
             CollectionAssert.AreEqual(sidecar, await File.ReadAllBytesAsync(path).ConfigureAwait(false));
         return new { Metrics = metrics, Hashes = await HashTreeAsync(root).ConfigureAwait(false) };
+    }
+
+    private static async Task<object> MeasureDerivativeAsync(string root, W2Input input, CameraModuleConfig configuration)
+    {
+        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+        var checksum = PayloadChecksum.ComputeSha256(input.Payload);
+        var evidence = Enumerable.Range(0, WarmupCount + MeasuredCount).Select(index =>
+        {
+            var submission = CreateSubmission(index, input);
+            var ids = RawCaptureDescriptorFactory.CreateStableIds(configuration, submission);
+            var raw = RawCaptureDescriptorFactory.Create(configuration, submission,
+                new RawCaptureIdentity(configuration.AgentId!, index + 1, ids.CaptureId, ids.ArtifactId), checksum, new EvidenceClock().GetUtcNow());
+            var artifactId = new Guid(index + 1, 2, 0, new byte[8]);
+            var recipe = RecipeIdentityDescriptor.Create("fixture-identity-calibration", "1.0.0", "fixture-pass-through-v1", JsonSerializer.SerializeToElement(new { }));
+            var descriptor = raw with { Artifact = raw.Artifact with
+            {
+                ArtifactId = artifactId, Role = FrameArtifactRole.Calibrated, Variant = "calibrated",
+                SourceArtifactIds = [ids.ArtifactId], Recipe = recipe
+            } };
+            Assert.IsTrue(descriptor.Validate().IsValid, descriptor.Validate().FieldPath);
+            return (Artifact: new FrameArtifact(artifactId, FrameArtifactRole.Calibrated, submission.Result.Frame!, [ids.ArtifactId], recipe.SemanticVersion), Descriptor: descriptor);
+        }).ToArray();
+        for (var index = 0; index < WarmupCount; index++)
+            _ = await storage.SaveAsync(root, evidence[index].Artifact, evidence[index].Descriptor, "fixture-calibration", CancellationToken.None).ConfigureAwait(false);
+        var cpu = Process.GetCurrentProcess().TotalProcessorTime;
+        var allocated = GC.GetTotalAllocatedBytes(precise: true);
+        var rss = Environment.WorkingSet;
+        var loh = GetLohSize();
+        var io = ReadIssue587Io();
+        var samples = new double[MeasuredCount];
+        for (var index = 0; index < MeasuredCount; index++)
+        {
+            var value = evidence[index + WarmupCount];
+            var start = Stopwatch.GetTimestamp();
+            _ = await storage.SaveAsync(root, value.Artifact, value.Descriptor, "fixture-calibration", CancellationToken.None).ConfigureAwait(false);
+            samples[index] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        }
+        var metrics = new
+        {
+            SamplesMilliseconds = samples,
+            CpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - cpu).TotalMilliseconds,
+            AllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocated,
+            RssBeforeBytes = rss, RssAfterBytes = Environment.WorkingSet,
+            LohBeforeBytes = loh, LohAfterBytes = GetLohSize(), IoDelta = IoDelta(io)
+        };
+        var hashes = await HashTreeAsync(root).ConfigureAwait(false);
+        // Reopen the service and repeat every write: payload/sidecar/index bytes must not change.
+        using var restarted = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+        foreach (var value in evidence)
+        {
+            var saved = await restarted.SaveAsync(root, value.Artifact, value.Descriptor, "fixture-calibration", CancellationToken.None).ConfigureAwait(false);
+            var parsed = CaptureContractJson.ParseManifest(await File.ReadAllBytesAsync(Path.ChangeExtension(saved.AbsolutePath, ".json")).ConfigureAwait(false));
+            Assert.IsTrue(parsed.IsValid, parsed.Validation.FieldPath);
+            Assert.AreEqual(CaptureContractJson.ComputeDescriptorSha256(value.Descriptor), CaptureContractJson.ComputeDescriptorSha256(parsed.Document!.Manifest.Descriptor));
+            Assert.AreEqual("fixture-calibration", parsed.Document.Manifest.ProducerStepId);
+        }
+        CollectionAssert.AreEqual(hashes.ToArray(), (await HashTreeAsync(root).ConfigureAwait(false)).ToArray());
+        return new { Metrics = metrics, Hashes = hashes, RestartReplayBytesUnchanged = true };
     }
 
     private static string RequiredEvidenceDirectory(string variable)
