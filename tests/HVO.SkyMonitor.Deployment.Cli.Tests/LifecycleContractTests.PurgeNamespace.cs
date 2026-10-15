@@ -78,6 +78,10 @@ public sealed partial class LifecycleContractTests
         var operation = await RetainedOperationAsync(fixture);
         Assert.AreEqual(LifecycleOperationPhase.Mutating, operation.Phase);
         Assert.IsTrue(operation.MutationStarted);
+        var evidenceBytes = await File.ReadAllBytesAsync(EvidencePath(fixture, operation.OperationId));
+        Assert.AreEqual(
+            NativeLinux.GetNodeIdentity(Namespace(fixture)).Inode,
+            (await ReadEvidenceAsync(fixture, operation.OperationId)).Namespace?.Inode);
 
         fixture.Runner.Sudo = SimulatedHelper(fixture);
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
@@ -87,6 +91,8 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(operation.OperationId, result.OperationId);
         Assert.IsFalse(Directory.Exists(fixture.Paths.InstanceRoot));
         Assert.IsEmpty(Tombstones(fixture));
+        // The retry continued under the evidence its first attempt recorded rather than replacing it.
+        CollectionAssert.AreEqual(evidenceBytes, await File.ReadAllBytesAsync(EvidencePath(fixture, operation.OperationId)));
     }
 
     [TestMethod]
@@ -297,13 +303,40 @@ public sealed partial class LifecycleContractTests
         var sudoCount = fixture.Runner.SudoCount;
         var operation = await RetainedOperationAsync(fixture);
         var namespaceEntries = Directory.EnumerateFileSystemEntries(Namespace(fixture)).Order().ToArray();
+        var journal = await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath);
+        var evidenceBytes = await File.ReadAllBytesAsync(EvidencePath(fixture, operation.OperationId));
 
-        var result = await CameraAgentLifecycleManager.ExecuteAsync(
-            PurgeRequest(fixture) with { Resume = true }, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None);
+        // A missing name alone never proves removal: without the operator's disposition nothing is recorded.
+        var unconfirmed = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            PurgeRequest(fixture) with { Resume = true }, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        StringAssert.Contains(unconfirmed.Message, "its absence does not prove removal", StringComparison.Ordinal);
+        StringAssert.Contains(
+            unconfirmed.Message, $"--confirm-removed-operation-id {operation.OperationId:D}", StringComparison.Ordinal);
+        Assert.AreEqual(journal, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
+        CollectionAssert.AreEqual(evidenceBytes, await File.ReadAllBytesAsync(EvidencePath(fixture, operation.OperationId)));
+
+        var flushed = new List<UnixNodeIdentity>();
+        CameraAgentLifecycleManager.NamespaceFlushOverride.Value = handle =>
+        {
+            flushed.Add(NativeLinux.GetOpenNodeIdentity(handle, Namespace(fixture)));
+            NativeLinux.FlushOpenDirectory(handle);
+        };
+        LifecycleResult result;
+        try
+        {
+            result = await CameraAgentLifecycleManager.ExecuteAsync(
+                ConfirmedResume(fixture, operation), fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None);
+        }
+        finally
+        {
+            CameraAgentLifecycleManager.NamespaceFlushOverride.Value = null;
+        }
 
         Assert.AreEqual(CameraAgentLifecycleManager.PurgeAlreadyAbsentSettlement, result.Outcome);
         Assert.AreEqual(operation.OperationId, result.OperationId);
         Assert.AreEqual(sudoCount, fixture.Runner.SudoCount);
+        Assert.AreEqual(NativeLinux.GetNodeIdentity(Namespace(fixture)).Inode, Assert.ContainsSingle(flushed).Inode);
         CollectionAssert.AreEqual(namespaceEntries, Directory.EnumerateFileSystemEntries(Namespace(fixture)).Order().ToArray());
         var evidence = await ReadEvidenceAsync(fixture, operation.OperationId);
         Assert.AreEqual(CameraAgentLifecycleManager.PurgeAlreadyAbsentSettlement, evidence.Settlement);
@@ -311,9 +344,262 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(InstallationStatus.Completed, (await RetainedOperationAsync(fixture)).Status);
 
         var second = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            PurgeRequest(fixture) with { Resume = true }, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+            ConfirmedResume(fixture, operation), fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
         Assert.AreEqual("No matching interrupted purge operation exists.", second.Message);
         Assert.AreEqual(evidence.SettledUtc, (await ReadEvidenceAsync(fixture, operation.OperationId)).SettledUtc);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task ResumePurge_RelocatedTreeIsNeverSettledAsRemoved()
+    {
+        using var fixture = await DeniedPurgeFixtureAsync();
+        var operation = await RetainedOperationAsync(fixture);
+        var relocated = Path.Combine(Namespace(fixture), "relocated");
+        WithWritableNamespace(fixture, () => Directory.Move(fixture.Paths.InstanceRoot, relocated));
+        fixture.Runner.Sudo = static (_, _) => throw new AssertFailedException("A relocated purge must not escalate.");
+        var journal = await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath);
+        var evidenceBytes = await File.ReadAllBytesAsync(EvidencePath(fixture, operation.OperationId));
+
+        // The disposition cannot override what the CLI can see: the evidenced tree under another name is not removed.
+        var inNamespace = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            ConfirmedResume(fixture, operation), fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        StringAssert.Contains(inNamespace.Message, "still exists in its namespace under another name", StringComparison.Ordinal);
+        Assert.IsTrue(File.Exists(Path.Combine(relocated, "instance-manifest.json")));
+
+        // Moved out of the namespace, the tree is indistinguishable from a removed one, so only the disposition naming
+        // this operation settles it, and settlement never touches the relocated tree.
+        var outside = Path.Combine(fixture.Root, "relocated-outside");
+        WithWritableNamespace(fixture, () => Directory.Move(relocated, outside));
+        var outsideInventory = SafeTreeDeletion.CaptureChildInventory(fixture.Root, "relocated-outside", fixture.Uid, fixture.Gid);
+        var unconfirmed = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            PurgeRequest(fixture) with { Resume = true }, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+        var otherOperation = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            PurgeRequest(fixture) with { Resume = true, ConfirmRemovedOperationId = Guid.NewGuid() },
+            fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        StringAssert.Contains(unconfirmed.Message, "its absence does not prove removal", StringComparison.Ordinal);
+        StringAssert.Contains(otherOperation.Message, "does not name the interrupted purge", StringComparison.Ordinal);
+        Assert.AreEqual(journal, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
+        CollectionAssert.AreEqual(evidenceBytes, await File.ReadAllBytesAsync(EvidencePath(fixture, operation.OperationId)));
+
+        var settled = await CameraAgentLifecycleManager.ExecuteAsync(
+            ConfirmedResume(fixture, operation), fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None);
+
+        Assert.AreEqual(CameraAgentLifecycleManager.PurgeAlreadyAbsentSettlement, settled.Outcome);
+        CollectionAssert.AreEqual(
+            outsideInventory.ToArray(),
+            SafeTreeDeletion.CaptureChildInventory(fixture.Root, "relocated-outside", fixture.Uid, fixture.Gid).ToArray());
+        Assert.IsFalse(Path.Exists(fixture.Paths.InstanceRoot));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task ResumePurge_EvidenceWithoutNamespaceIdentitySettlesOnlyByDisposition()
+    {
+        using var fixture = await DeniedPurgeFixtureAsync();
+        var operation = await RetainedOperationAsync(fixture);
+        // Evidence recorded before the namespace identity existed carries none.
+        await WriteEvidenceAsync(fixture, await ReadEvidenceAsync(fixture, operation.OperationId) with { Namespace = null });
+        var relocated = Path.Combine(Namespace(fixture), "relocated");
+        WithWritableNamespace(fixture, () => Directory.Move(fixture.Paths.InstanceRoot, relocated));
+        fixture.Runner.Sudo = static (_, _) => throw new AssertFailedException("A legacy purge settlement must not escalate.");
+
+        var inNamespace = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            ConfirmedResume(fixture, operation), fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.Contains(inNamespace.Message, "still exists in its namespace under another name", StringComparison.Ordinal);
+
+        WithWritableNamespace(fixture, () =>
+        {
+            SafeFileSystem.MakeTreeOwnerWritable(relocated);
+            Directory.Delete(relocated, recursive: true);
+        });
+        var unconfirmed = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            PurgeRequest(fixture) with { Resume = true }, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.Contains(unconfirmed.Message, "its absence does not prove removal", StringComparison.Ordinal);
+        Assert.IsNull((await ReadEvidenceAsync(fixture, operation.OperationId)).Settlement);
+
+        var settled = await CameraAgentLifecycleManager.ExecuteAsync(
+            ConfirmedResume(fixture, operation), fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None);
+
+        Assert.AreEqual(CameraAgentLifecycleManager.PurgeAlreadyAbsentSettlement, settled.Outcome);
+        var evidence = await ReadEvidenceAsync(fixture, operation.OperationId);
+        Assert.IsNull(evidence.Namespace);
+        Assert.AreEqual(CameraAgentLifecycleManager.PurgeAlreadyAbsentSettlement, evidence.Settlement);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task ResumePurge_FailedNamespaceFlushLeavesSettlementResumable()
+    {
+        using var fixture = await StrandedPurgeFixtureAsync();
+        var operation = await RetainedOperationAsync(fixture);
+        var journal = await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath);
+        var evidenceBytes = await File.ReadAllBytesAsync(EvidencePath(fixture, operation.OperationId));
+        CameraAgentLifecycleManager.NamespaceFlushOverride.Value = static _ =>
+            throw new InstallerException("An authenticated directory could not be flushed to disk.");
+        try
+        {
+            var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+                ConfirmedResume(fixture, operation), fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+            StringAssert.Contains(failure.Message, "could not be flushed to disk", StringComparison.Ordinal);
+        }
+        finally
+        {
+            CameraAgentLifecycleManager.NamespaceFlushOverride.Value = null;
+        }
+
+        Assert.AreEqual(journal, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
+        CollectionAssert.AreEqual(evidenceBytes, await File.ReadAllBytesAsync(EvidencePath(fixture, operation.OperationId)));
+        var retained = await RetainedOperationAsync(fixture);
+        Assert.AreEqual(LifecycleOperationPhase.Mutating, retained.Phase);
+        Assert.AreEqual(InstallationStatus.Running, retained.Status);
+
+        var settled = await CameraAgentLifecycleManager.ExecuteAsync(
+            ConfirmedResume(fixture, operation), fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None);
+        Assert.AreEqual(CameraAgentLifecycleManager.PurgeAlreadyAbsentSettlement, settled.Outcome);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task ResumePurge_CommittedTombstoneRemovedOutOfBandCompletesOnlyAfterNamespaceFlush()
+    {
+        using var fixture = await ReadOnlyNamespaceFixtureAsync();
+        var helper = SimulatedHelper(fixture);
+        fixture.Runner.Sudo = (arguments, cancellationToken) => arguments[4] == "remove"
+            ? Task.FromResult(new ProcessResult(1, string.Empty, "denied"))
+            : helper(arguments, cancellationToken);
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            PurgeRequest(fixture), fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+        var operation = await RetainedOperationAsync(fixture);
+        Assert.AreEqual(LifecycleOperationPhase.Committed, operation.Phase);
+        var tombstone = Assert.ContainsSingle(Tombstones(fixture));
+        WithWritableNamespace(fixture, () => Directory.Delete(tombstone));
+        fixture.Runner.Sudo = static (_, _) => throw new AssertFailedException("A committed purge without a tombstone must not escalate.");
+        var journal = await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath);
+
+        // A committed deletion is the CLI's own, so it needs no disposition and refuses one.
+        var disposition = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            ConfirmedResume(fixture, operation), fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+        StringAssert.Contains(disposition.Message, "refuses --confirm-removed-operation-id", StringComparison.Ordinal);
+        CameraAgentLifecycleManager.NamespaceFlushOverride.Value = static _ =>
+            throw new InstallerException("An authenticated directory could not be flushed to disk.");
+        try
+        {
+            var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+                PurgeRequest(fixture) with { Resume = true }, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+            StringAssert.Contains(failure.Message, "could not be flushed to disk", StringComparison.Ordinal);
+        }
+        finally
+        {
+            CameraAgentLifecycleManager.NamespaceFlushOverride.Value = null;
+        }
+        Assert.AreEqual(journal, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
+
+        var result = await CameraAgentLifecycleManager.ExecuteAsync(
+            PurgeRequest(fixture) with { Resume = true }, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None);
+
+        Assert.AreEqual("completed", result.Outcome);
+        Assert.AreEqual(InstallationStatus.Completed, (await RetainedOperationAsync(fixture)).Status);
+        Assert.IsNull((await ReadEvidenceAsync(fixture, operation.OperationId)).Settlement);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task ResumePurge_DispositionIsRefusedWhileTheTreeOrItsTombstoneExists()
+    {
+        using var fixture = await DeniedPurgeFixtureAsync();
+        var operation = await RetainedOperationAsync(fixture);
+        var inventory = Inventory(fixture);
+
+        var rootPresent = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            ConfirmedResume(fixture, operation), fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        StringAssert.Contains(rootPresent.Message, "The instance root exists, so it was not removed", StringComparison.Ordinal);
+        CollectionAssert.AreEqual(inventory, Inventory(fixture));
+        var tombstone = Path.Combine(Namespace(fixture), PrivilegedPurgeNamespace.TombstoneName(fixture.InstanceId, operation.OperationId));
+        WithWritableNamespace(fixture, () => Directory.Move(fixture.Paths.InstanceRoot, tombstone));
+
+        var tombstonePresent = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            ConfirmedResume(fixture, operation), fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        StringAssert.Contains(tombstonePresent.Message, "refuses --confirm-removed-operation-id", StringComparison.Ordinal);
+        Assert.IsTrue(File.Exists(Path.Combine(tombstone, "instance-manifest.json")));
+        Assert.AreEqual(1, fixture.Runner.SudoCount);
+        Assert.IsNull((await ReadEvidenceAsync(fixture, operation.OperationId)).Settlement);
+        Assert.AreEqual(LifecycleOperationPhase.Mutating, (await RetainedOperationAsync(fixture)).Phase);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task PurgeAsync_RetryBeforeQuarantineAdoptsOnlyItsUnchangedEvidence()
+    {
+        var cases = new (string Name, Func<LifecycleFixture, Guid, Task> Arrange, string Message)[]
+        {
+            ("planted file", static (fixture, _) =>
+                File.WriteAllTextAsync(Path.Combine(fixture.Paths.InstanceRoot, "planted"), "foreign"),
+                "not the tree the retained purge evidenced"),
+            ("replaced descendant", static (fixture, _) =>
+            {
+                var descendant = EvidencedDescendant(fixture);
+                var replacement = descendant + ".replacement";
+                File.Copy(descendant, replacement);
+                File.Move(replacement, descendant, overwrite: true);
+                return Task.CompletedTask;
+            }, "not the tree the retained purge evidenced"),
+            ("missing descendant", static (fixture, _) =>
+            {
+                File.Delete(EvidencedDescendant(fixture));
+                return Task.CompletedTask;
+            }, "not the tree the retained purge evidenced"),
+            ("foreign host", static async (fixture, operationId) =>
+                await WriteEvidenceAsync(fixture, await ReadEvidenceAsync(fixture, operationId) with
+                {
+                    HostIdentitySha256 = new string('0', 64)
+                }), "belongs to a different host"),
+            ("other schema", static async (fixture, operationId) =>
+            {
+                var evidence = await ReadEvidenceAsync(fixture, operationId);
+                await WriteEvidenceAsync(fixture, evidence with { SchemaVersion = evidence.SchemaVersion + 1 });
+            }, "does not match its retained operation"),
+            ("recorded settlement", static async (fixture, operationId) =>
+                await WriteEvidenceAsync(fixture, await ReadEvidenceAsync(fixture, operationId) with
+                {
+                    Settlement = CameraAgentLifecycleManager.PurgeAlreadyAbsentSettlement,
+                    SettledUtc = DateTimeOffset.UtcNow
+                }), "not the tree the retained purge evidenced"),
+            ("other namespace", static async (fixture, operationId) =>
+            {
+                var evidence = await ReadEvidenceAsync(fixture, operationId);
+                await WriteEvidenceAsync(fixture, evidence with
+                {
+                    Namespace = evidence.Namespace! with { Inode = evidence.Namespace.Inode + 1 }
+                });
+            }, "not the tree the retained purge evidenced")
+        };
+        foreach (var (name, arrange, message) in cases)
+        {
+            using var fixture = await DeniedPurgeFixtureAsync();
+            var operation = await RetainedOperationAsync(fixture);
+            await arrange(fixture, operation.OperationId);
+            var inventory = Inventory(fixture);
+            var journal = await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath);
+            var evidenceBytes = await File.ReadAllBytesAsync(EvidencePath(fixture, operation.OperationId));
+            fixture.Runner.Sudo = SimulatedHelper(fixture);
+
+            var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+                PurgeRequest(fixture) with { Resume = true }, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None),
+                name);
+
+            StringAssert.Contains(failure.Message, message, StringComparison.Ordinal, name);
+            CollectionAssert.AreEqual(inventory, Inventory(fixture), name);
+            Assert.AreEqual(journal, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath), name);
+            CollectionAssert.AreEqual(
+                evidenceBytes, await File.ReadAllBytesAsync(EvidencePath(fixture, operation.OperationId)), name);
+            Assert.AreEqual(1, fixture.Runner.SudoCount, name);
+            Assert.IsEmpty(Tombstones(fixture), name);
+        }
     }
 
     [TestMethod]
@@ -359,6 +645,14 @@ public sealed partial class LifecycleContractTests
                     Namespace(fixture), PrivilegedPurgeNamespace.TombstoneName(fixture.InstanceId, Guid.NewGuid()))));
                 return Task.CompletedTask;
             }, "Another purge tombstone of this instance exists"),
+            ("substituted namespace", static fixture =>
+            {
+                // A same-owner, same-mode replacement on the same filesystem is still not the evidenced directory.
+                Directory.Move(Namespace(fixture), Namespace(fixture) + "-displaced");
+                Directory.CreateDirectory(Namespace(fixture));
+                File.SetUnixFileMode(Namespace(fixture), ReadOnlyNamespace);
+                return Task.CompletedTask;
+            }, "not the directory that held the evidenced tree"),
             ("missing evidence", static async fixture =>
             {
                 var operation = await RetainedOperationAsync(fixture);
@@ -423,13 +717,15 @@ public sealed partial class LifecycleContractTests
         foreach (var (name, arrange, message) in cases)
         {
             using var fixture = await StrandedPurgeFixtureAsync();
+            // Every refusal holds even with the operator's disposition, which never overrides a provable contradiction.
+            var operation = await RetainedOperationAsync(fixture);
             await arrange(fixture);
             var journal = File.Exists(fixture.Paths.LifecycleStatePath)
                 ? await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath)
                 : null;
 
             var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-                PurgeRequest(fixture) with { Resume = true }, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None),
+                ConfirmedResume(fixture, operation), fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None),
                 name);
 
             StringAssert.Contains(failure.Message, message, StringComparison.Ordinal, name);
@@ -651,11 +947,10 @@ public sealed partial class LifecycleContractTests
     }
 
     /// <summary>
-    /// Produces the field incident's stranded state: a purge whose quarantine was denied, journalled as
-    /// <c>Purge / Mutating / Running</c> with its deletion evidence, after which its instance root was removed outside
-    /// the CLI.
+    /// A purge whose quarantine was denied: journalled as <c>Purge / Mutating / Running</c> with its deletion evidence
+    /// and its instance root intact.
     /// </summary>
-    private static async Task<LifecycleFixture> StrandedPurgeFixtureAsync()
+    private static async Task<LifecycleFixture> DeniedPurgeFixtureAsync()
     {
         var fixture = await ReadOnlyNamespaceFixtureAsync();
         fixture.Runner.Sudo = static (_, _) => Task.FromResult(new ProcessResult(1, string.Empty, "denied"));
@@ -664,6 +959,16 @@ public sealed partial class LifecycleContractTests
         var operation = await RetainedOperationAsync(fixture);
         Assert.AreEqual(LifecycleOperationPhase.Mutating, operation.Phase);
         Assert.AreEqual(InstallationStatus.Running, operation.Status);
+        return fixture;
+    }
+
+    /// <summary>
+    /// Produces the field incident's stranded state: a denied purge whose instance root was then removed outside the
+    /// CLI.
+    /// </summary>
+    private static async Task<LifecycleFixture> StrandedPurgeFixtureAsync()
+    {
+        var fixture = await DeniedPurgeFixtureAsync();
         WithWritableNamespace(fixture, () =>
         {
             SafeFileSystem.MakeTreeOwnerWritable(fixture.Paths.InstanceRoot);
@@ -675,6 +980,16 @@ public sealed partial class LifecycleContractTests
 
     private static LifecycleRequest PurgeRequest(LifecycleFixture fixture)
         => fixture.Request(LifecycleOperationKind.Purge) with { ConfirmationInstanceId = fixture.InstanceId };
+
+    private static LifecycleRequest ConfirmedResume(LifecycleFixture fixture, LifecycleOperationState operation)
+        => PurgeRequest(fixture) with { Resume = true, ConfirmRemovedOperationId = operation.OperationId };
+
+    // A regular file the purge evidenced, other than the ownership marker and the lifecycle lock.
+    private static string EvidencedDescendant(LifecycleFixture fixture)
+        => Directory.EnumerateFiles(fixture.Paths.InstanceRoot, "*", SearchOption.AllDirectories)
+            .Where(path => path != fixture.Paths.ManifestPath && Path.GetFileName(path) != ".deployment.lock")
+            .Order(StringComparer.Ordinal)
+            .First();
 
     private static string Namespace(LifecycleFixture fixture) => PrivilegedPurgeNamespace.NamespaceRoot(fixture.Paths.ProductRoot);
 

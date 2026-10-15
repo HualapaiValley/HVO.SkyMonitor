@@ -98,7 +98,8 @@ public sealed class PurgeNamespaceRootTests
 
     /// <summary>
     /// The field incident end to end: a purge stranded by a denied rename, its instance root then removed outside the
-    /// CLI, settles truthfully as already absent exactly once and never recreates the instance name.
+    /// CLI, is refused until the operator's disposition names the operation, then settles truthfully as already absent
+    /// exactly once and never recreates the instance name.
     /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
@@ -111,8 +112,16 @@ public sealed class PurgeNamespaceRootTests
         Assert.AreEqual(LifecycleOperationPhase.Mutating, stranded.Phase);
         await staging.RemoveInstanceRootAsRootAsync();
         var namespaceEntries = staging.NamespaceEntries();
+        var unconfirmed = await staging.RunCliAsync("purge", "--resume");
 
-        var settled = await staging.RunCliAsync("purge", "--resume");
+        Assert.AreEqual(1, unconfirmed.ExitCode, unconfirmed.StandardOutput);
+        StringAssert.Contains(unconfirmed.StandardError, "its absence does not prove removal", StringComparison.Ordinal);
+        StringAssert.Contains(
+            unconfirmed.StandardError, $"--confirm-removed-operation-id {stranded.OperationId:D}", StringComparison.Ordinal);
+        Assert.AreEqual(LifecycleOperationPhase.Mutating, (await staging.RetainedOperationAsync()).Phase);
+        Assert.IsNull((await staging.ReadEvidenceAsync(stranded.OperationId)).Settlement);
+
+        var settled = await staging.RunCliAsync("purge", "--resume", confirmRemovedOperationId: stranded.OperationId);
 
         Assert.AreEqual(0, settled.ExitCode, settled.StandardError);
         using var result = JsonDocument.Parse(settled.StandardOutput);
@@ -125,7 +134,7 @@ public sealed class PurgeNamespaceRootTests
         Assert.IsNotNull(evidence.SettledUtc);
         Assert.AreEqual(InstallationStatus.Completed, (await staging.RetainedOperationAsync()).Status);
 
-        var replayed = await staging.RunCliAsync("purge", "--resume");
+        var replayed = await staging.RunCliAsync("purge", "--resume", confirmRemovedOperationId: stranded.OperationId);
 
         Assert.AreEqual(1, replayed.ExitCode, replayed.StandardOutput);
         StringAssert.Contains(replayed.StandardError, "No matching interrupted purge operation exists.", StringComparison.Ordinal);
@@ -326,7 +335,8 @@ public sealed class PurgeNamespaceRootTests
             }
         }
 
-        public Task<ProcessResult> RunCliAsync(string command, string? flag = null, bool denySudo = false)
+        public Task<ProcessResult> RunCliAsync(
+            string command, string? flag = null, bool denySudo = false, Guid? confirmRemovedOperationId = null)
         {
             var path = Environment.GetEnvironmentVariable("PATH") ?? "/usr/local/bin:/usr/bin:/bin";
             List<string> environment =
@@ -347,6 +357,8 @@ public sealed class PurgeNamespaceRootTests
                 "--instance-id", instanceId, "--confirm-instance-id", instanceId, "--json"
             ];
             if (flag is not null) arguments.Add(flag);
+            if (confirmRemovedOperationId is { } operationId)
+                arguments.AddRange(["--confirm-removed-operation-id", operationId.ToString("D")]);
             return InNamespaceAsync(arguments);
         }
 

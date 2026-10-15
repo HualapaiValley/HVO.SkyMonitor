@@ -1224,9 +1224,19 @@ The CLI re-authenticates the result after the helper returns. A denied or failed
 helper leaves the journal at `Purge / Mutating`; rerun the same command with
 `--resume`, which continues from whichever side of the atomic rename the
 interruption left. Once the journal records the mutation, the CLI adopts an
-instance root only if it is the evidenced tree: the same installation, with the
-same root inode and device. It refuses any other tree at that name, and any
-instance root that reappears after the purge committed its deletion.
+instance root only if it is the evidenced tree. A retry before quarantine reuses
+the deletion evidence that its first attempt recorded and never replaces it. It
+continues only when all of these match:
+
+- the evidence names this operation, request and host, and records no
+  settlement;
+- the evidence records exactly the current manifest and, when it recorded one,
+  the current `cameraagents` directory;
+- the current tree is exactly the evidenced inventory.
+
+An added, missing or replaced entry stops the retry before anything is renamed.
+The CLI also refuses any instance root that reappears after the purge committed
+its deletion.
 
 The `Manual` contracts in `PurgeNamespaceRootTests` prove this boundary with
 real root ownership. Each run uses a disposable private mount namespace, so the
@@ -1241,23 +1251,49 @@ HVO_DEPLOYMENT_CLI_PUBLISHED=/tmp/hvo-cli/HVO.SkyMonitor.Deployment.Cli \
   --filter "TestCategory=Manual&FullyQualifiedName~PurgeNamespaceRootTests"
 ```
 
-When `--resume` finds neither the instance root nor its tombstone, and the
-journal never committed deletion, someone removed the tree outside the CLI. The
-CLI settles that case only when all of these hold:
+Sometimes `--resume` finds neither the instance root nor its tombstone, although
+the journal never committed deletion. The tree is gone from its name, but that
+does not prove it was removed, because it may have been moved instead.
+
+The CLI therefore never settles that case on its own. It refuses and prints the
+operation ID. Once the operator has confirmed that the tree was removed outside
+the CLI, they rerun the same command with that ID as an explicit disposition:
+
+```bash
+hvo-skymonitor cameraagent purge --instance-id <uuid> --confirm-instance-id <uuid> \
+  --resume --confirm-removed-operation-id <operation-id>
+```
+
+The disposition is accepted only with `cameraagent purge --resume` and a
+canonical, nonempty UUID. It is not part of the request hash. It must name the
+interrupted purge. The CLI refuses it whenever the instance root or the
+tombstone exists, and whenever the purge already committed its own deletion.
+
+Even with the disposition, the CLI settles only when all of these hold:
 
 - the journal and the retained deletion evidence match the request and this
   host;
 - the Docker daemon matches and no container references the instance;
+- `cameraagents` is the directory that held the evidenced tree, when the
+  evidence recorded it. Evidence written before that identity existed relies on
+  the operator's disposition alone for this check;
 - `cameraagents` is on the device that held the evidenced tree, so an unmounted
   data filesystem is not mistaken for a deletion;
 - nothing exists at the instance name, not even a dangling link;
-- no other tombstone of the instance exists.
+- no other tombstone of the instance exists;
+- the evidenced tree is not under any other name in `cameraagents`.
 
-The CLI then records `"settlement": "already-absent"` with a time in the evidence,
-completes the journal, and reports the outcome `already-absent`, not
-`completed`. It does not claim it deleted the tree, and it creates no path. A
-completed or settled purge is terminal: another `--resume` reports that no
-matching interrupted purge exists.
+The CLI then flushes `cameraagents` to disk so that the observed absence is
+durable. Only after that does it record `"settlement": "already-absent"` with a
+time in the evidence, complete the journal, and report the outcome
+`already-absent`, not `completed`. It does not claim it deleted the tree, and it
+creates no path. A committed purge whose emptied tombstone has gone also flushes
+`cameraagents` before it completes. If a flush fails, the journal stays
+resumable. A completed or settled purge is terminal: another `--resume` reports
+that no matching interrupted purge exists.
+
+The CLI cannot see a tree that was moved out of `cameraagents`. That is why the
+disposition is required, and the operator who supplies it is attesting removal.
 
 Catalog versions are explicit per instance:
 

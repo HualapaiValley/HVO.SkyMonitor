@@ -122,6 +122,18 @@ internal static class SafeTreeDeletion
             root.DeviceMajor, root.DeviceMinor, root.MountId);
     }
 
+    /// <summary>
+    /// Whether a freshly captured inventory is exactly a retained one: the same paths, each with the same owner, mode,
+    /// type, link count, inode, and device. Only the mount ID, which a remount or reboot may renumber, is not compared.
+    /// </summary>
+    public static bool IsUnchangedInventory(
+        IReadOnlyList<DestructiveTreeNode> current,
+        IReadOnlyList<DestructiveTreeNode> retained)
+        => current.Count == retained.Count &&
+           current.OrderBy(static node => node.RelativePath, StringComparer.Ordinal)
+               .Zip(retained.OrderBy(static node => node.RelativePath, StringComparer.Ordinal))
+               .All(static pair => pair.First with { MountId = 0 } == pair.Second with { MountId = 0 });
+
     private static UnixNodeIdentity EmptyChild(
         SafeFileHandle parent,
         string parentPath,
