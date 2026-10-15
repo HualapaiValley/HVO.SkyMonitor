@@ -1834,7 +1834,7 @@ internal sealed class CameraAgentLifecycleManager
             throw new InstallerException("The retained transactional identities do not match the lifecycle operation.");
     }
 
-    private static ComposeFiles ComposeFrom(InstallationPaths paths, InstanceManifest manifest, InstallationResult result)
+    internal static ComposeFiles ComposeFrom(InstallationPaths paths, InstanceManifest manifest, InstallationResult result)
     {
         var compact = manifest.InstanceId.ToString("N");
         return new ComposeFiles(

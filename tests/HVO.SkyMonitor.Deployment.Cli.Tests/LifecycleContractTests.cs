@@ -669,13 +669,45 @@ public sealed class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CatalogSelection_ImageWithoutCatalogIndependentReplay_RefusesBeforeMutation()
+    {
+        // Bundle-free coverage of the refusal inside the selection itself, so a lane without the production bundle
+        // still fails if the check is removed or moved after the pause. The candidate is synthetic: after candidate
+        // validation the selection reads only its identity, never its files, until the check has passed.
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        const string candidateVersion = "hyg-v4.2-p3-s2-r2";
+        var request = fixture.Request(LifecycleOperationKind.CatalogSelect) with { CatalogVersion = candidateVersion };
+        var candidate = fixture.Manifest.Catalog with { PackageVersion = candidateVersion };
+        var result = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
+        var operation = await CameraAgentLifecycleManager.BeginAsync(
+            request, fixture.Paths, LifecycleOperationKind.CatalogSelect, fixture.Manifest, CancellationToken.None);
+        var undeclared = new FakeLifecycleClient();
+        undeclared.RecoveryContinuity = undeclared.RecoveryContinuity with { ReplayCatalogIndependent = false };
+
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CatalogLifecycleManager.SelectAsync(
+            request, fixture.Paths, fixture.Manifest, result,
+            CameraAgentLifecycleManager.ComposeFrom(fixture.Paths, fixture.Manifest, result), new DockerClient(fixture.Runner),
+            _ => undeclared, _ => new FakeOwnerClient(fixture.ApplicationIdentity), "lifecycle-token", "verification-token",
+            candidate, operation, CancellationToken.None));
+        StringAssert.Contains(refusal.Message, "does not declare catalog-independent archived replay", StringComparison.Ordinal);
+        Assert.AreEqual(fixture.Manifest.Catalog.PackageVersion, await File.ReadAllTextAsync(
+            Path.Combine(fixture.Paths.ConfigRoot, "secrets", "Catalog__RequiredPackageVersion")));
+        Assert.AreEqual(0, undeclared.PauseCount);
+        Assert.AreEqual(0, fixture.Runner.ComposeUpCount);
+        Assert.IsFalse(File.Exists(Path.Combine(
+            fixture.Paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"), "previous-catalog-version")));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CatalogSelectAndRollback_CurrentContractsConverge()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
             InstanceLifecycleCondition.Installed, seedCatalogSelection: false);
-        // Deliberately environment-gated; see the note in InstallerFlowTests. The CI Unit lane
-        // restores the catalog bundle and asserts it exists before exporting this variable, so a
-        // skip there means the restore broke rather than that the gate is working as intended.
+        // Deliberately environment-gated; see the note in InstallerFlowTests. The full-qualification Unit lane in
+        // ci.yml restores the catalog bundle and asserts it exists before exporting this variable, so a skip there
+        // means the restore broke. Development v1 Build and Unit does not restore the bundle and skips this test;
+        // CatalogSelection_ImageWithoutCatalogIndependentReplay_RefusesBeforeMutation covers the refusal there.
         var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
         if (string.IsNullOrEmpty(bundle)) Assert.Inconclusive("Set HVO_PRODUCTION_CATALOG_BUNDLE to run catalog transitions.");
         var selected = CatalogInstaller.Install(bundle, fixture.Paths.CatalogRoot, Guid.NewGuid());

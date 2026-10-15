@@ -229,7 +229,9 @@ internal static class CatalogLifecycleManager
         }
     }
 
-    private static async Task<LifecycleResult> SelectAsync(
+    // Internal so the transition after candidate validation is testable without the production catalog bundle that
+    // ValidateInstalled needs, which Development v1 CI does not restore.
+    internal static async Task<LifecycleResult> SelectAsync(
         LifecycleRequest request,
         InstallationPaths paths,
         InstanceManifest manifest,
