@@ -206,7 +206,12 @@ public sealed partial class DurableCaptureProcessingTests
                 product.Recipe.IdentitySha256, product.MediaType, product.Layout, product.Payload, raw.CreatedUtc,
                 product.TotalIntegration, product.Compatibility, raw.CaptureSequence, product.SourceArtifactIds,
                 raw.ObservationStartedUtc, raw.ObservationEndedUtc)
-            { CaptureId = captureId };
+            {
+                CaptureId = captureId,
+                ProductKind = product.Kind,
+                SchemaVersion = product.SchemaVersion,
+                ContentIdentitySha256 = product.ContentIdentitySha256 ?? product.OutputIdentitySha256
+            };
 
             object OutputFootprint()
             {
