@@ -23,6 +23,8 @@ public sealed class ExecutionEvidencePerformanceTests
     private const int HistoryCount = 10_000;
     private const int Warmup = 5;
     private const int Measured = 30;
+    private const int ColdStartOperations = 30;
+    private const string SteadyStateEnvironmentVariable = "HVO_ISSUE_538_STEADY_STATE";
     private const long RawBytes = 4_708_352;
     private const string RepeatCommand = "dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~ExecutionEvidencePerformanceTests.Issue538_MetadataAndLiveInterferenceAcceptance";
     private static string DiagnosticRepeatCommand => ExecutionEvidenceDiagnosticCollector.DiagnosticRepeatCommand(RepeatCommand);
@@ -41,6 +43,10 @@ public sealed class ExecutionEvidencePerformanceTests
         var destination = Path.Combine(repository, "tests", "HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests",
             "TestResults", "issue-538", source.Sha, source.Dirty ? source.DirtyFingerprintSha256 : "clean");
         var diagnosticMode = ExecutionEvidenceDiagnosticCollector.IsEnabled;
+        var steadyStateMode = string.Equals(Environment.GetEnvironmentVariable(SteadyStateEnvironmentVariable),
+            "1", StringComparison.Ordinal);
+        Assert.IsFalse(steadyStateMode && (diagnosticMode || ExecutionEvidenceDiagnosticCollector.IsTraceRequested),
+            "Steady-state acceptance cannot be mixed with diagnostic instrumentation or EventPipe.");
         Assert.IsTrue(diagnosticMode || !ExecutionEvidenceDiagnosticCollector.IsTraceRequested,
             "EventPipe attach is available only in explicitly enabled diagnostic mode.");
         if (diagnosticMode)
@@ -48,10 +54,13 @@ public sealed class ExecutionEvidencePerformanceTests
             TestContext.WriteLine($"DiagnosticOnly-NotAcceptance source={source.Sha} dirty={source.Dirty} repeat={DiagnosticRepeatCommand}");
         }
         if (diagnosticMode) { destination = Path.Combine(destination, "diagnostic"); }
+        if (steadyStateMode) { destination = Path.Combine(destination, "steady-state"); }
+        var repeatCommand = PerformanceRepeatCommand(diagnosticMode, steadyStateMode);
+        TestContext.WriteLine($"mode={PerformanceMode(diagnosticMode, steadyStateMode)} source={source.Sha} dirty={source.Dirty} repeat={repeatCommand}");
         Directory.CreateDirectory(destination);
         using var counters = new ExecutionEvidencePerformanceCounters(Fixture.HostFixture.SqlServerConnectionString);
         // The idle bracket must precede the large metadata histories and their real reconciliation work.
-        var interference = await MeasureInterferenceAsync(counters, destination, source, diagnosticMode).ConfigureAwait(false);
+        var interference = await MeasureInterferenceAsync(counters, destination, source, diagnosticMode, steadyStateMode).ConfigureAwait(false);
         var comparisons = Compare(interference.Phases);
         if (diagnosticMode)
         {
@@ -65,15 +74,19 @@ public sealed class ExecutionEvidencePerformanceTests
             Assert.Inconclusive("Diagnostic-only E538-I completed; instrumentation overhead and causes require review. This is not performance acceptance.");
         }
         var metadata = await MeasureMetadataAsync(counters).ConfigureAwait(false);
-        await SaveIntermediateAsync(destination, "metadata-initial-baseline", source, metadata).ConfigureAwait(false);
+        await SaveIntermediateAsync(destination, "metadata-initial-baseline", source, metadata,
+            steadyStateMode: steadyStateMode).ConfigureAwait(false);
         var concurrency = await MeasureMetadataConcurrencyAsync(counters).ConfigureAwait(false);
-        await SaveIntermediateAsync(destination, "metadata-concurrency", source, concurrency).ConfigureAwait(false);
+        await SaveIntermediateAsync(destination, "metadata-concurrency", source, concurrency,
+            steadyStateMode: steadyStateMode).ConfigureAwait(false);
         var evidence = new
         {
             Schema = "hvo-issue538-execution-evidence-acceptance-v1",
+            Mode = PerformanceMode(diagnosticMode, steadyStateMode),
+            SteadyStateModeEnabled = steadyStateMode,
             Source = source,
             RecordedAtUtc = DateTimeOffset.UtcNow,
-            RepeatCommand,
+            RepeatCommand = repeatCommand,
             Environment = new
             {
                 Os = RuntimeInformation.OSDescription,
@@ -96,7 +109,9 @@ public sealed class ExecutionEvidencePerformanceTests
             },
             Workload = new
             {
-                StageOrder = "I (idle-before/active/denied/idle-after) on the fresh fixture, then M, then C",
+                StageOrder = steadyStateMode
+                    ? "I: separately reported 30 cold-start operations and complete admission/upload/job/export drain, then unchanged idle-before/active/denied/idle-after, then M, then C"
+                    : "I (idle-before/active/denied/idle-after) on the fresh fixture, then M, then C",
                 E538M = "W3M: 10,000 one-artifact availability observations derived from a real exported execution; 64-unit batches, 100-row keyset pages.",
                 E538C = "Metadata requests at concurrency 1/4/8, 20 warmup and 200 measured logical requests per level; 50% duplicate attempts. This is not payload W4.",
                 E538I = new
@@ -111,6 +126,8 @@ public sealed class ExecutionEvidencePerformanceTests
                     CadenceMilliseconds = 500,
                     Warmup,
                     Measured,
+                    ColdStartSelectedOperations = steadyStateMode ? ColdStartOperations : 0,
+                    TotalSelectedOperations = steadyStateMode ? ColdStartOperations + 4 * (Warmup + Measured) : 4 * (Warmup + Measured),
                     Phases = new[] { "idle-before", "active", "denied", "idle-after" },
                     CentralRecipe = BuiltInProcessingRecipes.EncodedPreview,
                     PhaseDeadlineSeconds = 180,
@@ -136,7 +153,10 @@ public sealed class ExecutionEvidencePerformanceTests
                 Http = "TestServer entity bytes, not physical network traffic.",
                 Io = "OS I/O counters and SQLite file footprints are distinct; physical media, per-transaction fsync latency and SQL logical reads are not inferred.",
                 Baseline = "Importer has no predecessor; metadata measurements are its initial absolute baseline. Interference compares evidence off/on on this same candidate.",
-                Trials = "One bracketed four-phase run with thirty distinct measured operations per phase; p95 is per operation. This is not a five-independent-trial confidence interval."
+                Trials = "One bracketed four-phase run with thirty distinct measured operations per phase; p95 is per operation. This is not a five-independent-trial confidence interval.",
+                Startup = steadyStateMode
+                    ? "Thirty separately retained cold-start operations precede the unchanged comparison phases. Every natural startup/drain operation is retained; none enters the comparisons. This amended run does not replace earlier Inconclusive evidence."
+                    : "Original fixed manifest; no added cold-start prefix."
             },
             Outcome = comparisons.All(item => item.Outcome == "Pass") ? "Pass" : "Investigate"
         };
@@ -148,17 +168,24 @@ public sealed class ExecutionEvidencePerformanceTests
             "Interference failed or is inconclusive; inspect the retained comparisons before accepting this candidate.");
     }
 
+    private static string PerformanceRepeatCommand(bool diagnosticMode, bool steadyStateMode)
+        => diagnosticMode ? DiagnosticRepeatCommand : steadyStateMode ? SteadyStateEnvironmentVariable + "=1 " + RepeatCommand : RepeatCommand;
+
+    private static string PerformanceMode(bool diagnosticMode, bool steadyStateMode)
+        => diagnosticMode ? "DiagnosticOnly-NotAcceptance" : steadyStateMode ? "SteadyStateAcceptance" : "AcceptanceStage";
+
     private static async Task SaveIntermediateAsync(string directory, string name, SourceEvidence source, object value,
-        bool diagnosticMode = false)
+        bool diagnosticMode = false, bool steadyStateMode = false)
     {
         var path = Path.Combine(directory, name + ".json");
         await File.WriteAllTextAsync(path + ".tmp", JsonSerializer.Serialize(new
         {
             Schema = "hvo-issue538-partial-performance-stage-v1",
-            Mode = diagnosticMode ? "DiagnosticOnly-NotAcceptance" : "AcceptanceStage",
+            Mode = PerformanceMode(diagnosticMode, steadyStateMode),
             DiagnosticModeEnabled = diagnosticMode,
+            SteadyStateModeEnabled = steadyStateMode,
             Source = source,
-            RepeatCommand = diagnosticMode ? DiagnosticRepeatCommand : RepeatCommand,
+            RepeatCommand = PerformanceRepeatCommand(diagnosticMode, steadyStateMode),
             RecordedAtUtc = DateTimeOffset.UtcNow,
             CompletedStage = name,
             Evidence = value,
@@ -309,9 +336,10 @@ public sealed class ExecutionEvidencePerformanceTests
     }
 
     private static async Task<InterferenceEvidence> MeasureInterferenceAsync(ExecutionEvidencePerformanceCounters counters,
-        string destination, SourceEvidence source, bool diagnosticMode)
+        string destination, SourceEvidence source, bool diagnosticMode, bool steadyStateMode)
     {
         using var diagnostics = diagnosticMode ? new ExecutionEvidenceDiagnosticCollector() : null;
+        SteadyStateRecorder? steadyState = null;
         var workloadCompleted = false;
         try
         {
@@ -319,10 +347,25 @@ public sealed class ExecutionEvidencePerformanceTests
             {
                 await diagnostics.AttachTraceAsync(source, DiagnosticRepeatCommand).ConfigureAwait(false);
             }
+            var startupSqlBefore = steadyStateMode ? await SqlContainerAsync().ConfigureAwait(false) : null;
+            var startupProcessBefore = steadyStateMode ? counters.BeginMeasurement() : null;
+            var fixtureStartedUtc = DateTimeOffset.UtcNow;
             await using var edge = await ExecutionEvidenceCombinedHarness.CreateAsync(Fixture, w1Geometry: true, diagnostics: diagnostics).ConfigureAwait(false);
             var central = await ExecutionEvidenceCentralWorkload.BindAsync(Fixture, edge).ConfigureAwait(false);
-            await edge.WaitForRealExecutionAsync().ConfigureAwait(false);
-            await edge.DrainAsync().ConfigureAwait(false);
+            object? coldStart = null;
+            if (steadyStateMode)
+            {
+                steadyState = new(edge, central, counters);
+                central.OperationCompleted = steadyState.ObserveAsync;
+                coldStart = await MeasureColdStartAsync(edge, central, counters, steadyState, destination, source,
+                    fixtureStartedUtc, startupProcessBefore!, startupSqlBefore!).ConfigureAwait(false);
+                await edge.ResumeCaptureAsync().ConfigureAwait(false);
+            }
+            else
+            {
+                await edge.WaitForRealExecutionAsync().ConfigureAwait(false);
+                await edge.DrainAsync().ConfigureAwait(false);
+            }
             var phases = new List<InterferencePhase>();
             foreach (var name in new[] { "idle-before", "active", "denied", "idle-after" })
             {
@@ -331,9 +374,10 @@ public sealed class ExecutionEvidencePerformanceTests
                 var load = name is "active" or "denied" ? RunEvidenceLoadAsync(edge, name, stop.Token) : Task.CompletedTask;
                 try
                 {
-                    var phase = await MeasureLivePhaseAsync(name, edge, central, counters, diagnostics).ConfigureAwait(false);
+                    var phase = await MeasureLivePhaseAsync(name, edge, central, counters, diagnostics, steadyState).ConfigureAwait(false);
                     phases.Add(phase);
-                    await SaveIntermediateAsync(destination, "interference-" + name, source, phase, diagnosticMode).ConfigureAwait(false);
+                    await SaveIntermediateAsync(destination, "interference-" + name, source, phase,
+                        diagnosticMode, steadyStateMode).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -341,15 +385,18 @@ public sealed class ExecutionEvidencePerformanceTests
                     await load.ConfigureAwait(false);
                 }
                 edge.Http.Fault = EvidenceHttpFault.None;
+                if (steadyState is not null) { steadyState.Stage = name + "-recovery"; }
                 await edge.DrainAsync().ConfigureAwait(false); // Recovery is excluded from the next idle measurement.
             }
+            if (steadyState is not null) { steadyState.Stage = "final-drain"; }
             await edge.StopCaptureAndWaitForTerminalAsync().ConfigureAwait(false);
             using var convergenceDeadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
             var converged = await central.ConvergeUploadsAndJobsAsync(convergenceDeadline.Token).ConfigureAwait(false);
             await edge.DrainAsync().ConfigureAwait(false);
             await central.AssertPersistedAsync(edge.ReadLocalRows()).ConfigureAwait(false);
+            steadyState?.AssertConverged(converged);
             workloadCompleted = true;
-            return new(phases, converged);
+            return new(phases, converged, coldStart);
         }
         catch
         {
@@ -358,6 +405,19 @@ public sealed class ExecutionEvidencePerformanceTests
         }
         finally
         {
+            if (steadyState is not null)
+            {
+                try
+                {
+                    await SaveIntermediateAsync(destination, "steady-state-all-capture-operations", source,
+                        new { WorkloadCompleted = workloadCompleted, Retention = steadyState.Snapshot() },
+                        steadyStateMode: true).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (!workloadCompleted)
+                {
+                    Trace.TraceError("Issue538 steady-state retention failed after the original workload failure: {0}", exception);
+                }
+            }
             if (diagnostics is not null)
             {
                 var detached = await diagnostics.DetachTraceAsync(workloadCompleted).ConfigureAwait(false);
@@ -386,10 +446,120 @@ public sealed class ExecutionEvidencePerformanceTests
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
     }
 
+    private static async Task<object> MeasureColdStartAsync(ExecutionEvidenceCombinedHarness edge,
+        ExecutionEvidenceCentralWorkload central, ExecutionEvidencePerformanceCounters counters,
+        SteadyStateRecorder retention, string destination, SourceEvidence source, DateTimeOffset fixtureStartedUtc,
+        ResourceSnapshot startupProcessBefore, SqlContainerSnapshot startupSqlBefore)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(180));
+        var selectionStartedUtc = DateTimeOffset.UtcNow;
+        var started = Stopwatch.GetTimestamp();
+        await edge.WaitForRealExecutionAsync(deadline.Token).ConfigureAwait(false);
+        var healthBefore = await central.ReadHealthAsync(deadline.Token).ConfigureAwait(false);
+        Assert.IsNull(healthBefore.CaptureLastFailedUtc);
+        Assert.AreEqual(0, healthBefore.FailedCaptureSamples);
+        Assert.AreEqual(0, healthBefore.TransactionFailures);
+        Assert.AreEqual(0, healthBefore.Counters.IngressFailures + healthBefore.Counters.IngressCancellations);
+        Assert.AreEqual(0, healthBefore.BadRawCaptures + healthBefore.QuarantinedLaneRecords + healthBefore.AbandonedLaneRecords);
+        Assert.AreEqual(0, healthBefore.FailedCentralJobs + healthBefore.Upload.QuarantinedCount + healthBefore.Upload.AbandonedCount);
+        retention.Baseline = healthBefore;
+        var statusBefore = await central.ReadStatusAsync(deadline.Token).ConfigureAwait(false);
+        var ingress = edge.Agent.Services.GetRequiredService<RawIngressTelemetry>();
+        var ingressBefore = Ingress(ingress);
+        var rows = new List<InterferenceOperation>();
+        while (rows.Count < ColdStartOperations)
+        {
+            var raw = await central.UploadNextRawAsync(deadline.Token).ConfigureAwait(false);
+            _ = await central.ExecutePreviewAsync(raw, deadline.Token).ConfigureAwait(false);
+            rows.Add(retention.Find(raw.CaptureId).Operation);
+            retention.Select(raw.CaptureId, "cold-start", "ColdStart", rows.Count);
+        }
+        // No exporter discovery, negotiation or submission precedes these exact30 operations.
+        Assert.AreEqual(0, edge.Http.Exchanges.Count);
+        Assert.HasCount(ColdStartOperations, rows.Select(row => row.Raw.CaptureId).Distinct().ToArray());
+        CollectionAssert.AreEqual(Enumerable.Range(0, ColdStartOperations)
+            .Select(index => rows[0].Raw.CaptureSequence + index).ToArray(), rows.Select(row => row.Raw.CaptureSequence).ToArray());
+        var coldElapsed = Stopwatch.GetElapsedTime(started);
+        var processAfter = counters.Snapshot();
+        var sqlAfter = await SqlContainerAsync().ConfigureAwait(false);
+        var cold = new
+        {
+            Name = "E538-I-cold-start-separately-reported",
+            SelectedOperations = ColdStartOperations,
+            DeadlineSeconds = 180,
+            FixtureStartedUtc = fixtureStartedUtc,
+            SelectionStartedUtc = selectionStartedUtc,
+            Operations = rows,
+            ElapsedMilliseconds = coldElapsed.TotalMilliseconds,
+            OperationsPerSecond = ColdStartOperations / coldElapsed.TotalSeconds,
+            CaptureLatency = LatencyEvidence.From(rows.Select(row => row.CaptureToIngressMilliseconds)),
+            RawIngressLatency = LatencyEvidence.From(rows.Select(row => row.RawIngressCommitMilliseconds)),
+            UploadLatency = LatencyEvidence.From(rows.Select(row => row.Raw.UploadMilliseconds)),
+            CentralLatency = LatencyEvidence.From(rows.Select(row => row.Job.ClaimAndExecuteMilliseconds)),
+            Process = startupProcessBefore.Delta(processAfter),
+            ProcessScope = "Pre-host construction through selected cold operations; fixture startup is included in resource counters and separately timestamped.",
+            SqlBefore = startupSqlBefore,
+            SqlAfter = sqlAfter,
+            HealthBefore = healthBefore,
+            IngressBefore = ingressBefore,
+            IngressAfter = Ingress(ingress),
+            StatusBefore = statusBefore,
+            StatusAfter = await central.ReadStatusAsync(deadline.Token).ConfigureAwait(false),
+            EffectiveConfigurationSha256 = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(
+                Path.Combine(edge.Root, "cameraagent.integration.json"), deadline.Token).ConfigureAwait(false))),
+            ComparedWithInterferencePhases = false
+        };
+        await SaveIntermediateAsync(destination, "cold-start-selected-operations", source, cold,
+            steadyStateMode: true).ConfigureAwait(false);
+
+        retention.Stage = "cold-start-drain";
+        var drainBefore = counters.BeginMeasurement();
+        var drainSqlBefore = await SqlContainerAsync().ConfigureAwait(false);
+        var backlogBefore = await edge.Outbox.ReadBacklogAsync(edge.Root, deadline.Token).ConfigureAwait(false);
+        await edge.PauseCaptureAndWaitForTerminalAsync(deadline.Token).ConfigureAwait(false);
+        var healthAfter = await central.ConvergeUploadsAndJobsAsync(deadline.Token).ConfigureAwait(false);
+        ExecutionEvidenceCentralWorkload.AssertHealthy(healthBefore, healthAfter);
+        retention.AssertAllRawAccounted(healthAfter);
+        await edge.DrainAsync(cancellationToken: deadline.Token).ConfigureAwait(false);
+        var local = edge.ReadLocalRows();
+        await central.AssertPersistedAsync(local).ConfigureAwait(false);
+        ExecutionEvidenceCombinedTests.AssertExactAcknowledgements(edge, local);
+        var statusAfter = await central.ReadStatusAsync(deadline.Token).ConfigureAwait(false);
+        var backlogAfter = await edge.Outbox.ReadBacklogAsync(edge.Root, deadline.Token).ConfigureAwait(false);
+        Assert.AreEqual(0, backlogAfter.PendingCount + backlogAfter.RetryCount);
+        var barrier = new
+        {
+            Admission = "Paused; every accepted edge execution terminal; all raw and derivative uploads/jobs converged before original phases resume.",
+            TotalPrefixMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+            ColdStart = cold,
+            Health = healthAfter,
+            BacklogBefore = backlogBefore,
+            BacklogAfter = backlogAfter,
+            StatusBefore = statusBefore,
+            StatusAfter = statusAfter,
+            AddedImportedUnits = statusAfter.UnitCount - statusBefore.UnitCount,
+            AddedObservations = statusAfter.ObservationCount - statusBefore.ObservationCount,
+            DueArtifactChecksBefore = statusBefore.DueArtifactChecks,
+            DueArtifactChecksAfter = statusAfter.DueArtifactChecks,
+            DueArtifactChecksAfterTruncated = statusAfter.DueArtifactChecksTruncated,
+            CanonicalPayloadSetSha256 = HashSet(local),
+            NaturalAndSelectedOperations = retention.Snapshot(),
+            Process = drainBefore.Delta(counters.Snapshot()),
+            SqlBefore = drainSqlBefore,
+            SqlAfter = await SqlContainerAsync().ConfigureAwait(false),
+            ProductionReconcilerEnabled = true
+        };
+        await SaveIntermediateAsync(destination, "cold-start-terminal-barrier", source, barrier,
+            steadyStateMode: true).ConfigureAwait(false);
+        deadline.Token.ThrowIfCancellationRequested();
+        return barrier;
+    }
+
     private static async Task<InterferencePhase> MeasureLivePhaseAsync(string name, ExecutionEvidenceCombinedHarness edge,
         ExecutionEvidenceCentralWorkload central, ExecutionEvidencePerformanceCounters counters,
-        ExecutionEvidenceDiagnosticCollector? diagnostics)
+        ExecutionEvidenceDiagnosticCollector? diagnostics, SteadyStateRecorder? steadyState)
     {
+        if (steadyState is not null) { steadyState.Stage = name + "-warmup"; }
         var phaseStart = DateTimeOffset.UtcNow;
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var healthBefore = await central.ReadHealthAsync(deadline.Token).ConfigureAwait(false);
@@ -399,19 +569,20 @@ public sealed class ExecutionEvidencePerformanceTests
         {
             var raw = await central.UploadNextRawAsync(deadline.Token).ConfigureAwait(false);
             _ = await central.ExecutePreviewAsync(raw, deadline.Token).ConfigureAwait(false);
-            var health = await central.ReadHealthAsync(deadline.Token).ConfigureAwait(false);
+            var health = steadyState?.Find(raw.CaptureId).Health ?? await central.ReadHealthAsync(deadline.Token).ConfigureAwait(false);
             ExecutionEvidenceCentralWorkload.AssertHealthy(healthBefore, health);
             if (raw.CapturedAtUtc >= phaseStart)
             {
                 warmup.Add(raw.CaptureId);
+                steadyState?.Select(raw.CaptureId, name, "Warmup", warmup.Count);
                 diagnostics?.RetainCapture(name, "Warmup", warmup.Count, raw);
             }
         }
         // Delimit acquisition as well as upload: no raw acquired during warmup can enter the measured set.
+        if (steadyState is not null) { steadyState.Stage = name + "-warmup-drain"; }
         await edge.PauseCaptureAndWaitForTerminalAsync(deadline.Token).ConfigureAwait(false);
         _ = await central.ConvergeUploadsAndJobsAsync(deadline.Token).ConfigureAwait(false);
         var rows = new List<InterferenceOperation>();
-        var telemetry = edge.Agent.Services.GetRequiredService<ICaptureTelemetryProvider>();
         var ingress = edge.Agent.Services.GetRequiredService<RawIngressTelemetry>();
         var ingressBefore = Ingress(ingress);
         var statusBefore = await central.ReadStatusAsync(deadline.Token).ConfigureAwait(false);
@@ -420,6 +591,7 @@ public sealed class ExecutionEvidencePerformanceTests
         var exchangeOffset = edge.Http.Exchanges.Count;
         var started = Stopwatch.GetTimestamp();
         var measuredAdmissionUtc = DateTimeOffset.UtcNow;
+        if (steadyState is not null) { steadyState.Stage = name + "-measured"; }
         await edge.ResumeCaptureAsync(deadline.Token).ConfigureAwait(false);
         DateTimeOffset? previousCaptureStart = null;
         while (rows.Count < Measured)
@@ -427,34 +599,14 @@ public sealed class ExecutionEvidencePerformanceTests
             var raw = await central.UploadNextRawAsync(deadline.Token).ConfigureAwait(false);
             diagnostics?.RetainCapture(name, "Measured", rows.Count + 1, raw);
             var job = await central.ExecutePreviewAsync(raw, deadline.Token).ConfigureAwait(false);
-            Assert.AreEqual(RawBytes, raw.Bytes);
-            CaptureTelemetrySample? sample = null;
-            await ExecutionEvidenceCombinedHarness.WaitUntilAsync(() =>
-            {
-                // RawCaptureDescriptorFactory truncates persisted cycle UTC to milliseconds. Telemetry preserves
-                // the original submission ticks; join on the exact persisted precision and require uniqueness.
-                sample = telemetry.GetSnapshot().Samples.SingleOrDefault(item =>
-                    item.StartedUtc.ToUnixTimeMilliseconds() == raw.ModuleCallStartedUtc.ToUnixTimeMilliseconds());
-                return Task.FromResult(sample is not null);
-            }, "capture telemetry corresponding to the uploaded raw", cancellationToken: deadline.Token).ConfigureAwait(false);
-            Assert.IsNotNull(sample);
-            var descriptorPrecisionOffset = sample.StartedUtc - raw.ModuleCallStartedUtc;
-            Assert.IsGreaterThanOrEqualTo(TimeSpan.Zero, descriptorPrecisionOffset);
-            Assert.IsLessThan(TimeSpan.FromMilliseconds(1), descriptorPrecisionOffset);
-            Assert.IsGreaterThanOrEqualTo(measuredAdmissionUtc, sample.StartedUtc);
-            Assert.IsTrue(sample.FrameStored);
-            var commits = edge.Metrics.Commits;
-            Assert.IsGreaterThanOrEqualTo(raw.RawCommitOrdinal, commits.Count);
-            var commit = commits[raw.RawCommitOrdinal - 1];
-            Assert.IsLessThan(1000, Math.Abs((commit.CompletedAtUtc - raw.JournalCommittedAtUtc).TotalMilliseconds),
-                "The isolated ingress histogram sample must match this durable commit ordinal and timestamp.");
+            var operation = steadyState?.Find(raw.CaptureId).Operation ??
+                await ReadInterferenceOperationAsync(edge, raw, job, deadline.Token).ConfigureAwait(false);
+            Assert.IsGreaterThanOrEqualTo(measuredAdmissionUtc, operation.CaptureStartedUtc);
             double? startGap = previousCaptureStart is { } prior ? (raw.ModuleCallStartedUtc - prior).TotalMilliseconds : null;
             previousCaptureStart = raw.ModuleCallStartedUtc;
-            rows.Add(new(raw, job, sample.StartedUtc, sample.LoopDuration.TotalMilliseconds,
-                sample.ProcessingLatency.TotalMilliseconds, sample.ProcessingSteps.Sum(step => step.Duration.TotalMilliseconds),
-                (sample.StartedUtc - raw.CapturedAtUtc).TotalMilliseconds, commit.Milliseconds,
-                (commit.CompletedAtUtc - raw.ModuleCallStartedUtc).TotalMilliseconds, startGap));
-            var health = await central.ReadHealthAsync(deadline.Token).ConfigureAwait(false);
+            rows.Add(operation with { CaptureStartGapMilliseconds = startGap });
+            steadyState?.Select(raw.CaptureId, name, "Measured", rows.Count);
+            var health = steadyState?.Find(raw.CaptureId).Health ?? await central.ReadHealthAsync(deadline.Token).ConfigureAwait(false);
             ExecutionEvidenceCentralWorkload.AssertHealthy(healthBefore, health);
             healthSamples.Add(health);
         }
@@ -492,6 +644,115 @@ public sealed class ExecutionEvidencePerformanceTests
             Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(
                 Path.Combine(edge.Root, "cameraagent.integration.json")).ConfigureAwait(false))));
     }
+
+    private static async Task<InterferenceOperation> ReadInterferenceOperationAsync(ExecutionEvidenceCombinedHarness edge,
+        RawUploadEvidence raw, CentralJobEvidence job, CancellationToken cancellationToken)
+    {
+        Assert.AreEqual(RawBytes, raw.Bytes);
+        var telemetry = edge.Agent.Services.GetRequiredService<ICaptureTelemetryProvider>();
+        CaptureTelemetrySample? sample = null;
+        await ExecutionEvidenceCombinedHarness.WaitUntilAsync(() =>
+        {
+            // Descriptor persistence truncates milliseconds; retain and validate the original full-precision sample.
+            sample = telemetry.GetSnapshot().Samples.SingleOrDefault(item =>
+                item.StartedUtc.ToUnixTimeMilliseconds() == raw.ModuleCallStartedUtc.ToUnixTimeMilliseconds());
+            return Task.FromResult(sample is not null);
+        }, "capture telemetry corresponding to the uploaded raw", cancellationToken: cancellationToken).ConfigureAwait(false);
+        Assert.IsNotNull(sample);
+        var descriptorPrecisionOffset = sample.StartedUtc - raw.ModuleCallStartedUtc;
+        Assert.IsGreaterThanOrEqualTo(TimeSpan.Zero, descriptorPrecisionOffset);
+        Assert.IsLessThan(TimeSpan.FromMilliseconds(1), descriptorPrecisionOffset);
+        Assert.IsTrue(sample.FrameStored);
+        var commits = edge.Metrics.Commits;
+        Assert.IsGreaterThanOrEqualTo(raw.RawCommitOrdinal, commits.Count);
+        var commit = commits[raw.RawCommitOrdinal - 1];
+        Assert.IsLessThan(1000, Math.Abs((commit.CompletedAtUtc - raw.JournalCommittedAtUtc).TotalMilliseconds),
+            "The isolated ingress histogram sample must match this durable commit ordinal and timestamp.");
+        return new(raw, job, sample.StartedUtc, sample.LoopDuration.TotalMilliseconds,
+            sample.ProcessingLatency.TotalMilliseconds, sample.ProcessingSteps.Sum(step => step.Duration.TotalMilliseconds),
+            (sample.StartedUtc - raw.CapturedAtUtc).TotalMilliseconds, commit.Milliseconds,
+            (commit.CompletedAtUtc - raw.ModuleCallStartedUtc).TotalMilliseconds, null);
+    }
+
+    private sealed class SteadyStateRecorder(ExecutionEvidenceCombinedHarness edge,
+        ExecutionEvidenceCentralWorkload central, ExecutionEvidencePerformanceCounters counters)
+    {
+        private readonly Dictionary<Guid, RetainedCaptureOperation> _operations = [];
+        private readonly Dictionary<Guid, CaptureSelection> _selected = [];
+        private DateTimeOffset? _previousCaptureStart;
+        private bool _allRawAccounted;
+        internal string Stage { get; set; } = "cold-start";
+        internal EdgeHealthEvidence? Baseline { get; set; }
+
+        internal async Task ObserveAsync(RawUploadEvidence raw, CentralJobEvidence job, CancellationToken cancellationToken)
+        {
+            _allRawAccounted = false;
+            Assert.IsLessThan(4096, _operations.Count, "Bounded retention filled; fail rather than omit any admitted capture.");
+            var operation = await ReadInterferenceOperationAsync(edge, raw, job, cancellationToken).ConfigureAwait(false);
+            operation = operation with
+            {
+                CaptureStartGapMilliseconds = _previousCaptureStart is { } prior
+                    ? (raw.ModuleCallStartedUtc - prior).TotalMilliseconds : null
+            };
+            _previousCaptureStart = raw.ModuleCallStartedUtc;
+            var health = await central.ReadHealthAsync(cancellationToken).ConfigureAwait(false);
+            Assert.IsTrue(_operations.TryAdd(raw.CaptureId,
+                new(Stage, operation, health, counters.Snapshot(), DateTimeOffset.UtcNow)),
+                "Every actual capture/upload/job tuple must occur exactly once in retention.");
+            Assert.IsNotNull(Baseline);
+            ExecutionEvidenceCentralWorkload.AssertHealthy(Baseline, health);
+        }
+
+        internal RetainedCaptureOperation Find(Guid captureId) => _operations[captureId];
+
+        internal void Select(Guid captureId, string phase, string role, int ordinal)
+        {
+            Assert.IsTrue(_operations.ContainsKey(captureId));
+            Assert.IsTrue(_selected.TryAdd(captureId, new(phase, role, ordinal)),
+                "A cold, warmup or measured capture cannot be selected or classified twice.");
+        }
+
+        internal object Snapshot() => new
+        {
+            RetentionBound = 4096,
+            AllAdmittedOperationsVerified = _allRawAccounted,
+            OmittedOperations = _allRawAccounted ? 0 : (int?)null,
+            SelectedCount = _selected.Count,
+            NaturalCount = _operations.Count - _selected.Count,
+            Operations = _operations.Values.OrderBy(row => row.Operation.Raw.CaptureSequence).Select(row => new
+            {
+                Observation = row,
+                Selection = _selected.GetValueOrDefault(row.Operation.Raw.CaptureId),
+                Accounting = _selected.ContainsKey(row.Operation.Raw.CaptureId) ? "DeclaredSelection" : "NaturallyAdmittedStartupOrDrain"
+            }).ToArray(),
+            Attribution = "Absolute per-operation process snapshots and phase deltas aggregate both in-process hosts and harness; SQL cgroup bookends are separate. Retention/health probes remain inside operation wall time."
+        };
+
+        internal void AssertConverged(EdgeHealthEvidence final)
+        {
+            AssertAllRawAccounted(final);
+            Assert.AreEqual(ColdStartOperations + 4 * (Warmup + Measured), _selected.Count);
+            Assert.AreEqual(ColdStartOperations, _selected.Values.Count(row => row.Role == "ColdStart"));
+            foreach (var name in new[] { "idle-before", "active", "denied", "idle-after" })
+            {
+                Assert.AreEqual(Warmup, _selected.Values.Count(row => row.Phase == name && row.Role == "Warmup"));
+                Assert.AreEqual(Measured, _selected.Values.Count(row => row.Phase == name && row.Role == "Measured"));
+            }
+        }
+
+        internal void AssertAllRawAccounted(EdgeHealthEvidence final)
+        {
+            Assert.AreEqual(final.RawCaptures, (long)_operations.Count, "Every naturally admitted capture must have a retained upload/job tuple.");
+            var sequences = _operations.Values.Select(row => row.Operation.Raw.CaptureSequence).Order().ToArray();
+            CollectionAssert.AreEqual(Enumerable.Range(0, sequences.Length).Select(index => sequences[0] + index).ToArray(), sequences);
+            Assert.AreEqual(_operations.Count, _operations.Values.Select(row => row.Operation.Job.JobId).Distinct().Count());
+            _allRawAccounted = true;
+        }
+    }
+
+    private sealed record CaptureSelection(string Phase, string Role, int Ordinal);
+    private sealed record RetainedCaptureOperation(string Stage, InterferenceOperation Operation, EdgeHealthEvidence Health,
+        ResourceSnapshot ProcessAtCompletion, DateTimeOffset ObservedAtUtc);
 
     private static List<RegressionComparison> Compare(IReadOnlyList<InterferencePhase> phases)
     {
@@ -582,4 +843,5 @@ internal sealed record InterferencePhase(string Name, IReadOnlyList<Guid> Warmup
     long EvidenceRequestEntityBytes, long EvidenceResponseEntityBytes, string EffectiveConfigurationSha256);
 internal sealed record RegressionComparison(string Metric, string Phase, double Baseline, double Candidate,
     double IdleBracketDriftFraction, double ToleranceFraction, string Outcome);
-internal sealed record InterferenceEvidence(IReadOnlyList<InterferencePhase> Phases, EdgeHealthEvidence FinalConvergence);
+internal sealed record InterferenceEvidence(IReadOnlyList<InterferencePhase> Phases, EdgeHealthEvidence FinalConvergence,
+    object? ColdStart);

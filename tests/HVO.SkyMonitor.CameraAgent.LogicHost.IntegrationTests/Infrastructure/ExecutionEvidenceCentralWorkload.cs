@@ -26,6 +26,8 @@ internal sealed class ExecutionEvidenceCentralWorkload(
     internal ExecutionEvidenceBindingView Binding { get; } = binding;
     internal Guid CentralRevisionId { get; } = centralRevisionId;
     internal string OwnerUserId { get; } = ownerUserId;
+    // Opt-in acceptance retention only. Normal correctness and diagnostic paths install no observer.
+    internal Func<RawUploadEvidence, CentralJobEvidence, CancellationToken, Task>? OperationCompleted { get; set; }
     // RawCaptureIngress constructs SqliteRawCaptureJournal with this journal subdirectory.
     private string RawJournalPath => Path.Combine(edge.Root, "journal", "raw-ingress.db");
 
@@ -352,9 +354,14 @@ internal sealed class ExecutionEvidenceCentralWorkload(
             Assert.IsNotNull(job.CompletedAtUtc);
             await scope.ServiceProvider.GetRequiredService<ICentralArtifactObjectReader>()
                 .VerifyAsync(job.ResultArtifact, timeout.Token).ConfigureAwait(false);
-            return new(job.Id, job.GraphExecutionId!.Value, lease.GraphRevisionId!.Value,
+            var evidence = new CentralJobEvidence(job.Id, job.GraphExecutionId!.Value, lease.GraphRevisionId!.Value,
                 raw.ArtifactId, job.ResultArtifact.ArtifactId, job.ResultArtifact.ChecksumSha256,
                 job.ResultArtifact.ByteLength, elapsed, (job.CompletedAtUtc.Value - job.CreatedAtUtc).TotalMilliseconds);
+            if (OperationCompleted is { } observe)
+            {
+                await observe(raw, evidence, timeout.Token).ConfigureAwait(false);
+            }
+            return evidence;
         }
     }
 }

@@ -411,6 +411,9 @@ internal sealed class ExecutionEvidenceDiagnosticCollector : IDisposable
     {
         public ValueTask InitializeAsync(CancellationToken cancellationToken) => inner.InitializeAsync(cancellationToken);
 
+        ValueTask<bool> IRawCaptureIngress.InitializeForOperationsAsync(CancellationToken cancellationToken)
+            => ((IRawCaptureIngress)inner).InitializeForOperationsAsync(cancellationToken);
+
         public async ValueTask<RawCaptureReceipt?> AcceptAsync(CameraModuleConfig configuration,
             CaptureLoopSubmission submission, CancellationToken cancellationToken)
         {

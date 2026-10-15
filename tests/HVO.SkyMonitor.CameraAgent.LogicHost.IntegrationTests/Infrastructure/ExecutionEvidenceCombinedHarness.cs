@@ -304,12 +304,13 @@ internal sealed class ExecutionEvidenceCombinedHarness : IAsyncDisposable
         _exporter = CreateExporter();
     }
 
-    internal async Task DrainAsync(int maximumCycles = 1000)
+    internal async Task DrainAsync(int maximumCycles = 1000, CancellationToken cancellationToken = default)
     {
         for (var cycle = 0; cycle < maximumCycles; cycle++)
         {
-            await RunCycleAsync().ConfigureAwait(false);
-            var backlog = await Outbox.ReadBacklogAsync(Root, CancellationToken.None).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            await RunCycleAsync(cancellationToken).ConfigureAwait(false);
+            var backlog = await Outbox.ReadBacklogAsync(Root, cancellationToken).ConfigureAwait(false);
             Assert.AreEqual(0, backlog.QuarantinedCount, "Transient dependencies must never terminally reject units.");
             Assert.AreEqual(0, backlog.ProjectionRejectedEvents, "The real source must project without silent loss.");
             if (backlog.PendingCount + backlog.RetryCount == 0)
