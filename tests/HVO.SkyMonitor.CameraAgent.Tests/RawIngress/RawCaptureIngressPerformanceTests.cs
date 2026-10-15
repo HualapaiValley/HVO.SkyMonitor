@@ -158,6 +158,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
         var workingSetAfter = Environment.WorkingSet;
         var lohAfter = GetLohSize();
         AssertReceipt(lastReceipt!, payload);
+        var chronologicalSamples = samples.ToArray();
         Array.Sort(samples);
         var totalSeconds = samples.Sum() / 1000d;
         var throughput = MeasuredCount / totalSeconds;
@@ -196,7 +197,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
             Directory.EnumerateFiles(Path.Combine(root, "index"), "*.jsonl").Sum(static path => new FileInfo(path).Length),
             new FileInfo(databasePath).Length,
             File.Exists(walPath) ? new FileInfo(walPath).Length : 0,
-            "Flush, directory-sync, and transaction counts are recorded by the measured accept path; byte sizes are read from produced files.") { SortedSamplesMilliseconds = samples };
+            "Flush, directory-sync, and transaction counts are recorded by the measured accept path; byte sizes are read from produced files.") { SamplesMilliseconds = chronologicalSamples, SortedSamplesMilliseconds = samples };
     }
 
     private static async Task<object> MeasureW3MetadataAsync(
@@ -807,6 +808,7 @@ public sealed partial class RawCaptureIngressPerformanceTests
         long WalBytes,
         string MeasurementNotes)
     {
+        public double[] SamplesMilliseconds { get; init; } = [];
         public double[] SortedSamplesMilliseconds { get; init; } = [];
     }
 
