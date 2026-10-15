@@ -125,6 +125,8 @@ Each of the ten shards becomes a typed scenario built on `Deployment.Contracts` 
 
 Hosted runners take cheap, untrusted, fast work: whitespace, workflow lint, policy checks, classification. Self-hosted runners take build, test, Docker, and deployment work. Ready-pull-request capacity is protected from post-merge contention, which is the standing problem `#849` owns.
 
+`#849` protects that capacity by reserving two general runners. Four of the six x64 runners carry `hvo-qualification`, and every self-hosted `ci.yml` job requires it. The `development-v1.yml` Build and Unit check does not require it, so it can run on all six runners while a promotion fan-out can never occupy the fifth or sixth. GitHub Actions has no label exclusion or workflow priority, so the reserve has to be expressed as a positive label. In the replay model it removed qualification contention for a ready PR arriving alone or just behind a `development/v1` push, at about 15% qualification makespan. A single reserve would cost about 4% but would not help behind a push, because the push takes the reserved runner first. It is a bounded, reversible trial with live acceptance after merge. The runner pool is shared, so the reserve is not exclusive. `scripts/test:development-v1-ci` enforces the selector contract. Inventory, measurements, rollout and rollback live in `docs/runbooks/ci-runner-capacity.md`. That runbook also records the `#852` runner-local store as an option that was not adopted.
+
 ## 4. Migration Plan
 
 The migration is staged so that authority moves last.
