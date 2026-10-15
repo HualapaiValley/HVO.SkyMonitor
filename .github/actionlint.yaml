@@ -2,5 +2,6 @@ self-hosted-runner:
   labels:
     - skymonitor-soak
     - hvo-skymonitor
+    - hvo-qualification
     - hvo-skymonitor-arm64
     - m5-mac
