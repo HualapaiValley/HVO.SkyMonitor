@@ -427,7 +427,7 @@ public sealed class SqliteArtifactOutboxTests
         Assert.AreEqual("owner", reader.GetString(0));
         Assert.AreEqual("operator-approved-loss", reader.GetString(1));
         Assert.AreEqual(clock.GetUtcNow().ToUnixTimeMilliseconds(), reader.GetInt64(2));
-        Assert.IsTrue(reader.IsDBNull(3));
+        Assert.IsTrue(await reader.IsDBNullAsync(3).ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -464,10 +464,10 @@ public sealed class SqliteArtifactOutboxTests
         using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
         Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
         Assert.AreEqual(delivered ? "acknowledged" : "leased", reader.GetString(0));
-        Assert.IsTrue(reader.IsDBNull(1));
-        Assert.IsTrue(reader.IsDBNull(2));
-        Assert.IsTrue(reader.IsDBNull(3));
-        Assert.AreEqual(!delivered, reader.IsDBNull(4));
+        Assert.IsTrue(await reader.IsDBNullAsync(1).ConfigureAwait(false));
+        Assert.IsTrue(await reader.IsDBNullAsync(2).ConfigureAwait(false));
+        Assert.IsTrue(await reader.IsDBNullAsync(3).ConfigureAwait(false));
+        Assert.AreEqual(!delivered, await reader.IsDBNullAsync(4).ConfigureAwait(false));
         Assert.AreEqual(0, reader.GetInt32(5));
         Assert.AreEqual(0, reader.GetInt32(6));
     }
