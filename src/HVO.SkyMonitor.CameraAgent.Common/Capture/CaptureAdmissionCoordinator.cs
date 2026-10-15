@@ -162,6 +162,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             }
 
             var evidenceReady = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
+            if (!evidenceReady && Volatile.Read(ref _awaitingEvidenceRecovery)) return;
             var recovered = await _store.InitializeAsync(_pauseFreshOnStartup, cancellationToken).ConfigureAwait(false);
             Volatile.Write(ref _awaitingEvidenceRecovery, !evidenceReady);
             SetSnapshot(evidenceReady ? recovered : recovered with { State = CaptureAdmissionState.Unavailable, IsInitialized = false });
