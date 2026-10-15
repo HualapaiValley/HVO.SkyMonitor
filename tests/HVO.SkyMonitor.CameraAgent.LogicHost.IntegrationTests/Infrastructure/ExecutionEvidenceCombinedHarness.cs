@@ -1,12 +1,19 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Evidence;
+using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -25,6 +32,7 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 /// </summary>
 internal sealed class ExecutionEvidenceCombinedHarness : IAsyncDisposable
 {
+    private static readonly JsonSerializerOptions DiagnosticJsonOptions = new() { WriteIndented = true };
     private readonly EvidenceHttpClientFactory _clients;
     private readonly IOptions<CameraAgentHostOptions> _options;
     private readonly ExecutionEvidenceExportTelemetry _telemetry;
@@ -114,7 +122,7 @@ internal sealed class ExecutionEvidenceCombinedHarness : IAsyncDisposable
                 .ConfigureAwait(false)).Count != 0, "a terminal real edge execution",
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-    /// <summary>Only finite backlog/fault cases stop capture. Live independence/performance cases never call this.</summary>
+    /// <summary>Stops acquisition only after the finite source, or a completed live assertion stage, drains.</summary>
     internal async Task StopCaptureAndWaitForTerminalAsync()
     {
         await PauseCaptureAndWaitForTerminalAsync().ConfigureAwait(false);
@@ -134,9 +142,137 @@ internal sealed class ExecutionEvidenceCombinedHarness : IAsyncDisposable
         var paused = await admission.PauseAsync($"issue538-pause-{Guid.NewGuid():N}", null,
             "issue538-test-owner", "finite-evidence-source", timeout.Token).WaitAsync(timeout.Token).ConfigureAwait(false);
         Assert.AreEqual(CaptureAdmissionState.Paused, paused.State);
-        await WaitUntilAsync(async () =>
-            await Source.ReadOldestActiveExecutionKeyAsync(timeout.Token).ConfigureAwait(false) is null,
-            "all in-flight edge executions terminal after capture stop", cancellationToken: timeout.Token).ConfigureAwait(false);
+        try
+        {
+            await WaitUntilAsync(async () =>
+                await Source.ReadOldestActiveExecutionKeyAsync(timeout.Token).ConfigureAwait(false) is null,
+                "all in-flight edge executions terminal after admission pauses", cancellationToken: timeout.Token).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is OperationCanceledException or AssertFailedException)
+        {
+            await RetainFailureDiagnosticsAsync(exception).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
+        Justification = "All diagnostic SQL statements are fixed literals with no user input.")]
+    private async Task RetainFailureDiagnosticsAsync(Exception failure)
+    {
+        // This runs only after a failed terminal barrier, outside every measured performance interval. Back up the
+        // live SQLite journal before host cleanup; never copy identity, provisioning or credential runtime files.
+        var directory = Path.GetFullPath(Path.Combine("TestResults", "issue-538", "diagnostics",
+            $"{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffffffZ}-{Agent.DevicePublicId:N}"));
+        try
+        {
+            Directory.CreateDirectory(directory);
+            var journalPath = Path.Combine(Root, "journal", "raw-ingress.db");
+            using var source = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = journalPath,
+                Mode = SqliteOpenMode.ReadOnly,
+                Pooling = false,
+                DefaultTimeout = 5
+            }.ToString());
+            await source.OpenAsync().ConfigureAwait(false);
+            var backupPath = Path.Combine(directory, "raw-ingress.db");
+            using (var backup = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = backupPath,
+                Pooling = false,
+                DefaultTimeout = 5
+            }.ToString()))
+            {
+                await backup.OpenAsync().ConfigureAwait(false);
+                source.BackupDatabase(backup);
+            }
+
+            var queries = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["executionCounts"] = "SELECT execution_class, status, COUNT(*) AS count FROM processing_executions GROUP BY execution_class, status",
+                ["activeExecutions"] = """
+                    SELECT execution_id, execution_class, status, capture_id, primary_artifact_id, graph_revision_id,
+                           accepted_unix_ms, available_unix_ms, deadline_unix_ms, maximum_age_unix_ms,
+                           started_unix_ms, completed_unix_ms, failure_reason, cancellation_requested, attempt_count
+                    FROM processing_executions WHERE status IN ('Pending','Running') ORDER BY accepted_unix_ms LIMIT 256
+                    """,
+                ["activeNodes"] = """
+                    SELECT node.* FROM processing_execution_nodes node
+                    JOIN processing_executions execution USING(execution_id)
+                    WHERE execution.status IN ('Pending','Running') ORDER BY execution.accepted_unix_ms, node.node_id LIMIT 512
+                    """,
+                ["activeAttempts"] = """
+                    SELECT attempt.* FROM processing_node_attempts attempt
+                    JOIN processing_executions execution USING(execution_id)
+                    WHERE execution.status IN ('Pending','Running')
+                    ORDER BY execution.accepted_unix_ms, attempt.node_id, attempt.attempt_number LIMIT 512
+                    """,
+                ["linkedRawCaptures"] = """
+                    SELECT raw.* FROM raw_captures raw JOIN processing_executions execution USING(capture_id)
+                    WHERE execution.status IN ('Pending','Running') ORDER BY raw.raw_capture_row_id LIMIT 256
+                    """,
+                ["linkedLaneWork"] = """
+                    SELECT work.* FROM capture_lane_work work JOIN raw_captures raw USING(raw_capture_row_id)
+                    JOIN processing_executions execution USING(capture_id)
+                    WHERE execution.status IN ('Pending','Running') ORDER BY work.work_id LIMIT 512
+                    """,
+                ["laneCounts"] = "SELECT lane_name, state, COUNT(*) AS count FROM capture_lane_work GROUP BY lane_name, state",
+                ["captureControl"] = "SELECT * FROM capture_control_state"
+            };
+            var rows = new Dictionary<string, object>(StringComparer.Ordinal);
+            foreach (var (name, sql) in queries)
+            {
+                using var command = source.CreateCommand();
+                command.CommandText = sql;
+                using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+                var items = new List<Dictionary<string, object?>>();
+                while (await reader.ReadAsync().ConfigureAwait(false))
+                {
+                    var item = new Dictionary<string, object?>(StringComparer.Ordinal);
+                    for (var column = 0; column < reader.FieldCount; column++)
+                    {
+                        var value = reader.GetValue(column);
+                        item[reader.GetName(column)] = value is DBNull ? null : value;
+                    }
+                    items.Add(item);
+                }
+                rows[name] = items;
+            }
+            await using var backupStream = File.OpenRead(backupPath);
+            var snapshot = new
+            {
+                observedAtUtc = DateTimeOffset.UtcNow,
+                failure = failure.ToString(),
+                Root,
+                journalPath,
+                configuredRawIngressRoot = Agent.Services.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.RawIngressRoot,
+                sourceType = Source.GetType().AssemblyQualifiedName,
+                oldestActiveExecutionKey = await Source.ReadOldestActiveExecutionKeyAsync(CancellationToken.None).ConfigureAwait(false),
+                hostedServices = Agent.Services.GetServices<IHostedService>().Select(service => new
+                {
+                    type = service.GetType().AssemblyQualifiedName,
+                    executeTaskStatus = (service as BackgroundService)?.ExecuteTask?.Status.ToString(),
+                    executeTaskException = (service as BackgroundService)?.ExecuteTask?.Exception?.ToString()
+                }).ToArray(),
+                admission = Agent.Services.GetRequiredService<CaptureAdmissionCoordinator>().Snapshot,
+                fleet = Agent.Services.GetRequiredService<FleetRuntimeState>().Snapshot.Capture,
+                processing = Agent.Services.GetRequiredService<CaptureProcessingState>().Snapshot,
+                lanes = Agent.Services.GetRequiredService<CaptureLaneState>().Snapshot,
+                ingress = Agent.Services.GetRequiredService<RawIngressState>().Snapshot,
+                captureTelemetry = Agent.Services.GetRequiredService<ICaptureTelemetryProvider>().GetSnapshot(),
+                journalBackupSha256 = Convert.ToHexString(await SHA256.HashDataAsync(backupStream).ConfigureAwait(false)),
+                rows
+            };
+            await File.WriteAllTextAsync(Path.Combine(directory, "snapshot.json"),
+                JsonSerializer.Serialize(snapshot, DiagnosticJsonOptions)).ConfigureAwait(false);
+            Console.WriteLine($"Issue538 failure diagnostics retained before isolated cleanup: {directory}");
+        }
+#pragma warning disable CA1031 // A failed diagnostic must preserve the original acceptance failure.
+        catch (Exception exception)
+#pragma warning restore CA1031
+        {
+            Console.WriteLine($"Issue538 diagnostic capture failed ({directory}): {exception}");
+        }
     }
 
     internal async Task ResumeCaptureAsync(CancellationToken cancellationToken)
