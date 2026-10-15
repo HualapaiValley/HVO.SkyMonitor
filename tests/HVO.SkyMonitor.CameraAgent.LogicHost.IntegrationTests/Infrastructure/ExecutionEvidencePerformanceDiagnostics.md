@@ -142,8 +142,11 @@ The proposed collector argv is pinned rather than inheriting tool defaults:
 
 The runtime mask is the union GC `0x1`, Loader `0x8`, JIT `0x10`, NGen `0x20`, method IL/native mapping
 `0x20000`, and Compilation `0x1000000000`, at Verbose level 5. It requests collection and suspend/restart events,
-named method loads, precompiled-code mapping and tier-control events. It does not enable heap dumps, forced GC,
-allocation ticks or verbose JIT-inlining tracing. Requested events must subsequently be shown to be present;
+named method loads, precompiled-code mapping and tier-control events. It does not request heap dumps, forced GC
+or verbose JIT-inlining tracing. The finalized r16 trace under this exact mask contains 147,890 `GC/AllocationTick`
+events; allocation ticks were present. The original trace SHA-256 is
+`F51D706FECC6997ABB50EA9E7138E89D4721E9E60CF097D37A18E1EF54151842`, and the retained
+`eventpipe-f9273212-analysis/decoded/visibility.json` records that count. Requested events must be shown to be present;
 provider enablement alone proves neither visibility nor absence of loss. Keyword definitions and optimization-tier
 fields are in the [TraceEvent parser](https://github.com/microsoft/perfview/blob/v3.1.23/src/TraceEvent/Parsers/ClrTraceEventParser.cs).
 The runtime documents [tier-control events](https://learn.microsoft.com/en-us/dotnet/fundamentals/diagnostics/runtime-tiered-compilation-events)
