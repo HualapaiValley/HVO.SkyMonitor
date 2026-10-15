@@ -454,6 +454,7 @@ public sealed partial class Program
         builder.Services.AddScoped<IPublicRecordPublicationService, PublicRecordPublicationService>();
         builder.Services.AddScoped<IPublicNetworkReadService, PublicNetworkReadService>();
         builder.Services.AddScoped<INetworkOperationsReadService, NetworkOperationsReadService>();
+        builder.Services.AddScoped<ILogicalCameraArchiveReadService, LogicalCameraArchiveReadService>();
         builder.Services.AddScoped<ICuratedPublicPlacementService, CuratedPublicPlacementService>();
         builder.Services.AddScoped<IRegisteredUserPersonalizationService, RegisteredUserPersonalizationService>();
         builder.Services.AddScoped<INetworkOperationsMutationService, NetworkOperationsMutationService>();
