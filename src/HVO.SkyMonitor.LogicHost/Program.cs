@@ -827,6 +827,14 @@ public sealed partial class Program
         builder.Services.AddScoped<IDeviceRegistrationReadService, DeviceRegistrationReadService>();
         builder.Services.AddScoped<IDeviceCredentialValidator, DeviceCredentialValidator>();
         builder.Services.AddScoped<IDeviceHeartbeatService, DeviceHeartbeatService>();
+        builder.Services.AddOptions<ExecutionEvidenceOptions>()
+            .Bind(builder.Configuration.GetSection(ExecutionEvidenceOptions.SectionName)).ValidateDataAnnotations().ValidateOnStart();
+        builder.Services.AddScoped<ExecutionEvidenceDatabase>();
+        builder.Services.AddScoped<ExecutionEvidenceService>();
+        builder.Services.AddScoped<ExecutionEvidenceReconciler>();
+        builder.Services.AddHostedService<ExecutionEvidenceReconciliationWorker>();
+        builder.Services.AddSingleton<ExecutionEvidenceCapacity>();
+        builder.Services.AddSingleton<ExecutionEvidenceTelemetry>();
         builder.Services.AddSingleton<FleetStatusClassifier>();
         builder.Services.AddSingleton<FleetStatusTelemetry>();
         builder.Services.AddSingleton<FleetRetentionState>();
