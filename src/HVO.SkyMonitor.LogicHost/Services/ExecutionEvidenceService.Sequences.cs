@@ -31,6 +31,24 @@ internal sealed partial class ExecutionEvidenceService
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         var gaps = ImmutableArray.CreateBuilder<ExecutionEvidenceSequenceRangeV1>();
         var truncated = false;
+        var remainingUnits = (long)ExecutionEvidenceOptions.MaximumBatchUnits;
+        // The producer's resync helper uses the shared 256-unit ceiling. Constrain the missing ranges
+        // themselves to our advertised 64-unit bound, including when a single gap is much larger.
+        bool AddGap(long fromSequence, long toSequence)
+        {
+            if (gaps.Count == GraphExecutionEvidenceLimits.MaximumMissingRanges || remainingUnits == 0)
+            {
+                truncated = true;
+                return false;
+            }
+            var length = toSequence - fromSequence + 1;
+            var count = Math.Min(length, remainingUnits);
+            gaps.Add(new(ExecutionEvidenceSequenceRangeV1.CurrentSchemaVersion, fromSequence, fromSequence + (count - 1)));
+            remainingUnits -= count;
+            if (count == length) { return true; }
+            truncated = true;
+            return false;
+        }
         if (origin.ContiguousThroughSequence < long.MaxValue)
         {
             var next = origin.ContiguousThroughSequence + 1;
@@ -38,8 +56,7 @@ internal sealed partial class ExecutionEvidenceService
             {
                 if (range.FromSequence > next)
                 {
-                    if (gaps.Count == GraphExecutionEvidenceLimits.MaximumMissingRanges) { truncated = true; break; }
-                    gaps.Add(new(ExecutionEvidenceSequenceRangeV1.CurrentSchemaVersion, next, range.FromSequence - 1));
+                    if (!AddGap(next, range.FromSequence - 1)) { break; }
                 }
                 if (range.ToSequence == long.MaxValue) { next = long.MaxValue; break; }
                 next = range.ToSequence + 1;
@@ -47,8 +64,7 @@ internal sealed partial class ExecutionEvidenceService
             if (!truncated && next <= origin.HighestSeenSequence &&
                 (accepted.Count == 0 || accepted[^1].ToSequence != long.MaxValue))
             {
-                if (gaps.Count == GraphExecutionEvidenceLimits.MaximumMissingRanges) { truncated = true; }
-                else { gaps.Add(new(ExecutionEvidenceSequenceRangeV1.CurrentSchemaVersion, next, origin.HighestSeenSequence)); }
+                _ = AddGap(next, origin.HighestSeenSequence);
             }
         }
         return new(ExecutionEvidenceFeedbackV1.CurrentSchemaVersion, origin.IdentitySha256, timeProvider.GetUtcNow(),
