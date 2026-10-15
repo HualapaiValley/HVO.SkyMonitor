@@ -257,9 +257,12 @@ the same pipeline, standard processing of that earlier work cannot run:
   completed keep their status. It spends no further attempt, releases its
   pinned inputs, and leaves its raw evidence untouched. It is counted in
   `ReplayAbandonedCount` on the `capture-processing` health check (gauge
-  `camera_agent.processing.replay.abandoned`), not in `ReplayTerminalCount`,
-  so it does not degrade health. The replay page explains this. To run that
-  capture again, submit a new replay against a revision this version compiles.
+  `camera_agent.processing.replay.abandoned`) and in `abandonedCount` of the
+  `archivedReplay` section of the operations summary
+  (`/api/v1/operations/summary`), not in `ReplayTerminalCount` or
+  `terminalCount`, so it does not degrade health. The replay page explains
+  this. To run that capture again, submit a new replay against a revision this
+  version compiles.
   A replay submitted against the old revision is refused, by the same plan
   comparison that abandons the accepted one.
 - Abandonment needs intact evidence. Before abandoning, the replay checks its
@@ -348,9 +351,10 @@ consults a release train.
 
 Lifecycle state (`/api/internal/deployment/lifecycle/state`) reports archived
 replay in its own `archivedReplay` section, separate from live
-`captureProcessing`. The section contains pending, leased, retry and terminal
-counts, pending bytes and the oldest pending time. Each recorded continuity
-boundary keeps the replay counts as `ReplayPending` and `ReplayLeased`. A
+`captureProcessing`. The section contains pending, leased, retry, terminal and
+abandoned counts, pending bytes and the oldest pending time. The operations
+summary carries the same section. Each recorded continuity boundary keeps the
+replay counts as `ReplayPending` and `ReplayLeased`. A
 lifecycle CLI reading an image that predates the section records zero.
 
 The pause-and-drain boundary deliberately does not wait for archived replay:

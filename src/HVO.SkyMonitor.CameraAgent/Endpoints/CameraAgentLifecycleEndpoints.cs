@@ -118,7 +118,7 @@ internal static class CameraAgentLifecycleEndpoints
         OperationsSection<OperationsCaptureLanesState> CaptureLanes,
         OperationsSection<OperationsQueueState> CaptureProcessing,
         OperationsSection<OperationsQueueState> ArtifactOutbox,
-        OperationsSection<OperationsQueueState> ArchivedReplay,
+        OperationsSection<OperationsArchivedReplayState> ArchivedReplay,
         long CaptureSequence,
         // Declares that archived replay never builds a scene from the mounted catalog (the replay guard in
         // AnnotationCaptureProcessingStep). The lifecycle CLI refuses catalog transitions on an image that omits it.
