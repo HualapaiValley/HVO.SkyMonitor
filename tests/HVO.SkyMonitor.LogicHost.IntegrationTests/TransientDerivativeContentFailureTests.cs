@@ -118,7 +118,9 @@ public sealed class TransientDerivativeContentFailureTests
             scope.ServiceProvider.GetRequiredService<ApplicationDbContext>(), seed.StorageReference, CancellationToken.None)
             .ConfigureAwait(false);
         objectLock.Should().NotBeNull();
-        store.ReadCalls.Should().Be(0);
+        store.ReadCalls.Should().Be(duringStreaming ? 1 : 0);
+        await objectLock!.DisposeAsync().ConfigureAwait(false);
+        await AssertReleasedAndUnchangedAsync(seed).ConfigureAwait(false);
     }
 
     [TestMethod]
