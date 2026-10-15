@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class LifecycleContractTests
+public sealed partial class LifecycleContractTests
 {
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
@@ -246,6 +246,7 @@ public sealed class LifecycleContractTests
         Assert.AreEqual("completed", result.Outcome);
         Assert.IsFalse(Directory.Exists(fixture.Paths.InstanceRoot));
         Assert.IsTrue(File.Exists(Path.Combine(sibling, "sentinel")));
+        Assert.AreEqual(0, fixture.Runner.SudoCount);
     }
 
     [TestMethod]
@@ -2564,7 +2565,7 @@ public sealed class LifecycleContractTests
         Assert.AreEqual(0, fixture.Runner.LoggedContainers.Count);
     }
 
-    private sealed class LifecycleFixture : IDisposable
+    internal sealed class LifecycleFixture : IDisposable
     {
         private LifecycleFixture(
             string root,
@@ -2798,7 +2799,7 @@ public sealed class LifecycleContractTests
         }
     }
 
-    private sealed class FakeRunner(DockerDaemonIdentity daemon, bool localRunner = false) : IProcessRunner
+    internal sealed class FakeRunner(DockerDaemonIdentity daemon, bool localRunner = false) : IProcessRunner
     {
         // Compose mounts the catalog root the instance environment names, so a cross-lineage selection that rewrites
         // HVO_CATALOG_ROOT is observed as a different read-only catalog mount, exactly as the daemon would report it.
@@ -2848,6 +2849,9 @@ public sealed class LifecycleContractTests
         public string CandidateRawIngressSchema { get; set; } = "12";
         public string CatalogContract { get; set; } = "hyg-v42-production-p3-s2";
         public Action? OnCandidateInspect { get; set; }
+        public Func<IReadOnlyList<string>, CancellationToken, Task<ProcessResult>>? Sudo { get; set; }
+        public int SudoCount { get; private set; }
+        public bool ListOwnedOrphan { get; set; }
         public List<string> Events { get; } = [];
         public List<string> LoggedContainers { get; } = [];
 
@@ -2888,6 +2892,13 @@ public sealed class LifecycleContractTests
                     return Task.FromResult(new ProcessResult(1, string.Empty, "simulated backup interruption"));
                 }
                 return new ProcessRunner().RunAsync(fileName, arguments, cancellationToken);
+            }
+            if (fileName == "sudo")
+            {
+                // Only the purge namespace handoff escalates; a test that expects no escalation leaves the hook unset.
+                SudoCount++;
+                Assert.IsNotNull(Sudo, "The privileged purge helper was invoked unexpectedly.");
+                return Sudo(arguments, cancellationToken);
             }
             Assert.AreEqual("docker", fileName);
             if (arguments is ["context", "inspect", ..])
@@ -2986,7 +2997,7 @@ public sealed class LifecycleContractTests
             }
             if (arguments is ["container", "ls", ..])
             {
-                var listed = RetainOwnedOrphanAfterDown && ComposeDownCount > 0 ? "owned-orphan\n" : string.Empty;
+                var listed = RetainOwnedOrphanAfterDown && ComposeDownCount > 0 || ListOwnedOrphan ? "owned-orphan\n" : string.Empty;
                 return Task.FromResult(new ProcessResult(0, listed, string.Empty));
             }
             if (arguments is ["container", "inspect", "owned-orphan", ..] && paths is not null)
