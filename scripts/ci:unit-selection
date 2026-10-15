@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Prove the full-qualification Unit job executes every test project that owns
-# Unit cases (issue #1255).
+# Prove the full-qualification Unit job lists every test project that owns Unit
+# cases (issue #1255).
+#
+# Bounded guarantee: for each inventory-derived Unit-bearing project, the full
+# `unit` job holds exactly one supported selecting command, whose arguments and
+# report boundaries (positive filter, TRX slot, coverage and Docker endpoint) are
+# checked, in a step of a closed grammar, ahead of the evidence bind and upload.
+# It is not proof of arbitrary shell execution, of whole-job artifact membership
+# or publication, of installed catalog availability, or of checkout trust: those
+# remain the workflow's own unchanged steps, Required CI and review (see the
+# Supplemental Unit selections section of docs/runbooks/ci-pipeline.md).
 #
 # Each test project declares its cases in tests/<project>/test-categories.json,
 # and tests/Directory.Build.props compile-links shared contract tests into
@@ -70,22 +79,39 @@ grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCa
 # through GITHUB_ENV or GITHUB_PATH (a narrowed UNIT_FILTER, a different PATH) would
 # leave every selecting step in the grammar while changing what it runs.
 mapping_keys() { # mapping_keys <env-line-regex> <indent-of-keys>: keys of the mapping that follows
+  # Prints each key; a line inside the mapping that is not a plain `KEY: value` (a quoted
+  # key, a flow mapping, a continuation of a value) is printed as BAD so it fails the check
+  # instead of being read past.
   awk -v head="$1" -v pad="$2" '
     $0 ~ head { on = 1; next }
-    on && $0 ~ "^" pad "[A-Za-z_][A-Za-z0-9_]*:" { sub("^" pad, ""); sub(/:.*/, ""); print; next }
     on && $0 ~ /^[[:space:]]*(#|$)/ { next }
+    on && $0 ~ "^" pad "[A-Za-z_][A-Za-z0-9_]*: [^ ]" { sub("^" pad, ""); sub(/:.*/, ""); print; next }
+    on && $0 ~ "^" pad { print "BAD " $0; next }
     on { exit }
   '
 }
-grep -qE '^defaults:' "$workflow" && fail 'the workflow must not set workflow-level defaults, which every Unit step would inherit'
-grep -qE '^    defaults:' <<<"$unit_job" && fail 'the Unit job must not set defaults, which its selecting steps would inherit'
-grep -qE '^[[:space:]]+shell:' <<<"$unit_job" && fail 'the Unit job must not set a shell, which could stop a selecting command executing'
+# A defaults key in any spelling (spaced colon, quoted, flow mapping) at any scope would be
+# inherited by the selecting steps, and so would a shell key anywhere in the Unit job.
+# shellcheck disable=SC2016
+key_pattern='(^|[^A-Za-z0-9_-])["'"'"']?%s["'"'"']?[[:space:]]*:'
+# The text is captured first: `grep -q` closing a pipe early would otherwise fail the
+# pipeline under pipefail and make a present key look absent.
+workflow_text="$(grep -vE '^[[:space:]]*#' "$workflow" || true)"
+unit_text="$(grep -vE '^[[:space:]]*#' <<<"$unit_job" || true)"
+# shellcheck disable=SC2059
+if grep -qE "$(printf "$key_pattern" defaults)" <<<"$workflow_text"; then
+  fail 'the workflow must not set defaults (workflow or job scope), which the selecting steps would inherit'
+fi
+# shellcheck disable=SC2059
+if grep -qE "$(printf "$key_pattern" shell)" <<<"$unit_text"; then
+  fail 'the Unit job must not set a shell, which could stop a selecting command executing'
+fi
 workflow_env="$(mapping_keys '^env:[[:space:]]*$' '  ' < "$workflow" | sort | paste -sd, -)"
 [[ "$workflow_env" == 'DOTNET_CLI_TELEMETRY_OPTOUT,DOTNET_NOLOGO' ]] ||
-  fail "the workflow env may set only DOTNET_NOLOGO and DOTNET_CLI_TELEMETRY_OPTOUT, found: ${workflow_env:-none}"
+  fail "the workflow env may set only DOTNET_NOLOGO and DOTNET_CLI_TELEMETRY_OPTOUT as plain single-line KEY: value entries, found: ${workflow_env:-none}"
 job_env="$(mapping_keys '^    env:[[:space:]]*$' '      ' <<<"$unit_job" | sort | paste -sd, -)"
 [[ "$job_env" == 'DOCKER_HOST,UNIT_FILTER' ]] ||
-  fail "the Unit job env may set only DOCKER_HOST and UNIT_FILTER, found: ${job_env:-none}"
+  fail "the Unit job env may set only DOCKER_HOST and UNIT_FILTER as plain single-line KEY: value entries, found: ${job_env:-none}"
 # The one supported export is the catalog bundle path that the restore step verifies.
 # shellcheck disable=SC2016
 bundle_export='          printf '"'"'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n'"'"' "$bundle_path" >> "$GITHUB_ENV"'
@@ -233,4 +259,4 @@ if ((errors)); then
   printf 'Unit selection failed with %d error(s).\n' "$errors" >&2
   exit 1
 fi
-printf 'Unit selection passed: the full-qualification unit job selects each of %d Unit-bearing project(s) exactly once (component lanes are not asserted).\n' "${#expected[@]}"
+printf 'Unit selection passed: the full-qualification unit job lists one supported selecting command for each of %d Unit-bearing project(s) (execution context, artifact publication and component lanes are not asserted).\n' "${#expected[@]}"

@@ -98,14 +98,32 @@ mutate githubpath '/^      - name: Run Docker-disabled supplemental Unit suites/
 expect_fail 'exports environment through GITHUB_ENV or GITHUB_PATH' --workflow "$scratch/githubpath.yml"
 mutate jobdefaults '/^  unit:/,/^  integration:/ { /^    timeout-minutes: 20$/ a\    defaults:\n      run:\n        shell: bash --noprofile --norc -n {0}
 }'
-expect_fail 'Unit job must not set defaults' --workflow "$scratch/jobdefaults.yml"
+expect_fail 'workflow must not set defaults' --workflow "$scratch/jobdefaults.yml"
 mutate workflowdefaults '/^concurrency:/ i\defaults:\n  run:\n    shell: bash --noprofile --norc -n {0}'
-expect_fail 'workflow-level defaults' --workflow "$scratch/workflowdefaults.yml"
+expect_fail 'workflow must not set defaults' --workflow "$scratch/workflowdefaults.yml"
 mutate jobenv '/^  unit:/,/^  integration:/ { /^      UNIT_FILTER:/ a\      BASH_ENV: /tmp/narrow.sh
 }'
 expect_fail 'Unit job env may set only DOCKER_HOST and UNIT_FILTER' --workflow "$scratch/jobenv.yml"
 mutate workflowenv '/^  DOTNET_NOLOGO: true$/ a\  BASH_ENV: /tmp/narrow.sh'
 expect_fail 'workflow env may set only' --workflow "$scratch/workflowenv.yml"
+# R1255-6: alternate spellings and a folded continuation of the validated values.
+mutate defaultsflow '/^  unit:/,/^  integration:/ { /^    timeout-minutes: 20$/ a\    defaults : {run: {shell: "bash --noprofile --norc -n {0}"}}
+}'
+expect_fail 'workflow must not set defaults' --workflow "$scratch/defaultsflow.yml"
+mutate defaultsquoted '/^concurrency:/ i\"defaults": {run: {shell: "bash --noprofile --norc -n {0}"}}'
+expect_fail 'workflow must not set defaults' --workflow "$scratch/defaultsquoted.yml"
+mutate shellflow '/^  unit:/,/^  integration:/ { /^    timeout-minutes: 20$/ a\    steps-shell: x\n    "shell" : bash -n
+}'
+expect_fail 'Unit job must not set a shell' --workflow "$scratch/shellflow.yml"
+mutate filtercont '/^  unit:/,/^  integration:/ { /^      UNIT_FILTER:/ a\        \&FullyQualifiedName~MatchesTheGlobalClearByDeclaringTypeAndNotByMethodNameAlone
+}'
+expect_fail 'Unit job env may set only DOCKER_HOST and UNIT_FILTER as plain single-line' --workflow "$scratch/filtercont.yml"
+mutate dockercont '/^  unit:/,/^  integration:/ { /^      DOCKER_HOST:/ a\        x
+}'
+expect_fail 'Unit job env may set only DOCKER_HOST and UNIT_FILTER as plain single-line' --workflow "$scratch/dockercont.yml"
+mutate quotedenv '/^  unit:/,/^  integration:/ { /^      UNIT_FILTER:/ a\      "BASH_ENV": /tmp/narrow.sh
+}'
+expect_fail 'Unit job env may set only DOCKER_HOST and UNIT_FILTER as plain single-line' --workflow "$scratch/quotedenv.yml"
 mutate noupload '/^  unit:/,/^  integration:/ s#^          path: TestResults/unit/$#          path: TestResults/unit/astronomy/#'
 expect_fail 'must upload TestResults/unit/' --workflow "$scratch/noupload.yml"
 # The supplemental step moved after the upload keeps a complete list but loses its evidence.
