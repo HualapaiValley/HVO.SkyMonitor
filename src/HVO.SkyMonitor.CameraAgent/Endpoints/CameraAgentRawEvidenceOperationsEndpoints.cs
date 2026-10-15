@@ -69,6 +69,8 @@ internal static class CameraAgentRawEvidenceOperationsEndpoints
         HttpContext context, ReleaseRequest request, RawEvidenceReleaseAction action, IRawEvidenceOperations operations,
         OutboxOperationsTokenService tokens, CancellationToken cancellationToken)
     {
+        if (context.Features.Get<IAntiforgeryValidationFeature>()?.IsValid != true)
+            return Results.Problem(statusCode: 400, title: "The raw evidence release is invalid.");
         var actor = CameraAgentCredentialAccess.GetOwnerId(context.User);
         if (string.IsNullOrWhiteSpace(actor)) return Results.Forbid();
         if (!tokens.TryReadRawEvidenceAction(action, request.ActionToken, out var target) || target is null)

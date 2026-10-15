@@ -45,8 +45,10 @@ public sealed partial class OutboxOperationsEndpointTests
         Assert.AreEqual(HttpStatusCode.OK, pageResponse.StatusCode);
         using var page = JsonDocument.Parse(await pageResponse.Content.ReadAsStringAsync().ConfigureAwait(false));
         var token = page.RootElement.GetProperty("items")[0].GetProperty("writeOffToken").GetString()!;
-        using var missingAntiforgery = await owner.PostAsJsonAsync(new Uri("/api/v1/operations/raw-evidence/write-off", UriKind.Relative),
-            new { actionToken = token, reasonCode = "operator-approved-loss" }).ConfigureAwait(false);
+        using var unprotectedRequest = new HttpRequestMessage(HttpMethod.Post, new Uri("/api/v1/operations/raw-evidence/write-off", UriKind.Relative));
+        unprotectedRequest.Headers.Add("Idempotency-Key", "raw-evidence-unprotected");
+        unprotectedRequest.Content = JsonContent.Create(new { actionToken = token, reasonCode = "operator-approved-loss" });
+        using var missingAntiforgery = await owner.SendAsync(unprotectedRequest).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.BadRequest, missingAntiforgery.StatusCode);
         Assert.AreEqual(0, operations.Mutations);
         var antiforgery = await GetAntiforgeryTokenAsync(owner).ConfigureAwait(false);

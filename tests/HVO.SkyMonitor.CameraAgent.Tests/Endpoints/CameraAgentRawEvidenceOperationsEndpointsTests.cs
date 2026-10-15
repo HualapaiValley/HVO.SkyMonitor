@@ -58,6 +58,12 @@ public sealed class CameraAgentRawEvidenceOperationsEndpointsTests
         using var app = CreateApp(operations);
         var tokens = app.Services.GetRequiredService<OutboxOperationsTokenService>();
         var token = tokens.ProtectRawEvidenceAction(RawEvidenceReleaseAction.WriteOff, RecordingOperations.Target);
+        foreach (var antiforgeryValid in new bool?[] { false, null })
+        {
+            var refused = await PostAsync(app, "WriteOffCameraAgentRawEvidence", token, "operator-approved-loss", antiforgeryValid).ConfigureAwait(false);
+            Assert.AreEqual(400, refused.Status);
+            Assert.AreEqual(0, operations.Calls);
+        }
         var response = await PostAsync(app, "WriteOffCameraAgentRawEvidence", token, "operator-approved-loss").ConfigureAwait(false);
         Assert.AreEqual(200, response.Status);
         Assert.AreEqual("owner-alice", operations.Actor);
@@ -101,7 +107,7 @@ public sealed class CameraAgentRawEvidenceOperationsEndpointsTests
         => ((IEndpointRouteBuilder)app).DataSources.SelectMany(source => source.Endpoints).OfType<RouteEndpoint>()
             .Single(endpoint => endpoint.Metadata.GetMetadata<IEndpointNameMetadata>()?.EndpointName == name);
 
-    private static async Task<(int Status, string Body)> PostAsync(WebApplication app, string name, string token, string reason)
+    private static async Task<(int Status, string Body)> PostAsync(WebApplication app, string name, string token, string reason, bool? antiforgeryValid = true)
     {
         var context = new DefaultHttpContext
         {
@@ -120,6 +126,8 @@ public sealed class CameraAgentRawEvidenceOperationsEndpointsTests
         context.Request.Headers["Idempotency-Key"] = "operation-1";
         context.Features.Set<IHttpRequestBodyDetectionFeature>(new BodyDetectionFeature());
         context.Features.Set<IRequestBodyPipeFeature>(new BodyPipeFeature(stream));
+        if (antiforgeryValid.HasValue)
+            context.Features.Set<IAntiforgeryValidationFeature>(new AntiforgeryFeature(antiforgeryValid.Value));
         using var response = new MemoryStream();
         context.Response.Body = response;
         await FindEndpoint(app, name).RequestDelegate!(context).ConfigureAwait(false);
@@ -127,6 +135,11 @@ public sealed class CameraAgentRawEvidenceOperationsEndpointsTests
     }
 
     private sealed class BodyDetectionFeature : IHttpRequestBodyDetectionFeature { public bool CanHaveBody => true; }
+    private sealed class AntiforgeryFeature(bool valid) : IAntiforgeryValidationFeature
+    {
+        public bool IsValid { get; } = valid;
+        public Exception? Error => null;
+    }
     private sealed class BodyPipeFeature(Stream stream) : IRequestBodyPipeFeature { public PipeReader Reader { get; } = PipeReader.Create(stream); }
 
     private sealed class RecordingOperations : IRawEvidenceOperations
