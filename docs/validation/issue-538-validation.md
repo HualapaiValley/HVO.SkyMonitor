@@ -100,7 +100,7 @@ M remeasured10000observations+3real source units in108610.3145ms,92.07229units/s
 
 Current-source resource observations (cold-selected includes isolated-fixture startup; cold-drain is separate):
 
-| Phase | Process CPU s | Allocated MiB | Peak sampled RSS MiB | Physical write MiB | SQL commands all/evidence | Separate SQL CPU s | SQL RSS end MiB |
+| Phase | Process CPU s | Allocated MiB | Peak sampled RSS MiB | Physical write MiB | SQL commands all/evidence | Separate SQL CPU s | SQL cgroup memory end MiB |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | cold-selected | 54.807 | 4460.08 | 1089.59 | 1142.863 | 8235/18 | 2.837 | 984.21 |
 | cold-drain | 3.337 | 668.54 | 894.72 | 101.270 | 1714/1121 | 0.520 | 994.47 |
@@ -113,7 +113,7 @@ Current-source resource observations (cold-selected includes isolated-fixture st
 | C4 | 1.466 | 322.38 | 1292.86 | 22.934 | 3226/3200 | 0.799 | 1120.71 |
 | C8 | 1.699 | 380.03 | 1296.49 | 22.996 | 3453/3425 | 0.917 | 1122.01 |
 
-Active metadata work has observable CPU/allocation/SQL costs; no zero-overhead claim is made. The ten predeclared operation-latency/throughput comparisons pass, with finite backlog and complete correctness. Process counters aggregate the harness and both in-process hosts; SQL cgroup counters are separate. Full bookends, physical reads, logical I/O and cgroup block-I/O remain in the JSON. Sampled RSS and lifetime SQL peak are not exact allocation peaks. Final acceptance JSON:592509bytes, SHA256c1a6d3e0d1e9f0ce026a2535b8b7bb50234a69e2a86ae644818f36d8540473cf. Independent Deep review and the coherent selected post-integration gate remain required.
+Active metadata work has observable CPU/allocation/SQL costs; no zero-overhead claim is made. The ten predeclared operation-latency/throughput comparisons pass, with finite backlog and complete correctness. Process counters aggregate the harness and both in-process hosts; SQL cgroup counters are separate. Full bookends, physical reads, logical I/O and cgroup block-I/O remain in the JSON. Process RSS is sampled. SQL memory.current/memory.peak are cgroup memory, including non-RSS charges; the peak is lifetime, not a SQL-process RSS or allocator peak. Final acceptance JSON:592509bytes, SHA256c1a6d3e0d1e9f0ce026a2535b8b7bb50234a69e2a86ae644818f36d8540473cf. Independent Deep review and the coherent selected post-integration gate remain required.
 
 ## Historical fixed-manifest and diagnostic results
 
@@ -132,7 +132,7 @@ Compact offline recovery of the SAME trace completed after the affected gate rel
 
 Historical uninstrumented resource baseline, derived directly from the checksummed final JSON:
 
-| Phase | Process CPU s | Allocated MiB | Peak sampled RSS MiB | Physical write MiB | SQL commands all/evidence | Separate SQL CPU s | SQL RSS end MiB |
+| Phase | Process CPU s | Allocated MiB | Peak sampled RSS MiB | Physical write MiB | SQL commands all/evidence | Separate SQL CPU s | SQL cgroup memory end MiB |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | idle-before | 39.000 | 3988.53 | 919.83 | 1119.641 | 8158/4 | 2.066 | 1335.54 |
 | active | 37.835 | 6131.73 | 1052.18 | 1310.961 | 32667/24437 | 7.181 | 1369.86 |
