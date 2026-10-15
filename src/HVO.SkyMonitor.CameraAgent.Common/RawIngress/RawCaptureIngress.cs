@@ -108,7 +108,8 @@ internal sealed partial class RawCaptureIngress :
             _lanePolicy,
             timeProvider,
             resolvedLaneFaultInjector,
-            laneTelemetry is null ? null : new Action<TimeSpan>(laneTelemetry.RecordLockWait));
+            laneTelemetry is null ? null : new Action<TimeSpan>(laneTelemetry.RecordLockWait),
+            InvalidateEvidence);
     }
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)

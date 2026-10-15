@@ -20,6 +20,13 @@ public interface IRawCaptureIngress
 {
     ValueTask InitializeAsync(CancellationToken cancellationToken);
 
+    // Startup can expose operator recovery only after validating the journal. False keeps capture closed.
+    internal async ValueTask<bool> InitializeForOperationsAsync(CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
     ValueTask<RawCaptureReceipt?> AcceptAsync(
         CameraModuleConfig configuration,
         CaptureLoopSubmission submission,

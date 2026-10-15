@@ -23,7 +23,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution;
 [TestClass]
 [TestCategory("Integration")]
 [DoNotParallelize]
-public sealed class DurableCaptureDistributionTests
+public sealed partial class DurableCaptureDistributionTests
 {
     private static readonly CaptureLaneFaultPoint[] CompletionFaultPoints =
     [

@@ -261,7 +261,7 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
     private string ConfirmationDescription => _pending?.Item.Kind == "RawEvidence"
         ? _pending.Action == OutboxOperationAction.Abandon
             ? "Write-off records an audited terminal loss decision and stops pending capture lanes. All raw files remain preserved; capture identity cannot be reused."
-            : "Revalidation checks recovered raw files against the original committed manifest and checksum. It records the release without deleting or rewriting raw evidence."
+            : "Revalidation checks recovered raw files against the original committed manifest and checksum. Evidence-failed standard work stays terminal; other eligible lanes may retry. Recovered raw stays preserved for explicitly requested archived replay, without deletion or rewriting."
         : _pending?.Item.Kind == "TransientRuntime"
         ? "Abandonment records an audited loss decision for this exact immutable source identity before recomputing its retention hold. Other required holds remain unchanged."
         : _pending?.Action == OutboxOperationAction.Abandon

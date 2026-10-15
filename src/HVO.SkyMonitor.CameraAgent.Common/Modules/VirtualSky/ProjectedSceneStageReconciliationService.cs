@@ -20,7 +20,8 @@ internal sealed class ProjectedSceneStageReconciliationService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await rawIngress.InitializeAsync(stoppingToken).ConfigureAwait(false);
+        while (!await rawIngress.InitializeForOperationsAsync(stoppingToken).ConfigureAwait(false))
+            await Task.Delay(TimeSpan.FromSeconds(1), timeProvider, stoppingToken).ConfigureAwait(false);
         while (!stoppingToken.IsCancellationRequested)
         {
             ProjectedSceneStageReconciliationResult result;

@@ -4,6 +4,12 @@ namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
 internal sealed partial class RawCaptureIngress
 {
+    async ValueTask<bool> IRawCaptureIngress.InitializeForOperationsAsync(CancellationToken cancellationToken)
+    {
+        await InitializeEvidenceOperationsAsync(cancellationToken).ConfigureAwait(false);
+        return !Volatile.Read(ref _evidenceUnavailable);
+    }
+
     public async ValueTask<RawEvidencePage> ReadEvidencePageAsync(
         int pageSize, long? beforeRowId, CancellationToken cancellationToken)
     {

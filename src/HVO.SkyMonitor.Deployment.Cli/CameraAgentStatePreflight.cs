@@ -542,11 +542,13 @@ internal static class CameraAgentStatePreflight
         {
             using var database = ReadOnlyDatabase.Open(databasePath);
             (observed, schemaObjects) = ReadRawIngressSchema(database.Connection);
-            if ((observed == 14 && expected == 14) ||
+            if ((observed == 14 && expected == 14) || (observed == 15 && expected == 15) ||
                 (observed == 13 && expected == 14 && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
-                 requirements.RawIngressMigration == RawIngressV13Schema.MigrationContract))
+                 requirements.RawIngressMigration == RawIngressV13Schema.MigrationContract) ||
+                (observed is 13 or 14 && expected == 15 && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
+                 requirements.RawIngressMigration == RawIngressV13Schema.RecoveryMigrationContract))
             {
-                canonical = observed == 14
+                canonical = observed is 14 or 15
                     ? RawIngressV13Schema.IsCanonicalV14(database.Connection)
                     : RawIngressV13Schema.IsCanonical(database.Connection);
                 if (canonical)
@@ -574,17 +576,17 @@ internal static class CameraAgentStatePreflight
 
         // SqliteRawCaptureJournal initializes a database whose user_version is 0 with no schema objects, so that
         // state is compatible rather than an unsupported schema.
-        if ((observed == expected && expected != 14) || (observed == 0 && schemaObjects == 0) || canonical)
+        if ((observed == expected && expected is not (14 or 15)) || (observed == 0 && schemaObjects == 0) || canonical)
         {
             return;
         }
         findings.Add(new CameraAgentStatePreflightFinding(
             "raw-ingress-schema", boundary, Blocking: true, databasePath,
             observed.ToString(CultureInfo.InvariantCulture), expected.ToString(CultureInfo.InvariantCulture),
-            observed == 14 && expected == 14
-                ? "The v14 journal must have the canonical schema and pass integrity and foreign-key checks; resolve drift or restore a healthy canonical backup."
-                : observed == 13 && expected == 14
-                ? "The v13 journal must have a canonical schema, pass integrity and foreign-key checks, and have an explicit migration declaration before the v14 image can migrate it; resolve drift or restore a healthy canonical backup."
+            observed == expected && expected is 14 or 15
+                ? "The raw journal must have the canonical schema and pass integrity and foreign-key checks; resolve drift or restore a healthy canonical backup."
+                : observed is 13 or 14 && expected is 14 or 15
+                ? "The earlier raw journal must have a canonical schema, pass integrity and foreign-key checks, and have an explicit migration declaration before this image can migrate it; resolve drift or restore a healthy canonical backup."
                 : "Archive the raw-ingress database and complete the CameraAgent-only reset procedure before upgrading."));
     }
 

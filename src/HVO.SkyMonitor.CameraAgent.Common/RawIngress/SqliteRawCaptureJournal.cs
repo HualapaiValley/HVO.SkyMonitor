@@ -24,8 +24,10 @@ internal sealed partial class SqliteRawCaptureJournal(
     TransientDetectionOptions? transientOptions = null,
     Action? inspectionSourceOpenedSeam = null)
 {
-    internal const int CurrentSchemaVersion = 14;
+    // v15 fences readers that do not preserve audited evidence dispositions and retention holds.
+    internal const int CurrentSchemaVersion = 15;
     private const int PreviousSchemaVersion = 13;
+    private const int PreviousRecoverySchemaVersion = 14;
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
         new(() => CreateCanonicalSchemaDefinitions(includeProfiles: true));
     private static readonly Lazy<Dictionary<string, string>> PreviousSchemaDefinitions =
@@ -128,7 +130,7 @@ internal sealed partial class SqliteRawCaptureJournal(
                     $"Raw ingress schema {version} is newer than supported schema {CurrentSchemaVersion}.");
             }
             initializeSchema = version == 0 && inspection.SchemaObjectCount == 0;
-            if (version != CurrentSchemaVersion && version != PreviousSchemaVersion && !initializeSchema)
+            if (version != CurrentSchemaVersion && version != PreviousSchemaVersion && version != PreviousRecoverySchemaVersion && !initializeSchema)
             {
                 throw new InvalidOperationException(
                     $"Raw ingress schema {version} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
@@ -143,7 +145,7 @@ internal sealed partial class SqliteRawCaptureJournal(
             "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
             cancellationToken).ConfigureAwait(false);
         if ((initializeSchema && (writableVersion != 0 || writableSchemaObjectCount != 0)) ||
-            (!initializeSchema && writableVersion != CurrentSchemaVersion && writableVersion != PreviousSchemaVersion))
+            (!initializeSchema && writableVersion != CurrentSchemaVersion && writableVersion != PreviousSchemaVersion && writableVersion != PreviousRecoverySchemaVersion))
         {
             throw new InvalidOperationException(
                 $"Raw ingress schema {writableVersion} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
@@ -180,18 +182,19 @@ internal sealed partial class SqliteRawCaptureJournal(
                 throw;
             }
         }
-        else if (writableVersion == PreviousSchemaVersion)
+        else if (writableVersion is PreviousSchemaVersion or PreviousRecoverySchemaVersion)
         {
             try
             {
                 using var transaction = BeginImmediate(connection);
-                if (await ExecuteScalarLongAsync(connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false) != PreviousSchemaVersion)
+                if (await ExecuteScalarLongAsync(connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false) != writableVersion)
                 {
                     throw new InvalidOperationException("Raw ingress schema changed before migration.");
                 }
-                await VerifyMigrationSourceAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await VerifyMigrationSourceAsync(connection, transaction, (int)writableVersion, cancellationToken).ConfigureAwait(false);
                 _faultInjector.Inject(RawIngressFaultPoint.AfterMigrationTransactionBegan);
-                await ExecuteNonQueryAsync(connection, transaction, NamedProfileSchemaSql, cancellationToken).ConfigureAwait(false);
+                if (writableVersion == PreviousSchemaVersion)
+                    await ExecuteNonQueryAsync(connection, transaction, NamedProfileSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(connection, transaction, $"PRAGMA user_version = {CurrentSchemaVersion};", cancellationToken).ConfigureAwait(false);
                 _faultInjector.Inject(RawIngressFaultPoint.BeforeMigrationCommit);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -520,7 +523,13 @@ internal sealed partial class SqliteRawCaptureJournal(
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*), COALESCE(SUM(payload_length), 0), MIN(durable_ingress_unix_ms) FROM raw_captures WHERE retention_hold = 1;";
+        command.CommandText = """
+            SELECT COUNT(*), COALESCE(SUM(payload_length), 0), MIN(durable_ingress_unix_ms)
+            FROM raw_captures WHERE retention_hold = 1 OR EXISTS (
+                SELECT 1 FROM raw_capture_stage_events disposition
+                WHERE disposition.raw_capture_row_id = raw_captures.raw_capture_row_id
+                  AND disposition.stage_key GLOB 'raw-evidence-release.*');
+            """;
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
         DateTimeOffset? oldest = await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false)
@@ -699,7 +708,7 @@ internal sealed partial class SqliteRawCaptureJournal(
             WHERE retention_hold = 1 OR EXISTS (
                 SELECT 1 FROM raw_capture_stage_events disposition
                 WHERE disposition.raw_capture_row_id = raw_captures.raw_capture_row_id
-                  AND disposition.stage_key = 'raw-evidence-written-off')
+                  AND disposition.stage_key GLOB 'raw-evidence-release.*')
             ORDER BY agent_id, capture_sequence;
             """;
         var holds = new List<RawIngressRetentionHold>();
@@ -1878,15 +1887,16 @@ internal sealed partial class SqliteRawCaptureJournal(
     }
 
     private static async Task VerifyMigrationSourceAsync(
-        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+        SqliteConnection connection, SqliteTransaction transaction, int sourceVersion, CancellationToken cancellationToken)
     {
         if (!string.Equals(await ExecuteScalarStringAsync(connection, "PRAGMA integrity_check;", cancellationToken).ConfigureAwait(false), "ok", StringComparison.Ordinal) ||
             await ExecuteScalarLongAsync(connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;", cancellationToken).ConfigureAwait(false) != 0)
         {
-            throw new InvalidDataException("Raw ingress v13 migration source failed integrity or foreign-key validation.");
+            throw new InvalidDataException($"Raw ingress v{sourceVersion} migration source failed integrity or foreign-key validation.");
         }
         await ValidateCanonicalSchemaDefinitionsAsync(
-            connection, transaction, PreviousSchemaDefinitions.Value, PreviousSchemaVersion, cancellationToken).ConfigureAwait(false);
+            connection, transaction, sourceVersion == PreviousSchemaVersion ? PreviousSchemaDefinitions.Value : CanonicalSchemaDefinitions.Value,
+            sourceVersion, cancellationToken).ConfigureAwait(false);
     }
 
     internal static async Task ValidateCanonicalSchemaDefinitionsAsync(
