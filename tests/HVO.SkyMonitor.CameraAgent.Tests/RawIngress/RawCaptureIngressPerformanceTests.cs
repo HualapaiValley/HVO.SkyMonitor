@@ -331,15 +331,22 @@ public sealed partial class RawCaptureIngressPerformanceTests
             var parsed = CaptureContractJson.ParseManifest(entry.ManifestJson);
             return parsed.IsValid && parsed.Document?.Manifest is not null;
         }));
+        var wholeStageCpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - cpuBefore).TotalMilliseconds;
+        var wholeStageAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
+        using var logicalRows = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (var entry in discovered.OrderBy(static entry => entry.CaptureSequence))
+            logicalRows.AppendData(JsonSerializer.SerializeToUtf8Bytes(entry, EvidenceOptions));
+        var logicalRowsSha256 = Convert.ToHexString(logicalRows.GetHashAndReset());
         return new
         {
+            LogicalRowsSha256 = logicalRowsSha256,
             Records = W3MetadataCount,
             InitializationMilliseconds = initializationMilliseconds,
             InsertMilliseconds = insertMilliseconds,
             QueryMilliseconds = queryMilliseconds,
             RecordsPerSecond = W3MetadataCount / (insertMilliseconds / 1000d),
-            CpuMilliseconds = (Process.GetCurrentProcess().TotalProcessorTime - cpuBefore).TotalMilliseconds,
-            AllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore,
+            CpuMilliseconds = wholeStageCpuMilliseconds,
+            AllocatedBytes = wholeStageAllocatedBytes,
             RssBeforeBytes = rssBefore,
             RssAfterBytes = Environment.WorkingSet,
             DatabaseBytesBeforeCheckpoint = databaseBytesBeforeCheckpoint,

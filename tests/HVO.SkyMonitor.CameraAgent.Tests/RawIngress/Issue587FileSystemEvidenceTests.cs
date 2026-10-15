@@ -69,8 +69,16 @@ public sealed partial class RawCaptureIngressPerformanceTests
             io = ReadIssue587Io();
             var w3p = await MeasureW3PayloadAsync(Path.Combine(work, "w3p"), frozenInput, configurationFromFixture, clock).ConfigureAwait(false);
             stages.Add("w3p", new { Measurement = w3p, IoDelta = IoDelta(io), Hashes = await HashTreeAsync(Path.Combine(work, "w3p"), excludeSqlite: true).ConfigureAwait(false) });
-            stages.Add("publication", await MeasurePublicationAsync(Path.Combine(work, "publication"), frozenInput,
-                await File.ReadAllBytesAsync(Directory.EnumerateFiles(Path.Combine(work, "w2", "frames"), "*.json", SearchOption.AllDirectories).Order(StringComparer.Ordinal).First()).ConfigureAwait(false)).ConfigureAwait(false));
+            var generatedSidecar = await File.ReadAllBytesAsync(Directory.EnumerateFiles(Path.Combine(work, "w2", "frames"), "*.json", SearchOption.AllDirectories).Order(StringComparer.Ordinal).First()).ConfigureAwait(false);
+            var publicationFixture = Path.Combine(fixtureRoot, "publication-sidecar.json");
+            if (!File.Exists(publicationFixture))
+            {
+                Assert.AreEqual("71e3656aaf6a356e75c8481435bfef55a84c78fd", Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"));
+                await File.WriteAllBytesAsync(publicationFixture, generatedSidecar).ConfigureAwait(false);
+            }
+            var frozenSidecar = await File.ReadAllBytesAsync(publicationFixture).ConfigureAwait(false);
+            CollectionAssert.AreEqual(frozenSidecar, generatedSidecar, "Publication isolation requires exact baseline sidecar bytes.");
+            stages.Add("publication", await MeasurePublicationAsync(Path.Combine(work, "publication"), frozenInput, frozenSidecar).ConfigureAwait(false));
             stages.Add("derivative", await MeasureDerivativeAsync(Path.Combine(work, "derivative"), frozenInput, configurationFromFixture).ConfigureAwait(false));
             await SaveFixtureJsonAsync(output, "evidence", new
             {
