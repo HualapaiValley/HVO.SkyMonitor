@@ -35,6 +35,8 @@ internal static partial class NativeLinux
     private const int TimeError = 5;
     private const int StatusUnsynchronized = 0x0040;
     private const int NoSuchFileOrDirectory = 2;
+    private const int OperationNotPermitted = 1;
+    private const int PermissionDenied = 13;
 
     internal static int GetOpenDirectoryFlag(Architecture architecture)
         => architecture switch
@@ -289,12 +291,60 @@ internal static partial class NativeLinux
 
     public static void RenameNodeAt(SafeFileHandle parent, string oldName, string newName)
     {
-        var descriptor = parent.DangerousGetHandle().ToInt32();
-        if (RenameAt2(descriptor, oldName, descriptor, newName, RenameNoReplace) != 0)
+        if (!TryRenameNodeAt(parent, oldName, newName))
         {
             throw new InstallerException($"Entry '{oldName}' could not be renamed through its authenticated parent.");
         }
     }
+
+    /// <summary>
+    /// Renames an entry without replacing an existing one. Returns <see langword="false"/> only when the kernel denies
+    /// the caller write access to the parent, which the purge handoff resolves through its narrow privileged helper;
+    /// every other failure is a refusal.
+    /// </summary>
+    public static bool TryRenameNodeAt(SafeFileHandle parent, string oldName, string newName)
+    {
+        var descriptor = parent.DangerousGetHandle().ToInt32();
+        if (RenameAt2(descriptor, oldName, descriptor, newName, RenameNoReplace) == 0) return true;
+        return IsAccessDenied(Marshal.GetLastPInvokeError())
+            ? false
+            : throw new InstallerException($"Entry '{oldName}' could not be renamed through its authenticated parent.");
+    }
+
+    /// <summary>
+    /// Removes an empty directory. Returns <see langword="false"/> only when the kernel denies the caller write access
+    /// to the parent; a non-empty, replaced, or missing directory is a refusal.
+    /// </summary>
+    public static bool TryRemoveDirectoryAt(SafeFileHandle parent, string name)
+    {
+        if (UnlinkAt(parent.DangerousGetHandle().ToInt32(), name, AtRemoveDirectory) == 0) return true;
+        return IsAccessDenied(Marshal.GetLastPInvokeError())
+            ? false
+            : throw new InstallerException($"Entry '{name}' could not be removed through its authenticated parent.");
+    }
+
+    /// <summary>Returns the identity of an entry without following a final link, or <see langword="null"/> when absent.</summary>
+    public static UnixNodeIdentity? TryGetNodeIdentityAt(SafeFileHandle parent, string name)
+    {
+        const uint mask = StatxType | StatxMode | StatxLinkCount | StatxUid | StatxGid | StatxInode | StatxMountId;
+        if (StatX(parent.DangerousGetHandle().ToInt32(), name, AtSymbolicLinkNoFollow, mask, out var status) != 0)
+        {
+            if (Marshal.GetLastPInvokeError() == NoSuchFileOrDirectory) return null;
+            throw new InstallerException($"Entry '{name}' could not be authenticated.");
+        }
+        if ((status.Mask & mask) != mask) throw new InstallerException($"Entry '{name}' could not be authenticated.");
+        return ToNodeIdentity(status);
+    }
+
+    public static void FlushOpenDirectory(SafeFileHandle directory)
+    {
+        if (FSync(directory.DangerousGetHandle().ToInt32()) != 0)
+        {
+            throw new InstallerException("An authenticated directory could not be flushed to disk.");
+        }
+    }
+
+    private static bool IsAccessDenied(int error) => error is PermissionDenied or OperationNotPermitted;
 
     public static void MakeOpenDirectoryOwnerWritable(SafeFileHandle handle)
     {

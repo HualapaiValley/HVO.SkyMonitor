@@ -20,7 +20,9 @@ internal sealed record PurgeDeletionEvidence(
     string RequestSha256,
     string HostIdentitySha256,
     InstanceManifest Manifest,
-    IReadOnlyList<DestructiveTreeNode> Tree);
+    IReadOnlyList<DestructiveTreeNode> Tree,
+    string? Settlement = null,
+    DateTimeOffset? SettledUtc = null);
 
 internal sealed record CatalogGarbageCollectionEvidence(
     int SchemaVersion,

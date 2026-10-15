@@ -769,7 +769,9 @@ verification result/time, and provenance identity without authentication data.
 The installer creates the product root through one narrow `sudo`-executed
 internal preparation command when needed, then performs catalog, configuration,
 Docker, Compose, and HTTP work as the invoking Docker-capable runtime user. Do
-not invoke the whole installer through `sudo`.
+not invoke the whole installer through `sudo`. Purge uses one other narrow
+`sudo`-executed internal command, described with purge below, for the two
+entries it must change in the root-owned `cameraagents` directory.
 
 ### Operator settings file
 
@@ -1199,6 +1201,63 @@ separate operation and requires `--confirm-instance-id <same-uuid>` after
 uninstall. Purge quarantines the inode-authenticated instance tree and resumes
 deletion from that tombstone after interruption; it never republishes a partially
 deleted tree.
+
+`<productRoot>/cameraagents` stays `root:root 0755`, so the runtime user cannot
+rename or remove its entries. Purge first tries each of its two namespace
+mutations as the runtime user. Only when the kernel denies that does it run
+`sudo -- /proc/<pid>/exe internal-purge-namespace` for exactly one of them:
+
+- **quarantine** renames `<instance-id>` to
+  `.purge-<instance-id>-<operation-id>` without replacing an existing entry;
+- **remove** removes that tombstone after the runtime user has emptied it
+  through the inventory-bound deletion.
+
+The helper accepts only the default product root and only when `sudo` reports
+the same non-root UID and GID that the command names. It opens every component
+from `/` to `cameraagents` without following links and requires each to be
+root-owned and not writable by group or other users. It derives both entry names
+from the instance and operation identifiers. It acts only on a runtime-owned
+directory with the authenticated inode and device, on the namespace's own mount,
+and it removes only a tombstone that holds no subdirectories; the kernel refuses
+any remaining file. It never deletes recursively and never widens a permission.
+The CLI re-authenticates the result after the helper returns. A denied or failed
+helper leaves the journal at `Purge / Mutating`; rerun the same command with
+`--resume`, which continues from whichever side of the atomic rename the
+interruption left. Once the journal records the mutation, the CLI adopts an
+instance root only if it is the evidenced tree: the same installation, with the
+same root inode and device. It refuses any other tree at that name, and any
+instance root that reappears after the purge committed its deletion.
+
+The `Manual` contracts in `PurgeNamespaceRootTests` prove this boundary with
+real root ownership. Each run uses a disposable private mount namespace, so the
+host's `/var/lib` and installed instances are never touched. The run needs a
+non-root user with non-interactive `sudo`, `unshare`, `setpriv`, a reachable
+Docker daemon, and a published CLI:
+
+```bash
+dotnet publish src/HVO.SkyMonitor.Deployment.Cli -r linux-x64 -c Release -o /tmp/hvo-cli
+HVO_DEPLOYMENT_CLI_PUBLISHED=/tmp/hvo-cli/HVO.SkyMonitor.Deployment.Cli \
+  dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests --configuration Release \
+  --filter "TestCategory=Manual&FullyQualifiedName~PurgeNamespaceRootTests"
+```
+
+When `--resume` finds neither the instance root nor its tombstone, and the
+journal never committed deletion, someone removed the tree outside the CLI. The
+CLI settles that case only when all of these hold:
+
+- the journal and the retained deletion evidence match the request and this
+  host;
+- the Docker daemon matches and no container references the instance;
+- `cameraagents` is on the device that held the evidenced tree, so an unmounted
+  data filesystem is not mistaken for a deletion;
+- nothing exists at the instance name, not even a dangling link;
+- no other tombstone of the instance exists.
+
+The CLI then records `"settlement": "already-absent"` with a time in the evidence,
+completes the journal, and reports the outcome `already-absent`, not
+`completed`. It does not claim it deleted the tree, and it creates no path. A
+completed or settled purge is terminal: another `--resume` reports that no
+matching interrupted purge exists.
 
 Catalog versions are explicit per instance:
 
