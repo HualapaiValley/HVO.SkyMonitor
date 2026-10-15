@@ -582,6 +582,7 @@ public sealed class ProcessingGraphOperationsTests
     [TestMethod]
     [DataRow("revision")]
     [DataRow("execution")]
+    [DataRow("shared")]
     public async Task ReplayUnderSupersededFrozenPlanIsAbandonedRatherThanFailed(string frozenRecord)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-superseded");
@@ -627,27 +628,12 @@ public sealed class ProcessingGraphOperationsTests
 
                 // Record the frozen plan as an earlier version compiled it, as for a replay accepted before an upgrade.
                 // "revision" is the upgrade itself; "execution" leaves the revision current and differs only in the
-                // execution's own frozen nodes, which the graph worker detects.
+                // execution's own frozen nodes, which the graph worker detects; "shared" changes only the shared node
+                // identity, which admission now refuses for new commands (see the refusal test's "shared" rows).
                 var snapshot = await operations.ReadRevisionSnapshotAsync(named.RevisionId, CancellationToken.None)
                     .ConfigureAwait(false);
-                using var connection = new SqliteConnection(
-                    $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
-                await connection.OpenAsync().ConfigureAwait(false);
-                if (frozenRecord == "revision")
-                {
-                    using var revision = connection.CreateCommand();
-                    revision.CommandText = "UPDATE processing_graph_revisions SET nodes_json = CAST(replace(CAST(nodes_json AS TEXT), $current, $old) AS BLOB) WHERE revision_id = $revision;";
-                    revision.Parameters.AddWithValue("$current", snapshot.Nodes[0].PlanSha256);
-                    revision.Parameters.AddWithValue("$old", new string('f', 64));
-                    revision.Parameters.AddWithValue("$revision", named.RevisionId);
-                    Assert.AreEqual(1, await revision.ExecuteNonQueryAsync().ConfigureAwait(false));
-                }
-                using var nodes = connection.CreateCommand();
-                nodes.CommandText = "UPDATE processing_execution_nodes SET plan_sha256 = $old WHERE execution_id = $execution AND plan_sha256 = $current;";
-                nodes.Parameters.AddWithValue("$current", snapshot.Nodes[0].PlanSha256);
-                nodes.Parameters.AddWithValue("$old", new string('f', 64));
-                nodes.Parameters.AddWithValue("$execution", executionId.ToString("N"));
-                Assert.AreEqual(1, await nodes.ExecuteNonQueryAsync().ConfigureAwait(false));
+                await RecordSupersededFrozenPlanAsync(root, named.RevisionId, executionId, snapshot, frozenRecord)
+                    .ConfigureAwait(false);
             }
 
             using (var provider = CreateProvider(root, settings))
@@ -678,6 +664,132 @@ public sealed class ProcessingGraphOperationsTests
                 Assert.AreEqual(HealthStatus.Healthy, health.Status);
                 Assert.AreEqual(1L, health.Data["ReplayAbandonedCount"]);
                 Assert.AreEqual(0L, health.Data["ReplayTerminalCount"]);
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static async Task RecordSupersededFrozenPlanAsync(
+        string root,
+        string revisionId,
+        Guid executionId,
+        ProcessingGraphRevisionSnapshot snapshot,
+        string frozenRecord)
+    {
+        var shared = frozenRecord == "shared";
+        var current = shared ? snapshot.Nodes[0].SharedPlanNodeIdentitySha256 : snapshot.Nodes[0].PlanSha256;
+        var old = new string(shared ? 'e' : 'f', 64);
+        Assert.HasCount(64, current);
+        using var connection = new SqliteConnection(
+            $"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        await connection.OpenAsync().ConfigureAwait(false);
+        if (frozenRecord != "execution")
+        {
+            using var revision = connection.CreateCommand();
+            revision.CommandText = "UPDATE processing_graph_revisions SET nodes_json = CAST(replace(CAST(nodes_json AS TEXT), $current, $old) AS BLOB) WHERE revision_id = $revision;";
+            revision.Parameters.AddWithValue("$current", current);
+            revision.Parameters.AddWithValue("$old", old);
+            revision.Parameters.AddWithValue("$revision", revisionId);
+            Assert.AreEqual(1, await revision.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
+        var column = shared ? "shared_plan_node_identity_sha256" : "plan_sha256";
+        using var nodes = connection.CreateCommand();
+        nodes.CommandText = $"UPDATE processing_execution_nodes SET {column} = $old WHERE execution_id = $execution AND node_id = $node AND {column} = $current;";
+        nodes.Parameters.AddWithValue("$current", current);
+        nodes.Parameters.AddWithValue("$old", old);
+        nodes.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        nodes.Parameters.AddWithValue("$node", snapshot.Nodes[0].NodeId);
+        Assert.AreEqual(1, await nodes.ExecuteNonQueryAsync().ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow("revision")]
+    [DataRow("execution")]
+    public async Task SupersededReplayWithDamagedHistoricalInputFailsRatherThanAbandons(string frozenRecord)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-superseded-window");
+        try
+        {
+            var settings = new Dictionary<string, string?>
+            {
+                ["CameraAgent:ProcessingGraphs:ReplayMaximumAttempts"] = "2",
+                ["CameraAgent:ProcessingGraphs:ReplayRecoveryPollSeconds"] = "1"
+            };
+            var baseConfiguration = CreateConfiguration();
+            var configuration = baseConfiguration with
+            {
+                Rig = baseConfiguration.Rig with
+                {
+                    Sensor = baseConfiguration.Rig.Sensor with { PixelFormat = CameraPixelFormat.Mono16 }
+                },
+                Pipeline = new CapturePipelineConfig(
+                    [new CaptureProcessingStepConfig(
+                        "RollingCombination",
+                        "rolling",
+                        Options: JsonSerializer.SerializeToElement(new { windowSize = 3, outputVariant = "rolling-mean" }),
+                        DependsOn: ["$raw"])],
+                    CapturePipelineSchemaVersions.ExplicitV2,
+                    CapturePipelineDependencyPolicy.RejectEnabledDependent)
+            };
+            var receipts = new List<RawCaptureReceipt>();
+            Guid executionId;
+            using (var provider = CreateProvider(root, settings))
+            {
+                var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+                await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None).ConfigureAwait(false);
+                for (var index = 0; index < 3; index++)
+                {
+                    receipts.Add(await ingress.AcceptAsync(
+                            configuration, CreateSubmission(index, CameraPixelFormat.Mono16), CancellationToken.None)
+                        .ConfigureAwait(false) ?? throw new AssertFailedException("The fixture must retain its raw capture."));
+                    // Replay is claimed only while no live standard work is pending.
+                    await CompleteLiveAsync(provider, configuration).ConfigureAwait(false);
+                }
+                var replay = await operations.SubmitReplayAsync(
+                    new ProcessingReplaySubmission(
+                        receipts[^1].Manifest.Descriptor.Capture.CaptureId,
+                        registry.ActiveRevisionId,
+                        receipts[^1].Manifest.Descriptor.Artifact.ArtifactId),
+                    "superseded-window-replay",
+                    "owner-test",
+                    CancellationToken.None).ConfigureAwait(false);
+                executionId = replay.Execution.ExecutionId;
+                var snapshot = await operations.ReadRevisionSnapshotAsync(registry.ActiveRevisionId, CancellationToken.None)
+                    .ConfigureAwait(false);
+                await RecordSupersededFrozenPlanAsync(root, registry.ActiveRevisionId, executionId, snapshot, frozenRecord)
+                    .ConfigureAwait(false);
+            }
+
+            using (var provider = CreateProvider(root, settings))
+            {
+                await provider.GetRequiredService<IRawCaptureIngress>()
+                    .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                // Damage only the oldest frozen window input after acceptance; the replay's own raw capture is intact,
+                // so only a check of every frozen input can tell this replay from one that is safe to abandon.
+                var damaged = receipts[0].StoredFrame.AbsolutePath;
+                var payload = await File.ReadAllBytesAsync(damaged).ConfigureAwait(false);
+                payload[^1] ^= 0xFF;
+                await File.WriteAllBytesAsync(damaged, payload).ConfigureAwait(false);
+                var damagedHash = Sha256OfFile(damaged);
+                var primaryHash = Sha256OfFile(receipts[^1].StoredFrame.AbsolutePath);
+
+                var detail = await RunReplayToCompletionAsync(provider, executionId).ConfigureAwait(false);
+
+                Assert.AreEqual(ProcessingGraphExecutionStatus.Failed, detail.Execution.Status, detail.Execution.FailureReason);
+                Assert.AreNotEqual(ProcessingReplayReasons.PlanSuperseded, detail.Execution.FailureReason);
+                Assert.AreEqual(damagedHash, Sha256OfFile(damaged), "Damaged evidence is kept as found.");
+                Assert.AreEqual(primaryHash, Sha256OfFile(receipts[^1].StoredFrame.AbsolutePath));
+                Assert.AreEqual(("Failed", 0L), ReadReplayWorkStateAndHeldPins(root, executionId));
+                var durable = await provider.GetRequiredService<SqliteCaptureProcessingStore>()
+                    .ReadOperationalStateAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(1L, durable.ReplayTerminalCount);
+                Assert.AreEqual(0L, durable.ReplayAbandonedCount);
             }
         }
         finally
@@ -1047,6 +1159,12 @@ public sealed class ProcessingGraphOperationsTests
     [DataRow("activate", "unsupported", true)]
     [DataRow("rollback", "unsupported", true)]
     [DataRow("replay", "unsupported", true)]
+    [DataRow("activate", "shared", false)]
+    [DataRow("rollback", "shared", false)]
+    [DataRow("replay", "shared", false)]
+    [DataRow("activate", "shared", true)]
+    [DataRow("rollback", "shared", true)]
+    [DataRow("replay", "shared", true)]
     public async Task SupersededRevisionRejectsNewCommandsButPreservesAcknowledgedCommands(
         string action, string mismatch, bool acknowledged)
     {
@@ -1102,8 +1220,20 @@ public sealed class ProcessingGraphOperationsTests
                 command.Parameters.AddWithValue("$revision", revisionId);
                 if (mismatch is not ("missing" or "unsupported"))
                 {
-                    command.Parameters.AddWithValue("$current", mismatch == "hash" ? snapshot.Nodes[0].PlanSha256 : "\"preview\"");
-                    command.Parameters.AddWithValue("$old", mismatch == "hash" ? new string('f', 64) : "\"previous-preview\"");
+                    // "shared" changes only the shared node identity, as a step-version change can before item 2.
+                    Assert.HasCount(64, snapshot.Nodes[0].SharedPlanNodeIdentitySha256);
+                    command.Parameters.AddWithValue("$current", mismatch switch
+                    {
+                        "hash" => snapshot.Nodes[0].PlanSha256,
+                        "shared" => snapshot.Nodes[0].SharedPlanNodeIdentitySha256,
+                        _ => "\"preview\""
+                    });
+                    command.Parameters.AddWithValue("$old", mismatch switch
+                    {
+                        "hash" => new string('f', 64),
+                        "shared" => new string('e', 64),
+                        _ => "\"previous-preview\""
+                    });
                 }
                 Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
             }

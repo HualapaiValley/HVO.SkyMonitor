@@ -595,6 +595,21 @@ internal sealed class CaptureProcessingPersistence(
         return artifacts;
     }
 
+    // Reads every raw input frozen for the execution, so a historical input that is missing, no longer committed or
+    // pinned, or damaged fails the check rather than shortening the window.
+    internal async ValueTask EnsureFrozenExecutionRawInputsIntactAsync(
+        Guid executionId,
+        CancellationToken cancellationToken)
+    {
+        var nodes = await _store.ReadFrozenExecutionRawInputNodesAsync(executionId, cancellationToken).ConfigureAwait(false);
+        foreach (var (nodeId, inputCount) in nodes)
+        {
+            var inputs = await ReadFrozenExecutionRawInputsAsync(executionId, nodeId, cancellationToken).ConfigureAwait(false);
+            if (inputs.Count != inputCount)
+                throw new InvalidDataException("A frozen replay input is no longer retained.");
+        }
+    }
+
     internal async ValueTask<IReadOnlyList<ProcessingArtifact>> ReadFrozenExecutionRawInputsAsync(
         Guid executionId,
         string nodeId,

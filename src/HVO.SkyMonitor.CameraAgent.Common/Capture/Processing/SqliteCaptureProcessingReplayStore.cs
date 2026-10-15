@@ -778,6 +778,30 @@ internal sealed partial class SqliteCaptureProcessingStore
         CancellationToken cancellationToken)
         => ReadFrozenExecutionRawInputsAsync(executionId, nodeId, cancellationToken);
 
+    internal async ValueTask<IReadOnlyList<(string NodeId, int InputCount)>> ReadFrozenExecutionRawInputNodesAsync(
+        Guid executionId,
+        CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT node_id, COUNT(*)
+            FROM processing_execution_inputs
+            WHERE execution_id = $execution AND selected_flag = 1
+            GROUP BY node_id
+            ORDER BY node_id;
+            """;
+        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        var nodes = new List<(string NodeId, int InputCount)>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            nodes.Add((reader.GetString(0), reader.GetInt32(1)));
+        }
+        return nodes;
+    }
+
     internal async ValueTask<IReadOnlyList<DurableProcessingOutput>> ReadFrozenExecutionOutputsAsync(
         Guid executionId,
         string nodeId,

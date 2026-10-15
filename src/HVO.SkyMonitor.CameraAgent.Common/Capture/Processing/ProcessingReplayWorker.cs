@@ -128,7 +128,7 @@ internal sealed class ProcessingReplayWorker(
                 timeProvider,
                 durableAttempt: lease.ClaimCount,
                 cancellationDisposition: () => ReplayCancellationResult(livePreemptionToken),
-                frozenPlanSuperseded: !MatchesFrozenPlan(graph.Value, lease.Revision))
+                frozenPlanSuperseded: !lease.Revision.IsCompiledBy(graph.Value))
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (processingCancellation.IsCancellationRequested)
@@ -220,21 +220,6 @@ internal sealed class ProcessingReplayWorker(
         => livePreemptionToken.IsCancellationRequested
             ? CaptureLaneHandlerResult.Wait("processing.replay-live-priority")
             : CaptureLaneHandlerResult.Retry("processing.replay-interrupted");
-
-    // The runtime graph is built from the frozen configuration, so a difference from the frozen revision means the
-    // running code compiles that configuration into different plans, for example after an upgrade.
-    private static bool MatchesFrozenPlan(
-        CaptureProcessingGraph graph,
-        ProcessingGraphRevisionSnapshot revision)
-        => graph.Nodes.Count == revision.Nodes.Length &&
-            !graph.Nodes.Where((node, index) =>
-                    !string.Equals(node.Id, revision.Nodes[index].NodeId, StringComparison.Ordinal) ||
-                    !string.Equals(node.PlanSha256, revision.Nodes[index].PlanSha256, StringComparison.Ordinal) ||
-                    !string.Equals(
-                        node.SharedPlanNodeIdentitySha256,
-                        revision.Nodes[index].SharedPlanNodeIdentitySha256,
-                        StringComparison.Ordinal))
-                .Any();
 
     private sealed class ReplayGraph(CaptureProcessingGraph value) : IDisposable
     {

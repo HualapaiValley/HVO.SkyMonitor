@@ -234,14 +234,20 @@ the same pipeline, standard processing of that earlier work cannot run:
   captures. That is unchanged and needs the evidence recovery path.
 - An archived replay accepted by the previous version, whose frozen plan this
   version no longer builds, is **abandoned** on its first claim. Its execution
-  and work become `Expired` with `processing.plan-superseded`. It spends no
-  further attempt, releases its pinned inputs, and leaves its raw evidence
-  untouched. It is counted in `ReplayAbandonedCount` on the
-  `capture-processing` health check (gauge
+  and work become `Expired` with `processing.plan-superseded`. Its unfinished
+  nodes record `TerminalFailure` with the same reason; nodes it had already
+  completed keep their status. It spends no further attempt, releases its
+  pinned inputs, and leaves its raw evidence untouched. It is counted in
+  `ReplayAbandonedCount` on the `capture-processing` health check (gauge
   `camera_agent.processing.replay.abandoned`), not in `ReplayTerminalCount`,
   so it does not degrade health. The replay page explains this. To run that
   capture again, submit a new replay against a revision this version compiles.
-  A replay submitted against the old revision is refused.
+  A replay submitted against the old revision is refused, by the same plan
+  comparison that abandons the accepted one.
+- Abandonment needs intact evidence. Before abandoning, the replay checks its
+  own raw capture and every historical raw input frozen for a window step. If
+  any is missing or damaged, the replay fails instead, as it would under a
+  current plan, and counts in `ReplayTerminalCount`.
 - A replay whose frozen configuration this version cannot build at all, for
   example because a step was removed, is not abandoned. It retries as
   `processing.replay-exception` and fails terminally once its attempts are
