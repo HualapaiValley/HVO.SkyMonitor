@@ -66,23 +66,32 @@ grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCa
 
 mapfile -t commands < <(grep -E '^[[:space:]]+dotnet test tests/' <<<"$unit_job" || true)
 
-# Tag each line of a step read from stdin: ENV <entry> for an env scalar, BAD <line>
-# for anything outside the selecting-step grammar described at its use.
+# Tag each line of a step read from stdin: ENV <entry> for its DOCKER_HOST scalar (the
+# only env a selecting step may set, so no step-level UNIT_FILTER or PATH override),
+# BAD <line> for anything outside the selecting-step grammar described at its use.
 validate_step() {
   awk '
     BEGIN {
       command_pattern = "^          dotnet test tests/[A-Za-z0-9._/-]+[.]csproj "
-      logger_token = "\"trx;LogFileName=[A-Za-z0-9._-]+\""
-      shell_meta = "[;|&<>`#\\\\]|[$][(]"
     }
+    { sub(/[ \t\r]+$/, "") }
     NR == 1 { if ($0 !~ /^      - name: [^ ]/) print "BAD " $0; next }
     /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
     $0 == "        env:" { if (seen_env || seen_run) print "BAD " $0; seen_env = 1; section = "env"; next }
     $0 == "        run: |" { if (seen_run) print "BAD " $0; seen_run = 1; section = "run"; next }
-    section == "env" && /^          [A-Z][A-Z0-9_]*: [^ ]/ { print "ENV " substr($0, 11); next }
+    section == "env" && /^          DOCKER_HOST: [^ ]/ { print "ENV " substr($0, 11); next }
     section == "run" && $0 ~ command_pattern {
-      rest = $0; gsub(logger_token, "", rest)
-      if (rest ~ shell_meta) print "BAD " $0
+      # Only these execution-preserving options may follow the project; any other
+      # token (--list-tests, --no-restore overrides, a shell operator) is left over.
+      rest = $0; sub(/^          dotnet test tests\/[A-Za-z0-9._\/-]+[.]csproj/, "", rest)
+      gsub(/ --no-build/, "", rest)
+      gsub(/ --configuration Release/, "", rest)
+      gsub(/ --filter "[$]UNIT_FILTER"/, "", rest)
+      gsub(/ --settings tests\/coverage[.]runsettings/, "", rest)
+      gsub(/ --collect:"XPlat Code Coverage"/, "", rest)
+      gsub(/ --results-directory TestResults\/unit\/[a-z0-9-]+/, "", rest)
+      gsub(/ --logger "trx;LogFileName=[A-Za-z0-9._-]+"/, "", rest)
+      if (rest !~ /^ *$/) print "BAD " $0
       next
     }
     { print "BAD " $0 }
@@ -125,9 +134,9 @@ for project in "${!expected[@]}"; do
   command="${matches[0]}"
   step="$(step_of "$command")"
   # A selecting step must match a closed grammar: its `- name:` opening line, an
-  # optional `env:` mapping of plain scalars, then one `run: |` block holding only
-  # plain `dotnet test tests/<project>.csproj ...` lines. Anything else -- an `if:`
-  # or `continue-on-error:` key in any spelling, a reindented or flow-style step, a
+  # optional `env:` mapping holding only DOCKER_HOST, then one `run: |` block of
+  # `dotnet test tests/<project>.csproj` lines using only the options checked
+  # below. Anything else -- an `if:` or `continue-on-error:` key in any spelling, a reindented or flow-style step, a
   # shell structure that could stop a line executing (heredoc, `||`, `;`, `&`) --
   # is rejected rather than interpreted, so a complete list cannot hide a selection
   # that never runs and an env-looking line inside a script is never read as env.

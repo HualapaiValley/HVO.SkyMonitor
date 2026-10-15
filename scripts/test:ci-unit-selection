@@ -79,6 +79,13 @@ expect_fail 'outside the supported grammar' --workflow "$scratch/inertenv.yml"
 mutate swallow '/unit\/catalog-sqlite-performance/ s#$# || true#'
 expect_fail 'outside the supported grammar' --workflow "$scratch/swallow.yml"
 
+mutate envfilter '/DOCKER_HOST: unix:\/\/\/tmp\/hvo-no-docker.sock/ a\          UNIT_FILTER: FullyQualifiedName~MatchesTheGlobalClearByDeclaringTypeAndNotByMethodNameAlone'
+expect_fail 'outside the supported grammar' --workflow "$scratch/envfilter.yml"
+mutate listtests '/unit\/cameraagent-integration/ s# --no-build# --list-tests --no-build#'
+expect_fail 'outside the supported grammar' --workflow "$scratch/listtests.yml"
+# Harmless trailing whitespace on the block header is not a reason to reject.
+mutate trailing '/- name: Run Docker-disabled supplemental Unit suites/,/- name: Bind Unit evidence/ s#^        run: \|$#        run: | #'
+expect_pass --workflow "$scratch/trailing.yml"
 mutate settings '/unit\/catalog-sqlite-performance/ s#--logger#--settings tests/coverage.runsettings --logger#'
 expect_fail 'passes --settings' --workflow "$scratch/settings.yml"
 mutate sharedslot '/unit\/logichost-integration/ s#unit/logichost-integration#unit/cameraagent-integration#; /unit-logichost-integration.trx/ s#unit-logichost-integration.trx#unit-cameraagent-integration.trx#'
