@@ -72,6 +72,32 @@ public sealed class OperationsCaptureDetailBaseImageTests
     }
 
     [TestMethod]
+    public async Task BaseFailureDuringSelectionRead_DoesNotMaterializeTheHiddenStack()
+    {
+        using var context = CreateContext(out var materializer);
+        var selection = context.JSInterop.SetupModule(ModulePath).Setup<string[]>("selectedLayerIdentities", _ => true);
+        var cut = RenderCapture(context, CaptureA);
+
+        await Task.WhenAll(cut.InvokeAsync(cut.Instance.SaveSelectedStackAsync), FailBaseThenReturnSelectionAsync());
+
+        async Task FailBaseThenReturnSelectionAsync()
+        {
+            try
+            {
+                await cut.Find(".layered-canvas img").TriggerEventAsync("onerror", new BrowserErrorEventArgs());
+            }
+            finally
+            {
+                selection.SetResult([new string('3', 64)]);
+            }
+        }
+
+        materializer.Calls.Should().Be(0);
+        cut.Instance.MaterializationMessage.Should().BeNull();
+        cut.Instance.IsSavingPresentation.Should().BeFalse();
+    }
+
+    [TestMethod]
     public async Task ExplicitRetry_RendersANewExactBaseElementAndRebindsLayers()
     {
         using var context = CreateContext(out _);
@@ -90,7 +116,7 @@ public sealed class OperationsCaptureDetailBaseImageTests
         context.JSInterop.VerifyInvoke("bindLayerToggles", 2);
 
         await cut.InvokeAsync(() => cut.Instance.OnBaseImageError(failedKey));
-        cut.FindAll(".layered-unavailable").Should().BeEmpty("an error from the superseded attempt is stale");
+        cut.Instance.IsBaseImageUnavailable.Should().BeFalse("an error from the superseded attempt is stale");
 
         await cut.Find(".layered-canvas img").TriggerEventAsync("onerror", new BrowserErrorEventArgs());
         cut.FindAll(".layered-unavailable").Should().ContainSingle("the current attempt can still fail");
@@ -109,6 +135,7 @@ public sealed class OperationsCaptureDetailBaseImageTests
 
         await cut.InvokeAsync(() => cut.Instance.OnBaseImageError(captureAKey));
 
+        cut.Instance.IsBaseImageUnavailable.Should().BeFalse("an error from the previous capture is stale");
         cut.FindAll(".layered-unavailable").Should().BeEmpty();
         cut.Find(".layered-overlay svg").Should().NotBeNull();
         cut.Find("h1").TextContent.Should().Be($"Capture {CapturedAt(CaptureB):u}");

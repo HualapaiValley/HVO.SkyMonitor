@@ -115,7 +115,7 @@ public partial class OperationsCaptureDetail : ComponentBase, IAsyncDisposable
             module ??= await JS.InvokeAsync<IJSObjectReference>(
                 "import", "./Components/Pages/Operations/OperationsCaptureDetail.razor.js");
             var selected = await module.InvokeAsync<string[]>("selectedLayerIdentities", presentationRoot);
-            if (!MatchesPresentation(generation, requestedCaptureId, requestedPresentationIdentity))
+            if (!MatchesPresentation(generation, requestedCaptureId, requestedPresentationIdentity) || IsBaseImageUnavailable)
             {
                 return;
             }
