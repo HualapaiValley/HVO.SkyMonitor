@@ -5884,9 +5884,24 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                 columns: new[] { "BindingId", "Kind", "ExecutionId", "Accepted", "Id" });
 
             migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceUnits_BindingId_Kind_Id",
+                table: "ImportedExecutionEvidenceUnits",
+                columns: new[] { "BindingId", "Kind", "Id" });
+
+            migrationBuilder.CreateIndex(
                 name: "IX_ImportedExecutionEvidenceUnits_BindingId_Kind_RevisionId_Accepted_Id",
                 table: "ImportedExecutionEvidenceUnits",
                 columns: new[] { "BindingId", "Kind", "RevisionId", "Accepted", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceUnits_BindingId_OriginId_Id",
+                table: "ImportedExecutionEvidenceUnits",
+                columns: new[] { "BindingId", "OriginId", "Id" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_ImportedExecutionEvidenceUnits_BindingId_OriginId_Kind_Id",
+                table: "ImportedExecutionEvidenceUnits",
+                columns: new[] { "BindingId", "OriginId", "Kind", "Id" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_ImportedExecutionEvidenceUnits_OriginId_BindingId",

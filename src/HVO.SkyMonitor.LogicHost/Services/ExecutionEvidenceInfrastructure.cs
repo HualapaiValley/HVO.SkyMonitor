@@ -87,6 +87,7 @@ internal sealed partial class ExecutionEvidenceTelemetry : IDisposable
     public void Request(string outcome, TimeSpan elapsed)
     {
         if (outcome == "pressure" && _logger is not null) { EvidencePressure(_logger); }
+        if (outcome == "unavailable" && _logger is not null) { EvidenceUnavailable(_logger); }
         _requests.Add(1, new KeyValuePair<string, object?>("outcome", outcome));
         _latency.Record(elapsed.TotalMilliseconds, new KeyValuePair<string, object?>("outcome", outcome));
     }
@@ -96,6 +97,8 @@ internal sealed partial class ExecutionEvidenceTelemetry : IDisposable
     private static partial void EvidenceConflict(ILogger logger);
     [LoggerMessage(EventId = 2482, Level = LogLevel.Warning, Message = "Execution evidence capacity is exhausted; new evidence remains retryable and retained history was preserved.")]
     private static partial void EvidencePressure(ILogger logger);
+    [LoggerMessage(EventId = 2483, Level = LogLevel.Warning, Message = "Execution evidence operation is temporarily unavailable; committed receipts remain readable on retry.")]
+    private static partial void EvidenceUnavailable(ILogger logger);
 }
 
 internal sealed class ExecutionEvidenceDeniedException : Exception

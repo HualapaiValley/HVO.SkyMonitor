@@ -103,6 +103,13 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         var converged = await FeedbackAsync(retry).ConfigureAwait(false);
         Assert.AreEqual(2, converged.ContiguousThroughSequence);
         Assert.AreEqual(0, converged.MissingRanges.Length);
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            var status = await scope.ServiceProvider.GetRequiredService<ExecutionEvidenceService>()
+                .GetStatusAsync(device.BindingId, device.OwnerId, null).ConfigureAwait(false);
+            Assert.AreEqual(0, status!.OriginsWithGaps);
+            Assert.IsNull(status.OldestGapDetectedAtUtc);
+        }
         var correction = GraphExecutionEvidenceJson.Seal(execution with
         {
             OriginSequence = 4,

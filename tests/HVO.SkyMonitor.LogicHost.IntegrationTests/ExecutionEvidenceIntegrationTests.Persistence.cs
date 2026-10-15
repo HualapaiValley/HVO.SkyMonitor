@@ -39,6 +39,11 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         Assert.AreEqual(2, first!.Count);
         var second = await service.ListUnitsAsync(device.BindingId, device.OwnerId, device.ObservatoryId, afterId: first[^1].Id, take: 2).ConfigureAwait(false);
         Assert.AreEqual(1, second!.Count);
+        var filtered = await service.ListUnitsAsync(device.BindingId, device.OwnerId, device.ObservatoryId,
+            afterId: first[0].Id, take: 1, originIdentitySha256: unit.Origin.IdentitySha256, kind: "GraphRevision").ConfigureAwait(false);
+        Assert.AreEqual(first[1].Id, filtered!.Single().Id);
+        Assert.AreEqual(0, (await service.ListUnitsAsync(device.BindingId, device.OwnerId, device.ObservatoryId,
+            take: 1, kind: "GraphExecution").ConfigureAwait(false))!.Count);
         Assert.IsTrue(second[0].Id > first[^1].Id);
         var bytes = await service.GetUnitAsync(device.BindingId, first[0].Id, device.OwnerId, null).ConfigureAwait(false);
         Assert.IsTrue(GraphExecutionEvidenceJson.ParseEnvelope(bytes!).Validation.IsValid);

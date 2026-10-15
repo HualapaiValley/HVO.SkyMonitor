@@ -6951,6 +6951,12 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                     b.HasIndex("OriginId", "OriginSequence")
                         .IsUnique();
 
+                    b.HasIndex("BindingId", "Kind", "Id");
+
+                    b.HasIndex("BindingId", "OriginId", "Id");
+
+                    b.HasIndex("BindingId", "OriginId", "Kind", "Id");
+
                     b.HasIndex("BindingId", "Kind", "ExecutionId", "Accepted", "Id");
 
                     b.HasIndex("BindingId", "Kind", "RevisionId", "Accepted", "Id");

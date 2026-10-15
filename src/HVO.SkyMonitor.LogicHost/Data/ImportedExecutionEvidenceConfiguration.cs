@@ -57,6 +57,9 @@ internal static class ImportedExecutionEvidenceConfiguration
         unit.HasIndex(x => new { x.OriginId, x.OriginSequence }).IsUnique();
         unit.HasIndex(x => new { x.OriginId, x.EvidenceId }).IsUnique().HasFilter("[Accepted] = 1");
         unit.HasIndex(x => new { x.BindingId, x.Id });
+        unit.HasIndex(x => new { x.BindingId, x.OriginId, x.Id });
+        unit.HasIndex(x => new { x.BindingId, x.Kind, x.Id });
+        unit.HasIndex(x => new { x.BindingId, x.OriginId, x.Kind, x.Id });
         unit.HasIndex(x => new { x.BindingId, x.Kind, x.RevisionId, x.Accepted, x.Id });
         unit.HasIndex(x => new { x.BindingId, x.Kind, x.ExecutionId, x.Accepted, x.Id });
         unit.HasOne<ImportedExecutionEvidenceOrigin>().WithMany().HasForeignKey(x => new { x.OriginId, x.BindingId }).HasPrincipalKey(x => new { x.Id, x.BindingId }).OnDelete(DeleteBehavior.Restrict);
