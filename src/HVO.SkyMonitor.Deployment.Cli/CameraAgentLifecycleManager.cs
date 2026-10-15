@@ -391,7 +391,8 @@ internal sealed class CameraAgentLifecycleManager
             CaptureInitialized: true,
             CaptureVersion: >= 0, CaptureSequence: >= 0,
             RawPending: >= 0, RawLeased: >= 0, LanePending: >= 0, LaneLeased: >= 0,
-            ProcessingPending: >= 0, ProcessingLeased: >= 0, OutboxPending: >= 0, OutboxLeased: >= 0
+            ProcessingPending: >= 0, ProcessingLeased: >= 0, OutboxPending: >= 0, OutboxLeased: >= 0,
+            ReplayPending: >= 0, ReplayLeased: >= 0
         } && boundary.RecordedUtc != default;
 
     private static bool IsValidRecoveryReceipt(LifecycleContinuityBoundary before, LifecycleResumeReceipt? receipt)
@@ -1833,7 +1834,7 @@ internal sealed class CameraAgentLifecycleManager
             throw new InstallerException("The retained transactional identities do not match the lifecycle operation.");
     }
 
-    private static ComposeFiles ComposeFrom(InstallationPaths paths, InstanceManifest manifest, InstallationResult result)
+    internal static ComposeFiles ComposeFrom(InstallationPaths paths, InstanceManifest manifest, InstallationResult result)
     {
         var compact = manifest.InstanceId.ToString("N");
         return new ComposeFiles(
@@ -2029,7 +2030,9 @@ internal sealed class CameraAgentLifecycleManager
             value.OutboxPending,
             value.OutboxLeased,
             DateTimeOffset.UtcNow,
-            value.CaptureInitialized);
+            value.CaptureInitialized,
+            value.ReplayPending,
+            value.ReplayLeased);
 
     private static void EnsureContinuity(LifecycleContinuityBoundary? before, LifecycleContinuity after)
     {

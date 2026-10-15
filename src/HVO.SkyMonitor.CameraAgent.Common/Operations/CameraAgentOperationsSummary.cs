@@ -199,7 +199,8 @@ public sealed record CameraAgentOperationsSummary(
     OperationsSection<OperationsExecutionEvidenceExportState> ExecutionEvidenceExport,
     OperationsSection<OperationsTransientWorkerState> TransientWorker,
     OperationsSection<OperationsCaptureTelemetryState> CaptureTelemetry,
-    OperationsSection<OperationsConfigurationState> Configuration);
+    OperationsSection<OperationsConfigurationState> Configuration,
+    OperationsSection<OperationsQueueState> ArchivedReplay);
 
 public sealed class CameraAgentOperationsSummaryProvider(
     TimeProvider timeProvider,
@@ -360,7 +361,13 @@ public sealed class CameraAgentOperationsSummaryProvider(
             Section("validated-configuration", OperationsFreshness.Static, null, new OperationsConfigurationState(
                 config is not null, config is null ? "unavailable" : "validated", startupConfig?.AgentId,
                 startupConfig?.ModuleType, hostOptions.Value.CentralIntegration.Mode.ToString(),
-                hostOptions.Value.TransientDetection.Mode.ToString())));
+                hostOptions.Value.TransientDetection.Mode.ToString())),
+            // Archived replay shares the processing refresh but is reported apart from live processing: the
+            // lifecycle drain waits on live leases only, and records replay in its continuity boundary.
+            Section("durable-processing-refresh", processing.EvaluatedUtc, now, new OperationsQueueState(
+                processing.Availability.ToString(), processing.ReplayPendingCount, processing.ReplayPendingBytes,
+                processing.ReplayLeasedCount, processing.ReplayRetryCount, 0, processing.ReplayTerminalCount,
+                processing.OldestReplayPendingUtc)));
     }
 
     private static OperationsSection<T> Section<T>(

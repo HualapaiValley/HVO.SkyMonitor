@@ -33,6 +33,7 @@ internal sealed class CaptureProcessingStateRefreshService(
             durable.OldestPendingUtc);
         state.SetReplayDurable(
             durable.ReplayPendingCount,
+            durable.ReplayLeasedCount,
             durable.ReplayRetryCount,
             durable.ReplayTerminalCount,
             durable.OldestReplayPendingUtc,

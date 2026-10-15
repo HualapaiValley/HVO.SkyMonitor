@@ -183,6 +183,7 @@ internal sealed record CaptureProcessingOperationalState(
     long ReplayTerminalCount,
     DateTimeOffset? OldestReplayPendingUtc,
     long ReplayPendingBytes,
+    long ReplayLeasedCount,
     long ReplayAbandonedCount);
 
 internal sealed partial class SqliteCaptureProcessingStore : IDisposable
@@ -2418,6 +2419,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                     AND COALESCE(execution.failure_reason, '') <> $abandoned) THEN 1 ELSE 0 END),
                 MIN(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.accepted_unix_ms END),
                 SUM(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.payload_bytes ELSE 0 END),
+                SUM(CASE WHEN work.state = 'Leased' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN work.state = 'Expired' AND execution.failure_reason = $abandoned THEN 1 ELSE 0 END)
             FROM processing_replay_work work
             JOIN processing_executions execution ON execution.execution_id = work.execution_id;
@@ -2434,12 +2436,13 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         var replayPendingBytes = await replayReader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false)
             ? 0
             : replayReader.GetInt64(4);
-        var replayAbandoned = await replayReader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false)
+        var replayLeased = await replayReader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? 0 : replayReader.GetInt64(5);
+        var replayAbandoned = await replayReader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false)
             ? 0
-            : replayReader.GetInt64(5);
+            : replayReader.GetInt64(6);
         return new CaptureProcessingOperationalState(
             pending, leased, retry, terminal, oldest, replayPending, replayRetry, replayTerminal, replayOldest,
-            replayPendingBytes, replayAbandoned);
+            replayPendingBytes, replayLeased, replayAbandoned);
     }
 
     private async ValueTask<bool> InsertOutputAsync(
