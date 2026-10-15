@@ -77,8 +77,10 @@ implicitly complete shorter batch. Unknown versions, duplicate JSON members,
 invalid hashes, and oversized units fail validation.
 
 The receiver publishes a 64-unit batch/resynchronization limit so four accepted
-facts per unit fit the shared 256-fact response limit. Each origin has its own
-sequence space. Negotiating the current origin does not prevent delivery of
+facts per unit fit the shared 256-fact response limit. Feedback ranges contain
+at most 64 missing sequence positions in total across all inclusive ranges.
+Larger gaps set `MissingRangesTruncated` and recover through successive bounded
+replies. Each origin has its own sequence space. Negotiating the current origin does not prevent delivery of
 already sealed units from older boots.
 
 For a committed unit, feedback contains `Received`, `Validated`, `Accepted`,
