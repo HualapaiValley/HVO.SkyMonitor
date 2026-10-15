@@ -1,9 +1,11 @@
 # Issue 538 combined acceptance: completed lane work leaves executions active
 
-The combined smoke is blocked by an existing CameraAgent execution-lifecycle defect. Acquisition, actual raw
+The original combined smoke exposed an existing CameraAgent execution-lifecycle defect. Acquisition, actual raw
 upload, central preview processing and three additional live captures complete under a denied evidence sink.
 After normal admission pauses, the durable execution barrier never empties despite completed processing work.
-The terminal predicate, enabled lanes and product sources have not been changed to bypass this result.
+The terminal predicate and enabled lanes remain unchanged. The maintainer subsequently authorized the narrow
+CameraAgent correction within issue 538; its focused regression evidence is recorded below. Combined acceptance
+and performance still require a fresh run of that corrected candidate.
 
 ## Reproduction and retained evidence
 
@@ -67,7 +69,7 @@ more time. `ReadOldestActiveExecutionKeyAsync` correctly considers `Pending` and
 The registered capture service is `HVO.SkyMonitor.CameraAgent.Common.Capture.CameraCaptureService`, from the Common
 assembly; the harness resolves that actual hosted type, with no host alias substitute.
 
-## Source explanation and proposed prerequisite
+## Source explanation and authorized correction
 
 In `SqliteCaptureLaneStore.ReadCandidateAsync`, the live execution join is enabled for every lane when the
 execution schema exists. In `ClaimAsync`, the block beginning at the `candidate.ExecutionId` guard marks that
@@ -77,8 +79,8 @@ when that context exists. An upload claim after standard completion therefore re
 its eventual successful completion leaves it active. A retry/reclaim repeats the state mutation. The retained
 rows and exact source control flow agree.
 
-The narrow suggested patch, for an explicitly authorized CameraAgent owner to review, is to expose execution
-identity only on standard-lane candidates. In `ReadCandidateAsync`, derive the two existing SQL fragments from:
+The authorized patch exposes execution identity only on standard-lane candidates. In `ReadCandidateAsync`, both
+existing SQL fragments now derive from:
 
 ```csharp
 var includeExecution = _hasExecutionSchema &&
@@ -91,25 +93,34 @@ var executionJoin = includeExecution
     : string.Empty;
 ```
 
-This is a proposed change, not an applied or validated product patch. It keeps standard graph execution authority
-on the standard lane, including candidate-based failure paths. Review all candidate execution mutations when
-implementing it; guarding only the claim-start block leaves the nonstandard `MarkUnprocessableAsync` failure path
-able to mutate graph state. A fix for new work must also explicitly decide how already affected persisted rows
-are diagnosed or recovered; this test does not rewrite them.
+Product commit `739e9d6167f3717045086b7bc0de75840d117a4c` applies this guard. It keeps standard graph execution authority
+on the standard lane, including candidate-based failure paths; guarding only the claim-start block would leave
+the nonstandard `MarkUnprocessableAsync` failure path able to mutate graph state. This correction prevents invalid
+transitions on subsequent lane operations. It does not repair already affected persisted executions or rewrite
+their history. Those rows remain diagnosable by the execution/node/lane comparisons above; no automatic recovery
+or schema change is included in the approved exception.
 
-Suggested focused regression tests in the owning CameraAgent test project (not added by this delegate):
+Regression commit `b76f1a9e` adds eight Unit cases in the owning CameraAgent test project, using actual raw ingress,
+the production-compiled configured preview graph and durable lane operations. Upload and an enabled generic
+secondary lane are each tested before and after standard completion:
 
 1. Commit a real raw capture under a production-compiled configured graph. Complete its standard processing, then
    claim, release/retry, reclaim and complete upload. Assert the execution's terminal status, completion time,
    attempt count, node attempts and output publication remain unchanged throughout nonstandard work, and the
    evidence source reports no active execution after standard completion.
-2. Reverse the ordering: claim upload while standard remains pending. Assert upload does not start, complete or
-   fail the graph execution; standard alone performs its `Pending -> Running -> Completed` transitions. Repeat
-   with an enabled environment-association lane where practical.
+2. Reverse the ordering: claim secondary work while standard remains pending. Assert it does not start, complete or
+   fail the graph execution; standard alone performs its `Pending -> Running -> Completed` transitions.
+   Missing-payload cases additionally exercise candidate-based quarantine/abandon handling
+   without changing the graph execution; restoring the payload allows pending standard work to complete.
 3. Keep a standard execution active through actual processing. Assert the barrier remains non-null until its
    real terminal transition. This prevents a workaround that merely weakens active-work detection.
-4. Re-run this combined denied-sink smoke unchanged, then the nine combined cases. Only after a fixed coherent
-   candidate passes should E538-I/M/C measurement begin, with its approved graph/phase manifest unchanged.
+
+All eight cases failed on clean regression commit `b76f1a9e` against the original product, at the graph-state
+assertions. All eight passed after the guard on clean commit `739e9d6167f3717045086b7bc0de75840d117a4c`; the Release
+build used `-warnaserror`. Logs, source ledgers and TRX files are retained separately under
+`TestResults/issue538-edge-fix/red/` and `TestResults/issue538-edge-fix/green/` in the integration worktree. The
+original failing combined evidence above remains unmodified. The unchanged denied-sink smoke and nine combined
+cases are the next acceptance gate; E538-I/M/C measurement remains gated on their success.
 
 ## Relationship to current work
 
@@ -119,6 +130,8 @@ release of evidence-invalid quarantine. [PR 1235](https://github.com/HualapaiVal
 implements only item 4; its description and file scope were read without mutation. File overlap in the lane store
 does not establish that it fixes this defect, and the observed rows are completed rather than quarantined.
 
-Issue 538 explicitly excludes CameraAgent product implementation. A narrow prerequisite assignment or another
-authorized owner is required for the product correction; this delegate has changed only its combined test project
-and this evidence summary. There is no passing full9 result or performance result to report yet.
+The maintainer explicitly approved including this narrow fix and its regression tests in issue 538. The
+[scope decision](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/538#issuecomment-6186238503) records the
+exception to the original CameraAgent exclusion. The issue body now includes that exception. Broader edge
+features, schema changes and automatic historical-state repair remain excluded. There is no passing full9 result
+or performance result to report yet.
