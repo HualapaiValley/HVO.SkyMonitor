@@ -42,8 +42,13 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing
             var before = Issue587RetryCostEvidence.Hashes(destination);
             var metrics = await Issue587RetryCostEvidence.MeasureAsync(CopyAsync).ConfigureAwait(false);
             CollectionAssert.AreEqual(before, Issue587RetryCostEvidence.Hashes(destination));
-            await Issue587RetryCostEvidence.SaveAsync(output, new { metrics, hashes = before,
-                step.Product.OutputIdentitySha256, step.Product.ChecksumSha256 }).ConfigureAwait(false);
+            await Issue587RetryCostEvidence.SaveAsync(output, new
+            {
+                metrics,
+                hashes = before,
+                step.Product.OutputIdentitySha256,
+                step.Product.ChecksumSha256
+            }).ConfigureAwait(false);
         }
     }
 }
@@ -113,18 +118,33 @@ namespace HVO.SkyMonitor.CameraAgent.Tests
                 await operation(i + 5).ConfigureAwait(false);
                 samples[i] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
             }
-            return new { SamplesMilliseconds = samples, CpuMilliseconds = (process.TotalProcessorTime - cpu).TotalMilliseconds,
-                AllocatedBytes = GC.GetTotalAllocatedBytes(true) - allocated, RssBeforeBytes = rss, RssAfterBytes = Environment.WorkingSet,
-                LohBeforeBytes = loh, LohAfterBytes = Loh(), IoBefore = io, IoAfter = Io(), Warmups = 5, Operations = 30, Concurrency = 1 };
+            return new
+            {
+                SamplesMilliseconds = samples,
+                CpuMilliseconds = (process.TotalProcessorTime - cpu).TotalMilliseconds,
+                AllocatedBytes = GC.GetTotalAllocatedBytes(true) - allocated,
+                RssBeforeBytes = rss,
+                RssAfterBytes = Environment.WorkingSet,
+                LohBeforeBytes = loh,
+                LohAfterBytes = Loh(),
+                IoBefore = io,
+                IoAfter = Io(),
+                Warmups = 5,
+                Operations = 30,
+                Concurrency = 1
+            };
         }
         private static long Loh() => GC.GetGCMemoryInfo().GenerationInfo.Length > 3 ? GC.GetGCMemoryInfo().GenerationInfo[3].SizeAfterBytes : 0;
         private static string Io() => OperatingSystem.IsLinux() ? File.ReadAllText("/proc/self/io") : "unavailable";
         internal static string[] Hashes(string root) => Directory.GetFiles(root, "*", SearchOption.AllDirectories)
             .Order(StringComparer.Ordinal).Select(path => Path.GetRelativePath(root, path) + ":" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)))).ToArray();
         internal static async Task SaveAsync(string output, object measurement)
-            => await File.WriteAllTextAsync(Path.Combine(output, "costs.json"), JsonSerializer.Serialize(new {
+            => await File.WriteAllTextAsync(Path.Combine(output, "costs.json"), JsonSerializer.Serialize(new
+            {
                 Revision = Environment.GetEnvironmentVariable("HVO_EVIDENCE_REVISION"),
-                Runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription, Environment.ProcessorCount, measurement
+                Runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
+                Environment.ProcessorCount,
+                measurement
             })).ConfigureAwait(false);
     }
 }

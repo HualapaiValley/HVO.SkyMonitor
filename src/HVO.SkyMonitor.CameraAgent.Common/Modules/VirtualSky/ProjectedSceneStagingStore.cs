@@ -746,10 +746,10 @@ internal sealed class ProjectedSceneStagingStore :
         {
             using var directory = OpenLinuxStageDirectory(create: false);
             if (directory is not null)
-                {
-                    _ = LinuxUnlink(directory, name);
-                    SyncLinuxDirectory(directory);
-                }
+            {
+                _ = LinuxUnlink(directory, name);
+                SyncLinuxDirectory(directory);
+            }
             return;
         }
         var path = Path.Combine(_root, name);
