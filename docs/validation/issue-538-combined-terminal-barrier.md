@@ -4,8 +4,8 @@ The original combined smoke exposed an existing CameraAgent execution-lifecycle 
 upload, central preview processing and three additional live captures complete under a denied evidence sink.
 After normal admission pauses, the durable execution barrier never empties despite completed processing work.
 The terminal predicate and enabled lanes remain unchanged. The maintainer subsequently authorized the narrow
-CameraAgent correction within issue 538; its focused regression evidence is recorded below. Combined acceptance
-and performance still require a fresh run of that corrected candidate.
+CameraAgent correction within issue 538. Its focused regression evidence and passing combined acceptance are
+recorded below; performance acceptance remains pending.
 
 ## Reproduction and retained evidence
 
@@ -119,8 +119,32 @@ All eight cases failed on clean regression commit `b76f1a9e` against the origina
 assertions. All eight passed after the guard on clean commit `739e9d6167f3717045086b7bc0de75840d117a4c`; the Release
 build used `-warnaserror`. Logs, source ledgers and TRX files are retained separately under
 `TestResults/issue538-edge-fix/red/` and `TestResults/issue538-edge-fix/green/` in the integration worktree. The
-original failing combined evidence above remains unmodified. The unchanged denied-sink smoke and nine combined
-cases are the next acceptance gate; E538-I/M/C measurement remains gated on their success.
+original failing combined evidence above remains unmodified.
+
+## Combined acceptance after the correction
+
+On clean combined commit `0029117718616d362bf67103ff3676a2a496f806`, the Release build passed with zero warnings
+and errors, the unchanged denied-sink smoke passed 1/1 in 16 seconds, and the full issue-specific combined
+selection passed 9/9 with zero skips in 33 seconds. A single bounded lock covered build, smoke and full9; it
+released at 2026-10-15T06:59:09Z. Enabled lanes and the accepted-work terminal barrier were unchanged.
+
+The candidate's `src` tree `c03bc86586f4340dbbf92672d8630ed08ec48b73` and `tests` tree
+`e569195b6ae34f0d0af59262c94766d9445949ed` exactly match parent fix commit `739e9d6167f3717045086b7bc0de75840d117a4c`.
+The combined worktree retains source/config equality proof, runtime binary/fixture/catalog checksums, log, TRX
+and stage status under `tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/TestResults/issue-538/corrective-00291177/`.
+
+The first performance invocation on the same candidate failed before completing its first phase: it attempted
+full-tick equality between a telemetry timestamp and its deliberately millisecond-normalized raw descriptor
+timestamp. `RawCaptureDescriptorFactory.NormalizeEvidence` truncates this persisted timestamp; lane telemetry
+preserves the original submission ticks. This is a measurement join defect, not a product regression result.
+That failed run and checksummed analysis remain under `TestResults/issue-538/perf-00291177/` in the combined project.
+
+Test-only commit `21e0dd0401b1bb42c838be42636716d790aba0e4` corrects the unique join to exact Unix milliseconds,
+asserts the full telemetry timestamp is within `[0, 1 ms)` after the descriptor timestamp, and uses full precision
+for measured-admission exclusion. Both original timestamps remain in the output. Focused Release build and
+scoped format verification passed; workload counts, graphs, phase deadlines and regression thresholds are
+unchanged. Its parent cherry-pick is `349d81c5405db3a72fe50f45412a0864f8f8dbbd`. A fresh exclusive measurement is
+required before performance acceptance; the failed attempt is not a passing baseline.
 
 ## Relationship to current work
 
@@ -133,5 +157,5 @@ does not establish that it fixes this defect, and the observed rows are complete
 The maintainer explicitly approved including this narrow fix and its regression tests in issue 538. The
 [scope decision](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/538#issuecomment-6186238503) records the
 exception to the original CameraAgent exclusion. The issue body now includes that exception. Broader edge
-features, schema changes and automatic historical-state repair remain excluded. There is no passing full9 result
-or performance result to report yet.
+features, schema changes and automatic historical-state repair remain excluded. Combined correctness has passed;
+performance and the remaining lifecycle gates are still pending.
