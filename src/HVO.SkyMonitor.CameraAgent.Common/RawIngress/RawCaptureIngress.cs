@@ -113,10 +113,13 @@ internal sealed partial class RawCaptureIngress :
     }
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
+        => _ = await InitializeCoreAsync(allowEvidenceUnavailable: false, cancellationToken).ConfigureAwait(false);
+
+    private async ValueTask<bool> InitializeCoreAsync(bool allowEvidenceUnavailable, CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _initialized))
         {
-            return;
+            return true;
         }
         await _initializeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         SemaphoreSlim? lifecycleGate = null;
@@ -125,8 +128,12 @@ internal sealed partial class RawCaptureIngress :
         {
             if (_initialized)
             {
-                return;
+                return true;
             }
+            // Recovery readiness belongs to this serialized validation result, never a later flag read.
+            if (allowEvidenceUnavailable && _journalValidated && _evidenceUnavailable) return false;
+            Volatile.Write(ref _journalValidated, false);
+            Volatile.Write(ref _evidenceUnavailable, false);
             _faultInjector.Inject(RawIngressFaultPoint.BeforeInitializationLifecycleLock);
             lifecycleGate = RawIngressLifecycleLock.ForRoot(_options.RawIngressRoot);
             await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -134,11 +141,10 @@ internal sealed partial class RawCaptureIngress :
             var wasUnhealthy = _state.Snapshot.Availability == RawIngressAvailability.Unhealthy;
             try
             {
+                _faultInjector.AfterInitializationStateReset();
                 _files.EnsureRootIsPhysical();
                 _processLock ??= AcquireProcessLock();
                 using var initializationActivity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.initialize");
-                Volatile.Write(ref _journalValidated, false);
-                Volatile.Write(ref _evidenceUnavailable, false);
                 await SqliteTransientRuntimeStore.ValidateExistingRuntimeSchemaAsync(
                     _options.RawIngressRoot,
                     _options.RawIngressSqliteBusyTimeoutSeconds,
@@ -221,6 +227,7 @@ internal sealed partial class RawCaptureIngress :
                     _logger.RawIngressRecovered();
                 }
                 Volatile.Write(ref _initialized, true);
+                return true;
             }
             catch (OperationCanceledException)
             {
@@ -231,6 +238,7 @@ internal sealed partial class RawCaptureIngress :
             {
                 // The validated journal has already published its evidence health and retained quarantine.
                 _telemetry.RecordFailure("initialization", "evidence-unavailable");
+                if (allowEvidenceUnavailable) return false;
                 throw;
             }
             catch (Exception exception)
