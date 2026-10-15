@@ -118,6 +118,12 @@ reported artifact was produced by that execution.
 | `/origins/{originIdentitySha256}/feedback?afterSequence=0&take=64` | Bounded durable acknowledgement reread |
 | `/observations?afterId=0&take=50` | Central reconciliation observations |
 
+Status includes the number of origins with gaps and the oldest gap detection
+time. It also reports due artifact checks and their oldest due time; the count
+is capped at 1,000 with an explicit truncation flag. These are central receipt
+and reconciliation backlogs. Read the CameraAgent outbox status separately for
+pending sender units and retry age.
+
 Retained canonical documents preserve graph definitions and plans, node
 attempts, outcomes, reasons, selected inputs, outputs, and lineage. Frozen-plan
 identities are authenticated-origin claims tied across the imported documents.
@@ -177,6 +183,14 @@ Submission has fixed protocol limits of 64 units and 16 MiB of envelope bytes
 plus LF separators. Reconciliation processes at most 32 references per sweep
 and performs object metadata I/O outside its SQL transaction. Quotas bound
 retained history; they are not an automatic retention or deletion schedule.
+
+The `HVO.SkyMonitor.ExecutionEvidence` meter exposes request counts and duration,
+unit outcomes, and reconciliation observation outcomes. Its tags contain bounded
+outcome/state names. The activity source has the same name and traces receive
+and reconciliation operations. LogicHost registers both with its existing
+OpenTelemetry pipeline. Warning events 2480, 2481, and 2482 identify temporary
+reconciliation failure, a durably audited sequence conflict, and receipt quota
+pressure respectively, without including credentials or canonical payloads.
 
 LogicHost remains unreleased. Initialize an empty database with the candidate's
 single canonical baseline using the
