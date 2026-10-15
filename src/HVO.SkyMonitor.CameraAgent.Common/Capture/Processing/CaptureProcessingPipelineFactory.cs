@@ -1160,6 +1160,12 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         ICaptureProcessingGraphStep? graphStep,
         IReadOnlyList<string> dependencies)
     {
+        var implementationVersion = step.ImplementationVersion;
+        var sharedStepVersion = ResolveSharedStepVersion(graphStep, config.Type, step);
+        if (string.IsNullOrWhiteSpace(implementationVersion) || string.IsNullOrWhiteSpace(sharedStepVersion))
+        {
+            throw new InvalidOperationException($"Capture processing step '{step.Name}' must declare a non-empty implementation version.");
+        }
         var outputs = graphStep is null ? [] : GetOutputs(graphStep).Select(static output => new
         {
             output.Role,
@@ -1181,6 +1187,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             ? JsonSerializer.SerializeToElement(new
             {
                 config.Type,
+                implementationVersion,
+                sharedStepVersion,
                 id = step.Name,
                 order = step.Order,
                 dependencies,
@@ -1197,6 +1205,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             : CaptureContractJson.SerializeToElement(new
             {
                 config.Type,
+                implementationVersion,
+                sharedStepVersion,
                 id = step.Name,
                 order = step.Order,
                 dependencies,
