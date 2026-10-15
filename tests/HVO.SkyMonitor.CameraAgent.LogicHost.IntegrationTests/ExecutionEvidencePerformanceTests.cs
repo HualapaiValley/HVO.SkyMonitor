@@ -25,6 +25,7 @@ public sealed class ExecutionEvidencePerformanceTests
     private const int Measured = 30;
     private const long RawBytes = 4_708_352;
     private const string RepeatCommand = "dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~ExecutionEvidencePerformanceTests.Issue538_MetadataAndLiveInterferenceAcceptance";
+    private const string DiagnosticRepeatCommand = ExecutionEvidenceDiagnosticCollector.EnvironmentVariable + "=1 " + RepeatCommand;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static CameraAgentIntegrationFixture Fixture => AssemblyHooks.Fixture;
     public TestContext TestContext { get; set; } = null!;
@@ -39,11 +40,24 @@ public sealed class ExecutionEvidencePerformanceTests
         var source = ExecutionEvidencePerformanceCounters.Source(repository);
         var destination = Path.Combine(repository, "tests", "HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests",
             "TestResults", "issue-538", source.Sha, source.Dirty ? source.DirtyFingerprintSha256 : "clean");
+        var diagnosticMode = ExecutionEvidenceDiagnosticCollector.IsEnabled;
+        if (diagnosticMode) { destination = Path.Combine(destination, "diagnostic"); }
         Directory.CreateDirectory(destination);
         using var counters = new ExecutionEvidencePerformanceCounters(Fixture.HostFixture.SqlServerConnectionString);
         // The idle bracket must precede the large metadata histories and their real reconciliation work.
-        var interference = await MeasureInterferenceAsync(counters, destination, source).ConfigureAwait(false);
+        var interference = await MeasureInterferenceAsync(counters, destination, source, diagnosticMode).ConfigureAwait(false);
         var comparisons = Compare(interference.Phases);
+        if (diagnosticMode)
+        {
+            await SaveIntermediateAsync(destination, "diagnostic-interference-completed", source, new
+            {
+                Mode = "DiagnosticOnly-NotAcceptance",
+                Interference = interference,
+                Comparisons = comparisons,
+                MetadataWorkloads = "Not run in diagnostic mode; the declared E538-I 4 x (5 + 30) workload is unchanged."
+            }, diagnosticMode: true).ConfigureAwait(false);
+            Assert.Inconclusive("Diagnostic-only E538-I completed; instrumentation overhead and causes require review. This is not performance acceptance.");
+        }
         var metadata = await MeasureMetadataAsync(counters).ConfigureAwait(false);
         await SaveIntermediateAsync(destination, "metadata-initial-baseline", source, metadata).ConfigureAwait(false);
         var concurrency = await MeasureMetadataConcurrencyAsync(counters).ConfigureAwait(false);
@@ -128,18 +142,21 @@ public sealed class ExecutionEvidencePerformanceTests
             "Interference failed or is inconclusive; inspect the retained comparisons before accepting this candidate.");
     }
 
-    private static async Task SaveIntermediateAsync(string directory, string name, SourceEvidence source, object value)
+    private static async Task SaveIntermediateAsync(string directory, string name, SourceEvidence source, object value,
+        bool diagnosticMode = false)
     {
         var path = Path.Combine(directory, name + ".json");
         await File.WriteAllTextAsync(path + ".tmp", JsonSerializer.Serialize(new
         {
             Schema = "hvo-issue538-partial-performance-stage-v1",
+            Mode = diagnosticMode ? "DiagnosticOnly-NotAcceptance" : "AcceptanceStage",
+            DiagnosticModeEnabled = diagnosticMode,
             Source = source,
-            RepeatCommand,
+            RepeatCommand = diagnosticMode ? DiagnosticRepeatCommand : RepeatCommand,
             RecordedAtUtc = DateTimeOffset.UtcNow,
             CompletedStage = name,
             Evidence = value,
-            OverallAcceptance = "Pending remaining stages and interference comparisons"
+            OverallAcceptance = diagnosticMode ? "DiagnosticOnly-NotAcceptance" : "Pending remaining stages and interference comparisons"
         }, Json)).ConfigureAwait(false);
         File.Move(path + ".tmp", path, overwrite: true);
     }
@@ -286,38 +303,50 @@ public sealed class ExecutionEvidencePerformanceTests
     }
 
     private static async Task<InterferenceEvidence> MeasureInterferenceAsync(ExecutionEvidencePerformanceCounters counters,
-        string destination, SourceEvidence source)
+        string destination, SourceEvidence source, bool diagnosticMode)
     {
-        await using var edge = await ExecutionEvidenceCombinedHarness.CreateAsync(Fixture, w1Geometry: true).ConfigureAwait(false);
-        var central = await ExecutionEvidenceCentralWorkload.BindAsync(Fixture, edge).ConfigureAwait(false);
-        await edge.WaitForRealExecutionAsync().ConfigureAwait(false);
-        await edge.DrainAsync().ConfigureAwait(false);
-        var phases = new List<InterferencePhase>();
-        foreach (var name in new[] { "idle-before", "active", "denied", "idle-after" })
+        using var diagnostics = diagnosticMode ? new ExecutionEvidenceDiagnosticCollector() : null;
+        try
         {
-            using var stop = new CancellationTokenSource();
-            edge.Http.Fault = name == "denied" ? EvidenceHttpFault.Unavailable : EvidenceHttpFault.None;
-            var load = name is "active" or "denied" ? RunEvidenceLoadAsync(edge, name, stop.Token) : Task.CompletedTask;
-            try
+            await using var edge = await ExecutionEvidenceCombinedHarness.CreateAsync(Fixture, w1Geometry: true, diagnostics: diagnostics).ConfigureAwait(false);
+            var central = await ExecutionEvidenceCentralWorkload.BindAsync(Fixture, edge).ConfigureAwait(false);
+            await edge.WaitForRealExecutionAsync().ConfigureAwait(false);
+            await edge.DrainAsync().ConfigureAwait(false);
+            var phases = new List<InterferencePhase>();
+            foreach (var name in new[] { "idle-before", "active", "denied", "idle-after" })
             {
-                var phase = await MeasureLivePhaseAsync(name, edge, central, counters).ConfigureAwait(false);
-                phases.Add(phase);
-                await SaveIntermediateAsync(destination, "interference-" + name, source, phase).ConfigureAwait(false);
+                using var stop = new CancellationTokenSource();
+                edge.Http.Fault = name == "denied" ? EvidenceHttpFault.Unavailable : EvidenceHttpFault.None;
+                var load = name is "active" or "denied" ? RunEvidenceLoadAsync(edge, name, stop.Token) : Task.CompletedTask;
+                try
+                {
+                    var phase = await MeasureLivePhaseAsync(name, edge, central, counters, diagnostics).ConfigureAwait(false);
+                    phases.Add(phase);
+                    await SaveIntermediateAsync(destination, "interference-" + name, source, phase, diagnosticMode).ConfigureAwait(false);
+                }
+                finally
+                {
+                    await stop.CancelAsync().ConfigureAwait(false);
+                    await load.ConfigureAwait(false);
+                }
+                edge.Http.Fault = EvidenceHttpFault.None;
+                await edge.DrainAsync().ConfigureAwait(false); // Recovery is excluded from the next idle measurement.
             }
-            finally
-            {
-                await stop.CancelAsync().ConfigureAwait(false);
-                await load.ConfigureAwait(false);
-            }
-            edge.Http.Fault = EvidenceHttpFault.None;
-            await edge.DrainAsync().ConfigureAwait(false); // Recovery is excluded from the next idle measurement.
+            await edge.StopCaptureAndWaitForTerminalAsync().ConfigureAwait(false);
+            using var convergenceDeadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+            var converged = await central.ConvergeUploadsAndJobsAsync(convergenceDeadline.Token).ConfigureAwait(false);
+            await edge.DrainAsync().ConfigureAwait(false);
+            await central.AssertPersistedAsync(edge.ReadLocalRows()).ConfigureAwait(false);
+            return new(phases, converged);
         }
-        await edge.StopCaptureAndWaitForTerminalAsync().ConfigureAwait(false);
-        using var convergenceDeadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
-        var converged = await central.ConvergeUploadsAndJobsAsync(convergenceDeadline.Token).ConfigureAwait(false);
-        await edge.DrainAsync().ConfigureAwait(false);
-        await central.AssertPersistedAsync(edge.ReadLocalRows()).ConfigureAwait(false);
-        return new(phases, converged);
+        finally
+        {
+            if (diagnostics is not null)
+            {
+                await SaveIntermediateAsync(destination, "diagnostic-producer-runtime-retention", source,
+                    diagnostics.Snapshot(DiagnosticRepeatCommand), diagnosticMode: true).ConfigureAwait(false);
+            }
+        }
     }
 
     private static async Task RunEvidenceLoadAsync(ExecutionEvidenceCombinedHarness edge, string phase, CancellationToken token)
@@ -339,7 +368,8 @@ public sealed class ExecutionEvidencePerformanceTests
     }
 
     private static async Task<InterferencePhase> MeasureLivePhaseAsync(string name, ExecutionEvidenceCombinedHarness edge,
-        ExecutionEvidenceCentralWorkload central, ExecutionEvidencePerformanceCounters counters)
+        ExecutionEvidenceCentralWorkload central, ExecutionEvidencePerformanceCounters counters,
+        ExecutionEvidenceDiagnosticCollector? diagnostics)
     {
         var phaseStart = DateTimeOffset.UtcNow;
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
@@ -352,7 +382,11 @@ public sealed class ExecutionEvidencePerformanceTests
             _ = await central.ExecutePreviewAsync(raw, deadline.Token).ConfigureAwait(false);
             var health = await central.ReadHealthAsync(deadline.Token).ConfigureAwait(false);
             ExecutionEvidenceCentralWorkload.AssertHealthy(healthBefore, health);
-            if (raw.CapturedAtUtc >= phaseStart) { warmup.Add(raw.CaptureId); }
+            if (raw.CapturedAtUtc >= phaseStart)
+            {
+                warmup.Add(raw.CaptureId);
+                diagnostics?.RetainCapture(name, "Warmup", warmup.Count, raw);
+            }
         }
         // Delimit acquisition as well as upload: no raw acquired during warmup can enter the measured set.
         await edge.PauseCaptureAndWaitForTerminalAsync(deadline.Token).ConfigureAwait(false);
@@ -372,6 +406,7 @@ public sealed class ExecutionEvidencePerformanceTests
         while (rows.Count < Measured)
         {
             var raw = await central.UploadNextRawAsync(deadline.Token).ConfigureAwait(false);
+            diagnostics?.RetainCapture(name, "Measured", rows.Count + 1, raw);
             var job = await central.ExecutePreviewAsync(raw, deadline.Token).ConfigureAwait(false);
             Assert.AreEqual(RawBytes, raw.Bytes);
             CaptureTelemetrySample? sample = null;

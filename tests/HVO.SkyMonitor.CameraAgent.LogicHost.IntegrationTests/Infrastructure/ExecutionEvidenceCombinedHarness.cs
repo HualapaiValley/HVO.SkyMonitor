@@ -96,13 +96,13 @@ internal sealed class ExecutionEvidenceCombinedHarness : IAsyncDisposable
     internal IExecutionEvidenceSource Source => Agent.Services.GetRequiredService<IExecutionEvidenceSource>();
 
     internal static async Task<ExecutionEvidenceCombinedHarness> CreateAsync(
-        CameraAgentIntegrationFixture fixture, bool w1Geometry = false)
+        CameraAgentIntegrationFixture fixture, bool w1Geometry = false, ExecutionEvidenceDiagnosticCollector? diagnostics = null)
     {
         var metrics = new ExecutionEvidenceEdgeMetrics();
         CameraAgentIntegrationFixture.IsolatedCameraAgent? agent = null;
         try
         {
-            agent = await fixture.StartIsolatedCameraAgentAsync(w1Geometry: w1Geometry).ConfigureAwait(false);
+            agent = await fixture.StartIsolatedCameraAgentAsync(w1Geometry: w1Geometry, diagnostics: diagnostics).ConfigureAwait(false);
             var provider = agent.Services.GetRequiredService<IExecutionEvidenceOriginProvider>();
             Assert.IsInstanceOfType<LocalExecutionEvidenceOriginProvider>(provider);
             var descriptor = await provider.GetDescriptorAsync(CancellationToken.None).ConfigureAwait(false);

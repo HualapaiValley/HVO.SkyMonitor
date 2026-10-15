@@ -362,7 +362,8 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     /// </summary>
     public async Task<IsolatedCameraAgent> StartIsolatedCameraAgentAsync(
         [CallerMemberName] string? consumer = null,
-        bool w1Geometry = false)
+        bool w1Geometry = false,
+        ExecutionEvidenceDiagnosticCollector? diagnostics = null)
     {
         EnsureInitialized();
         RecordConsumer(consumer);
@@ -409,10 +410,11 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         var agent = new IsolatedCameraAgent(new WebApplicationFactory<Program>(), storageRoot);
         try
         {
-            agent.Start(builder => ConfigureAgentHost(
-                builder,
-                BuildConfigurationOverrides(storageRoot, configurationPath),
-                removeOutboxDrain: true));
+            agent.Start(builder =>
+            {
+                ConfigureAgentHost(builder, BuildConfigurationOverrides(storageRoot, configurationPath), removeOutboxDrain: true);
+                if (diagnostics is not null) { builder.ConfigureTestServices(diagnostics.ConfigureIsolatedHost); }
+            });
             using var scope = agent.Services.CreateScope();
             agent.Provisioned = await ProvisionAgentAsync(scope.ServiceProvider).ConfigureAwait(false);
             return agent;
