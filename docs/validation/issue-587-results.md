@@ -1,6 +1,6 @@
 # Issue 587 measured results
 
-Status: local workload and kernel-fault evidence complete; the full candidate gate, independent review and protected CI are pending.
+This document records the completed local workload and kernel-fault evidence. The append-only [issue ledger](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/587) records current candidate-gate, independent-review and protected-CI status; these measurements alone do not establish merge readiness.
 
 Measured on hvo-dev-02, Ubuntu 24.04.4, x64, SDK 10.0.401, runtime 10.0.12, two visible processors. Shared `flock --close` excluded #1005 build/browser/I/O activity. Before production is exact merged #1055 `71e3656aaf6a356e75c8481435bfef55a84c78fd`; after production is `14f7bbf297aae97048da973b38a54df697bd7a23`. Diagnostic harness-only commit `43123ec3` leaves that production tree unchanged. Both sides use identical overlaid harness files and one frozen baseline VirtualSky fixture; original checkpoint and append-only merge are retained. See [method](issue-587-method.md) for commands, acceptance boundaries and failed-probe preservation.
 

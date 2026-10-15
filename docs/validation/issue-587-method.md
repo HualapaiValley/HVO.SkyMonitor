@@ -90,3 +90,31 @@ Status: focused EIO/permission/ENOSPC and EINTR passed after the correction.
 Equivalent measurements and cost investigation are recorded in
 [measured results](issue-587-results.md). Tier C test/publish/coverage evidence,
 independent review and protected CI remain required; this is not completion.
+
+## Candidate gate provenance
+
+Bind every result to its actual source revision and tested binary identity. Preserve
+failed attempts and select exactly one successful assembly result per canonical
+coverage slot. The capacity-restored CameraAgent Unit retry supersedes its earlier
+low-disk failure only in the current selection; the failed TRX remains evidence.
+
+The full positive Unit selection includes four compile-linked Unit contract tests
+in each of CameraAgent.IntegrationTests, LogicHost.IntegrationTests,
+CameraAgent.LogicHost.IntegrationTests and Catalog.Sqlite.PerformanceTests. Run
+these sixteen cases with the invalid Docker endpoint in separate result slots in
+addition to the workflow's seventeen explicit projects. Preserve the canonical
+coverage selection; additional contract-test slots are not extra rollup inputs.
+
+Some Integration cases call `EvidenceSourceIdentity.CaptureAsync`, which requires
+Release assembly informational versions to contain the exact checked-out HEAD.
+An unchanged source closure does not satisfy that runtime guard with an older
+commit-stamped binary. Rebuild the affected marker assemblies at the current
+committed head, request that exact evidence revision, and rerun the required
+evidence without weakening the guard. The initial three such failures on17c3ec5d
+used binaries stamped361d0b84 and remain in the private evidence pack.
+
+Later append-only target merges deliver Deployment CLI and LogicHost archive-read
+changes outside the measured CameraAgent/shared-filesystem source closure. Verify
+that closure against the actual merge endpoints before retaining measurements,
+and run affected builds/tests plus all four CI-control guards. The issue/PR ledger
+binds reused results, refreshed results, target profile and exact classifier range.
