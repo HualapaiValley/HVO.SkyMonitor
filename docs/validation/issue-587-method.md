@@ -86,6 +86,7 @@ runs. This is a noise-investigation trigger, not an acceptance waiver: any
 unexplained material regression or changed durable output blocks merge. Do not
 change acceptance thresholds or golden outputs to make a run pass.
 
-Status: focused EIO/permission/ENOSPC passed after the correction. Broader
-conformance, EINTR, equivalent measurements, Tier C, independent review and CI
-are still required; this document does not claim completion.
+Status: focused EIO/permission/ENOSPC and EINTR passed after the correction.
+Equivalent measurements and cost investigation are recorded in
+[measured results](issue-587-results.md). Tier C test/publish/coverage evidence,
+independent review and protected CI remain required; this is not completion.
