@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Data;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -6,6 +7,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.LogicHost.Data;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Data.SqlClient;
 
 namespace HVO.SkyMonitor.LogicHost.Services;
 
@@ -60,25 +62,7 @@ internal sealed class LogicalCameraArchiveReadService(
         if (owner is null || !await CanReadAsync(owner, observatoryId, cameraId, cancellationToken).ConfigureAwait(false))
             return new([], null);
         var position = Decode(cursor, owner, observatoryId, cameraId, "archive", filter);
-        var query = Captures(owner, observatoryId, cameraId);
-        if (filter.FromUtc is { } from) query = query.Where(frame => frame.CapturedAtUtc >= from);
-        if (filter.UntilUtc is { } until) query = query.Where(frame => frame.CapturedAtUtc < until);
-        if (filter.Product is not null || filter.ObjectState is not null || filter.ReconstructionState is not null)
-            query = query.Where(frame => frame.Artifacts.Any(artifact =>
-                (filter.Product == null || artifact.Role == filter.Product) &&
-                (filter.ObjectState == null || artifact.ObjectState == filter.ObjectState) &&
-                (filter.ReconstructionState == null || artifact.ReconstructionState == filter.ReconstructionState)));
-        if (filter.Text is { } text)
-        {
-            if (Guid.TryParse(text, out var identity))
-                query = query.Where(frame => frame.Id == identity || frame.FrameId == identity);
-            else
-            {
-                var sequence = long.Parse(text, CultureInfo.InvariantCulture);
-                query = query.Where(frame => frame.CaptureSequence == sequence);
-            }
-        }
-        var rows = await Project(After(query, position)).Take(take + 1)
+        var rows = await Project(Window(owner, observatoryId, cameraId, filter, position, take + 1)).Take(take + 1)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
         var more = rows.Count > take;
         if (more) rows.RemoveAt(rows.Count - 1);
@@ -97,7 +81,7 @@ internal sealed class LogicalCameraArchiveReadService(
             return null;
         var filter = new CameraArchiveFilter();
         var position = Decode(cursor, owner, observatoryId, cameraId, "current", filter);
-        var rows = await Project(After(Captures(owner, observatoryId, cameraId), position))
+        var rows = await Project(Window(owner, observatoryId, cameraId, filter, position, CurrentCaptureLimit + 1))
             .Take(CurrentCaptureLimit + 1).ToListAsync(cancellationToken).ConfigureAwait(false);
         var more = rows.Count > CurrentCaptureLimit;
         if (more) rows.RemoveAt(rows.Count - 1);
@@ -172,20 +156,80 @@ internal sealed class LogicalCameraArchiveReadService(
                 .Any(membership => membership.ObservatoryId == observatoryId), token);
 
     private IQueryable<CentralFrame> Captures(string owner, Guid observatoryId, Guid cameraId)
-        => db.CentralFrames.FromSqlInterpolated($"""
+        => db.CentralFrames.AsNoTracking().Where(frame => frame.ObservatoryId == observatoryId &&
+            frame.LogicalCameraInstallation != null && frame.LogicalCameraInstallation.LogicalCameraId == cameraId &&
+            frame.LogicalCameraInstallation.LogicalCamera!.ObservatoryId == observatoryId &&
+            ObservatoryMembershipAccess.ForUser(db, owner).Any(membership => membership.ObservatoryId == observatoryId));
+
+    // SQL APPLY preserves a bounded index seek per retained installation before the global merge.
+    // LINQ's per-group Take can become ROW_NUMBER over the complete history instead.
+    private IQueryable<CentralFrame> Window(string owner, Guid observatoryId, Guid cameraId,
+        CameraArchiveFilter filter, ArchiveCursor? cursor, int limit)
+    {
+        var from = Parameter("@from", SqlDbType.DateTimeOffset, filter.FromUtc);
+        var until = Parameter("@until", SqlDbType.DateTimeOffset, filter.UntilUtc);
+        var boundaryTime = Parameter("@boundaryTime", SqlDbType.DateTimeOffset, cursor?.CapturedAtUtc);
+        var boundaryId = Parameter("@boundaryId", SqlDbType.UniqueIdentifier, cursor?.CaptureId);
+        if (filter.Product is not null || filter.ObjectState is not null || filter.ReconstructionState is not null || filter.Text is not null)
+            return FilteredWindow(owner, observatoryId, cameraId, filter, cursor);
+        return db.CentralFrames.FromSqlInterpolated($"""
+            SELECT candidate.*
+            FROM [LogicalCameraInstallations] AS installation
+            INNER JOIN [LogicalCameras] AS camera ON camera.[Id] = installation.[LogicalCameraId]
+            CROSS APPLY (
+                SELECT TOP ({limit}) frame.*
+                FROM [CentralFrames] AS frame
+                    WITH (INDEX([IX_CentralFrames_LogicalCameraInstallationId_CapturedAtUtc_Id]))
+                WHERE frame.[LogicalCameraInstallationId] = installation.[Id]
+                    AND frame.[ObservatoryId] = {observatoryId}
+                    AND ({from} IS NULL OR frame.[CapturedAtUtc] >= {from})
+                    AND ({until} IS NULL OR frame.[CapturedAtUtc] < {until})
+                    AND ({boundaryTime} IS NULL OR frame.[CapturedAtUtc] < {boundaryTime}
+                        OR frame.[CapturedAtUtc] = {boundaryTime} AND frame.[Id] < {boundaryId})
+                ORDER BY frame.[CapturedAtUtc] DESC, frame.[Id] DESC
+            ) AS candidate
+            WHERE camera.[Id] = {cameraId} AND camera.[ObservatoryId] = {observatoryId}
+            """).AsNoTracking().Where(frame => ObservatoryMembershipAccess.ForUser(db, owner)
+                .Any(membership => membership.ObservatoryId == frame.ObservatoryId));
+    }
+
+    // Selective artifact predicates need a global semi-join plan. Applying an installation row goal
+    // here forces an artifact probe for every historical capture when few records match.
+    private IQueryable<CentralFrame> FilteredWindow(string owner, Guid observatoryId, Guid cameraId,
+        CameraArchiveFilter filter, ArchiveCursor? cursor)
+    {
+        var query = db.CentralFrames.FromSqlInterpolated($"""
             SELECT frame.* FROM [CentralFrames] AS frame
                 WITH (INDEX([IX_CentralFrames_LogicalCameraInstallationId_CapturedAtUtc_Id]))
-            INNER JOIN [LogicalCameraInstallations] AS installation
-                ON installation.[Id] = frame.[LogicalCameraInstallationId]
+            INNER JOIN [LogicalCameraInstallations] AS installation ON installation.[Id] = frame.[LogicalCameraInstallationId]
             INNER JOIN [LogicalCameras] AS camera ON camera.[Id] = installation.[LogicalCameraId]
             WHERE camera.[Id] = {cameraId} AND camera.[ObservatoryId] = {observatoryId}
                 AND frame.[ObservatoryId] = {observatoryId}
             """).AsNoTracking().Where(frame => ObservatoryMembershipAccess.ForUser(db, owner)
                 .Any(membership => membership.ObservatoryId == frame.ObservatoryId));
-
-    private static IQueryable<CentralFrame> After(IQueryable<CentralFrame> query, ArchiveCursor? cursor)
-        => cursor is null ? query : query.Where(frame => frame.CapturedAtUtc < cursor.CapturedAtUtc ||
+        if (filter.FromUtc is { } from) query = query.Where(frame => frame.CapturedAtUtc >= from);
+        if (filter.UntilUtc is { } until) query = query.Where(frame => frame.CapturedAtUtc < until);
+        if (cursor is not null) query = query.Where(frame => frame.CapturedAtUtc < cursor.CapturedAtUtc ||
             frame.CapturedAtUtc == cursor.CapturedAtUtc && frame.Id.CompareTo(cursor.CaptureId) < 0);
+        if (filter.Product is not null || filter.ObjectState is not null || filter.ReconstructionState is not null)
+            query = query.Where(frame => frame.Artifacts.Any(artifact =>
+                (filter.Product == null || artifact.Role == filter.Product) &&
+                (filter.ObjectState == null || artifact.ObjectState == filter.ObjectState) &&
+                (filter.ReconstructionState == null || artifact.ReconstructionState == filter.ReconstructionState)));
+        if (filter.Text is { } text)
+        {
+            if (Guid.TryParse(text, out var identity)) query = query.Where(frame => frame.Id == identity || frame.FrameId == identity);
+            else
+            {
+                var sequence = long.Parse(text, CultureInfo.InvariantCulture);
+                query = query.Where(frame => frame.CaptureSequence == sequence);
+            }
+        }
+        return query;
+    }
+
+    private static SqlParameter Parameter(string name, SqlDbType type, object? value)
+        => new(name, type) { Value = value ?? DBNull.Value };
 
     private static IQueryable<CameraArchiveCapture> Project(IQueryable<CentralFrame> query)
         => query.OrderByDescending(frame => frame.CapturedAtUtc).ThenByDescending(frame => frame.Id)

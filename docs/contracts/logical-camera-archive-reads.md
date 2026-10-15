@@ -50,7 +50,10 @@ child collection or image transfer.
 Ordering is descending `(CapturedAtUtc, central capture Id)` using SQL Server's
 UUID ordering. Retired/replaced installations remain members through the immutable
 capture installation relationship; current registration does not rewrite history.
-The existing installation/capture-time/identity index is used. Selective predicates
+The existing installation/capture-time/identity index is used. Ordered reads use
+parameterized SQL APPLY to bound each installation before the global merge;
+selective product/state/identity filters retain a global indexed semi-join plan
+to avoid probing artifacts for every capture under an installation row goal. Selective predicates
 can require examining retained SQL index rows; `Take` bounds materialized rows,
 not every physical page the database may read. The measurement harness reports
 both actual rows read and logical reads, including rare/no-match filters.
