@@ -72,7 +72,7 @@ public sealed class StandaloneW6ProfileTests
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "EFBD0878A83C8CA8182FC577BA43AB716A78340DA1C192A6AD07AD44BDC8BDFE",
+            "114F1E0A994BAE76B0D5B6B9D2A7145F9D7B624E65436192D2B3FA28BEA3B339",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);
@@ -167,7 +167,7 @@ public sealed class StandaloneW6ProfileTests
             "75717D0AF614FCABA0E482BB968DFE1B2DC9CED9FF85843D1CE1275CB65A6F90",
             preview.DesiredSha256);
         Assert.AreEqual(
-            "A7C84CBE5B6BCA51537F52E378C9327ACB17D360B20A8DFA00D7C6D29B3D8192",
+            "0057FF63B73D26C31C376646EDD99C4C4BCCED9A7FDAD65849A8B8C45F6910D2",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(5, preview.EffectiveNodes);
@@ -420,8 +420,8 @@ public sealed class StandaloneW6ProfileTests
                 ? ReconstructSceneConsumerHash(node, removeV3: true) : node.PlanSha256).ToArray()
         }));
         Assert.AreEqual(preview.EffectiveSha256, Aggregate(removeV3: false));
-        Assert.AreEqual("9C37FFDBD6F120EE0D56C02B284B1413AC2A305A117922B84E2C4A31CB671ED2", Aggregate(removeV3: true),
-            "Only removal of v3 from these two consumer requirements must recover the historical effective graph.");
+        Assert.AreEqual("A3ADF0AA0B463EC5FBE07F55A1DE913A21C77E22F049DCC0324E4CB52EA9EB53", Aggregate(removeV3: true),
+            "The versioned effective graph without v3 requirements is pinned independently of the current graph.");
     }
 
     // Reconstruct only the two published consumer preimages, independently of the factory's private hasher.
@@ -448,6 +448,8 @@ public sealed class StandaloneW6ProfileTests
         var preimage = CaptureContractJson.SerializeToElement(new
         {
             Type = node.Alias,
+            implementationVersion = node.Step.ImplementationVersion,
+            sharedStepVersion = step.SharedStepVersion,
             id = node.Step.Name,
             order = node.Step.Order,
             dependencies = node.DeclaredDependencies ?? node.Dependencies,
