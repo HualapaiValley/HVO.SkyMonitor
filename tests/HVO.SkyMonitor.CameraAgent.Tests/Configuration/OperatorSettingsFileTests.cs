@@ -282,6 +282,36 @@ public sealed class OperatorSettingsFileTests
     }
 
     [TestMethod]
+    public async Task UnchangedRetryMustSettlePreviouslyFailedDirectorySynchronization()
+    {
+        var fail = true;
+        var attempts = 0;
+        using var file = new OperatorSettingsFile(SettingsPath, () => _reloads++, _ => [])
+        {
+            SyncPublishedDirectory = directory =>
+            {
+                attempts++;
+                if (fail) throw new IOException("Injected settings directory fsync EIO.", 5);
+                HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawIngressFileStore.SyncDirectory(directory);
+            }
+        };
+        await Assert.ThrowsExactlyAsync<IOException>(async () =>
+            await WriteAsync(file, OperatorSettingsFile.AbsentVersion, LimitKey, 900).ConfigureAwait(false)).ConfigureAwait(false);
+        var visible = await file.ReadAsync(CancellationToken.None).ConfigureAwait(false);
+        var bytes = await File.ReadAllBytesAsync(SettingsPath).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<IOException>(async () =>
+            await WriteAsync(file, visible.Version, LimitKey, 900).ConfigureAwait(false)).ConfigureAwait(false);
+        Assert.AreEqual(2, attempts);
+        Assert.AreEqual(0, _reloads);
+        fail = false;
+        var settled = await WriteAsync(file, visible.Version, LimitKey, 900).ConfigureAwait(false);
+        Assert.AreEqual(OperatorSettingsWriteStatus.Unchanged, settled.Status);
+        Assert.AreEqual(3, attempts);
+        Assert.AreEqual(1, _reloads, "A failed earlier apply must finish its deferred reload after durability settles.");
+        CollectionAssert.AreEqual(bytes, await File.ReadAllBytesAsync(SettingsPath).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public void Constructor_RequiresAnAbsolutePath()
         => Assert.ThrowsExactly<ArgumentException>(() => new OperatorSettingsFile("appsettings.local.json", () => { }, _ => []));
 

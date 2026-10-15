@@ -110,6 +110,7 @@ internal sealed class ProjectedSceneStagingStore :
         new Guid("11111111-1111-1111-1111-111111111111"),
         new Guid("22222222-2222-2222-2222-222222222222"),
         new string('A', 64));
+    internal Action<string>? BeforeDirectorySyncForTest { get; set; }
     private readonly string _root;
     private readonly string _durableRoot;
     private readonly string _cursorPath;
@@ -335,7 +336,7 @@ internal sealed class ProjectedSceneStagingStore :
                 {
                     using var directory = OpenLinuxStageDirectory(create: false);
                     if (directory is not null && LinuxUnlink(directory, $"{stageKey}.json"))
-                        CameraAgentFileSystem.SyncDirectory(directory, _root);
+                        SyncLinuxDirectory(directory);
                 }
                 else
                 {
@@ -391,7 +392,7 @@ internal sealed class ProjectedSceneStagingStore :
                         throw new InvalidDataException("Projected-scene completion marker conflicts with active evidence.");
                     _ = LinuxUnlink(directory, activeName);
                 }
-                CameraAgentFileSystem.SyncDirectory(directory, _root);
+                SyncLinuxDirectory(directory);
                 return;
             }
 
@@ -435,7 +436,7 @@ internal sealed class ProjectedSceneStagingStore :
             if (OperatingSystem.IsLinux())
             {
                 using var directory = OpenLinuxStageDirectory(create: false);
-                if (directory is not null && LinuxUnlink(directory, name)) CameraAgentFileSystem.SyncDirectory(directory, _root);
+                if (directory is not null && LinuxUnlink(directory, name)) SyncLinuxDirectory(directory);
                 return;
             }
             var path = Path.Combine(_root, name);
@@ -735,7 +736,7 @@ internal sealed class ProjectedSceneStagingStore :
         if (OperatingSystem.IsLinux())
         {
             using var directory = OpenLinuxStageDirectory(create: false);
-            if (directory is not null && LinuxUnlink(directory, name)) CameraAgentFileSystem.SyncDirectory(directory, _root);
+            if (directory is not null && LinuxUnlink(directory, name)) SyncLinuxDirectory(directory);
             return;
         }
         var path = Path.Combine(_root, name);
@@ -801,6 +802,12 @@ internal sealed class ProjectedSceneStagingStore :
         }
     }
 
+    private void SyncLinuxDirectory(SafeFileHandle directory)
+    {
+        BeforeDirectorySyncForTest?.Invoke(_root);
+        CameraAgentFileSystem.SyncDirectory(directory, _root);
+    }
+
     private static SafeFileHandle LinuxOpenAtDirectory(SafeFileHandle parent, string name)
         => LinuxOpenAt(parent, name, StagingOpenFlags.ReadOnly | LinuxDirectoryFlag() |
             LinuxNoFollowFlag() | StagingOpenFlags.CloseOnExec, directory: true)!;
@@ -851,7 +858,7 @@ internal sealed class ProjectedSceneStagingStore :
             {
                 published = true;
             }
-            CameraAgentFileSystem.SyncDirectory(directory, _root);
+            SyncLinuxDirectory(directory);
         }
         catch
         {
@@ -860,7 +867,7 @@ internal sealed class ProjectedSceneStagingStore :
                 try
                 {
                     _ = LinuxUnlink(directory, finalName);
-                    CameraAgentFileSystem.SyncDirectory(directory, _root);
+                    SyncLinuxDirectory(directory);
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {

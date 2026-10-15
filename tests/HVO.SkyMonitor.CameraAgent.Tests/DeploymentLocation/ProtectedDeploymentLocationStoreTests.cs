@@ -66,6 +66,46 @@ public sealed class ProtectedDeploymentLocationStoreTests
     }
 
     [TestMethod]
+    public async Task InitializeRetryMustSettleMarkerDurabilityBeforePublishingActiveLocation()
+        => await VerifyLocationMarkerRetryAsync(kernelFault: false).ConfigureAwait(false);
+
+    internal async Task VerifyLocationMarkerRetryAsync(bool kernelFault)
+    {
+        var control = kernelFault ? Capture.Processing.DurableCaptureProcessingTests.RequireKernelRetryControl() : null;
+        var root = _options.Value.RawIngressRoot;
+        var marker = Path.Combine(root, ".deployment-location.v1.identity");
+        using var store = CreateStore();
+        var attempts = 0;
+        var fail = true;
+        store.BeforeStateDirectorySyncForTest = directory =>
+        {
+            if (directory != root || !File.Exists(marker)) return;
+            attempts++;
+            if (!fail) return;
+            if (control is null) throw new IOException("Injected location marker fsync EIO.", 5);
+            if (attempts == 1) Capture.Processing.DurableCaptureProcessingTests.ArmKernelRetryFault(control, directory);
+        };
+        var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var failure = await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.AreEqual(5, failure.HResult & 0xffff);
+            Assert.IsNull(store.Active);
+        }
+        var markerBytes = await File.ReadAllBytesAsync(marker).ConfigureAwait(false);
+        var statePath = Path.Combine(root, ".location", "deployment-location.v1.protected");
+        var protectedBytes = await File.ReadAllBytesAsync(statePath).ConfigureAwait(false);
+        if (control is not null) Capture.Processing.DurableCaptureProcessingTests.WaitForKernelController(control + ".released");
+        fail = false;
+        var active = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1L, active.Version);
+        Assert.AreEqual(active, store.Active);
+        CollectionAssert.AreEqual(markerBytes, await File.ReadAllBytesAsync(marker).ConfigureAwait(false));
+        CollectionAssert.AreEqual(protectedBytes, await File.ReadAllBytesAsync(statePath).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task InitializeRestartAndChange_PreservesProtectedImmutableVersions()
     {
         var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
