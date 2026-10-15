@@ -188,9 +188,10 @@ The `HVO.SkyMonitor.ExecutionEvidence` meter exposes request counts and duration
 unit outcomes, and reconciliation observation outcomes. Its tags contain bounded
 outcome/state names. The activity source has the same name and traces receive
 and reconciliation operations. LogicHost registers both with its existing
-OpenTelemetry pipeline. Warning events 2480, 2481, and 2482 identify temporary
-reconciliation failure, a durably audited sequence conflict, and receipt quota
-pressure respectively, without including credentials or canonical payloads.
+OpenTelemetry pipeline. Warning events 2480, 2481, 2482, and 2483 identify
+temporary reconciliation failure, a durably audited sequence conflict, receipt
+quota pressure, and temporary receiver failure respectively, without including
+credentials or canonical payloads.
 
 LogicHost remains unreleased. Initialize an empty database with the candidate's
 single canonical baseline using the
