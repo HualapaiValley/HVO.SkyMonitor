@@ -9,7 +9,7 @@ using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Endpoints;
 
-internal sealed class OutboxOperationsTokenService
+internal sealed partial class OutboxOperationsTokenService
 {
     private readonly IDataProtectionProvider _provider;
     private readonly TimeSpan _lifetime;

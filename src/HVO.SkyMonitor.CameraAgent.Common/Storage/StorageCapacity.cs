@@ -102,7 +102,7 @@ internal static class StorageLifecycleLock
 /// Lock order (outermost first) for every site that holds more than one lock:
 /// <list type="number">
 /// <item><description><c>RawCaptureIngress._acceptGate</c> (accept path only) or
-/// <c>RawCaptureIngress._initializeGate</c> (initialization only); the two are never held together.</description></item>
+/// <c>RawCaptureIngress._initializeGate</c> (initialization and audited evidence release); the two are never held together.</description></item>
 /// <item><description><see cref="RawIngressLifecycleLock"/> for the storage root.</description></item>
 /// <item><description><see cref="StorageLifecycleLock"/> for the same root (retention acquires it under the
 /// raw-ingress lifecycle lock).</description></item>

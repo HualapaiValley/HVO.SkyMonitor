@@ -29,7 +29,7 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Configured async disposal would hide the strongly typed standalone fixture used throughout the acceptance scope.")]
-public sealed class StandaloneCameraAgentAcceptanceTests
+public sealed partial class StandaloneCameraAgentAcceptanceTests
 {
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
     private static readonly FrameArtifactRole[] ExpectedRoles =
