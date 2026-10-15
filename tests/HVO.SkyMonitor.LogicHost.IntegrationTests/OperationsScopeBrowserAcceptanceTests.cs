@@ -50,14 +50,23 @@ public sealed class OperationsScopeBrowserAcceptanceTests
         TaskCompletionSource? reconnect = null;
         TaskCompletionSource? allowReconnect = null;
         TaskCompletionSource? reconnectAttempt = null;
-        await page.RouteWebSocketAsync("**/_blazor*", async route =>
+        await page.RouteWebSocketAsync("**/_blazor*", route =>
         {
+            // Install forwarding immediately so the SignalR handshake cannot be lost.
+            // Only replacement-connection frames wait for the membership revocation.
+            var server = route.ConnectToServer();
             if (allowReconnect is not null)
             {
                 reconnectAttempt!.TrySetResult();
-                await allowReconnect.Task;
+                var release = allowReconnect.Task;
+                route.OnMessage(async frame =>
+                {
+                    await release;
+                    if (frame.Binary is { } binary) server.Send(binary);
+                    else server.Send(frame.Text!);
+                });
             }
-            socket = route.ConnectToServer();
+            socket = server;
             Interlocked.Increment(ref socketCount);
             reconnect?.TrySetResult();
         });
@@ -164,6 +173,14 @@ public sealed class OperationsScopeBrowserAcceptanceTests
         reconnect = new(TaskCreationOptions.RunContinuationsAsynchronously);
         allowReconnect = new(TaskCreationOptions.RunContinuationsAsynchronously);
         reconnectAttempt = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await page.EvaluateAsync("""
+            () => {
+                window.scopeReconnectStates = [];
+                document.getElementById('components-reconnect-modal')
+                    .addEventListener('components-reconnect-state-changed', event =>
+                        window.scopeReconnectStates.push(event.detail.state));
+            }
+            """);
         await socket!.CloseAsync();
         await reconnectAttempt.Task.WaitAsync(TimeSpan.FromSeconds(15));
         await using (var scope = fixture.Services.CreateAsyncScope())
@@ -176,6 +193,7 @@ public sealed class OperationsScopeBrowserAcceptanceTests
         allowReconnect.TrySetResult();
         await reconnect.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Volatile.Read(ref socketCount).Should().BeGreaterThan(beforeReconnect);
+        await page.WaitForFunctionAsync("window.scopeReconnectStates.includes('hide')", null, new() { Timeout = 10000 });
         await page.GetByText("Scope not found or access was removed.", new() { Exact = true })
             .WaitForAsync(new() { Timeout = 10000 });
         var reconnectWindowSeconds = Stopwatch.GetElapsedTime(lastNavigationStarted).TotalSeconds;
@@ -261,6 +279,7 @@ public sealed class OperationsScopeBrowserAcceptanceTests
             TenThousand = tenThousand,
             Reconnected = Volatile.Read(ref socketCount) > beforeReconnect,
             AutomaticReconnectRevalidation = true,
+            ReconnectStates = await page.EvaluateAsync<string[]>("window.scopeReconnectStates"),
             ReconnectWindowBeforeFirstPeriodicTickSeconds = reconnectWindowSeconds,
             PageErrors = pageErrors.ToArray(),
             ScopePairDenial = true,
