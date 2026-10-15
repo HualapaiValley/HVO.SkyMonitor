@@ -335,7 +335,14 @@ public sealed partial class RawCaptureIngressPerformanceTests
         var wholeStageAllocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocatedBefore;
         using var logicalRows = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         foreach (var entry in discovered.OrderBy(static entry => entry.CaptureSequence))
-            logicalRows.AppendData(JsonSerializer.SerializeToUtf8Bytes(entry, EvidenceOptions));
+            logicalRows.AppendData(JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                entry.AgentId, entry.CaptureSequence, entry.CaptureId, entry.ArtifactId,
+                entry.DescriptorSha256, entry.ManifestSha256, entry.PayloadSha256, entry.PayloadLength,
+                entry.PayloadRelativePath, entry.SidecarRelativePath, entry.ManifestJson,
+                entry.ExposureStartedUtc, entry.DurableIngressUtc, entry.State, entry.RetentionHold,
+                entry.EvidenceOrigin
+            }, EvidenceOptions));
         var logicalRowsSha256 = Convert.ToHexString(logicalRows.GetHashAndReset());
         return new
         {
