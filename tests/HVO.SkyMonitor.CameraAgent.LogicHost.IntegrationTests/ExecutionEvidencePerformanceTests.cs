@@ -25,7 +25,7 @@ public sealed class ExecutionEvidencePerformanceTests
     private const int Measured = 30;
     private const long RawBytes = 4_708_352;
     private const string RepeatCommand = "dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter FullyQualifiedName~ExecutionEvidencePerformanceTests.Issue538_MetadataAndLiveInterferenceAcceptance";
-    private const string DiagnosticRepeatCommand = ExecutionEvidenceDiagnosticCollector.EnvironmentVariable + "=1 " + RepeatCommand;
+    private static string DiagnosticRepeatCommand => ExecutionEvidenceDiagnosticCollector.DiagnosticRepeatCommand(RepeatCommand);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static CameraAgentIntegrationFixture Fixture => AssemblyHooks.Fixture;
     public TestContext TestContext { get; set; } = null!;
@@ -41,6 +41,12 @@ public sealed class ExecutionEvidencePerformanceTests
         var destination = Path.Combine(repository, "tests", "HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests",
             "TestResults", "issue-538", source.Sha, source.Dirty ? source.DirtyFingerprintSha256 : "clean");
         var diagnosticMode = ExecutionEvidenceDiagnosticCollector.IsEnabled;
+        Assert.IsTrue(diagnosticMode || !ExecutionEvidenceDiagnosticCollector.IsTraceRequested,
+            "EventPipe attach is available only in explicitly enabled diagnostic mode.");
+        if (diagnosticMode)
+        {
+            TestContext.WriteLine($"DiagnosticOnly-NotAcceptance source={source.Sha} dirty={source.Dirty} repeat={DiagnosticRepeatCommand}");
+        }
         if (diagnosticMode) { destination = Path.Combine(destination, "diagnostic"); }
         Directory.CreateDirectory(destination);
         using var counters = new ExecutionEvidencePerformanceCounters(Fixture.HostFixture.SqlServerConnectionString);
@@ -306,8 +312,13 @@ public sealed class ExecutionEvidencePerformanceTests
         string destination, SourceEvidence source, bool diagnosticMode)
     {
         using var diagnostics = diagnosticMode ? new ExecutionEvidenceDiagnosticCollector() : null;
+        var workloadCompleted = false;
         try
         {
+            if (diagnostics is not null)
+            {
+                await diagnostics.AttachTraceAsync(source, DiagnosticRepeatCommand).ConfigureAwait(false);
+            }
             await using var edge = await ExecutionEvidenceCombinedHarness.CreateAsync(Fixture, w1Geometry: true, diagnostics: diagnostics).ConfigureAwait(false);
             var central = await ExecutionEvidenceCentralWorkload.BindAsync(Fixture, edge).ConfigureAwait(false);
             await edge.WaitForRealExecutionAsync().ConfigureAwait(false);
@@ -337,14 +348,22 @@ public sealed class ExecutionEvidencePerformanceTests
             var converged = await central.ConvergeUploadsAndJobsAsync(convergenceDeadline.Token).ConfigureAwait(false);
             await edge.DrainAsync().ConfigureAwait(false);
             await central.AssertPersistedAsync(edge.ReadLocalRows()).ConfigureAwait(false);
+            workloadCompleted = true;
             return new(phases, converged);
+        }
+        catch
+        {
+            workloadCompleted = false;
+            throw;
         }
         finally
         {
             if (diagnostics is not null)
             {
+                var detached = await diagnostics.DetachTraceAsync(workloadCompleted).ConfigureAwait(false);
                 await SaveIntermediateAsync(destination, "diagnostic-producer-runtime-retention", source,
                     diagnostics.Snapshot(DiagnosticRepeatCommand), diagnosticMode: true).ConfigureAwait(false);
+                if (workloadCompleted) { Assert.IsTrue(detached, "EventPipe detach/finalization failed; retain handshake and collector diagnostics. This cannot satisfy acceptance."); }
             }
         }
     }
