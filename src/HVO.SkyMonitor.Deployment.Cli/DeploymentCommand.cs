@@ -213,6 +213,13 @@ internal sealed record LifecycleRequest : DeploymentCommand
     public bool NoDownload { get; init; }
     public bool MigrationBackwardCompatible { get; init; }
     public Guid? ConfirmationInstanceId { get; init; }
+
+    /// <summary>
+    /// The operator's disposition that the interrupted purge with this operation ID lost its evidenced tree to a
+    /// removal outside the CLI. It is an attestation for one retained operation, not an input of the request, so it is
+    /// excluded from the request hash.
+    /// </summary>
+    public Guid? ConfirmRemovedOperationId { get; init; }
     public string? CatalogBundle { get; init; }
     public string? CatalogManifest { get; init; }
     public string? CatalogIndex { get; init; }
@@ -269,6 +276,11 @@ internal sealed record LifecycleRequest : DeploymentCommand
         }
         if (!RestoreOnly && RecoveryOperationId is not null)
             throw new InstallUsageException("--operation-id requires --restore-only.");
+        if (ConfirmRemovedOperationId is not null &&
+            (Operation != LifecycleOperationKind.Purge || !Resume || ConfirmRemovedOperationId == Guid.Empty))
+        {
+            throw new InstallUsageException("--confirm-removed-operation-id requires cameraagent purge --resume and a nonempty operation ID.");
+        }
         ValidateOperationOptions();
     }
 

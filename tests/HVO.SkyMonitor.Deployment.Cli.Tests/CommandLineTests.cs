@@ -366,6 +366,48 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
+    public void ParseCommand_PurgeResumeBindsRemovalDispositionWithoutChangingRequestHash()
+    {
+        var instanceId = Guid.NewGuid().ToString("D");
+        var operationId = Guid.NewGuid();
+        string[] resume = ["cameraagent", "purge", "--instance-id", instanceId, "--confirm-instance-id", instanceId, "--resume"];
+        var request = (LifecycleRequest)CommandLine.ParseCommand(resume);
+        var confirmed = (LifecycleRequest)CommandLine.ParseCommand(
+            [.. resume, "--confirm-removed-operation-id", operationId.ToString("D")]);
+
+        Assert.IsNull(request.ConfirmRemovedOperationId);
+        Assert.AreEqual(operationId, confirmed.ConfirmRemovedOperationId);
+        Assert.AreEqual(request.ComputeRequestSha256(), confirmed.ComputeRequestSha256());
+    }
+
+    [TestMethod]
+    [DataRow("without-resume")]
+    [DataRow("other-operation")]
+    [DataRow("empty")]
+    [DataRow("non-canonical")]
+    public void ParseCommand_RemovalDispositionRequiresPurgeResumeAndCanonicalOperation(string fault)
+    {
+        var instanceId = Guid.NewGuid().ToString("D");
+        var operationId = Guid.NewGuid();
+        string[] arguments = fault switch
+        {
+            "without-resume" => ["cameraagent", "purge", "--instance-id", instanceId, "--confirm-instance-id", instanceId,
+                "--confirm-removed-operation-id", operationId.ToString("D")],
+            "other-operation" => ["cameraagent", "uninstall", "--instance-id", instanceId, "--resume",
+                "--confirm-removed-operation-id", operationId.ToString("D")],
+            "empty" => ["cameraagent", "purge", "--instance-id", instanceId, "--confirm-instance-id", instanceId, "--resume",
+                "--confirm-removed-operation-id", Guid.Empty.ToString("D")],
+            "non-canonical" => ["cameraagent", "purge", "--instance-id", instanceId, "--confirm-instance-id", instanceId, "--resume",
+                "--confirm-removed-operation-id", operationId.ToString("N")],
+            _ => throw new InvalidOperationException()
+        };
+
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(arguments));
+
+        StringAssert.Contains(exception.Message, "--confirm-removed-operation-id", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void ParseCommand_CatalogCommandsHaveDistinctScope()
     {
         var install = (LifecycleRequest)CommandLine.ParseCommand([

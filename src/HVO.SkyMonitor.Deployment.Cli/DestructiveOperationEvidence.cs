@@ -20,7 +20,22 @@ internal sealed record PurgeDeletionEvidence(
     string RequestSha256,
     string HostIdentitySha256,
     InstanceManifest Manifest,
-    IReadOnlyList<DestructiveTreeNode> Tree);
+    IReadOnlyList<DestructiveTreeNode> Tree,
+    string? Settlement = null,
+    DateTimeOffset? SettledUtc = null,
+    PurgeNamespaceIdentity? Namespace = null);
+
+/// <summary>
+/// The <c>cameraagents</c> directory that held a purged tree when its deletion evidence was recorded. Evidence written
+/// before this identity existed omits it.
+/// </summary>
+internal sealed record PurgeNamespaceIdentity(ulong Inode, uint DeviceMajor, uint DeviceMinor)
+{
+    public static PurgeNamespaceIdentity From(UnixNodeIdentity identity) => new(identity.Inode, identity.DeviceMajor, identity.DeviceMinor);
+
+    public bool Matches(UnixNodeIdentity identity)
+        => identity.Inode == Inode && identity.DeviceMajor == DeviceMajor && identity.DeviceMinor == DeviceMinor;
+}
 
 internal sealed record CatalogGarbageCollectionEvidence(
     int SchemaVersion,
