@@ -64,6 +64,46 @@ grep -qxF '      DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock' <
 grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware' <<<"$unit_job" ||
   fail 'the Unit job must use the positive Unit filter'
 
+# Anything that changes how the Unit job's steps execute is part of the selection: a
+# `defaults:` block (an inherited `shell:` such as `bash -n` runs no test), job-level or
+# workflow-level env beyond the supported keys, or an earlier step exporting a variable
+# through GITHUB_ENV or GITHUB_PATH (a narrowed UNIT_FILTER, a different PATH) would
+# leave every selecting step in the grammar while changing what it runs.
+mapping_keys() { # mapping_keys <env-line-regex> <indent-of-keys>: keys of the mapping that follows
+  awk -v head="$1" -v pad="$2" '
+    $0 ~ head { on = 1; next }
+    on && $0 ~ "^" pad "[A-Za-z_][A-Za-z0-9_]*:" { sub("^" pad, ""); sub(/:.*/, ""); print; next }
+    on && $0 ~ /^[[:space:]]*(#|$)/ { next }
+    on { exit }
+  '
+}
+grep -qE '^defaults:' "$workflow" && fail 'the workflow must not set workflow-level defaults, which every Unit step would inherit'
+grep -qE '^    defaults:' <<<"$unit_job" && fail 'the Unit job must not set defaults, which its selecting steps would inherit'
+grep -qE '^[[:space:]]+shell:' <<<"$unit_job" && fail 'the Unit job must not set a shell, which could stop a selecting command executing'
+workflow_env="$(mapping_keys '^env:[[:space:]]*$' '  ' < "$workflow" | sort | paste -sd, -)"
+[[ "$workflow_env" == 'DOTNET_CLI_TELEMETRY_OPTOUT,DOTNET_NOLOGO' ]] ||
+  fail "the workflow env may set only DOTNET_NOLOGO and DOTNET_CLI_TELEMETRY_OPTOUT, found: ${workflow_env:-none}"
+job_env="$(mapping_keys '^    env:[[:space:]]*$' '      ' <<<"$unit_job" | sort | paste -sd, -)"
+[[ "$job_env" == 'DOCKER_HOST,UNIT_FILTER' ]] ||
+  fail "the Unit job env may set only DOCKER_HOST and UNIT_FILTER, found: ${job_env:-none}"
+# The one supported export is the catalog bundle path that the restore step verifies.
+# shellcheck disable=SC2016
+bundle_export='          printf '"'"'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n'"'"' "$bundle_path" >> "$GITHUB_ENV"'
+while IFS= read -r exporting; do
+  [[ "$exporting" == "$bundle_export" ]] ||
+    fail "the Unit job exports environment through GITHUB_ENV or GITHUB_PATH beyond the catalog bundle, which could change the selection: ${exporting# }"
+done < <(grep -E 'GITHUB_(ENV|PATH)' <<<"$unit_job" || true)
+
+# Evidence is bound and uploaded from TestResults/unit, so a selection that runs after
+# those steps passes while its TRX never reaches the artifact.
+bind_line="$(grep -nxF '      - name: Bind Unit evidence' <<<"$unit_job" | cut -d: -f1 || true)"
+upload_line="$(grep -nxF '      - name: Upload Unit evidence' <<<"$unit_job" | cut -d: -f1 || true)"
+if [[ -z "$bind_line" || -z "$upload_line" ]] || ((bind_line > upload_line)); then
+  fail 'the Unit job must bind its evidence and then upload it, as steps named Bind Unit evidence and Upload Unit evidence'
+fi
+grep -qxF '          path: TestResults/unit/' <<<"$unit_job" ||
+  fail 'the Unit evidence artifact must upload TestResults/unit/, where every selection writes its TRX'
+
 mapfile -t commands < <(grep -E '^[[:space:]]+dotnet test tests/' <<<"$unit_job" || true)
 
 # Tag each line of a step read from stdin: ENV <entry> for its DOCKER_HOST scalar (the
@@ -133,6 +173,10 @@ for project in "${!expected[@]}"; do
   fi
   command="${matches[0]}"
   step="$(step_of "$command")"
+  command_line="$(grep -nF -- "$command" <<<"$unit_job" | head -1 | cut -d: -f1)"
+  if [[ -n "$bind_line" ]] && ((command_line > bind_line)); then
+    fail "$project command runs after the evidence is bound and uploaded, so its results never reach the artifact"
+  fi
   # A selecting step must match a closed grammar: its `- name:` opening line, an
   # optional `env:` mapping holding only DOCKER_HOST, then one `run: |` block of
   # `dotnet test tests/<project>.csproj` lines using only the options checked

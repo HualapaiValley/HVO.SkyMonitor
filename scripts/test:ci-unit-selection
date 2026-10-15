@@ -86,6 +86,38 @@ expect_fail 'outside the supported grammar' --workflow "$scratch/listtests.yml"
 # Harmless trailing whitespace on the block header is not a reason to reject.
 mutate trailing '/- name: Run Docker-disabled supplemental Unit suites/,/- name: Bind Unit evidence/ s#^        run: \|$#        run: | #'
 expect_pass --workflow "$scratch/trailing.yml"
+# Anything outside the selecting step that changes what the Unit job executes fails too:
+# an earlier step exporting through GITHUB_ENV/GITHUB_PATH, inherited defaults or shell,
+# job or workflow env beyond the supported keys, and a selection that runs after the
+# evidence is bound and uploaded.
+# shellcheck disable=SC2016
+mutate githubenv '/^      - name: Run Docker-disabled supplemental Unit suites/ i\      - name: Narrow filter\n        run: echo "UNIT_FILTER=FullyQualifiedName~MatchesTheGlobalClearByDeclaringTypeAndNotByMethodNameAlone" >> "$GITHUB_ENV"'
+expect_fail 'exports environment through GITHUB_ENV or GITHUB_PATH' --workflow "$scratch/githubenv.yml"
+# shellcheck disable=SC2016
+mutate githubpath '/^      - name: Run Docker-disabled supplemental Unit suites/ i\      - name: Shadow dotnet\n        run: echo "/tmp/shadow" >> "$GITHUB_PATH"'
+expect_fail 'exports environment through GITHUB_ENV or GITHUB_PATH' --workflow "$scratch/githubpath.yml"
+mutate jobdefaults '/^  unit:/,/^  integration:/ { /^    timeout-minutes: 20$/ a\    defaults:\n      run:\n        shell: bash --noprofile --norc -n {0}
+}'
+expect_fail 'Unit job must not set defaults' --workflow "$scratch/jobdefaults.yml"
+mutate workflowdefaults '/^concurrency:/ i\defaults:\n  run:\n    shell: bash --noprofile --norc -n {0}'
+expect_fail 'workflow-level defaults' --workflow "$scratch/workflowdefaults.yml"
+mutate jobenv '/^  unit:/,/^  integration:/ { /^      UNIT_FILTER:/ a\      BASH_ENV: /tmp/narrow.sh
+}'
+expect_fail 'Unit job env may set only DOCKER_HOST and UNIT_FILTER' --workflow "$scratch/jobenv.yml"
+mutate workflowenv '/^  DOTNET_NOLOGO: true$/ a\  BASH_ENV: /tmp/narrow.sh'
+expect_fail 'workflow env may set only' --workflow "$scratch/workflowenv.yml"
+mutate noupload '/^  unit:/,/^  integration:/ s#^          path: TestResults/unit/$#          path: TestResults/unit/astronomy/#'
+expect_fail 'must upload TestResults/unit/' --workflow "$scratch/noupload.yml"
+# The supplemental step moved after the upload keeps a complete list but loses its evidence.
+awk '
+  /^      - name: Run Docker-disabled supplemental Unit suites/ { hold = 1 }
+  /^      - name: Bind Unit evidence/ { hold = 0 }
+  hold { held = held $0 "\n"; next }
+  /^  integration:/ { printf "%s\n", held; held = "" }
+  { print }
+' "$workflow" | awk 'BEGIN { RS = "\0" } { sub(/\n\n\n  integration:/, "\n\n  integration:"); printf "%s", $0 }' > "$scratch/latesupplemental.yml"
+cmp -s "$workflow" "$scratch/latesupplemental.yml" && { printf 'Mutation latesupplemental changed nothing.\n' >&2; exit 1; }
+expect_fail 'runs after the evidence is bound and uploaded' --workflow "$scratch/latesupplemental.yml"
 mutate settings '/unit\/catalog-sqlite-performance/ s#--logger#--settings tests/coverage.runsettings --logger#'
 expect_fail 'passes --settings' --workflow "$scratch/settings.yml"
 mutate sharedslot '/unit\/logichost-integration/ s#unit/logichost-integration#unit/cameraagent-integration#; /unit-logichost-integration.trx/ s#unit-logichost-integration.trx#unit-cameraagent-integration.trx#'
