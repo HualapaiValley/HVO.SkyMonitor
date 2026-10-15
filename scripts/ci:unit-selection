@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Prove the full-qualification Unit job executes every test project that owns
+# Unit cases (issue #1255).
+#
+# Each test project declares its cases in tests/<project>/test-categories.json,
+# and tests/Directory.Build.props compile-links shared contract tests into
+# projects whose name does not say "Tests", so a project can own Unit cases
+# while looking like an Integration-only assembly. The Unit job in
+# .github/workflows/ci.yml is a hand-written list; that list silently omitted
+# four such assemblies (16 cases) until this check existed. Deriving the
+# expectation from the inventories keeps it attached to what the repository
+# contains instead of to someone remembering to extend the list.
+#
+# A project whose command collects coverage must be a canonical slot of the
+# Coverage job, and a command without --collect is a supplemental run that must
+# not be one, so a supplemental TRX-only run can neither add a duplicate report
+# to the canonical merge nor drop a canonical one.
+#
+# Usage: scripts/ci:unit-selection [--workflow <path>] [--tests-root <dir>]
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+workflow="$repo_root/.github/workflows/ci.yml"
+tests_root="$repo_root/tests"
+
+while (($#)); do
+  case "$1" in
+    --workflow) workflow="${2:?--workflow requires a path}"; shift 2 ;;
+    --tests-root) tests_root="${2:?--tests-root requires a directory}"; shift 2 ;;
+    *) printf 'Usage: %s [--workflow <path>] [--tests-root <dir>]\n' "${BASH_SOURCE[0]##*/}" >&2; exit 2 ;;
+  esac
+done
+
+[[ -f "$workflow" ]] || { printf 'Workflow not found: %s\n' "$workflow" >&2; exit 2; }
+[[ -d "$tests_root" ]] || { printf 'Tests root not found: %s\n' "$tests_root" >&2; exit 2; }
+
+job_block() {
+  awk -v name="$1" '
+    $0 == "  " name ":" { on = 1; next }
+    on && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { exit }
+    on { print }
+  ' "$workflow"
+}
+
+unit_job="$(job_block unit)"
+coverage_job="$(job_block coverage)"
+errors=0
+fail() { printf 'Unit selection: %s\n' "$1" >&2; errors=$((errors + 1)); }
+
+[[ -n "$unit_job" ]] || { printf 'Unit selection: the unit job is missing from %s\n' "$workflow" >&2; exit 1; }
+[[ -n "$coverage_job" ]] || { printf 'Unit selection: the coverage job is missing from %s\n' "$workflow" >&2; exit 1; }
+
+grep -qxF '      DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock' <<<"$unit_job" ||
+  fail 'the Unit job must run with the intentionally invalid Docker endpoint'
+grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware' <<<"$unit_job" ||
+  fail 'the Unit job must use the positive Unit filter'
+
+mapfile -t commands < <(grep -E '^[[:space:]]+dotnet test tests/' <<<"$unit_job" || true)
+mapfile -t coverage_slots < <(grep -oE "TestResults/unit/[a-z0-9-]+/\*/coverage\.cobertura\.xml" <<<"$coverage_job" | sed -E 's#TestResults/unit/([a-z0-9-]+)/.*#\1#' || true)
+
+declare -A expected=()
+while IFS= read -r inventory; do
+  unit="$(jq -r '.Unit' "$inventory")"
+  ((unit > 0)) || continue
+  dir="$(dirname "$inventory")"
+  mapfile -t projects < <(find "$dir" -maxdepth 1 -name '*.csproj' -printf '%f\n')
+  ((${#projects[@]} == 1)) || { fail "inventory without exactly one project beside it: $inventory"; continue; }
+  expected["tests/$(basename "$dir")/${projects[0]}"]="$unit"
+done < <(find "$tests_root" -mindepth 2 -maxdepth 2 -name test-categories.json | sort)
+
+((${#expected[@]} > 0)) || { printf 'Unit selection: no Unit-bearing inventory found under %s\n' "$tests_root" >&2; exit 1; }
+
+for project in "${!expected[@]}"; do
+  matches=()
+  for command in "${commands[@]}"; do
+    [[ "$command" == *"dotnet test $project "* ]] && matches+=("$command")
+  done
+  if ((${#matches[@]} != 1)); then
+    fail "$project owns ${expected[$project]} Unit case(s) but ${#matches[@]} Unit job command(s) select it (expected exactly 1)"
+    continue
+  fi
+  command="${matches[0]}"
+  # The needles are literal command text, including the unexpanded $UNIT_FILTER.
+  # shellcheck disable=SC2016
+  for required in ' --no-build ' ' --configuration Release ' ' --filter "$UNIT_FILTER" ' ' --logger "trx;'; do
+    [[ "$command" == *"$required"* ]] || fail "$project command lacks${required% }"
+  done
+  slot="$(sed -nE 's#.* --results-directory TestResults/unit/([a-z0-9-]+)( .*|$)#\1#p' <<<"$command")"
+  if [[ -z "$slot" ]]; then
+    fail "$project command does not write to TestResults/unit/<slot>"
+    continue
+  fi
+  canonical=false
+  for covered in "${coverage_slots[@]}"; do
+    [[ "$covered" == "$slot" ]] && canonical=true
+  done
+  collects=false
+  [[ "$command" == *' --collect:"XPlat Code Coverage"'* && "$command" == *' --settings tests/coverage.runsettings '* ]] && collects=true
+  if $canonical && ! $collects; then
+    fail "$project slot $slot is a canonical coverage slot but its command does not collect coverage"
+  fi
+  if ! $canonical && [[ "$command" == *' --collect'* && "$slot" != processing-runner ]]; then
+    fail "$project slot $slot collects coverage that the Coverage job never merges; supplemental runs must be TRX-only"
+  fi
+done
+
+for command in "${commands[@]}"; do
+  project="$(sed -nE 's#^[[:space:]]+dotnet test (tests/[^ ]+) .*#\1#p' <<<"$command")"
+  [[ -n "${expected[$project]:-}" ]] || fail "the Unit job selects $project, which owns no Unit cases"
+done
+
+if ((errors)); then
+  printf 'Unit selection failed with %d error(s).\n' "$errors" >&2
+  exit 1
+fi
+printf 'Unit selection passed: %d Unit-bearing project(s), each selected exactly once.\n' "${#expected[@]}"

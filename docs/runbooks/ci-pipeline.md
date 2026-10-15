@@ -15,10 +15,10 @@ remains in Build. Both are intentionally absent from the short workflow.
 | --- | --- |
 | **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
 | **Catalog Contracts** | Full-mode hosted build and smoke validation of the exact HYG v42 production catalog contracts, retained as a one-day workflow artifact. Skipped in classified reduced mode. |
-| **Quality** | Workflow lint, syntax and documentation audits, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
+| **Quality** | Workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 6727 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. |
+| **Unit Tests** | 6727 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. |
 | **Integration Tests** | 808 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
 | **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 18 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
@@ -614,6 +614,26 @@ that reason while the aggregate rollup keeps enforcing 0.90 on `main`.
 aggregate rollup has never counted it, and changing the aggregate slot set is
 outside component gating. The Shared Libraries lane still runs that suite as a
 gate; only its coverage report is discarded, exactly as the Unit job does today.
+
+## Supplemental Unit selections
+
+`tests/Directory.Build.props` compile-links `TestSettings/ConnectionPoolClearContract.cs` into every test project, so each assembly checks its own pool-clear usage. In four assemblies whose remaining cases are Integration or Manual, those four contract cases are the only Unit cases, and the Unit job once omitted the assemblies because their names do not read as Unit projects (#1255):
+
+| Project | Results directory |
+| --- | --- |
+| `HVO.SkyMonitor.CameraAgent.IntegrationTests` | `TestResults/unit/cameraagent-integration` |
+| `HVO.SkyMonitor.LogicHost.IntegrationTests` | `TestResults/unit/logichost-integration` |
+| `HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests` | `TestResults/unit/cameraagent-logichost-integration` |
+| `HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests` | `TestResults/unit/catalog-sqlite-performance` |
+
+The Unit job runs them in a separate step with the same positive Unit filter and invalid Docker endpoint, with a TRX logger and no coverage collection. They are deliberately not canonical coverage slots: the aggregate rollup's exact-path slot list is unchanged, so no duplicate or incompatible Cobertura report reaches the canonical merge, and the retained `unit-test-evidence` artifact gains only their TRX files. Component plans are unchanged; they select the same per-project commands as before.
+
+`./scripts/ci:unit-selection` derives the expectation from the inventories instead of from this list: every `tests/<project>/test-categories.json` with `Unit > 0` must be selected by exactly one Unit-job `dotnet test` command that uses `--no-build`, Release, `--filter "$UNIT_FILTER"` and a TRX logger under `TestResults/unit/<slot>`; a command that selects a project owning no Unit cases, a slot that is a canonical Coverage slot without collecting coverage, and supplemental coverage collection all fail. Quality runs it beside `./scripts/test:ci-unit-selection`, whose negative controls prove that each way of dropping a selection fails. Both are Docker-free and need no build:
+
+```bash
+./scripts/ci:unit-selection
+./scripts/test:ci-unit-selection
+```
 
 ## Failure Triage
 

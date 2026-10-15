@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Negative controls for scripts/ci:unit-selection (issue #1255): the checked-in
+# workflow must pass, and each way of leaving a Unit-bearing project out of the
+# Unit job -- or of letting a supplemental run reach the canonical coverage
+# merge -- must fail, so the check cannot report success without selecting.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+checker="$repo_root/scripts/ci:unit-selection"
+workflow="$repo_root/.github/workflows/ci.yml"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+
+expect_pass() {
+  "$checker" "$@" > "$scratch/out" 2>&1 || { cat "$scratch/out" >&2; printf 'Expected pass: %s\n' "$*" >&2; exit 1; }
+}
+expect_fail() {
+  local needle="$1"; shift
+  if "$checker" "$@" > "$scratch/out" 2>&1; then
+    printf 'Unexpected pass (%s): %s\n' "$needle" "$*" >&2; exit 1
+  fi
+  grep -qF -- "$needle" "$scratch/out" || { cat "$scratch/out" >&2; printf 'Failure did not mention: %s\n' "$needle" >&2; exit 1; }
+}
+mutate() { # mutate <name> <sed-script>
+  sed -E "$2" "$workflow" > "$scratch/$1.yml"
+  cmp -s "$workflow" "$scratch/$1.yml" && { printf 'Mutation %s changed nothing.\n' "$1" >&2; exit 1; }
+  return 0
+}
+
+expect_pass
+expect_pass --workflow "$workflow" --tests-root "$repo_root/tests"
+
+# Removing any one Unit-bearing selection fails and names the project.
+for slot in cameraagent-integration logichost-integration cameraagent-logichost-integration \
+    catalog-sqlite-performance astronomy cameraagent-logichost; do
+  mutate "drop-$slot" "/dotnet test .* --results-directory TestResults\/unit\/$slot --logger/d"
+  expect_fail 'Unit job command(s) select it' --workflow "$scratch/drop-$slot.yml"
+done
+
+# A duplicate selection, a non-positive filter and a non-Release/--no-build command all fail.
+mutate duplicate '/--results-directory TestResults\/unit\/astronomy /{p}'
+expect_fail 'expected exactly 1' --workflow "$scratch/duplicate.yml"
+# The sed script matches the literal text "$UNIT_FILTER" in the workflow.
+# shellcheck disable=SC2016
+mutate filter '/unit\/logichost-integration/ s#--filter "\$UNIT_FILTER"#--filter "TestCategory=Integration"#'
+expect_fail 'lacks --filter' --workflow "$scratch/filter.yml"
+mutate nobuild '/unit\/cameraagent-integration/ s# --no-build##'
+expect_fail 'lacks --no-build' --workflow "$scratch/nobuild.yml"
+
+# Supplemental runs are TRX-only; a canonical slot must keep collecting coverage.
+mutate collect '/unit\/catalog-sqlite-performance/ s#--logger#--settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --logger#'
+expect_fail 'supplemental runs must be TRX-only' --workflow "$scratch/collect.yml"
+mutate uncollected '/unit\/imaging --logger/ s#--settings tests/coverage.runsettings --collect:"XPlat Code Coverage" ##'
+expect_fail 'canonical coverage slot but its command does not collect' --workflow "$scratch/uncollected.yml"
+
+# The Docker-disabled Unit environment is part of the contract.
+mutate docker '/hvo-unit-docker-must-not-exist/{0,/hvo-unit-docker-must-not-exist/ s#hvo-unit-docker-must-not-exist#hvo-docker#}'
+expect_fail 'invalid Docker endpoint' --workflow "$scratch/docker.yml"
+
+# Inventory-driven: a new project that owns Unit cases must be selected, and a
+# selected project that owns none is stale. The fixture mirrors the real
+# inventories and project names without copying any test source.
+fixture="$scratch/tests"
+while IFS= read -r inventory; do
+  name="$(basename "$(dirname "$inventory")")"
+  mkdir -p "$fixture/$name"
+  cp "$inventory" "$fixture/$name/test-categories.json"
+  : > "$fixture/$name/$name.csproj"
+done < <(find "$repo_root/tests" -mindepth 2 -maxdepth 2 -name test-categories.json | sort)
+expect_pass --workflow "$workflow" --tests-root "$fixture"
+mkdir -p "$fixture/HVO.SkyMonitor.New.Tests"
+printf '{"Unit":3,"Integration":0,"Manual":0,"Soak":0,"External":0,"Hardware":0}\n' > "$fixture/HVO.SkyMonitor.New.Tests/test-categories.json"
+: > "$fixture/HVO.SkyMonitor.New.Tests/HVO.SkyMonitor.New.Tests.csproj"
+expect_fail 'tests/HVO.SkyMonitor.New.Tests/HVO.SkyMonitor.New.Tests.csproj owns 3 Unit case(s)' --workflow "$workflow" --tests-root "$fixture"
+rm -r "$fixture/HVO.SkyMonitor.New.Tests"
+printf '{"Unit":0,"Integration":1,"Manual":0,"Soak":0,"External":0,"Hardware":0}\n' > "$fixture/HVO.SkyMonitor.Astronomy.Tests/test-categories.json"
+expect_fail 'selects tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj, which owns no Unit cases' --workflow "$workflow" --tests-root "$fixture"
+
+printf 'CI Unit selection contract passed.\n'
