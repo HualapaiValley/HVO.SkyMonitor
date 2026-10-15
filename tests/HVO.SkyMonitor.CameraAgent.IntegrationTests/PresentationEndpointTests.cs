@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Data;
@@ -41,8 +42,7 @@ public sealed class PresentationEndpointTests
         Assert.AreEqual($"\"{service.Presentation.SvgChecksumSha256}\"", response.Headers.ETag?.Tag);
         Assert.AreEqual("image/svg+xml", response.Content.Headers.ContentType?.MediaType);
         Assert.AreEqual("nosniff", response.Headers.GetValues("X-Content-Type-Options").Single());
-        StringAssert.Contains(response.Headers.CacheControl!.ToString(), "private", StringComparison.Ordinal);
-        StringAssert.Contains(response.Headers.CacheControl.ToString(), "immutable", StringComparison.Ordinal);
+        AssertRefreshablePrivateCache(response);
         StringAssert.Contains(response.Headers.GetValues("Content-Security-Policy").Single(), "default-src 'none'", StringComparison.Ordinal);
 
         using var conditionalRequest = new HttpRequestMessage(HttpMethod.Get, uri);
@@ -50,13 +50,33 @@ public sealed class PresentationEndpointTests
         conditionalRequest.Headers.IfNoneMatch.Add(response.Headers.ETag);
         using var conditional = await client.SendAsync(conditionalRequest).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.NotModified, conditional.StatusCode);
+        AssertRefreshablePrivateCache(conditional);
         Assert.IsEmpty(await conditional.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
 
         using var headRequest = new HttpRequestMessage(HttpMethod.Head, uri);
         using var head = await client.SendAsync(headRequest).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, head.StatusCode);
+        AssertRefreshablePrivateCache(head);
         Assert.AreEqual(service.Presentation.Svg.Length, head.Content.Headers.ContentLength);
         Assert.IsEmpty(await head.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+
+        // The capture URL stays the same when later evidence changes its immutable composition.
+        var revisedSvg = Encoding.UTF8.GetBytes(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 640 480\"><path d=\"M10 10L20 20\"/></svg>");
+        service.Presentation = service.Presentation with
+        {
+            PresentationIdentitySha256 = new string('E', 64),
+            SvgChecksumSha256 = Convert.ToHexString(SHA256.HashData(revisedSvg)),
+            Svg = revisedSvg
+        };
+        using var staleRequest = new HttpRequestMessage(HttpMethod.Get, uri);
+        staleRequest.Headers.IfNoneMatch.Add(response.Headers.ETag);
+        using var revised = await client.SendAsync(staleRequest).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, revised.StatusCode);
+        AssertRefreshablePrivateCache(revised);
+        CollectionAssert.AreEqual(revisedSvg, await revised.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+        Assert.AreEqual($"\"{service.Presentation.SvgChecksumSha256}\"", revised.Headers.ETag?.Tag);
+        Assert.AreNotEqual(response.Headers.ETag, revised.Headers.ETag);
 
         using var descriptor = await client.GetAsync(new Uri(
             $"/api/v1/operations/gallery/{service.Presentation.CaptureId:D}/presentation",
@@ -95,6 +115,17 @@ public sealed class PresentationEndpointTests
         Assert.IsTrue(response.Headers.CacheControl?.NoCache);
     }
 
+    private static void AssertRefreshablePrivateCache(HttpResponseMessage response)
+    {
+        Assert.IsTrue(response.Headers.CacheControl?.Private);
+        Assert.IsTrue(response.Headers.CacheControl?.NoCache);
+        Assert.IsFalse(response.Headers.CacheControl?.Public);
+        Assert.IsNull(response.Headers.CacheControl?.MaxAge);
+        Assert.IsFalse(response.Headers.CacheControl!.Extensions.Any(value =>
+            string.Equals(value.Name, "immutable", StringComparison.OrdinalIgnoreCase)));
+        Assert.IsTrue(response.Headers.Vary.Contains("Cookie"));
+    }
+
     private static async Task<string> GetOwnerIdAsync(IServiceProvider services)
     {
         using var scope = services.CreateScope();
@@ -106,7 +137,7 @@ public sealed class PresentationEndpointTests
 
     private sealed class StubPresentationService : ICameraAgentLayeredPresentationService
     {
-        internal CameraAgentLayeredPresentation Presentation { get; } = new(
+        internal CameraAgentLayeredPresentation Presentation { get; set; } = new(
             Guid.Parse("30000000-0000-0000-0000-000000000001"),
             Guid.Parse("30000000-0000-0000-0000-000000000002"),
             new string('A', 64),

@@ -98,6 +98,11 @@ The original retained presentation remains available and reports the configurati
 opt-out explicitly. This is independent of detector mode: turning detection off
 does not invalidate already retained evidence.
 
+The capture-addressed SVG URL uses private, no-cache revalidation because later
+evidence can change its immutable composition. An unchanged checksum supports
+304; an old ETag receives the new body and checksum after evidence changes.
+The URL must not advertise immutable caching.
+
 The measured layer starts off. Explicit evidence refresh preserves opt-out and
 other selected layer kinds across immutable identity changes. Capture generation
 checks prevent late results and saves from attaching to another capture, and the
