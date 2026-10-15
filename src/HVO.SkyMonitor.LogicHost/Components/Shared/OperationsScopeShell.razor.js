@@ -30,12 +30,14 @@ export function attach(root, receiver) {
 }
 
 export function restoreFocus(root, requested) {
-    const target = history.state?.hvoScopeFocus
-        ?? (requested === "observatories" ? "scope-observatories"
-            : requested === "cameras" ? "scope-cameras" : null);
-    if (typeof target !== "string") return;
-    const element = document.getElementById(target);
-    if (!element || !root.contains(element)) return;
+    const targets = [history.state?.hvoScopeFocus,
+        requested === "observatories" ? "scope-observatories"
+            : requested === "cameras" ? "scope-cameras" : null,
+        "scope-heading"];
+    const element = targets.filter(target => typeof target === "string")
+        .map(target => document.getElementById(target))
+        .find(candidate => candidate && root.contains(candidate));
+    if (!element) return;
     const picker = element.closest("details");
     if (picker) picker.open = true;
     const list = element.closest(".scope-list");

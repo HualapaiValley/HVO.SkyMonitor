@@ -208,7 +208,9 @@ public sealed partial class OperationsScopeShell : ComponentBase, IAsyncDisposab
     private void AuthenticationChanged(Task<AuthenticationState> authenticationState)
         => _ = InvokeAsync(async () =>
         {
-            await LoadAsync();
+            var loading = LoadAsync();
+            StateHasChanged();
+            await loading;
             if (!disposed) StateHasChanged();
         });
 

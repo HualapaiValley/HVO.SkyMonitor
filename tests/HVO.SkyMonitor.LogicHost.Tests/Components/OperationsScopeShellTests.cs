@@ -107,6 +107,29 @@ public sealed class OperationsScopeShellTests
     }
 
     [TestMethod]
+    public async Task AuthenticationChange_HidesPreviousActorBeforeRevalidationCompletes()
+    {
+        await using var context = CreateContext(out var authentication);
+        var a = await SeedAsync(context, "Private station", "Private camera");
+        var cut = context.Render<OperationsScopeShell>(p => p.Add(c => c.ObservatoryId, a.ObservatoryId)
+            .AddChildContent("private child"));
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Private station").And.Contain("private child"));
+        var replacement = new TaskCompletionSource<AuthenticationState>(TaskCreationOptions.RunContinuationsAsynchronously);
+        authentication.Pending = replacement.Task;
+        try
+        {
+            await cut.InvokeAsync(() => authentication.Change(Principal("different")));
+            cut.WaitForAssertion(() => cut.Markup.Should().Contain("Checking scope access")
+                .And.NotContain("Private station").And.NotContain("private child"));
+        }
+        finally
+        {
+            replacement.TrySetResult(new(Principal("different")));
+        }
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Scope not found"));
+    }
+
+    [TestMethod]
     public async Task DelayedPriorNavigation_CannotReplaceTheNewScope()
     {
         await using var context = CreateContext(out var authentication);

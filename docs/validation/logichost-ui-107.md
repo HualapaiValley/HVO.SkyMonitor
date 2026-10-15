@@ -44,6 +44,9 @@ Each scope selector displays one 25-item page. Next/first links replace that
 page; browser history retains the page cursors and restores the previously
 focused scope link. Navigation cursors are protected and bound to the actor,
 list and parent observatory. Invalid or obsolete pages offer an explicit reset.
+Authentication changes render the cleared/loading state before waiting for
+replacement authorization. Forward scope navigation focuses the completed
+heading when there is no valid saved or pagination focus target.
 Access is rechecked on navigation, authentication changes, refresh, browser
 focus/visibility/online changes, circuit reconnect and a 30-second interval.
 Denied or failed checks clear protected labels and child content. Read failures
@@ -58,10 +61,12 @@ dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.Logic
 ```
 
 The browser case uses disposable SQL/Redis/Mailpit fixtures and the real Kestrel
-host. It exercises 64 observatories and 1K/10K camera scopes, bounded SQL reader
-operations, URL/history/focus restoration, keyboard/touch navigation, accessible
+host. It exercises 64 observatories and 1K/10K camera scopes, complete-shell SQL
+command/reader bounds (including selected scope, choices and installation reads),
+URL/history/focus restoration, delayed forward reads, keyboard/touch navigation, accessible
 landmarks and names, desktop/portrait/short-landscape layouts, actual websocket
-reconnect, role access, cross-scope denial and membership removal. Its attached
+reconnect with access revoked while disconnected, automatic clearing before the
+first periodic tick, role access, cross-scope denial and membership removal. Its attached
 `issue-1238/acceptance.json` records SQL commands/reader operations, HTML bytes,
 journey timings and Chromium heap samples. Set `HVO_EVIDENCE_REVISION` to the
 exact source revision or worktree fingerprint for retained candidate evidence.

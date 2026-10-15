@@ -27,7 +27,9 @@ public sealed class OperationsScopeBrowserAcceptanceTests
     [TestMethod]
     public async Task Issue1238_ScopesStayBoundedAuthorizedAndAccessibleAcrossNavigationAndReconnect()
     {
-        await using var fixture = await LogicHostUiKestrelFixture.CreateAsync();
+        var scopeReads = new ScopeSqlProbe();
+        await using var fixture = await LogicHostUiKestrelFixture.CreateAsync(
+            configureDatabase: options => options.AddInterceptors(scopeReads));
         var dataset = await SeedAsync(fixture.Services);
         var sql = await MeasureSqlAsync(fixture.Services, dataset);
         using var playwright = await Playwright.CreateAsync();
@@ -46,8 +48,15 @@ public sealed class OperationsScopeBrowserAcceptanceTests
         var socketCount = 0;
         IWebSocketRoute? socket = null;
         TaskCompletionSource? reconnect = null;
-        await page.RouteWebSocketAsync("**/_blazor*", route =>
+        TaskCompletionSource? allowReconnect = null;
+        TaskCompletionSource? reconnectAttempt = null;
+        await page.RouteWebSocketAsync("**/_blazor*", async route =>
         {
+            if (allowReconnect is not null)
+            {
+                reconnectAttempt!.TrySetResult();
+                await allowReconnect.Task;
+            }
             socket = route.ConnectToServer();
             Interlocked.Increment(ref socketCount);
             reconnect?.TrySetResult();
@@ -57,18 +66,34 @@ public sealed class OperationsScopeBrowserAcceptanceTests
         await page.GetByLabel("Password").FillAsync(TestUsers.Operator.Password);
         await page.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync();
         await ReadyAsync(page);
+        await Assertions.Expect(page.Locator("#scope-heading")).ToBeFocusedAsync();
+        var forward = scopeReads.HoldNextRead();
+        try
+        {
+            await page.Locator($"#scope-observatory-{dataset.ThousandObservatoryId:D}").FocusAsync();
+            await page.Keyboard.PressAsync("Enter");
+            await forward.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await page.GetByText("Checking scope access…", new() { Exact = true }).WaitForAsync();
+        }
+        finally { forward.Released.TrySetResult(); }
+        await ReadyAsync(page);
+        await Assertions.Expect(page.Locator("#scope-heading")).ToBeFocusedAsync();
 
         var root = Path.Combine(TestContext.TestRunDirectory!, "issue-1238");
         Directory.CreateDirectory(root);
         var routes = new List<object>();
+        var lastNavigationStarted = Stopwatch.GetTimestamp();
         foreach (var (width, height) in new[] { (1440, 900), (390, 844), (844, 390), (320, 700) })
         {
             await page.SetViewportSizeAsync(width, height);
             var started = Stopwatch.GetTimestamp();
+            lastNavigationStarted = started;
+            scopeReads.Commands.Clear();
             var response = await page.GotoAsync(new Uri(fixture.BaseAddress, ScopePath(dataset.ThousandObservatoryId)).AbsoluteUri);
             await ReadyAsync(page);
             var interactiveReadyMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
             var responseBytes = (await response!.BodyAsync()).LongLength;
+            var observatorySql = CompleteScopeLoad(scopeReads);
             await AssertAccessibleAsync(page);
             (await page.Locator("nav[aria-label='Observatory scopes'] > a").CountAsync()).Should().Be(25);
             (await page.Locator("nav[aria-label='Camera scopes'] > a").CountAsync()).Should().Be(25);
@@ -85,10 +110,20 @@ public sealed class OperationsScopeBrowserAcceptanceTests
             var cameraLink = page.Locator("nav[aria-label='Camera scopes'] > a").First;
             var expectedFocus = await cameraLink.GetAttributeAsync("id");
             var cameraName = await cameraLink.TextContentAsync();
-            await cameraLink.FocusAsync();
-            await page.Keyboard.PressAsync("Enter");
+            scopeReads.Commands.Clear();
+            var cameraRead = scopeReads.HoldNextRead();
+            try
+            {
+                await cameraLink.FocusAsync();
+                await page.Keyboard.PressAsync("Enter");
+                await cameraRead.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                await page.GetByText("Checking scope access…", new() { Exact = true }).WaitForAsync();
+            }
+            finally { cameraRead.Released.TrySetResult(); }
             await Assertions.Expect(page.Locator(".scope-content h1")).ToHaveTextAsync(cameraName!);
             await ReadyAsync(page);
+            await Assertions.Expect(page.Locator("#scope-heading")).ToBeFocusedAsync();
+            var cameraSql = CompleteScopeLoad(scopeReads);
             (await page.Locator(".scope-content h1").TextContentAsync()).Should().Be(cameraName);
             await page.GoBackAsync();
             await page.WaitForURLAsync(secondPageUrl);
@@ -113,6 +148,8 @@ public sealed class OperationsScopeBrowserAcceptanceTests
                 InteractiveReadyMilliseconds = interactiveReadyMilliseconds,
                 NavigationAndHistoryMilliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds,
                 InitialResponseBytes = responseBytes,
+                CompleteObservatoryScopeSql = observatorySql,
+                CompleteCameraScopeSql = cameraSql,
                 HtmlBytes = Encoding.UTF8.GetByteCount(await page.ContentAsync()),
                 JavaScriptHeapBytes = await HeapBytesAsync(page),
                 ObservatoryItems = await page.Locator("nav[aria-label='Observatory scopes'] > a").CountAsync(),
@@ -125,9 +162,37 @@ public sealed class OperationsScopeBrowserAcceptanceTests
         socket.Should().NotBeNull();
         var beforeReconnect = Volatile.Read(ref socketCount);
         reconnect = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        allowReconnect = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        reconnectAttempt = new(TaskCreationOptions.RunContinuationsAsynchronously);
         await socket!.CloseAsync();
+        await reconnectAttempt.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        await using (var scope = fixture.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            db.ObservatoryMemberships.Remove(await db.ObservatoryMemberships.SingleAsync(m =>
+                m.ObservatoryId == dataset.ThousandObservatoryId && m.UserId == dataset.UserId));
+            await db.SaveChangesAsync();
+        }
+        allowReconnect.TrySetResult();
         await reconnect.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Volatile.Read(ref socketCount).Should().BeGreaterThan(beforeReconnect);
+        await page.GetByText("Scope not found or access was removed.", new() { Exact = true })
+            .WaitForAsync(new() { Timeout = 10000 });
+        var reconnectWindowSeconds = Stopwatch.GetElapsedTime(lastNavigationStarted).TotalSeconds;
+        reconnectWindowSeconds.Should().BeLessThan(30,
+            "automatic removal must occur before this component's first periodic revalidation can fire");
+        (await page.Locator(".scope-shell").TextContentAsync()).Should().NotContain("Scope 1k").And.NotContain("Camera 000");
+        await using (var scope = fixture.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            db.ObservatoryMemberships.Add(new ObservatoryMembership
+            {
+                ObservatoryId = dataset.ThousandObservatoryId,
+                UserId = dataset.UserId,
+                Role = ObservatoryMembershipRole.Owner
+            });
+            await db.SaveChangesAsync();
+        }
         await page.GetByRole(AriaRole.Button, new() { Name = "Refresh access", Exact = true }).ClickAsync();
         await ReadyAsync(page);
 
@@ -143,10 +208,12 @@ public sealed class OperationsScopeBrowserAcceptanceTests
         await ReadyAsync(page);
         (await page.Locator("nav[aria-label='Camera scopes'] > a").CountAsync()).Should().Be(25);
 
+        scopeReads.Commands.Clear();
         await page.GotoAsync(new Uri(fixture.BaseAddress, ScopePath(dataset.TenThousandObservatoryId)).AbsoluteUri);
         await ReadyAsync(page);
         var tenThousand = new
         {
+            CompleteScopeSql = CompleteScopeLoad(scopeReads),
             HtmlBytes = Encoding.UTF8.GetByteCount(await page.ContentAsync()),
             JavaScriptHeapBytes = await HeapBytesAsync(page),
             CameraItems = await page.Locator("nav[aria-label='Camera scopes'] > a").CountAsync()
@@ -193,6 +260,8 @@ public sealed class OperationsScopeBrowserAcceptanceTests
             Routes = routes,
             TenThousand = tenThousand,
             Reconnected = Volatile.Read(ref socketCount) > beforeReconnect,
+            AutomaticReconnectRevalidation = true,
+            ReconnectWindowBeforeFirstPeriodicTickSeconds = reconnectWindowSeconds,
             PageErrors = pageErrors.ToArray(),
             ScopePairDenial = true,
             MalformedCursorRecovery = true,
@@ -205,6 +274,16 @@ public sealed class OperationsScopeBrowserAcceptanceTests
 
     private static async Task ReadyAsync(IPage page)
         => await page.Locator(".scope-shell[data-scope-interactive='true'][aria-busy='false'] .scope-content").WaitForAsync();
+
+    private static SqlRead[] CompleteScopeLoad(ScopeSqlProbe probe)
+    {
+        var commands = probe.Commands.ToArray();
+        commands.Length.Should().BeInRange(3, 18,
+            "the actual shell includes all scope lookups and choices, with prerender/interactive and one coalesced focus refresh");
+        commands.Should().OnlyContain(command => command.ReadCalls <= 52,
+            "even installation detail is bounded to 50 rows plus continuation/read completion");
+        return commands;
+    }
 
     private static async Task AssertAccessibleAsync(IPage page)
     {
@@ -322,12 +401,39 @@ public sealed class OperationsScopeBrowserAcceptanceTests
 
     private sealed class ScopeSqlProbe : DbCommandInterceptor
     {
-        internal List<SqlRead> Commands { get; } = [];
-        public override InterceptionResult DataReaderDisposing(DbCommand command, DataReaderDisposingEventData eventData, InterceptionResult result)
+        private ReadGate? nextRead;
+        internal ConcurrentQueue<SqlRead> Commands { get; } = [];
+        internal ReadGate HoldNextRead()
         {
-            Commands.Add(new(eventData.ReadCount, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.CommandText)))));
+            var gate = new ReadGate();
+            Interlocked.Exchange(ref nextRead, gate).Should().BeNull();
+            return gate;
+        }
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            if (IsScopeRead(command.CommandText) && Interlocked.Exchange(ref nextRead, null) is { } gate)
+            {
+                gate.Started.TrySetResult();
+                await gate.Released.Task.WaitAsync(cancellationToken);
+            }
             return result;
         }
+        public override InterceptionResult DataReaderDisposing(DbCommand command, DataReaderDisposingEventData eventData, InterceptionResult result)
+        {
+            if (IsScopeRead(command.CommandText))
+                Commands.Enqueue(new(eventData.ReadCount, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.CommandText)))));
+            return result;
+        }
+        private static bool IsScopeRead(string sql) => sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+            && (sql.Contains("[ObservatoryMemberships]", StringComparison.Ordinal)
+                || sql.Contains("[LogicalCameras]", StringComparison.Ordinal)
+                || sql.Contains("[LogicalCameraInstallations]", StringComparison.Ordinal));
+    }
+    private sealed class ReadGate
+    {
+        internal TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Released { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
     private sealed record SqlRead(int ReadCalls, string QuerySha256);
 }
