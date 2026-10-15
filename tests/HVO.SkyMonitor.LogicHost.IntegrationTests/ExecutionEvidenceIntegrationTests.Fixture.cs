@@ -101,13 +101,18 @@ public sealed partial class ExecutionEvidenceIntegrationTests
     private static async Task SeedGoldenAssignmentAsync(Device device)
     {
         var revision = (await FixtureAsync("revision-assigned").ConfigureAwait(false)).GraphRevision!;
+        await SeedAssignmentAsync(device, revision).ConfigureAwait(false);
+    }
+
+    private static async Task SeedAssignmentAsync(Device device, GraphRevisionEvidenceV1 revision)
+    {
         var assignment = revision.Assignment!;
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
         db.CentralProcessingGraphRevisions.Add(new CentralProcessingGraphRevision
         {
             Id = assignment.CatalogRevisionId,
-            Name = "Evidence fixture",
+            Name = $"Evidence fixture {assignment.CatalogRevisionId:N}",
             Revision = "fixture-1",
             DefinitionJson = revision.CanonicalDefinition.GetRawText(),
             DefinitionIdentitySha256 = revision.DefinitionIdentitySha256,
@@ -153,5 +158,82 @@ public sealed partial class ExecutionEvidenceIntegrationTests
             LocalPlanIdentitySha256 = revision.LocalPlanIdentitySha256
         });
         await db.SaveChangesAsync().ConfigureAwait(false);
+    }
+
+    private static async Task AssertAssignmentProposalNondisclosureAsync(HttpClient client, Device device)
+    {
+        var fixture = await FixtureAsync("revision-assigned").ConfigureAwait(false);
+        ExecutionEvidenceEnvelopeV1 Assigned(Device authority)
+        {
+            var revision = fixture.GraphRevision!;
+            var assignment = revision.Assignment! with
+            {
+                ProposalId = Guid.NewGuid(),
+                AssignmentId = Guid.NewGuid(),
+                CatalogRevisionId = Guid.NewGuid(),
+                RegistrationId = authority.RegistrationId,
+                LogicalCameraInstallationId = authority.InstallationId,
+                InstallationPublicId = authority.DevicePublicId
+            };
+            return GraphExecutionEvidenceJson.Seal(fixture with
+            {
+                EvidenceId = Guid.NewGuid(),
+                OriginSequence = 1,
+                Origin = GraphExecutionEvidenceJson.BindIdentity(authority.Origin with { BootSessionId = Guid.NewGuid() }),
+                GraphRevision = revision with { Assignment = assignment }
+            });
+        }
+
+        var foreignObservatory = await SeedAsync(createBinding: false).ConfigureAwait(false);
+        var wrongInstallation = await SeedAsync(createBinding: false).ConfigureAwait(false);
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            // A second valid registration/installation at the same observatory is still outside this binding.
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var registration = await db.DeviceRegistrations.SingleAsync(r => r.Id == wrongInstallation.RegistrationId).ConfigureAwait(false);
+            var installation = await db.LogicalCameraInstallations.Include(i => i.LogicalCamera)
+                .SingleAsync(i => i.Id == wrongInstallation.InstallationId).ConfigureAwait(false);
+            registration.ObservatoryId = device.ObservatoryId;
+            installation.LogicalCamera!.ObservatoryId = device.ObservatoryId;
+            await db.SaveChangesAsync().ConfigureAwait(false);
+            wrongInstallation = wrongInstallation with { ObservatoryId = device.ObservatoryId };
+        }
+        var foreign = Assigned(foreignObservatory);
+        var wrong = Assigned(wrongInstallation);
+        await SeedAssignmentAsync(foreignObservatory, foreign.GraphRevision!).ConfigureAwait(false);
+        await SeedAssignmentAsync(wrongInstallation, wrong.GraphRevision!).ConfigureAwait(false);
+        var missing = Assigned(device);
+        var assignment = missing.GraphRevision!.Assignment!;
+        foreach (var proposalId in new[] { assignment.ProposalId, foreign.GraphRevision!.Assignment!.ProposalId,
+            wrong.GraphRevision!.Assignment!.ProposalId })
+        {
+            // Every field except the untrusted proposal ID is identical, including origin/sequence/evidence ID.
+            var probe = GraphExecutionEvidenceJson.Seal(missing with
+            {
+                GraphRevision = missing.GraphRevision with { Assignment = assignment with { ProposalId = proposalId } }
+            });
+            using var response = await PostAsync(client, device, probe).ConfigureAwait(false);
+            var feedback = await FeedbackAsync(response).ConfigureAwait(false);
+            Assert.IsEmpty(feedback.Facts, "Foreign and absent proposal IDs must expose the same retryable response.");
+            Assert.AreEqual(0L, feedback.ContiguousThroughSequence);
+            Assert.HasCount(1, feedback.MissingRanges);
+            Assert.AreEqual(1L, feedback.MissingRanges[0].FromSequence);
+            Assert.AreEqual(1L, feedback.MissingRanges[0].ToSequence);
+            Assert.IsFalse(feedback.MissingRangesTruncated);
+        }
+        await using (var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope())
+        {
+            Assert.IsFalse(await scope.ServiceProvider.GetRequiredService<ApplicationDbContext>()
+                .Set<ImportedExecutionEvidenceUnit>().AnyAsync(u => u.BindingId == device.BindingId &&
+                    u.EvidenceId == missing.EvidenceId).ConfigureAwait(false), "Hidden or missing dependencies cannot persist a terminal rejection.");
+        }
+        // A legitimately late proposal and acceptance still allow the exact previously pending bytes to converge.
+        await SeedAssignmentAsync(device, missing.GraphRevision).ConfigureAwait(false);
+        using var retry = await PostAsync(client, device, missing).ConfigureAwait(false);
+        var acknowledged = await FeedbackAsync(retry).ConfigureAwait(false);
+        Assert.HasCount(4, acknowledged.Facts);
+        Assert.IsTrue(acknowledged.Facts.All(f => f.EvidenceId == missing.EvidenceId && f.PayloadSha256 == missing.PayloadSha256));
+        Assert.AreEqual(ExecutionEvidenceFactKind.Acknowledged, acknowledged.Facts[^1].Kind);
+        Assert.AreEqual(1L, acknowledged.ContiguousThroughSequence);
     }
 }

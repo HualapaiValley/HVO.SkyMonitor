@@ -199,6 +199,7 @@ public sealed partial class ExecutionEvidenceIntegrationTests
             using var wrong = await PostAsync(client, device, GraphExecutionEvidenceJson.Seal(envelope with { Origin = GraphExecutionEvidenceJson.BindIdentity(origin) })).ConfigureAwait(false);
             Assert.AreEqual(HttpStatusCode.Forbidden, wrong.StatusCode);
         }
+        await AssertAssignmentProposalNondisclosureAsync(client, device).ConfigureAwait(false);
     }
 
     [TestMethod]
