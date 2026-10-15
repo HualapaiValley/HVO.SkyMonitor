@@ -374,14 +374,20 @@ public sealed class ExecutionEvidencePerformanceTests
             var raw = await central.UploadNextRawAsync(deadline.Token).ConfigureAwait(false);
             var job = await central.ExecutePreviewAsync(raw, deadline.Token).ConfigureAwait(false);
             Assert.AreEqual(RawBytes, raw.Bytes);
-            Assert.IsGreaterThanOrEqualTo(measuredAdmissionUtc, raw.ModuleCallStartedUtc);
             CaptureTelemetrySample? sample = null;
             await ExecutionEvidenceCombinedHarness.WaitUntilAsync(() =>
             {
-                sample = telemetry.GetSnapshot().Samples.SingleOrDefault(item => item.StartedUtc == raw.ModuleCallStartedUtc);
+                // RawCaptureDescriptorFactory truncates persisted cycle UTC to milliseconds. Telemetry preserves
+                // the original submission ticks; join on the exact persisted precision and require uniqueness.
+                sample = telemetry.GetSnapshot().Samples.SingleOrDefault(item =>
+                    item.StartedUtc.ToUnixTimeMilliseconds() == raw.ModuleCallStartedUtc.ToUnixTimeMilliseconds());
                 return Task.FromResult(sample is not null);
             }, "capture telemetry corresponding to the uploaded raw", cancellationToken: deadline.Token).ConfigureAwait(false);
             Assert.IsNotNull(sample);
+            var descriptorPrecisionOffset = sample.StartedUtc - raw.ModuleCallStartedUtc;
+            Assert.IsGreaterThanOrEqualTo(TimeSpan.Zero, descriptorPrecisionOffset);
+            Assert.IsLessThan(TimeSpan.FromMilliseconds(1), descriptorPrecisionOffset);
+            Assert.IsGreaterThanOrEqualTo(measuredAdmissionUtc, sample.StartedUtc);
             Assert.IsTrue(sample.FrameStored);
             var commits = edge.Metrics.Commits;
             Assert.IsGreaterThanOrEqualTo(raw.RawCommitOrdinal, commits.Count);
