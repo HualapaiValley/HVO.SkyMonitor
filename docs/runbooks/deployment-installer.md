@@ -287,7 +287,6 @@ keeps killing its host cannot loop forever. Within its remaining attempts and
 deadline it retries on its own. When they are spent it fails terminally, as
 any replay does.
 
-
 Open **Quarantine → Raw evidence quarantine and releases**
 (`/operations/quarantine?kind=RawEvidence`). Review the capture identity and
 failure, then choose one of these audited actions:
