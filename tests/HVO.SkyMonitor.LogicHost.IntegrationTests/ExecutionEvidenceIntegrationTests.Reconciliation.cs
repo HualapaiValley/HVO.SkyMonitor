@@ -143,9 +143,10 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         using var executionResponse = await PostAsync(client, device, execution).ConfigureAwait(false);
         _ = await FeedbackAsync(executionResponse).ConfigureAwait(false);
         var payload = new byte[] { 1, 2, 3, 4 };
-        var artifactId = Guid.NewGuid();
+        var outputIdentity = Convert.ToHexString(SHA256.HashData(Guid.NewGuid().ToByteArray()));
+        var artifactId = ProcessingIdentity.CreateArtifactId(outputIdentity);
         var reference = new ExecutionEvidenceArtifactReferenceV1(ExecutionEvidenceArtifactReferenceV1.CurrentSchemaVersion, artifactId,
-            execution.Execution!.CaptureId, Role: FrameArtifactRole.Raw, Variant: "raw", PayloadSha256: Convert.ToHexString(SHA256.HashData(payload)),
+            execution.Execution!.CaptureId, OutputIdentitySha256: outputIdentity, Role: FrameArtifactRole.Preview, Variant: "preview", PayloadSha256: Convert.ToHexString(SHA256.HashData(payload)),
             PayloadLength: payload.Length, MediaType: "application/octet-stream");
         var report = GraphExecutionEvidenceJson.Seal(Reorigin(await FixtureAsync("availability").ConfigureAwait(false), device) with
         {
@@ -182,9 +183,9 @@ public sealed partial class ExecutionEvidenceIntegrationTests
             CentralFrameId = frame.Id,
             ArtifactId = setup.ArtifactId,
             DevicePublicId = setup.Device.DevicePublicId,
-            Role = FrameArtifactRole.Raw,
-            Variant = "raw",
-            RecipeVersion = "raw-v1",
+            Role = FrameArtifactRole.Preview,
+            Variant = "preview",
+            RecipeVersion = "preview-v1",
             ManifestSchemaVersion = "v2",
             MediaType = "application/octet-stream",
             ByteLength = setup.Payload.Length,
