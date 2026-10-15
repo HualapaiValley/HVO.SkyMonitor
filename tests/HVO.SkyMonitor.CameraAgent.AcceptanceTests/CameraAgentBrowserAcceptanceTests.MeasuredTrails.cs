@@ -153,6 +153,14 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
             await Task.Delay(TimeSpan.FromSeconds(seconds)).ConfigureAwait(false);
         }
         await diagnostics.CompleteAsync().ConfigureAwait(false);
+        var readEvidencePath = Environment.GetEnvironmentVariable("HVO_ISSUE1005_READ_EVIDENCE_PATH");
+        if (!string.IsNullOrWhiteSpace(readEvidencePath))
+        {
+            await context.CloseAsync().ConfigureAwait(false);
+            await RecordMeasuredTrailReadEvidenceAsync(readEvidencePath, captureId, projection,
+                host.Services.GetRequiredService<ICameraAgentLayeredPresentationService>(),
+                presentation.Presentation.ManifestIdentitySha256).ConfigureAwait(false);
+        }
 
         async Task AssertSvgAsync(CameraAgentLayeredPresentation expected, string? staleChecksum)
         {
