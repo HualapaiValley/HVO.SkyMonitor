@@ -210,7 +210,7 @@ public sealed class ProcessingGraphProposalReadTests
     [TestMethod]
     public async Task Http_LargeHistoryReadsIndexedBoundedRowsWithEqualTimesAndConcurrentInsert()
     {
-        var seed = await SeedAsync().ConfigureAwait(false);
+        var seed = await SeedAsync(pending: true).ConfigureAwait(false);
         await SeedHistoryAsync(seed, 10000).ConfigureAwait(false);
         var probe = new ReadProbe();
         using var factory = CreateFactory(probe);
@@ -242,7 +242,11 @@ public sealed class ProcessingGraphProposalReadTests
         TestContext.WriteLine(factsCommand.Sql);
         // Insert while the next request is between the proposal and fact commands. The new read
         // may see the appended immutable fact; it remains deterministic and bounded, without a snapshot promise.
-        var inserted = Fact(seed.Proposal.Id, "Retrieved", seed.Now.AddDays(1), 99999);
+        var inserted = new CentralProcessingGraphDeliveryFact
+        {
+            ProposalId = seed.Proposal.Id, Kind = "Retrieved", Source = "LogicHost",
+            OccurredAtUtc = seed.Now.AddMinutes(45), RecordedAtUtc = seed.Now.AddMinutes(45), ReasonCode = "proposal-retrieved"
+        };
         probe.BeforeFacts = async () =>
         {
             await using var insertion = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
@@ -329,7 +333,7 @@ public sealed class ProcessingGraphProposalReadTests
         return client;
     }
 
-    private static async Task<Seed> SeedAsync(bool viewerOwner = false)
+    private static async Task<Seed> SeedAsync(bool viewerOwner = false, bool pending = false)
     {
         var artifact = await ArtifactRetrievalTests.SeedArtifactAsync(viewerOwner ? TestUsers.Viewer.Email : TestUsers.Operator.Email, [1], putObject: false).ConfigureAwait(false);
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
@@ -404,8 +408,8 @@ public sealed class ProcessingGraphProposalReadTests
             IssuedAtUtc = now.AddTicks(index),
             ExpiresAtUtc = now.AddHours(1)
         }).ToArray();
-        var facts = new[] { Fact(proposals[0].Id, "Retrieved", now, 0), Fact(proposals[0].Id, "Accepted", now, 1),
-            Fact(proposals[0].Id, "Activated", now, 2), Fact(proposals[0].Id, "RolledBack", now, 3) };
+        CentralProcessingGraphDeliveryFact[] facts = pending ? [] : [Fact(proposals[0].Id, "Retrieved", now, 0), Fact(proposals[0].Id, "Accepted", now, 1),
+            Fact(proposals[0].Id, "Activated", now, 2), Fact(proposals[0].Id, "RolledBack", now, 3)];
         var otherFacts = new[] { Fact(proposals[1].Id, "Superseded", now, 4), Fact(proposals[2].Id, "Rejected", now, 5), Fact(proposals[3].Id, "Expired", now, 6) };
         db.AddRange(camera, installation, replacement, assignment);
         db.AddRange(proposals);
