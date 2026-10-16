@@ -74,8 +74,14 @@ CameraAgent uses a separate SQLite ASP.NET Identity database and remains usable
 offline. It does not share LogicHost users, cookies, or SQL Server tables.
 
 - `LocalIdentity:AdminEmail` and a temporary `LocalIdentity:AdminPassword` or
-  `AdminPasswordFile` create the site owner once. Existing owner passwords are
-  never reconciled from configuration.
+  `AdminPasswordFile` create the site owner once, with the user name
+  `LocalIdentity:AdminUserName` (default `admin`). The installer's default
+  temporary password is `skymonitor`. Existing owner passwords and user names
+  are never reconciled from configuration.
+- Sign-in accepts the user name or the email. Passwords need at least 8
+  characters without character-class rules and cannot be `skymonitor`, the user
+  name, or the current password. Five failed sign-ins lock the account for five
+  minutes.
 - A newly seeded owner must replace the temporary password at
   `/Account/ReplaceTemporaryPassword` before ordinary owner UI or APIs are
   authorized. The requirement is durable in the local Identity database.

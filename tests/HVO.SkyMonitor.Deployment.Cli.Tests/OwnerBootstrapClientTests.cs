@@ -203,6 +203,118 @@ public sealed class OwnerBootstrapClientTests
         Assert.AreEqual("CameraAgent reported installation identities that differ from the installer manifest.", exception.Message);
     }
 
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task ReadState_PostsTheOwnerIdentifierAsInputEmailAndRequiresTheSignInRedirect(bool signInAccepted)
+    {
+        // CameraAgent keeps the sign-in field's original Input.Email name, now accepting a user name or an email, so
+        // an installer, a split-host deployment, and a CameraAgent image from either side of issue #1278 still agree.
+        using var listener = new HttpListener();
+        var port = FreeLoopbackPort();
+        var baseAddress = new Uri($"http://127.0.0.1:{port}/");
+        listener.Prefixes.Add(baseAddress.ToString());
+        listener.Start();
+        string? postedForm = null;
+        var server = Task.Run(async () =>
+        {
+            while (listener.IsListening)
+            {
+                HttpListenerContext context;
+                try
+                {
+                    context = await listener.GetContextAsync();
+                }
+                catch (HttpListenerException)
+                {
+                    return;
+                }
+                catch (ObjectDisposedException)
+                {
+                    return;
+                }
+
+                var response = context.Response;
+                var path = context.Request.Url!.AbsolutePath;
+                string body;
+                if (context.Request.HttpMethod == "GET" && path == "/Account/Login")
+                {
+                    body = "<form><input name=\"__RequestVerificationToken\" type=\"hidden\" value=\"anti&amp;forgery\" /></form>";
+                }
+                else if (context.Request.HttpMethod == "POST" && path == "/Account/Login")
+                {
+                    using var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8);
+                    postedForm = await reader.ReadToEndAsync();
+                    if (signInAccepted)
+                    {
+                        response.StatusCode = 302;
+                        response.RedirectLocation = "/Account/ReplaceTemporaryPassword";
+                        response.AppendHeader("Set-Cookie", "owner=session; path=/");
+                        body = string.Empty;
+                    }
+                    else
+                    {
+                        // A refused or locked-out sign-in re-renders the form instead of redirecting.
+                        body = "<p>Error: This account is locked after 5 failed sign-in attempts.</p>";
+                    }
+                }
+                else if (path == "/api/internal/owner-bootstrap/status" && context.Request.Headers["Cookie"] == "owner=session")
+                {
+                    body = "{\"state\":\"owner-temporary-password\",\"passwordChangeRequired\":true}";
+                }
+                else
+                {
+                    response.StatusCode = 404;
+                    body = string.Empty;
+                }
+
+                var bytes = Encoding.UTF8.GetBytes(body);
+                response.ContentLength64 = bytes.Length;
+                await response.OutputStream.WriteAsync(bytes);
+                response.Close();
+            }
+        });
+        try
+        {
+            var client = new OwnerBootstrapClient(baseAddress);
+            if (signInAccepted)
+            {
+                var state = await client.ReadStateAsync("owner@cameraagent.local", "skymonitor", CancellationToken.None);
+                Assert.AreEqual("owner-temporary-password", state);
+            }
+            else
+            {
+                var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+                    client.ReadStateAsync("owner@cameraagent.local", "skymonitor", CancellationToken.None));
+                Assert.AreEqual("The CameraAgent login response was invalid.", exception.Message);
+            }
+
+            Assert.IsNotNull(postedForm);
+            var fields = postedForm.Split('&')
+                .Select(static pair => pair.Split('=', 2))
+                .ToDictionary(static pair => WebUtility.UrlDecode(pair[0]), static pair => WebUtility.UrlDecode(pair[1]));
+            Assert.AreEqual("anti&forgery", fields["__RequestVerificationToken"]);
+            Assert.AreEqual("owner@cameraagent.local", fields["Input.Email"]);
+            Assert.AreEqual("skymonitor", fields["Input.Password"]);
+            Assert.AreEqual("login", fields["_handler"]);
+        }
+        finally
+        {
+            listener.Stop();
+            await server;
+        }
+    }
+
+    private static int FreeLoopbackPort()
+    {
+        using var socket = new System.Net.Sockets.Socket(
+            System.Net.Sockets.AddressFamily.InterNetwork,
+            System.Net.Sockets.SocketType.Stream,
+            System.Net.Sockets.ProtocolType.Tcp);
+        socket.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        return ((IPEndPoint)socket.LocalEndPoint!).Port;
+    }
+
     private static Task<string> ReadAsync(OwnerBootstrapClient client, bool verify, CancellationToken cancellationToken)
         => verify
             ? client.VerifyInstallationAsync(Token, Expectation, cancellationToken)

@@ -467,6 +467,7 @@ public sealed partial class Program
         builder.Services.AddScoped<IProcessingGraphCatalogService>(provider =>
             provider.GetRequiredService<ProcessingGraphCatalogService>());
         builder.Services.AddScoped<IProcessingGraphDeliveryService, ProcessingGraphDeliveryService>();
+        builder.Services.AddScoped<IProcessingGraphProposalReadService, ProcessingGraphProposalReadService>();
         builder.Services.AddSingleton<OperatorUiTelemetry>();
         builder.Services.AddScoped<IDeploymentLocationAuthorityService, DeploymentLocationAuthorityService>();
         builder.Services.AddOptions<DeploymentLocationReconciliationOptions>()

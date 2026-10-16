@@ -174,16 +174,22 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<IConstellationTopology>(),
             () => provider.GetService<IDeploymentLocationStore>()));
         services.AddSingleton<IPlanetEphemeris, AstronomyEnginePlanetEphemeris>();
-        services.AddSingleton<ICameraAgentSkyMapProjection>(provider => new CameraAgentSkyMapProjection(
-            provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
-            provider.GetRequiredService<ICelestialCatalog>(),
-            provider.GetRequiredService<TimeProvider>(),
-            provider.GetService<IConstellationTopology>(),
-            provider.GetService<IDeploymentLocationStore>(),
-            provider.GetService<ILatestFrameAccessor>(),
-            provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>(),
-            SkyMapObjectBound(configuration),
-            provider.GetService<IPlanetEphemeris>()));
+        // One live operator limit governs both the sky map and VirtualSky capture, which resolves it optionally.
+        services.AddSingleton<ISceneObjectBound>(new ConfigurationSceneObjectBound(SkyMapObjectBound(configuration)));
+        services.AddSingleton<ICameraAgentSkyMapProjection>(provider =>
+        {
+            var sceneObjectBound = provider.GetRequiredService<ISceneObjectBound>();
+            return new CameraAgentSkyMapProjection(
+                provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+                provider.GetRequiredService<ICelestialCatalog>(),
+                provider.GetRequiredService<TimeProvider>(),
+                provider.GetService<IConstellationTopology>(),
+                provider.GetService<IDeploymentLocationStore>(),
+                provider.GetService<ILatestFrameAccessor>(),
+                provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>(),
+                () => sceneObjectBound.Current,
+                provider.GetService<IPlanetEphemeris>());
+        });
         services.AddSingleton<ILatestFrameAccessor, LatestFrameAccessor>();
         services.AddSingleton<ICaptureCalibrationProcessor, NullCaptureCalibrationProcessor>();
         services.AddSingleton<CaptureTelemetryMetricsRecorder>();

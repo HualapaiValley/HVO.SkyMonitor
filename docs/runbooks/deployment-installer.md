@@ -3,7 +3,8 @@
 The `hvo-skymonitor` self-contained Linux CLI installs one local, standalone
 VirtualSky CameraAgent without a repository checkout or a target-host .NET
 runtime. Docker Engine and the Compose plugin are the only application-runtime
-prerequisites. Catalog releases can be resolved from signed local metadata,
+prerequisites; the host must also pass the [host prerequisites](#host-prerequisites)
+that install and `install --dry-run` evaluate. Catalog releases can be resolved from signed local metadata,
 HTTPS mirrors, or signed release indexes; every source uses the same pinned
 signature, length, checksum, archive, and internal catalog validation.
 
@@ -20,7 +21,6 @@ directory produced by the deterministic catalog tooling:
 ```bash
 hvo-skymonitor cameraagent install \
   --friendly-name "North All-Sky Camera" \
-  --owner-email admin@home.lan \
   --bind-address 127.0.0.1 \
   --port 5130 \
   --catalog-bundle /srv/hvo/hyg-v4.2-p3-s2-r1.bundle \
@@ -40,7 +40,6 @@ hvo-skymonitor cameraagent install \
   --catalog-manifest /srv/hvo/catalog-release/catalog-manifest.json \
   --no-download \
   --friendly-name "North All-Sky Camera" \
-  --owner-email admin@home.lan \
   --image-ref sha256:<loaded-image-id>
 ```
 
@@ -68,17 +67,83 @@ under `$XDG_STATE_HOME/hvo/skymonitor/distribution`, or
 is not removed by ordinary cache cleanup.
 
 Use `--image-archive /srv/hvo/cameraagent.tar` together with
-`--image-archive-sha256 <sha256>` for an offline image load. Use
-`--password-file <owner-only-path>` for an operator-supplied temporary password;
-otherwise the installer generates one. `--json` selects the versioned structured
-result. `--dry-run` validates the catalog, Docker daemon, loaded image, generated
+`--image-archive-sha256 <sha256>` for an offline image load.
+
+A new CameraAgent's first sign-in is the documented default, user name `admin`
+and password `skymonitor`, and CameraAgent requires that password to be
+replaced at first sign-in (see [Bootstrap And Recovery](#bootstrap-and-recovery)).
+`--owner-email` is optional: it sets the owner's durable email, which is also
+accepted as a sign-in name, and defaults to the non-routable
+`owner@cameraagent.local`. Instead of the default password, use
+`--password-file <owner-only-path>` for an operator-chosen temporary password of
+8 to 256 characters without control characters, or `--generate-password` for a
+random one written to the owner-only `config/owner-bootstrap/temporary-password`.
+A password file is read as UTF-8 with only its trailing line ending removed, by
+the installer and CameraAgent alike, so leading, trailing, and inner spaces are
+part of the password.
+`--json` selects the versioned structured result. `--dry-run` validates the catalog, Docker daemon, loaded image, generated
 configuration, and rendered Compose model using private temporary storage without
 creating the product root, loading/pulling an image, or starting a container.
 
 Missing required values are prompted only on an interactive terminal. A strict
 JSON config may be supplied with `--config`; value options cannot be mixed with
 it. Flags such as `--dry-run`, `--json`, `--no-download`, and the explicit non-loopback HTTP
-acknowledgement may still be applied.
+acknowledgement may still be applied. A configuration that does not name
+`productRoot` installs into the production product root, as the command-line form
+does; one that names a root keeps it and is validated like `--product-root`.
+
+To serve the camera on a LAN address, bind it there and acknowledge plaintext
+HTTP:
+
+```bash
+hvo-skymonitor cameraagent install ... \
+  --bind-address 192.168.2.138 --port 5130 --acknowledge-plaintext-http
+```
+
+After `compose up`, the installer waits for health and bootstraps the owner at
+the instance's public URL, the same `url` the result reports and every lifecycle
+probe uses: the bind address itself, or `localhost` for `0.0.0.0`/`::`. It never
+probes `127.0.0.1` for an instance bound elsewhere, because that instance is not
+listening there.
+
+## Host Prerequisites
+
+`cameraagent install` and `cameraagent install --dry-run` evaluate every host
+prerequisite before the product root is prepared or anything else is created,
+and report every finding together so the host can be fixed in one pass:
+
+| Code | Requires |
+| --- | --- |
+| `docker-memory-limit-unsupported` | `docker info` reports `MemoryLimit: true`, so the Compose `mem_limit` is enforced |
+| `docker-cpu-quota-unsupported` | `docker info` reports `CpuCfsQuota: true`, so the Compose `cpus` quota is enforced |
+| `docker-pids-limit-unsupported` | `docker info` reports `PidsLimit: true`, so the Compose `pids_limit` is enforced |
+| `tar-missing` | an executable `tar` on `PATH`; upgrade and rollback run it for the consistent instance backup |
+| `product-root-storage-insufficient` | room on the filesystem that holds the product root: twice the catalog bundle and image archive together, plus 1 GiB |
+| `docker-root-storage-insufficient` | room on the filesystem that holds Docker's `DockerRootDir`: twice the image archive and 1 GiB |
+| `docker-root-unreported` | `docker info` reports an absolute `DockerRootDir` |
+
+A capability `docker info` does not report counts as unsupported. Free space is
+measured on the filesystem that actually stores each root, at its nearest
+existing ancestor, not on `/`; when the product root and Docker's data root
+share one filesystem their requirements are added together. An upgrade likewise
+measures the instance backup and staged archive against the product root's own
+filesystem.
+
+A host that cannot enforce the limits would otherwise run CameraAgent unbounded,
+so it is refused. Raspberry Pi OS boots with `cgroup_disable=memory`. The remedy
+is to add `cgroup_enable=memory` to the single line in
+`/boot/firmware/cmdline.txt`, reboot, and confirm that `docker info` reports
+`MemoryLimit`, `CpuCfsQuota`, and `PidsLimit` as `true`. Each limit finding
+quotes the cgroup version, `/sys/fs/cgroup/cgroup.controllers` when it is
+readable, and Docker's own limit warnings.
+
+The human form renders every finding and its remedy on standard error. With
+`--json` the structured report is written to standard output and standard error
+carries one error object with `errorCode` `host-prerequisites`; the exit code is
+`1` either way. The CLI uses SQLite in-process and never runs `sqlite3` or `jq`,
+so neither is required. Uninstall, purge, and the other lifecycle commands do not
+evaluate these prerequisites, so a host that loses limit support can still be
+cleaned up.
 
 ## Signed Image Release
 
@@ -728,17 +793,160 @@ W6 performance disposition defined in
 
 ## Persistent State
 
-Production installation always uses `/var/lib/hvo/skymonitor` and the canonical
+Production installation uses the production product root and the canonical
 layout in [product-instance-layout.md](product-instance-layout.md). The
-`--product-root` override is rejected unless the invocation was admitted for a
-test root. Admission is decided exactly once, when the command line is parsed:
-the process environment is read there and nowhere else, and only
+production product root is `/var/lib/hvo/skymonitor`, unless the root-owned host
+policy described below names another one. Every command defaults to it, so an
+instance is found under a relocated root with no extra option. The
+`--product-root` override is rejected for any other root unless the invocation
+was admitted for a test root. Admission is decided exactly once, when the command
+line is parsed: the process environment is read there and nowhere else, and only
 `HVO_INSTALLER_ALLOW_TEST_ROOT=1` admits. The decision then travels on the
 request itself, so a later change to the environment cannot revoke an admission
 already granted or grant one already refused, and an installer configuration
 file cannot reach the decision at all because the flag is never deserialized.
 Tests that need a temporary root set that admission on the request they build
-rather than mutating the environment of the process they share.
+rather than mutating the environment of the process they share. The host policy
+location is carried the same way: a test states its own policy location on the
+request it parses, and production always reads `/etc/hvo/skymonitor/host.json`.
+
+### Production product root on another filesystem
+
+A host that keeps application data on another filesystem, for example NVMe
+mounted under `/srv`, names the production product root in the root-owned host
+policy instead of bind-mounting it over `/var/lib/hvo/skymonitor`:
+
+```json
+{"productRoot": "/srv/data/hvo-skymonitor", "mountPoint": "/srv"}
+```
+
+Write it with the convenience command, as the deployment user, **before the
+first instance is installed**:
+
+```bash
+sudo install -d -o root -g root -m 0755 /srv/data   # the parent must already exist
+hvo-skymonitor host set-product-root /srv/data/hvo-skymonitor
+```
+
+The command escalates through one narrow `sudo`-executed internal command,
+`internal-set-product-root --product-root <path>`, which accepts nothing else and
+always writes `/etc/hvo/skymonitor/host.json`. It re-reads and re-validates the
+existing policy itself, refuses to move a production root whose `cameraagents` or
+`logichosts` directory holds any entry, creates only the final product-root
+directory (`root:root 0755`) beneath an existing validated parent, and publishes
+the file atomically (`root:root 0644`). It records `mountPoint`, the mount point
+of the filesystem the root resolves through at that moment (from
+`/proc/self/mountinfo`; `/srv` on a host whose NVMe is mounted there). The command
+then reads the policy back as the deployment user and requires it to name
+exactly the requested root and mount. Restating the current root reports
+`unchanged`, or `updated` when it adds a missing `mountPoint` to a hand-written
+policy. It cannot replace a recorded `mountPoint` that no longer validates: the
+existing policy is validated first and the command refuses, so repair it with
+the procedure under [Repairing the host policy](#repairing-the-host-policy).
+Relocating a root that already holds instances is not supported: their manifests
+and Compose files name the old root.
+
+The empty-root check and the publication run under a root-only lock,
+`/run/hvo-skymonitor-host-policy.lock` (`root:root 0600`, so no other user can
+open or hold it). The privileged preparation holds the same lock while it re-reads
+the policy and creates an instance root, so an instance can never appear under
+the old root between the check and the moment the policy stops naming it: the
+preparation either completes first, and the move is then refused because the root
+holds an instance, or runs after the move and is refused because the policy no
+longer names the root it was asked to prepare.
+
+Without the file, behaviour is unchanged. When the file exists, every command
+reads it once while parsing its command line and fails closed unless all of these
+hold:
+
+- the file and every directory from `/` to it are `root:root` and not writable by
+  group or other users; the file is a regular file with one link, at most 4 KiB,
+  holding a JSON object with exactly one `productRoot` string and at most one
+  `mountPoint` string; a duplicate or unknown member is refused;
+- `productRoot` is an absolute normalized path other than `/`, with no `.`/`..`,
+  repeated or trailing `/`, and every segment uses only ASCII letters, digits,
+  `.`, `_` and `-` without a leading `-`. The generated Compose environment file
+  and bind mounts carry such a path literally; `$`, `#` after whitespace, `:`,
+  quotes, and whitespace would be interpolated, cut off, or split by Compose;
+- the product root already exists, and it and every component from `/` are
+  `root:root` directories that are not symbolic links and not writable by group or
+  other users;
+- nothing is mounted beneath the product root, so the whole root lives on one
+  mount. A mount exactly at the root is accepted;
+- when the policy records `mountPoint`, which must be the root or one of its
+  ancestors, the recorded path is currently a mount point in
+  `/proc/self/mountinfo`, and the product root resolves through the mount
+  currently visible there (its `statx` mount ID equals that mount's ID).
+
+That is a check of the mount path, not of the filesystem behind it. The policy
+records a pathname, not a device or filesystem UUID. When nothing at all is
+mounted at `mountPoint`, every command stops and names the mount point, even if a
+directory of the same name remains on the parent filesystem (which is what is
+left behind when the filesystem was mounted exactly at the root). It does not
+tell one filesystem from another at the same path:
+
+- with stacked mounts, unmounting the top mount at `/srv` exposes the mount
+  beneath it, which is still a mount at `/srv` and is accepted when the root
+  resolves through it;
+- a different filesystem mounted at `/srv` in place of the intended one (another
+  partition, a replacement disk, or a tmpfs) is accepted the same way.
+
+Verify the intended backing filesystem yourself after boot or any storage change,
+for example `findmnt -no SOURCE,UUID /srv` (or `findmnt -T
+/srv/data/hvo-skymonitor`), and compare it with the device or UUID in
+`/etc/fstab`. Without `mountPoint`, which only a hand-written policy can lack, the
+check is weaker still: an unmounted filesystem stops commands only when the root
+directory itself disappears with it. Run `host set-product-root` with the same
+root to record the mount point. The narrow `sudo` helpers for preparation and purge
+also read and validate the policy themselves and act only on the root it resolves,
+never on a root their arguments merely name. The clock-synchronization gate
+protects every installation into the production root, wherever the policy puts
+it; only an admitted test root is exempt. Compose files stay inside each instance
+under `config/compose`, so an instance's configuration and state remain one
+backup unit.
+
+#### Repairing the host policy
+
+Every command refuses a policy that does not validate, including
+`host set-product-root`, which validates the existing policy before it writes a
+new one. A recorded `mountPoint` that is no longer a mount, or a hand edit that
+broke the file, therefore needs a privileged repair, which no `hvo-skymonitor`
+command performs.
+
+A manual edit of `/etc/hvo/skymonitor/host.json` does **not** take the
+host-policy lock (`/run/hvo-skymonitor-host-policy.lock`) that
+`host set-product-root` and the privileged preparation hold. A command started
+while the file is being changed can therefore resolve a different production
+root, for example create a new instance under `/var/lib/hvo/skymonitor` while
+the policy is briefly absent, and that instance would then block restoring the
+real root. Repair only inside a maintenance window:
+
+1. **Open the window.** Stop or hold every automation that runs
+   `hvo-skymonitor`, and run no `hvo-skymonitor` command by hand: no
+   `cameraagent install`, `upgrade`, `rollback`, `reinstall`, `uninstall`,
+   `purge`, `reset-state`, `recover-owner`, `preflight`, no `catalog` command, no
+   `host` command, and no `status`, until step 5 is done. Confirm that nothing is
+   running: `pgrep -af hvo-skymonitor` must print nothing. Running CameraAgent
+   containers are unaffected and keep running.
+2. **Repair in place, preferring storage over the file.** If the intended
+   filesystem can be mounted, mount it at the recorded `mountPoint`, confirm it
+   with `findmnt -no SOURCE,UUID <mountPoint>`, and change nothing in the file.
+3. **Otherwise edit only the mount field.** Run
+   `sudo editor /etc/hvo/skymonitor/host.json` and either correct `mountPoint`
+   or delete just the `mountPoint` member so the setter records it again. Keep
+   `productRoot` exactly as it was: it is the root the instances live under.
+   Keep the file `root:root 0644`.
+4. **Never delete the file while instances exist under its `productRoot`.**
+   Without the file every command falls back to `/var/lib/hvo/skymonitor`, so the
+   instances under the policy root become unreachable: `status` and every
+   lifecycle command look only in the root in force. Remove `host.json` only when
+   that root is empty, after every instance under it has been uninstalled and
+   purged.
+5. **Re-establish and verify, then close the window.** Run
+   `hvo-skymonitor host set-product-root <the same productRoot>`, which validates
+   the repaired policy and records the mount point that currently holds the
+   root, then `hvo-skymonitor status`, and confirm that every expected instance ID
+   is listed. Only then resume automation and other `hvo-skymonitor` commands.
 
 The installer records owner-only files beneath the UUID instance root:
 
@@ -762,12 +970,24 @@ catalog, image, Docker daemon, Compose template/model, configuration, rig,
 schedule, deployment-location snapshot, and installation-verification token
 hash identities. Password and verification-token content is never written to
 the manifest, result, phase state, Compose environment, logs, or terminal output.
+The one exception is the public, documented default owner password: when it
+seeded the owner, the result records `ownerPasswordIsDefault: true` and the human
+output names it.
 Signed installs additionally retain the release train/version/tag, exact
 manifest and asset length/hash, signing key ID, source and resolved public URI,
 verification result/time, and provenance identity without authentication data.
 
 The installer creates the product root through one narrow `sudo`-executed
-internal preparation command when needed, then performs catalog, configuration,
+internal preparation command when needed. That command prepares only the
+production product root the host policy resolves, under the host-policy lock:
+under the default root it may also create `/var/lib/hvo`, and under a policy root
+it validates the existing root and creates its `cameraagents`, `logichosts`, and
+`catalogs` namespaces as `root:root 0755`. `catalog install` and `catalog gc` use
+the same command's product form (`--product-root`, `--uid`, `--gid`, no instance)
+when the runtime user is denied creating the runtime-owned `operations` directory
+or an approved catalog root beneath the root-owned namespace; neither command ever
+changes the shared root's ownership or mode, under the default root or a policy
+root. The installer then performs catalog, configuration,
 Docker, Compose, and HTTP work as the invoking Docker-capable runtime user. Do
 not invoke the whole installer through `sudo`. Purge uses one other narrow
 `sudo`-executed internal command, described with purge below, for the two
@@ -782,6 +1002,14 @@ location page writes the site profile (observatory name, camera name, owner name
 `CameraAgent:Site` and the scene object limit to `CameraAgent:SkyMap:MaximumObjects`; any other setting can be
 added by hand. The page names the file it writes.
 
+The scene object limit (default 200, 1 to 5,000) is how many of the brightest catalog stars both the page's sky
+map and every VirtualSky capture use. A capture keeps the brightest stars whose image crosses the frame during
+the exposure, up to the limit, and always adds visible constellation figure stars and the planets, Sun and Moon
+on top. Lower values make night images faster; raising it, even above the camera module's `maximumResults`,
+deepens the star field at a higher cost per capture. A camera module that sets
+`"stellarCandidateSelection": "Exhaustive"` ignores the limit and keeps its complete `maximumResults` query;
+qualification profiles use that to retain full catalog depth.
+
 - Environment variables, the command line, and the installer's key-per-file settings in `config/secrets` take
   precedence over the file. The page says when one of them sets a value it edits, because saving that value in
   the file would have no effect.
@@ -794,7 +1022,8 @@ added by hand. The page names the file it writes.
   carries the file across a state reset.
 - Each save from the page names the file content it read, so a save never overwrites a hand edit made after
   the page was loaded; the page asks for a refresh instead. The file is watched, so the site profile and object
-  limit apply at once; most other settings take effect at the next CameraAgent start.
+  limit apply at once, the limit from the next sky map projection and the next capture of a camera module that
+  follows it (an exhaustive module never does); most other settings take effect at the next CameraAgent start.
 - A hand-edited file may contain comments and trailing commas, as the configuration loader allows. A save from
   the page keeps every setting but rewrites the file without its comments.
 - A malformed file stops CameraAgent at startup. A malformed edit made while CameraAgent runs leaves the file's
@@ -814,6 +1043,35 @@ removes `LocalIdentity__AdminPasswordFile` authority, recreates the exact
 Compose service, and requires the durable `owner-password-change-required`
 state. The operator completes password replacement through CameraAgent.
 
+Unless `--password-file` or `--generate-password` was given, the seeded owner
+is user name `admin` with password `skymonitor`, and the installer prints:
+
+```text
+Sign in as admin / skymonitor; a password change is required at first sign-in.
+```
+
+Otherwise it prints the owner-only temporary password file instead. The
+installer authenticates its own bootstrap check with the owner email, which
+every supported CameraAgent image resolves; the browser accepts either the user
+name or the email. The default password requires a CameraAgent image that
+includes issue #1278; install an older image with `--generate-password` or
+`--password-file`.
+
+> **Takeover window.** Until the first sign-in replaces the default, anyone who
+> can reach the CameraAgent port can sign in as `admin` / `skymonitor` and claim
+> the camera by choosing the new password. Keep the default loopback
+> `--bind-address 127.0.0.1` until the password is replaced. A non-loopback
+> address still requires `--acknowledge-plaintext-http`; when you use one, sign
+> in and replace the default immediately after the install completes, or install
+> with `--password-file` or `--generate-password` instead.
+
+The replacement, and every later password, needs at least 8 characters and has
+no character-class rules; it cannot be `skymonitor` in any letter case, the
+user name, or the current password. Five failed sign-ins lock the account for
+five minutes, and the sign-in page says so. Owner recovery below also clears a
+lockout. An installation upgraded from an installer that predates issue #1278
+keeps its owner's email as the user name; sign in with that email.
+
 If the owner loses the durable password after initial setup, recover access from
 the CameraAgent host as the Docker-capable deployment runtime user, never as
 root:
@@ -823,7 +1081,9 @@ hvo-skymonitor cameraagent recover-owner --instance-id <uuid> --generate-passwor
 ```
 
 Alternatively, provide an absolute owner-only mode `0400` or `0600` file with
-`--password-file`. Password input is never accepted on the command line. The
+`--password-file`, holding 8 to 256 printable ASCII characters without spaces;
+CameraAgent refuses the documented default as a recovery password. Password
+input is never accepted on the command line. The
 command validates the installed manifest/result, runtime UID/GID, product and
 instance locks, and the retained lifecycle-control credential. It contacts the
 installed CameraAgent directly through `<state-root>/identity/owner.sock`, which
@@ -1212,10 +1472,12 @@ mutations as the runtime user. Only when the kernel denies that does it run
 - **remove** removes that tombstone after the runtime user has emptied it
   through the inventory-bound deletion.
 
-The helper accepts only the default product root and only when `sudo` reports
-the same non-root UID and GID that the command names. It opens every component
-from `/` to `cameraagents` without following links and requires each to be
-root-owned and not writable by group or other users. It derives both entry names
+The helper re-reads and validates the host policy itself and accepts only the
+production product root it resolves, and only when `sudo` reports the same
+non-root UID and GID that the command names. It opens every component from `/`
+to `cameraagents` without following links and requires each to be root-owned
+and not writable by group or other users; under a host-policy root every
+component must also belong to group `root`. It derives both entry names
 from the instance and operation identifiers. It acts only on a runtime-owned
 directory with the authenticated inode and device, on the namespace's own mount,
 and it removes only a tombstone that holds no subdirectories; the kernel refuses

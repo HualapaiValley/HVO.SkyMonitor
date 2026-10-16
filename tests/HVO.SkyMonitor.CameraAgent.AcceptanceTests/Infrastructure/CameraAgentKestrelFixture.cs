@@ -80,7 +80,8 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         bool enableCentralIntegration = false,
         bool useEnvironmentalAcquisition = false,
         Func<string, Task>? prepareRoot = null,
-        bool useTransientEvidence = false)
+        bool useTransientEvidence = false,
+        string ownerPassword = OwnerPassword)
     {
         var temporaryRoot = useCalibrationLibrary && Directory.Exists("/dev/shm")
             ? "/dev/shm"
@@ -149,7 +150,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         var overrides = new Dictionary<string, string?>
         {
             ["LocalIdentity:AdminEmail"] = OwnerEmail,
-            ["LocalIdentity:AdminPassword"] = OwnerPassword,
+            ["LocalIdentity:AdminPassword"] = ownerPassword,
             ["LocalIdentity:AdminPasswordFile"] = string.Empty,
             ["LocalIdentity:AllowMissingAdminPassword"] = "false",
             ["LocalIdentity:DatabasePath"] = Path.Combine(root, "identity", "cameraagent_identity.db"),
@@ -337,7 +338,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "HttpClient takes ownership of its handler and the caller owns the returned client.")]
-    internal async Task<HttpClient> CreateOwnerClientAsync(string password = OwnerPassword)
+    internal async Task<HttpClient> CreateOwnerClientAsync(string password = OwnerPassword, string signInName = OwnerEmail)
     {
         var client = new HttpClient(new HttpClientHandler
         {
@@ -359,7 +360,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             using var form = new FormUrlEncodedContent(new Dictionary<string, string>
             {
                 ["__RequestVerificationToken"] = token,
-                ["Input.Email"] = OwnerEmail,
+                ["Input.Email"] = signInName,
                 ["Input.Password"] = password,
                 ["Input.RememberMe"] = "false",
                 ["_handler"] = "login"

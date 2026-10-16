@@ -17,6 +17,11 @@
     <ProjectReference Include="..\HVO.SkyMonitor.Deployment.Distribution\HVO.SkyMonitor.Deployment.Distribution.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <!-- CameraAgent owns how an owner password file is read; the installer compiles the same reader so it validates,
+         authenticates with, and classifies exactly the password CameraAgent seeds (#1278). -->
+    <Compile Include="..\HVO.SkyMonitor.CameraAgent\Configuration\OwnerPasswordFileText.cs" Link="Shared/OwnerPasswordFileText.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <InternalsVisibleTo Include="HVO.SkyMonitor.Deployment.Cli.Tests" />
   </ItemGroup>
 </Project>
