@@ -188,6 +188,23 @@ Acceptance: endpoint/service tests cover shared definitions versus private
 assignment/execution state; multi-observatory and credential-scope denial;
 camera/installation replacement; pagination with equal timestamps and concurrent
 inserts; and exact execution/job/input/attempt/output lineage without lease tokens.
+The bounded [#1270](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1270)
+leaf adds `GET /api/v1.0/observatories/{observatoryId}/cameras/{logicalCameraId}/installations/{installationId}/processing-graph-proposals/{proposalId}`
+for one exact retained proposal. `installationId` is the central
+`LogicalCameraInstallation.Id`, distinct from `InstallationPublicId`. Current
+User membership and credential observatory scope apply even to replaced,
+retired installations and inactive cameras; global graph catalog access grants
+no private proposal authority. The response projects stored proposal/fact
+identities, reasons and UTC fields only. `take` defaults to 50 and accepts 1–50;
+latest facts sort by recorded UTC then SQL Server GUID identity, both descending.
+One sentinel supplies `FactsAreTruncated`; there is no proposal discovery or
+continuation and no claim of a complete history when truncated. Three bounded
+SELECTs read the exact proposal, at most 51 facts through the existing index,
+and recheck authorization before returning. Dedicated service and real HTTP/SQL
+tests cover authorization, historical replacement, cancellation, exact fields,
+equal timestamps, concurrent append, bounds and large retained/unrelated history.
+The broader B2 browsing, continuation and inspector acceptance remains open.
+
 Delivery history reports each persisted lifecycle fact and UTC/reason separately
 from heartbeat. Staged is currently a poll disposition derived from accepted
 inactive revision evidence, not a separately persisted Staged fact. Label that

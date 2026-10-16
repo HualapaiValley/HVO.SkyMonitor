@@ -647,3 +647,27 @@ Quality runs it beside `./scripts/test:ci-unit-selection`, whose negative contro
 - Coverage failures name exact source paths, covered/valid counts, observed rates, and required floors.
 - Integration failures retain separate project/category TRX and Cobertura evidence for 30 days.
 - Deployment failures identify the failed shard in coordinator output; inspect the retained shard log and status marker before rerunning only that shard locally.
+
+### Exact scoped delivery-proposal read (#1270)
+
+The dedicated `ProcessingGraphProposalReadServiceTests` Unit cases and
+`ProcessingGraphProposalReadTests` Integration cases own this read slice.
+Discover actual categories from the built Release assemblies before changing
+`test-categories.json`; the inventories are counts of discovered cases.
+
+```bash
+DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj --no-build --configuration Release --filter "FullyQualifiedName~ProcessingGraphProposalReadServiceTests"
+DOCKER_HOST=unix:///var/run/docker.sock dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter "FullyQualifiedName~ProcessingGraphProposalReadTests"
+```
+
+Integration uses the existing fixture's real HTTP/TestServer and SQL Server.
+Its large-history case appends 10,000 retrieval facts to one retained proposal
+and another 10,000 across 200 unrelated proposals. After one warm-up, it records
+three product SELECTs, the actual indexed fact rows examined/returned, response
+bytes and one observed HTTP duration. It verifies the latest 50 plus one
+sentinel through `(ProposalId, RecordedAtUtc, Id)`, equal timestamp ordering,
+explicit truncation and a concurrent insert. Fixture startup and seeding are
+outside that observation; this is bounded-read evidence, with no percentile,
+speedup, full-history snapshot or production qualification claim. Raw SQL plan
+XML and observed values are retained in TRX output with the exact source/DLL/PDB
+provenance in the issue/PR evidence archive.
