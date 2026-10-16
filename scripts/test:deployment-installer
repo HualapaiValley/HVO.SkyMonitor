@@ -223,6 +223,14 @@ test "$(jq -er '.image.imageId' "$root/first.json")" = "$image_id"
 test "$(jq -er '.image.archiveSha256' "$root/first.json")" = "$archive_sha256"
 test "$(docker inspect --format '{{.State.Health.Status}}' "$runner_container")" = healthy
 test "$(docker inspect --format '{{.Config.User}}' "$runner_container")" = "$(id -u):$(id -g)"
+# The CameraAgent container gets the default 2 CPUs, 4 GiB and 256 PIDs, recorded with the instance as limits no
+# operator set; the replay runner keeps its own bounds.
+test "$(docker inspect "$container" | jq -er '.[0].HostConfig | "\(.NanoCpus) \(.Memory) \(.PidsLimit)"')" = \
+  "2000000000 4294967296 256"
+test "$(docker inspect "$runner_container" | jq -er '.[0].HostConfig | "\(.NanoCpus) \(.Memory) \(.PidsLimit)"')" = \
+  "500000000 2147483648 64"
+jq -e '.resources == {cpus: 2, memoryBytes: 4294967296, pidsLimit: 256, cpusSetByOperator: false, memorySetByOperator: false}' \
+  "$instance_root/instance-manifest.json" >/dev/null
 
 docker stop "$container" >/dev/null
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" >"$root/rerun.json"

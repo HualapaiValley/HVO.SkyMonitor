@@ -158,7 +158,7 @@ public sealed class DockerClientTests
         var runner = new FakeProcessRunner(
             "{\"OSType\":\"linux\",\"Architecture\":\"aarch64\",\"ID\":\"daemon-1\",\"Name\":\"pi\",\"ServerVersion\":\"29.0\"," +
             "\"MemoryLimit\":false,\"CpuCfsQuota\":true,\"PidsLimit\":true,\"CgroupVersion\":\"2\",\"DockerRootDir\":\"/srv/docker\"," +
-            "\"Warnings\":[\"WARNING: No memory limit support\"]}",
+            "\"NCPU\":4,\"MemTotal\":8442572800,\"Warnings\":[\"WARNING: No memory limit support\"]}",
             "2.40.0");
 
         var capabilities = await new DockerClient(runner).ReadHostCapabilitiesAsync(CancellationToken.None);
@@ -169,6 +169,8 @@ public sealed class DockerClientTests
         Assert.IsTrue(capabilities.PidsLimit);
         Assert.AreEqual("2", capabilities.CgroupVersion);
         Assert.AreEqual("/srv/docker", capabilities.DockerRootDir);
+        Assert.AreEqual(4, capabilities.CpuCount);
+        Assert.AreEqual(8442572800, capabilities.MemoryBytes);
         string[] expectedWarnings = ["WARNING: No memory limit support"];
         CollectionAssert.AreEqual(expectedWarnings, capabilities.Warnings.ToArray());
         Assert.IsTrue(runner.Commands.Any(static command => command.EndsWith(" compose version --short", StringComparison.Ordinal)));
@@ -187,8 +189,11 @@ public sealed class DockerClientTests
         Assert.IsNull(capabilities.CpuCfsQuota);
         Assert.IsNull(capabilities.PidsLimit);
         Assert.IsNull(capabilities.DockerRootDir);
+        Assert.IsNull(capabilities.CpuCount);
+        Assert.IsNull(capabilities.MemoryBytes);
         Assert.IsEmpty(capabilities.Warnings);
-        Assert.IsFalse(HostPrerequisites.Evaluate(capabilities, "/srv/data/hvo-skymonitor", 1, 1, new FakeHostEnvironment()).Satisfied);
+        Assert.IsFalse(HostPrerequisites.Evaluate(capabilities, "/srv/data/hvo-skymonitor", 1, 1, new FakeHostEnvironment(),
+            CameraAgentContainerResources.Default).Satisfied);
     }
 
     private sealed class FakeProcessRunner(params string[] outputs) : IProcessRunner

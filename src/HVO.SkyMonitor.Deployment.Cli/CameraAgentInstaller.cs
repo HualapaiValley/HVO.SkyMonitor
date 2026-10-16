@@ -260,6 +260,10 @@ internal sealed class CameraAgentInstaller
             var lifecycleControlToken = await ReadOwnerSecretAsync(lifecycleControlTokenPath, cancellationToken).ConfigureAwait(false);
             var passwordAuthorityEnabled = retainedCompletedResult is null &&
                                             (existingState is null || existingState.Phase < InstallationPhase.OwnerSeeded);
+            // A re-run of a completed installation keeps the limits it recorded, which the request identity has already
+            // matched. An instance an earlier installer completed records none and keeps its original limits until its
+            // next upgrade.
+            var resources = retainedCompletedResult is null ? request.ContainerResources() : existingManifest!.Resources;
             if (retainedCompletedResult is not null)
             {
                 await ValidateCompletedCandidateAsync(
@@ -278,6 +282,7 @@ internal sealed class CameraAgentInstaller
                     daemon,
                     existingManifest!,
                     retainedCompletedResult,
+                    resources,
                     docker,
                     cancellationToken).ConfigureAwait(false);
                 completedCandidateValidated = true;
@@ -294,7 +299,8 @@ internal sealed class CameraAgentInstaller
                 passwordPath,
                 verificationToken,
                 lifecycleControlToken,
-                passwordAuthorityEnabled);
+                passwordAuthorityEnabled,
+                resources);
 
             // Compose writing created every writable bind source with the runtime identity. Prove the persisted
             // catalog, Identity, and raw-ingress boundaries match this image before Compose starts the container,
@@ -327,7 +333,8 @@ internal sealed class CameraAgentInstaller
             var composeModelSha256 = ComposeDeployment.ComputeSha256(rendered.StandardOutput);
             var manifest = CreateManifest(
                 request, paths, instanceId, installationId, applicationIdentity, uid, gid,
-                verificationToken, lifecycleControlToken, compose, composeModelSha256, catalog, image, daemon, existingManifest);
+                verificationToken, lifecycleControlToken, compose, composeModelSha256, catalog, image, daemon, existingManifest,
+                resources);
             if (retainedCompletedResult is null)
             {
                 await SafeFileSystem.WriteJsonAtomicAsync(
@@ -378,7 +385,8 @@ internal sealed class CameraAgentInstaller
                         passwordPath,
                         verificationToken,
                         lifecycleControlToken,
-                        passwordAuthorityEnabled: false);
+                        passwordAuthorityEnabled: false,
+                        resources);
                     rendered = await docker.ComposeAsync(
                         compose.ComposeFile,
                         compose.EnvironmentFile,
@@ -560,7 +568,8 @@ internal sealed class CameraAgentInstaller
                 "/dev/null",
                 "dry-run-installation-verification-token",
                 "dry-run-lifecycle-control-token",
-                passwordAuthorityEnabled: true);
+                passwordAuthorityEnabled: true,
+                request.ContainerResources());
             var rendered = await docker.ComposeAsync(
                 compose.ComposeFile,
                 compose.EnvironmentFile,
@@ -666,6 +675,7 @@ internal sealed class CameraAgentInstaller
         DockerDaemonIdentity daemon,
         InstanceManifest retainedManifest,
         InstallationResult retainedResult,
+        ContainerResourceLimits? resources,
         DockerClient docker,
         CancellationToken cancellationToken)
     {
@@ -686,6 +696,7 @@ internal sealed class CameraAgentInstaller
                 verificationToken,
                 lifecycleControlToken,
                 passwordAuthorityEnabled: false,
+                resources,
                 outputPaths: outputPaths);
             var rendered = await docker.ComposeAsync(
                 compose.ComposeFile,
@@ -708,7 +719,8 @@ internal sealed class CameraAgentInstaller
                 catalog,
                 image,
                 daemon,
-                retainedManifest);
+                retainedManifest,
+                resources);
             if (candidate != retainedManifest)
             {
                 throw new InstallerException("The completed installation differs from its retained immutable manifest.");
@@ -760,7 +772,8 @@ internal sealed class CameraAgentInstaller
         CatalogInstallationIdentity catalog,
         ImageInstallationIdentity image,
         DockerDaemonIdentity daemon,
-        InstanceManifest? previous)
+        InstanceManifest? previous,
+        ContainerResourceLimits? resources)
     {
         var location = HVO.SkyMonitor.AgentCore.DeploymentLocationSnapshot.Create(
             $"installer-{instanceId:D}",
@@ -819,7 +832,8 @@ internal sealed class CameraAgentInstaller
             previous?.UpdatedUtc,
             ComposeDeployment.ComputeSha256(lifecycleControlToken),
             previous?.PreviousComposeModelSha256,
-            (ContractReplayProfile)request.ReplayProfile);
+            (ContractReplayProfile)request.ReplayProfile,
+            resources);
     }
 
     private static InstallationResult CreateInstalledResult(
@@ -1143,8 +1157,19 @@ internal sealed class CameraAgentInstaller
             request.ProductRoot,
             productRootBytes,
             dockerRootBytes,
-            hostEnvironment);
-        return report.Satisfied ? capabilities.Daemon : throw new HostPrerequisiteException(report);
+            hostEnvironment,
+            request.ContainerResources());
+        if (!report.Satisfied)
+        {
+            throw new HostPrerequisiteException(report);
+        }
+        // An advisory finding does not refuse the installation, so it is rendered here or the operator would never see
+        // it. A --json invocation reserves standard error for one error object, as the state preflight does.
+        if (report.Findings.Count > 0 && !request.Json)
+        {
+            await Console.Error.WriteLineAsync(HostPrerequisites.Render(report)).ConfigureAwait(false);
+        }
+        return capabilities.Daemon;
     }
 
     /// <summary>
@@ -1219,7 +1244,21 @@ internal sealed class CameraAgentInstaller
             request.AcknowledgePlaintextHttp,
             request.ReplayProfile
         });
-        return Convert.ToHexStringLower(SHA256.HashData(identity));
+        var sha256 = Convert.ToHexStringLower(SHA256.HashData(identity));
+        if (request.Cpus is null && request.Memory is null)
+        {
+            return sha256;
+        }
+        // Container limits joined the request identity after installations had already begun without them. A request
+        // that leaves both to the default keeps the identity it always had, so such an installation still resumes and
+        // re-runs; one that sets either binds the normalized values it set.
+        var resources = request.ContainerResources();
+        return Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            request = sha256,
+            cpus = resources.CpusSetByOperator ? CameraAgentContainerResources.FormatCpus(resources.Cpus) : null,
+            memoryBytes = resources.MemorySetByOperator ? resources.MemoryBytes : (long?)null
+        })));
     }
 
     internal static bool RequestIdentityMatches(
@@ -1231,7 +1270,8 @@ internal sealed class CameraAgentInstaller
                retainedSha256,
                ComputeRequestSha256(request, instanceId, catalogDistribution),
                StringComparison.Ordinal) ||
-           request.ReplayProfile == CameraAgentReplayProfile.InProcess && string.Equals(
+           request.ReplayProfile == CameraAgentReplayProfile.InProcess && request.Cpus is null && request.Memory is null &&
+           string.Equals(
                retainedSha256,
                ComputeLegacyRequestSha256(request, instanceId, catalogDistribution),
                StringComparison.Ordinal);

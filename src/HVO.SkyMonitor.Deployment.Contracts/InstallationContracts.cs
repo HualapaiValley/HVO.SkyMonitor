@@ -145,6 +145,19 @@ public sealed record DockerDaemonIdentity(
     string Architecture,
     string ServerVersion);
 
+/// <summary>
+/// The CameraAgent container's Compose resource limits recorded with an instance. A limit the operator did not set
+/// follows the installer default, so an upgrade moves it to the upgrading installer's default; a limit the operator
+/// set is kept. A manifest written before this record existed carries none: that instance runs the original
+/// 1 CPU, 1 GiB and 256 PID limits, which no operator could set.
+/// </summary>
+public sealed record ContainerResourceLimits(
+    decimal Cpus,
+    long MemoryBytes,
+    int PidsLimit,
+    bool CpusSetByOperator,
+    bool MemorySetByOperator);
+
 public sealed record InstanceManifest(
     int SchemaVersion,
     string Product,
@@ -191,7 +204,8 @@ public sealed record InstanceManifest(
     DateTimeOffset? UpdatedUtc = null,
     string? LifecycleControlTokenSha256 = null,
     string? PreviousComposeModelSha256 = null,
-    CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess);
+    CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess,
+    ContainerResourceLimits? Resources = null);
 
 public sealed record LifecycleOperationState(
     int SchemaVersion,

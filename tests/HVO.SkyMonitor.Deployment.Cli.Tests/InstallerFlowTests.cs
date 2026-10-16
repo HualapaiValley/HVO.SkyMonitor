@@ -10,7 +10,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class InstallerFlowTests
+public sealed partial class InstallerFlowTests
 {
     // The installer always runs as the invoking Docker-capable user, so the contract fixtures must use the real
     // runtime identity rather than a constant that only matches one developer machine.
@@ -714,6 +714,7 @@ public sealed class InstallerFlowTests
         {
             DockerInfo = "{\"OSType\":\"linux\",\"Architecture\":\"amd64\",\"ID\":\"daemon-1\",\"Name\":\"pi\",\"ServerVersion\":\"29.0\"," +
                          "\"MemoryLimit\":false,\"CpuCfsQuota\":false,\"CgroupVersion\":\"2\",\"DockerRootDir\":\"/srv/docker\"," +
+                         "\"NCPU\":1,\"MemTotal\":2147483648," +
                          "\"Warnings\":[\"WARNING: No memory limit support\",\"WARNING: No cpu cfs quota support\"]}"
         };
         var host = new FakeHostEnvironment
@@ -729,6 +730,7 @@ public sealed class InstallerFlowTests
         string[] expectedCodes =
         [
             "docker-memory-limit-unsupported", "docker-cpu-quota-unsupported", "docker-pids-limit-unsupported",
+            "docker-host-cpus-insufficient", "docker-host-memory-below-limit",
             "tar-missing", "product-root-storage-insufficient", "docker-root-storage-insufficient"
         ];
         try
@@ -750,7 +752,10 @@ public sealed class InstallerFlowTests
                 Assert.IsFalse(report.Satisfied, $"dry-run={dryRun}");
                 CollectionAssert.AreEqual(expectedCodes, report.Findings.Select(static finding => finding.Code).ToArray(), $"dry-run={dryRun}");
                 CollectionAssert.AreEqual(new[] { root, "/srv/docker" }, host.Measured.ToArray(), $"dry-run={dryRun}");
-                foreach (var code in expectedCodes)
+                // A memory limit above the host's memory is advisory, so it is reported with the rest but does not name the
+                // refusal; every blocking finding does.
+                Assert.IsFalse(report.Findings.Single(static finding => finding.Code == "docker-host-memory-below-limit").Blocking);
+                foreach (var code in expectedCodes.Where(static code => code != "docker-host-memory-below-limit"))
                 {
                     StringAssert.Contains(refused.Message, code, StringComparison.Ordinal);
                 }
@@ -911,7 +916,8 @@ public sealed class InstallerFlowTests
     /// <summary>A daemon that enforces every Compose resource limit, as a supported installation host's does.</summary>
     private const string SupportedDockerInfo =
         "{\"OSType\":\"linux\",\"Architecture\":\"amd64\",\"ID\":\"daemon-1\",\"Name\":\"host\",\"ServerVersion\":\"29.0\"," +
-        "\"MemoryLimit\":true,\"CpuCfsQuota\":true,\"PidsLimit\":true,\"CgroupVersion\":\"2\",\"DockerRootDir\":\"/var/lib/docker\",\"Warnings\":null}";
+        "\"MemoryLimit\":true,\"CpuCfsQuota\":true,\"PidsLimit\":true,\"CgroupVersion\":\"2\",\"DockerRootDir\":\"/var/lib/docker\"," +
+        "\"NCPU\":4,\"MemTotal\":8442572800,\"Warnings\":null}";
 
     private sealed class InstallerProcessRunner(string imageId, string root, Guid instanceId) : IProcessRunner
     {

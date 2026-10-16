@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
 
@@ -145,8 +146,9 @@ internal sealed class HostPrerequisiteException : Exception
 
 /// <summary>
 /// The host prerequisites <c>cameraagent install</c> and <c>cameraagent install --dry-run</c> evaluate before anything
-/// is created: Docker must enforce the Compose memory, CPU and PIDs limits; <c>tar</c>, which upgrade backups run, must
-/// be present; and the filesystems that hold the product root and Docker's data root must have room. Every finding is
+/// is created: Docker must enforce the Compose memory, CPU and PIDs limits and its host must have the CPUs the CPU
+/// limit names; <c>tar</c>, which upgrade backups run, must be present; and the filesystems that hold the product root
+/// and Docker's data root must have room. A memory limit above the host's memory is advisory. Every finding is
 /// reported together so an operator resolves the complete set in one pass. The CLI uses SQLite in-process and never
 /// runs <c>sqlite3</c> or <c>jq</c>, so neither is required.
 /// </summary>
@@ -162,6 +164,14 @@ internal static class HostPrerequisites
         "cgroup_disable=memory: add cgroup_enable=memory to the single line in /boot/firmware/cmdline.txt, reboot, and " +
         "confirm that docker info reports MemoryLimit, CpuCfsQuota and PidsLimit as true. On other hosts enable the " +
         "memory, cpu and pids cgroup controllers for the Docker daemon.";
+
+    internal const string CpuCapacityRemediation =
+        "Docker refuses a CPU limit larger than the CPUs its host has. Use a host whose Docker daemon reports at least " +
+        "that many CPUs, or lower --cpus; CameraAgent is never limited to fewer than 2 CPUs, so a host with fewer is not supported.";
+
+    internal const string MemoryCapacityRemediation =
+        "The installation proceeds, but a memory limit the host cannot reach does not stop CameraAgent from exhausting " +
+        "the host's memory. Add memory, or lower --memory; CameraAgent is never limited to less than 4 GiB.";
 
     internal const string StorageRemediation =
         "Free space on that filesystem, or provide a larger one: place the product root there with " +
@@ -180,13 +190,16 @@ internal static class HostPrerequisites
         string productRoot,
         long productRootRequiredBytes,
         long dockerRootRequiredBytes,
-        IHostEnvironment host)
+        IHostEnvironment host,
+        ContainerResourceLimits resources)
     {
         ArgumentNullException.ThrowIfNull(docker);
         ArgumentNullException.ThrowIfNull(productRoot);
         ArgumentNullException.ThrowIfNull(host);
+        ArgumentNullException.ThrowIfNull(resources);
         var findings = new List<HostPrerequisiteFinding>();
         EvaluateResourceLimits(findings, docker, host);
+        EvaluateCapacity(findings, docker, resources);
         EvaluateTools(findings, host);
         EvaluateStorage(findings, docker, productRoot, productRootRequiredBytes, dockerRootRequiredBytes, host);
         var satisfied = !findings.Any(static finding => finding.Blocking);
@@ -267,6 +280,47 @@ internal static class HostPrerequisites
             builder.Append(CultureInfo.InvariantCulture, $"; Docker warns \"{warning.Trim()}\"");
         }
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// Compares the CameraAgent limits with the CPUs and memory <c>docker info</c> reports for the Docker host, which is
+    /// the host the container runs on. Docker refuses to create a container whose CPU quota exceeds its host's CPUs, so
+    /// that is refused here rather than when Compose starts it. A memory limit above the host's memory is applied and
+    /// CameraAgent runs, so it is advisory: refusing it would turn away hosts that report slightly under 4 GiB.
+    /// </summary>
+    private static void EvaluateCapacity(
+        List<HostPrerequisiteFinding> findings,
+        DockerHostCapabilities docker,
+        ContainerResourceLimits resources)
+    {
+        var cpus = CameraAgentContainerResources.FormatCpus(resources.Cpus);
+        var cpuCount = docker.CpuCount ?? 0;
+        if (cpuCount < resources.Cpus)
+        {
+            findings.Add(new HostPrerequisiteFinding(
+                "docker-host-cpus-insufficient",
+                "capacity",
+                Blocking: true,
+                "docker info .NCPU",
+                docker.CpuCount is null ? "NCPU=not reported" : string.Create(CultureInfo.InvariantCulture, $"NCPU={cpuCount}"),
+                $"at least {cpus} CPUs for the CameraAgent CPU limit",
+                CpuCapacityRemediation));
+        }
+        var memoryBytes = docker.MemoryBytes ?? 0;
+        if (memoryBytes < resources.MemoryBytes)
+        {
+            findings.Add(new HostPrerequisiteFinding(
+                "docker-host-memory-below-limit",
+                "capacity",
+                Blocking: false,
+                "docker info .MemTotal",
+                docker.MemoryBytes is null
+                    ? "MemTotal=not reported"
+                    : string.Create(CultureInfo.InvariantCulture, $"MemTotal={memoryBytes} bytes"),
+                string.Create(CultureInfo.InvariantCulture,
+                    $"at least {resources.MemoryBytes} bytes ({CameraAgentContainerResources.DescribeMemory(resources.MemoryBytes)}) for the CameraAgent memory limit"),
+                MemoryCapacityRemediation));
+        }
     }
 
     private static void EvaluateTools(List<HostPrerequisiteFinding> findings, IHostEnvironment host)

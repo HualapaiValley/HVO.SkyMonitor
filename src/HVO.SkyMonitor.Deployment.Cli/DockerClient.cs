@@ -6,8 +6,8 @@ namespace HVO.SkyMonitor.Deployment;
 
 /// <summary>
 /// The daemon identity and the host capabilities <c>docker info</c> reports that decide whether the CameraAgent
-/// Compose resource limits are enforced and where Docker stores images. A capability the daemon does not report is
-/// <see langword="null"/> and is treated as unsupported.
+/// Compose resource limits are enforced, whether the Docker host has the CPUs and memory they name, and where Docker
+/// stores images. A capability the daemon does not report is <see langword="null"/> and is treated as unsupported.
 /// </summary>
 internal sealed record DockerHostCapabilities(
     DockerDaemonIdentity Daemon,
@@ -16,7 +16,9 @@ internal sealed record DockerHostCapabilities(
     bool? PidsLimit,
     string? CgroupVersion,
     string? DockerRootDir,
-    IReadOnlyList<string> Warnings);
+    IReadOnlyList<string> Warnings,
+    int? CpuCount = null,
+    long? MemoryBytes = null);
 
 internal sealed class DockerClient(IProcessRunner processRunner)
 {
@@ -54,7 +56,15 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                         .Where(static warning => warning.ValueKind == JsonValueKind.String)
                         .Select(static warning => warning.GetString()!)
                         .ToArray()
-                    : []);
+                    : [],
+                daemon.TryGetProperty("NCPU", out var cpus) && cpus.ValueKind == JsonValueKind.Number &&
+                cpus.TryGetInt32(out var cpuCount) && cpuCount > 0
+                    ? cpuCount
+                    : null,
+                daemon.TryGetProperty("MemTotal", out var memory) && memory.ValueKind == JsonValueKind.Number &&
+                memory.TryGetInt64(out var memoryBytes) && memoryBytes > 0
+                    ? memoryBytes
+                    : null);
         }
         await RunDockerAsync(["compose", "version", "--short"], cancellationToken).ConfigureAwait(false);
         return capabilities;

@@ -12,13 +12,14 @@ public sealed class HostPrerequisitesTests
     private const long Required = 2L * 1024 * 1024 * 1024;
 
     private static readonly DockerDaemonIdentity Daemon = new("daemon-1", "pi", "arm64", "29.0");
+    private static readonly ContainerResourceLimits Limits = CameraAgentContainerResources.Default;
 
     [TestMethod]
     public void Evaluate_HostThatEnforcesLimitsWithToolsAndRoom_IsSatisfied()
     {
         var host = new FakeHostEnvironment();
 
-        var report = HostPrerequisites.Evaluate(Supported(), ProductRoot, Required, Required, host);
+        var report = HostPrerequisites.Evaluate(Supported(), ProductRoot, Required, Required, host, Limits);
 
         Assert.IsTrue(report.Satisfied);
         Assert.AreEqual("satisfied", report.Outcome);
@@ -38,7 +39,7 @@ public sealed class HostPrerequisitesTests
         };
         var host = new FakeHostEnvironment { Controllers = "cpuset cpu io pids" };
 
-        var report = HostPrerequisites.Evaluate(docker, ProductRoot, Required, Required, host);
+        var report = HostPrerequisites.Evaluate(docker, ProductRoot, Required, Required, host, Limits);
 
         string[] expectedCodes = ["docker-memory-limit-unsupported", "docker-cpu-quota-unsupported", "docker-pids-limit-unsupported"];
         Assert.IsFalse(report.Satisfied);
@@ -66,7 +67,7 @@ public sealed class HostPrerequisitesTests
     public void Evaluate_UnreadableControllers_AreNotQuoted()
     {
         var report = HostPrerequisites.Evaluate(
-            Supported() with { MemoryLimit = false }, ProductRoot, Required, Required, new FakeHostEnvironment());
+            Supported() with { MemoryLimit = false }, ProductRoot, Required, Required, new FakeHostEnvironment(), Limits);
 
         var finding = report.Findings.Single();
         Assert.AreEqual("docker-memory-limit-unsupported", finding.Code);
@@ -77,7 +78,7 @@ public sealed class HostPrerequisitesTests
     public void Evaluate_MissingTar_IsReported()
     {
         var report = HostPrerequisites.Evaluate(
-            Supported(), ProductRoot, Required, Required, new FakeHostEnvironment { Tar = false });
+            Supported(), ProductRoot, Required, Required, new FakeHostEnvironment { Tar = false }, Limits);
 
         var finding = report.Findings.Single();
         Assert.AreEqual("tar-missing", finding.Code);
@@ -98,7 +99,7 @@ public sealed class HostPrerequisitesTests
             }
         };
 
-        var report = HostPrerequisites.Evaluate(Supported(), ProductRoot, Required, Required, host);
+        var report = HostPrerequisites.Evaluate(Supported(), ProductRoot, Required, Required, host, Limits);
 
         // '/' has no free space at all; only the filesystems that store the roots decide.
         CollectionAssert.AreEqual(new[] { ProductRoot, DockerRoot }, host.Measured.ToArray());
@@ -110,7 +111,7 @@ public sealed class HostPrerequisitesTests
 
         host.FileSystems[ProductRoot] = new HostFileSystemMeasurement("/srv/data", "259:2", Required - 1);
         host.FileSystems[DockerRoot] = new HostFileSystemMeasurement(DockerRoot, "259:3", Required);
-        var product = HostPrerequisites.Evaluate(Supported(), ProductRoot, Required, Required, host).Findings.Single();
+        var product = HostPrerequisites.Evaluate(Supported(), ProductRoot, Required, Required, host, Limits).Findings.Single();
         Assert.AreEqual("product-root-storage-insufficient", product.Code);
         Assert.AreEqual("/srv/data", product.Path);
     }
@@ -127,7 +128,7 @@ public sealed class HostPrerequisitesTests
             }
         };
 
-        var finding = HostPrerequisites.Evaluate(Supported(), ProductRoot, Required, Required, host).Findings.Single();
+        var finding = HostPrerequisites.Evaluate(Supported(), ProductRoot, Required, Required, host, Limits).Findings.Single();
 
         Assert.AreEqual("product-root-storage-insufficient", finding.Code);
         StringAssert.Contains(finding.Expected, $"at least {Required * 2} bytes", StringComparison.Ordinal);
@@ -135,17 +136,87 @@ public sealed class HostPrerequisitesTests
 
         host.FileSystems[ProductRoot] = new HostFileSystemMeasurement("/srv/data", "259:2", Required * 2);
         host.FileSystems[DockerRoot] = new HostFileSystemMeasurement("/srv", "259:2", Required * 2);
-        Assert.IsTrue(HostPrerequisites.Evaluate(Supported(), ProductRoot, Required, Required, host).Satisfied);
+        Assert.IsTrue(HostPrerequisites.Evaluate(Supported(), ProductRoot, Required, Required, host, Limits).Satisfied);
     }
 
     [TestMethod]
     public void Evaluate_DockerRootNotReported_IsRefused()
     {
         var report = HostPrerequisites.Evaluate(
-            Supported() with { DockerRootDir = null }, ProductRoot, Required, Required, new FakeHostEnvironment());
+            Supported() with { DockerRootDir = null }, ProductRoot, Required, Required, new FakeHostEnvironment(), Limits);
 
         Assert.AreEqual("docker-root-unreported", report.Findings.Single().Code);
         Assert.IsFalse(report.Satisfied);
+    }
+
+    [TestMethod]
+    [DataRow(1, "2", false)]
+    [DataRow(2, "2", true)]
+    [DataRow(2, "2.5", false)]
+    [DataRow(3, "2.5", true)]
+    [DataRow(4, "6", false)]
+    public void Evaluate_CpuLimitAboveTheDockerHostCpus_IsRefused(int hostCpus, string limit, bool satisfied)
+    {
+        var limits = CameraAgentContainerResources.Resolve(
+            decimal.Parse(limit, System.Globalization.CultureInfo.InvariantCulture), null);
+
+        var report = HostPrerequisites.Evaluate(
+            Supported() with { CpuCount = hostCpus }, ProductRoot, Required, Required, new FakeHostEnvironment(), limits);
+
+        Assert.AreEqual(satisfied, report.Satisfied);
+        if (satisfied)
+        {
+            Assert.IsEmpty(report.Findings);
+            return;
+        }
+        var finding = report.Findings.Single();
+        Assert.AreEqual("docker-host-cpus-insufficient", finding.Code);
+        Assert.AreEqual("capacity", finding.Boundary);
+        Assert.IsTrue(finding.Blocking);
+        Assert.AreEqual($"NCPU={hostCpus}", finding.Observed);
+        StringAssert.Contains(finding.Expected, $"at least {limit} CPUs", StringComparison.Ordinal);
+        StringAssert.Contains(finding.Remediation, "never limited to fewer than 2 CPUs", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void Evaluate_UnreportedCpuCount_IsRefused()
+    {
+        var report = HostPrerequisites.Evaluate(
+            Supported() with { CpuCount = null }, ProductRoot, Required, Required, new FakeHostEnvironment(), Limits);
+
+        var finding = report.Findings.Single();
+        Assert.IsFalse(report.Satisfied);
+        Assert.AreEqual("docker-host-cpus-insufficient", finding.Code);
+        Assert.AreEqual("NCPU=not reported", finding.Observed);
+    }
+
+    [TestMethod]
+    public void Evaluate_MemoryLimitAboveTheDockerHostMemory_IsAdvisoryAndDoesNotRefuse()
+    {
+        // A 4 GB Raspberry Pi reports a little under 4 GiB, so the default limit is above what the host has.
+        const long fourGigabytePi = 4_142_665_728;
+
+        var report = HostPrerequisites.Evaluate(
+            Supported() with { MemoryBytes = fourGigabytePi }, ProductRoot, Required, Required, new FakeHostEnvironment(), Limits);
+        var unreported = HostPrerequisites.Evaluate(
+            Supported() with { MemoryBytes = null }, ProductRoot, Required, Required, new FakeHostEnvironment(), Limits);
+        var enough = HostPrerequisites.Evaluate(
+            Supported() with { MemoryBytes = 4L * 1024 * 1024 * 1024 }, ProductRoot, Required, Required, new FakeHostEnvironment(), Limits);
+
+        Assert.IsTrue(report.Satisfied);
+        Assert.AreEqual("satisfied", report.Outcome);
+        var finding = report.Findings.Single();
+        Assert.AreEqual("docker-host-memory-below-limit", finding.Code);
+        Assert.AreEqual("capacity", finding.Boundary);
+        Assert.IsFalse(finding.Blocking);
+        Assert.AreEqual($"MemTotal={fourGigabytePi} bytes", finding.Observed);
+        StringAssert.Contains(finding.Expected, "4294967296 bytes (4 GiB)", StringComparison.Ordinal);
+        StringAssert.Contains(finding.Remediation, "The installation proceeds", StringComparison.Ordinal);
+        StringAssert.Contains(
+            HostPrerequisites.Render(report), "- [advisory] docker-host-memory-below-limit (capacity)", StringComparison.Ordinal);
+        Assert.IsTrue(unreported.Satisfied);
+        Assert.AreEqual("MemTotal=not reported", unreported.Findings.Single().Observed);
+        Assert.IsEmpty(enough.Findings);
     }
 
     [TestMethod]
@@ -193,7 +264,8 @@ public sealed class HostPrerequisitesTests
     }
 
     private static DockerHostCapabilities Supported()
-        => new(Daemon, MemoryLimit: true, CpuCfsQuota: true, PidsLimit: true, "2", DockerRoot, []);
+        => new(Daemon, MemoryLimit: true, CpuCfsQuota: true, PidsLimit: true, "2", DockerRoot, [],
+            CpuCount: 4, MemoryBytes: 8L * 1024 * 1024 * 1024);
 }
 
 /// <summary>

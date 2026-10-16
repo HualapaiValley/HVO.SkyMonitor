@@ -87,7 +87,8 @@ creating the product root, loading/pulling an image, or starting a container.
 
 Missing required values are prompted only on an interactive terminal. A strict
 JSON config may be supplied with `--config`; value options cannot be mixed with
-it. Flags such as `--dry-run`, `--json`, `--no-download`, and the explicit non-loopback HTTP
+it. Its `cpus` number and `memory` string are the `--cpus` and `--memory`
+[container limits](#container-resources). Flags such as `--dry-run`, `--json`, `--no-download`, and the explicit non-loopback HTTP
 acknowledgement may still be applied. A configuration that does not name
 `productRoot` installs into the production product root, as the command-line form
 does; one that names a root keeps it and is validated like `--product-root`.
@@ -117,10 +118,18 @@ and report every finding together so the host can be fixed in one pass:
 | `docker-memory-limit-unsupported` | `docker info` reports `MemoryLimit: true`, so the Compose `mem_limit` is enforced |
 | `docker-cpu-quota-unsupported` | `docker info` reports `CpuCfsQuota: true`, so the Compose `cpus` quota is enforced |
 | `docker-pids-limit-unsupported` | `docker info` reports `PidsLimit: true`, so the Compose `pids_limit` is enforced |
+| `docker-host-cpus-insufficient` | `docker info` reports at least as many CPUs (`NCPU`) as the CameraAgent [CPU limit](#container-resources); Docker refuses to create a container with a larger quota |
 | `tar-missing` | an executable `tar` on `PATH`; upgrade and rollback run it for the consistent instance backup |
 | `product-root-storage-insufficient` | room on the filesystem that holds the product root: twice the catalog bundle and image archive together, plus 1 GiB |
 | `docker-root-storage-insufficient` | room on the filesystem that holds Docker's `DockerRootDir`: twice the image archive and 1 GiB |
 | `docker-root-unreported` | `docker info` reports an absolute `DockerRootDir` |
+
+One finding is advisory and never refuses: `docker-host-memory-below-limit`
+reports that Docker's host has less memory (`MemTotal`) than the CameraAgent
+memory limit. The limit is still applied, but it cannot stop CameraAgent from
+exhausting that host's memory. The human form renders it on standard error with
+the rest of the report and the installation proceeds; with `--json` it is not
+rendered, because standard error is reserved for an error object.
 
 A capability `docker info` does not report counts as unsupported. Free space is
 measured on the filesystem that actually stores each root, at its nearest
@@ -144,6 +153,99 @@ carries one error object with `errorCode` `host-prerequisites`; the exit code is
 so neither is required. Uninstall, purge, and the other lifecycle commands do not
 evaluate these prerequisites, so a host that loses limit support can still be
 cleaned up.
+
+## Container Resources
+
+The installer limits the CameraAgent container to **2 CPUs, 4 GiB of memory and
+256 PIDs** unless the operator sets other limits, as section 7 of the shared HVO
+install contract requires. Raise them when installing:
+
+```bash
+hvo-skymonitor cameraagent install ... --cpus 3 --memory 6g
+```
+
+- `--cpus` is a number from 2 to 1024 with at most two decimal places, such as
+  `2.5`.
+- `--memory` is whole mebibytes or gibibytes, such as `6144m` or `6g`, from `4g`
+  to `1024g`.
+- In a `--config` file they are the `cpus` number and the `memory` string, for
+  example `"cpus": 3, "memory": "6g"`. Leaving a member out, or setting it to
+  `null`, leaves that limit to the default.
+- A limit below 2 CPUs or 4 GiB is **refused** as a usage error with exit code
+  `2`. No acknowledgement admits one: the contract makes these limits a floor,
+  and [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044)
+  records the out-of-memory cold start the former 1 GiB limit produced.
+- The PIDs limit stays at 256 and is not set by the operator. It bounds runaway
+  process and thread creation rather than capacity, and the .NET runtime adds
+  only about one thread for each CPU it is given.
+- The optional [local replay runner](#local-replay-runner) keeps its own 0.5 CPU,
+  2 GiB and 64 PID limits. They bound one sandboxed replay at a time and are not
+  changed by these options.
+
+Install and `install --dry-run` check the limits against the host Docker runs on
+before anything is created (see [Host Prerequisites](#host-prerequisites)). A
+CPU limit above the CPUs Docker reports is refused, because Docker would refuse
+to create the container. A memory limit above the host's memory is the advisory
+`docker-host-memory-below-limit`, and the installation proceeds: a 4 GB
+Raspberry Pi reports slightly less than 4 GiB, and refusing it would turn away a
+host that runs CameraAgent.
+
+The limits are recorded as `resources` in the instance's
+`instance-manifest.json`:
+
+```json
+"resources": {
+  "cpus": 2,
+  "memoryBytes": 4294967296,
+  "pidsLimit": 256,
+  "cpusSetByOperator": false,
+  "memorySetByOperator": false
+}
+```
+
+A `...SetByOperator` flag is `true` when the operator gave that limit, even if
+the value equals the default. A limit the operator did not give follows the
+installer default:
+
+- **Upgrade** keeps every limit the operator set and moves every other limit to
+  the upgrading installer's default.
+- **Rollback** runs the previous image with the Compose model retained from
+  before the upgrade, authenticated against its recorded identity, and gives it
+  the limits the instance records. A rollback never returns an instance to limits
+  it has left.
+- **Reinstall** keeps the recorded limits, and so does a re-run of a completed
+  install. A re-run is held to the same request: adding, dropping or changing
+  `--cpus` or `--memory` is refused with `The retained installation state belongs
+  to different immutable inputs`. The same limit written another way, such as
+  `6g` and `6144m`, is the same request.
+- A failed upgrade candidate restores the exact prior Compose file and manifest,
+  limits included.
+- The limits of an installed instance cannot be changed yet, apart from the
+  default moving on upgrade.
+
+An instance installed before limits were recorded has no `resources` member. It
+runs the original 1 CPU, 1 GiB and 256 PID limits. No operator could set them,
+because the installer had no option for them, so none counts as set by the
+operator. Its next `cameraagent upgrade` moves it to 2 CPUs and 4 GiB and records
+`resources` with both flags `false`; until then a re-run of its install keeps the
+original limits exactly. A runtime `docker update` override, such as a memory
+override approved during recovery, is not an installer setting: it is not
+recorded, and the container an upgrade creates carries the recorded limits.
+
+An upgrade refuses, before it touches anything, a Compose file whose CameraAgent
+limit lines differ from the limits its manifest records. Lifecycle commands do not
+run the host check, so on a host with fewer than 2 CPUs the upgrade that moves an
+instance to the defaults fails when Docker refuses the candidate, and the
+automatic restore returns it to its prior image and limits.
+
+Confirm what Docker applied with:
+
+```bash
+docker inspect --format '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.PidsLimit}}' \
+  hvo-skymonitor-<instance-uuid-without-dashes>
+```
+
+The defaults report `2000000000 4294967296 256`.
 
 ## Signed Image Release
 
