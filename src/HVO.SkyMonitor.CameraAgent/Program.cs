@@ -196,6 +196,7 @@ public class Program
             options.Stores.SchemaVersion = IdentitySchemaVersions.Version3;
         })
         .AddEntityFrameworkStores<ApplicationDbContext>()
+        .AddCameraAgentPasswordPolicy()
         .AddClaimsPrincipalFactory<CanonicalLocalUserClaimsPrincipalFactory>()
         .AddSignInManager()
         .AddDefaultTokenProviders();

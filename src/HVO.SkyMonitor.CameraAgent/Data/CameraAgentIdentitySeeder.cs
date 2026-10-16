@@ -37,16 +37,22 @@ internal sealed class CameraAgentIdentitySeeder(
             }
             user = new ApplicationUser
             {
-                UserName = _options.AdminEmail,
+                UserName = _options.AdminUserName,
                 Email = _options.AdminEmail,
                 EmailConfirmed = true,
                 IsSiteOwner = true,
                 PasswordChangeRequired = true
             };
 
-            var createResult = await userManager.CreateAsync(user, _options.AdminPassword);
+            var createResult = await CreateOwnerAsync(userManager, user, _options.AdminPassword).ConfigureAwait(false);
             if (!createResult.Succeeded)
             {
+                if (createResult.Errors.Any(static error => error.Code == nameof(IdentityErrorDescriber.DuplicateUserName)))
+                {
+                    _logger.LogError("Failed to create default admin user: the configured owner user name is already in use");
+                    throw new InvalidOperationException("The configured owner user name is already used by another local account.");
+                }
+
                 var errors = string.Join(", ", createResult.Errors.Select(e => e.Description));
                 _logger.LogError("Failed to create default admin user: {Errors}", errors);
                 throw new InvalidOperationException("Could not seed default admin user");
@@ -60,13 +66,10 @@ internal sealed class CameraAgentIdentitySeeder(
             }
         }
 
+        // The email is the durable owner key and is kept aligned with configuration. The user name is not: an owner
+        // seeded before user names existed signs in with its email user name, and renaming it on upgrade would
+        // silently change how that owner signs in.
         var needsUpdate = false;
-
-        if (!string.Equals(user.UserName, _options.AdminEmail, StringComparison.OrdinalIgnoreCase))
-        {
-            user.UserName = _options.AdminEmail;
-            needsUpdate = true;
-        }
 
         if (!string.Equals(user.Email, _options.AdminEmail, StringComparison.OrdinalIgnoreCase))
         {
@@ -83,6 +86,12 @@ internal sealed class CameraAgentIdentitySeeder(
         if (!user.IsSiteOwner)
         {
             user.IsSiteOwner = true;
+            needsUpdate = true;
+        }
+
+        if (!user.LockoutEnabled)
+        {
+            user.LockoutEnabled = true;
             needsUpdate = true;
         }
 
@@ -135,5 +144,25 @@ internal sealed class CameraAgentIdentitySeeder(
                 "Demoted {StaleOwnerCount} stale site owner accounts while reconciling local ownership",
                 staleOwners.Count);
         }
+    }
+
+    /// <summary>
+    /// Creates the owner with its temporary password. The documented default is refused by the password policy as a
+    /// replacement, so it is the one value hashed here without passing through the password validators; the owner
+    /// is created with <see cref="ApplicationUser.PasswordChangeRequired"/> set, so the default only ever reaches the
+    /// forced replacement. Any other configured password must satisfy the policy.
+    /// </summary>
+    private static Task<IdentityResult> CreateOwnerAsync(
+        UserManager<ApplicationUser> userManager,
+        ApplicationUser user,
+        string password)
+    {
+        if (!CameraAgentIdentityPolicy.IsDefaultOwnerPassword(password))
+        {
+            return userManager.CreateAsync(user, password);
+        }
+
+        user.PasswordHash = userManager.PasswordHasher.HashPassword(user, password);
+        return userManager.CreateAsync(user);
     }
 }

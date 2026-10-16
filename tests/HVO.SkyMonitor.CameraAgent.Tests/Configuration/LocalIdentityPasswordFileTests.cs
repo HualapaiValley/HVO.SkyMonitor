@@ -32,6 +32,39 @@ public sealed class LocalIdentityPasswordFileTests
     }
 
     [TestMethod]
+    public void ApplyLocalIdentityPasswordFile_ReadsTheInstallerDefaultAsAValidTemporaryPassword()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            // The installer writes the documented default exactly like this when no password option is given.
+            File.WriteAllText(path, "skymonitor\n");
+            var configuration = new ConfigurationManager();
+            configuration["LocalIdentity:AdminPasswordFile"] = path;
+
+            Program.ApplyLocalIdentityPasswordFile(configuration);
+
+            Assert.AreEqual("skymonitor", configuration["LocalIdentity:AdminPassword"]);
+            var options = new HVO.SkyMonitor.CameraAgent.Configuration.LocalIdentityOptions
+            {
+                AdminPassword = configuration["LocalIdentity:AdminPassword"]!
+            };
+            var results = new List<System.ComponentModel.DataAnnotations.ValidationResult>();
+            Assert.IsTrue(
+                System.ComponentModel.DataAnnotations.Validator.TryValidateObject(
+                    options,
+                    new System.ComponentModel.DataAnnotations.ValidationContext(options),
+                    results,
+                    validateAllProperties: true),
+                string.Join("; ", results));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
     public void ApplyLocalIdentityPasswordFile_RejectsRelativePath()
     {
         var configuration = new ConfigurationManager();

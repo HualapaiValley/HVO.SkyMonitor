@@ -83,7 +83,7 @@ public sealed partial class ReplaceTemporaryPassword
         public string CurrentPassword { get; set; } = string.Empty;
 
         [Required]
-        [StringLength(100, MinimumLength = 6)]
+        [StringLength(100, MinimumLength = CameraAgentIdentityPolicy.MinimumPasswordLength)]
         [DataType(DataType.Password)]
         [Display(Name = "New password")]
         public string NewPassword { get; set; } = string.Empty;

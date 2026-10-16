@@ -1520,7 +1520,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private static async Task BrowserLoginAsync(IPage page, string password)
     {
         await page.GotoAsync("/Account/Login").ConfigureAwait(false);
-        await page.GetByLabel("Email").FillAsync("standalone-owner@cameraagent.test").ConfigureAwait(false);
+        await page.GetByLabel("Username or email").FillAsync("standalone-owner@cameraagent.test").ConfigureAwait(false);
         await page.GetByLabel("Password").FillAsync(password).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(

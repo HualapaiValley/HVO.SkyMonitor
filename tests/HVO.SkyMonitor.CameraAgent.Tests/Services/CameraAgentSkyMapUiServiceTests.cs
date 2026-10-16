@@ -587,6 +587,22 @@ public sealed class CameraAgentSkyMapUiServiceTests
         Assert.AreEqual(new CameraAgentObjectLimitSetting("profile-version", "750", false), result.Value!.ObjectLimit);
     }
 
+    [TestMethod]
+    [DataRow("owner@cameraagent.local")]
+    [DataRow(" OWNER@CameraAgent.local ")]
+    public async Task GetSiteAsync_DoesNotOfferThePlaceholderOwnerEmailAsAContactAsync(string adminEmail)
+    {
+        var profiles = new RecordingSiteProfileStore { State = ProfileState("profile-version") };
+        var authorization = CreateAuthorization(out var principal, succeeded: true);
+        var service = CreateSiteService(principal, authorization.Object, profiles, adminEmail: adminEmail);
+
+        var result = await service.GetSiteAsync(CancellationToken.None).ConfigureAwait(false);
+
+        // An installation without --owner-email has only the non-routable default, which is nobody's contact.
+        Assert.AreEqual(OperatorUiResultKind.Success, result.Kind);
+        Assert.IsNull(result.Value!.OwnerLoginEmail);
+    }
+
     private static readonly SiteProfileValues SavedProfile = new(
         "Hualapai Valley Observatory", "East dome", "Night Owner", "owner@home.lan");
 
@@ -606,7 +622,8 @@ public sealed class CameraAgentSkyMapUiServiceTests
         IDeviceSecretStore? secrets = null,
         Dictionary<string, ApplicationUser>? users = null,
         DeploymentLocationReconciliationState? reconciliation = null,
-        OperatorSettingsFile? settingsFile = null)
+        OperatorSettingsFile? settingsFile = null,
+        string adminEmail = "  owner@home.lan ")
     {
         var userStore = new Mock<IUserStore<ApplicationUser>>();
         userStore
@@ -625,7 +642,7 @@ public sealed class CameraAgentSkyMapUiServiceTests
             {
                 CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
             }),
-            Options.Create(new LocalIdentityOptions { AdminEmail = "  owner@home.lan " }),
+            Options.Create(new LocalIdentityOptions { AdminEmail = adminEmail }),
             secrets,
             reconciliation,
             new UserManager<ApplicationUser>(
