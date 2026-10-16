@@ -11,11 +11,12 @@ internal sealed partial class SqliteTimeLapseStore
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         // The queue rows are bounded settings/window documents. Do not read source plans or packet proofs for a calendar.
-        using var command = Command(connection, null, "WITH ranked AS (SELECT " + JobColumns + """
-            ,ROW_NUMBER() OVER(PARTITION BY json_extract(window_json,'$.identitySha256') ORDER BY updated_ticks DESC, job_id DESC) AS rank
-            FROM jobs WHERE report_date >= $first AND report_date <= $last)
-            SELECT
-            """ + JobColumns + " FROM ranked WHERE rank=1 LIMIT 4097;", ("$first", Date(firstDate)), ("$last", Date(lastDate)));
+        using var command = Command(connection, null, $"""
+            WITH ranked AS (SELECT {JobColumns},
+                ROW_NUMBER() OVER(PARTITION BY json_extract(window_json,'$.identitySha256') ORDER BY updated_ticks DESC, job_id DESC) AS rank
+                FROM jobs WHERE report_date >= $first AND report_date <= $last)
+            SELECT {JobColumns} FROM ranked WHERE rank=1 LIMIT 4097;
+            """, ("$first", Date(firstDate)), ("$last", Date(lastDate)));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var jobs = new List<CameraAgentTimeLapseJob>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) jobs.Add(ReadJob(reader));

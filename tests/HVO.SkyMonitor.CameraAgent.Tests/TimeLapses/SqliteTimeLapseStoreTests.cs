@@ -184,18 +184,109 @@ public sealed class SqliteTimeLapseStoreTests
         finally { Directory.Delete(root, true); }
     }
 
+    [TestMethod]
+    public async Task Summaries_UseLatestJobPerWindowForDailyStateProducedHoursAndPendingWork()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-summary");
+        try
+        {
+            var options = Options(root);
+            var preset = options.Value.TimeLapses.Freeze(NightlyProductFixture.Configuration());
+            var hourlyDate = NightlyProductFixture.ObservingDate;
+            var dailyDate = hourlyDate.AddDays(1);
+            var workingDate = hourlyDate.AddDays(2);
+            var clock = new NightlyClock(NightlyProductFixture.Calendar.Resolve(workingDate.AddDays(1)).EndUtc.AddMinutes(10));
+            using var store = new SqliteTimeLapseStore(options, clock);
+            using var lease = await store.AcquireWorkerAsync(CancellationToken.None);
+            var hours = Windows(hourlyDate, LocalAutomationSourceWindowKind.CompletedCivilHour);
+            // The rerun definition targets the same hour windows, so its newer jobs replace hours 0 and 1.
+            foreach (var (definition, hour, state) in new[]
+            {
+                ("video-hour", 0, CameraAgentTimeLapseState.Produced), ("video-hour", 1, CameraAgentTimeLapseState.Produced),
+                ("video-hour", 2, CameraAgentTimeLapseState.NoSources), ("video-hour", 3, CameraAgentTimeLapseState.Produced),
+                ("video-hour-rerun", 1, CameraAgentTimeLapseState.Failed), ("video-hour-rerun", 0, CameraAgentTimeLapseState.Produced)
+            })
+            {
+                await store.EnqueueAsync(Occurrence(options.Value.TimeLapses, hours[hour], definition), preset, [], CancellationToken.None);
+                await FinishAsync(store, clock, root, await ClaimAsync(store, clock), state);
+            }
+            var dayHours = Windows(dailyDate, LocalAutomationSourceWindowKind.CompletedCivilHour);
+            await store.EnqueueAsync(Occurrence(options.Value.TimeLapses, Windows(dailyDate, LocalAutomationSourceWindowKind.SunriseDay).Single(), "video-day"),
+                preset, dayHours, CancellationToken.None);
+            for (var i = 0; i < dayHours.Count; i++)
+            {
+                var child = await ClaimAsync(store, clock);
+                await FinishAsync(store, clock, root, child, dayHours.Take(3).Any(hour => hour.IdentitySha256 == child.Window.IdentitySha256)
+                    ? CameraAgentTimeLapseState.Produced : CameraAgentTimeLapseState.NoSources);
+            }
+            await FinishAsync(store, clock, root, await ClaimAsync(store, clock), CameraAgentTimeLapseState.Produced);
+            var workingHour = Windows(workingDate, LocalAutomationSourceWindowKind.CompletedCivilHour)[0];
+            await store.EnqueueAsync(Occurrence(options.Value.TimeLapses, workingHour, "video-hour"), preset, [], CancellationToken.None);
+            await ClaimAsync(store, clock);
+            await store.EnqueueAsync(Occurrence(options.Value.TimeLapses, hours[4], "video-hour"), preset, [], CancellationToken.None);
+            foreach (var outside in new[] { hourlyDate.AddDays(-1), workingDate.AddDays(1) })
+                await store.EnqueueAsync(Occurrence(options.Value.TimeLapses, Windows(outside, LocalAutomationSourceWindowKind.CompletedCivilHour)[0], "video-hour"),
+                    preset, [], CancellationToken.None);
+
+            var summaries = (await store.SummarizeAsync(hourlyDate, workingDate, CancellationToken.None)).ToDictionary(summary => summary.ReportDate);
+
+            Assert.HasCount(3, summaries);
+            Assert.AreEqual(new CameraAgentTimeLapseDateSummary(hourlyDate, hours[0].ReportingPeriod.IdentitySha256, null, 2, true), summaries[hourlyDate]);
+            Assert.AreEqual(new CameraAgentTimeLapseDateSummary(dailyDate, dayHours[0].ReportingPeriod.IdentitySha256,
+                CameraAgentTimeLapseState.Produced, 3, false), summaries[dailyDate]);
+            Assert.AreEqual(new CameraAgentTimeLapseDateSummary(workingDate, workingHour.ReportingPeriod.IdentitySha256, null, 0, true), summaries[workingDate]);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     internal static IOptions<CameraAgentHostOptions> Options(string root) => Microsoft.Extensions.Options.Options.Create(new CameraAgentHostOptions
     {
         RawIngressRoot = root,
         TimeLapses = new() { Enabled = true, RigProfileSha256 = NightlyProductFixture.RigProfileSha256 }
     });
 
-    internal static LocalAutomationOccurrence Occurrence(TimeLapseOptions options, LocalAutomationSourceWindowKind kind)
+    internal static LocalAutomationOccurrence Occurrence(TimeLapseOptions options, LocalAutomationSourceWindowKind kind) =>
+        Occurrence(options, NightlyProductFixture.Occurrence(Common.NightlyProducts.NightlyProductKind.Keogram, windowKind: kind).SourceWindow!,
+            kind == LocalAutomationSourceWindowKind.SunriseDay ? "video-day" : "video-hour");
+
+    private static LocalAutomationOccurrence Occurrence(TimeLapseOptions options, LocalAutomationSourceWindow window, string definitionId)
     {
-        var window = NightlyProductFixture.Occurrence(Common.NightlyProducts.NightlyProductKind.Keogram, windowKind: kind).SourceWindow!;
-        var definition = new LocalAutomationDefinition(kind == LocalAutomationSourceWindowKind.SunriseDay ? "video-day" : "video-hour", "Video", true, LocalAutomationTaskKind.TimeLapseGeneration,
+        var definition = new LocalAutomationDefinition(definitionId, "Video", true, LocalAutomationTaskKind.TimeLapseGeneration,
             options.Target, LocalAutomationTriggerKind.SourceWindowClosed, 1, NightlyProductFixture.DayStartUtc, window.Policy);
         return LocalAutomationWindowPlanner.CreateOccurrence(new(definition, 1,
             LocalAutomationContract.ComputeRevisionSha256(definition), null, null), window);
+    }
+
+    private static IReadOnlyList<LocalAutomationSourceWindow> Windows(DateOnly date, LocalAutomationSourceWindowKind kind) =>
+        new LocalAutomationWindowPlanner(new FixedObservingDayCalendarProvider(NightlyProductFixture.Calendar)).ResolveWindows(date,
+            NightlyProductFixture.Occurrence(Common.NightlyProducts.NightlyProductKind.Keogram, windowKind: kind).SourceWindow!.Policy);
+
+    private static async Task<CameraAgentTimeLapseJob> ClaimAsync(SqliteTimeLapseStore store, NightlyClock clock)
+    {
+        clock.UtcNow = clock.UtcNow.AddSeconds(1);
+        var job = await store.ClaimAsync(CancellationToken.None);
+        Assert.IsNotNull(job);
+        return job;
+    }
+
+    private static async Task FinishAsync(SqliteTimeLapseStore store, NightlyClock clock, string root, CameraAgentTimeLapseJob job,
+        CameraAgentTimeLapseState state)
+    {
+        clock.UtcNow = clock.UtcNow.AddSeconds(1);
+        if (state != CameraAgentTimeLapseState.Produced)
+        {
+            await store.CompleteAsync(job.JobId, state, "fixture", null, CancellationToken.None);
+            return;
+        }
+        // A real Produced completion requires an encoded publication; summaries read only job rows, so record the terminal row directly.
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        { DataSource = Path.Combine(root, ".time-lapses", "time-lapses.db"), Pooling = false }.ToString());
+        await connection.OpenAsync();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE jobs SET state='Produced', product_id=$product, updated_ticks=$now, revision=revision+1 WHERE job_id=$id AND state='Working';";
+        command.Parameters.AddWithValue("$product", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("$now", clock.UtcNow.UtcTicks);
+        command.Parameters.AddWithValue("$id", job.JobId.ToString("N"));
+        Assert.AreEqual(1, await command.ExecuteNonQueryAsync());
     }
 }
