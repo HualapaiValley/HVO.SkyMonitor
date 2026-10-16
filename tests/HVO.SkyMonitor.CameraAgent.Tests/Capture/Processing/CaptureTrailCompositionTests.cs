@@ -92,7 +92,7 @@ public sealed partial class DurableCaptureProcessingTests
                 .ConfigureAwait(false) ?? throw new AssertFailedException("The preview base output was not retained.");
             Assert.IsTrue(await CaptureProcessingPersistence.HasSourcePixelMappingAsync(previewOutput, descriptor,
                 store.ReadOutputByArtifactIdAsync, CancellationToken.None).ConfigureAwait(false));
-            static DurableProcessingOutput Relink(DurableProcessingOutput output, Guid artifactId, Guid sourceArtifactId)
+            static DurableProcessingOutput Relink(DurableProcessingOutput output, Guid artifactId, params Guid[] sourceArtifactIds)
             {
                 var retained = output.Descriptor ?? throw new AssertFailedException("The retained output has no descriptor.");
                 return output with
@@ -100,7 +100,7 @@ public sealed partial class DurableCaptureProcessingTests
                     ArtifactId = artifactId,
                     Descriptor = retained with
                     {
-                        Artifact = retained.Artifact with { ArtifactId = artifactId, SourceArtifactIds = [sourceArtifactId] }
+                        Artifact = retained.Artifact with { ArtifactId = artifactId, SourceArtifactIds = [.. sourceArtifactIds] }
                     }
                 };
             }
@@ -120,9 +120,29 @@ public sealed partial class DurableCaptureProcessingTests
                 }
                 return await MapsThroughAsync(previous, lineage).ConfigureAwait(false);
             }
+            async ValueTask<bool> MapsThroughSharedAncestorAsync(bool longBranchFirst)
+            {
+                var shared = Relink(rollingOutput, Guid.NewGuid(), descriptor.Artifact.ArtifactId);
+                var lineage = new Dictionary<Guid, DurableProcessingOutput> { [shared.ArtifactId] = shared };
+                var previous = shared.ArtifactId;
+                for (var index = 0; index < CaptureProcessingPersistence.MaximumLineageHops - 2; index++)
+                {
+                    var link = Relink(rollingOutput, Guid.NewGuid(), previous);
+                    lineage.Add(link.ArtifactId, link);
+                    previous = link.ArtifactId;
+                }
+                var root = longBranchFirst
+                    ? Relink(rollingOutput, Guid.NewGuid(), previous, shared.ArtifactId)
+                    : Relink(rollingOutput, Guid.NewGuid(), shared.ArtifactId, previous);
+                lineage.Add(root.ArtifactId, root);
+                return await MapsThroughAsync(root.ArtifactId, lineage).ConfigureAwait(false);
+            }
             // R1005-1-F2: the preview base over N rolling means is N + 1 source edges, the last one into the raw source.
             Assert.IsTrue(await MapsThroughRollingChainAsync(CaptureProcessingPersistence.MaximumLineageHops - 1).ConfigureAwait(false));
             Assert.IsFalse(await MapsThroughRollingChainAsync(CaptureProcessingPersistence.MaximumLineageHops).ConfigureAwait(false));
+            // R1005-2-F1: exhausting the nine-edge branch must not hide the three-edge route through the shared ancestor.
+            Assert.IsTrue(await MapsThroughSharedAncestorAsync(longBranchFirst: true).ConfigureAwait(false));
+            Assert.IsTrue(await MapsThroughSharedAncestorAsync(longBranchFirst: false).ConfigureAwait(false));
             var (cycleStart, cycleEnd) = (Guid.NewGuid(), Guid.NewGuid());
             Assert.IsFalse(await MapsThroughAsync(cycleStart, new()
             {

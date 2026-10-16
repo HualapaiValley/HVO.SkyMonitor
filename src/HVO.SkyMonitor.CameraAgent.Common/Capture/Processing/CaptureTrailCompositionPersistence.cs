@@ -202,14 +202,19 @@ internal sealed partial class CaptureProcessingPersistence
     internal static ValueTask<bool> HasSourcePixelMappingAsync(DurableProcessingOutput output,
         ReconstructionDescriptor source, Func<Guid, CancellationToken, ValueTask<DurableProcessingOutput?>> readOutput,
         CancellationToken cancellationToken) =>
-        HasSourcePixelMappingAsync(output, source, readOutput, [], MaximumLineageHops, cancellationToken);
+        HasSourcePixelMappingAsync(output, source, readOutput, new(), MaximumLineageHops, cancellationToken);
 
-    // Every source edge, including the final edge into the raw source, consumes one hop of the budget.
+    // Every source edge, including the final edge into the raw source, consumes one hop of the budget. An artifact is
+    // examined again only with a larger remaining budget, so a branch that exhausted the budget cannot hide a shorter
+    // route through a shared ancestor, while the strictly decreasing budget still bounds cycles.
     private static async ValueTask<bool> HasSourcePixelMappingAsync(DurableProcessingOutput output,
         ReconstructionDescriptor source, Func<Guid, CancellationToken, ValueTask<DurableProcessingOutput?>> readOutput,
-        HashSet<Guid> visited, int remainingHops, CancellationToken cancellationToken)
+        Dictionary<Guid, int> examined, int remainingHops, CancellationToken cancellationToken)
     {
-        if (!visited.Add(output.ArtifactId) || output.AvailabilityState != "Available" ||
+        if (examined.TryGetValue(output.ArtifactId, out var examinedHops) && examinedHops >= remainingHops)
+            return false;
+        examined[output.ArtifactId] = remainingHops;
+        if (output.AvailabilityState != "Available" ||
             output.Descriptor is not { } descriptor || descriptor.Capture.CaptureId != source.Capture.CaptureId ||
             descriptor.Layout.Width != source.Layout.Width || descriptor.Layout.Height != source.Layout.Height ||
             descriptor.Timing.ExposureStartedUtc != source.Timing.ExposureStartedUtc ||
@@ -237,7 +242,7 @@ internal sealed partial class CaptureProcessingPersistence
         {
             if (id == source.Artifact.ArtifactId) return true;
             var parent = await readOutput(id, cancellationToken).ConfigureAwait(false);
-            if (parent is not null && await HasSourcePixelMappingAsync(parent, source, readOutput, visited, remainingHops - 1,
+            if (parent is not null && await HasSourcePixelMappingAsync(parent, source, readOutput, examined, remainingHops - 1,
                 cancellationToken).ConfigureAwait(false))
                 return true;
         }

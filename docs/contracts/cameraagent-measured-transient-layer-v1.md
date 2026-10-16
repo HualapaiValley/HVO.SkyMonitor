@@ -44,7 +44,8 @@ not confirm a meteor.
 The base must be a reconstructable packed raster with the same source grid,
 capture, recorded exposure bounds, rig, orientation, sensor and location.
 Membership is checked through at most eight immutable processing lineage hops,
-each source edge including the final edge into the raw source counting as one hop,
+each source edge including the final edge into the raw source counting as one hop
+and the shortest admissible route deciding regardless of source order,
 with at most 100 source references per admitted window. Only pinned producer
 and algorithm versions known to preserve pixel coordinates are accepted:
 full-size fixed/encoded preview, unregistered linear arithmetic rolling mean,
