@@ -106,9 +106,10 @@ The first full scan, on 2026-10-16 at `43ef6d4a`, reported 28 findings in 1,871
 commits. Five reviewed entries cover them. One holds true positives that are
 inert: Data Protection key rings from local development runs, committed in
 November 2025, expired on 2026-02-12, and removed from the tree. The rest are an
-Application Insights connection string (a resource identifier, not a secret),
-test-only values, PEM header literals and synthetic AWS-shaped vectors in the
-processing-graph secret filter, and generic-rule matches on ordinary words.
+Application Insights connection string (a resource identifier, not a secret,
+removed from the tree on 2026-07-12 and now only in history), test-only values,
+PEM header literals and synthetic AWS-shaped vectors in the processing-graph
+secret filter, and generic-rule matches on ordinary words.
 
 Run the scan and its contract test locally the way CI does:
 

@@ -27,9 +27,11 @@ commits = [
 paths = ['''^src/HVO\.SkyMonitor(\.CameraAgent\.Simulator|\.CameraAgent\.ZWO)?/DataProtection-Keys/key-[0-9a-f-]{36}\.xml$''']
 
 [[allowlists]]
-description = """Not a secret. An Application Insights connection string for the development telemetry resource is \
-committed as configuration and is still in these files. Microsoft documents its instrumentation key as a resource \
-identifier, not a security token or key."""
+description = """Not a secret; historical exposure only. f0d65178 (2025-11-25) committed an Application Insights \
+connection string for the development telemetry resource as configuration in these files, and 19865bbb (2026-07-12) \
+removed it from all of them, so it remains only in history. Microsoft documents its instrumentation key as a resource \
+identifier, not a security token or key. Whether that historical resource is disposed of or limited to Microsoft Entra \
+ID authenticated ingestion is the owner's decision."""
 targetRules = ["generic-api-key"]
 condition = "AND"
 commits = ["f0d6517809544dce574b08cc671050883d388f50"]
