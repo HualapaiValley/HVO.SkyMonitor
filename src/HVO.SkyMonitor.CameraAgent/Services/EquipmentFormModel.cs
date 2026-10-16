@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 
 namespace HVO.SkyMonitor.CameraAgent.Services;
@@ -11,7 +12,20 @@ internal sealed class EquipmentFormModel
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
+    /// <summary>The VirtualSky sky lighting choices, in display order; the first is the omitted default.</summary>
+    public static IReadOnlyList<(string Value, string Label, string Help)> SkyLightingChoices { get; } =
+    [
+        (nameof(VirtualSkyIlluminationMode.LegacyScalarSolar), "Uniform daylight",
+            "The whole sky brightens evenly with the real Sun's altitude. This is the default."),
+        (nameof(VirtualSkyIlluminationMode.SolarDriven), "Realistic daylight",
+            "A clear-sky approximation: a bounded blue sky and a warm horizon on the side facing the real Sun."),
+        (nameof(VirtualSkyIlluminationMode.ControlledNight), "No daylight",
+            "A night sky at the real time, around the clock: stars keep moving, and capture control treats every frame as night.")
+    ];
+
     public string ModuleType { get; set; } = string.Empty;
+    /// <summary>The VirtualSky sky lighting choice; empty for other modules or when the basis choice cannot be read.</summary>
+    public string SkyLighting { get; set; } = string.Empty;
     public string SensorName { get; set; } = string.Empty;
     public string WidthPixels { get; set; } = string.Empty;
     public string HeightPixels { get; set; } = string.Empty;
@@ -56,7 +70,9 @@ internal sealed class EquipmentFormModel
     private static string Text(double? value) => value is { } number ? Text(number) : string.Empty;
     private static string Text(int? value) => value is { } number ? Text(number) : string.Empty;
 
-    public static EquipmentFormModel FromCamera(NamedCameraEquipment camera)
+    /// <param name="camera">The basis camera, whose module options are never read here.</param>
+    /// <param name="skyLighting">The basis revision's projected VirtualSky sky lighting choice, when it has one.</param>
+    public static EquipmentFormModel FromCamera(NamedCameraEquipment camera, string? skyLighting = null)
     {
         ArgumentNullException.ThrowIfNull(camera);
         var sensor = camera.Sensor;
@@ -64,6 +80,8 @@ internal sealed class EquipmentFormModel
         return new EquipmentFormModel
         {
             ModuleType = camera.Module.Type,
+            SkyLighting = camera.Module.Type == "VirtualSky" && SkyLightingChoices.Any(choice => choice.Value == skyLighting)
+                ? skyLighting! : string.Empty,
             SensorName = sensor.Name,
             WidthPixels = Text(sensor.WidthPixels),
             HeightPixels = Text(sensor.HeightPixels),
@@ -126,6 +144,10 @@ internal sealed class EquipmentFormModel
             problems.Add("Sensor color mode and pixel format must agree.");
         if (basis.Module.Type != "VirtualSky" && basis.Sensor.SimulationResponse is not null)
             problems.Add("Physical cameras cannot use a simulation response.");
+        if (SkyLighting.Length > 0 && basis.Module.Type != "VirtualSky")
+            problems.Add("Sky lighting applies only to virtual sky cameras.");
+        else if (SkyLighting.Length > 0 && !SkyLightingChoices.Any(choice => choice.Value == SkyLighting))
+            problems.Add("Sky lighting is not a supported value.");
         var sensor = basis.Sensor with
         {
             Name = SensorName.Trim(),
@@ -174,8 +196,12 @@ internal sealed class EquipmentFormModel
         }
         errors = problems;
         // Never serialize provider options into the browser's submission, even when the caller holds a full basis.
+        // The sky lighting choice is the one allow-listed value the store merges into the basis module options.
         definition = problems.Count == 0
-            ? JsonSerializer.SerializeToElement(new { module = new { type = basis.Module.Type }, sensor, readout }, WebJson)
+            ? SkyLighting.Length == 0
+                ? JsonSerializer.SerializeToElement(new { module = new { type = basis.Module.Type }, sensor, readout }, WebJson)
+                : JsonSerializer.SerializeToElement(
+                    new { module = new { type = basis.Module.Type }, sensor, readout, illuminationMode = SkyLighting }, WebJson)
             : default;
         return problems.Count == 0;
     }
