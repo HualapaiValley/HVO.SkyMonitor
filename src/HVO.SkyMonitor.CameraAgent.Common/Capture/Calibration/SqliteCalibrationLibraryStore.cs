@@ -131,7 +131,7 @@ public sealed class SqliteCalibrationLibraryStore(
         using var activity = CalibrationTelemetry.ActivitySource.StartActivity("calibration.library.initialize");
         try
         {
-            await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
             await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -600,7 +600,7 @@ public sealed class SqliteCalibrationLibraryStore(
     internal async Task<IReadOnlyList<CalibrationReconciliationOperation>> ReadPlannedReconciliationsAsync(
         CancellationToken cancellationToken)
     {
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
@@ -635,7 +635,7 @@ public sealed class SqliteCalibrationLibraryStore(
         {
             throw new ArgumentException("The calibration reconciliation operation is invalid.", nameof(operation));
         }
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -676,7 +676,7 @@ public sealed class SqliteCalibrationLibraryStore(
         string reason,
         CancellationToken cancellationToken)
     {
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -716,7 +716,7 @@ public sealed class SqliteCalibrationLibraryStore(
         {
             throw new ArgumentException("The calibration reconciliation result is invalid.", nameof(reason));
         }
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -750,7 +750,7 @@ public sealed class SqliteCalibrationLibraryStore(
             activity?.SetStatus(ActivityStatusCode.Error);
             throw new ArgumentException($"The calibration bundle is invalid ({validation.FieldPath}).", nameof(bundle));
         }
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         var bundleJson = CalibrationLibraryContractJson.Serialize(bundle);
         bundle = CalibrationLibraryContractJson.Parse(bundleJson).Value
             ?? throw new InvalidDataException("The canonical calibration bundle could not be parsed.");
@@ -875,7 +875,7 @@ public sealed class SqliteCalibrationLibraryStore(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(profileRelativePath);
         _ = ResolveSafePath(profileRelativePath);
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {

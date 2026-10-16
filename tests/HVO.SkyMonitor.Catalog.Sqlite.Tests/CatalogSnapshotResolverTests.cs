@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Nodes;
 
 namespace HVO.SkyMonitor.Catalog.Sqlite.Tests;
@@ -249,6 +250,20 @@ internal sealed class CatalogSnapshotResolverTests
                 StringComparison.Ordinal));
         var duplicate = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
         StringAssert.Contains(duplicate.Message, "duplicate property", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void ResolveAcceptsAManifestThatStartsWithAUtf8ByteOrderMark()
+    {
+        using var installation = CreateInstallation();
+        File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath),
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+        Assert.AreEqual(0xEF, File.ReadAllBytes(installation.ManifestPath)[0]);
+
+        var result = ResolveFixture(installation.Root);
+
+        Assert.AreEqual(SnapshotVersion, result.SnapshotVersion);
+        Assert.AreEqual("hyg-v42-fixture", result.CatalogId);
     }
 
     [TestMethod]
@@ -1043,6 +1058,68 @@ internal sealed class CatalogSnapshotResolverTests
         {
             throw new Win32Exception(Marshal.GetLastPInvokeError());
         }
+    }
+
+    [TestMethod]
+    public void ReadBoundedManifestRejectsContentBeyondTheLimitThatItsReportedLengthHides()
+    {
+        // Authentication fixes the manifest's identity, not its length, so a manifest can grow after the length
+        // check. The bound must hold on the bytes read, not on the length reported before the read.
+        using var stream = new UnderReportingStream(new byte[200_000], reportedLength: 2);
+
+        var exception = Assert.ThrowsExactly<InvalidDataException>(() => CatalogSnapshotResolver.ReadBoundedManifest(stream));
+
+        StringAssert.Contains(exception.Message, "65536-byte limit", StringComparison.Ordinal);
+        Assert.AreEqual(65_537, stream.Position, "The read stops one byte beyond the limit.");
+    }
+
+    [TestMethod]
+    public void ReadBoundedManifestReadsAManifestAtTheLimitFromItsStart()
+    {
+        var content = new byte[65_536];
+        RandomNumberGenerator.Fill(content);
+        using var stream = new UnderReportingStream(content, reportedLength: 2);
+        stream.Position = content.Length;
+
+        var manifest = CatalogSnapshotResolver.ReadBoundedManifest(stream);
+
+        CollectionAssert.AreEqual(content, manifest.ToArray());
+    }
+
+    [TestMethod]
+    public void ComputeSha256RejectsAFileExtendedBeyondItsCheckedLength()
+    {
+        // A file can grow between its length check and its hash. The hash must stop one byte past the checked length
+        // rather than reading the extension to its end.
+        using var stream = new MemoryStream(new byte[200_000], writable: false);
+
+        var exception = Assert.ThrowsExactly<InvalidDataException>(
+            () => CatalogSnapshotResolver.ComputeSha256(stream, 10, "Catalog database"));
+
+        StringAssert.Contains(exception.Message, "grew beyond its expected length of 10 bytes", StringComparison.Ordinal);
+        Assert.AreEqual(11, stream.Position, "The hash stops one byte beyond the checked length.");
+    }
+
+    [TestMethod]
+    public void ComputeSha256HashesExactlyTheCheckedLengthFromItsStart()
+    {
+        var content = new byte[200_000];
+        RandomNumberGenerator.Fill(content);
+        using var stream = new MemoryStream(content, writable: false) { Position = content.Length };
+
+        var sha256 = CatalogSnapshotResolver.ComputeSha256(stream, content.Length, "Catalog database");
+
+        Assert.AreEqual(Convert.ToHexString(SHA256.HashData(content)), sha256);
+        Assert.AreEqual(0, stream.Position);
+        using var truncatedStream = new MemoryStream(content, 0, 1_000, writable: false);
+        var truncated = CatalogSnapshotResolver.ComputeSha256(truncatedStream, content.Length, "Catalog database");
+        Assert.AreEqual(Convert.ToHexString(SHA256.HashData(content.AsSpan(0, 1_000))), truncated,
+            "A file truncated after its length check hashes short and fails the checksum comparison.");
+    }
+
+    private sealed class UnderReportingStream(byte[] content, long reportedLength) : MemoryStream(content, writable: false)
+    {
+        public override long Length => reportedLength;
     }
 
     internal sealed record Installation(

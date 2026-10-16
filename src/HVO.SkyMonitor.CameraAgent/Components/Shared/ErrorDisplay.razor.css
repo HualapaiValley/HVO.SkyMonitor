@@ -16,6 +16,10 @@
     color: var(--hvo-danger, #ff6b6b);
 }
 
+.error-display__content {
+    min-width: 0;
+}
+
 .error-display__title {
     font-size: 1.45rem;
     margin-bottom: 0.25rem;
@@ -37,8 +41,13 @@
     margin-right: 0.5rem;
 }
 
+.error-display__correlation code {
+    overflow-wrap: anywhere;
+}
+
 .error-display__actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 0.75rem;
 }

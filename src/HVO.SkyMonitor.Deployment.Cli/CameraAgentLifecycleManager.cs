@@ -5,6 +5,7 @@ using System.Text.Json.Serialization.Metadata;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Deployment.Contracts;
 using HVO.SkyMonitor.Deployment.Distribution;
+using Microsoft.Win32.SafeHandles;
 
 namespace HVO.SkyMonitor.Deployment;
 
@@ -72,10 +73,13 @@ internal sealed class CameraAgentLifecycleManager
         if (request.Operation == LifecycleOperationKind.Purge && !Directory.Exists(paths.InstanceRoot))
         {
             if (!request.Resume) throw new InstallerException("The instance root is absent; use --resume only for a retained purge operation.");
-            SafeFileSystem.CreateOwnerDirectory(paths.OperationsRoot);
+            // Resume only ever continues retained state: it never creates the operations root or any other path.
+            SafeFileSystem.EnsureSafeExistingAncestors(paths.OperationsRoot);
+            if (!Directory.Exists(paths.OperationsRoot)) throw new InstallerException("No matching interrupted purge operation exists.");
             using var interruptedPurgeLock = OperationLock.Acquire(
                 Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
-            return await ResumeInterruptedPurgeAsync(request, paths, new DockerClient(processRunner), cancellationToken)
+            return await ResumeInterruptedPurgeAsync(
+                    request, paths, new DockerClient(processRunner), processRunner, cancellationToken)
                 .ConfigureAwait(false);
         }
         var manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
@@ -184,7 +188,7 @@ internal sealed class CameraAgentLifecycleManager
                 cancellationToken)
                 .ConfigureAwait(false),
             LifecycleOperationKind.Purge => await PurgeAsync(
-                request, paths, manifest, compose, docker, daemon, cancellationToken).ConfigureAwait(false),
+                request, paths, manifest, compose, docker, daemon, processRunner, cancellationToken).ConfigureAwait(false),
             LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback =>
                 await CatalogLifecycleManager.SelectAsync(
                     request, paths, manifest, result, compose, docker, lifecycleClientFactory, ownerClientFactory,
@@ -391,7 +395,8 @@ internal sealed class CameraAgentLifecycleManager
             CaptureInitialized: true,
             CaptureVersion: >= 0, CaptureSequence: >= 0,
             RawPending: >= 0, RawLeased: >= 0, LanePending: >= 0, LaneLeased: >= 0,
-            ProcessingPending: >= 0, ProcessingLeased: >= 0, OutboxPending: >= 0, OutboxLeased: >= 0
+            ProcessingPending: >= 0, ProcessingLeased: >= 0, OutboxPending: >= 0, OutboxLeased: >= 0,
+            ReplayPending: >= 0, ReplayLeased: >= 0
         } && boundary.RecordedUtc != default;
 
     private static bool IsValidRecoveryReceipt(LifecycleContinuityBoundary before, LifecycleResumeReceipt? receipt)
@@ -1097,8 +1102,11 @@ internal sealed class CameraAgentLifecycleManager
         ComposeFiles compose,
         DockerClient docker,
         DockerDaemonIdentity daemon,
+        IProcessRunner processRunner,
         CancellationToken cancellationToken)
     {
+        if (request.ConfirmRemovedOperationId is not null)
+            throw new InstallerException("The instance root exists, so it was not removed; purge refuses --confirm-removed-operation-id.");
         if (manifest.LifecycleCondition != InstanceLifecycleCondition.Uninstalled)
             throw new InstallerException("Purge requires a completed preserve-by-default uninstall.");
         var runtime = await docker.InspectContainerAsync(compose.ContainerName, cancellationToken).ConfigureAwait(false);
@@ -1109,11 +1117,15 @@ internal sealed class CameraAgentLifecycleManager
         var operation = await BeginAsync(request, paths, LifecycleOperationKind.Purge, manifest, cancellationToken)
             .ConfigureAwait(false);
         if (request.DryRun) return Result(operation.Kind, "planned", operation.OperationId, paths, manifest, daemon, false, false);
+        // Deletion is committed only after the tree has been quarantined, so an instance root present beside a
+        // committed purge is a different tree that this operation never authenticated.
+        if (operation.Phase == LifecycleOperationPhase.Committed)
+            throw new InstallerException("The retained purge already committed its deletion; it cannot adopt an instance root that reappeared.");
         await CatalogReferenceStore.PinHistoricalAsync(paths, manifest.Catalog, operation.OperationId, cancellationToken)
             .ConfigureAwait(false);
         var parent = Directory.GetParent(paths.InstanceRoot)?.FullName
             ?? throw new InstallerException("The instance root has no authenticated parent.");
-        var expectedParent = Path.Combine(paths.ProductRoot, "cameraagents");
+        var expectedParent = PrivilegedPurgeNamespace.NamespaceRoot(paths.ProductRoot);
         if (parent != expectedParent || new DirectoryInfo(paths.InstanceRoot).LinkTarget is not null)
             throw new InstallerException("The instance root path is not canonical.");
         var identity = NativeLinux.GetDirectoryIdentity(paths.InstanceRoot);
@@ -1122,19 +1134,49 @@ internal sealed class CameraAgentLifecycleManager
         var childName = Path.GetFileName(paths.InstanceRoot);
         var inventory = SafeTreeDeletion.CaptureChildInventory(parent, childName, identity.Uid, identity.Gid);
         var treeIdentity = SafeTreeDeletion.ValidateChild(parent, childName, identity.Uid, identity.Gid);
-        var tombstone = Path.Combine(parent, $".purge-{manifest.InstanceId:D}-{operation.OperationId:D}");
-        await SafeFileSystem.WriteJsonAtomicAsync(
-            Path.Combine(paths.OperationsRoot, $"purge-{operation.OperationId:D}.evidence.json"),
-            new PurgeDeletionEvidence(
-                DeploymentSchemaVersions.LifecycleOperation, operation.OperationId, operation.RequestSha256,
-                LocalHostIdentity.ReadSha256(), manifest, inventory),
-            DeploymentJsonContext.Default.PurgeDeletionEvidence, cancellationToken).ConfigureAwait(false);
+        var tombstoneName = PrivilegedPurgeNamespace.TombstoneName(manifest.InstanceId, operation.OperationId);
+        var tombstone = Path.Combine(parent, tombstoneName);
+        var evidencePath = Path.Combine(paths.OperationsRoot, $"purge-{operation.OperationId:D}.evidence.json");
+        UnixNodeIdentity namespaceIdentity;
+        using (var namespaceRoot = NativeLinux.OpenDirectoryNoFollow(parent))
+            namespaceIdentity = NativeLinux.GetOpenNodeIdentity(namespaceRoot, parent);
+        if (operation.MutationStarted)
+        {
+            // A retry before quarantine continues under the evidence its first attempt recorded and never replaces it.
+            await EnsureRetainedPurgeTreeAsync(
+                    evidencePath, operation, paths, manifest, inventory, namespaceIdentity, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            await SafeFileSystem.WriteJsonAtomicAsync(
+                evidencePath,
+                new PurgeDeletionEvidence(
+                    DeploymentSchemaVersions.LifecycleOperation, operation.OperationId, operation.RequestSha256,
+                    LocalHostIdentity.ReadSha256(), manifest, inventory,
+                    Namespace: PurgeNamespaceIdentity.From(namespaceIdentity)),
+                DeploymentJsonContext.Default.PurgeDeletionEvidence, cancellationToken).ConfigureAwait(false);
+        }
         operation = await RecordAsync(paths, operation with
         {
             Phase = LifecycleOperationPhase.Mutating,
             MutationStarted = true
         }, cancellationToken).ConfigureAwait(false);
-        SafeTreeDeletion.RenameChild(parent, Path.GetFileName(paths.InstanceRoot), Path.GetFileName(tombstone), treeIdentity);
+        try
+        {
+            // The runtime user cannot write the root-owned namespace, so the rename may be handed to the narrow,
+            // identity-bound privileged helper; the journal already records the mutation, and --resume continues
+            // from whichever side of the atomic rename an interruption leaves.
+            await PrivilegedPurgeNamespace.QuarantineAsync(
+                    paths.ProductRoot, manifest.InstanceId, operation.OperationId, treeIdentity, processRunner, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (InstallerException exception)
+        {
+            throw new InstallerException(
+                $"Purge stopped before its quarantine was confirmed; rerun the same command with --resume. {exception.Message}",
+                exception);
+        }
         try
         {
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
@@ -1150,12 +1192,17 @@ internal sealed class CameraAgentLifecycleManager
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             operation = await RecordAsync(paths, operation with { Phase = LifecycleOperationPhase.Committed }, cancellationToken)
                 .ConfigureAwait(false);
-            SafeTreeDeletion.DeleteChild(parent, Path.GetFileName(tombstone), identity.Uid, identity.Gid, treeIdentity);
+            var emptied = SafeTreeDeletion.EmptyChild(parent, tombstoneName, identity.Uid, identity.Gid, treeIdentity);
+            await PrivilegedPurgeNamespace.RemoveTombstoneAsync(
+                    paths.ProductRoot, manifest.InstanceId, operation.OperationId, emptied, processRunner, cancellationToken)
+                .ConfigureAwait(false);
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
         }
         catch (Exception exception)
         {
-            throw new InstallerException("Purge stopped at its quarantined tombstone; rerun the same command with --resume.", exception);
+            throw new InstallerException(
+                $"Purge stopped at its quarantined tombstone; rerun the same command with --resume. {SafeMessage(exception)}",
+                exception);
         }
         await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
         return new LifecycleResult(
@@ -1489,25 +1536,193 @@ internal sealed class CameraAgentLifecycleManager
             throw new InstallerException("The restored lifecycle operation has inconsistent recovery evidence.");
     }
 
+    /// <summary>The evidence settlement of an interrupted purge whose instance tree was already removed outside the CLI.</summary>
+    internal const string PurgeAlreadyAbsentSettlement = "already-absent";
+
     private static async Task<LifecycleResult> ResumeInterruptedPurgeAsync(
         LifecycleRequest request,
         InstallationPaths paths,
         DockerClient docker,
+        IProcessRunner processRunner,
         CancellationToken cancellationToken)
     {
         var operation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
         if (operation is not { Kind: LifecycleOperationKind.Purge, Status: not InstallationStatus.Completed, MutationStarted: true } ||
             operation.InstanceId != request.InstanceId || operation.RequestSha256 != request.ComputeRequestSha256())
             throw new InstallerException("No matching interrupted purge operation exists.");
-        var parent = Path.GetDirectoryName(paths.InstanceRoot)!;
-        var tombstone = Path.Combine(parent, $".purge-{operation.InstanceId!.Value:D}-{operation.OperationId:D}");
+        if (request.ConfirmRemovedOperationId is { } confirmedOperationId && confirmedOperationId != operation.OperationId)
+            throw new InstallerException("--confirm-removed-operation-id does not name the interrupted purge.");
+        var parent = PrivilegedPurgeNamespace.NamespaceRoot(paths.ProductRoot);
+        var instanceName = operation.InstanceId!.Value.ToString("D");
+        var tombstoneName = PrivilegedPurgeNamespace.TombstoneName(operation.InstanceId.Value, operation.OperationId);
+        var tombstone = Path.Combine(parent, tombstoneName);
         var evidencePath = Path.Combine(paths.OperationsRoot, $"purge-{operation.OperationId:D}.evidence.json");
+        var evidence = await ReadPurgeEvidenceAsync(evidencePath, cancellationToken).ConfigureAwait(false);
+        ValidateRetainedPurgeEvidence(evidence, operation, paths);
+        var manifest = evidence.Manifest;
+        paths = paths.WithCatalog(manifest.Catalog.CatalogId);
+        var daemon = await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
+        EnsureDaemon(manifest.DockerDaemon, daemon);
+        await docker.EnsureNoInstanceReferencesAsync(manifest.InstanceId, paths.InstanceRoot, cancellationToken, evidence.Tree).ConfigureAwait(false);
+        await docker.EnsureNoInstanceReferencesAsync(manifest.InstanceId, tombstone, cancellationToken, evidence.Tree).ConfigureAwait(false);
+        SafeFileSystem.EnsureSafeExistingAncestors(parent);
+        bool tombstonePresent;
+        using (var namespaceRoot = NativeLinux.OpenDirectoryNoFollow(parent))
+            tombstonePresent = NativeLinux.TryGetNodeIdentityAt(namespaceRoot, tombstoneName) is not null;
+        if (evidence.Settlement is not null && (tombstonePresent || operation.Phase != LifecycleOperationPhase.Mutating))
+            throw new InstallerException("The purge deletion evidence records a settlement that contradicts the retained tree.");
+        if (request.ConfirmRemovedOperationId is not null && (tombstonePresent || operation.Phase != LifecycleOperationPhase.Mutating))
+            throw new InstallerException("The interrupted purge retained its tombstone or committed its deletion; it refuses --confirm-removed-operation-id.");
+        var outcome = "completed";
+        if (tombstonePresent)
+        {
+            var treeIdentity = SafeTreeDeletion.ValidateRemainingChild(
+                parent, tombstoneName, manifest.RuntimeUid, manifest.RuntimeGid, evidence.Tree);
+            EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
+            await docker.EnsureNoInstanceReferencesAsync(manifest.InstanceId, paths.InstanceRoot, cancellationToken, evidence.Tree).ConfigureAwait(false);
+            await docker.EnsureNoInstanceReferencesAsync(manifest.InstanceId, tombstone, cancellationToken, evidence.Tree).ConfigureAwait(false);
+            operation = await RecordAsync(paths, operation with { Phase = LifecycleOperationPhase.Committed }, cancellationToken)
+                .ConfigureAwait(false);
+            var emptied = SafeTreeDeletion.EmptyChild(
+                parent, tombstoneName, manifest.RuntimeUid, manifest.RuntimeGid, treeIdentity);
+            await PrivilegedPurgeNamespace.RemoveTombstoneAsync(
+                    paths.ProductRoot, manifest.InstanceId, operation.OperationId, emptied, processRunner, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        else if (operation.Phase != LifecycleOperationPhase.Committed)
+        {
+            await SettleAlreadyAbsentAsync(request, operation, evidence, evidencePath, parent, instanceName, cancellationToken)
+                .ConfigureAwait(false);
+            outcome = PurgeAlreadyAbsentSettlement;
+        }
+        else
+        {
+            // The committed tombstone is gone, but its removal is durable only once the namespace is flushed; a failed
+            // flush leaves the journal resumable instead of completing over an entry a crash could restore.
+            using var namespaceRoot = NativeLinux.OpenDirectoryNoFollow(parent);
+            FlushNamespace(namespaceRoot);
+        }
+        EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
+        operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
+        return new LifecycleResult(
+            DeploymentSchemaVersions.LifecycleOperation, operation.Kind, outcome, operation.OperationId,
+            manifest.InstanceId, null, paths.ProductRoot, null, null, null, manifest.Catalog, manifest.PreviousCatalog,
+            daemon, false, false, [paths.CatalogRoot, paths.OperationsRoot], null, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>
+    /// Settles an interrupted purge whose instance tree and tombstone were both removed outside the CLI after the
+    /// purge recorded its deletion evidence. The CLI deleted nothing, so it records that truth rather than a deletion:
+    /// the evidence gains an <see cref="PurgeAlreadyAbsentSettlement"/> settlement, and the result reports that
+    /// outcome instead of <c>completed</c>. A missing name never proves removal, because the tree may have been moved
+    /// rather than deleted, so settlement requires the operator's explicit disposition naming this operation. It also
+    /// refuses whatever the CLI can prove is not a removal: a namespace that is not the evidenced directory or is on
+    /// another device, any entry at the instance name, any other tombstone of the instance, and the evidenced tree
+    /// under any other name in the namespace. The namespace is flushed before the settlement is recorded, so the
+    /// recorded absence is durable. It creates and changes no path outside the operation's own evidence and journal.
+    /// </summary>
+    private static async Task SettleAlreadyAbsentAsync(
+        LifecycleRequest request,
+        LifecycleOperationState operation,
+        PurgeDeletionEvidence evidence,
+        string evidencePath,
+        string parent,
+        string instanceName,
+        CancellationToken cancellationToken)
+    {
+        if (operation.Phase != LifecycleOperationPhase.Mutating)
+            throw new InstallerException("The interrupted purge has an impossible phase for an already-absent tree.");
+        var evidencedRoot = evidence.Tree.SingleOrDefault(static node => node.RelativePath == ".")
+            ?? throw new InstallerException("The purge deletion evidence does not record its tree root.");
+        using (var namespaceRoot = NativeLinux.OpenDirectoryNoFollow(parent))
+        {
+            var namespaceIdentity = NativeLinux.GetOpenNodeIdentity(namespaceRoot, parent);
+            if (evidence.Namespace is { } evidencedNamespace && !evidencedNamespace.Matches(namespaceIdentity))
+                throw new InstallerException("The instance namespace is not the directory that held the evidenced tree; purge resume will not settle against it.");
+            if (namespaceIdentity.DeviceMajor != evidencedRoot.DeviceMajor || namespaceIdentity.DeviceMinor != evidencedRoot.DeviceMinor)
+                throw new InstallerException("The instance namespace is not on the filesystem that held the evidenced tree; mount it before resuming.");
+            if (NativeLinux.TryGetNodeIdentityAt(namespaceRoot, instanceName) is not null)
+                throw new InstallerException("An entry occupies the purged instance name; purge resume will neither settle nor delete it.");
+            var tombstonePrefix = $".purge-{instanceName}-";
+            foreach (var name in Directory.EnumerateFileSystemEntries($"/proc/self/fd/{namespaceRoot.DangerousGetHandle().ToInt64()}")
+                         .Select(Path.GetFileName)
+                         .Where(static name => !string.IsNullOrEmpty(name)))
+            {
+                if (name!.StartsWith(tombstonePrefix, StringComparison.Ordinal))
+                    throw new InstallerException("Another purge tombstone of this instance exists; purge resume will not settle around it.");
+                if (NativeLinux.TryGetNodeIdentityAt(namespaceRoot, name) is { } entry && entry.Inode == evidencedRoot.Inode &&
+                    entry.DeviceMajor == evidencedRoot.DeviceMajor && entry.DeviceMinor == evidencedRoot.DeviceMinor)
+                {
+                    throw new InstallerException("The evidenced instance tree still exists in its namespace under another name; purge resume will neither settle nor delete it.");
+                }
+            }
+            if (evidence.Settlement is null && request.ConfirmRemovedOperationId != operation.OperationId)
+            {
+                throw new InstallerException(
+                    "The evidenced instance tree is absent from its namespace, but its absence does not prove removal. " +
+                    "If the tree was removed outside the CLI, rerun the same command with " +
+                    $"--confirm-removed-operation-id {operation.OperationId:D}.");
+            }
+            FlushNamespace(namespaceRoot);
+        }
+        if (evidence.Settlement is null)
+        {
+            await SafeFileSystem.WriteJsonAtomicAsync(
+                evidencePath,
+                evidence with { Settlement = PurgeAlreadyAbsentSettlement, SettledUtc = DateTimeOffset.UtcNow },
+                DeploymentJsonContext.Default.PurgeDeletionEvidence, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Binds a resumed purge whose quarantine was never confirmed to the evidence its first attempt recorded, before
+    /// anything is renamed or deleted: the retained evidence must belong to this operation, request, and host, carry
+    /// no settlement, record exactly the current manifest and, when it recorded one, the current namespace, and the
+    /// current tree must be exactly the evidenced inventory. An added, missing, or replaced entry, or a root that
+    /// reappeared after the evidenced tree was removed, is never adopted for deletion.
+    /// </summary>
+    private static async Task EnsureRetainedPurgeTreeAsync(
+        string evidencePath,
+        LifecycleOperationState operation,
+        InstallationPaths paths,
+        InstanceManifest manifest,
+        IReadOnlyList<DestructiveTreeNode> inventory,
+        UnixNodeIdentity namespaceIdentity,
+        CancellationToken cancellationToken)
+    {
+        var evidence = await ReadPurgeEvidenceAsync(evidencePath, cancellationToken).ConfigureAwait(false);
+        ValidateRetainedPurgeEvidence(evidence, operation, paths);
+        if (evidence.Settlement is not null ||
+            JsonSerializer.Serialize(evidence.Manifest, DeploymentJsonContext.Default.InstanceManifest) !=
+            JsonSerializer.Serialize(manifest, DeploymentJsonContext.Default.InstanceManifest) ||
+            evidence.Namespace is { } evidencedNamespace && !evidencedNamespace.Matches(namespaceIdentity) ||
+            !SafeTreeDeletion.IsUnchangedInventory(inventory, evidence.Tree))
+        {
+            throw new InstallerException("The instance root is not the tree the retained purge evidenced; purge will not adopt it.");
+        }
+    }
+
+    private static async Task<PurgeDeletionEvidence> ReadPurgeEvidenceAsync(string evidencePath, CancellationToken cancellationToken)
+    {
         await using var evidenceStream = SafeFileSystem.OpenOwnerFileRead(evidencePath);
-        var evidence = await DeserializeRetainedAsync(
+        return await DeserializeRetainedAsync(
             evidenceStream, DeploymentJsonContext.Default.PurgeDeletionEvidence,
             "purge deletion evidence", cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The binding every retained purge evidence must satisfy before a resumed purge acts on it: this operation and
+    /// request, a well-formed settlement, this host, and a canonical manifest that owns the operation's paths and
+    /// identities.
+    /// </summary>
+    private static void ValidateRetainedPurgeEvidence(
+        PurgeDeletionEvidence evidence,
+        LifecycleOperationState operation,
+        InstallationPaths paths)
+    {
         if (evidence.SchemaVersion != DeploymentSchemaVersions.LifecycleOperation || evidence.OperationId != operation.OperationId ||
-            evidence.RequestSha256 != operation.RequestSha256 || evidence.Manifest.InstanceId != operation.InstanceId || evidence.Tree.Count == 0)
+            evidence.RequestSha256 != operation.RequestSha256 || evidence.Manifest.InstanceId != operation.InstanceId || evidence.Tree.Count == 0 ||
+            evidence.Settlement is not (null or PurgeAlreadyAbsentSettlement) || (evidence.Settlement is null) != (evidence.SettledUtc is null))
             throw new InstallerException("The purge deletion evidence does not match its retained operation.");
         if (evidence.HostIdentitySha256 != LocalHostIdentity.ReadSha256())
             throw new InstallerException("The purge deletion evidence belongs to a different host.");
@@ -1519,35 +1734,23 @@ internal sealed class CameraAgentLifecycleManager
         {
             throw new InstallerException("The purge deletion evidence does not own the retained operation paths and identities.");
         }
-        paths = paths.WithCatalog(manifest.Catalog.CatalogId);
-        var daemon = await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
-        EnsureDaemon(manifest.DockerDaemon, daemon);
-        await docker.EnsureNoInstanceReferencesAsync(manifest.InstanceId, paths.InstanceRoot, cancellationToken, evidence.Tree).ConfigureAwait(false);
-        await docker.EnsureNoInstanceReferencesAsync(manifest.InstanceId, tombstone, cancellationToken, evidence.Tree).ConfigureAwait(false);
-        if (Directory.Exists(tombstone))
-        {
-            var treeIdentity = SafeTreeDeletion.ValidateRemainingChild(
-                parent, Path.GetFileName(tombstone), manifest.RuntimeUid, manifest.RuntimeGid, evidence.Tree);
-            EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
-            await docker.EnsureNoInstanceReferencesAsync(manifest.InstanceId, paths.InstanceRoot, cancellationToken, evidence.Tree).ConfigureAwait(false);
-            await docker.EnsureNoInstanceReferencesAsync(manifest.InstanceId, tombstone, cancellationToken, evidence.Tree).ConfigureAwait(false);
-            operation = await RecordAsync(paths, operation with { Phase = LifecycleOperationPhase.Committed }, cancellationToken)
-                .ConfigureAwait(false);
-            SafeTreeDeletion.DeleteChild(
-                parent, Path.GetFileName(tombstone), manifest.RuntimeUid, manifest.RuntimeGid, treeIdentity);
-        }
-        else if (operation.Phase != LifecycleOperationPhase.Committed)
-        {
-            throw new InstallerException("The interrupted purge tombstone is missing before deletion was committed.");
-        }
-        EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
-        EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
-        operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
-        return new LifecycleResult(
-            DeploymentSchemaVersions.LifecycleOperation, operation.Kind, "completed", operation.OperationId,
-            manifest.InstanceId, null, paths.ProductRoot, null, null, null, manifest.Catalog, manifest.PreviousCatalog,
-            daemon, false, false, [paths.CatalogRoot, paths.OperationsRoot], null, DateTimeOffset.UtcNow);
     }
+
+    /// <summary>
+    /// Replaces the namespace flush for the current asynchronous flow only, so a contract can prove that a failed flush
+    /// leaves the purge resumable. Production never sets it.
+    /// </summary>
+    internal static readonly AsyncLocal<Action<SafeFileHandle>?> NamespaceFlushOverride = new();
+
+    private static void FlushNamespace(SafeFileHandle namespaceRoot)
+    {
+        if (NamespaceFlushOverride.Value is { } flush)
+            flush(namespaceRoot);
+        else
+            NativeLinux.FlushOpenDirectory(namespaceRoot);
+    }
+
+    private static string SafeMessage(Exception exception) => exception is InstallerException ? exception.Message : string.Empty;
 
     internal static async Task<InstanceManifest> ReadManifestAsync(string path, CancellationToken cancellationToken)
     {
@@ -1833,7 +2036,7 @@ internal sealed class CameraAgentLifecycleManager
             throw new InstallerException("The retained transactional identities do not match the lifecycle operation.");
     }
 
-    private static ComposeFiles ComposeFrom(InstallationPaths paths, InstanceManifest manifest, InstallationResult result)
+    internal static ComposeFiles ComposeFrom(InstallationPaths paths, InstanceManifest manifest, InstallationResult result)
     {
         var compact = manifest.InstanceId.ToString("N");
         return new ComposeFiles(
@@ -2029,7 +2232,9 @@ internal sealed class CameraAgentLifecycleManager
             value.OutboxPending,
             value.OutboxLeased,
             DateTimeOffset.UtcNow,
-            value.CaptureInitialized);
+            value.CaptureInitialized,
+            value.ReplayPending,
+            value.ReplayLeased);
 
     private static void EnsureContinuity(LifecycleContinuityBoundary? before, LifecycleContinuity after)
     {

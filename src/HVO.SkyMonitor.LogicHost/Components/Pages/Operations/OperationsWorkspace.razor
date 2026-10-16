@@ -1,0 +1,8 @@
+@page "/app/network"
+@page "/app/network/observatories/{ObservatoryId:guid}"
+@page "/app/network/observatories/{ObservatoryId:guid}/cameras/{CameraId:guid}"
+@attribute [Authorize(Policy = HVO.SkyMonitor.Common.Security.AuthorizationPolicyNames.InteractiveUser)]
+
+<PageTitle>Network workspace | HVO SkyMonitor</PageTitle>
+<OperationsScopeShell ObservatoryId="ObservatoryId" CameraId="CameraId"
+    ObservatoryPage="@ObservatoryPage" CameraPage="@CameraPage" NavigationFocus="@NavigationFocus" />

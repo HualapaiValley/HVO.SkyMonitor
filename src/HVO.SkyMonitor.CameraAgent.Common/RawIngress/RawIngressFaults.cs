@@ -24,7 +24,8 @@ internal enum RawIngressFaultPoint
     AfterJournalCommit,
     BeforeIndexProjection,
     AfterIndexProjection,
-    BeforeWakeUpNotification
+    BeforeWakeUpNotification,
+    BeforeAcceptanceLifecycleLock
 }
 
 internal interface IRawIngressFaultInjector
@@ -32,6 +33,11 @@ internal interface IRawIngressFaultInjector
     bool IsEnabled(RawIngressFaultPoint point) => false;
 
     void Inject(RawIngressFaultPoint point);
+
+    // Scheduling-only seams keep initialization races separate from publication fault inventory.
+    void AfterInitializationStateReset() { }
+
+    void BeforeOperationsReadinessDecision() { }
 }
 
 internal interface IRawIngressRecoveryControl

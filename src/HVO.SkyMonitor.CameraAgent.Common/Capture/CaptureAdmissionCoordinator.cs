@@ -114,6 +114,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     private int _inFlight;
     private int _failedPublicationDuringDrain;
     private int _failClosed;
+    private bool _awaitingEvidenceRecovery;
     private bool _disposed;
 
     public CaptureAdmissionCoordinator(
@@ -160,10 +161,12 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
                 return;
             }
 
-            await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            var evidenceReady = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
+            if (!evidenceReady && Volatile.Read(ref _awaitingEvidenceRecovery)) return;
             var recovered = await _store.InitializeAsync(_pauseFreshOnStartup, cancellationToken).ConfigureAwait(false);
-            SetSnapshot(recovered);
-            if (recovered.State == CaptureAdmissionState.Running)
+            Volatile.Write(ref _awaitingEvidenceRecovery, !evidenceReady);
+            SetSnapshot(evidenceReady ? recovered : recovered with { State = CaptureAdmissionState.Unavailable, IsInitialized = false });
+            if (evidenceReady && recovered.State == CaptureAdmissionState.Running)
             {
                 OpenGate();
             }
@@ -238,7 +241,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, MaxRecentCommands);
         ObjectDisposedException.ThrowIf(_disposed, this);
-        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
         return await _store.ReadRecentCommandsAsync(limit, cancellationToken).ConfigureAwait(false);
     }
 
@@ -248,6 +251,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     {
         ArgumentNullException.ThrowIfNull(action);
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        if (!Snapshot.IsInitialized) throw new CaptureAdmissionUnavailableException("Raw evidence requires audited recovery.");
         await _commandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         var reopen = Snapshot.State == CaptureAdmissionState.Running;
         try
@@ -290,6 +294,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     {
         ValidateCommand(idempotencyKey, expectedVersion, actor, reason);
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        if (!Snapshot.IsInitialized) throw new CaptureAdmissionUnavailableException("Raw evidence requires audited recovery.");
         await _commandGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -400,6 +405,15 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref _awaitingEvidenceRecovery))
+            {
+                await InitializeAsync(cancellationToken).ConfigureAwait(false);
+                if (Volatile.Read(ref _awaitingEvidenceRecovery))
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+            }
             var signal = Volatile.Read(ref _runningSignal).Task;
             if (TryEnter())
             {

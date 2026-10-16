@@ -85,6 +85,21 @@ def violations(short, full):
     )
     require("if: needs.changes.outputs.mode == 'full'" in qualification_build,
             "category audit belongs to full qualification")
+    # Issue #849 keeps two general x64 runners out of qualification so a ready v1
+    # PR is not queued behind a promotion fan-out. Qualification must opt in to
+    # the hvo-qualification label on every self-hosted job; the v1 check must not.
+    general = "[self-hosted, linux, x64, hvo-skymonitor]"
+    reserved = "[self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]"
+    # A selector is either a bare GitHub-hosted image or the exact reserved list;
+    # anything else (a self-hosted list carrying an image label, a mapping or an
+    # expression) could reach the general runners and is rejected.
+    selectors = [value.strip() for value in re.findall(r"^\s+runs-on:(.*)$", full, re.M)]
+    require(reserved in selectors and all(
+        value == reserved or re.fullmatch(r"ubuntu-(latest|\d+\.\d+)", value) for value in selectors),
+        "every self-hosted qualification job requires hvo-qualification")
+    require(re.findall(r"^    runs-on: (.+)$", build, re.M) == [general],
+            "v1 Build and Unit stays on the general runner pool")
+    require("hvo-qualification" not in short, "v1 profile never requires the qualification label")
     return errors
 
 
@@ -107,6 +122,15 @@ mutations = (
     ("lint destination removed", short, full.replace("./scripts/ci:shellcheck", ":")),
     ("control guard removed", short.replace("./scripts/test:ci-classification", ":"), full),
     ("evidence lost on failure", short.replace("if: always()", "if: success()"), full),
+    ("qualification job on general pool", short, full.replace(
+        "x64, hvo-skymonitor, hvo-qualification]", "x64, hvo-skymonitor]", 1)),
+    ("qualification selector in mapping form", short, full.replace(
+        "runs-on: [self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]",
+        "runs-on:\n      labels: [self-hosted, linux, x64, hvo-skymonitor]", 1)),
+    ("qualification selector with an image label", short, full.replace(
+        "x64, hvo-skymonitor, hvo-qualification]", "x64, hvo-skymonitor, ubuntu-24.04]", 1)),
+    ("v1 confined to qualification runners", short.replace(
+        "x64, hvo-skymonitor]", "x64, hvo-skymonitor, hvo-qualification]"), full),
 )
 for name, candidate, qualification in mutations:
     if not violations(candidate, qualification):
@@ -172,5 +196,5 @@ else:
                 raise SystemExit("Refreshing a promotion changed its draft/ready state")
         elif request[:3] != ["api", "-X", "POST"] or "draft=true" not in request:
             raise SystemExit("New promotion was not created as draft")
-print("Development v1 CI contracts passed; 12 mutation controls and 8 offline promotion cases passed.")
+print("Development v1 CI contracts passed; 16 mutation controls and 8 offline promotion cases passed.")
 PY

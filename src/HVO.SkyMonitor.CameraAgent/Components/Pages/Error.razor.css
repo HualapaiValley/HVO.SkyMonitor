@@ -18,6 +18,10 @@
     color: var(--hvo-danger, #ff6b6b);
 }
 
+.error-page__content {
+    min-width: 0;
+}
+
 .error-page__title {
     font-size: clamp(2rem, 5vw, 2.75rem);
     margin-bottom: 0.5rem;
@@ -41,6 +45,10 @@
     font-size: 0.75rem;
     margin-right: 0.5rem;
     color: var(--hvo-muted-color, #cfcfe8);
+}
+
+.error-page__meta code {
+    overflow-wrap: anywhere;
 }
 
 .error-page__actions {

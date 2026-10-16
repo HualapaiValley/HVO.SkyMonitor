@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class UpgradePreflightTests
+public sealed partial class UpgradePreflightTests
 {
     private const string CurrentIdentityMigration = "20260827053715_InitialIdentity";
     private const string LegacyIdentityMigration = "20251125021552_CreateLocalIdentity";

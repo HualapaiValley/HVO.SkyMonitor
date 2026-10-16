@@ -11,6 +11,10 @@ internal static class Program
         {
             return PrivilegedPreparation.RunInternal(args);
         }
+        if (args.Length > 0 && args[0] == PrivilegedPurgeNamespace.CommandName)
+        {
+            return PrivilegedPurgeNamespace.RunInternal(args);
+        }
 
         using var cancellation = new CancellationTokenSource();
         Console.CancelKeyPress += (_, eventArgs) =>

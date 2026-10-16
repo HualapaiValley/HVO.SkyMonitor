@@ -85,6 +85,79 @@ public sealed class CameraAgentLifecycleClientTests
     }
 
     [TestMethod]
+    public async Task ConfirmDrained_WaitsWhileCaptureProcessingIsLeased()
+    {
+        using var handler = new ScriptedHandler((_, sequence, _) => Task.FromResult(sequence switch
+        {
+            1 or 2 => State("Paused", 2, processingLeased: 1),
+            _ => State("Paused", 2, captureSequence: 5)
+        }));
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
+
+        var continuity = await client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None);
+
+        Assert.AreEqual(0, continuity.ProcessingLeased);
+        Assert.AreEqual(5, continuity.CaptureSequence);
+        Assert.AreEqual(3, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task ConfirmDrained_ReportsLeasedCaptureProcessingWhenTheDeadlineExpires()
+    {
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(State("Paused", 2, processingLeased: 2)));
+        var client = new CameraAgentLifecycleClient(
+            BaseAddress, handler, FastBudgets with { DrainDeadline = TimeSpan.FromMilliseconds(200) });
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
+
+        StringAssert.Contains(exception.Message, "before the lifecycle deadline", StringComparison.Ordinal);
+        StringAssert.Contains(exception.Message, "leased raw/lane/processing/outbox 0/0/2/0", StringComparison.Ordinal);
+        Assert.IsTrue(handler.RequestCount > 1, $"expected repeated reads before the deadline, saw {handler.RequestCount} requests");
+    }
+
+    [TestMethod]
+    public async Task ConfirmDrained_RecordsArchivedReplayWithoutWaitingForIt()
+    {
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(State("Paused", 2, replayPending: 4, replayLeased: 1)));
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
+
+        var continuity = await client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None);
+
+        Assert.AreEqual(4, continuity.ReplayPending);
+        Assert.AreEqual(1, continuity.ReplayLeased);
+        Assert.AreEqual(1, handler.RequestCount);
+    }
+
+    [TestMethod]
+    public async Task ConfirmDrained_ReportsNoArchivedReplayForAnImageThatOmitsIt()
+    {
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(State("Paused", 2, archivedReplay: false)));
+        var client = new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets);
+
+        var continuity = await client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None);
+
+        Assert.AreEqual(0, continuity.ReplayPending);
+        Assert.AreEqual(0, continuity.ReplayLeased);
+    }
+
+    [TestMethod]
+    public async Task ConfirmDrained_NamesArchivedReplayWhenTheDeadlineExpires()
+    {
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(
+            State("Paused", 2, processingLeased: 2, replayPending: 3, replayLeased: 1)));
+        var client = new CameraAgentLifecycleClient(
+            BaseAddress, handler, FastBudgets with { DrainDeadline = TimeSpan.FromMilliseconds(200) });
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => client.ConfirmDrainedAsync("lifecycle-token", CancellationToken.None));
+
+        StringAssert.Contains(exception.Message,
+            "leased raw/lane/processing/outbox 0/0/2/0; archived replay pending/leased 3/1, which the drain does not wait for)",
+            StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task ConfirmDrained_RetriesTransientReadFailuresUntilTheBoundaryAppears()
     {
         using var handler = new ScriptedHandler((_, sequence, _) => sequence switch
@@ -520,6 +593,26 @@ public sealed class CameraAgentLifecycleClientTests
     }
 
     [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task RecoveryRead_ReportsTheImagesReplayCatalogDeclaration(bool declared)
+    {
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(State("Paused", 2, catalogIndependent: declared)));
+        var result = await new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets)
+            .ReadContinuityAsync("lifecycle-token", CancellationToken.None);
+        Assert.AreEqual(declared, result.ReplayCatalogIndependent);
+    }
+
+    [TestMethod]
+    public async Task RecoveryRead_TreatsAnImageWithoutTheReplayDeclarationAsCatalogDependent()
+    {
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(State("Paused", 2)));
+        var result = await new CameraAgentLifecycleClient(BaseAddress, handler, FastBudgets)
+            .ReadContinuityAsync("lifecycle-token", CancellationToken.None);
+        Assert.IsFalse(result.ReplayCatalogIndependent);
+    }
+
+    [TestMethod]
     [DataRow(401)]
     [DataRow(503)]
     public async Task RecoveryRead_FailsClosedOnRejectedCredentialOrUnavailableState(int status)
@@ -584,15 +677,28 @@ public sealed class CameraAgentLifecycleClientTests
         long version,
         long captureSequence = 0,
         long rawLeased = 0,
-        bool initialized = true)
+        bool initialized = true,
+        long processingLeased = 0,
+        bool archivedReplay = true,
+        long replayPending = 0,
+        long replayLeased = 0,
+        bool? catalogIndependent = null)
     {
+        // An image that predates the archived-replay section omits it.
+        var replay = archivedReplay
+            ? $$""" "archivedReplay": { "value": { "pendingCount": {{replayPending}}, "leasedCount": {{replayLeased}} } },"""
+            : string.Empty;
+        // An image that predates the replay guard omits the declaration.
+        var independence = catalogIndependent is { } declared
+            ? $$""" "archivedReplayCatalogIndependent": {{(declared ? "true" : "false")}},"""
+            : string.Empty;
         var json = $$"""
             {
               "captureControl": { "value": { "state": "{{captureState}}", "version": {{version}}, "isInitialized": {{(initialized ? "true" : "false")}} } },
               "rawIngress": { "value": { "pendingCount": 0, "leasedCount": {{rawLeased}} } },
               "captureLanes": { "value": { "pendingCount": 0, "leasedCount": 0 } },
-              "captureProcessing": { "value": { "pendingCount": 0, "leasedCount": 0 } },
-              "artifactOutbox": { "value": { "pendingCount": 0, "leasedCount": 0 } },
+              "captureProcessing": { "value": { "pendingCount": {{processingLeased}}, "leasedCount": {{processingLeased}} } },
+              "artifactOutbox": { "value": { "pendingCount": 0, "leasedCount": 0 } },{{replay}}{{independence}}
               "captureSequence": {{captureSequence}}
             }
             """;

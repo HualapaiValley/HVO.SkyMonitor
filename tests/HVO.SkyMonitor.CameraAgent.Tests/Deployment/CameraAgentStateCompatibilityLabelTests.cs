@@ -38,7 +38,7 @@ public sealed class CameraAgentStateCompatibilityLabelTests
         Assert.AreEqual(
             SqliteRawCaptureJournal.CurrentSchemaVersion.ToString(CultureInfo.InvariantCulture),
             labels["io.hvo.skymonitor.raw-ingress-schema"]);
-        Assert.AreEqual(RawIngressV13Schema.MigrationContract, labels["io.hvo.skymonitor.raw-ingress-migration"]);
+        Assert.AreEqual(RawIngressV13Schema.RecoveryMigrationContract, labels["io.hvo.skymonitor.raw-ingress-migration"]);
     }
 
     [TestMethod]

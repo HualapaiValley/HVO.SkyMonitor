@@ -174,6 +174,7 @@ internal sealed record DurableRawProcessingInput(
 
 internal sealed record CaptureProcessingOperationalState(
     long PendingCount,
+    long LeasedCount,
     long RetryCount,
     long TerminalCount,
     DateTimeOffset? OldestPendingUtc,
@@ -181,7 +182,9 @@ internal sealed record CaptureProcessingOperationalState(
     long ReplayRetryCount,
     long ReplayTerminalCount,
     DateTimeOffset? OldestReplayPendingUtc,
-    long ReplayPendingBytes);
+    long ReplayPendingBytes,
+    long ReplayLeasedCount,
+    long ReplayAbandonedCount);
 
 internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 {
@@ -2389,7 +2392,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 SUM(CASE WHEN work.state IN ('pending', 'leased', 'retry_wait') THEN 1 ELSE 0 END),
                 SUM(CASE WHEN work.state = 'retry_wait' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN work.state = 'quarantined' THEN 1 ELSE 0 END),
-                MIN(CASE WHEN work.state IN ('pending', 'leased', 'retry_wait') THEN raw.exposure_started_unix_ms END)
+                MIN(CASE WHEN work.state IN ('pending', 'leased', 'retry_wait') THEN raw.exposure_started_unix_ms END),
+                SUM(CASE WHEN work.state = 'leased' THEN 1 ELSE 0 END)
             FROM capture_lane_work AS work
             JOIN raw_captures AS raw ON raw.raw_capture_row_id = work.raw_capture_row_id
             WHERE work.lane_name = 'standard';
@@ -2402,18 +2406,25 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         var oldest = await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false)
             ? (DateTimeOffset?)null
             : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3));
+        var leased = await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ? 0 : reader.GetInt64(4);
         await reader.DisposeAsync().ConfigureAwait(false);
         using var replay = connection.CreateCommand();
+        // A replay abandoned because this version no longer builds its frozen plan is final but not a failure: it
+        // is counted separately and never as terminal, so it does not degrade capture processing health.
         replay.CommandText = """
             SELECT
-                SUM(CASE WHEN state IN ('Pending', 'Leased', 'RetryWait') THEN 1 ELSE 0 END),
-                SUM(CASE WHEN state = 'RetryWait' THEN 1 ELSE 0 END),
-                SUM(CASE WHEN state IN ('Failed', 'Expired') THEN 1 ELSE 0 END),
+                SUM(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN 1 ELSE 0 END),
+                SUM(CASE WHEN work.state = 'RetryWait' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN work.state = 'Failed' OR (work.state = 'Expired'
+                    AND COALESCE(execution.failure_reason, '') <> $abandoned) THEN 1 ELSE 0 END),
                 MIN(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.accepted_unix_ms END),
-                SUM(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.payload_bytes ELSE 0 END)
+                SUM(CASE WHEN work.state IN ('Pending', 'Leased', 'RetryWait') THEN execution.payload_bytes ELSE 0 END),
+                SUM(CASE WHEN work.state = 'Leased' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN work.state = 'Expired' AND execution.failure_reason = $abandoned THEN 1 ELSE 0 END)
             FROM processing_replay_work work
             JOIN processing_executions execution ON execution.execution_id = work.execution_id;
             """;
+        replay.Parameters.AddWithValue("$abandoned", ProcessingReplayReasons.PlanSuperseded);
         using var replayReader = await replay.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         await replayReader.ReadAsync(cancellationToken).ConfigureAwait(false);
         var replayPending = await replayReader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false) ? 0 : replayReader.GetInt64(0);
@@ -2425,9 +2436,13 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         var replayPendingBytes = await replayReader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false)
             ? 0
             : replayReader.GetInt64(4);
+        var replayLeased = await replayReader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? 0 : replayReader.GetInt64(5);
+        var replayAbandoned = await replayReader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false)
+            ? 0
+            : replayReader.GetInt64(6);
         return new CaptureProcessingOperationalState(
-            pending, retry, terminal, oldest, replayPending, replayRetry, replayTerminal, replayOldest,
-            replayPendingBytes);
+            pending, leased, retry, terminal, oldest, replayPending, replayRetry, replayTerminal, replayOldest,
+            replayPendingBytes, replayLeased, replayAbandoned);
     }
 
     private async ValueTask<bool> InsertOutputAsync(

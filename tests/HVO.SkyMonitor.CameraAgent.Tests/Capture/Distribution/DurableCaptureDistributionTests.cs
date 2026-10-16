@@ -23,7 +23,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Distribution;
 [TestClass]
 [TestCategory("Integration")]
 [DoNotParallelize]
-public sealed class DurableCaptureDistributionTests
+public sealed partial class DurableCaptureDistributionTests
 {
     private static readonly CaptureLaneFaultPoint[] CompletionFaultPoints =
     [
@@ -982,8 +982,14 @@ public sealed class DurableCaptureDistributionTests
         }
 
         Assert.IsNull(await fixture.ClaimAsync("standard").ConfigureAwait(false));
-        Assert.IsNull(await fixture.ClaimAsync("secondary").ConfigureAwait(false));
+        // The required claim now closes ingress; exercise the optional store disposition directly.
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() => fixture.Ingress.InitializeAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+        Assert.IsNull(await fixture.Store.ClaimAsync(
+            fixture.Policy.Definitions.Single(lane => lane.Name == "secondary"),
+            "test-owner", fixture.Configuration, CancellationToken.None).ConfigureAwait(false));
         using var connection = await OpenAsync(fixture.Root).ConfigureAwait(false);
+        Assert.AreEqual("quarantined", await ScalarStringAsync(
+            connection, "SELECT state FROM raw_captures;").ConfigureAwait(false));
         Assert.AreEqual("quarantined", await ScalarStringAsync(
             connection, "SELECT state FROM capture_lane_work WHERE lane_name = 'standard';").ConfigureAwait(false));
         Assert.AreEqual("abandoned", await ScalarStringAsync(

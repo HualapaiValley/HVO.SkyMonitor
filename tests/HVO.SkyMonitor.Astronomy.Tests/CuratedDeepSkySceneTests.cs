@@ -142,6 +142,7 @@ public sealed partial class CuratedDeepSkySceneTests
         var bytes = ProjectedSceneJson.Serialize(scene);
         var parsed = ProjectedSceneJson.Parse(bytes).Scene;
         Assert.IsNotNull(parsed);
+        Assert.AreEqual(parsed.SchemaVersion, visible.ProjectedSceneSchemaVersion);
         Assert.AreEqual(scene.SceneIdentitySha256, parsed.SceneIdentitySha256);
         Assert.AreEqual(0, parsed.Selection.DeepSky!.MaximumOutlines);
         Assert.IsNull(ProjectedSceneJson.Parse(bytes, [ProjectedSceneV1.CurrentSchemaVersion,

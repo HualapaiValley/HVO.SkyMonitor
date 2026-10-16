@@ -261,8 +261,8 @@ internal static class CommandLine
         }
         var known = new HashSet<string>(StringComparer.Ordinal)
         {
-            "--instance-id", "--confirm-instance-id", "--operation-id", "--product-root", "--image-ref", "--image-archive",
-            "--image-archive-sha256", "--image-manifest", "--image-index", "--image-version",
+            "--instance-id", "--confirm-instance-id", "--confirm-removed-operation-id", "--operation-id", "--product-root",
+            "--image-ref", "--image-archive", "--image-archive-sha256", "--image-manifest", "--image-index", "--image-version",
             "--catalog-bundle", "--catalog-manifest", "--catalog-index",
             "--catalog-version", "--asset-base-url", "--channel"
         };
@@ -288,6 +288,8 @@ internal static class CommandLine
             NoDownload = flags.Contains("--no-download"),
             MigrationBackwardCompatible = flags.Contains("--migration-backward-compatible"),
             ConfirmationInstanceId = ParseGuid(Get(values, "--confirm-instance-id"), "--confirm-instance-id"),
+            ConfirmRemovedOperationId = ParseGuid(
+                Get(values, "--confirm-removed-operation-id"), "--confirm-removed-operation-id"),
             CatalogBundle = Get(values, "--catalog-bundle"),
             CatalogManifest = Get(values, "--catalog-manifest"),
             CatalogIndex = Get(values, "--catalog-index"),

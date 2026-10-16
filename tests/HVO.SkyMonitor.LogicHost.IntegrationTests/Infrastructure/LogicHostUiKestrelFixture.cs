@@ -26,13 +26,18 @@ internal sealed class LogicHostUiKestrelFixture : IAsyncDisposable
 
     internal static async Task<LogicHostUiKestrelFixture> CreateAsync(
         Issue107RuntimeEvidenceCollector? evidence = null,
-        bool enableArtifactResponseThrottle = false)
+        bool enableArtifactResponseThrottle = false,
+        Action<DbContextOptionsBuilder>? configureDatabase = null)
     {
         var factory = AssemblyHooks.Fixture.CreateKestrelFactory(
-            evidence is null ? null : options =>
+            evidence is null && configureDatabase is null ? null : options =>
             {
-                options.EnableSensitiveDataLogging(false);
-                options.AddInterceptors(evidence);
+                if (evidence is not null)
+                {
+                    options.EnableSensitiveDataLogging(false);
+                    options.AddInterceptors(evidence);
+                }
+                configureDatabase?.Invoke(options);
             },
             services =>
             {

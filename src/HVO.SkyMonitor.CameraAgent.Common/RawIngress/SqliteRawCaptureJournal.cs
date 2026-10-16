@@ -11,7 +11,7 @@ using System.Text.Json.Serialization;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
-internal sealed class SqliteRawCaptureJournal(
+internal sealed partial class SqliteRawCaptureJournal(
     string databasePath,
     int busyTimeoutSeconds,
     Action<TimeSpan>? lockWaitRecorder = null,
@@ -24,8 +24,10 @@ internal sealed class SqliteRawCaptureJournal(
     TransientDetectionOptions? transientOptions = null,
     Action? inspectionSourceOpenedSeam = null)
 {
-    internal const int CurrentSchemaVersion = 14;
+    // v15 fences readers that do not preserve audited evidence dispositions and retention holds.
+    internal const int CurrentSchemaVersion = 15;
     private const int PreviousSchemaVersion = 13;
+    private const int PreviousRecoverySchemaVersion = 14;
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
         new(() => CreateCanonicalSchemaDefinitions(includeProfiles: true));
     private static readonly Lazy<Dictionary<string, string>> PreviousSchemaDefinitions =
@@ -128,7 +130,7 @@ internal sealed class SqliteRawCaptureJournal(
                     $"Raw ingress schema {version} is newer than supported schema {CurrentSchemaVersion}.");
             }
             initializeSchema = version == 0 && inspection.SchemaObjectCount == 0;
-            if (version != CurrentSchemaVersion && version != PreviousSchemaVersion && !initializeSchema)
+            if (version != CurrentSchemaVersion && version != PreviousSchemaVersion && version != PreviousRecoverySchemaVersion && !initializeSchema)
             {
                 throw new InvalidOperationException(
                     $"Raw ingress schema {version} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
@@ -143,7 +145,7 @@ internal sealed class SqliteRawCaptureJournal(
             "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
             cancellationToken).ConfigureAwait(false);
         if ((initializeSchema && (writableVersion != 0 || writableSchemaObjectCount != 0)) ||
-            (!initializeSchema && writableVersion != CurrentSchemaVersion && writableVersion != PreviousSchemaVersion))
+            (!initializeSchema && writableVersion != CurrentSchemaVersion && writableVersion != PreviousSchemaVersion && writableVersion != PreviousRecoverySchemaVersion))
         {
             throw new InvalidOperationException(
                 $"Raw ingress schema {writableVersion} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
@@ -180,18 +182,19 @@ internal sealed class SqliteRawCaptureJournal(
                 throw;
             }
         }
-        else if (writableVersion == PreviousSchemaVersion)
+        else if (writableVersion is PreviousSchemaVersion or PreviousRecoverySchemaVersion)
         {
             try
             {
                 using var transaction = BeginImmediate(connection);
-                if (await ExecuteScalarLongAsync(connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false) != PreviousSchemaVersion)
+                if (await ExecuteScalarLongAsync(connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false) != writableVersion)
                 {
                     throw new InvalidOperationException("Raw ingress schema changed before migration.");
                 }
-                await VerifyMigrationSourceAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await VerifyMigrationSourceAsync(connection, transaction, (int)writableVersion, cancellationToken).ConfigureAwait(false);
                 _faultInjector.Inject(RawIngressFaultPoint.AfterMigrationTransactionBegan);
-                await ExecuteNonQueryAsync(connection, transaction, NamedProfileSchemaSql, cancellationToken).ConfigureAwait(false);
+                if (writableVersion == PreviousSchemaVersion)
+                    await ExecuteNonQueryAsync(connection, transaction, NamedProfileSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(connection, transaction, $"PRAGMA user_version = {CurrentSchemaVersion};", cancellationToken).ConfigureAwait(false);
                 _faultInjector.Inject(RawIngressFaultPoint.BeforeMigrationCommit);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -358,7 +361,7 @@ internal sealed class SqliteRawCaptureJournal(
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT payload_relative_path, sidecar_relative_path FROM raw_captures WHERE capture_id = $capture_id;";
+        command.CommandText = "SELECT payload_relative_path, sidecar_relative_path, state FROM raw_captures WHERE capture_id = $capture_id;";
         command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -372,7 +375,7 @@ internal sealed class SqliteRawCaptureJournal(
             root, reader.GetString(1).Replace('/', Path.DirectorySeparatorChar)));
         RawIngressFileStore.EnsureNoSymbolicLinks(root, payload);
         RawIngressFileStore.EnsureNoSymbolicLinks(root, sidecar);
-        return (true, File.Exists(payload) && File.Exists(sidecar));
+        return (true, reader.GetString(2) == "committed" && File.Exists(payload) && File.Exists(sidecar));
     }
 
     internal async Task<bool> IsCaptureArtifactCommittedAsync(
@@ -520,7 +523,13 @@ internal sealed class SqliteRawCaptureJournal(
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*), COALESCE(SUM(payload_length), 0), MIN(durable_ingress_unix_ms) FROM raw_captures WHERE retention_hold = 1;";
+        command.CommandText = """
+            SELECT COUNT(*), COALESCE(SUM(payload_length), 0), MIN(durable_ingress_unix_ms)
+            FROM raw_captures WHERE retention_hold = 1 OR EXISTS (
+                SELECT 1 FROM raw_capture_stage_events disposition
+                WHERE disposition.raw_capture_row_id = raw_captures.raw_capture_row_id
+                  AND disposition.stage_key GLOB 'raw-evidence-release.*');
+            """;
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
         DateTimeOffset? oldest = await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false)
@@ -558,7 +567,7 @@ internal sealed class SqliteRawCaptureJournal(
                        raw.descriptor_sha256, raw.manifest_sha256, raw.payload_sha256, raw.payload_length,
                        raw.payload_relative_path, raw.sidecar_relative_path, raw.manifest_json,
                        raw.exposure_started_unix_ms, raw.durable_ingress_unix_ms, raw.state,
-                       raw.retention_hold, raw.evidence_origin, raw.raw_capture_row_id
+                       raw.retention_hold, raw.evidence_origin, raw.raw_capture_row_id, 0
                 FROM raw_captures raw
                 JOIN capture_lane_work work ON work.raw_capture_row_id = raw.raw_capture_row_id
                                              AND work.lane_name = 'standard'
@@ -577,7 +586,10 @@ internal sealed class SqliteRawCaptureJournal(
                        descriptor_sha256, manifest_sha256, payload_sha256, payload_length,
                        payload_relative_path, sidecar_relative_path, manifest_json,
                        exposure_started_unix_ms, durable_ingress_unix_ms, state, retention_hold, evidence_origin,
-                       raw_capture_row_id
+                       raw_capture_row_id,
+                       EXISTS (SELECT 1 FROM raw_capture_stage_events terminal
+                           WHERE terminal.raw_capture_row_id = raw_captures.raw_capture_row_id
+                             AND terminal.stage_key = 'raw-evidence-written-off')
                 FROM raw_captures
                 WHERE raw_capture_row_id >= $cursor AND raw_capture_row_id <= $maximum
                 ORDER BY raw_capture_row_id LIMIT 1;
@@ -594,7 +606,7 @@ internal sealed class SqliteRawCaptureJournal(
             using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
             {
                 if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) yield break;
-                entry = ReadEntry(reader);
+                entry = ReadEntry(reader) with { EvidenceWrittenOff = reader.GetInt64(17) != 0 };
                 rowId = reader.GetInt64(16);
             }
             yield return entry;
@@ -693,7 +705,10 @@ internal sealed class SqliteRawCaptureJournal(
         command.CommandText = """
             SELECT raw_artifact_id, payload_relative_path, sidecar_relative_path
             FROM raw_captures
-            WHERE retention_hold = 1
+            WHERE retention_hold = 1 OR EXISTS (
+                SELECT 1 FROM raw_capture_stage_events disposition
+                WHERE disposition.raw_capture_row_id = raw_captures.raw_capture_row_id
+                  AND disposition.stage_key GLOB 'raw-evidence-release.*')
             ORDER BY agent_id, capture_sequence;
             """;
         var holds = new List<RawIngressRetentionHold>();
@@ -1459,25 +1474,6 @@ internal sealed class SqliteRawCaptureJournal(
         }
     }
 
-    internal Task MarkCommittedAsync(Guid captureId, CancellationToken cancellationToken)
-        => TrackWriteAsync("evidence-repair", () => MarkCommittedCoreAsync(captureId, cancellationToken));
-
-    private async Task MarkCommittedCoreAsync(Guid captureId, CancellationToken cancellationToken)
-    {
-        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            UPDATE raw_captures
-            SET state = 'committed', failure_reason = NULL
-            WHERE capture_id = $capture_id;
-            """;
-        command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
-        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
-        {
-            throw new InvalidOperationException("Raw ingress repair did not identify exactly one capture.");
-        }
-    }
-
     internal async Task<(long QuarantineCount, long QuarantineBytes, long FailureCount)> ReadHealthTotalsAsync(
         CancellationToken cancellationToken)
     {
@@ -1487,7 +1483,10 @@ internal sealed class SqliteRawCaptureJournal(
             SELECT
                 (SELECT COUNT(*) FROM raw_ingress_reconciliation WHERE outcome = 'quarantined'),
                 (SELECT COALESCE(SUM(observed_bytes), 0) FROM raw_ingress_reconciliation WHERE outcome = 'quarantined'),
-                (SELECT COUNT(*) FROM raw_captures WHERE state != 'committed');
+                (SELECT COUNT(*) FROM raw_captures raw WHERE state != 'committed'
+                    AND NOT EXISTS (SELECT 1 FROM raw_capture_stage_events disposition
+                        WHERE disposition.raw_capture_row_id = raw.raw_capture_row_id
+                          AND disposition.stage_key = 'raw-evidence-written-off'));
             """;
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
@@ -1888,15 +1887,16 @@ internal sealed class SqliteRawCaptureJournal(
     }
 
     private static async Task VerifyMigrationSourceAsync(
-        SqliteConnection connection, SqliteTransaction transaction, CancellationToken cancellationToken)
+        SqliteConnection connection, SqliteTransaction transaction, int sourceVersion, CancellationToken cancellationToken)
     {
         if (!string.Equals(await ExecuteScalarStringAsync(connection, "PRAGMA integrity_check;", cancellationToken).ConfigureAwait(false), "ok", StringComparison.Ordinal) ||
             await ExecuteScalarLongAsync(connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;", cancellationToken).ConfigureAwait(false) != 0)
         {
-            throw new InvalidDataException("Raw ingress v13 migration source failed integrity or foreign-key validation.");
+            throw new InvalidDataException($"Raw ingress v{sourceVersion} migration source failed integrity or foreign-key validation.");
         }
         await ValidateCanonicalSchemaDefinitionsAsync(
-            connection, transaction, PreviousSchemaDefinitions.Value, PreviousSchemaVersion, cancellationToken).ConfigureAwait(false);
+            connection, transaction, sourceVersion == PreviousSchemaVersion ? PreviousSchemaDefinitions.Value : CanonicalSchemaDefinitions.Value,
+            sourceVersion, cancellationToken).ConfigureAwait(false);
     }
 
     internal static async Task ValidateCanonicalSchemaDefinitionsAsync(
