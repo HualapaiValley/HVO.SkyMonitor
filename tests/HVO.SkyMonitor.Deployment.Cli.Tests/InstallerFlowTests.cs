@@ -617,6 +617,221 @@ public sealed class InstallerFlowTests
     }
 
     /// <summary>
+    /// The post-start health wait and owner bootstrap reach the instance at the address it was bound to, the same URL
+    /// the result reports. A LAN-bound instance is not listening on loopback, so probing 127.0.0.1 always failed.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("192.0.2.10", "192.0.2.10", DisplayName = "lan-bind")]
+    [DataRow("0.0.0.0", "localhost", DisplayName = "wildcard-bind")]
+    public async Task InstallAsync_ProbesHealthAndOwnerBootstrapAtTheBoundAddress(string bindAddress, string expectedHost)
+    {
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
+        if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
+        {
+            Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract.");
+        }
+
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-bind-{Guid.NewGuid():N}");
+        var imageId = $"sha256:{new string('b', 64)}";
+        var request = new InstallRequest
+        {
+            AllowTestProductRoot = true,
+            InstanceId = Guid.Parse("5d3f0c8e-6a1b-4f27-9e44-2c7d8b9a1e60"),
+            FriendlyName = "LAN Camera",
+            OwnerEmail = "owner@example.test",
+            ProductRoot = root,
+            CatalogBundle = bundle,
+            ImageReference = imageId,
+            BindAddress = bindAddress,
+            AcknowledgePlaintextHttp = true,
+            Port = SelectFreePort()
+        };
+        var runner = new InstallerProcessRunner(imageId, root, request.InstanceId.Value);
+        var probe = new RecordingPortProbe();
+        var owner = new InstallerOwnerClient();
+        var probed = new List<Uri>();
+        try
+        {
+            var result = await CameraAgentInstaller.InstallAsync(
+                request,
+                runner,
+                uri =>
+                {
+                    probed.Add(uri);
+                    return owner;
+                },
+                RuntimeUid,
+                RuntimeGid,
+                CancellationToken.None,
+                portAvailabilityProbe: probe.Probe);
+
+            var expected = new Uri($"http://{expectedHost}:{request.Port}/");
+            Assert.AreEqual(InstallationOutcome.Installed, result.Outcome);
+            Assert.AreEqual(expected, result.Url);
+            Assert.IsNotEmpty(probed);
+            CollectionAssert.AreEqual(Enumerable.Repeat(expected, probed.Count).ToArray(), probed.ToArray());
+            Assert.AreEqual(bindAddress, probe.LastBindAddress);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                SafeFileSystem.MakeTreeOwnerWritable(root);
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// A host whose Docker cannot enforce the Compose limits, lacks tar, and is short of space on both filesystems is
+    /// refused by both install and install --dry-run with every finding in one report, before anything is created.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstallAsync_UnmetHostPrerequisites_RefuseInstallAndDryRunBeforeAnythingIsCreated()
+    {
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
+        if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
+        {
+            Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract.");
+        }
+
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-prerequisites-{Guid.NewGuid():N}", "product");
+        var imageId = $"sha256:{new string('b', 64)}";
+        var request = new InstallRequest
+        {
+            AllowTestProductRoot = true,
+            InstanceId = Guid.Parse("9e1c4a7b-2f35-4d68-8b0a-6c3e5f7d9a12"),
+            FriendlyName = "Pi Camera",
+            OwnerEmail = "owner@example.test",
+            ProductRoot = root,
+            CatalogBundle = bundle,
+            ImageReference = imageId,
+            Port = SelectFreePort()
+        };
+        var runner = new InstallerProcessRunner(imageId, root, request.InstanceId.Value)
+        {
+            DockerInfo = "{\"OSType\":\"linux\",\"Architecture\":\"amd64\",\"ID\":\"daemon-1\",\"Name\":\"pi\",\"ServerVersion\":\"29.0\"," +
+                         "\"MemoryLimit\":false,\"CpuCfsQuota\":false,\"CgroupVersion\":\"2\",\"DockerRootDir\":\"/srv/docker\"," +
+                         "\"Warnings\":[\"WARNING: No memory limit support\",\"WARNING: No cpu cfs quota support\"]}"
+        };
+        var host = new FakeHostEnvironment
+        {
+            Tar = false,
+            Controllers = "cpuset cpu io pids",
+            FileSystems =
+            {
+                [root] = new HostFileSystemMeasurement("/srv/data", "259:2", 4096),
+                ["/srv/docker"] = new HostFileSystemMeasurement("/srv/docker", "259:3", 4096)
+            }
+        };
+        string[] expectedCodes =
+        [
+            "docker-memory-limit-unsupported", "docker-cpu-quota-unsupported", "docker-pids-limit-unsupported",
+            "tar-missing", "product-root-storage-insufficient", "docker-root-storage-insufficient"
+        ];
+        try
+        {
+            foreach (var dryRun in new[] { true, false })
+            {
+                host.Measured.Clear();
+                var refused = await Assert.ThrowsExactlyAsync<HostPrerequisiteException>(() => CameraAgentInstaller.InstallAsync(
+                    request with { DryRun = dryRun },
+                    runner,
+                    _ => throw new AssertFailedException("A refused host must never be probed."),
+                    RuntimeUid,
+                    RuntimeGid,
+                    CancellationToken.None,
+                    portAvailabilityProbe: (_, _) => throw new AssertFailedException("A refused host must never admit a port."),
+                    hostEnvironment: host));
+
+                var report = refused.Report ?? throw new AssertFailedException("The refusal carried no report.");
+                Assert.IsFalse(report.Satisfied, $"dry-run={dryRun}");
+                CollectionAssert.AreEqual(expectedCodes, report.Findings.Select(static finding => finding.Code).ToArray(), $"dry-run={dryRun}");
+                CollectionAssert.AreEqual(new[] { root, "/srv/docker" }, host.Measured.ToArray(), $"dry-run={dryRun}");
+                foreach (var code in expectedCodes)
+                {
+                    StringAssert.Contains(refused.Message, code, StringComparison.Ordinal);
+                }
+                Assert.IsFalse(Directory.Exists(Path.GetDirectoryName(root)), $"dry-run={dryRun} created the product root.");
+                Assert.AreEqual(0, runner.ComposeUpCount);
+            }
+        }
+        finally
+        {
+            var parent = Path.GetDirectoryName(root)!;
+            if (Directory.Exists(parent))
+            {
+                SafeFileSystem.MakeTreeOwnerWritable(parent);
+                Directory.Delete(parent, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The product-root threshold the installer computes is twice the catalog bundle and image archive plus 1 GiB:
+    /// one byte short is refused naming exactly that requirement, and exactly that much is admitted.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstallAsync_ProductRootStorageThreshold_IsTwiceTheBundleAndArchivePlusHeadroom()
+    {
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
+        if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
+        {
+            Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract.");
+        }
+
+        var scratch = Path.Combine(Path.GetTempPath(), $"hvo-installer-budget-{Guid.NewGuid():N}");
+        var root = Path.Combine(scratch, "product");
+        var archive = Path.Combine(scratch, "cameraagent.tar");
+        Directory.CreateDirectory(scratch);
+        await File.WriteAllBytesAsync(archive, new byte[4096]);
+        File.SetUnixFileMode(archive, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var imageId = $"sha256:{new string('b', 64)}";
+        var request = new InstallRequest
+        {
+            AllowTestProductRoot = true,
+            InstanceId = Guid.Parse("3c6f1d2e-8a47-4b59-9d10-7e2f4a6b8c31"),
+            FriendlyName = "Budget Camera",
+            OwnerEmail = "owner@example.test",
+            ProductRoot = root,
+            CatalogBundle = bundle,
+            ImageReference = imageId,
+            ImageArchive = archive,
+            ImageArchiveSha256 = await SafeFileSystem.ComputeSha256Async(archive, CancellationToken.None),
+            DryRun = true,
+            Port = SelectFreePort()
+        };
+        var bundleBytes = Directory.EnumerateFiles(bundle).Sum(static path => new FileInfo(path).Length);
+        var required = (2 * (bundleBytes + 4096)) + HostPrerequisites.StorageHeadroomBytes;
+        var runner = new InstallerProcessRunner(imageId, root, request.InstanceId.Value);
+        try
+        {
+            var shortHost = new FakeHostEnvironment { FileSystems = { [root] = new HostFileSystemMeasurement("/srv/data", "259:2", required - 1) } };
+            var refused = await Assert.ThrowsExactlyAsync<HostPrerequisiteException>(() => CameraAgentInstaller.InstallAsync(
+                request, runner, _ => new InstallerOwnerClient(), RuntimeUid, RuntimeGid, CancellationToken.None,
+                portAvailabilityProbe: (_, _) => { }, hostEnvironment: shortHost));
+            var finding = refused.Report!.Findings.Single();
+            Assert.AreEqual("product-root-storage-insufficient", finding.Code);
+            StringAssert.Contains(finding.Expected, $"at least {required} bytes", StringComparison.Ordinal);
+
+            var exactHost = new FakeHostEnvironment { FileSystems = { [root] = new HostFileSystemMeasurement("/srv/data", "259:2", required) } };
+            var planned = await CameraAgentInstaller.InstallAsync(
+                request, runner, _ => new InstallerOwnerClient(), RuntimeUid, RuntimeGid, CancellationToken.None,
+                portAvailabilityProbe: (_, _) => { }, hostEnvironment: exactHost);
+            Assert.AreEqual(InstallationOutcome.Planned, planned.Outcome);
+            Assert.IsFalse(Directory.Exists(root));
+        }
+        finally
+        {
+            SafeFileSystem.MakeTreeOwnerWritable(scratch);
+            Directory.Delete(scratch, recursive: true);
+        }
+    }
+
+    /// <summary>
     /// Reserves an OS-selected loopback port and releases it, so no fixture depends on a fixed host port.
     /// </summary>
     private static int SelectFreePort()
@@ -693,9 +908,16 @@ public sealed class InstallerFlowTests
         }
     }
 
+    /// <summary>A daemon that enforces every Compose resource limit, as a supported installation host's does.</summary>
+    private const string SupportedDockerInfo =
+        "{\"OSType\":\"linux\",\"Architecture\":\"amd64\",\"ID\":\"daemon-1\",\"Name\":\"host\",\"ServerVersion\":\"29.0\"," +
+        "\"MemoryLimit\":true,\"CpuCfsQuota\":true,\"PidsLimit\":true,\"CgroupVersion\":\"2\",\"DockerRootDir\":\"/var/lib/docker\",\"Warnings\":null}";
+
     private sealed class InstallerProcessRunner(string imageId, string root, Guid instanceId) : IProcessRunner
     {
         public int ComposeUpCount { get; private set; }
+
+        public string DockerInfo { get; init; } = SupportedDockerInfo;
 
         public Task<ProcessResult> RunAsync(
             string fileName,
@@ -711,7 +933,7 @@ public sealed class InstallerFlowTests
             if (arguments.Count >= 2 && arguments[0] == "--host") arguments = arguments.Skip(2).ToArray();
             if (arguments.SequenceEqual(["info", "--format", "{{json .}}"], StringComparer.Ordinal))
             {
-                return Success("{\"OSType\":\"linux\",\"Architecture\":\"amd64\",\"ID\":\"daemon-1\",\"Name\":\"host\",\"ServerVersion\":\"29.0\"}");
+                return Success(DockerInfo);
             }
             if (arguments.SequenceEqual(["compose", "version", "--short"], StringComparer.Ordinal))
             {

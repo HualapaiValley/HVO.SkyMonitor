@@ -66,7 +66,7 @@ internal sealed record InstallRequest
     public CameraAgentReplayProfile ReplayProfile { get; init; } = CameraAgentReplayProfile.InProcess;
 
     /// <summary>
-    /// Whether this invocation may install below a product root other than <see cref="DefaultProductRoot"/>.
+    /// Whether this invocation may install below a product root other than <see cref="ProductionProductRoot"/>.
     /// Deny by default, decided once where the process boundary is crossed, and carried on the request rather
     /// than reread from process state, so a request validated as admitted stays admitted and one validated as
     /// refused cannot become admitted by anything that runs afterwards. It is deliberately not serialized: an
@@ -74,6 +74,18 @@ internal sealed record InstallRequest
     /// </summary>
     [JsonIgnore]
     public bool AllowTestProductRoot { get; init; }
+
+    /// <summary>
+    /// The production product root this invocation resolved at the command-line boundary: the root a valid host policy
+    /// names, or <see cref="DefaultProductRoot"/> without one. Like <see cref="AllowTestProductRoot"/> it is decided
+    /// once, carried on the request, and never serialized, so an installer configuration file cannot redirect it.
+    /// </summary>
+    [JsonIgnore]
+    public string ProductionProductRoot { get; init; } = DefaultProductRoot;
+
+    /// <summary>Whether this request installs into the production product root rather than an admitted test root.</summary>
+    [JsonIgnore]
+    public bool IsProductionRoot => string.Equals(ProductRoot, ProductionProductRoot, StringComparison.Ordinal);
 
     private readonly string _ownerEmail = OwnerCredentialDefaults.Email;
 
@@ -118,10 +130,7 @@ internal sealed record InstallRequest
         }
 
         ValidateAbsolutePath(ProductRoot, "--product-root");
-        if (!string.Equals(ProductRoot, DefaultProductRoot, StringComparison.Ordinal) && !AllowTestProductRoot)
-        {
-            throw new InstallUsageException("--product-root must be /var/lib/hvo/skymonitor outside isolated tests.");
-        }
+        ProductRootAdmission.Validate(ProductRoot, ProductionProductRoot, AllowTestProductRoot);
         if (CatalogManifest is not null && CatalogIndex is not null)
         {
             throw new InstallUsageException("--catalog-manifest cannot be combined with --catalog-index.");
@@ -293,6 +302,28 @@ internal sealed record InstallRequest
         }
     }
 
+}
+
+/// <summary>
+/// The one rule every command applies to its product root: an absolute normalized path other than <c>/</c> that is the
+/// production product root resolved at the command-line boundary, unless the invocation was admitted for a test root.
+/// </summary>
+internal static class ProductRootAdmission
+{
+    public static void Validate(string productRoot, string productionProductRoot, bool allowTestProductRoot)
+    {
+        ArgumentNullException.ThrowIfNull(productRoot);
+        if (!Path.IsPathFullyQualified(productRoot) || productRoot.Contains("//", StringComparison.Ordinal) ||
+            Path.GetFullPath(productRoot) != productRoot.TrimEnd('/') || productRoot == "/")
+        {
+            throw new InstallUsageException("--product-root must be an absolute normalized path other than root.");
+        }
+        if (!string.Equals(productRoot, productionProductRoot, StringComparison.Ordinal) && !allowTestProductRoot)
+        {
+            throw new InstallUsageException(
+                $"--product-root must be the production product root '{productionProductRoot}' outside isolated tests.");
+        }
+    }
 }
 
 internal sealed class InstallUsageException : Exception

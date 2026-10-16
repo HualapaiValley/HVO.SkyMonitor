@@ -23,27 +23,43 @@ internal static class CommandLine
 
     /// <summary>Parses with admission stated explicitly, so a caller never has to mutate process state.</summary>
     internal static DeploymentCommand ParseCommand(string[] args, bool allowTestProductRoot)
+        => ParseCommand(args, new CommandLineContext(allowTestProductRoot, HostPolicyLocation.Production));
+
+    /// <summary>
+    /// Parses with admission and the host policy location stated explicitly. The host policy is read exactly once,
+    /// here, and the production product root it resolves travels on the request like test-root admission does.
+    /// </summary>
+    internal static DeploymentCommand ParseCommand(string[] args, CommandLineContext context)
     {
+        ArgumentNullException.ThrowIfNull(args);
+        ArgumentNullException.ThrowIfNull(context);
+        var production = HostProductRootPolicy.Resolve(context.HostPolicy).Path;
+        var allowTestProductRoot = context.AllowTestProductRoot;
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "install")
         {
-            return new InstallDeploymentCommand(Parse(args, allowTestProductRoot))
+            return new InstallDeploymentCommand(Parse(args, allowTestProductRoot, production))
             {
-                AllowTestProductRoot = allowTestProductRoot
+                AllowTestProductRoot = allowTestProductRoot,
+                ProductionProductRoot = production
             };
         }
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "recover-owner")
         {
-            return ParseOwnerRecovery(args, allowTestProductRoot);
+            return ParseOwnerRecovery(args, allowTestProductRoot, production);
         }
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "preflight")
         {
-            return ParseStatePreflight(args, allowTestProductRoot);
+            return ParseStatePreflight(args, allowTestProductRoot, production);
         }
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "reset-state")
         {
-            return ParseStateReset(args, allowTestProductRoot);
+            return ParseStateReset(args, allowTestProductRoot, production);
         }
-        return ParseLifecycle(args, allowTestProductRoot);
+        if (args.Length >= 1 && args[0] == "host")
+        {
+            return ParseHost(args, context, production);
+        }
+        return ParseLifecycle(args, allowTestProductRoot, production);
     }
 
     public static InstallRequest Parse(string[] args)
@@ -51,6 +67,10 @@ internal static class CommandLine
 
     /// <summary>Parses with admission stated explicitly, so a caller never has to mutate process state.</summary>
     internal static InstallRequest Parse(string[] args, bool allowTestProductRoot)
+        => Parse(args, allowTestProductRoot, HostProductRootPolicy.Resolve(HostPolicyLocation.Production).Path);
+
+    /// <summary>Parses with admission and the resolved production product root stated explicitly.</summary>
+    internal static InstallRequest Parse(string[] args, bool allowTestProductRoot, string productionProductRoot)
     {
         if (args.Length < 2 || args[0] != "cameraagent" || args[1] != "install")
         {
@@ -96,9 +116,21 @@ internal static class CommandLine
         InstallRequest request;
         if (configPath is not null)
         {
-            using var stream = SafeFileSystem.OpenRegularFileRead(configPath);
-            request = JsonSerializer.Deserialize(stream, InstallRequestJsonContext.Default.InstallRequest)
+            byte[] configuration;
+            using (var stream = SafeFileSystem.OpenRegularFileRead(configPath))
+            using (var buffer = new MemoryStream())
+            {
+                stream.CopyTo(buffer);
+                configuration = buffer.ToArray();
+            }
+            request = JsonSerializer.Deserialize(configuration, InstallRequestJsonContext.Default.InstallRequest)
                 ?? throw new InstallUsageException("The installer configuration is empty.");
+            // A configuration that does not name a product root installs into the production root this host's policy
+            // resolved, exactly as the command-line form does; one that names a root keeps it and is validated.
+            if (!NamesProductRoot(configuration))
+            {
+                request = request with { ProductRoot = productionProductRoot };
+            }
         }
         else
         {
@@ -110,7 +142,7 @@ internal static class CommandLine
                 OwnerEmail = Get(values, "--owner-email") ?? OwnerCredentialDefaults.Email,
                 BindAddress = Get(values, "--bind-address") ?? "127.0.0.1",
                 Port = ParseInt(Get(values, "--port"), 5130, "--port"),
-                ProductRoot = Get(values, "--product-root") ?? InstallRequest.DefaultProductRoot,
+                ProductRoot = Get(values, "--product-root") ?? productionProductRoot,
                 CatalogBundle = Get(values, "--catalog-bundle"),
                 CatalogManifest = Get(values, "--catalog-manifest"),
                 CatalogIndex = Get(values, "--catalog-index"),
@@ -137,6 +169,7 @@ internal static class CommandLine
         request = request with
         {
             AllowTestProductRoot = allowTestProductRoot,
+            ProductionProductRoot = productionProductRoot,
             DryRun = flags.Contains("--dry-run") || request.DryRun,
             Resume = flags.Contains("--resume") || request.Resume,
             Json = flags.Contains("--json") || request.Json,
@@ -146,6 +179,20 @@ internal static class CommandLine
         };
         request.Validate();
         return request;
+    }
+
+    private static bool NamesProductRoot(byte[] configuration)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(configuration);
+            return document.RootElement.ValueKind == JsonValueKind.Object &&
+                   document.RootElement.TryGetProperty("productRoot", out _);
+        }
+        catch (JsonException exception)
+        {
+            throw new InstallUsageException("The installer configuration is not valid JSON.", exception);
+        }
     }
 
     private static void RejectUnknown(IEnumerable<string> options)
@@ -221,7 +268,25 @@ internal static class CommandLine
             _ => throw new InstallUsageException("--replay-profile must be in-process or local-runner.")
         };
 
-    private static LifecycleRequest ParseLifecycle(string[] args, bool allowTestProductRoot)
+    private static HostProductRootRequest ParseHost(string[] args, CommandLineContext context, string productionProductRoot)
+    {
+        if (args.Length < 3 || args[1] != "set-product-root" || args[2].StartsWith("--", StringComparison.Ordinal))
+        {
+            throw new InstallUsageException("Usage: hvo-skymonitor host set-product-root <absolute-path> [--json]");
+        }
+        var (values, flags) = ParseOptions(args, 3, ["--json"]);
+        RejectUnknown(values, []);
+        var request = new HostProductRootRequest(args[2], flags.Contains("--json"))
+        {
+            AllowTestProductRoot = context.AllowTestProductRoot,
+            ProductionProductRoot = productionProductRoot,
+            PolicyLocation = context.HostPolicy
+        };
+        request.Validate();
+        return request;
+    }
+
+    private static LifecycleRequest ParseLifecycle(string[] args, bool allowTestProductRoot, string productionProductRoot)
     {
         var (operation, optionOffset) = args switch
         {
@@ -237,7 +302,7 @@ internal static class CommandLine
             ["catalog", "gc", ..] => (LifecycleOperationKind.CatalogGarbageCollect, 2),
             ["catalog", "check", ..] => (LifecycleOperationKind.CatalogCheck, 2),
             _ => throw new InstallUsageException(
-                "Usage: hvo-skymonitor status|cameraagent <install|recover-owner|preflight|reset-state|upgrade|rollback|reinstall|uninstall|purge>|catalog <install|select|rollback|gc|check> [options]")
+                "Usage: hvo-skymonitor status|cameraagent <install|recover-owner|preflight|reset-state|upgrade|rollback|reinstall|uninstall|purge>|catalog <install|select|rollback|gc|check>|host set-product-root <path> [options]")
         };
         var values = new Dictionary<string, string?>(StringComparer.Ordinal);
         var flags = new HashSet<string>(StringComparer.Ordinal);
@@ -271,12 +336,13 @@ internal static class CommandLine
         var request = new LifecycleRequest(
             operation,
             ParseGuid(Get(values, "--instance-id"), "--instance-id"),
-            Get(values, "--product-root") ?? InstallRequest.DefaultProductRoot,
+            Get(values, "--product-root") ?? productionProductRoot,
             flags.Contains("--dry-run"),
             flags.Contains("--resume"),
             flags.Contains("--json"))
         {
             AllowTestProductRoot = allowTestProductRoot,
+            ProductionProductRoot = productionProductRoot,
             RestoreOnly = flags.Contains("--restore-only"),
             RecoveryOperationId = ParseGuid(Get(values, "--operation-id"), "--operation-id"),
             ImageReference = Get(values, "--image-ref"),
@@ -305,7 +371,8 @@ internal static class CommandLine
         return request;
     }
 
-    private static CameraAgentStatePreflightRequest ParseStatePreflight(string[] args, bool allowTestProductRoot)
+    private static CameraAgentStatePreflightRequest ParseStatePreflight(
+        string[] args, bool allowTestProductRoot, string productionProductRoot)
     {
         var (values, flags) = ParseOptions(args, 2, ["--json", "--no-download"]);
         RejectUnknown(values, [
@@ -314,11 +381,12 @@ internal static class CommandLine
         ]);
         var request = new CameraAgentStatePreflightRequest(
             ParseGuid(Get(values, "--instance-id"), "--instance-id"),
-            Get(values, "--product-root") ?? InstallRequest.DefaultProductRoot,
+            Get(values, "--product-root") ?? productionProductRoot,
             Get(values, "--image-ref"),
             flags.Contains("--json"))
         {
             AllowTestProductRoot = allowTestProductRoot,
+            ProductionProductRoot = productionProductRoot,
             ImageManifest = Get(values, "--image-manifest"),
             ImageIndex = Get(values, "--image-index"),
             ImageVersion = Get(values, "--image-version"),
@@ -332,18 +400,20 @@ internal static class CommandLine
         return request;
     }
 
-    private static CameraAgentStateResetRequest ParseStateReset(string[] args, bool allowTestProductRoot)
+    private static CameraAgentStateResetRequest ParseStateReset(
+        string[] args, bool allowTestProductRoot, string productionProductRoot)
     {
         var (values, flags) = ParseOptions(args, 2, ["--json", "--dry-run"]);
         RejectUnknown(values, ["--instance-id", "--confirm-instance-id", "--product-root"]);
         var request = new CameraAgentStateResetRequest(
             ParseGuid(Get(values, "--instance-id"), "--instance-id"),
             ParseGuid(Get(values, "--confirm-instance-id"), "--confirm-instance-id"),
-            Get(values, "--product-root") ?? InstallRequest.DefaultProductRoot,
+            Get(values, "--product-root") ?? productionProductRoot,
             flags.Contains("--dry-run"),
             flags.Contains("--json"))
         {
-            AllowTestProductRoot = allowTestProductRoot
+            AllowTestProductRoot = allowTestProductRoot,
+            ProductionProductRoot = productionProductRoot
         };
         request.Validate();
         return request;
@@ -383,7 +453,8 @@ internal static class CommandLine
         if (unknown is not null) throw new InstallUsageException($"Unknown option '{unknown}'.");
     }
 
-    private static OwnerRecoveryRequest ParseOwnerRecovery(string[] args, bool allowTestProductRoot)
+    private static OwnerRecoveryRequest ParseOwnerRecovery(
+        string[] args, bool allowTestProductRoot, string productionProductRoot)
     {
         var values = new Dictionary<string, string?>(StringComparer.Ordinal);
         var flags = new HashSet<string>(StringComparer.Ordinal);
@@ -423,15 +494,23 @@ internal static class CommandLine
 
         var request = new OwnerRecoveryRequest(
             ParseGuid(Get(values, "--instance-id"), "--instance-id"),
-            Get(values, "--product-root") ?? InstallRequest.DefaultProductRoot,
+            Get(values, "--product-root") ?? productionProductRoot,
             Get(values, "--password-file"),
             flags.Contains("--generate-password"),
             flags.Contains("--resume"),
             flags.Contains("--json"))
         {
-            AllowTestProductRoot = allowTestProductRoot
+            AllowTestProductRoot = allowTestProductRoot,
+            ProductionProductRoot = productionProductRoot
         };
         request.Validate();
         return request;
     }
 }
+
+/// <summary>
+/// What the command-line boundary decides once per invocation: whether a non-production product root is admitted,
+/// and where the host product-root policy is read. Production uses <see cref="HostPolicyLocation.Production"/>; an
+/// isolated test states its own location here rather than mutating process state.
+/// </summary>
+internal sealed record CommandLineContext(bool AllowTestProductRoot, HostPolicyLocation HostPolicy);

@@ -15,6 +15,10 @@ internal static class Program
         {
             return PrivilegedPurgeNamespace.RunInternal(args);
         }
+        if (args.Length > 0 && args[0] == PrivilegedHostPolicy.CommandName)
+        {
+            return PrivilegedHostPolicy.RunInternal(args);
+        }
 
         using var cancellation = new CancellationTokenSource();
         Console.CancelKeyPress += (_, eventArgs) =>
@@ -79,6 +83,22 @@ internal static class Program
                     await WriteStateResetResultAsync(result).ConfigureAwait(false);
                 }
             }
+            else if (command is HostProductRootRequest host)
+            {
+                var result = await PrivilegedHostPolicy.SetProductRootAsync(host, cancellation.Token).ConfigureAwait(false);
+                if (host.Json)
+                {
+                    await Console.Out.WriteLineAsync(
+                        JsonSerializer.Serialize(result, DeploymentJsonContext.Default.HostPolicyResult)).ConfigureAwait(false);
+                }
+                else
+                {
+                    await Console.Out.WriteLineAsync($"Outcome: {result.Outcome}").ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync($"Policy: {result.PolicyPath}").ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync($"Previous product root: {result.PreviousProductRoot}").ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync($"Product root: {result.ProductRoot}").ConfigureAwait(false);
+                }
+            }
             else if (command is OwnerRecoveryRequest recovery)
             {
                 OwnerRecoveryResult result;
@@ -141,6 +161,25 @@ internal static class Program
         {
             await WriteErrorAsync(jsonErrors, "canceled", "Deployment operation canceled.").ConfigureAwait(false);
             return 130;
+        }
+        catch (HostPrerequisiteException exception)
+        {
+            // Every finding and its remedy is reported at once: as the structured report on standard output for
+            // --json, whose standard error is reserved for one error object, and rendered on standard error otherwise.
+            if (exception.Report is { } report)
+            {
+                if (jsonErrors)
+                {
+                    await Console.Out.WriteLineAsync(
+                        JsonSerializer.Serialize(report, DeploymentJsonContext.Default.HostPrerequisiteReport)).ConfigureAwait(false);
+                }
+                else
+                {
+                    await Console.Error.WriteLineAsync(HostPrerequisites.Render(report)).ConfigureAwait(false);
+                }
+            }
+            await WriteErrorAsync(jsonErrors, "host-prerequisites", exception.Message).ConfigureAwait(false);
+            return 1;
         }
         catch (OwnerRecoveryProtocolException exception)
         {
