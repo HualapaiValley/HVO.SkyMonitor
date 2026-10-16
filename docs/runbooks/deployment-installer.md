@@ -276,7 +276,8 @@ can be evaluated against persisted state first without acquiring, loading, or st
 [State Compatibility Boundary](#state-compatibility-boundary).
 
 `--migration-backward-compatible` remains a separate operator assertion about the
-candidate's state migration and is required only when the candidate declares one.
+candidate's state migration and is required only when the candidate declares one;
+[CameraAgent Lifecycle](#cameraagent-lifecycle) defines exactly when that is.
 Do not add it to a routine upgrade; doing so defeats the gate it exists for.
 
 ### Edge work persisted across an upgrade
@@ -577,6 +578,11 @@ every transition the retained release record has to follow:
 | Refused: resuming the refused upgrade | `cameraagent upgrade --image-manifest <contradicting> --resume` | still absent; the journal is byte-identical |
 | State-compatibility preflight on what the sequence left behind | `cameraagent preflight` | still absent |
 | Uninstall without `--resume` after the refusal | `cameraagent uninstall` | still absent; the container is gone |
+
+Every upgrade in the table passes `--migration-backward-compatible` only when
+the two releases declare different state boundaries, as an operator would. Two
+releases built from adjacent revisions normally declare the same ones, so their
+upgrades then run without it. `summary.txt` records which applied.
 
 Each refusal targets its own gate. The production-trust-root refusal and the
 four derived-release refusals share the acquirer's single diagnostic, because
@@ -1239,7 +1245,8 @@ LocalRunner instance needs, therefore no longer preflights clean only to be refu
 **A compatible signed-release preflight is still not a promise that the upgrade will proceed.** It compares
 persisted state and the declared contract identities against this instance. Gates that need the image itself run
 only during the upgrade: the labels the loaded image actually carries are compared against the signed record, and
-a candidate declaring a state migration still requires `--migration-backward-compatible`. When either signed
+a candidate declaring a state migration still requires `--migration-backward-compatible` (see
+[CameraAgent Lifecycle](#cameraagent-lifecycle)). When either signed
 identity for the selected platform (`offlineArchiveImageId` or `manifestDigest`) equals the installed
 `manifest.image.imageId`, preflight remains compatible but includes the non-blocking
 `candidate-image-already-active` advisory. The advisory tells the operator that no upgrade action is needed; an
@@ -1340,17 +1347,42 @@ without accepting an operator password file. Image references must be immutable 
 ```bash
 hvo-skymonitor status --instance-id <uuid> --json
 hvo-skymonitor cameraagent upgrade --instance-id <uuid> \
-  --image-ref <repository@sha256:digest> --migration-backward-compatible
+  --image-ref <repository@sha256:digest>
 hvo-skymonitor cameraagent rollback --instance-id <uuid>
 hvo-skymonitor cameraagent uninstall --instance-id <uuid>
 hvo-skymonitor cameraagent reinstall --instance-id <uuid>
 ```
 
-`--migration-backward-compatible` is the operator's explicit acknowledgement that no transactional restore
-path is being reserved. It is necessary but not sufficient: the candidate must also declare the current
-`cameraagent-state-v2` contract, and the persisted state must satisfy every declared boundary described in
-[State Compatibility Boundary](#state-compatibility-boundary). A rollback target installed before that label
-correction is accepted as a known contract because no state migration occurs on the way back.
+An upgrade whose candidate declares the installed state contract needs no further assertion. The candidate
+declares a state migration, and the upgrade then also requires `--migration-backward-compatible`, when any of
+these holds:
+
+- A persisted-state boundary label differs between the installed image and the candidate, compared exactly:
+  `io.hvo.skymonitor.state-compatibility` (on the installed side, the contract the instance manifest records),
+  `minimum-compatible-revision`, `identity-migration`, `raw-ingress-schema`, `raw-ingress-migration`, or
+  `catalog-manifest-version`.
+- Either image omits one of those labels other than `raw-ingress-migration`, so the two cannot be compared.
+  Only an image that migrates an earlier raw journal declares `raw-ingress-migration`, so both omitting it is
+  agreement.
+- The persisted raw-ingress journal exists and is initialized, and its `PRAGMA user_version` is not the
+  candidate's `raw-ingress-schema`, or the journal cannot be read. A journal at `user_version` 0 with no schema
+  objects is one the runtime has not initialized yet, which is a fresh start rather than a migration.
+
+The check runs after the state preflight, so an incompatible persisted state is reported first, and before the
+backup, the drain, and any Compose change. Its refusal names every difference, for example
+`io.hvo.skymonitor.raw-ingress-schema installed 14, candidate 15`, and is journalled as a terminal refusal that
+blocks no later operation. The contract-identity labels (`component`, `configuration-contract`,
+`catalog-contract`, `replay-runner-contract`) are not state: a mismatch there is refused whether or not the
+assertion is given.
+
+`--migration-backward-compatible` asserts that the prior image can read the state a migrating candidate leaves
+behind. A candidate that fails after it starts is restored by starting the prior image again on that state; the
+pre-mutation backup is not restored, so no transactional restore path is reserved. The assertion is necessary but
+not sufficient: the candidate must also declare the current `cameraagent-state-v2` contract, and the persisted
+state must satisfy every declared boundary described in [State Compatibility Boundary](#state-compatibility-boundary).
+Supplying it for a candidate that declares no migration is accepted and changes nothing, but passing it habitually
+would admit the next real migration unexamined. A rollback never requires it, and a rollback target installed
+before that label correction is accepted as a known contract because no state migration occurs on the way back.
 
 Each transition pins the Docker endpoint and daemon identity, validates the
 rendered Compose model, records pre-mutation continuity, creates and validates a
@@ -1608,10 +1640,11 @@ so a signed release can be proved against the bytes an operator receives:
 
 ```bash
 # Install, health, replay-runner health, stop-and-reinstall idempotence, preflight,
-# bind-source ownership and mode, uninstall, and the explicit reset, against a
-# published archive rather than a locally built image. The authenticated owner
-# recovery, upgrade, and rollback contract belongs to the baseline-revision run
-# and is not exercised here.
+# bind-source ownership and mode, uninstall, the explicit reset, and the
+# migration-assertion upgrades, against a published archive rather than a locally
+# built image. The authenticated owner recovery and rollback contract, with its
+# upgrade from an older baseline, belongs to the baseline-revision run and is not
+# exercised here.
 case "$(uname -m)" in
   x86_64) release_architecture=amd64 ;;
   aarch64|arm64) release_architecture=arm64 ;;
@@ -1814,6 +1847,14 @@ capability, image, and constrained-container checks.
 
 The campaign additionally proves the state preflight, the operator-confirmed CameraAgent-only reset, and the
 reset-then-reinstall convergence against a real image and a real product root.
+
+It then proves the migration assertion against two variants of the installed image that differ from it only in
+added labels. An upgrade to the variant that declares the same state boundaries completes without
+`--migration-backward-compatible`. The variant that declares a different `minimum-compatible-revision` is refused
+without it, leaving the instance, its manifest, and its running image unchanged and the refusal journalled as
+terminal, and the same upgrade then completes with it. A run with `HVO_INSTALLER_BASELINE_REVISION` skips this
+step, because its baseline image may predate the boundary labels, and keeps the assertion on its own baseline
+upgrade.
 
 Run the disposable installer contract against the current image with
 `./scripts/test:deployment-installer`. To validate an owner-recovery image
