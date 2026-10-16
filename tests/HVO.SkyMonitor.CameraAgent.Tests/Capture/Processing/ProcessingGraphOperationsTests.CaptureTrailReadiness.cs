@@ -130,9 +130,14 @@ public sealed partial class ProcessingGraphOperationsTests
         using var command = journal.CreateCommand();
         command.CommandText = "SELECT COUNT(*) FROM raw_captures;";
         Assert.AreEqual(1L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
-        command.CommandText = missingEvidence
-            ? "SELECT COUNT(*) FROM raw_captures WHERE state='missing_evidence' AND retention_hold=1;"
-            : "SELECT COUNT(*) FROM raw_captures WHERE state='committed';";
+        if (missingEvidence)
+        {
+            command.CommandText = "SELECT COUNT(*) FROM raw_captures WHERE state='missing_evidence' AND retention_hold=1;";
+        }
+        else
+        {
+            command.CommandText = "SELECT COUNT(*) FROM raw_captures WHERE state='committed';";
+        }
         Assert.AreEqual(1L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
         command.CommandText = "SELECT COUNT(*) FROM capture_lane_work WHERE state IN ('leased', 'completed') OR completed_unix_ms IS NOT NULL;";
         Assert.AreEqual(0L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
