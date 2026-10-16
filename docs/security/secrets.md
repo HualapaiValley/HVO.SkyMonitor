@@ -35,9 +35,12 @@ recovery must be implemented and tested in that deployment.
 Release automation is a separate control plane and does not add Azure Key Vault
 as an application runtime provider. The `production-release` GitHub environment
 uses OIDC subject
-`repo:RoySalisbury/HVO.SkyMonitor:environment:production-release` and the
-least-privileged `Key Vault Crypto User` assignment scoped to the single
-non-exported P-256 release key. Workflow variables identify the Azure tenant,
+`repo:HualapaiValley@330983554/HVO.SkyMonitor@1095187036:environment:production-release`
+and the least-privileged `Key Vault Crypto User` assignment scoped to the single
+non-exported P-256 release key. The subject carries GitHub's immutable owner and
+repository IDs; `gh api repos/HualapaiValley/HVO.SkyMonitor/actions/oidc/customization/sub`
+reports its prefix, and the Azure federated credential must match it exactly.
+Workflow variables identify the Azure tenant,
 subscription, client, vault, key name, and pinned key version; there is no Azure
 client secret or GitHub-held private signing key. The public key and fingerprint
 are committed trust roots. Owner recovery material and the encrypted Key Vault

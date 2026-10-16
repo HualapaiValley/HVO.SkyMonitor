@@ -505,7 +505,7 @@ public sealed class SignedImageReleaseTests
 
             fixture.Image = new DistributionImageIdentity(
                 "CameraAgent",
-                "ghcr.io/roysalisbury/hvo.skymonitor/cameraagent",
+                "ghcr.io/hualapaivalley/skymonitor-cameraagent",
                 $"sha256:{new string('c', 64)}",
                 Revision,
                 new string('b', 40),
@@ -522,7 +522,7 @@ public sealed class SignedImageReleaseTests
                     : DistributionSchemaVersions.ReleaseManifest,
                 DistributionManifestKind.ImageRelease,
                 new DistributionReleaseIdentity(
-                    "image", "1.2.3", "image-v1.2.3", "RoySalisbury/HVO.SkyMonitor", Revision, new string('b', 40),
+                    "image", "1.2.3", "image-v1.2.3", "HualapaiValley/HVO.SkyMonitor", Revision, new string('b', 40),
                     DateTimeOffset.Parse("2026-08-24T00:00:00Z", CultureInfo.InvariantCulture)),
                 new DistributionSigningIdentity(DistributionTrustRoot.Algorithm, fixture.TrustRoot.KeyId),
                 artifacts,

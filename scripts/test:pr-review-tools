@@ -166,7 +166,7 @@ printf 'Follow AGENTS.md and the PR lifecycle skill.\n' > "$work_root/instructio
 # The path's last two segments are the fixture PR's owner/repo on purpose: the request
 # tool now refuses a remote that does not resolve to the repository the PR lives in, and
 # a remote named `origin` that points somewhere else is the shape that defect takes.
-fixture_repo="$work_root/RoySalisbury/HVO.SkyMonitor"
+fixture_repo="$work_root/HualapaiValley/HVO.SkyMonitor"
 mkdir -p "$fixture_repo"
 git -C "$fixture_repo" init --quiet --initial-branch=main
 git -C "$fixture_repo" config user.name 'Review Tool Test'
@@ -197,7 +197,7 @@ correction_head="$(git -C "$fixture_repo" rev-parse HEAD)"
 git -C "$fixture_repo" remote add origin "$fixture_repo"
 git -C "$fixture_repo" fetch --quiet origin
 export MOCK_FIXTURE_REPO="$fixture_repo"
-export MOCK_API_REPO="RoySalisbury/HVO.SkyMonitor"
+export MOCK_API_REPO="HualapaiValley/HVO.SkyMonitor"
 
 new_base="$divergent_target"
 sync_head="$correction_head"
@@ -235,7 +235,7 @@ add_ledger_comment() {
 }
 
 common_args=(
-    --repo RoySalisbury/HVO.SkyMonitor --pr 700 --issue 699 --round 0
+    --repo HualapaiValley/HVO.SkyMonitor --pr 700 --issue 699 --round 0
     --command-id CMD-REVIEW-001 --reviewer-id "$participant"
     --acceptance-file "$work_root/acceptance.txt" --lens-file "$work_root/lens.txt"
     --profile standard --primary Codex --fallback Copilot --route local
@@ -758,7 +758,7 @@ if $request_tool "${common_args[@]}" --mode initial --remote stalefork \
     printf 'Request generation succeeded against a remote in another repository.\n' >&2
     exit 1
 fi
-grep -Fq "does not contain RoySalisbury/HVO.SkyMonitor target at $divergent_target" "$work_root/wrong-repo.err" ||
+grep -Fq "does not contain HualapaiValley/HVO.SkyMonitor target at $divergent_target" "$work_root/wrong-repo.err" ||
     { printf 'Wrong-repository remote failed for some other reason.\n' >&2; exit 1; }
 [[ ! -e "$work_root/wrong-repo.request" ]] ||
     { printf 'Wrong-repository remote case wrote a request file.\n' >&2; exit 1; }
@@ -801,7 +801,7 @@ printf '%s\n%s\n%s\nExact review range: %s..%s\n%s\n%s\n%s\n' \
     prefix '```text' 'Review mode: initial' "$base" "$initial_head" \
     'Start acknowledgement: acknowledge the request.' '```' \
     'The dispatcher must receive this comment ID before launching.' > "$MOCK_COMMENT_BODY"
-$request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9001 --output "$work_root/replayed.request"
+$request_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --recorded-comment 9001 --output "$work_root/replayed.request"
 grep -Fqx "Exact review range: $base..$initial_head" "$work_root/replayed.request" ||
     fail 'Replayed request did not reproduce the range recorded in the referenced comment.'
 
@@ -810,7 +810,7 @@ grep -Fqx "Exact review range: $base..$initial_head" "$work_root/replayed.reques
 # failed on all of them with "no fenced review request" -- the parser's expectation
 # reported as a property of the comment, which is this tool's own subject one level up.
 cp "$work_root/initial.request" "$MOCK_COMMENT_BODY"
-$request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9001 --output "$work_root/replayed-unfenced.request"
+$request_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --recorded-comment 9001 --output "$work_root/replayed-unfenced.request"
 grep -Fqx "Current head SHA: $initial_head" "$work_root/replayed-unfenced.request" ||
     fail 'Replay did not reproduce an unfenced request comment.'
 
@@ -828,7 +828,7 @@ grep -Fqx "Current head SHA: $initial_head" "$work_root/replayed-unfenced.reques
     printf 'Passed! 1812 passed, 49 skipped, 0 failed\n'
     printf '%s\n' '```'
 } > "$MOCK_COMMENT_BODY"
-$request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9001 \
+$request_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --recorded-comment 9001 \
     --output "$work_root/replayed-inner-fence.request"
 grep -Fqx "Current head SHA: $initial_head" "$work_root/replayed-inner-fence.request" ||
     fail 'An unfenced request carrying a fenced block of its own lost the request around it.'
@@ -966,7 +966,7 @@ done
     printf '%s
 ' '```'
 } > "$MOCK_COMMENT_BODY"
-if $request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9001 \
+if $request_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --recorded-comment 9001 \
     --output "$work_root/replayed-truncated.request" 2> "$work_root/replayed-truncated.err"; then
     printf 'Replay accepted a fenced request truncated at its own inner fence.\n' >&2
     exit 1
@@ -1094,7 +1094,7 @@ done
 # cleanly into this one's record.
 cp "$work_root/initial.request" "$MOCK_COMMENT_DIR/9101.txt"
 mark_comment_on_pr 9101 824
-if $request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9101 \
+if $request_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --recorded-comment 9101 \
     --output "$work_root/replayed-foreign.request" 2> "$work_root/replayed-foreign.err"; then
     printf 'Replay accepted a comment belonging to another pull request.\n' >&2
     exit 1
@@ -1105,7 +1105,7 @@ unmark_comment 9101
 rm -f "$MOCK_COMMENT_DIR/9101.txt"
 
 printf 'Looks good to me.\n' > "$MOCK_COMMENT_BODY"
-if $request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9001 \
+if $request_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --recorded-comment 9001 \
     --output "$work_root/replayed-prose.request" 2> "$work_root/replayed-prose.err"; then
     printf 'Replay accepted a comment carrying no review request.\n' >&2
     exit 1
@@ -1118,7 +1118,7 @@ jq -n --arg participant "$participant" '{commandId:"CMD-REVIEW-001",targetPartic
 printf '[]\n' > "$work_root/receipts.json"
 
 : > "$MOCK_EVENT_LOG"
-$dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/initial.request" \
+$dispatch_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --request "$work_root/initial.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/review.jsonl" --registry "$work_root/registry.json" \
     --command "$work_root/command.json" --receipts "$work_root/receipts.json" \
@@ -1131,7 +1131,7 @@ grep -Fq 'DRY-RUN: no comment posted and no reviewer launched.' "$work_root/dry-
 grep -Fq 'codex exec resume' "$work_root/dry-run.txt" ||
     fail 'Dry run did not show the resume invocation it would have run.'
 
-$dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/initial.request" \
+$dispatch_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --request "$work_root/initial.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/review.jsonl" --registry "$work_root/registry.json" \
     --command "$work_root/command.json" --receipts "$work_root/receipts.json" \
@@ -1156,7 +1156,7 @@ complete_line="$(grep -n CODEX_COMPLETE "$MOCK_EVENT_LOG" | cut -d: -f1)"
 [[ -n "$complete_line" && "$launch_line" -lt "$complete_line" ]] ||
     fail 'Reviewer completion was not logged after the launch.'
 
-$dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/initial.request" \
+$dispatch_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --request "$work_root/initial.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/review.jsonl" --registry "$work_root/registry.json" \
     --command "$work_root/command.json" --receipts "$work_root/receipts.json" \
@@ -1194,7 +1194,7 @@ jq -n --arg participant "$participant" '{commandId:"CMD-REVIEW-NESTED",targetPar
 # The dispatcher derives the reviewer's result path from the log file, so the mock
 # reviewer has to write where this dispatch will look rather than where the last one did.
 export MOCK_REVIEW_RESULT="$work_root/logs/nested.final.md"
-$dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/nested.request" \
+$dispatch_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --request "$work_root/nested.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/nested.jsonl" --registry "$work_root/registry.json" \
     --command "$work_root/command-nested.json" --receipts "$work_root/receipts.json" \
@@ -1205,7 +1205,7 @@ jq -r '[.[] | select(.body | contains("## Review request — generated dispatch"
     "$MOCK_LEDGER" > "$MOCK_COMMENT_DIR/9105.txt"
 grep -Eq '^`{4,}text$' "$MOCK_COMMENT_DIR/9105.txt" ||
     fail 'The dispatcher opened the quoted request with a fence no longer than the fences inside it.'
-$request_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --recorded-comment 9105 \
+$request_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --recorded-comment 9105 \
     --output "$work_root/nested-replay.request"
 grep -Fqx "Current head SHA: $initial_head" "$work_root/nested-replay.request" ||
     fail 'A request quoting fenced content did not survive the round trip: the head field is gone.'
@@ -1226,7 +1226,7 @@ jq -n --arg participant "$participant" '{participants:[{id:$participant,status:"
 jq -n --arg participant "$participant" '{commandId:"CMD-REVIEW-CONCURRENT",targetParticipantId:$participant,leaseGeneration:1}' > "$work_root/command-concurrent.json"
 sed 's/CMD-REVIEW-001/CMD-REVIEW-CONCURRENT/g' "$work_root/initial.request" > "$work_root/concurrent.request"
 export MOCK_LEDGER_GET_DELAY=0.5
-$dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/concurrent.request" \
+$dispatch_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --request "$work_root/concurrent.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/concurrent.jsonl" --registry "$MOCK_REGISTRY" \
     --command "$work_root/command-concurrent.json" --receipts "$work_root/receipts.json" \
@@ -1242,7 +1242,7 @@ grep -Fq GH_GET_STARTED "$MOCK_EVENT_LOG" || {
     printf 'First concurrent dispatcher did not enter the delayed ledger read.\n' >&2
     exit 1
 }
-if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/concurrent.request" \
+if $dispatch_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --request "$work_root/concurrent.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/concurrent.jsonl" --registry "$MOCK_REGISTRY" \
     --command "$work_root/command-concurrent.json" --receipts "$work_root/receipts.json" \
@@ -1269,7 +1269,7 @@ jq -n --arg participant "$participant" '{participants:[{id:$participant,status:"
 jq -n --arg participant "$participant" '{commandId:"CMD-REVIEW-LEASE",targetParticipantId:$participant,leaseGeneration:1}' > "$work_root/command-lease.json"
 sed 's/CMD-REVIEW-001/CMD-REVIEW-LEASE/g' "$work_root/initial.request" > "$work_root/lease.request"
 export MOCK_REPLACE_LEASE_ON_RESERVATION=true
-if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/lease.request" \
+if $dispatch_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --request "$work_root/lease.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/lease.jsonl" --registry "$MOCK_REGISTRY" \
     --command "$work_root/command-lease.json" --receipts "$work_root/receipts.json" \
@@ -1291,7 +1291,7 @@ jq -n --arg participant "$participant" '{participants:[{id:$participant,status:"
 jq -n --arg participant "$participant" '{commandId:"CMD-REVIEW-POSTFAIL",targetParticipantId:$participant,leaseGeneration:1}' > "$work_root/command-postfail.json"
 sed 's/CMD-REVIEW-001/CMD-REVIEW-POSTFAIL/g' "$work_root/initial.request" > "$work_root/postfail.request"
 export MOCK_FAIL_POST_NUMBER=3
-if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/postfail.request" \
+if $dispatch_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --request "$work_root/postfail.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/postfail.jsonl" --registry "$MOCK_REGISTRY" \
     --command "$work_root/command-postfail.json" --receipts "$work_root/receipts.json" \
@@ -1308,7 +1308,7 @@ grep -Fq '## Review launch — STARTING (durable reservation)' "$MOCK_LEDGER" ||
     fail 'Failed-receipt run did not write the durable reservation.'
 grep -Fq '## Review process — ERROR' "$MOCK_LEDGER" ||
     fail 'Failed-receipt run did not record the review process error.'
-if $dispatch_tool --repo RoySalisbury/HVO.SkyMonitor --pr 700 --request "$work_root/postfail.request" \
+if $dispatch_tool --repo HualapaiValley/HVO.SkyMonitor --pr 700 --request "$work_root/postfail.request" \
     --runner codex --model gpt-5.6-terra --effort high --worktree "$repo_root" \
     --log-file "$work_root/logs/postfail.jsonl" --registry "$MOCK_REGISTRY" \
     --command "$work_root/command-postfail.json" --receipts "$work_root/receipts.json" \
