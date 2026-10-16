@@ -511,7 +511,7 @@ public sealed class CameraAgentGalleryPerformanceTests
     private static async Task LoginAsync(IPage page)
     {
         await page.GotoAsync("/Account/Login").ConfigureAwait(false);
-        await page.GetByLabel("Email").FillAsync(CameraAgentKestrelFixture.OwnerEmail).ConfigureAwait(false);
+        await page.GetByLabel("Username or email").FillAsync(CameraAgentKestrelFixture.OwnerEmail).ConfigureAwait(false);
         await page.GetByLabel("Password").FillAsync(CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => !url.Contains("/Account/Login", StringComparison.OrdinalIgnoreCase))

@@ -28,7 +28,15 @@ internal sealed record InstallRequest
 
     public Guid? InstanceId { get; init; }
     public required string FriendlyName { get; init; }
-    public required string OwnerEmail { get; init; }
+    /// <summary>
+    /// The owner's durable email key. Optional: an omitted value, including one missing from an installer
+    /// configuration file, is the non-routable <see cref="OwnerCredentialDefaults.Email"/>.
+    /// </summary>
+    public string OwnerEmail
+    {
+        get => _ownerEmail;
+        init => _ownerEmail = value ?? OwnerCredentialDefaults.Email;
+    }
     public string BindAddress { get; init; } = "127.0.0.1";
     public int Port { get; init; } = 5130;
     public string ProductRoot { get; init; } = DefaultProductRoot;
@@ -66,6 +74,8 @@ internal sealed record InstallRequest
     /// </summary>
     [JsonIgnore]
     public bool AllowTestProductRoot { get; init; }
+
+    private readonly string _ownerEmail = OwnerCredentialDefaults.Email;
 
     public void Validate()
     {

@@ -113,16 +113,82 @@ public sealed class OwnerPasswordRecoveryServiceTests
         var challenge = await fixture.Service.CreateChallengeAsync(operationId, CancellationToken.None)
             .ConfigureAwait(false);
 
+        // Long enough and printable, but refused by the password policy because it is the documented default.
         var outcome = await fixture.Service.CompleteAsync(
             operationId,
             challenge.Challenge!,
-            "alllowercasepassword",
+            "SkyMonitor",
             CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(OwnerPasswordRecoveryOutcome.InvalidRequest, outcome);
         Assert.IsFalse(fixture.Owner.PasswordChangeRequired);
         Assert.IsTrue(await fixture.UserManager.CheckPasswordAsync(
             fixture.Owner, RecoveryFixture.OriginalPassword).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task Recovery_AcceptsAnEightCharacterPasswordWithoutCharacterClasses()
+    {
+        using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
+        var operationId = Guid.NewGuid();
+        var challenge = await fixture.Service.CreateChallengeAsync(operationId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        var outcome = await fixture.Service.CompleteAsync(
+            operationId,
+            challenge.Challenge!,
+            "abcdefgh",
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OwnerPasswordRecoveryOutcome.Completed, outcome);
+        Assert.IsTrue(fixture.Owner.PasswordChangeRequired);
+        Assert.IsTrue(await fixture.UserManager.CheckPasswordAsync(fixture.Owner, "abcdefgh").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow("abcdefg")]
+    [DataRow("contains space")]
+    public async Task Recovery_RejectsAShortOrNonPrintablePasswordBeforeChangingTheOwner(string password)
+    {
+        using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
+        var operationId = Guid.NewGuid();
+        var securityStamp = fixture.Owner.SecurityStamp;
+        var challenge = await fixture.Service.CreateChallengeAsync(operationId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        var outcome = await fixture.Service.CompleteAsync(
+            operationId,
+            challenge.Challenge!,
+            password,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OwnerPasswordRecoveryOutcome.InvalidRequest, outcome);
+        Assert.AreEqual(securityStamp, fixture.Owner.SecurityStamp);
+        Assert.IsTrue(await fixture.UserManager.CheckPasswordAsync(
+            fixture.Owner, RecoveryFixture.OriginalPassword).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task Recovery_ClearsASignInLockout()
+    {
+        using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
+        Assert.IsTrue((await fixture.UserManager.SetLockoutEndDateAsync(
+            fixture.Owner, DateTimeOffset.UtcNow.AddMinutes(5)).ConfigureAwait(false)).Succeeded);
+        Assert.IsTrue((await fixture.UserManager.AccessFailedAsync(fixture.Owner).ConfigureAwait(false)).Succeeded);
+        Assert.IsTrue(await fixture.UserManager.IsLockedOutAsync(fixture.Owner).ConfigureAwait(false));
+        var operationId = Guid.NewGuid();
+        var challenge = await fixture.Service.CreateChallengeAsync(operationId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        var outcome = await fixture.Service.CompleteAsync(
+            operationId,
+            challenge.Challenge!,
+            RecoveryFixture.RecoveryPassword,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OwnerPasswordRecoveryOutcome.Completed, outcome);
+        Assert.IsFalse(await fixture.UserManager.IsLockedOutAsync(fixture.Owner).ConfigureAwait(false));
+        Assert.AreEqual(0, await fixture.UserManager.GetAccessFailedCountAsync(fixture.Owner).ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -227,6 +293,7 @@ public sealed class OwnerPasswordRecoveryServiceTests
             services.AddDbContext<ApplicationDbContext>(options => options.UseSqlite(connection));
             services.AddIdentityCore<ApplicationUser>()
                 .AddEntityFrameworkStores<ApplicationDbContext>()
+                .AddCameraAgentPasswordPolicy()
                 .AddDefaultTokenProviders();
             services.AddSingleton(Options.Create(new LocalIdentityOptions
             {

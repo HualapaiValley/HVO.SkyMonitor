@@ -21,7 +21,8 @@ internal static class IdentityComponentsEndpointRouteBuilderExtensions
     private const int RecoveryRequestSizeLimit = 8 * 1024;
     private const int RecoveryAttestationNonceLength = 32;
     private const int MaximumRecoveryChallengeBytes = 4096;
-    private const int MaximumRecoveryPasswordBytes = 256;
+    // Recovery passwords are printable ASCII, so their byte and character bounds are the same.
+    private const int MaximumRecoveryPasswordBytes = CameraAgentIdentityPolicy.MaximumRecoveryPasswordLength;
     private const byte RecoveryCompletionProtocolVersion = 1;
     private const string RecoveryOperationHeader = "X-HVO-Recovery-Operation";
     private const string RecoveryAttestationPurpose = "HVO.SkyMonitor.CameraAgent.OwnerRecovery.Attestation.v1";
@@ -296,7 +297,8 @@ internal static class IdentityComponentsEndpointRouteBuilderExtensions
         var challengeLength = BinaryPrimitives.ReadInt32BigEndian(buffer.AsSpan(1, 4));
         var passwordLength = BinaryPrimitives.ReadInt32BigEndian(buffer.AsSpan(5, 4));
         if (challengeLength is < 1 or > MaximumRecoveryChallengeBytes ||
-            passwordLength is < 16 or > MaximumRecoveryPasswordBytes ||
+            passwordLength < CameraAgentIdentityPolicy.MinimumPasswordLength ||
+            passwordLength > MaximumRecoveryPasswordBytes ||
             9 + challengeLength + passwordLength != total)
         {
             return null;

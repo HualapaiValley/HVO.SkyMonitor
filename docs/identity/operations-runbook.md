@@ -117,11 +117,36 @@ user-secrets store:
 ```
 
 The host creates the configured `LocalIdentity:AdminEmail` owner once with the
-temporary password. It never reconciles an existing owner's password from
-configuration. The first authenticated owner session is redirected to
+temporary password and the user name `LocalIdentity:AdminUserName` (default
+`admin`). The email stays the durable owner key for authorization, bootstrap
+state, and recovery. It never reconciles an existing owner's password or user
+name from configuration, so an owner seeded before user names existed keeps its
+email as its user name. The first authenticated owner session is redirected to
 `/Account/ReplaceTemporaryPassword` and must supply the current temporary
 password, a policy-valid new password, and matching confirmation. Until that
 transaction commits, ordinary CameraAgent pages and APIs are denied.
+
+CameraAgent reads `AdminPasswordFile` as strict UTF-8, ignores a leading
+byte-order mark, and removes only trailing carriage returns and line feeds;
+spaces are part of the password. The installer validates, authenticates with,
+and reads recovery passwords from files through the same reader.
+
+The installer's documented default temporary password is `skymonitor`, so a new
+installation's first sign-in is `admin` / `skymonitor`. A configured
+`AdminPassword` of exactly `skymonitor` is the only password the host seeds
+without applying the replacement policy; it is still always marked for
+replacement. Until the first sign-in replaces it, anyone who can reach the
+CameraAgent port can sign in with the default and claim the camera, so keep the
+loopback binding until the replacement is done (see the
+[installer runbook](../runbooks/deployment-installer.md#bootstrap-and-recovery)).
+
+The sign-in form accepts a user name or an email: a value containing `@` is
+looked up as an email, any other value as a user name. Its field keeps the
+form name `Input.Email` for existing automation. Every password set after
+seeding needs at least 8 characters with no character-class rules and cannot be
+`skymonitor` in any letter case, the account's user name, or its current
+password. Five failed sign-ins lock the account for five minutes; the sign-in
+page reports the lockout and logs event `4188`.
 
 After the owner exists durably, remove `AdminPassword`/`AdminPasswordFile` from
 runtime configuration and set
@@ -256,6 +281,7 @@ Structured events contain no email, password, token, path, or credential value:
 | `4185` | `OwnerPasswordRecoveryCompleted` | The configured owner credential and security stamp changed atomically. |
 | `4186` | `OwnerPasswordRecoveryRejected` | Recovery failed closed with a bounded reason and operation ID. |
 | `4187` | `OwnerPasswordRecoveryEndpointFailed` | A recovery endpoint failed unexpectedly and returned only a fixed diagnostic. |
+| `4188` | `LocalSignInLockedOut` | A sign-in was refused because repeated failures locked the account. |
 
 No anonymous account creation or browser email-reset endpoint is added. The
 login recovery link contains static local-host instructions and never accepts an
@@ -287,9 +313,11 @@ lifecycle-control credential over that socket, never a public installation
 URL. The five-minute
 challenge binds operation ID, owner ID, and current security stamp. Completion
 requires exactly one site owner matching `LocalIdentity:AdminEmail` and removed
-bootstrap password authority; it resets only that owner, restores
-`PasswordChangeRequired`, rotates the security stamp, and records the last
-operation in existing `AspNetUserTokens` state for idempotent resume. Old
+bootstrap password authority and a temporary password of 8 to 256 printable
+ASCII characters that satisfies the password policy; it resets only that owner,
+restores `PasswordChangeRequired`, clears any sign-in lockout, rotates the
+security stamp, and records the last operation in existing `AspNetUserTokens`
+state for idempotent resume. Old
 cookies and connected circuits lose owner authorization on their next request
 or protected action. Capture and storage are not paused or restarted.
 
