@@ -1,0 +1,81 @@
+# Secret scan configuration for scripts/ci:secret-scan (#1321): gitleaks' default rules plus the reviewed
+# exceptions below.
+#
+# Each exception applies only to the historical commits it names, and only to its rules and paths
+# (condition = "AND"). Commits are immutable, so no entry can hide a finding in a later commit: a new
+# occurrence is always reported and needs its own reviewed entry. History is never rewritten to remove a
+# finding; a real credential is revoked or rotated instead. The scan ignores inline gitleaks:allow comments
+# and refuses a .gitleaksignore file, so this file is the only place an exception can be recorded.
+# scripts/test:ci-secret-scan enforces this shape.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """True positives, inert. ASP.NET Core Data Protection key rings from local development runs (unencrypted \
+XML master keys) were committed on 2025-11-14 under the since-removed HVO.SkyMonitor, CameraAgent.Simulator and \
+CameraAgent.ZWO projects. Every key expired on 2026-02-12, the files left the tree by 2026-08-24, and no release had \
+shipped, so the keys protect nothing current. Key rings are runtime state and are never committed (AGENTS.md)."""
+targetRules = ["generic-api-key"]
+condition = "AND"
+commits = [
+  "66438a71604e9ffa0f1cde01f98ea746fa12f64d",
+  "21239a4e52e7f64636019abb1803727bcbe1dea3",
+]
+paths = ['''^src/HVO\.SkyMonitor(\.CameraAgent\.Simulator|\.CameraAgent\.ZWO)?/DataProtection-Keys/key-[0-9a-f-]{36}\.xml$''']
+
+[[allowlists]]
+description = """Not a secret. An Application Insights connection string for the development telemetry resource is \
+committed as configuration and is still in these files. Microsoft documents its instrumentation key as a resource \
+identifier, not a security token or key."""
+targetRules = ["generic-api-key"]
+condition = "AND"
+commits = ["f0d6517809544dce574b08cc671050883d388f50"]
+paths = [
+  '''^\.devcontainer/devcontainer\.json$''',
+  '''^\.env\.(development|template)$''',
+  '''^src/HVO\.SkyMonitor\.LogicHost/appsettings(\.Development)?\.json$''',
+]
+
+[[allowlists]]
+description = """Test-only values: the TestSupport HMAC signing keys, which only test projects reference, and the \
+placeholder API keys of two CameraAgent authentication tests."""
+targetRules = ["generic-api-key"]
+condition = "AND"
+commits = [
+  "8f5093edde38ae278ebdf4faa068e7e098ca1807",
+  "7b17a7d7fdf6970f9461ed083b2360832d15e12f",
+  "84fc2a98179c1aecbca8fd4a7e3a1e877a6f9e59",
+]
+paths = [
+  '''^src/HVO\.SkyMonitor\.TestSupport/TestHmacSecrets\.cs$''',
+  '''^tests/HVO\.SkyMonitor\.CameraAgent\.Tests/CentralAuthenticationService(Error)?Tests\.cs$''',
+]
+
+[[allowlists]]
+description = """No key material. The processing-graph secret filter (#546) and its tests use PEM header literals such \
+as "BEGIN PRIVATE KEY" and synthetic AKIA/ASIA vectors spelled from the alphabet to prove that credentials are rejected."""
+targetRules = ["private-key", "aws-access-token"]
+condition = "AND"
+commits = ["286b004f2386ebbba84f0517af7e5e25d3f2b13c"]
+paths = [
+  '''^src/HVO\.SkyMonitor\.LogicHost/Services/ProcessingGraphCatalogService\.cs$''',
+  '''^tests/HVO\.SkyMonitor\.LogicHost\.Tests/Services/ProcessingGraphCatalogAndDeliveryServiceTests\.cs$''',
+]
+
+[[allowlists]]
+description = """Not secrets. The generic rule read ordinary words after a key-like name: runbook prose, the name of the \
+next shell variable after an empty sign_key assignment, and CI artifact names in #535 evidence fixtures."""
+targetRules = ["generic-api-key"]
+condition = "AND"
+commits = [
+  "1eaaa670c08bdaa2aa037322b4ae530d1215de90",
+  "48efab3f64018b14c3aa5737e0b526307473e2a6",
+  "b12bd30d25e3244e758865fc79f2e5c95aad15cb",
+  "8388002ce69aa1fa194e7644bd8f35352ac10acf",
+]
+paths = [
+  '''^docs/runbooks/curated-catalog-annotations\.md$''',
+  '''^scripts/release:cameraagent-image$''',
+  '''^tests/fixtures/issue-535/final-head/(green|replay-nodes-definition-order)\.json$''',
+]

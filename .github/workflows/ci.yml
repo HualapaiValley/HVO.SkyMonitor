@@ -88,7 +88,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The secret scan reads the complete history (#1321).
+          fetch-depth: 0
           persist-credentials: false
+      - name: Scan history for secrets
+        env:
+          HVO_GITLEAKS_CACHE_DIR: ${{ runner.temp }}/gitleaks
+        run: |
+          ./scripts/ci:secret-scan
+          ./scripts/test:ci-secret-scan
       - name: Setup .NET from global.json
         if: needs.changes.outputs.mode == 'full'
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
