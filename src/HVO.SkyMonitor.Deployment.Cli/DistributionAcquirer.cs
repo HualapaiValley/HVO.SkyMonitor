@@ -519,7 +519,7 @@ internal sealed class DistributionAcquirer : IDisposable
         }
         if (index.Uri.Host == "github.com")
         {
-            return DistributionLocator.Parse($"https://github.com/RoySalisbury/HVO.SkyMonitor/releases/download/{tag}/{assetName}");
+            return DistributionLocator.Parse($"https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/{tag}/{assetName}");
         }
         throw new InstallerException("A mirrored signed index requires --asset-base-url for immutable release assets.");
     }

@@ -103,7 +103,7 @@ internal sealed class SignedImageReleaseFixture : IDisposable
         var revision = labels["org.opencontainers.image.revision"];
         var image = new DistributionImageIdentity(
             "CameraAgent",
-            "ghcr.io/roysalisbury/hvo.skymonitor/cameraagent",
+            "ghcr.io/hualapaivalley/skymonitor-cameraagent",
             $"sha256:{new string('c', 64)}",
             revision,
             new string('b', 40),
@@ -126,7 +126,7 @@ internal sealed class SignedImageReleaseFixture : IDisposable
             DistributionSchemaVersions.ReleaseManifest,
             DistributionManifestKind.ImageRelease,
             new DistributionReleaseIdentity(
-                "image", "1.2.3", "image-v1.2.3", "RoySalisbury/HVO.SkyMonitor", revision, new string('b', 40),
+                "image", "1.2.3", "image-v1.2.3", "HualapaiValley/HVO.SkyMonitor", revision, new string('b', 40),
                 DateTimeOffset.Parse("2026-08-24T00:00:00Z", CultureInfo.InvariantCulture)),
             new DistributionSigningIdentity(DistributionTrustRoot.Algorithm, "placeholder"),
             artifacts,

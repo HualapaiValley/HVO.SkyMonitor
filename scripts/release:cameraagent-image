@@ -18,7 +18,7 @@ Required:
 
 Options:
   --repository <reference>    Image repository recorded in the signed release.
-                              Default: ghcr.io/roysalisbury/hvo.skymonitor/cameraagent
+                              Default: ghcr.io/hualapaivalley/skymonitor-cameraagent
   --revision <sha>            Source revision to build and label. Default: HEAD.
   --index-digest <digest>     Multi-architecture manifest digest from the registry publication.
                               Default: the canonical index digest computed from the platform archives.
@@ -44,7 +44,7 @@ USAGE
     exit 2
 }
 
-repository="ghcr.io/roysalisbury/hvo.skymonitor/cameraagent"
+repository="ghcr.io/hualapaivalley/skymonitor-cameraagent"
 version=""
 output=""
 revision=""

@@ -15,7 +15,7 @@ runbook describes the current release design; no release has been published yet.
 | Integration pre-releases `vX.Y.Z-dev.<n>` from `development/v1` | None | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309) |
 | A tag starts the workflow, which reuses CI as gates, drafts the release, installs from the draft on x64 and arm64, and waits for an approved publish | Dispatched from `main` with a `PUBLISH` confirmation; the `production-release` environment has no protection rules | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
 | `install.sh`, `release.json`, and `SHA256SUMS`; trust is `SHA256SUMS` plus GitHub build-provenance attestations only | ES256-signed manifests and indexes per train, verified against the embedded [trust root](#trust-root); the owner retired all three on 2026-10-16 (contract section 10) | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309), [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310), [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
-| Images at `ghcr.io/hualapaivalley/skymonitor-cameraagent`, always by digest, with `latest` moved for the newest final release | `scripts/release:cameraagent-image` defaults to `ghcr.io/roysalisbury/hvo.skymonitor/cameraagent`, some links below name `RoySalisbury/HVO.SkyMonitor`, and this runbook forbids `latest` | [#1308](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1308), [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
+| Images at `ghcr.io/hualapaivalley/skymonitor-cameraagent`, always by digest, with `latest` moved for the newest final release | No image has been published yet, and this runbook forbids `latest` | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
 | `CHANGELOG.md` and `docs/upgrade-notes/X.Y.Z.md` | Neither exists | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312), [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
 | Branch and check settings (contract section 2) | Squash and rebase merges are allowed, merged branches are kept, release tags have no ruleset, CI has no secret scan, and Dependabot does not update Docker base images | No issue yet |
 
@@ -252,7 +252,7 @@ host can execute is smoke-tested; the other architecture's runtime evidence
 belongs to a host of that architecture.
 
 The `open(2)` flag defect that blocked `linux/arm64`
-([#603](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/603)) is fixed:
+([#603](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/603)) is fixed:
 the CameraAgent runtime and the deployment CLI select `O_DIRECTORY` and
 `O_NOFOLLOW` per processor architecture, and the SQLite catalog selects
 `O_NOFOLLOW` the same way (the arm and powerpc ABIs override the asm-generic
@@ -260,11 +260,11 @@ values that x86-64 uses). The advisory native arm64 workflow
 (`.github/workflows/cameraagent-arm64.yml`) runs the CameraAgent, acceptance,
 catalog, and deployment CLI Unit suites on aarch64 and smoke-tests a natively
 built image there. The signed-release installer campaign
-([#598](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/598)) proves the
+([#598](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/598)) proves the
 signed lifecycle on `linux/amd64`: both architectures of both candidates are
 built, identity-derived, scanned, and signed, and the amd64 archive is the one that an
 installation consumes and runs. The native `linux/arm64` qualification under
-[#651](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/651) runs that same
+[#651](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/651) runs that same
 two-candidate signed install, upgrade, rollback, refusal, and uninstall campaign
 on aarch64. It verifies the complete published-format candidate packages before
 reuse and after the lifecycle, and proves that both native release archives run.

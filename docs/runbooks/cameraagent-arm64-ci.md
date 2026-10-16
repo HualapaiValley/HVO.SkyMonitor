@@ -107,7 +107,7 @@ the bounded registration command:
 read -rsp 'Runner registration token: ' RUNNER_TOKEN
 printf '\n'
 ./config.sh \
-  --url https://github.com/RoySalisbury/HVO.SkyMonitor \
+  --url https://github.com/HualapaiValley/HVO.SkyMonitor \
   --token "$RUNNER_TOKEN" \
   --name github-runner-pi-01 \
   --labels hvo-skymonitor-arm64,dotnet,docker,pi5 \
@@ -196,7 +196,7 @@ checks that follow it.
 Trigger a trusted default-branch run manually with:
 
 ```bash
-gh api --method POST repos/RoySalisbury/HVO.SkyMonitor/dispatches \
+gh api --method POST repos/HualapaiValley/HVO.SkyMonitor/dispatches \
   -f event_type=cameraagent-arm64
 ```
 
