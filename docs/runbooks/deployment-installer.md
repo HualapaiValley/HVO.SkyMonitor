@@ -830,7 +830,10 @@ of the filesystem the root resolves through at that moment (from
 `/proc/self/mountinfo`; `/srv` on a host whose NVMe is mounted there). The command
 then reads the policy back as the deployment user and requires it to name
 exactly the requested root and mount. Restating the current root reports
-`unchanged`, or `updated` when it adds a missing or stale `mountPoint`.
+`unchanged`, or `updated` when it adds a missing `mountPoint` to a hand-written
+policy. It cannot replace a recorded `mountPoint` that no longer validates: the
+existing policy is validated first and the command refuses, so repair it with
+the procedure under [Repairing the host policy](#repairing-the-host-policy).
 Relocating a root that already holds instances is not supported: their manifests
 and Compose files name the old root.
 
@@ -862,23 +865,59 @@ hold:
 - nothing is mounted beneath the product root, so the whole root lives on one
   mount. A mount exactly at the root is accepted;
 - when the policy records `mountPoint`, which must be the root or one of its
-  ancestors, a filesystem is mounted there and the product root resolves through
-  exactly that mount.
+  ancestors, the recorded path is currently a mount point in
+  `/proc/self/mountinfo`, and the product root resolves through the mount
+  currently visible there (its `statx` mount ID equals that mount's ID).
 
-With `mountPoint` recorded, an unmounted data filesystem stops every command,
-naming the mount point, even when a directory of the same name remains on the
-parent filesystem, which is what is left behind when the filesystem was mounted
-exactly at the root. Without `mountPoint`, which only a hand-written policy can
-lack, the check is weaker: an unmounted filesystem fails closed only when the
-root directory itself disappears with it. Run `host set-product-root` with the
-same root to record the mount point. Fix an invalid policy with `sudo` directly; `host set-product-root` refuses to replace a
-policy it cannot validate. The narrow `sudo` helpers for preparation and purge
+That is a check of the mount path, not of the filesystem behind it. The policy
+records a pathname, not a device or filesystem UUID. When nothing at all is
+mounted at `mountPoint`, every command stops and names the mount point, even if a
+directory of the same name remains on the parent filesystem (which is what is
+left behind when the filesystem was mounted exactly at the root). It does not
+tell one filesystem from another at the same path:
+
+- with stacked mounts, unmounting the top mount at `/srv` exposes the mount
+  beneath it, which is still a mount at `/srv` and is accepted when the root
+  resolves through it;
+- a different filesystem mounted at `/srv` in place of the intended one (another
+  partition, a replacement disk, or a tmpfs) is accepted the same way.
+
+Verify the intended backing filesystem yourself after boot or any storage change,
+for example `findmnt -no SOURCE,UUID /srv` (or `findmnt -T
+/srv/data/hvo-skymonitor`), and compare it with the device or UUID in
+`/etc/fstab`. Without `mountPoint`, which only a hand-written policy can lack, the
+check is weaker still: an unmounted filesystem stops commands only when the root
+directory itself disappears with it. Run `host set-product-root` with the same
+root to record the mount point. The narrow `sudo` helpers for preparation and purge
 also read and validate the policy themselves and act only on the root it resolves,
 never on a root their arguments merely name. The clock-synchronization gate
 protects every installation into the production root, wherever the policy puts
 it; only an admitted test root is exempt. Compose files stay inside each instance
 under `config/compose`, so an instance's configuration and state remain one
 backup unit.
+
+#### Repairing the host policy
+
+Every command refuses a policy that does not validate, including
+`host set-product-root`, which validates the existing policy before it writes a
+new one. A recorded `mountPoint` that is no longer a mount, a product root that
+was removed, or a hand edit that broke the file therefore needs a privileged
+repair, which no `hvo-skymonitor` command performs:
+
+1. Correct the cause first when it is storage: mount the intended
+   filesystem at the recorded `mountPoint` and confirm it with
+   `findmnt -no SOURCE,UUID <mountPoint>`. Most refusals end there.
+2. Otherwise, as an administrator, edit the file in place with
+   `sudo editor /etc/hvo/skymonitor/host.json`, keeping it `root:root 0644`,
+   or remove it with `sudo rm /etc/hvo/skymonitor/host.json`. Removing it
+   returns every command to `/var/lib/hvo/skymonitor` until a policy is written
+   again, so do not leave a host in that state while instances live under
+   another root.
+3. Run `hvo-skymonitor host set-product-root <root>` again. It validates the
+   repaired or absent policy, records the mount point that currently holds the
+   root, and refuses if the root then in force differs from `<root>` and still
+   holds instances.
+4. Confirm with `hvo-skymonitor status` that every instance is listed.
 
 The installer records owner-only files beneath the UUID instance root:
 

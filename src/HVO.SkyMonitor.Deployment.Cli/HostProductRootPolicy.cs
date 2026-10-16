@@ -62,9 +62,10 @@ internal sealed record HostPolicyChange(string Outcome, string PreviousProductRo
 
 /// <param name="ProductRoot">The production product root.</param>
 /// <param name="MountPoint">
-/// The mount point of the filesystem that holds the product root when the policy was written. When present, the root
-/// must still resolve through exactly that mount, so an unmounted data filesystem fails closed even when a directory
-/// of the same name remains beneath its mount point.
+/// The mount point (a pathname) of the filesystem that held the product root when the policy was written. When present,
+/// that path must currently be a mount point and the root must resolve through the mount currently visible there, so a
+/// command refuses when nothing is mounted at the path. It records no filesystem identity: a stacked or replacement
+/// mount at the same path is accepted, so operators verify the backing filesystem themselves.
 /// </param>
 internal sealed record HostPolicyDocument(string? ProductRoot, string? MountPoint = null);
 
@@ -83,8 +84,8 @@ internal sealed partial class HostPolicyJsonContext : JsonSerializerContext;
 /// and every directory from <c>/</c> to it, and every component of the product root it names, must be
 /// <c>root:root</c> and not writable by group or other users; no component may be a symbolic link; the root must be an
 /// absolute normalized path of portable segments that already exists; nothing may be mounted beneath it, so the whole
-/// root lives on one mount; and when the policy records the mount point that held the root, the root must still resolve
-/// through that mount. The command line reads it once and carries the answer on the request, and each narrow
+/// root lives on one mount; and when the policy records the mount point that held the root, that path must currently be
+/// a mount point the root resolves through (a pathname check, not filesystem authentication). The command line reads it once and carries the answer on the request, and each narrow
 /// <c>sudo</c> helper reads and validates it again for itself instead of trusting its arguments. A policy change and a
 /// privileged preparation hold the same root-only lock, so an instance can never be created under a root while the
 /// policy moves away from it.
@@ -212,9 +213,11 @@ internal static class HostProductRootPolicy
     }
 
     /// <summary>
-    /// Requires the product root to resolve through the filesystem mounted at <paramref name="mountPoint"/>. A data
-    /// filesystem that is no longer mounted leaves its mount-point directory, and possibly a same-named directory
-    /// beneath it, on the parent filesystem; this refuses that instead of writing beneath the empty mount point.
+    /// Requires <paramref name="mountPoint"/> to be a current mount point and the product root to resolve through the
+    /// mount currently visible there (equal mount IDs). When nothing is mounted at the path, the mount-point directory,
+    /// and possibly a same-named directory beneath it, remain on the parent filesystem; this refuses that instead of
+    /// writing beneath the empty mount point. It checks the pathname only: an underlying stacked mount or a different
+    /// filesystem mounted at the same path is accepted.
     /// </summary>
     internal static void EnsureMountedOn(string productRoot, ulong rootMountId, string mountPoint, string mountInfo)
     {

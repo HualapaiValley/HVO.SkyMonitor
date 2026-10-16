@@ -20,8 +20,11 @@ described in
 [deployment-installer.md](deployment-installer.md#production-product-root-on-another-filesystem):
 the file and every component of the root must be `root:root` and not writable by
 group or other users, the root must exist, use only portable path characters,
-contain no symbolic link, live on one mount, and resolve through the recorded
-mount, and a root that already holds instances is never moved. Each instance
+contain no symbolic link, live on one mount, and resolve through the mount
+currently at the recorded `mountPoint` path, and a root that already holds
+instances is never moved. The `mountPoint` check confirms that a mount exists at
+that path, not which filesystem it is, so verify the backing filesystem with
+`findmnt -no SOURCE,UUID <mountPoint>` after storage changes. Each instance
 keeps its Compose files inside its own `config/compose`, so configuration and
 state stay one backup unit wherever the root lives. Isolated contract tests may
 use a disposable root beneath their private `/tmp/hvo-deploy-test.*` directory.
