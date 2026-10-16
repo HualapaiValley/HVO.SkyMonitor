@@ -244,8 +244,12 @@ public sealed class ProcessingGraphProposalReadTests
         // may see the appended immutable fact; it remains deterministic and bounded, without a snapshot promise.
         var inserted = new CentralProcessingGraphDeliveryFact
         {
-            ProposalId = seed.Proposal.Id, Kind = "Retrieved", Source = "LogicHost",
-            OccurredAtUtc = seed.Now.AddMinutes(45), RecordedAtUtc = seed.Now.AddMinutes(45), ReasonCode = "proposal-retrieved"
+            ProposalId = seed.Proposal.Id,
+            Kind = "Retrieved",
+            Source = "LogicHost",
+            OccurredAtUtc = seed.Now.AddMinutes(45),
+            RecordedAtUtc = seed.Now.AddMinutes(45),
+            ReasonCode = "proposal-retrieved"
         };
         probe.BeforeFacts = async () =>
         {
