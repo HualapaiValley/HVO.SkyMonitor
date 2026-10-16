@@ -30,6 +30,14 @@ The schema-v2 runtime inventory contains 116 distinct rows. Commit
 coverage. It is not interchangeable with `raw-boundary-payload-written` and must
 not be dropped or merged.
 
+`scripts/test:phase14-acceptance` still requires every boundary fault-point enum
+value to map to an inventory row or carry a reasoned exclusion.
+`RawIngressFaultPoint.BeforeAcceptanceLifecycleLock`, added by `ed3f5c09` after
+the product pin named under Source Families, is excluded rather than added as a
+row: it cannot be evidenced at that pin, and a new row would change the canonical
+inventory digest that the accepted #971 import binds. Its coverage remains with
+the Development v1 CameraAgent unit tests.
+
 The definition contract binds the canonical inventory SHA-256 and maps every row
 exactly once:
 

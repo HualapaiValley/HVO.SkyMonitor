@@ -423,8 +423,16 @@ evidence_contract="$SOURCE_REPO_ROOT/deploy/split-host/acceptance/phase14-eviden
 deploy_acceptance_validate_repository_manifest "$campaign"
 audit_test_references "$campaign"
 validate_evidence_contract "$evidence_contract" "$campaign"
-assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/RawIngress/RawIngressFaults.cs" \
-  RawIngressFaultPoint 'boundary:raw-ingress:' '[]'
+# BeforeAcceptanceLifecycleLock (ed3f5c09) is a reasoned exclusion, not a manifest row. This inventory is
+# frozen at product pin 8388002c, where that fault point does not exist, and the accepted #971 source
+# import binds every artifact to this manifest's canonical digest; a new row could never be evidenced
+# under the pin and would invalidate the recorded import. Development v1 unit coverage owns it instead:
+# AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture faults every enum value, and
+# the EvidenceRelease_*WaitingForLifecycleLock tests drive its write-off race. Any other unmapped value
+# still fails here (proved by the probe below) until it is mapped or given its own reasoned exclusion.
+raw_ingress_faults="$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/RawIngress/RawIngressFaults.cs"
+raw_ingress_exclusions='["BeforeAcceptanceLifecycleLock"]'
+assert_enum_coverage "$raw_ingress_faults" RawIngressFaultPoint 'boundary:raw-ingress:' "$raw_ingress_exclusions"
 assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Transients/TransientCandidateFaults.cs" \
   TransientCandidateFaultPoint 'boundary:transient-candidate:' '[]'
 assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Transients/TransientCandidateFaults.cs" \
@@ -452,6 +460,12 @@ jq '(.scenarios[] | select(.evidenceSource | startswith("test:")) | .evidenceSou
   "test:HVO.SkyMonitor.DoesNotExist.MissingTests.MissingMethod"' "$campaign" > "$TEMP_DIR/missing-test-reference.json"
 if (audit_test_references "$TEMP_DIR/missing-test-reference.json") > /dev/null 2>&1; then
     fail 'A nonexistent public MSTest evidence FQN was accepted.'
+fi
+perl -0pe 's/(enum\s+RawIngressFaultPoint\s*\{)/$1\n    UnreviewedFaultPointProbe,/' "$raw_ingress_faults" \
+  > "$TEMP_DIR/unreviewed-raw-ingress-faults.cs"
+if (assert_enum_coverage "$TEMP_DIR/unreviewed-raw-ingress-faults.cs" RawIngressFaultPoint 'boundary:raw-ingress:' \
+  "$raw_ingress_exclusions") > /dev/null 2>&1; then
+    fail 'Raw-ingress coverage accepted an unmapped fault point beyond its reasoned exclusion.'
 fi
 jq '.inventory.scenarioCount=110' "$evidence_contract" > "$TEMP_DIR/stale-contract-count.json"
 expect_rejected 'A stale 110-scenario evidence contract was accepted.' \
