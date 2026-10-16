@@ -5,6 +5,7 @@ set -euo pipefail
 # workflow must pass, and each way of leaving a Unit-bearing project out of the
 # Unit job -- or of letting a supplemental run reach the canonical coverage
 # merge -- must fail, so the check cannot report success without selecting.
+# Issue #1261 adds focused component selection, build-root and TRX boundaries.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 checker="$repo_root/scripts/ci:unit-selection"
@@ -168,4 +169,72 @@ rm -r "$fixture/HVO.SkyMonitor.New.Tests"
 printf '{"Unit":0,"Integration":1,"Manual":0,"Soak":0,"External":0,"Hardware":0}\n' > "$fixture/HVO.SkyMonitor.Astronomy.Tests/test-categories.json"
 expect_fail 'selects tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj, which owns no Unit cases' --workflow "$workflow" --tests-root "$fixture"
 
-printf 'CI Unit selection contract passed.\n'
+# Each component's supplemental command is independently protected. Mutations
+# stay within one job, so a full-unit selection cannot mask a missing lane.
+while IFS='|' read -r job component name slot; do
+  range="/^  $job:/,/^  [a-z][a-z-]*:/"
+  mutate "$component-drop" "$range { /dotnet test .* --results-directory TestResults\\/unit\\/$slot --logger/d; }"
+  expect_fail "$job must contain exactly one TRX-only supplemental Unit command" --workflow "$scratch/$component-drop.yml"
+  for mutation in filter nobuild release collect settings slot trx duplicate endpoint condition; do
+    # The literal filter variable is part of the checked command grammar.
+    # shellcheck disable=SC2016
+    case "$mutation" in
+      filter) edit='s#--filter "\$UNIT_FILTER"#--filter "TestCategory=Integration"#' ;;
+      nobuild) edit='s# --no-build##' ;;
+      release) edit='s#--configuration Release#--configuration Debug#' ;;
+      collect) edit='s# --logger# --collect:"XPlat Code Coverage" --logger#' ;;
+      settings) edit='s# --logger# --settings tests/coverage.runsettings --logger#' ;;
+      slot) edit="s#unit/$slot #unit/astronomy #" ;;
+      trx) edit="s#unit-$slot.trx#unit-other.trx#" ;;
+      duplicate) edit='p' ;;
+      endpoint) edit='s#hvo-no-docker.sock#hvo-unit-docker-must-not-exist.sock#' ;;
+      condition) edit='s#        run: |#        if: false\n        run: |#' ;;
+    esac
+    if [[ "$mutation" == endpoint ]]; then
+      mutate "$component-$mutation" "$range { /DOCKER_HOST: unix:\\/\\/\\/tmp\\/hvo-no-docker.sock/ { $edit; }; }"
+      needle="$job supplemental step must use"
+    elif [[ "$mutation" == condition ]]; then
+      mutate "$component-$mutation" "$range { /run: \\|/ { $edit; }; }"
+      needle="$job supplemental step must use"
+    else
+      mutate "$component-$mutation" "$range { /dotnet test .* --results-directory TestResults\\/unit\\/$slot --logger/ { $edit; }; }"
+      needle="$job must contain exactly one TRX-only supplemental Unit command"
+    fi
+    expect_fail "$needle" --workflow "$scratch/$component-$mutation.yml"
+  done
+  mutate "$component-envfilter" "$range { /^      UNIT_FILTER:/ s#TestCategory=Unit#TestCategory=Integration#; }"
+  expect_fail "$job must use the complete positive Unit filter" --workflow "$scratch/$component-envfilter.yml"
+  mutate "$component-build-binding" "$range { s#run: ./scripts/ci:component-build $component#run: ./scripts/ci:component-build delivery#; }"
+  expect_fail "$job supplemental command must follow its component build" --workflow "$scratch/$component-build-binding.yml"
+  # Remove each owned root from the actual build script, rather than from a
+  # second hand-maintained root fixture.
+  sed "\#tests/$name/$name.csproj#d" "$repo_root/scripts/ci:component-build" > "$scratch/build-$component"
+  chmod +x "$scratch/build-$component"
+  expect_fail "$job component build plan omits tests/$name/$name.csproj" --component-build "$scratch/build-$component"
+done <<'COMPONENTS'
+shared-libraries|shared|HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests|catalog-sqlite-performance
+cameraagent-component|cameraagent|HVO.SkyMonitor.CameraAgent.IntegrationTests|cameraagent-integration
+logichost-component|logichost|HVO.SkyMonitor.LogicHost.IntegrationTests|logichost-integration
+combined-integration|combined|HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests|cameraagent-logichost-integration
+COMPONENTS
+
+# Prove list mode describes the real restore/build invocations, with a dotnet
+# recorder: no SDK, solution build, foreign output or Docker is involved.
+mkdir "$scratch/bin"
+cat > "$scratch/bin/dotnet" <<'DOTNET'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$HVO_COMPONENT_BUILD_LOG"
+DOTNET
+chmod +x "$scratch/bin/dotnet"
+for component in shared cameraagent logichost combined delivery; do
+  "$repo_root/scripts/ci:component-build" "$component" --list-projects > "$scratch/plan"
+  awk '{ print "restore " $0 }' "$scratch/plan" > "$scratch/expected"
+  awk '{ print "build " $0 " --no-restore --configuration Release -warnaserror" }' "$scratch/plan" >> "$scratch/expected"
+  : > "$scratch/actual"
+  PATH="$scratch/bin:$PATH" HVO_COMPONENT_BUILD_LOG="$scratch/actual" \
+    "$repo_root/scripts/ci:component-build" "$component"
+  cmp "$scratch/expected" "$scratch/actual"
+done
+
+printf 'CI Unit selection contract passed (full job and four supplemental component selections/build roots).\n'

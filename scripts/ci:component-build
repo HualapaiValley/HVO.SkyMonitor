@@ -10,6 +10,11 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 component="${1:-}"
+mode="${2:-}"
+[[ $# -le 2 && ( -z "$mode" || "$mode" == --list-projects ) ]] || {
+  printf 'Usage: scripts/ci:component-build <component> [--list-projects]\n' >&2
+  exit 2
+}
 case "$component" in
   shared)
     projects=(
@@ -17,6 +22,7 @@ case "$component" in
       tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj
       tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj
       tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj
+      tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj
       tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj
       tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj
       tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj
@@ -56,10 +62,16 @@ case "$component" in
     )
     ;;
   *)
-    printf 'Usage: scripts/ci:component-build <shared|cameraagent|logichost|combined|delivery>\n' >&2
+    printf 'Usage: scripts/ci:component-build <shared|cameraagent|logichost|combined|delivery> [--list-projects]\n' >&2
     exit 2
     ;;
 esac
+
+# The read-only plan uses the same roots as restore/build; controls need no SDK.
+if [[ "$mode" == --list-projects ]]; then
+  printf '%s\n' "${projects[@]}"
+  exit 0
+fi
 
 for project in "${projects[@]}"; do
   dotnet restore "$project"

@@ -2,12 +2,14 @@
 set -euo pipefail
 
 # Prove the full-qualification Unit job lists every test project that owns Unit
-# cases (issue #1255).
+# cases (issue #1255), plus the four supplemental component selections (#1261).
 #
 # Bounded guarantee: for each inventory-derived Unit-bearing project, the full
 # `unit` job holds exactly one supported selecting command, whose arguments and
 # report boundaries (positive filter, TRX slot, coverage and Docker endpoint) are
 # checked, in a step of a closed grammar, ahead of the evidence bind and upload.
+# Component checks use that grammar for the four explicitly named supplemental
+# commands, with the same strict TRX-only arguments and their own build roots.
 # It is not proof of arbitrary shell execution, of whole-job artifact membership
 # or publication, of installed catalog availability, or of checkout trust: those
 # remain the workflow's own unchanged steps, Required CI and review (see the
@@ -31,21 +33,22 @@ set -euo pipefail
 #
 # Every selecting command must sit in a step that always runs: an `if:` or
 # `continue-on-error:` on its step would let the list stay complete while the
-# selection never executes. This check covers only the full-qualification `unit`
-# job; the component lanes that run when the classifier returns complete=false
-# keep their own per-project commands and are not asserted here.
+# selection never executes. Component checks below cover only their four named
+# supplemental selecting commands and the corresponding component build roots.
 #
-# Usage: scripts/ci:unit-selection [--workflow <path>] [--tests-root <dir>]
+# Usage: scripts/ci:unit-selection [--workflow <path>] [--tests-root <dir>] [--component-build <path>]
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 workflow="$repo_root/.github/workflows/ci.yml"
 tests_root="$repo_root/tests"
+component_build="$repo_root/scripts/ci:component-build"
 
 while (($#)); do
   case "$1" in
     --workflow) workflow="${2:?--workflow requires a path}"; shift 2 ;;
+    --component-build) component_build="${2:?--component-build requires a path}"; shift 2 ;;
     --tests-root) tests_root="${2:?--tests-root requires a directory}"; shift 2 ;;
-    *) printf 'Usage: %s [--workflow <path>] [--tests-root <dir>]\n' "${BASH_SOURCE[0]##*/}" >&2; exit 2 ;;
+    *) printf 'Usage: %s [--workflow <path>] [--tests-root <dir>] [--component-build <path>]\n' "${BASH_SOURCE[0]##*/}" >&2; exit 2 ;;
   esac
 done
 
@@ -255,8 +258,59 @@ for command in "${commands[@]}"; do
   [[ -n "${expected[$project]:-}" ]] || fail "the Unit job selects $project, which owns no Unit cases"
 done
 
+# These four compile-linked Unit-bearing assemblies supplement existing component
+# coverage runs. This is a selecting-command/build-plan contract, not a whole-job
+# YAML interpreter or proof of checkout, prerequisites or artifact publication.
+while IFS='|' read -r job component name slot; do
+  unit_job="$(job_block "$job")" # step_of reads the current job.
+  project="tests/$name/$name.csproj"
+  [[ -n "${expected[$project]:-}" ]] || fail "$job supplemental project owns no Unit cases: $project"
+  grep -qxF '      UNIT_FILTER: TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware' <<<"$unit_job" ||
+    fail "$job must use the complete positive Unit filter"
+  component_env="$(mapping_keys '^    env:[[:space:]]*$' '      ' <<<"$unit_job" | sort | paste -sd, -)"
+  [[ "$component_env" == 'INTEGRATION_FILTER,UNIT_FILTER' ]] ||
+    fail "$job env must hold only plain INTEGRATION_FILTER and UNIT_FILTER scalars"
+  # Pin the supplemental command's supported arguments, including its own TRX-only
+  # slot. The step grammar rejects conditions, shell operators and env overrides.
+  required_command="          dotnet test $project --no-build --configuration Release --filter \"\$UNIT_FILTER\" --results-directory TestResults/unit/$slot --logger \"trx;LogFileName=unit-$slot.trx\""
+  count="$(grep -cxF -- "$required_command" <<<"$unit_job" || true)"
+  if [[ "$count" != 1 ]]; then
+    fail "$job must contain exactly one TRX-only supplemental Unit command for $project (found $count)"
+  else
+    command_line="$(grep -nxF -- "$required_command" <<<"$unit_job" | cut -d: -f1)"
+    build_line="$(grep -nxF "        run: ./scripts/ci:component-build $component" <<<"$unit_job" | cut -d: -f1 || true)"
+    upload_line="$(grep -nE '^      - name: Upload .* component evidence$' <<<"$unit_job" | cut -d: -f1 || true)"
+    if [[ ! "$build_line" =~ ^[0-9]+$ || ! "$upload_line" =~ ^[0-9]+$ ]] ||
+        ((command_line < build_line || command_line > upload_line)); then
+      fail "$job supplemental command must follow its component build and precede its evidence upload"
+    fi
+    step="$(step_of "$required_command")"
+    parsed="$(validate_step <<<"$step")"
+    [[ "$parsed" == 'ENV DOCKER_HOST: unix:///tmp/hvo-no-docker.sock' ]] ||
+      fail "$job supplemental step must use the supported grammar and exact Docker-disabled endpoint"
+  fi
+  # A second writer to this directory can overwrite the supplemental report.
+  writers="$(grep -Ec -- "^[[:space:]]+dotnet test .* --results-directory TestResults/unit/$slot( |$)" <<<"$unit_job" || true)"
+  [[ "$writers" == 1 ]] || fail "$job supplemental result slot $slot must have exactly one writer"
+  for covered in "${coverage_slots[@]}"; do
+    [[ "$covered" != "$slot" ]] || fail "$job supplemental result slot $slot collides with canonical coverage"
+  done
+  # List mode is the very array restore/build executes, with no solution-wide
+  # build or foreign-lane output assumed.
+  if ! plan="$("$component_build" "$component" --list-projects)"; then
+    fail "$job component build plan could not be read"
+  elif ! grep -qxF "$project" <<<"$plan"; then
+    fail "$job component build plan omits $project"
+  fi
+done <<'COMPONENTS'
+shared-libraries|shared|HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests|catalog-sqlite-performance
+cameraagent-component|cameraagent|HVO.SkyMonitor.CameraAgent.IntegrationTests|cameraagent-integration
+logichost-component|logichost|HVO.SkyMonitor.LogicHost.IntegrationTests|logichost-integration
+combined-integration|combined|HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests|cameraagent-logichost-integration
+COMPONENTS
+
 if ((errors)); then
   printf 'Unit selection failed with %d error(s).\n' "$errors" >&2
   exit 1
 fi
-printf 'Unit selection passed: the full-qualification unit job lists one supported selecting command for each of %d Unit-bearing project(s) (execution context, artifact publication and component lanes are not asserted).\n' "${#expected[@]}"
+printf 'Unit selection passed: the full-qualification unit job lists one supported selecting command for each of %d Unit-bearing project(s) plus four component supplemental commands and their build roots (whole-job execution context and artifact publication are not asserted).\n' "${#expected[@]}"
