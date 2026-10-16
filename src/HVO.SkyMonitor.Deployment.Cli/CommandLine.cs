@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.Deployment.Contracts;
 
@@ -6,6 +7,79 @@ namespace HVO.SkyMonitor.Deployment;
 
 internal static class CommandLine
 {
+    private const string Executable = "hvo-skymonitor";
+
+    private static readonly string[] InstallValueOptions =
+    [
+        "--config", "--instance-id", "--friendly-name", "--owner-email", "--bind-address", "--port",
+        "--product-root", "--catalog-bundle", "--catalog-manifest", "--catalog-index", "--catalog-version", "--asset-base-url", "--channel", "--image-ref", "--image-archive",
+        "--image-archive-sha256", "--image-manifest", "--image-index", "--image-version",
+        "--password-file", "--latitude", "--longitude",
+        "--elevation", "--time-zone", "--replay-profile"
+    ];
+
+    private static readonly string[] InstallFlags =
+        ["--dry-run", "--resume", "--json", "--generate-password", "--acknowledge-plaintext-http", "--no-download"];
+
+    private static readonly string[] OwnerRecoveryValueOptions = ["--instance-id", "--product-root", "--password-file"];
+
+    private static readonly string[] OwnerRecoveryFlags = ["--generate-password", "--resume", "--json"];
+
+    private static readonly string[] StatePreflightValueOptions =
+    [
+        "--instance-id", "--product-root", "--image-ref",
+        "--image-manifest", "--image-index", "--image-version", "--asset-base-url", "--channel"
+    ];
+
+    private static readonly string[] StatePreflightFlags = ["--json", "--no-download"];
+
+    private static readonly string[] StateResetValueOptions = ["--instance-id", "--confirm-instance-id", "--product-root"];
+
+    private static readonly string[] StateResetFlags = ["--json", "--dry-run"];
+
+    private static readonly string[] LifecycleValueOptions =
+    [
+        "--instance-id", "--confirm-instance-id", "--confirm-removed-operation-id", "--operation-id", "--product-root",
+        "--image-ref", "--image-archive", "--image-archive-sha256", "--image-manifest", "--image-index", "--image-version",
+        "--catalog-bundle", "--catalog-manifest", "--catalog-index",
+        "--catalog-version", "--asset-base-url", "--channel"
+    ];
+
+    private static readonly string[] LifecycleFlags =
+        ["--dry-run", "--resume", "--restore-only", "--json", "--no-download", "--migration-backward-compatible"];
+
+    private static readonly CommandDefinition HostSetProductRoot =
+        new(["host", "set-product-root"], "<absolute-path>", [], ["--json"]);
+
+    /// <summary>
+    /// Every command the parser accepts, in the order help lists them. Each parser reads its options from the same
+    /// lists, so help names exactly the options that parser admits.
+    /// </summary>
+    internal static readonly IReadOnlyList<CommandDefinition> Commands =
+    [
+        Lifecycle("status"),
+        new(["cameraagent", "install"], null, InstallValueOptions, InstallFlags,
+            "--config reads the request from a JSON file and cannot be combined with the other value options."),
+        new(["cameraagent", "recover-owner"], null, OwnerRecoveryValueOptions, OwnerRecoveryFlags),
+        new(["cameraagent", "preflight"], null, StatePreflightValueOptions, StatePreflightFlags),
+        new(["cameraagent", "reset-state"], null, StateResetValueOptions, StateResetFlags),
+        Lifecycle("cameraagent", "upgrade"),
+        Lifecycle("cameraagent", "rollback"),
+        Lifecycle("cameraagent", "reinstall"),
+        Lifecycle("cameraagent", "uninstall"),
+        Lifecycle("cameraagent", "purge"),
+        Lifecycle("catalog", "install"),
+        Lifecycle("catalog", "select"),
+        Lifecycle("catalog", "rollback"),
+        Lifecycle("catalog", "gc"),
+        Lifecycle("catalog", "check"),
+        HostSetProductRoot
+    ];
+
+    private static CommandDefinition Lifecycle(params string[] path)
+        => new(path, null, LifecycleValueOptions, LifecycleFlags,
+            "These options are shared with the other lifecycle commands; not every one applies to this command.");
+
     /// <summary>
     /// The one place a non-production product root can be admitted. The variable is read here, where the
     /// process boundary is crossed, and never again: every request carries the answer it was parsed with, so
@@ -33,6 +107,129 @@ internal static class CommandLine
     {
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(context);
+        // Help is answered before the host policy is read, so it works even where that policy is refused.
+        if (HelpFor(args) is { } help)
+        {
+            return new HelpCommand(help);
+        }
+        try
+        {
+            return ParseOperation(args, context);
+        }
+        catch (InstallUsageException exception) when (exception.Usage is null)
+        {
+            // A mistake found here is in the command line itself, so it carries the usage of the command it was made
+            // in, or the general usage when the arguments name no command. One raised later, by an operation already
+            // under way, carries none and is still reported as that operation's failure.
+            exception.Usage = Find(args) is { } command ? CommandUsage(command) : GeneralUsage();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The usage text an invocation asks for, or <see langword="null"/> when it asks for none. <c>--help</c>,
+    /// <c>-h</c> or <c>help</c> alone, or <c>--help</c> or <c>-h</c> alone after a command group, asks for the general
+    /// usage; <c>--help</c> or <c>-h</c> where a command reads an option asks for that command's usage.
+    /// </summary>
+    internal static string? HelpFor(string[] args)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        if ((args is [var only] && (IsHelpOption(only) || only == "help")) ||
+            (args is [var group, var option] && IsGroup(group) && IsHelpOption(option)))
+        {
+            return GeneralUsage();
+        }
+        return Find(args) is { } command && RequestsHelp(args, command) ? CommandUsage(command) : null;
+    }
+
+    /// <summary>The usage that lists every command.</summary>
+    internal static string GeneralUsage()
+    {
+        var usage = new StringBuilder()
+            .AppendLine(CultureInfo.InvariantCulture, $"Usage: {Executable} <command> [options]")
+            .AppendLine()
+            .AppendLine("Commands:");
+        foreach (var command in Commands)
+        {
+            usage.AppendLine(CultureInfo.InvariantCulture, $"  {Synopsis(command)}");
+        }
+        return usage
+            .AppendLine()
+            .AppendLine(CultureInfo.InvariantCulture, $"Run '{Executable} <command> --help' to list the options of one command.")
+            .ToString();
+    }
+
+    /// <summary>The usage of one command, listing the options its parser admits.</summary>
+    internal static string CommandUsage(CommandDefinition command)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        var usage = new StringBuilder()
+            .AppendLine(CultureInfo.InvariantCulture, $"Usage: {Executable} {Synopsis(command)} [options]")
+            .AppendLine()
+            .AppendLine("Options:");
+        foreach (var option in command.ValueOptions)
+        {
+            usage.AppendLine(CultureInfo.InvariantCulture, $"  {option} <value>");
+        }
+        foreach (var flag in command.Flags)
+        {
+            usage.AppendLine(CultureInfo.InvariantCulture, $"  {flag}");
+        }
+        usage.AppendLine("  -h, --help");
+        if (command.Note is not null)
+        {
+            usage.AppendLine().AppendLine(command.Note);
+        }
+        return usage.ToString();
+    }
+
+    private static string Synopsis(CommandDefinition command)
+        => command.Positional is null ? command.Name : $"{command.Name} {command.Positional}";
+
+    private static bool IsHelpOption(string argument) => argument is "--help" or "-h";
+
+    private static bool IsGroup(string argument) => Commands.Any(command => command.Path.Count > 1 && command.Path[0] == argument);
+
+    private static CommandDefinition? Find(string[] args)
+        => Commands.FirstOrDefault(command =>
+            args.Length >= command.Path.Count && command.Path.SequenceEqual(args.Take(command.Path.Count), StringComparer.Ordinal));
+
+    /// <summary>
+    /// Walks the arguments after the command the way its parser does, so a help option is recognised only where an
+    /// option is read and an option value that happens to be <c>-h</c> stays a value.
+    /// </summary>
+    private static bool RequestsHelp(string[] args, CommandDefinition command)
+    {
+        for (var index = command.Path.Count; index < args.Length; index++)
+        {
+            var argument = args[index];
+            if (IsHelpOption(argument))
+            {
+                return true;
+            }
+            if (argument.StartsWith("--", StringComparison.Ordinal) && !command.Flags.Contains(argument, StringComparer.Ordinal) &&
+                index + 1 < args.Length && !args[index + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                index++;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>The reason given when the arguments name no command.</summary>
+    private static string UnknownCommand(string[] args) => args switch
+    {
+        [] => "Missing command.",
+        [var first, var second, ..] when IsHelpOption(first) || first == "help" =>
+            $"Unexpected argument '{second}' after '{first}'.",
+        [var group] when IsGroup(group) => $"Missing command after '{group}'.",
+        [var group, var name, ..] when IsGroup(group) && name.StartsWith('-') => $"Missing command after '{group}'.",
+        [var group, var name, ..] when IsGroup(group) => $"Unknown command '{group} {name}'.",
+        [var name, ..] => $"Unknown command '{name}'."
+    };
+
+    private static DeploymentCommand ParseOperation(string[] args, CommandLineContext context)
+    {
         var production = HostProductRootPolicy.Resolve(context.HostPolicy).Path;
         var allowTestProductRoot = context.AllowTestProductRoot;
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "install")
@@ -88,7 +285,7 @@ internal static class CommandLine
                 throw new InstallUsageException("Unexpected positional argument.");
             }
 
-            if (option is "--dry-run" or "--resume" or "--json" or "--generate-password" or "--acknowledge-plaintext-http" or "--no-download")
+            if (InstallFlags.Contains(option, StringComparer.Ordinal))
             {
                 if (!flags.Add(option))
                 {
@@ -197,15 +394,8 @@ internal static class CommandLine
 
     private static void RejectUnknown(IEnumerable<string> options)
     {
-        var known = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "--instance-id", "--friendly-name", "--owner-email", "--bind-address", "--port",
-            "--product-root", "--catalog-bundle", "--catalog-manifest", "--catalog-index", "--catalog-version", "--asset-base-url", "--channel", "--image-ref", "--image-archive",
-            "--image-archive-sha256", "--image-manifest", "--image-index", "--image-version",
-            "--password-file", "--latitude", "--longitude",
-            "--elevation", "--time-zone", "--replay-profile"
-        };
-        var unknown = options.FirstOrDefault(option => !known.Contains(option));
+        // --config never reaches this check: it is removed first and admits no other value option.
+        var unknown = options.FirstOrDefault(option => !InstallValueOptions.Contains(option, StringComparer.Ordinal));
         if (unknown is not null)
         {
             throw new InstallUsageException($"Unknown option '{unknown}'.");
@@ -270,12 +460,16 @@ internal static class CommandLine
 
     private static HostProductRootRequest ParseHost(string[] args, CommandLineContext context, string productionProductRoot)
     {
-        if (args.Length < 3 || args[1] != "set-product-root" || args[2].StartsWith("--", StringComparison.Ordinal))
+        if (args.Length < 2 || args[1] != "set-product-root")
         {
-            throw new InstallUsageException("Usage: hvo-skymonitor host set-product-root <absolute-path> [--json]");
+            throw new InstallUsageException(UnknownCommand(args));
         }
-        var (values, flags) = ParseOptions(args, 3, ["--json"]);
-        RejectUnknown(values, []);
+        if (args.Length < 3 || args[2].StartsWith("--", StringComparison.Ordinal))
+        {
+            throw new InstallUsageException($"{HostSetProductRoot.Name} requires {HostSetProductRoot.Positional}.");
+        }
+        var (values, flags) = ParseOptions(args, 3, HostSetProductRoot.Flags);
+        RejectUnknown(values, HostSetProductRoot.ValueOptions);
         var request = new HostProductRootRequest(args[2], flags.Contains("--json"))
         {
             AllowTestProductRoot = context.AllowTestProductRoot,
@@ -301,8 +495,7 @@ internal static class CommandLine
             ["catalog", "rollback", ..] => (LifecycleOperationKind.CatalogRollback, 2),
             ["catalog", "gc", ..] => (LifecycleOperationKind.CatalogGarbageCollect, 2),
             ["catalog", "check", ..] => (LifecycleOperationKind.CatalogCheck, 2),
-            _ => throw new InstallUsageException(
-                "Usage: hvo-skymonitor status|cameraagent <install|recover-owner|preflight|reset-state|upgrade|rollback|reinstall|uninstall|purge>|catalog <install|select|rollback|gc|check>|host set-product-root <path> [options]")
+            _ => throw new InstallUsageException(UnknownCommand(args))
         };
         var values = new Dictionary<string, string?>(StringComparer.Ordinal);
         var flags = new HashSet<string>(StringComparer.Ordinal);
@@ -313,7 +506,7 @@ internal static class CommandLine
             {
                 throw new InstallUsageException("Unexpected positional argument.");
             }
-            if (option is "--dry-run" or "--resume" or "--restore-only" or "--json" or "--no-download" or "--migration-backward-compatible")
+            if (LifecycleFlags.Contains(option, StringComparer.Ordinal))
             {
                 if (!flags.Add(option)) throw new InstallUsageException($"Duplicate option '{option}'.");
                 continue;
@@ -324,15 +517,7 @@ internal static class CommandLine
                 throw new InstallUsageException($"Option '{option}' requires one non-duplicate value.");
             }
         }
-        var known = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "--instance-id", "--confirm-instance-id", "--confirm-removed-operation-id", "--operation-id", "--product-root",
-            "--image-ref", "--image-archive", "--image-archive-sha256", "--image-manifest", "--image-index", "--image-version",
-            "--catalog-bundle", "--catalog-manifest", "--catalog-index",
-            "--catalog-version", "--asset-base-url", "--channel"
-        };
-        var unknown = values.Keys.FirstOrDefault(option => !known.Contains(option));
-        if (unknown is not null) throw new InstallUsageException($"Unknown option '{unknown}'.");
+        RejectUnknown(values, LifecycleValueOptions);
         var request = new LifecycleRequest(
             operation,
             ParseGuid(Get(values, "--instance-id"), "--instance-id"),
@@ -374,11 +559,8 @@ internal static class CommandLine
     private static CameraAgentStatePreflightRequest ParseStatePreflight(
         string[] args, bool allowTestProductRoot, string productionProductRoot)
     {
-        var (values, flags) = ParseOptions(args, 2, ["--json", "--no-download"]);
-        RejectUnknown(values, [
-            "--instance-id", "--product-root", "--image-ref",
-            "--image-manifest", "--image-index", "--image-version", "--asset-base-url", "--channel"
-        ]);
+        var (values, flags) = ParseOptions(args, 2, StatePreflightFlags);
+        RejectUnknown(values, StatePreflightValueOptions);
         var request = new CameraAgentStatePreflightRequest(
             ParseGuid(Get(values, "--instance-id"), "--instance-id"),
             Get(values, "--product-root") ?? productionProductRoot,
@@ -403,8 +585,8 @@ internal static class CommandLine
     private static CameraAgentStateResetRequest ParseStateReset(
         string[] args, bool allowTestProductRoot, string productionProductRoot)
     {
-        var (values, flags) = ParseOptions(args, 2, ["--json", "--dry-run"]);
-        RejectUnknown(values, ["--instance-id", "--confirm-instance-id", "--product-root"]);
+        var (values, flags) = ParseOptions(args, 2, StateResetFlags);
+        RejectUnknown(values, StateResetValueOptions);
         var request = new CameraAgentStateResetRequest(
             ParseGuid(Get(values, "--instance-id"), "--instance-id"),
             ParseGuid(Get(values, "--confirm-instance-id"), "--confirm-instance-id"),
@@ -466,7 +648,7 @@ internal static class CommandLine
                 throw new InstallUsageException("Unexpected positional argument.");
             }
 
-            if (option is "--generate-password" or "--resume" or "--json")
+            if (OwnerRecoveryFlags.Contains(option, StringComparer.Ordinal))
             {
                 if (!flags.Add(option))
                 {
@@ -482,15 +664,7 @@ internal static class CommandLine
             }
         }
 
-        var known = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "--instance-id", "--product-root", "--password-file"
-        };
-        var unknown = values.Keys.FirstOrDefault(option => !known.Contains(option));
-        if (unknown is not null)
-        {
-            throw new InstallUsageException($"Unknown option '{unknown}'.");
-        }
+        RejectUnknown(values, OwnerRecoveryValueOptions);
 
         var request = new OwnerRecoveryRequest(
             ParseGuid(Get(values, "--instance-id"), "--instance-id"),
@@ -514,3 +688,17 @@ internal static class CommandLine
 /// isolated test states its own location here rather than mutating process state.
 /// </summary>
 internal sealed record CommandLineContext(bool AllowTestProductRoot, HostPolicyLocation HostPolicy);
+
+/// <summary>
+/// One command: the words that name it, the positional argument it requires if any, the options its parser admits,
+/// and a note help prints after them.
+/// </summary>
+internal sealed record CommandDefinition(
+    IReadOnlyList<string> Path,
+    string? Positional,
+    IReadOnlyList<string> ValueOptions,
+    IReadOnlyList<string> Flags,
+    string? Note = null)
+{
+    public string Name => string.Join(' ', Path);
+}

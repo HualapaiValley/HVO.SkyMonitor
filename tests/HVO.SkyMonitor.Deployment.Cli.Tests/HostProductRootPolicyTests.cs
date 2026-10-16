@@ -413,6 +413,22 @@ public sealed class HostProductRootPolicyTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void ParseCommand_Help_IsAnsweredWithoutReadingARefusedHostPolicy()
+    {
+        using var host = new PolicyHost();
+        host.WritePolicyText("{\"productRoot\":\"relative\"}");
+        var context = new CommandLineContext(false, host.Location);
+
+        Assert.AreEqual(CommandLine.GeneralUsage(), ((HelpCommand)CommandLine.ParseCommand(["--help"], context)).Usage);
+        StringAssert.StartsWith(
+            ((HelpCommand)CommandLine.ParseCommand(["status", "--help"], context)).Usage,
+            "Usage: hvo-skymonitor status [options]",
+            StringComparison.Ordinal);
+        Assert.ThrowsExactly<InstallerException>(() => CommandLine.ParseCommand(["status"], context));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void ParseCommand_HostSetProductRoot_CarriesThePolicyLocationAndRejectsMalformedUse()
     {
         using var host = new PolicyHost();
