@@ -900,24 +900,44 @@ backup unit.
 
 Every command refuses a policy that does not validate, including
 `host set-product-root`, which validates the existing policy before it writes a
-new one. A recorded `mountPoint` that is no longer a mount, a product root that
-was removed, or a hand edit that broke the file therefore needs a privileged
-repair, which no `hvo-skymonitor` command performs:
+new one. A recorded `mountPoint` that is no longer a mount, or a hand edit that
+broke the file, therefore needs a privileged repair, which no `hvo-skymonitor`
+command performs.
 
-1. Correct the cause first when it is storage: mount the intended
-   filesystem at the recorded `mountPoint` and confirm it with
-   `findmnt -no SOURCE,UUID <mountPoint>`. Most refusals end there.
-2. Otherwise, as an administrator, edit the file in place with
-   `sudo editor /etc/hvo/skymonitor/host.json`, keeping it `root:root 0644`,
-   or remove it with `sudo rm /etc/hvo/skymonitor/host.json`. Removing it
-   returns every command to `/var/lib/hvo/skymonitor` until a policy is written
-   again, so do not leave a host in that state while instances live under
-   another root.
-3. Run `hvo-skymonitor host set-product-root <root>` again. It validates the
-   repaired or absent policy, records the mount point that currently holds the
-   root, and refuses if the root then in force differs from `<root>` and still
-   holds instances.
-4. Confirm with `hvo-skymonitor status` that every instance is listed.
+A manual edit of `/etc/hvo/skymonitor/host.json` does **not** take the
+host-policy lock (`/run/hvo-skymonitor-host-policy.lock`) that
+`host set-product-root` and the privileged preparation hold. A command started
+while the file is being changed can therefore resolve a different production
+root, for example create a new instance under `/var/lib/hvo/skymonitor` while
+the policy is briefly absent, and that instance would then block restoring the
+real root. Repair only inside a maintenance window:
+
+1. **Open the window.** Stop or hold every automation that runs
+   `hvo-skymonitor`, and run no `hvo-skymonitor` command by hand: no
+   `cameraagent install`, `upgrade`, `rollback`, `reinstall`, `uninstall`,
+   `purge`, `reset-state`, `recover-owner`, `preflight`, no `catalog` command, no
+   `host` command, and no `status`, until step 5 is done. Confirm that nothing is
+   running: `pgrep -af hvo-skymonitor` must print nothing. Running CameraAgent
+   containers are unaffected and keep running.
+2. **Repair in place, preferring storage over the file.** If the intended
+   filesystem can be mounted, mount it at the recorded `mountPoint`, confirm it
+   with `findmnt -no SOURCE,UUID <mountPoint>`, and change nothing in the file.
+3. **Otherwise edit only the mount field.** Run
+   `sudo editor /etc/hvo/skymonitor/host.json` and either correct `mountPoint`
+   or delete just the `mountPoint` member so the setter records it again. Keep
+   `productRoot` exactly as it was: it is the root the instances live under.
+   Keep the file `root:root 0644`.
+4. **Never delete the file while instances exist under its `productRoot`.**
+   Without the file every command falls back to `/var/lib/hvo/skymonitor`, so the
+   instances under the policy root become unreachable: `status` and every
+   lifecycle command look only in the root in force. Remove `host.json` only when
+   that root is empty, after every instance under it has been uninstalled and
+   purged.
+5. **Re-establish and verify, then close the window.** Run
+   `hvo-skymonitor host set-product-root <the same productRoot>`, which validates
+   the repaired policy and records the mount point that currently holds the
+   root, then `hvo-skymonitor status`, and confirm that every expected instance ID
+   is listed. Only then resume automation and other `hvo-skymonitor` commands.
 
 The installer records owner-only files beneath the UUID instance root:
 
