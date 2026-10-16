@@ -3,11 +3,26 @@
 ## Local Owner Bootstrap
 
 Initial startup requires a temporary owner password from
-`LocalIdentity:AdminPassword` or `LocalIdentity:AdminPasswordFile`. A newly
-seeded owner must replace it at `/Account/ReplaceTemporaryPassword` before using
-ordinary CameraAgent UI or APIs. After seeding, remove the password setting and
-set `LocalIdentity:AllowMissingAdminPassword=true`; the durable replacement is
-not reconciled from configuration on restart.
+`LocalIdentity:AdminPassword` or `LocalIdentity:AdminPasswordFile`. The owner is
+seeded with the user name `LocalIdentity:AdminUserName` (default `admin`) and
+the email `LocalIdentity:AdminEmail` (default `owner@cameraagent.local`), and
+can sign in with either. A newly seeded owner must replace the temporary
+password at `/Account/ReplaceTemporaryPassword` before using ordinary
+CameraAgent UI or APIs. After seeding, remove the password setting and set
+`LocalIdentity:AllowMissingAdminPassword=true`; the durable replacement is not
+reconciled from configuration on restart.
+
+The installer seeds the documented default sign-in `admin` / `skymonitor`
+unless it is given `--password-file` or `--generate-password`. **Until the first
+sign-in replaces that password, anyone who can reach the CameraAgent port can
+sign in and claim the camera.** Keep the installer's default loopback binding
+until the password is replaced; a non-loopback binding still requires the
+explicit `--acknowledge-plaintext-http` acknowledgement.
+
+Passwords need at least 8 characters, with no character-class rules, and cannot
+be `skymonitor` in any letter case, the user name, or the current password. Five
+failed sign-ins lock the account for five minutes. An owner created before user
+names existed keeps its email as its user name and signs in with that email.
 
 Authenticated installer status is available at
 `/api/internal/owner-bootstrap/status`. See
@@ -53,7 +68,7 @@ The app applies pending migrations automatically on startup.
 
 ## Configuration
 
-- `LocalIdentity` configures the seeded owner email/password and optional `DatabasePath`. Use CameraAgent User Secrets for the password in a direct run and `CAMERA_AGENT_ADMIN_PASSWORD` for Compose.
+- `LocalIdentity` configures the seeded owner email, user name, and temporary password and the optional `DatabasePath`. Use CameraAgent User Secrets for the password in a direct run and `CAMERA_AGENT_ADMIN_PASSWORD` for Compose.
 - Data-protection keys persist under `DataProtection-Keys/` (or the path you mount in Docker) so browser sessions survive restarts.
 - Device identity and encrypted central credentials persist under `DeviceProvisioning:StateDirectory`; restore them with the matching Data Protection keys.
 

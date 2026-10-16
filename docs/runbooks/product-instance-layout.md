@@ -1,21 +1,36 @@
 # Product and Instance Persistent Layout
 
-SkyMonitor owns `/var/lib/hvo/skymonitor`. Application instances and catalogs
-are separate identity domains beneath that root:
+SkyMonitor owns one production product root: `/var/lib/hvo/skymonitor` by
+default, or the root named by the root-owned host policy
+`/etc/hvo/skymonitor/host.json` (`{"productRoot": "/srv/data/hvo-skymonitor", "mountPoint": "/srv"}`),
+which places it on another filesystem without a bind mount. Application
+instances and catalogs are separate identity domains beneath that root:
 
 ```text
-/var/lib/hvo/skymonitor/
+<product-root>/                       # /var/lib/hvo/skymonitor unless the host policy names another
 |-- operations/                       # product-wide runtime operation lock
 |-- catalogs/<catalog-id>/{current,previous,versions/}
-|-- cameraagents/<instance-uuid>/{config,state}
+|-- cameraagents/<instance-uuid>/{config,state}   # config/compose holds the instance's Compose files
 `-- logichosts/<instance-uuid>/{config,state}
 ```
 
-Persistent deployment rejects any other product root. Isolated contract tests
-may use a disposable root beneath their private `/tmp/hvo-deploy-test.*`
-directory. The deployment never treats `/var/lib/hvo`, a hostname, target name,
-friendly name, container name, port, or application identity as an instance ID.
-The self-contained local installer enforces this root and records its exact
+Persistent deployment rejects any product root other than the production one.
+The host policy, its validation, and `hvo-skymonitor host set-product-root` are
+described in
+[deployment-installer.md](deployment-installer.md#production-product-root-on-another-filesystem):
+the file and every component of the root must be `root:root` and not writable by
+group or other users, the root must exist, use only portable path characters,
+contain no symbolic link, live on one mount, and resolve through the mount
+currently at the recorded `mountPoint` path, and a root that already holds
+instances is never moved. The `mountPoint` check confirms that a mount exists at
+that path, not which filesystem it is, so verify the backing filesystem with
+`findmnt -no SOURCE,UUID <mountPoint>` after storage changes. Each instance
+keeps its Compose files inside its own `config/compose`, so configuration and
+state stay one backup unit wherever the root lives. Isolated contract tests may
+use a disposable root beneath their private `/tmp/hvo-deploy-test.*` directory.
+The deployment never treats `/var/lib/hvo`, a hostname, target name, friendly
+name, container name, port, or application identity as an instance ID. The
+self-contained local installer enforces this root and records its exact
 manifest, phase, and result contracts as described in
 [deployment-installer.md](deployment-installer.md).
 

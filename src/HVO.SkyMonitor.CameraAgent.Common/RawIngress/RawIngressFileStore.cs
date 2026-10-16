@@ -1,10 +1,9 @@
 using System.Globalization;
-using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
-using Microsoft.Win32.SafeHandles;
+using HVO.SkyMonitor.Storage.FileSystem;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -151,9 +150,7 @@ internal sealed class RawIngressFileStore(
             await stream.WriteAsync(line, cancellationToken).ConfigureAwait(false);
             await stream.WriteAsync("\n"u8.ToArray(), cancellationToken).ConfigureAwait(false);
             await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
-            stream.Flush(flushToDisk: true);
-#pragma warning restore CA1849
+            CameraAgentFileSystem.FlushFile(stream);
             fileFlushRecorder?.Invoke();
         }
         finally
@@ -265,71 +262,64 @@ internal sealed class RawIngressFileStore(
         {
             FlushDirectoryHierarchy(directory);
         }
-        var temporaryPath = string.Concat(finalPath, ".", Guid.NewGuid().ToString("N"), ".tmp");
         try
         {
-            using (var stream = new FileStream(
-                temporaryPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                64 * 1024,
-                FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.WriteThrough))
-            {
-                // RawCaptureIngress serializes acceptance while holding the root's exclusive process lock.
-                if (partiallyWritten is { } partialPoint && content.Length > 1 && _faultInjector.IsEnabled(partialPoint))
+            await AtomicPublisher.PublishAsync(
+                PhysicalRoot.Open(_root),
+                NormalizeRelative(_root, finalPath),
+                PublishMode.CreateNew,
+                async (stream, token) =>
                 {
-                    var prefixLength = Math.Min(64 * 1024, Math.Max(1, content.Length / 2));
-                    await stream.WriteAsync(content[..prefixLength], cancellationToken).ConfigureAwait(false);
-#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
-                    stream.Flush(flushToDisk: true);
-#pragma warning restore CA1849
-                    _faultInjector.Inject(partialPoint);
-                    await stream.WriteAsync(content[prefixLength..], cancellationToken).ConfigureAwait(false);
-                }
-                else
+                    // Acceptance holds the root's exclusive process lock; only this invocation
+                    // owns the temporary, and every original crash boundary remains observable.
+                    if (partiallyWritten is { } partialPoint && content.Length > 1 && _faultInjector.IsEnabled(partialPoint))
+                    {
+                        var prefixLength = Math.Min(64 * 1024, Math.Max(1, content.Length / 2));
+                        await stream.WriteAsync(content[..prefixLength], token).ConfigureAwait(false);
+                        DurableSync.File((FileStream)stream);
+                        _faultInjector.Inject(partialPoint);
+                        await stream.WriteAsync(content[prefixLength..], token).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await stream.WriteAsync(content, token).ConfigureAwait(false);
+                    }
+                    _faultInjector.Inject(written);
+                },
+                phase =>
                 {
-                    await stream.WriteAsync(content, cancellationToken).ConfigureAwait(false);
-                }
-                _faultInjector.Inject(written);
-                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
-                stream.Flush(flushToDisk: true);
-#pragma warning restore CA1849
-                _fileFlushRecorder?.Invoke();
-                _faultInjector.Inject(flushed);
-            }
-            EnsureNoSymbolicLinks(_root, directory);
-            File.Move(temporaryPath, finalPath, overwrite: false);
-            _faultInjector.Inject(published);
-            EnsureNoSymbolicLinks(_root, finalPath);
-            FlushDirectoryTracked(Path.GetDirectoryName(finalPath)!);
-            _faultInjector.Inject(directorySynced);
+                    switch (phase)
+                    {
+                        case PublicationPhase.FileFlushed:
+                            _fileFlushRecorder?.Invoke();
+                            _faultInjector.Inject(flushed);
+                            break;
+                        case PublicationPhase.Renamed:
+                            _faultInjector.Inject(published);
+                            break;
+                        case PublicationPhase.DirectorySynced:
+                            if (OperatingSystem.IsLinux()) _directorySyncRecorder?.Invoke();
+                            _faultInjector.Inject(directorySynced);
+                            break;
+                    }
+                },
+                cancellationToken).ConfigureAwait(false);
         }
-        catch
+        catch (FileSystemFaultException exception)
         {
-            TryDelete(temporaryPath);
-            throw;
+            FileSystemFaultCompatibility.Rethrow(exception);
         }
     }
 
     internal void EnsureRootIsPhysical()
     {
-        var rootExisted = Directory.Exists(_root);
-        Directory.CreateDirectory(_root);
-        EnsureNoSymbolicLinks(_root, _root);
-        if (!rootExisted && OperatingSystem.IsLinux())
-        {
-            FlushDirectoryTracked(_root);
-            FlushDirectoryTracked(Path.GetDirectoryName(_root)!);
-        }
+        CameraAgentFileSystem.EnsureStorageRootDurable(_root, _directorySyncRecorder);
         foreach (var child in TopLevelDirectories)
         {
             var childPath = Path.Combine(_root, child);
-            var childExisted = Directory.Exists(childPath);
             Directory.CreateDirectory(childPath);
             EnsureNoSymbolicLinks(_root, childPath);
-            if (!childExisted && OperatingSystem.IsLinux())
+            if (OperatingSystem.IsLinux())
             {
                 FlushDirectoryTracked(childPath);
                 FlushDirectoryTracked(_root);
@@ -361,29 +351,14 @@ internal sealed class RawIngressFileStore(
 
     internal static void EnsureNoSymbolicLinks(string rootPath, string path)
     {
-        var fullPath = Path.GetFullPath(path);
-        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootPath));
-        if (new FileInfo(fullPath).LinkTarget is not null || new DirectoryInfo(fullPath).LinkTarget is not null)
+        try
         {
-            throw new IOException("Raw ingress evidence must not be a symbolic link.");
+            PhysicalRoot.VerifyPath(rootPath, path, "inspect-raw-path");
         }
-        var current = new DirectoryInfo(Directory.Exists(fullPath) ? fullPath : Path.GetDirectoryName(fullPath)!);
-        while (current is not null)
+        catch (FileSystemFaultException exception)
         {
-            if (current.LinkTarget is not null)
-            {
-                throw new IOException("Raw ingress paths must not traverse symbolic links.");
-            }
-            if (string.Equals(
-                    Path.TrimEndingDirectorySeparator(current.FullName),
-                    root,
-                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-            {
-                return;
-            }
-            current = current.Parent;
+            FileSystemFaultCompatibility.Rethrow(exception);
         }
-        throw new IOException("Raw ingress path is outside the configured root.");
     }
 
     internal static void SyncDirectory(string directory) => FlushDirectory(directory);
@@ -412,8 +387,16 @@ internal sealed class RawIngressFileStore(
     internal static void SyncFile(string root, string path)
     {
         EnsureNoSymbolicLinks(root, path);
-        using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        RandomAccess.FlushToDisk(handle);
+        using var handle = File.OpenHandle(path, FileMode.Open,
+                OperatingSystem.IsWindows() ? FileAccess.ReadWrite : FileAccess.Read, FileShare.Read);
+        try
+        {
+            DurableSync.File(handle, path);
+        }
+        catch (FileSystemFaultException exception)
+        {
+            FileSystemFaultCompatibility.Rethrow(exception);
+        }
     }
 
     private static string NormalizeRelative(string root, string path)
@@ -421,26 +404,21 @@ internal sealed class RawIngressFileStore(
 
     private static void FlushDirectory(string directory)
     {
-        if (!OperatingSystem.IsLinux())
+        try
         {
-            return;
+            DurableSync.Directory(directory);
         }
-        const int readOnly = 0;
-        const int closeOnExec = 0x80000;
-        var descriptor = Open(directory, readOnly | GetLinuxDirectoryOnlyFlag(RuntimeInformation.ProcessArchitecture) | closeOnExec);
-        if (descriptor < 0)
+        catch (FileSystemFaultException exception)
         {
-            throw new IOException("Failed to open the raw ingress directory for durable synchronization.", new Win32Exception(Marshal.GetLastPInvokeError()));
+            FileSystemFaultCompatibility.Rethrow(exception);
         }
-        using var handle = new SafeFileHandle((nint)descriptor, ownsHandle: true);
-        RandomAccess.FlushToDisk(handle);
     }
 
     internal static int GetLinuxDirectoryOnlyFlag(Architecture architecture)
-        => Storage.LinuxOpenFlags.GetDirectoryFlag(architecture);
+        => HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags.GetDirectoryFlag(architecture);
 
     internal static int GetLinuxNoFollowFlag(Architecture architecture)
-        => Storage.LinuxOpenFlags.GetNoFollowFlag(architecture);
+        => HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags.GetNoFollowFlag(architecture);
 
     private void FlushDirectoryTracked(string directory)
     {
@@ -448,26 +426,6 @@ internal sealed class RawIngressFileStore(
         if (OperatingSystem.IsLinux())
         {
             _directorySyncRecorder?.Invoke();
-        }
-    }
-
-#pragma warning disable SYSLIB1054 // This narrow Unix call avoids enabling unsafe code for source-generated interop.
-    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
-    [DllImport("libc", EntryPoint = "open", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true, SetLastError = true)]
-    private static extern int Open(string path, int flags);
-#pragma warning restore SYSLIB1054
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            File.Delete(path);
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
         }
     }
 

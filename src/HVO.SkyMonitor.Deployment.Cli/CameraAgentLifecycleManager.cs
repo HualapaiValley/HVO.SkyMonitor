@@ -2211,7 +2211,8 @@ internal sealed class CameraAgentLifecycleManager
         }
         var archiveBytes = imageArchive is null ? 0 : new FileInfo(imageArchive).Length;
         var required = checked(instanceBytes + archiveBytes + 256L * 1024 * 1024);
-        var available = new DriveInfo(Path.GetPathRoot(paths.ProductRoot)!).AvailableFreeSpace;
+        // The backup and staged archive land on the filesystem that holds the product root, which need not be '/'.
+        var available = LinuxHostEnvironment.AvailableBytes(paths.ProductRoot);
         if (available < required)
         {
             throw new InstallerException("Insufficient free space for the candidate image and consistent rollback backup.");

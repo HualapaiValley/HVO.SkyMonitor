@@ -64,6 +64,8 @@ public sealed class DeploymentAsi676ProfileTests
             Assert.AreEqual(TimeSpan.FromSeconds(20), configuration.Schedule.SetpointProfiles[0].CaptureInterval);
             Assert.IsNotNull(options.TransientScenario?.Recurrence);
             Assert.AreEqual(4096, options.TransientScenario.Recurrence.EventCount);
+            // Split-host qualification keeps full catalog depth instead of the operator's scene object limit.
+            Assert.AreEqual(VirtualSkyStellarCandidateSelection.Exhaustive, options.StellarCandidateSelection);
             Assert.HasCount(2, options.TransientScenario.Recurrence.Profiles);
             options.TransientScenario.ValidateSensorBounds(layout.Width, layout.Height);
             var module = new VirtualSkyCameraModule(

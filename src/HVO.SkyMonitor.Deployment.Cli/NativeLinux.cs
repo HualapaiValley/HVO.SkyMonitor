@@ -37,6 +37,10 @@ internal static partial class NativeLinux
     private const int NoSuchFileOrDirectory = 2;
     private const int OperationNotPermitted = 1;
     private const int PermissionDenied = 13;
+    private const int LockExclusive = 2;
+    private const int LockNonBlocking = 4;
+    private const int LockRelease = 8;
+    private const int WouldBlock = 11;
 
     internal static int GetOpenDirectoryFlag(Architecture architecture)
         => architecture switch
@@ -90,6 +94,14 @@ internal static partial class NativeLinux
     [LibraryImport("libc", EntryPoint = "openat", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static partial int OpenAt(int directoryFileDescriptor, string path, int flags);
+
+    [LibraryImport("libc", EntryPoint = "openat", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static partial int OpenAtWithMode(int directoryFileDescriptor, string path, int flags, uint mode);
+
+    [LibraryImport("libc", EntryPoint = "flock", SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static partial int FLock(int fileDescriptor, int operation);
 
     [LibraryImport("libc", EntryPoint = "unlinkat", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
@@ -242,6 +254,35 @@ internal static partial class NativeLinux
             ? new SafeFileHandle(descriptor, ownsHandle: true)
             : throw new InstallerException($"Entry '{name}' could not be opened without following links.");
     }
+
+    /// <summary>
+    /// Opens or creates (mode <c>0600</c>) a lock file through an already-authenticated parent directory without
+    /// following a final link.
+    /// </summary>
+    public static SafeFileHandle OpenLockFileAt(SafeFileHandle parent, string name, string path)
+    {
+        var descriptor = OpenAtWithMode(
+            parent.DangerousGetHandle().ToInt32(), name,
+            OpenReadWrite | OpenCreate | OpenNoFollow | OpenCloseOnExec, 0x180);
+        return descriptor >= 0
+            ? new SafeFileHandle(descriptor, ownsHandle: true)
+            : throw new InstallerException($"Lock '{path}' could not be opened safely.");
+    }
+
+    /// <summary>
+    /// Takes an exclusive <c>flock</c> on the open file description without waiting. Unlike the record locks
+    /// <see cref="FileStream.Lock(long, long)"/> takes, it also excludes a second descriptor in the same process.
+    /// Returns <see langword="false"/> only when another holder has it.
+    /// </summary>
+    public static bool TryLockExclusive(SafeFileHandle handle, string path)
+    {
+        if (FLock(handle.DangerousGetHandle().ToInt32(), LockExclusive | LockNonBlocking) == 0) return true;
+        return Marshal.GetLastPInvokeError() == WouldBlock
+            ? false
+            : throw new InstallerException($"Lock '{path}' could not be taken.");
+    }
+
+    public static void Unlock(SafeFileHandle handle) => _ = FLock(handle.DangerousGetHandle().ToInt32(), LockRelease);
 
     public static UnixFileIdentity GetOpenFileIdentity(SafeFileHandle handle, string path)
     {

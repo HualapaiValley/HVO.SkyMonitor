@@ -15,6 +15,10 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent\HVO.SkyMonitor.CameraAgent.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
+    <!-- The installer's owner recovery client, driven against the real recovery socket end to end (#1278). -->
+    <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/OwnerRecoveryClient.cs" Link="Deployment/OwnerRecoveryClient.cs" />
+    <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/OwnerCredentialDefaults.cs" Link="Deployment/OwnerCredentialDefaults.cs" />
+    <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/InstallerException.cs" Link="Deployment/InstallerException.cs" />
   </ItemGroup>
 
   <ItemGroup>

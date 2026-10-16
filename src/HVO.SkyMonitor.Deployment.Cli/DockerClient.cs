@@ -4,6 +4,20 @@ using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
 
+/// <summary>
+/// The daemon identity and the host capabilities <c>docker info</c> reports that decide whether the CameraAgent
+/// Compose resource limits are enforced and where Docker stores images. A capability the daemon does not report is
+/// <see langword="null"/> and is treated as unsupported.
+/// </summary>
+internal sealed record DockerHostCapabilities(
+    DockerDaemonIdentity Daemon,
+    bool? MemoryLimit,
+    bool? CpuCfsQuota,
+    bool? PidsLimit,
+    string? CgroupVersion,
+    string? DockerRootDir,
+    IReadOnlyList<string> Warnings);
+
 internal sealed class DockerClient(IProcessRunner processRunner)
 {
     private string? endpoint;
@@ -15,6 +29,46 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         await RunDockerAsync(["compose", "version", "--short"], cancellationToken).ConfigureAwait(false);
         return identity;
     }
+
+    /// <summary>
+    /// The installation preflight: the daemon identity, the Compose plugin, and the capabilities the host
+    /// prerequisites evaluate, all from one <c>docker info</c> read. Lifecycle operations keep using
+    /// <see cref="PreflightAsync"/>, so uninstall and purge never depend on these capabilities.
+    /// </summary>
+    public async Task<DockerHostCapabilities> ReadHostCapabilitiesAsync(CancellationToken cancellationToken)
+    {
+        var daemonResult = await RunDockerAsync(["info", "--format", "{{json .}}"], cancellationToken).ConfigureAwait(false);
+        DockerHostCapabilities capabilities;
+        using (var daemonJson = JsonDocument.Parse(daemonResult.StandardOutput))
+        {
+            var daemon = daemonJson.RootElement;
+            capabilities = new DockerHostCapabilities(
+                ParseDaemonIdentity(daemon),
+                OptionalBoolean(daemon, "MemoryLimit"),
+                OptionalBoolean(daemon, "CpuCfsQuota"),
+                OptionalBoolean(daemon, "PidsLimit"),
+                OptionalString(daemon, "CgroupVersion"),
+                OptionalString(daemon, "DockerRootDir"),
+                daemon.TryGetProperty("Warnings", out var warnings) && warnings.ValueKind == JsonValueKind.Array
+                    ? warnings.EnumerateArray()
+                        .Where(static warning => warning.ValueKind == JsonValueKind.String)
+                        .Select(static warning => warning.GetString()!)
+                        .ToArray()
+                    : []);
+        }
+        await RunDockerAsync(["compose", "version", "--short"], cancellationToken).ConfigureAwait(false);
+        return capabilities;
+    }
+
+    private static bool? OptionalBoolean(JsonElement element, string name)
+        => element.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? value.GetBoolean()
+            : null;
+
+    private static string? OptionalString(JsonElement element, string name)
+        => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 
     public async Task<(DockerDaemonIdentity Daemon, ImageInstallationIdentity Image)> PrepareImageAsync(
         InstallRequest request,
@@ -248,7 +302,11 @@ internal sealed class DockerClient(IProcessRunner processRunner)
     {
         var daemonResult = await RunDockerAsync(["info", "--format", "{{json .}}"], cancellationToken).ConfigureAwait(false);
         using var daemonJson = JsonDocument.Parse(daemonResult.StandardOutput);
-        var daemon = daemonJson.RootElement;
+        return ParseDaemonIdentity(daemonJson.RootElement);
+    }
+
+    private static DockerDaemonIdentity ParseDaemonIdentity(JsonElement daemon)
+    {
         if (daemon.GetProperty("OSType").GetString() != "linux")
         {
             throw new InstallerException("The Docker daemon must run Linux containers.");

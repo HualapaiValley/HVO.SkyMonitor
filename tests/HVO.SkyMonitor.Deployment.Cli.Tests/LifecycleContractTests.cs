@@ -670,6 +670,30 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RetainedResult_WithoutTheDefaultPasswordFlag_RemainsValidAndReadsAsNotDefault()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var json = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(fixture.Paths.ResultPath))!.AsObject();
+        Assert.IsTrue(json.Remove("ownerPasswordIsDefault"), "The result did not record whether the owner password is the default.");
+        SafeFileSystem.WriteTextAtomic(fixture.Paths.ResultPath, json.ToJsonString());
+
+        // A result written before issue #1278 omits the flag; it reads as a generated or supplied password.
+        var legacy = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
+        json["ownerPasswordIsDefault"] = true;
+        SafeFileSystem.WriteTextAtomic(fixture.Paths.ResultPath, json.ToJsonString());
+        var current = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
+
+        Assert.IsFalse(legacy.OwnerPasswordIsDefault);
+        Assert.IsTrue(current.OwnerPasswordIsDefault);
+        Assert.AreEqual(legacy with { OwnerPasswordIsDefault = true }, current);
+        Assert.AreEqual($"Temporary password file: {legacy.PasswordFile}", Program.OwnerSignInInstruction(legacy));
+        Assert.AreEqual(
+            "Sign in as admin / skymonitor; a password change is required at first sign-in.",
+            Program.OwnerSignInInstruction(current));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task CatalogSelection_ImageWithoutCatalogIndependentReplay_RefusesBeforeMutation()
     {
         // Bundle-free coverage of the refusal inside the selection itself, so a lane without the production bundle

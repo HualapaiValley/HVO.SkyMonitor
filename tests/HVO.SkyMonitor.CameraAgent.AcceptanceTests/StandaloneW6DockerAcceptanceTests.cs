@@ -42,7 +42,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private const string ExpectedCatalogSha256 = "B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2";
     private const string ExpectedRigSha256 = "7191D84F4BA368482546AB6A09FBFEDD2F273BD626FABE6F3156C55C54DFCA9B";
     private const string ExpectedProcessingSha256 = "FE3EA5C9A5FB0605FA7522C7271E39FE32B0C8B44178BFF6A5625956C3AFAACE";
-    private const string ExpectedLocalProfileSha256 = "CB42AAEE50DD957AAC7330AA65391814C7AC415CAA4D535230B16BDDA04709B8";
+    private const string ExpectedLocalProfileSha256 = "86F33CC1F53B39B3307B3100FB942348A16C4DB8AEFB3B1987C542E23D020CB5";
     private const string ExpectedScheduleSha256 = "6A5E298C74CA520E3EB3EEE6CE67D30A8BDFC1340ACC2FE1AA5DDDF0F6F9CFDD";
     private const string ExpectedDesiredGraphSha256 = "9B21B31E30070315093EE6F53727813840CDF3F75008838342B5446A4F488069";
     private const string ExpectedEffectiveGraphSha256 = "114F1E0A994BAE76B0D5B6B9D2A7145F9D7B624E65436192D2B3FA28BEA3B339";
@@ -50,7 +50,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private const string ExpectedMonoAgentId = "cameraagent-standalone-w6-asi174-mono8";
     private const string ExpectedMonoRigSha256 = "FBF90275979743BC7B13128808CBE079D206F9D5435EB45F55D9AC956118A479";
     private const string ExpectedMonoProcessingSha256 = "4C8ECBAB017F1EDBF0C008ADA5D31EDEAA2B816C2C3B468F426FB83497553106";
-    private const string ExpectedMonoLocalProfileSha256 = "D59FA049B7A525571C3DB244C4BED80F7D6D4F4AD9AB15839F1F25A1962044BD";
+    private const string ExpectedMonoLocalProfileSha256 = "C27BB89E8678A021793F626E88158807F7C1C79C6000A00070043D863D31F4FD";
     private const string ExpectedMonoScheduleSha256 = "99892B9195FDAF6800CB1B8D914B39A610A989B2775B2BD980E50EE8C15CCD80";
     private const string ExpectedMonoDesiredGraphSha256 = "75717D0AF614FCABA0E482BB968DFE1B2DC9CED9FF85843D1CE1275CB65A6F90";
     private const string ExpectedMonoEffectiveGraphSha256 = "0057FF63B73D26C31C376646EDD99C4C4BCCED9A7FDAD65849A8B8C45F6910D2";
@@ -1520,7 +1520,7 @@ public sealed class StandaloneW6DockerAcceptanceTests
     private static async Task BrowserLoginAsync(IPage page, string password)
     {
         await page.GotoAsync("/Account/Login").ConfigureAwait(false);
-        await page.GetByLabel("Email").FillAsync("standalone-owner@cameraagent.test").ConfigureAwait(false);
+        await page.GetByLabel("Username or email").FillAsync("standalone-owner@cameraagent.test").ConfigureAwait(false);
         await page.GetByLabel("Password").FillAsync(password).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(

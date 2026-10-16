@@ -174,6 +174,64 @@ public sealed class OwnerRecoveryClientTests
         }
     }
 
+    [TestMethod]
+    [DataRow(8)]
+    [DataRow(15)]
+    [DataRow(256)]
+    public async Task Recover_SendsAnyPasswordWithinTheRelaxedBounds(int length)
+    {
+        var operationId = Guid.NewGuid();
+        const string token = "retained-lifecycle-token";
+        var password = new string('p', length);
+        string? sentPassword = null;
+        using var handler = new ScriptedHandler(async (request, sequence, cancellationToken) =>
+        {
+            if (sequence == 1)
+            {
+                var nonce = await request.Content!.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                return Bytes(CreateAttestationProof(token, operationId, nonce));
+            }
+            if (sequence == 2)
+            {
+                return Bytes(Encoding.UTF8.GetBytes("protected-recovery-challenge"));
+            }
+
+            var body = await request.Content!.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+            var challengeLength = BinaryPrimitives.ReadInt32BigEndian(body.AsSpan(1, 4));
+            var passwordLength = BinaryPrimitives.ReadInt32BigEndian(body.AsSpan(5, 4));
+            sentPassword = Encoding.UTF8.GetString(body, 9 + challengeLength, passwordLength);
+            return Bytes(Encoding.UTF8.GetBytes("owner-password-change-required"));
+        });
+        var client = new OwnerRecoveryClient("/tmp/hvo-owner-recovery-test.sock", handler);
+
+        var state = await client.RecoverAsync(operationId, token, password, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual("owner-password-change-required", state);
+        Assert.AreEqual(password, sentPassword);
+        Assert.AreEqual(3, handler.RequestCount);
+    }
+
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(7)]
+    [DataRow(257)]
+    public async Task Recover_RefusesAPasswordOutsideTheBoundsAsAFreshOperationBeforeContactingCameraAgent(int length)
+    {
+        using var handler = new ScriptedHandler((_, _, _) =>
+            throw new AssertFailedException("A password outside the recovery bounds must not reach CameraAgent."));
+        var client = new OwnerRecoveryClient("/tmp/hvo-owner-recovery-test.sock", handler);
+
+        var exception = await Assert.ThrowsExactlyAsync<OwnerRecoveryProtocolException>(() => client.RecoverAsync(
+            Guid.NewGuid(),
+            "retained-lifecycle-token",
+            new string('p', length),
+            CancellationToken.None)).ConfigureAwait(false);
+
+        // A resume could only repeat this refusal, so the operation is closed and a fresh one is allowed.
+        Assert.AreEqual(OwnerRecoveryFailureDisposition.FreshOperationRequired, exception.Disposition);
+        Assert.AreEqual(0, handler.RequestCount);
+    }
+
     private static byte[] CreateAttestationProof(string token, Guid operationId, ReadOnlySpan<byte> nonce)
     {
         var prefix = Encoding.UTF8.GetBytes($"{AttestationPurpose}\n{operationId:D}\n");

@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using HVO.SkyMonitor.CameraAgent.Data;
 
 namespace HVO.SkyMonitor.CameraAgent.Configuration;
 
@@ -6,9 +7,29 @@ public sealed class LocalIdentityOptions : IValidatableObject
 {
     public const string DefaultCookieName = "CameraAgent.Auth";
 
+    /// <summary>The sign-in name a newly seeded owner receives unless another is configured.</summary>
+    public const string DefaultAdminUserName = "admin";
+
+    /// <summary>The non-routable owner email used when none is configured.</summary>
+    public const string DefaultAdminEmail = "owner@cameraagent.local";
+
+    /// <summary>
+    /// The durable owner key. Ownership, authorization, bootstrap state, and recovery all match the owner by this
+    /// email; it is also accepted as a sign-in name.
+    /// </summary>
     [Required]
     [EmailAddress]
-    public string AdminEmail { get; set; } = "owner@cameraagent.local";
+    public string AdminEmail { get; set; } = DefaultAdminEmail;
+
+    /// <summary>
+    /// The user name given to a newly seeded owner. An owner that already exists keeps the user name it was created
+    /// with, so an upgraded installation still signs in with its email. It cannot contain <c>@</c>, because a
+    /// sign-in name containing <c>@</c> is resolved as an email.
+    /// </summary>
+    [Required]
+    [StringLength(64, MinimumLength = 1)]
+    [RegularExpression("^[A-Za-z0-9._-]+$")]
+    public string AdminUserName { get; set; } = DefaultAdminUserName;
 
     public string AdminPassword { get; set; } = string.Empty;
 
@@ -37,28 +58,10 @@ public sealed class LocalIdentityOptions : IValidatableObject
             yield break;
         }
 
-        if (!AdminPassword.Any(char.IsUpper))
+        if (AdminPassword.Length < CameraAgentIdentityPolicy.MinimumPasswordLength)
         {
             yield return new ValidationResult(
-                "AdminPassword must contain an uppercase character.",
-                [nameof(AdminPassword)]);
-        }
-        if (!AdminPassword.Any(char.IsLower))
-        {
-            yield return new ValidationResult(
-                "AdminPassword must contain a lowercase character.",
-                [nameof(AdminPassword)]);
-        }
-        if (!AdminPassword.Any(char.IsDigit))
-        {
-            yield return new ValidationResult(
-                "AdminPassword must contain a digit.",
-                [nameof(AdminPassword)]);
-        }
-        if (!AdminPassword.Any(static character => !char.IsLetterOrDigit(character)))
-        {
-            yield return new ValidationResult(
-                "AdminPassword must contain a non-alphanumeric character.",
+                $"AdminPassword must be at least {CameraAgentIdentityPolicy.MinimumPasswordLength} characters.",
                 [nameof(AdminPassword)]);
         }
     }

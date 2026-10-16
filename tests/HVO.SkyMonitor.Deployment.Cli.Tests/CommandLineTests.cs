@@ -81,6 +81,56 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
+    public void Parse_WithoutOwnerEmail_UsesTheNonRoutableDefaultAndTheDefaultPassword()
+    {
+        var arguments = ValidArguments.Where((_, index) => index is not (4 or 5)).ToArray();
+        CollectionAssert.DoesNotContain(arguments, "--owner-email");
+
+        var request = CommandLine.Parse(arguments);
+
+        Assert.AreEqual("owner@cameraagent.local", request.OwnerEmail);
+        Assert.IsNull(request.PasswordFile);
+        Assert.IsFalse(request.GeneratePassword);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Parse_ConfigWithoutOwnerEmail_UsesTheNonRoutableDefault()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            var json = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(
+                CommandLine.Parse(ValidArguments),
+                InstallRequestJsonContext.Default.InstallRequest))!.AsObject();
+            Assert.IsTrue(json.Remove("ownerEmail"));
+            File.WriteAllText(path, json.ToJsonString());
+
+            var request = CommandLine.Parse(["cameraagent", "install", "--config", path]);
+
+            Assert.AreEqual("owner@cameraagent.local", request.OwnerEmail);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("owner")]
+    [DataRow("owner@localhost")]
+    [DataRow("")]
+    public void Parse_SuppliedOwnerEmail_MustStillBeAnEmailAddress(string ownerEmail)
+    {
+        var arguments = ValidArguments.ToArray();
+        arguments[5] = ownerEmail;
+
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse(arguments));
+
+        StringAssert.Contains(exception.Message, "--owner-email", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void Parse_UnknownOption_FailsClosed()
     {
         var arguments = ValidArguments.Concat(["--password", "secret"]).ToArray();

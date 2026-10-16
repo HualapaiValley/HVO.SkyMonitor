@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.Deployment.Contracts;
 using ContractReplayProfile = HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile;
 using HVO.SkyMonitor.Deployment.Distribution;
@@ -32,10 +33,14 @@ internal sealed class CameraAgentInstaller
         uint gid,
         CancellationToken cancellationToken,
         Func<DistributionAcquirer>? distributionFactory = null,
-        Action<string, int>? portAvailabilityProbe = null)
+        Action<string, int>? portAvailabilityProbe = null,
+        IHostEnvironment? hostEnvironment = null)
     {
         request.Validate();
         distributionFactory ??= CreateDistributionAcquirer;
+        // The public entry point never supplies a host environment, so a production install always measures the real
+        // filesystems and PATH; unit flows substitute one so shared-host disk and tool state cannot decide them.
+        hostEnvironment ??= LinuxHostEnvironment.Instance;
         // The public entry point never supplies a probe, so a production install always admits the port through the
         // real socket bind below. Unit flows whose subject is identity, resume, or signed distribution can substitute
         // an explicit probe so shared-host socket state cannot decide their outcome.
@@ -49,8 +54,13 @@ internal sealed class CameraAgentInstaller
             using var dryRunAcquirer = distributionFactory();
             using var dryRunCatalog = await dryRunAcquirer.AcquireAsync(request, cancellationToken).ConfigureAwait(false);
             var dryRunImage = await dryRunAcquirer.AcquireImageAsync(request, cancellationToken).ConfigureAwait(false);
+            var plannedRequest = ApplySignedImage(request with { CatalogBundle = dryRunCatalog.BundlePath }, dryRunImage);
+            // A dry run evaluates the same host prerequisites an install does, so a host that cannot run the instance
+            // as deployed is refused by the plan rather than discovered after the product root exists.
+            _ = await EnsureHostPrerequisitesAsync(plannedRequest, docker, hostEnvironment, cancellationToken)
+                .ConfigureAwait(false);
             return await PlanAsync(
-                    ApplySignedImage(request with { CatalogBundle = dryRunCatalog.BundlePath }, dryRunImage),
+                    plannedRequest,
                     dryRunCatalog.Evidence,
                     paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(dryRunCatalog.BundlePath).CatalogId),
                     instanceId,
@@ -77,7 +87,10 @@ internal sealed class CameraAgentInstaller
         var acquiredImage = await catalogAcquirer.AcquireImageAsync(request, cancellationToken).ConfigureAwait(false);
         request = ApplySignedImage(request with { CatalogBundle = acquiredCatalog.BundlePath }, acquiredImage);
 
-        var preflightDaemon = await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
+        // Every host prerequisite is evaluated, and every finding reported together, before the product root is
+        // prepared or anything else is created.
+        var preflightDaemon = await EnsureHostPrerequisitesAsync(request, docker, hostEnvironment, cancellationToken)
+            .ConfigureAwait(false);
         ValidateCatalogInput(request.CatalogBundle!);
         // The bundle's approved specification selects the side-by-side catalog root this instance installs into.
         paths = paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(request.CatalogBundle!).CatalogId);
@@ -89,9 +102,9 @@ internal sealed class CameraAgentInstaller
         {
             portAvailabilityProbe(request.BindAddress, request.Port);
         }
-        EnsureStorageAvailable(request);
-        if (string.Equals(request.ProductRoot, InstallRequest.DefaultProductRoot, StringComparison.Ordinal) &&
-            !NativeLinux.IsClockSynchronized())
+        // The clock gate protects every production install, whichever root the host policy names; only an admitted
+        // test root is exempt.
+        if (request.IsProductionRoot && !NativeLinux.IsClockSynchronized())
         {
             throw new InstallerException("The host clock is not synchronized.");
         }
@@ -223,8 +236,8 @@ internal sealed class CameraAgentInstaller
                 state = await RecordPhaseAsync(paths, state, InstallationPhase.Configuration, cancellationToken).ConfigureAwait(false);
             }
             var generatedPasswordPath = Path.Combine(paths.ConfigRoot, "owner-bootstrap", "temporary-password");
-            var passwordPath = retainedCompletedResult?.PasswordFile ?? await CredentialFile.GetOrCreateAsync(
-                    request.PasswordFile,
+            var passwordPath = retainedCompletedResult?.PasswordFile ?? await CreateOwnerPasswordAsync(
+                    request,
                     generatedPasswordPath,
                     cancellationToken).ConfigureAwait(false);
             var verificationTokenPath = Path.Combine(paths.ConfigRoot, "installation-verification", "token");
@@ -331,16 +344,22 @@ internal sealed class CameraAgentInstaller
                 compose.ProjectName,
                 ["up", "--detach", "--remove-orphans"],
                 cancellationToken).ConfigureAwait(false);
-            var baseAddress = new UriBuilder("http", "127.0.0.1", request.Port).Uri;
+            // Health and owner bootstrap reach the instance at the address it was bound to, the same public URL the
+            // result reports and every lifecycle probe uses; a LAN-bound instance is not listening on loopback.
+            var baseAddress = PublicUri(request);
             var ownerClient = ownerClientFactory(baseAddress);
             await ownerClient.WaitForHealthAsync(ProductionCatalog.Get(catalog.CatalogId), cancellationToken).ConfigureAwait(false);
 
             var ownerState = retainedCompletedResult?.OwnerBootstrapState ?? "owner-temporary-password";
+            // Whether the owner's first sign-in is the documented default comes from the credential actually seeded,
+            // not from this invocation's flags, because a resumed installation keeps the credential its first run wrote.
+            var ownerPasswordIsDefault = retainedCompletedResult?.OwnerPasswordIsDefault ?? false;
             string? password = null;
             if (retainedCompletedResult is null)
             {
                 state = await RecordPhaseAsync(paths, state, InstallationPhase.OwnerBootstrap, cancellationToken).ConfigureAwait(false);
-                password = await ReadOwnerSecretAsync(passwordPath, cancellationToken).ConfigureAwait(false);
+                password = await ReadOwnerPasswordAsync(passwordPath, cancellationToken).ConfigureAwait(false);
+                ownerPasswordIsDefault = string.Equals(password, OwnerCredentialDefaults.Password, StringComparison.Ordinal);
                 ownerState = await ownerClient.ReadStateAsync(request.OwnerEmail, password, cancellationToken)
                     .ConfigureAwait(false);
                 if (ownerState == "owner-temporary-password")
@@ -436,6 +455,7 @@ internal sealed class CameraAgentInstaller
                 image,
                 daemon,
                 ownerState,
+                ownerPasswordIsDefault,
                 DateTimeOffset.UtcNow);
             if (retainedCompletedResult is not null)
             {
@@ -583,7 +603,8 @@ internal sealed class CameraAgentInstaller
                 Healthy: false,
                 "planned",
                 DateTimeOffset.UtcNow,
-                (ContractReplayProfile)request.ReplayProfile);
+                (ContractReplayProfile)request.ReplayProfile,
+                OwnerPasswordIsDefault: request.PasswordFile is null && !request.GeneratePassword);
         }
         finally
         {
@@ -707,6 +728,7 @@ internal sealed class CameraAgentInstaller
                 image,
                 daemon,
                 "owner-password-change-required",
+                retainedResult.OwnerPasswordIsDefault,
                 retainedResult.CompletedUtc);
             if (candidateResult != retainedResult)
             {
@@ -815,6 +837,7 @@ internal sealed class CameraAgentInstaller
         ImageInstallationIdentity image,
         DockerDaemonIdentity daemon,
         string ownerState,
+        bool ownerPasswordIsDefault,
         DateTimeOffset completedUtc)
         => new(
             DeploymentSchemaVersions.InstallationResult,
@@ -852,7 +875,44 @@ internal sealed class CameraAgentInstaller
             Healthy: true,
             ownerState,
             completedUtc,
-            (ContractReplayProfile)request.ReplayProfile);
+            (ContractReplayProfile)request.ReplayProfile,
+            ownerPasswordIsDefault);
+
+    /// <summary>
+    /// Publishes the owner's temporary password: the operator's <c>--password-file</c>, a random password for
+    /// <c>--generate-password</c>, or otherwise the documented default. A credential an earlier run already
+    /// published is kept unchanged.
+    /// </summary>
+    private static Task<string> CreateOwnerPasswordAsync(
+        InstallRequest request,
+        string generatedPasswordPath,
+        CancellationToken cancellationToken)
+        => request.PasswordFile is null && !request.GeneratePassword
+            ? CredentialFile.GetOrCreateKnownAsync(generatedPasswordPath, OwnerCredentialDefaults.Password, cancellationToken)
+            : CredentialFile.GetOrCreateAsync(request.PasswordFile, generatedPasswordPath, cancellationToken);
+
+    /// <summary>
+    /// Reads the owner's temporary password exactly as CameraAgent seeds it from the mounted password file, so the
+    /// bootstrap check authenticates with, and classifies, the password the owner actually has.
+    /// </summary>
+    private static async Task<string> ReadOwnerPasswordAsync(string path, CancellationToken cancellationToken)
+    {
+        await using var stream = SafeFileSystem.OpenOwnerFileRead(path);
+        var content = new byte[stream.Length];
+        try
+        {
+            await stream.ReadExactlyAsync(content, cancellationToken).ConfigureAwait(false);
+            return OwnerPasswordFileText.Decode(content);
+        }
+        catch (System.Text.DecoderFallbackException exception)
+        {
+            throw new InstallerException("The owner temporary password file is not valid UTF-8.", exception);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(content);
+        }
+    }
 
     private static async Task<string> ReadOwnerSecretAsync(string path, CancellationToken cancellationToken)
     {
@@ -1065,23 +1125,39 @@ internal sealed class CameraAgentInstaller
         }
     }
 
-    private static void EnsureStorageAvailable(InstallRequest request)
+    /// <summary>
+    /// Evaluates the host prerequisites and returns the daemon identity they were read from. Both storage requirements
+    /// (see <see cref="StorageRequirements"/>) are measured on the filesystem that actually stores each root, and summed
+    /// when they share one.
+    /// </summary>
+    private static async Task<DockerDaemonIdentity> EnsureHostPrerequisitesAsync(
+        InstallRequest request,
+        DockerClient docker,
+        IHostEnvironment hostEnvironment,
+        CancellationToken cancellationToken)
     {
-        var bundleBytes = Directory.EnumerateFiles(request.CatalogBundle!).Sum(path => new FileInfo(path).Length);
-        var archiveBytes = request.ImageArchive is null ? 0 : new FileInfo(request.ImageArchive).Length;
-        var required = checked(bundleBytes * 2 + archiveBytes + 1024L * 1024 * 1024);
-        var existing = new DirectoryInfo(request.ProductRoot);
-        while (!existing.Exists)
-        {
-            existing = existing.Parent
-                ?? throw new InstallerException("Could not identify storage for the product root.");
-        }
-        var drive = new DriveInfo(Path.GetPathRoot(existing.FullName)!);
-        if (drive.AvailableFreeSpace < required)
-        {
-            throw new InstallerException(
-                $"Insufficient storage: {required} bytes are required before installation mutation.");
-        }
+        var capabilities = await docker.ReadHostCapabilitiesAsync(cancellationToken).ConfigureAwait(false);
+        var (productRootBytes, dockerRootBytes) = StorageRequirements(request.CatalogBundle!, request.ImageArchive);
+        var report = HostPrerequisites.Evaluate(
+            capabilities,
+            request.ProductRoot,
+            productRootBytes,
+            dockerRootBytes,
+            hostEnvironment);
+        return report.Satisfied ? capabilities.Daemon : throw new HostPrerequisiteException(report);
+    }
+
+    /// <summary>
+    /// The bytes an installation needs on each filesystem: <c>2 × (catalog bundle + image archive) + 1 GiB</c> on the one
+    /// holding the product root, and <c>2 × image archive + 1 GiB</c> on the one holding Docker's data root.
+    /// </summary>
+    internal static (long ProductRootBytes, long DockerRootBytes) StorageRequirements(string catalogBundle, string? imageArchive)
+    {
+        var bundleBytes = Directory.EnumerateFiles(catalogBundle).Sum(path => new FileInfo(path).Length);
+        var archiveBytes = imageArchive is null ? 0 : new FileInfo(imageArchive).Length;
+        return (
+            checked((2 * (bundleBytes + archiveBytes)) + HostPrerequisites.StorageHeadroomBytes),
+            checked((2 * archiveBytes) + HostPrerequisites.StorageHeadroomBytes));
     }
 
     internal static void EnsureImageSupportsCatalog(ImageInstallationIdentity image, string catalogId)
