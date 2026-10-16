@@ -453,11 +453,12 @@ internal sealed class CameraAgentLifecycleManager
         catch (Exception exception) when (!request.DryRun && exception is not OperationCanceledException)
         {
             // Every gate between the journal entry above and the mutation record (release label agreement, the
-            // already-active and contract checks, the state preflight, the owner-state read, Compose staging) runs
-            // before the instance is touched. A refusal there is settled as terminal so the journal never reports a
-            // running operation that never started, which would otherwise block rollback, uninstall, and any other
-            // upgrade behind a --resume the same gate would refuse again. A cancellation is not a refusal: its
-            // unmutated journal stays resumable and, like any unmutated record, never blocks another operation.
+            // already-active and contract checks, the state preflight, the migration assertion, the owner-state read,
+            // Compose staging) runs before the instance is touched. A refusal there is settled as terminal so the
+            // journal never reports a running operation that never started, which would otherwise block rollback,
+            // uninstall, and any other upgrade behind a --resume the same gate would refuse again. A cancellation is
+            // not a refusal: its unmutated journal stays resumable and, like any unmutated record, never blocks
+            // another operation.
             await SettleRefusedOperationAsync(paths, operation, exception).ConfigureAwait(false);
             throw;
         }
@@ -571,10 +572,6 @@ internal sealed class CameraAgentLifecycleManager
             throw new InstallerException("The candidate image does not declare the required CameraAgent configuration and catalog contracts.");
         }
         CameraAgentInstaller.EnsureImageSupportsCatalog(candidate, manifest.Catalog.CatalogId);
-        if (!rollback && !request.MigrationBackwardCompatible)
-        {
-            throw new InstallerException("The candidate does not declare backward-compatible state migration; an explicit transactional restore path is required.");
-        }
         if (!rollback && !CameraAgentStateContract.IsCurrent(candidate.UpgradeCompatibility))
         {
             throw new InstallerException(
@@ -608,6 +605,19 @@ internal sealed class CameraAgentLifecycleManager
             rollback ? CameraAgentStateContractPolicy.AllowLegacy : CameraAgentStateContractPolicy.RequireCurrent,
             signedImage?.Release.Tag)
             .ConfigureAwait(false);
+        // The preflight has proved the persisted state readable and within the candidate's boundaries, so what remains
+        // is whether the candidate changes that state. A failed candidate is restored by starting the prior image on
+        // the state it leaves behind, so a migration needs the operator's assertion; an unchanged contract does not.
+        if (!rollback && !request.MigrationBackwardCompatible)
+        {
+            var migration = CameraAgentStateMigration.DeclaredChanges(
+                paths, manifest.Image, manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility, candidate);
+            if (migration.Count > 0)
+            {
+                throw new InstallerException(
+                    $"The candidate declares a CameraAgent state migration ({string.Join("; ", migration)}). A failed candidate is restored onto the state it leaves behind, so an explicit transactional restore path is required; pass --migration-backward-compatible only when the prior image can read the migrated state.");
+            }
+        }
         if (operation.CandidateImage is not null && operation.CandidateImage != candidate)
             throw new InstallerException("The retained image operation has a different candidate identity.");
         operation = operation with

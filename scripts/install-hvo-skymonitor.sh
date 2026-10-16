@@ -220,8 +220,8 @@ if [[ -n "$index_locator" ]]; then
     manifest_name="$(jq -r .manifestAsset <<<"$release_reference")"
     manifest_signature_name="$(jq -r .signatureAsset <<<"$release_reference")"
     if [[ -z "$asset_base" ]]; then
-        if [[ "$index_locator" == https://github.com/RoySalisbury/HVO.SkyMonitor/releases/download/* ]]; then
-            release_base="https://github.com/RoySalisbury/HVO.SkyMonitor/releases/download/$tag"
+        if [[ "$index_locator" == https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/* ]]; then
+            release_base="https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/$tag"
         elif [[ "$index_locator" == /* ]]; then
             release_base="$(dirname "$index_locator")/$tag"
         else
@@ -236,7 +236,7 @@ else
     tag="installer-v$version"
     manifest_name="release-manifest.json"
     manifest_signature_name="release-manifest.json.sig"
-    release_base="${asset_base:-https://github.com/RoySalisbury/HVO.SkyMonitor/releases/download/$tag}"
+    release_base="${asset_base:-https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/$tag}"
 fi
 
 fetch "$(join_locator "$release_base" "$manifest_name")" "$temporary/release-manifest.json" 262144

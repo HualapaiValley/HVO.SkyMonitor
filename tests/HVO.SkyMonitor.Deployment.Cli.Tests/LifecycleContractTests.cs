@@ -2633,7 +2633,8 @@ public sealed partial class LifecycleContractTests
             bool seedCatalogSelection = true,
             string? daemonArchitecture = null,
             bool recoveryState = false,
-            string catalogId = HygV42.CatalogId)
+            string catalogId = HygV42.CatalogId,
+            Func<ImageInstallationIdentity, ImageInstallationIdentity>? installedImage = null)
         {
             // Every approved catalog is a valid selection; the fixture records the pinned identity of the requested
             // one, and a non-default catalog needs an image declaring the multi-catalog contract.
@@ -2690,6 +2691,7 @@ public sealed partial class LifecycleContractTests
                 IdentityMigration: recoveryState ? "20260827053715_InitialIdentity" : null,
                 CatalogManifestVersion: recoveryState ? "2" : null,
                 MinimumCompatibleRevision: recoveryState ? new string('7', 40) : null);
+            if (installedImage is not null) image = installedImage(image);
             var installationId = Guid.NewGuid();
             // The bound application identity is deliberately distinct from the instance id so that
             // lifecycle verification cannot pass by comparing the wrong identity.
@@ -2705,7 +2707,7 @@ public sealed partial class LifecycleContractTests
                 paths.ProductRoot, paths.ConfigRoot, paths.StateRoot, composeTemplateVersion,
                 new string('e', 64), new string('f', 64), new string('1', 64), "default", "1", "1", "active",
                 ComposeDeployment.ComputeSha256("verification-token"), ComposeDeployment.ComputeSha256(composeModel),
-                catalog, image, null, daemon, "backward-compatible",
+                catalog, image, null, daemon, image.UpgradeCompatibility ?? "requires-declared-compatible-migration",
                 DateTimeOffset.UtcNow, LifecycleCondition: condition, Port: 5130,
                 LifecycleControlTokenSha256: ComposeDeployment.ComputeSha256("lifecycle-token"),
                 ReplayProfile: replayProfile);
@@ -2880,6 +2882,8 @@ public sealed partial class LifecycleContractTests
         public bool RejectNextStop { get; set; }
         public bool RejectNextBackup { get; set; }
         public string CandidateRawIngressSchema { get; set; } = "12";
+        /// <summary>Candidate image labels to set, or with a null value to remove, over the defaults below.</summary>
+        public Dictionary<string, string?> CandidateLabels { get; } = new(StringComparer.Ordinal);
         public string CatalogContract { get; set; } = "hyg-v42-production-p3-s2";
         public Action? OnCandidateInspect { get; set; }
         public Func<IReadOnlyList<string>, CancellationToken, Task<ProcessResult>>? Sudo { get; set; }
@@ -2979,6 +2983,14 @@ public sealed partial class LifecycleContractTests
                 if (localRunner)
                 {
                     labels["io.hvo.skymonitor.replay-runner-contract"] = "local-replay-runner-v1";
+                }
+                if (isCandidate)
+                {
+                    foreach (var (name, value) in CandidateLabels)
+                    {
+                        if (value is null) labels.Remove(name);
+                        else labels[name] = value;
+                    }
                 }
                 return Task.FromResult(new ProcessResult(0, JsonSerializer.Serialize(new[]
                 {
