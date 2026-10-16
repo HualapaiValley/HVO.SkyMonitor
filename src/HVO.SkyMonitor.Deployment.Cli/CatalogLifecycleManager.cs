@@ -940,6 +940,7 @@ internal static class CatalogLifecycleManager
             // so it inherits that request's admission rather than defaulting to deny and refusing a root the
             // caller was admitted for.
             AllowTestProductRoot = request.AllowTestProductRoot,
+            ProductionProductRoot = request.ProductionProductRoot,
             FriendlyName = "catalog-lifecycle",
             OwnerEmail = "lifecycle@localhost.invalid",
             ProductRoot = request.ProductRoot,

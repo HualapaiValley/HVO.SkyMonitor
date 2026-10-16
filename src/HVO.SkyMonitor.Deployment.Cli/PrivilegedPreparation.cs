@@ -36,6 +36,10 @@ internal static class PrivilegedPreparation
         SafeFileSystem.EnsureSafeExistingAncestors(paths.InstanceRoot);
     }
 
+    /// <summary>
+    /// The <c>sudo</c>-executed preparation. It re-reads and re-validates the host policy itself rather than trusting
+    /// its arguments, and prepares only the production product root that policy resolves.
+    /// </summary>
     public static int RunInternal(string[] args)
     {
         if (args.Length != 9 || args[0] != "internal-prepare" || args[1] != "--product-root" ||
@@ -51,16 +55,48 @@ internal static class PrivilegedPreparation
             return 2;
         }
 
-        var productRoot = Path.GetFullPath(args[2]);
-        if (!string.Equals(productRoot, InstallRequest.DefaultProductRoot, StringComparison.Ordinal))
+        try
         {
-            return 2;
+            var production = HostProductRootPolicy.Resolve(HostPolicyLocation.Production);
+            if (!string.Equals(args[2], production.Path, StringComparison.Ordinal))
+            {
+                return 2;
+            }
+            Prepare(
+                InstallationPaths.Create(production.Path, instanceId, ProductionCatalog.DefaultCatalogId),
+                uid,
+                gid,
+                requireRoot: true,
+                production.FromPolicy);
+            return 0;
         }
-        Prepare(InstallationPaths.Create(productRoot, instanceId, ProductionCatalog.DefaultCatalogId), uid, gid, requireRoot: true);
-        return 0;
+        catch (Exception exception) when (exception is InstallerException or IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine(exception.Message);
+            return 1;
+        }
     }
 
-    private static void Prepare(InstallationPaths paths, uint uid, uint gid, bool requireRoot)
+    /// <summary>
+    /// The root-owned shared namespaces the privileged preparation creates or validates. Under the default root that
+    /// includes <c>/var/lib/hvo</c>, which it may create; a host-policy root already exists with every component
+    /// validated as <c>root:root</c> by the policy, so only the root and its namespaces are listed.
+    /// </summary>
+    internal static IReadOnlyList<string> RootOwnedNamespaces(string productRoot, bool fromPolicy)
+    {
+        var namespaces = new List<string>();
+        if (!fromPolicy)
+        {
+            namespaces.Add(Path.GetDirectoryName(InstallRequest.DefaultProductRoot)!);
+        }
+        namespaces.Add(productRoot);
+        namespaces.Add(Path.Combine(productRoot, "cameraagents"));
+        namespaces.Add(Path.Combine(productRoot, "logichosts"));
+        namespaces.Add(Path.Combine(productRoot, "catalogs"));
+        return namespaces;
+    }
+
+    private static void Prepare(InstallationPaths paths, uint uid, uint gid, bool requireRoot, bool fromPolicy = false)
     {
         if (requireRoot && NativeLinux.getuid() != 0)
         {
@@ -85,14 +121,7 @@ internal static class PrivilegedPreparation
             return;
         }
 
-        foreach (var directory in new[]
-        {
-            "/var/lib/hvo",
-            paths.ProductRoot,
-            Path.Combine(paths.ProductRoot, "cameraagents"),
-            Path.Combine(paths.ProductRoot, "logichosts"),
-            Path.Combine(paths.ProductRoot, "catalogs")
-        })
+        foreach (var directory in RootOwnedNamespaces(paths.ProductRoot, fromPolicy))
         {
             CreateOrValidateRootDirectory(directory);
         }

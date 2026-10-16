@@ -32,10 +32,14 @@ internal sealed class CameraAgentInstaller
         uint gid,
         CancellationToken cancellationToken,
         Func<DistributionAcquirer>? distributionFactory = null,
-        Action<string, int>? portAvailabilityProbe = null)
+        Action<string, int>? portAvailabilityProbe = null,
+        IHostEnvironment? hostEnvironment = null)
     {
         request.Validate();
         distributionFactory ??= CreateDistributionAcquirer;
+        // The public entry point never supplies a host environment, so a production install always measures the real
+        // filesystems and PATH; unit flows substitute one so shared-host disk and tool state cannot decide them.
+        hostEnvironment ??= LinuxHostEnvironment.Instance;
         // The public entry point never supplies a probe, so a production install always admits the port through the
         // real socket bind below. Unit flows whose subject is identity, resume, or signed distribution can substitute
         // an explicit probe so shared-host socket state cannot decide their outcome.
@@ -49,8 +53,13 @@ internal sealed class CameraAgentInstaller
             using var dryRunAcquirer = distributionFactory();
             using var dryRunCatalog = await dryRunAcquirer.AcquireAsync(request, cancellationToken).ConfigureAwait(false);
             var dryRunImage = await dryRunAcquirer.AcquireImageAsync(request, cancellationToken).ConfigureAwait(false);
+            var plannedRequest = ApplySignedImage(request with { CatalogBundle = dryRunCatalog.BundlePath }, dryRunImage);
+            // A dry run evaluates the same host prerequisites an install does, so a host that cannot run the instance
+            // as deployed is refused by the plan rather than discovered after the product root exists.
+            _ = await EnsureHostPrerequisitesAsync(plannedRequest, docker, hostEnvironment, cancellationToken)
+                .ConfigureAwait(false);
             return await PlanAsync(
-                    ApplySignedImage(request with { CatalogBundle = dryRunCatalog.BundlePath }, dryRunImage),
+                    plannedRequest,
                     dryRunCatalog.Evidence,
                     paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(dryRunCatalog.BundlePath).CatalogId),
                     instanceId,
@@ -77,7 +86,10 @@ internal sealed class CameraAgentInstaller
         var acquiredImage = await catalogAcquirer.AcquireImageAsync(request, cancellationToken).ConfigureAwait(false);
         request = ApplySignedImage(request with { CatalogBundle = acquiredCatalog.BundlePath }, acquiredImage);
 
-        var preflightDaemon = await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
+        // Every host prerequisite is evaluated, and every finding reported together, before the product root is
+        // prepared or anything else is created.
+        var preflightDaemon = await EnsureHostPrerequisitesAsync(request, docker, hostEnvironment, cancellationToken)
+            .ConfigureAwait(false);
         ValidateCatalogInput(request.CatalogBundle!);
         // The bundle's approved specification selects the side-by-side catalog root this instance installs into.
         paths = paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(request.CatalogBundle!).CatalogId);
@@ -89,9 +101,9 @@ internal sealed class CameraAgentInstaller
         {
             portAvailabilityProbe(request.BindAddress, request.Port);
         }
-        EnsureStorageAvailable(request);
-        if (string.Equals(request.ProductRoot, InstallRequest.DefaultProductRoot, StringComparison.Ordinal) &&
-            !NativeLinux.IsClockSynchronized())
+        // The clock gate protects every production install, whichever root the host policy names; only an admitted
+        // test root is exempt.
+        if (request.IsProductionRoot && !NativeLinux.IsClockSynchronized())
         {
             throw new InstallerException("The host clock is not synchronized.");
         }
@@ -331,7 +343,9 @@ internal sealed class CameraAgentInstaller
                 compose.ProjectName,
                 ["up", "--detach", "--remove-orphans"],
                 cancellationToken).ConfigureAwait(false);
-            var baseAddress = new UriBuilder("http", "127.0.0.1", request.Port).Uri;
+            // Health and owner bootstrap reach the instance at the address it was bound to, the same public URL the
+            // result reports and every lifecycle probe uses; a LAN-bound instance is not listening on loopback.
+            var baseAddress = PublicUri(request);
             var ownerClient = ownerClientFactory(baseAddress);
             await ownerClient.WaitForHealthAsync(ProductionCatalog.Get(catalog.CatalogId), cancellationToken).ConfigureAwait(false);
 
@@ -1065,23 +1079,28 @@ internal sealed class CameraAgentInstaller
         }
     }
 
-    private static void EnsureStorageAvailable(InstallRequest request)
+    /// <summary>
+    /// Evaluates the host prerequisites and returns the daemon identity they were read from. The product root's
+    /// filesystem must hold the catalog twice, the privately staged image archive, and headroom; Docker's data root
+    /// must hold the loaded image (twice the archive, for its unpacked layers) and headroom. Both are measured on the
+    /// filesystem that actually stores them, and summed when they share one.
+    /// </summary>
+    private static async Task<DockerDaemonIdentity> EnsureHostPrerequisitesAsync(
+        InstallRequest request,
+        DockerClient docker,
+        IHostEnvironment hostEnvironment,
+        CancellationToken cancellationToken)
     {
+        var capabilities = await docker.ReadHostCapabilitiesAsync(cancellationToken).ConfigureAwait(false);
         var bundleBytes = Directory.EnumerateFiles(request.CatalogBundle!).Sum(path => new FileInfo(path).Length);
         var archiveBytes = request.ImageArchive is null ? 0 : new FileInfo(request.ImageArchive).Length;
-        var required = checked(bundleBytes * 2 + archiveBytes + 1024L * 1024 * 1024);
-        var existing = new DirectoryInfo(request.ProductRoot);
-        while (!existing.Exists)
-        {
-            existing = existing.Parent
-                ?? throw new InstallerException("Could not identify storage for the product root.");
-        }
-        var drive = new DriveInfo(Path.GetPathRoot(existing.FullName)!);
-        if (drive.AvailableFreeSpace < required)
-        {
-            throw new InstallerException(
-                $"Insufficient storage: {required} bytes are required before installation mutation.");
-        }
+        var report = HostPrerequisites.Evaluate(
+            capabilities,
+            request.ProductRoot,
+            checked(bundleBytes * 2 + archiveBytes + HostPrerequisites.StorageHeadroomBytes),
+            checked(archiveBytes * 2 + HostPrerequisites.StorageHeadroomBytes),
+            hostEnvironment);
+        return report.Satisfied ? capabilities.Daemon : throw new HostPrerequisiteException(report);
     }
 
     internal static void EnsureImageSupportsCatalog(ImageInstallationIdentity image, string catalogId)
