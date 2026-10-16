@@ -123,6 +123,16 @@ must not redefine its policy inconsistently.
 - CameraAgent module/pipeline configuration comes from `cameraagent.sample.json` and the `CameraAgent` configuration section. Preserve configuration-driven module discovery and explicit pipeline graphs that use stable step aliases rather than adding host-specific branches.
 - For Blazor components with logic, keep markup, code-behind, scoped CSS, and optional scoped JS in sibling `.razor`, `.razor.cs`, `.razor.css`, and `.razor.js` files. Root/layout components must render `data-theme="hvo-dark"` on `<html>`.
 
+## Changelog
+
+- A pull request that changes what an operator or user notices adds a line under `## [Unreleased]` in `CHANGELOG.md`.
+  This covers the installer, UI, API, configuration, deployment, images, and the logs and metrics operators act on.
+- Put the line under the Keep a Changelog heading that fits: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or
+  `Security`. Write it for an operator, and end it with the issue number.
+- Internal refactoring, tests, CI and agent-process changes add no entry.
+- Cutting a release renames `[Unreleased]` and adds `docs/upgrade-notes/X.Y.Z.md`. That is the release procedure of the
+  install contract (section 3), not part of an ordinary pull request.
+
 ## Roadmap Execution
 
 ### Developer Ownership

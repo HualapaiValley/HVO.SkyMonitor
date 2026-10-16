@@ -1,12 +1,15 @@
+using System.Reflection;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using HVO.SkyMonitor.Deployment;
 
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
-/// What the installer prints, where, and with which exit code: help on standard output with success, a command-line
-/// mistake as its reason and the usage on standard error with exit code 2, and an ordinary failure unchanged. Each
-/// case runs the real entry point with the console streams captured, so the class does not run in parallel.
+/// What the installer prints, where, and with which exit code: help and the version on standard output with success, a
+/// command-line mistake as its reason and the usage on standard error with exit code 2, and an ordinary failure
+/// unchanged. Each case runs the real entry point with the console streams captured, so the class does not run in
+/// parallel.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
@@ -35,6 +38,7 @@ public sealed class ProgramOutputTests
           host set-product-root <absolute-path>
 
         Run 'hvo-skymonitor <command> --help' to list the options of one command.
+        Run 'hvo-skymonitor --version' to print this installer's version and commit.
         """;
 
     private const string InstallUsage = """
@@ -114,11 +118,41 @@ public sealed class ProgramOutputTests
     }
 
     [TestMethod]
+    public async Task Main_Version_PrintsTheStampedVersionAndCommitOnStandardOutputAndSucceeds()
+    {
+        var (exitCode, output, error) = await RunCommandLineAsync("--version");
+
+        Assert.AreEqual(0, exitCode);
+        Assert.AreEqual(string.Empty, error);
+        var stamped = InstallerBuildIdentity.Of(typeof(Program).Assembly);
+        Assert.AreEqual(stamped + Environment.NewLine, output);
+        // Install contract section 1: exactly <version>+<40-character commit>, with "unknown" for a build that had no
+        // checkout and was given no commit.
+        var match = Regex.Match(
+            stamped,
+            "^(?<version>[A-Za-z0-9](?:[A-Za-z0-9.-]{0,126}[A-Za-z0-9])?)\\+(?<commit>[0-9a-f]{40}|unknown)$",
+            RegexOptions.CultureInvariant);
+        Assert.IsTrue(match.Success, stamped);
+        // This test assembly comes from the same checkout and build, so the SDK stamped it with the same commit and
+        // version properties: the installer names that commit (unknown when there was none), and that version, or its
+        // own 0.0.0-dev default where the SDK defaulted to 1.0.0 because the build was given no version.
+        var reference = typeof(ProgramOutputTests).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion;
+        var separator = reference.IndexOf('+', StringComparison.Ordinal);
+        var (referenceVersion, referenceCommit) = separator < 0
+            ? (reference, "unknown")
+            : (reference[..separator], reference[(separator + 1)..]);
+        Assert.AreEqual(referenceCommit, match.Groups["commit"].Value);
+        Assert.AreEqual(referenceVersion == "1.0.0" ? "0.0.0-dev" : referenceVersion, match.Groups["version"].Value);
+    }
+
+    [TestMethod]
     [DataRow("bogus", "Unknown command 'bogus'.")]
     [DataRow("", "Missing command.")]
     [DataRow("cameraagent", "Missing command after 'cameraagent'.")]
     [DataRow("catalog bogus", "Unknown command 'catalog bogus'.")]
     [DataRow("help status", "Unexpected argument 'status' after 'help'.")]
+    [DataRow("--version status", "Unexpected argument 'status' after '--version'.")]
     public async Task Main_NoKnownCommand_ReportsTheReasonAndTheGeneralUsageOnStandardError(string arguments, string reason)
     {
         ArgumentNullException.ThrowIfNull(arguments);

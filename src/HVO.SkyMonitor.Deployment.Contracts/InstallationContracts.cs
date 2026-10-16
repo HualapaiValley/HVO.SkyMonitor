@@ -274,7 +274,24 @@ public sealed record LifecycleResult(
     bool? Healthy,
     IReadOnlyList<string> PreservedPaths,
     string? ResumeCommand,
-    DateTimeOffset CompletedUtc);
+    DateTimeOffset CompletedUtc)
+{
+    /// <summary>
+    /// The upgrade notes an upgrade showed before it started, when its source provided a release.json. Omitted
+    /// otherwise, so every other lifecycle result is unchanged.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public LifecycleUpgradeNotes? UpgradeNotes { get; init; }
+}
+
+/// <summary>One release's upgrade notes, from its <c>docs/upgrade-notes/X.Y.Z.md</c> as release.json carries them.</summary>
+public sealed record UpgradeNote(string Version, string Text);
+
+/// <summary>
+/// The upgrade notes an upgrade from <see cref="InstalledVersion"/> to <see cref="TargetVersion"/> shows, oldest first.
+/// <see cref="InstalledVersion"/> is null when the instance records no release version.
+/// </summary>
+public sealed record LifecycleUpgradeNotes(string? InstalledVersion, string TargetVersion, IReadOnlyList<UpgradeNote> Notes);
 
 public sealed record InstallationState(
     int SchemaVersion,

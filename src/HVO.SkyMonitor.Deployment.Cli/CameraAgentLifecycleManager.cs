@@ -22,10 +22,12 @@ internal sealed class CameraAgentLifecycleManager
         uint uid,
         uint gid,
         CancellationToken cancellationToken,
-        Func<DistributionAcquirer>? distributionFactory = null)
+        Func<DistributionAcquirer>? distributionFactory = null,
+        TextWriter? output = null)
     {
         request.Validate();
         distributionFactory ??= CreateDistributionAcquirer;
+        output ??= Console.Out;
         if (request.Operation == LifecycleOperationKind.CatalogCheck)
         {
             return await CatalogLifecycleManager.CheckAsync(request, distributionFactory, cancellationToken).ConfigureAwait(false);
@@ -174,11 +176,11 @@ internal sealed class CameraAgentLifecycleManager
             LifecycleOperationKind.Upgrade => await ChangeImageAsync(
                 request, paths, manifest, result, compose, docker, processRunner, lifecycleClientFactory, uid, gid,
                 ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage,
-                rollback: false, cancellationToken).ConfigureAwait(false),
+                rollback: false, output, cancellationToken).ConfigureAwait(false),
             LifecycleOperationKind.Rollback => await ChangeImageAsync(
                 request, paths, manifest, result, compose, docker, processRunner, lifecycleClientFactory, uid, gid,
                 ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage: null,
-                rollback: true, cancellationToken).ConfigureAwait(false),
+                rollback: true, output, cancellationToken).ConfigureAwait(false),
             LifecycleOperationKind.Reinstall => await ReinstallAsync(
                 request, paths, manifest, result, compose, docker, lifecycleClientFactory, ownerClientFactory,
                 lifecycleControlToken!, installationVerificationToken!, daemon, cancellationToken)
@@ -435,20 +437,34 @@ internal sealed class CameraAgentLifecycleManager
         string verificationToken,
         AcquiredImage? signedImage,
         bool rollback,
+        TextWriter output,
         CancellationToken cancellationToken)
     {
         if (manifest.LifecycleCondition != InstanceLifecycleCondition.Installed)
             throw new InstallerException("An uninstalled instance must be reinstalled before image lifecycle operations.");
         if (rollback && manifest.PreviousImage is null) throw new InstallerException("No previous image is retained for rollback.");
+        // The target release's notes are shown, and an older target refused, against the manifest read under the
+        // instance lock and before the journal entry, so a refusal leaves nothing to settle and a dry run shows them too.
+        var upgradeNotes = !rollback && request.TargetRelease is { } targetRelease
+            ? UpgradeNotes.Plan(
+                await UpgradeNotes.InstalledVersionAsync(paths, manifest.Image, cancellationToken).ConfigureAwait(false),
+                targetRelease,
+                manifest.InstanceId)
+            : null;
+        if (upgradeNotes is not null && !request.Json)
+        {
+            await output.WriteLineAsync(UpgradeNotes.Render(upgradeNotes)).ConfigureAwait(false);
+        }
         var operation = await BeginAsync(request, paths, rollback ? LifecycleOperationKind.Rollback : LifecycleOperationKind.Upgrade,
             manifest, cancellationToken).ConfigureAwait(false);
         try
         {
-            return await ChangeImageAsync(
+            var changed = await ChangeImageAsync(
                     request, paths, manifest, installationResult, compose, docker, processRunner, lifecycleClientFactory,
                     uid, gid, ownerClientFactory, lifecycleControlToken, verificationToken, signedImage, rollback, operation,
                     cancellationToken)
                 .ConfigureAwait(false);
+            return upgradeNotes is null ? changed : changed with { UpgradeNotes = upgradeNotes };
         }
         catch (Exception exception) when (!request.DryRun && exception is not OperationCanceledException)
         {

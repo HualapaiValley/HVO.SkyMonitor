@@ -64,7 +64,9 @@ The workflow:
 
 1. Builds and tests without signing or release-write permission.
 2. Produces deterministic x64/ARM64 installer archives or the exact production
-   catalog through the existing pinned catalog path.
+   catalog through the existing pinned catalog path. Both installers are stamped
+   with the release version and source commit, and the workflow requires
+   `--version` to print exactly `<version>+<commit>` (#1312).
 3. Uses the `production-release` environment and Azure OIDC to sign the
    manifest, checksum list, and next append-only index snapshot.
 4. Immediately verifies every Key Vault signature against the embedded key.

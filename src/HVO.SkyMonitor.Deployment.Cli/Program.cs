@@ -42,6 +42,10 @@ internal static class Program
             {
                 await Console.Out.WriteAsync(help.Usage).ConfigureAwait(false);
             }
+            else if (command is VersionCommand version)
+            {
+                await Console.Out.WriteLineAsync(version.Identity).ConfigureAwait(false);
+            }
             else if (command is InstallDeploymentCommand install)
             {
                 var result = await CameraAgentInstaller.InstallAsync(install.Request, cancellation.Token).ConfigureAwait(false);

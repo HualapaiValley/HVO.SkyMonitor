@@ -65,7 +65,7 @@ is_reduced_path() {
     docs/* | .devcontainer/* | .vscode/* | .github/prompts/*)
       return 0
       ;;
-    README.md | AGENTS.md | CLAUDE.md | THIRD-PARTY-NOTICES.md)
+    README.md | AGENTS.md | CLAUDE.md | CHANGELOG.md | THIRD-PARTY-NOTICES.md)
       return 0
       ;;
     .github/copilot-instructions.md | .github/pull_request_template.md)

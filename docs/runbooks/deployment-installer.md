@@ -8,6 +8,12 @@ that install and `install --dry-run` evaluate. Catalog releases can be resolved 
 HTTPS mirrors, or signed release indexes; every source uses the same pinned
 signature, length, checksum, archive, and internal catalog validation.
 
+`hvo-skymonitor --version` prints the installer's version and the commit it was built from, as
+`<version>+<40-character commit>`, and exits 0. Like `--help`, it needs no Docker and does not read the
+[host policy](#production-product-root-on-another-filesystem), so it works even where that policy is refused. A build
+given no version is `0.0.0-dev`, and a build without a checkout or a supplied commit prints `0.0.0-dev+unknown`.
+[Build Evidence](#build-evidence) describes how a publish is stamped.
+
 ## Inputs
 
 Supply an immutable CameraAgent repository digest or an already loaded image ID,
@@ -1362,6 +1368,25 @@ Compose, image, and identity records before capture resumes. Noncurrent manifest
 and results are rejected before lifecycle state mutation; invalid candidate images
 or rollback models are rejected before runtime mutation.
 
+### Upgrade notes and older targets
+
+An upgrade from a release reads the release's `release.json` (install contract sections 4 and 6). Before it changes
+anything, including before the lifecycle journal, it does two things:
+
+- It prints the upgrade notes of every release after the installed version, up to the release the target belongs to.
+  A release candidate shows its release's notes. With `--json`, the notes are in the result's `upgradeNotes` member
+  instead. `--dry-run` shows them too.
+- It refuses a target older than the installed version, says that an upgrade never goes back, and names
+  `hvo-skymonitor cameraagent rollback --instance-id <uuid>`.
+
+The installed version is the one the retained release record names for the running image. An instance installed from an
+image reference records none. Its upgrade then shows every note up to the target, says that the installed version is not
+recorded, and cannot apply the older-target refusal.
+
+No current upgrade source supplies a `release.json`. The reader and the upgrade step that uses it are in place. The
+release acquisition that selects the candidate image from the same `release.json`, and records the installed release
+version, comes with #1309. Until then, image-reference and signed-manifest upgrades show no notes.
+
 ### Restore Only After an Interrupted Upgrade
 
 Ordinary `upgrade --resume` retries the upgrade, including backup and candidate
@@ -1806,6 +1831,13 @@ dotnet publish src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.Camera
 dotnet publish src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj \
   --configuration Release --runtime linux-arm64
 ```
+
+Each installer publish is stamped with its version and commit. A publish given no version is `0.0.0-dev+<commit>`. A
+release passes `-p:InformationalVersion=<version> -p:SourceRevisionId=<40-character commit>`. The build refuses a
+version that is not 1-128 letters, digits, periods and hyphens, and a commit that is not 40 lowercase hexadecimal
+digits or `unknown`. `scripts/ci:component-publish delivery`, the Architecture & Publish job and the release workflow
+each check that `--version` prints exactly `<version>+<commit>`. On ARM64 they check that the binary contains that
+string.
 
 Run the x64 output with `--capabilities`; require protocol version `1` and
 completed runtime/native-library warmup. On an ARM64 builder, the existing
