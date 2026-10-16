@@ -80,7 +80,16 @@ public sealed class DerivativeResetEvidenceTests
     [TestMethod]
     public async Task OutputLimitLeavesNoPartialPublishedEvidence()
     {
-        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        // Resolve platform links in the trusted temporary base, not inside the writer's test path.
+        var temporary = Path.GetFullPath(Path.GetTempPath());
+        var physical = Path.GetPathRoot(temporary)!;
+        foreach (var segment in temporary[physical.Length..].Split(
+            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var ancestor = new DirectoryInfo(Path.Combine(physical, segment));
+            physical = (ancestor.ResolveLinkTarget(returnFinalTarget: true) ?? ancestor).FullName;
+        }
+        var directory = Path.Combine(physical, Guid.NewGuid().ToString("N"));
         try
         {
             await Assert.ThrowsAsync<IOException>(() => P5TrialDiagnostics.WriteAsync(directory, "derivative-reset.json",
