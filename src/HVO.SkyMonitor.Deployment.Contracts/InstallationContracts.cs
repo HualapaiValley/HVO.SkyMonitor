@@ -10,6 +10,7 @@ public static class DeploymentSchemaVersions
     public const int LifecycleOperation = 1;
     public const int StatePreflightReport = 1;
     public const int StateResetEvidence = 1;
+    public const int LifecycleEvent = 1;
     /// <summary>
     /// Version 1 recorded the SBOM, provenance, and vulnerability-scan asset names; version 2 (issue #645) adds the
     /// optional per-platform component-inventory asset. Version-1 documents remain readable.
@@ -292,6 +293,18 @@ public sealed record UpgradeNote(string Version, string Text);
 /// <see cref="InstalledVersion"/> is null when the instance records no release version.
 /// </summary>
 public sealed record LifecycleUpgradeNotes(string? InstalledVersion, string TargetVersion, IReadOnlyList<UpgradeNote> Notes);
+
+/// <summary>
+/// What a <c>--json</c> upgrade writes to standard error, as one line, when it shows upgrade notes: the notes, before
+/// the lifecycle journal, the backup, the pause or the image change. Standard output carries only the result, which
+/// repeats them, so this is how a caller sees them before anything changes; a failed upgrade's error object follows
+/// this line.
+/// </summary>
+public sealed record LifecycleUpgradeNotesEvent(int SchemaVersion, string Event, LifecycleUpgradeNotes UpgradeNotes)
+{
+    /// <summary>The <see cref="Event"/> this record carries.</summary>
+    public const string Name = "upgrade-notes";
+}
 
 public sealed record InstallationState(
     int SchemaVersion,

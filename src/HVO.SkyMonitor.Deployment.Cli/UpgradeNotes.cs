@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -72,6 +73,35 @@ internal static class UpgradeNotes
             .OrderBy(static note => note.Version, Comparer<string>.Create(ProductVersion.Compare))
             .ToArray();
         return new LifecycleUpgradeNotes(installedVersion, target.Version, notes);
+    }
+
+    /// <summary>
+    /// Shows the notes before the upgrade starts: rendered on standard output, ahead of the result. With
+    /// <c>--json</c> standard output carries only the one result, so they are written to standard error as one
+    /// <see cref="LifecycleUpgradeNotesEvent"/> line instead, which a failed upgrade's error object follows.
+    /// </summary>
+    public static Task ShowAsync(LifecycleUpgradeNotes plan, bool json, TextWriter output, TextWriter error)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(error);
+        return json ? error.WriteLineAsync(Event(plan)) : output.WriteLineAsync(Render(plan));
+    }
+
+    /// <summary>The notes as the one-line event a <c>--json</c> upgrade writes to standard error.</summary>
+    public static string Event(LifecycleUpgradeNotes plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        var line = new ArrayBufferWriter<byte>();
+        // The context indents the documents it writes itself; a writer given to it keeps its own unindented form.
+        using (var writer = new Utf8JsonWriter(line))
+        {
+            JsonSerializer.Serialize(
+                writer,
+                new LifecycleUpgradeNotesEvent(DeploymentSchemaVersions.LifecycleEvent, LifecycleUpgradeNotesEvent.Name, plan),
+                DeploymentJsonContext.Default.LifecycleUpgradeNotesEvent);
+        }
+        return Encoding.UTF8.GetString(line.WrittenSpan);
     }
 
     /// <summary>The notes as an operator reads them before the upgrade starts.</summary>

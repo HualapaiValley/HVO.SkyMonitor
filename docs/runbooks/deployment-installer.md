@@ -1202,8 +1202,9 @@ hvo-skymonitor cameraagent preflight --instance-id <uuid> \
   --image-version 1.5.0 --asset-base-url https://mirror.example/releases
 ```
 
-A `--json` install or lifecycle invocation reserves standard error for its single error object, so the
-rendered report is written there only in human form. Read the complete report from
+With `--json`, an install or lifecycle invocation reports on standard error only in one-line JSON objects: any events,
+such as an upgrade's notes (see [Upgrade notes and older targets](#upgrade-notes-and-older-targets)), then at most one
+error object, last. The rendered report is therefore written there only in human form. Read the complete report from
 `state/deployment/state-preflight.json`, or from `cameraagent preflight --json` on standard output; a
 `--dry-run` deliberately retains nothing, and its error message still enumerates every blocking code.
 
@@ -1374,10 +1375,25 @@ An upgrade from a release reads the release's `release.json` (install contract s
 anything, including before the lifecycle journal, it does two things:
 
 - It prints the upgrade notes of every release after the installed version, up to the release the target belongs to.
-  A release candidate shows its release's notes. With `--json`, the notes are in the result's `upgradeNotes` member
-  instead. `--dry-run` shows them too.
+  A release candidate shows its release's notes. `--dry-run` shows them too.
 - It refuses a target older than the installed version, says that an upgrade never goes back, and names
   `hvo-skymonitor cameraagent rollback --instance-id <uuid>`.
+
+With `--json`, standard output carries only the one result, which is written when the upgrade ends, so the notes are
+written to standard error first as one `upgrade-notes` event on a single line:
+
+```json
+{"schemaVersion":1,"event":"upgrade-notes","upgradeNotes":{"installedVersion":"1.0.0","targetVersion":"1.2.0","notes":[{"version":"1.1.0","text":"Nothing to do by hand."},{"version":"1.2.0","text":"Read the Camera \u0026 rig page after upgrading."}]}}
+```
+
+- The event comes before the journal, the backup, the pause and the image change, so a caller sees the notes before
+  anything changes. A failed upgrade has already written it, and its error object follows it.
+- `installedVersion` is `null` when it is not recorded. `text` keeps its line breaks as `\n`.
+- The result repeats the notes in its `upgradeNotes` member. A result with no `release.json` behind it has no such
+  member.
+- A refused older target writes no event, only the error object.
+- Read standard error line by line: an object with `event` is an event, one with `errorCode` is the error, and callers
+  ignore event names they do not know.
 
 The installed version is the one the retained release record names for the running image. An instance installed from an
 image reference records none. Its upgrade then shows every note up to the target, says that the installed version is not

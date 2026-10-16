@@ -180,7 +180,8 @@ internal static class Program
         catch (HostPrerequisiteException exception)
         {
             // Every finding and its remedy is reported at once: as the structured report on standard output for
-            // --json, whose standard error is reserved for one error object, and rendered on standard error otherwise.
+            // --json, whose standard error carries only one-line JSON objects, and rendered on standard error
+            // otherwise.
             if (exception.Report is { } report)
             {
                 if (jsonErrors)

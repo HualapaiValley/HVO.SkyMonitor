@@ -121,5 +121,21 @@ public sealed class UpgradeNotesTests
             UpgradeNotes.Render(new LifecycleUpgradeNotes(null, "1.2.0", [])));
     }
 
+    [TestMethod]
+    public void Event_IsTheOneLineTheRunbookDocuments()
+    {
+        var plan = new LifecycleUpgradeNotes(
+            "1.0.0", "1.2.0",
+            [new UpgradeNote("1.1.0", "Nothing to do by hand."), new UpgradeNote("1.2.0", "Read the Camera & rig page after upgrading.")]);
+
+        // docs/runbooks/deployment-installer.md, "Upgrade notes and older targets".
+        Assert.AreEqual(
+            """{"schemaVersion":1,"event":"upgrade-notes","upgradeNotes":{"installedVersion":"1.0.0","targetVersion":"1.2.0","notes":[{"version":"1.1.0","text":"Nothing to do by hand."},{"version":"1.2.0","text":"Read the Camera \u0026 rig page after upgrading."}]}}""",
+            UpgradeNotes.Event(plan));
+        Assert.AreEqual(
+            """{"schemaVersion":1,"event":"upgrade-notes","upgradeNotes":{"installedVersion":null,"targetVersion":"1.2.0","notes":[{"version":"1.2.0","text":"One.\n\nTwo."}]}}""",
+            UpgradeNotes.Event(new LifecycleUpgradeNotes(null, "1.2.0", [new UpgradeNote("1.2.0", "One.\n\nTwo.")])));
+    }
+
     internal static string Versions(IEnumerable<UpgradeNote> notes) => string.Join(' ', notes.Select(static note => note.Version));
 }

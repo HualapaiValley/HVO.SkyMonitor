@@ -7,7 +7,8 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
 /// The upgrade seam for a target release's release.json (#1312): its notes are shown, and an older target refused,
-/// before the lifecycle journal, the backup, the pause or the image change, and the notes travel with the result.
+/// before the lifecycle journal, the backup, the pause or the image change, and the notes travel with the result. With
+/// --json they are shown as one event line on standard error, since standard output carries only the result.
 /// </summary>
 public sealed partial class LifecycleContractTests
 {
@@ -21,13 +22,13 @@ public sealed partial class LifecycleContractTests
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
         ConfigureNotesCandidate(fixture);
         var lifecycle = new FakeLifecycleClient();
-        using var output = new ObservingWriter<(bool Journaled, string? ActiveImageId, int Pauses)>(
-            () => (File.Exists(fixture.Paths.LifecycleStatePath), fixture.Runner.ActiveImageId, lifecycle.PauseCount));
+        using var output = new ObservingWriter<MutationState>(() => Mutations(fixture, lifecycle));
+        using var error = new ObservingWriter<MutationState>(() => Mutations(fixture, lifecycle));
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
             NotesUpgrade(fixture) with { TargetRelease = ReleaseManifest.Parse(ReleaseManifestTests.Fixture()) },
             fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None, output: output);
+            fixture.Uid, fixture.Gid, CancellationToken.None, output: output, error: error);
 
         Assert.AreEqual("completed", result.Outcome);
         Assert.AreEqual(NotesCandidateImageId, result.Image!.ImageId);
@@ -37,7 +38,10 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual("1.2.0", notes.TargetVersion);
         Assert.AreEqual("1.0.0 1.1.0 1.2.0", UpgradeNotesTests.Versions(notes.Notes));
         Assert.AreEqual(UpgradeNotes.Render(notes) + Environment.NewLine, output.ToString());
-        Assert.AreEqual((false, fixture.Manifest.Image.ImageId, 0), output.StateAtFirstWrite);
+        Assert.AreEqual(string.Empty, error.ToString());
+        Assert.AreEqual(Unmutated(fixture), output.StateAtFirstWrite);
+        // The upgrade then journaled, backed up, paused and changed the image, each of which the probe would have seen.
+        Assert.AreEqual(new MutationState(true, 1, NotesCandidateImageId, 1), Mutations(fixture, lifecycle));
     }
 
     [TestMethod]
@@ -68,7 +72,9 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAsync_TargetReleaseOlderThanInstalled_IsRefusedBeforeTheJournalAndPointsToRollback()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task UpgradeAsync_TargetReleaseOlderThanInstalled_IsRefusedBeforeTheJournalAndPointsToRollback(bool json)
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
         await RecordInstalledReleaseAsync(fixture, "1.3.0");
@@ -76,11 +82,12 @@ public sealed partial class LifecycleContractTests
         var lifecycle = new FakeLifecycleClient();
         var manifestBefore = await File.ReadAllTextAsync(fixture.Paths.ManifestPath);
         using var output = new ObservingWriter<bool>(() => true);
+        using var error = new ObservingWriter<bool>(() => true);
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            NotesUpgrade(fixture) with { TargetRelease = ReleaseManifest.Parse(ReleaseManifestTests.Fixture()) },
+            NotesUpgrade(fixture) with { Json = json, TargetRelease = ReleaseManifest.Parse(ReleaseManifestTests.Fixture()) },
             fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None, output: output));
+            fixture.Uid, fixture.Gid, CancellationToken.None, output: output, error: error));
 
         Assert.AreEqual(
             "1.3.0 is installed, which is newer than the upgrade target 1.2.0; an upgrade never goes back. " +
@@ -89,6 +96,7 @@ public sealed partial class LifecycleContractTests
         // Nothing was journaled, shown, paused or changed, so no refused operation is left to settle or resume.
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
         Assert.AreEqual(string.Empty, output.ToString());
+        Assert.AreEqual(string.Empty, error.ToString());
         Assert.AreEqual(0, lifecycle.PauseCount);
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
         Assert.AreEqual(manifestBefore, await File.ReadAllTextAsync(fixture.Paths.ManifestPath));
@@ -96,11 +104,13 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAsync_TargetReleaseWithJson_CarriesTheNotesOnlyInTheResult()
+    public async Task UpgradeAsync_TargetReleaseWithJson_WritesTheNotesAsOneEventOnStandardErrorBeforeAnyMutation()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
         ConfigureNotesCandidate(fixture);
-        using var output = new ObservingWriter<bool>(() => true);
+        var lifecycle = new FakeLifecycleClient();
+        using var output = new ObservingWriter<MutationState>(() => Mutations(fixture, lifecycle));
+        using var error = new ObservingWriter<MutationState>(() => Mutations(fixture, lifecycle));
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
             NotesUpgrade(fixture) with
@@ -108,20 +118,102 @@ public sealed partial class LifecycleContractTests
                 Json = true,
                 TargetRelease = ReleaseManifestTests.Release("1.2.0", ("1.2.0", "twelve"))
             },
-            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
-            fixture.Uid, fixture.Gid, CancellationToken.None, output: output);
+            fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None, output: output, error: error);
 
-        // Standard output carries exactly the one JSON result, so the notes are written there and nowhere else.
+        // Standard output carries exactly the one JSON result, written once the upgrade returns, so the notes went to
+        // standard error as one event line, before the journal, the backup, the pause or the image change.
+        Assert.AreEqual("completed", result.Outcome);
         Assert.AreEqual(string.Empty, output.ToString());
+        Assert.AreEqual(Unmutated(fixture), error.StateAtFirstWrite);
+        using var notesEvent = JsonDocument.Parse(SingleLine(error.ToString()));
+        Assert.AreEqual(
+            "schemaVersion event upgradeNotes",
+            string.Join(' ', notesEvent.RootElement.EnumerateObject().Select(static member => member.Name)));
+        Assert.AreEqual(1, notesEvent.RootElement.GetProperty("schemaVersion").GetInt32());
+        Assert.AreEqual("upgrade-notes", notesEvent.RootElement.GetProperty("event").GetString());
+        var shown = notesEvent.RootElement.GetProperty("upgradeNotes")
+            .Deserialize(DeploymentJsonContext.Default.LifecycleUpgradeNotes)!;
+        Assert.IsNull(shown.InstalledVersion);
+        Assert.AreEqual("1.2.0", shown.TargetVersion);
+        Assert.AreEqual("twelve", shown.Notes.Single().Text);
+        // The result still carries the same notes.
+        Assert.AreEqual(UpgradeNotes.Render(shown), UpgradeNotes.Render(result.UpgradeNotes!));
         using var document = JsonDocument.Parse(JsonSerializer.Serialize(result, DeploymentJsonContext.Default.LifecycleResult));
-        var notes = document.RootElement.GetProperty("upgradeNotes");
-        Assert.AreEqual(JsonValueKind.Null, notes.GetProperty("installedVersion").ValueKind);
-        Assert.AreEqual("1.2.0", notes.GetProperty("targetVersion").GetString());
-        Assert.AreEqual("twelve", notes.GetProperty("notes")[0].GetProperty("text").GetString());
+        Assert.AreEqual(
+            "twelve", document.RootElement.GetProperty("upgradeNotes").GetProperty("notes")[0].GetProperty("text").GetString());
         // A result with no release.json behind it keeps its previous shape.
         using var plain = JsonDocument.Parse(JsonSerializer.Serialize(
             result with { UpgradeNotes = null }, DeploymentJsonContext.Default.LifecycleResult));
         Assert.IsFalse(plain.RootElement.TryGetProperty("upgradeNotes", out _));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_TargetReleaseDryRunWithJson_WritesTheNotesEventAndPlansWithThem()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        await RecordInstalledReleaseAsync(fixture, "1.0.0");
+        ConfigureNotesCandidate(fixture);
+        var lifecycle = new FakeLifecycleClient();
+        using var output = new ObservingWriter<MutationState>(() => Mutations(fixture, lifecycle));
+        using var error = new ObservingWriter<MutationState>(() => Mutations(fixture, lifecycle));
+
+        var result = await CameraAgentLifecycleManager.ExecuteAsync(
+            NotesUpgrade(fixture) with
+            {
+                DryRun = true,
+                Json = true,
+                TargetRelease = ReleaseManifest.Parse(ReleaseManifestTests.Fixture())
+            },
+            fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None, output: output, error: error);
+
+        Assert.AreEqual("planned", result.Outcome);
+        Assert.AreEqual(string.Empty, output.ToString());
+        Assert.AreEqual(Unmutated(fixture), error.StateAtFirstWrite);
+        var shown = JsonSerializer.Deserialize(
+            SingleLine(error.ToString()), DeploymentJsonContext.Default.LifecycleUpgradeNotesEvent)!;
+        Assert.AreEqual(LifecycleUpgradeNotesEvent.Name, shown.Event);
+        Assert.AreEqual("1.0.0", shown.UpgradeNotes.InstalledVersion);
+        Assert.AreEqual("1.1.0 1.2.0", UpgradeNotesTests.Versions(shown.UpgradeNotes.Notes));
+        Assert.AreEqual(UpgradeNotes.Render(shown.UpgradeNotes), UpgradeNotes.Render(result.UpgradeNotes!));
+        // A dry run changes nothing at all.
+        Assert.AreEqual(Unmutated(fixture), Mutations(fixture, lifecycle));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task UpgradeAsync_TargetReleaseThatFailsAfterItsJournal_HasAlreadyShownTheNotes(bool json)
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        ConfigureNotesCandidate(fixture);
+        fixture.Runner.RejectNextBackup = true;
+        var lifecycle = new FakeLifecycleClient();
+        using var output = new ObservingWriter<MutationState>(() => Mutations(fixture, lifecycle));
+        using var error = new ObservingWriter<MutationState>(() => Mutations(fixture, lifecycle));
+
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            NotesUpgrade(fixture) with
+            {
+                Json = json,
+                TargetRelease = ReleaseManifestTests.Release("1.2.0", ("1.2.0", "twelve"))
+            },
+            fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None, output: output, error: error));
+
+        // The upgrade journaled and paused before its backup failed; the notes were out before any of it, so the
+        // caller has them although no result follows (with --json, the error object follows the event line).
+        Assert.IsTrue(File.Exists(fixture.Paths.LifecycleStatePath));
+        Assert.AreEqual(1, lifecycle.PauseCount);
+        var (shownOn, silent) = json ? (error, output) : (output, error);
+        Assert.AreEqual(Unmutated(fixture), shownOn.StateAtFirstWrite);
+        Assert.AreEqual(string.Empty, silent.ToString());
+        var expected = new LifecycleUpgradeNotes(null, "1.2.0", [new UpgradeNote("1.2.0", "twelve")]);
+        Assert.AreEqual(
+            (json ? UpgradeNotes.Event(expected) : UpgradeNotes.Render(expected)) + Environment.NewLine, shownOn.ToString());
     }
 
     [TestMethod]
@@ -205,6 +297,24 @@ public sealed partial class LifecycleContractTests
                 "sbom.json", "provenance.json", "scan.json", null, DateTimeOffset.UnixEpoch),
             DeploymentJsonContext.Default.CameraAgentImageReleaseEvidence,
             CancellationToken.None);
+
+    /// <summary>What an upgrade has changed: its journal, its backups, the running image and the pauses it asked for.</summary>
+    private readonly record struct MutationState(bool Journaled, int Backups, string? ActiveImageId, int Pauses);
+
+    private static MutationState Mutations(LifecycleFixture fixture, FakeLifecycleClient lifecycle)
+        => new(File.Exists(fixture.Paths.LifecycleStatePath), fixture.Runner.BackupCount, fixture.Runner.ActiveImageId,
+            lifecycle.PauseCount);
+
+    private static MutationState Unmutated(LifecycleFixture fixture) => new(false, 0, fixture.Manifest.Image.ImageId, 0);
+
+    /// <summary>The one line <paramref name="written"/> holds, without its line ending.</summary>
+    private static string SingleLine(string written)
+    {
+        var lines = written.Split(Environment.NewLine);
+        Assert.HasCount(2, lines, written);
+        Assert.AreEqual(string.Empty, lines[1], written);
+        return lines[0];
+    }
 
     /// <summary>Captures what is written, and what <c>observe</c> reports at the moment the first character is.</summary>
     private sealed class ObservingWriter<TState>(Func<TState> observe) : TextWriter
