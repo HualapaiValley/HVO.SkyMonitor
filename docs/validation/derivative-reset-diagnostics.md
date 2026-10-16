@@ -172,3 +172,22 @@ closed instead of overwriting. In the retained baseline JSON, `cpu_time`, `reads
 request ends. Session lifetime CPU/I/O totals were lost to that name collision,
 so no such totals are claimed above. This alias-only delta is built and reviewed
 as current-PR validation, not relabeled as another baseline execution.
+
+### Current candidate validation
+
+At `c0c72cdd8c6301b4f85fc2b1414d7836d4760c74`, both affected Release projects
+built warning-clean. Docker-disabled LogicHost Unit execution discovered732 cases:
+731 passed, one pre-existing `AmbiguousDelete_IsNotAReachableStateForThisProvider`
+case skipped. All six dedicated diagnostic Unit cases passed. Integration
+**discovery only** found520 current-target cases, compared with512 cases executed
+on the older baseline; these are deliberately separate claims.
+
+The classifier selected `mode=full, complete=false, logichost=true` with all other
+lanes/deployment false. All four mandatory guards and the Unit-selection control
+and regression guard passed. The first candidate gate ended rc1 only because
+format verification found whitespace; that log is retained. Formatting and the
+inventory/runbook successor are validated separately without repeating the
+unchanged Unit suite or either SQL replay. The read-only operations-doc audit
+passed before inventory reconciliation, because both the inventory and runbook
+still agreed on the old total; actual discovery exposed the six missing cases.
+The owning inventory is updated726→732 and the aggregate Unit total6756→6762.

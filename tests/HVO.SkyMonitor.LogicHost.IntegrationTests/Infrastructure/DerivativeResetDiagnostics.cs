@@ -71,9 +71,15 @@ internal static class DerivativeResetDiagnostics
                         var utc = DateTimeOffset.UtcNow;
                         var sessions = await ReadSessionsAsync(observer, session, token).ConfigureAwait(false);
                         var resources = await container(token).ConfigureAwait(false);
-                        samples.Add(new { utc, sessions, host = DerivativeResetEvidence.HostSnapshot(),
-                            containerId = resources.Id, containerExit = resources.ExitCode,
-                            containerCounters = DerivativeResetEvidence.NumericLines(resources.Counters) });
+                        samples.Add(new
+                        {
+                            utc,
+                            sessions,
+                            host = DerivativeResetEvidence.HostSnapshot(),
+                            containerId = resources.Id,
+                            containerExit = resources.ExitCode,
+                            containerCounters = DerivativeResetEvidence.NumericLines(resources.Counters)
+                        });
                     }
                     catch (Exception error) { errors.Add(Error(error)); }
                 }, () => Volatile.Read(ref finished) != 0, TimeProvider.System, deadline.Token);
@@ -112,10 +118,20 @@ internal static class DerivativeResetDiagnostics
             {
                 await P5TrialDiagnostics.WriteAsync(directory, "derivative-reset.json", new
                 {
-                    schemaVersion = 1, selection, processId = Environment.ProcessId,
-                    session, started, ended, succeeded, resetSqlNumber, commandTimeoutSeconds = db.Database.GetCommandTimeout() ?? 30,
+                    schemaVersion = 1,
+                    selection,
+                    processId = Environment.ProcessId,
+                    session,
+                    started,
+                    ended,
+                    succeeded,
+                    resetSqlNumber,
+                    commandTimeoutSeconds = db.Database.GetCommandTimeout() ?? 30,
                     targetRowsReadUncommitted = targetRows,
-                    maximumSamples = DerivativeResetEvidence.MaximumSamples, samples, plans, errors,
+                    maximumSamples = DerivativeResetEvidence.MaximumSamples,
+                    samples,
+                    plans,
+                    errors,
                     ownerAttribution = "Session/process and transaction lifetime observations only; worker ownership requires separate stack correlation."
                 }, DerivativeResetEvidence.MaximumBytes).ConfigureAwait(false);
             }
@@ -218,9 +234,13 @@ internal static class DerivativeResetDiagnostics
         {
             result.Add(new
             {
-                kind = "cached-estimated-projection-not-actual", source = reader.GetInt32(5) == 1 ? "graph-identity-trigger" : "reset-sql-shape", queryHash = Convert.ToHexString((byte[])reader[0]),
-                planHash = Convert.ToHexString((byte[])reader[1]), commandHash = Convert.ToHexString((byte[])reader[2]),
-                projection = DerivativeResetEvidence.ProjectPlan(reader.GetString(3)).ToString(), lastExecution = reader.GetDateTime(4)
+                kind = "cached-estimated-projection-not-actual",
+                source = reader.GetInt32(5) == 1 ? "graph-identity-trigger" : "reset-sql-shape",
+                queryHash = Convert.ToHexString((byte[])reader[0]),
+                planHash = Convert.ToHexString((byte[])reader[1]),
+                commandHash = Convert.ToHexString((byte[])reader[2]),
+                projection = DerivativeResetEvidence.ProjectPlan(reader.GetString(3)).ToString(),
+                lastExecution = reader.GetDateTime(4)
             });
         }
         return result;
