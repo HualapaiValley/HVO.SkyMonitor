@@ -154,8 +154,8 @@ internal sealed partial class CaptureProcessingPersistence
             var outputs = new List<DurableProcessingOutput>(3);
             foreach (var product in new[] { snapshotProduct, trailProduct, composed })
             {
-                outputs.Add(await PersistMetadataProductAsync(_storageRoot, descriptor,
-                    publicationNodeId, product, cancellationToken).ConfigureAwait(false));
+                outputs.Add(await PersistMetadataProductAsync(_storageRoot, descriptor, publicationNodeId, product,
+                    BeforeMetadataDirectorySyncForTest, provisionStorageRoot: false, cancellationToken).ConfigureAwait(false));
             }
             var now = _timeProvider.GetUtcNow();
             var node = new CaptureProcessingGraphNode(publicationNodeId,
