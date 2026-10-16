@@ -1,6 +1,8 @@
+using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.Data;
 using System.Text.Json;
+using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.Sqlite;
@@ -43,6 +45,34 @@ public sealed class OwnerPasswordRecoveryServiceTests
             fixture.Owner, RecoveryFixture.OriginalPassword).ConfigureAwait(false));
         Assert.IsTrue(await fixture.UserManager.CheckPasswordAsync(
             fixture.Owner, RecoveryFixture.RecoveryPassword).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task Recovery_RevokesEveryApiKeyOfTheOwnerInTheSameTransaction()
+    {
+        using var fixture = await RecoveryFixture.CreateAsync().ConfigureAwait(false);
+        var keys = fixture.ApiKeys();
+        var first = await keys.CreateAsync(fixture.Owner.Id, "laptop", ApiKeyAccessLevel.ReadWrite, CancellationToken.None)
+            .ConfigureAwait(false);
+        var second = await keys.CreateAsync(fixture.Owner.Id, "automation", ApiKeyAccessLevel.Read, CancellationToken.None)
+            .ConfigureAwait(false);
+        var operationId = Guid.NewGuid();
+        var challenge = await fixture.Service.CreateChallengeAsync(operationId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        var completed = await fixture.Service.CompleteAsync(
+            operationId,
+            challenge.Challenge!,
+            RecoveryFixture.RecoveryPassword,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OwnerPasswordRecoveryOutcome.Completed, completed);
+        Assert.IsNull(await keys.FindAsync(first.Token!, CancellationToken.None).ConfigureAwait(false));
+        Assert.IsNull(await keys.FindAsync(second.Token!, CancellationToken.None).ConfigureAwait(false));
+        Assert.IsEmpty(await keys.ListAsync(fixture.Owner.Id, CancellationToken.None).ConfigureAwait(false));
+        // The recovery receipt, kept in the same table, survives.
+        Assert.IsNotNull(await fixture.UserManager.GetAuthenticationTokenAsync(
+            fixture.Owner, "HVO.SkyMonitor.OwnerRecovery", "LastCompletedOperation").ConfigureAwait(false));
     }
 
     [TestMethod]
@@ -276,6 +306,12 @@ public sealed class OwnerPasswordRecoveryServiceTests
         internal UserManager<ApplicationUser> UserManager { get; }
         internal IDataProtectionProvider DataProtectionProvider { get; }
         internal OwnerPasswordRecoveryService Service { get; }
+
+        internal CameraAgentApiKeyStore ApiKeys()
+            => new(
+                _scope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
+                TimeProvider.System,
+                NullLogger<CameraAgentApiKeyStore>.Instance);
 
         internal Task<IdentityResult> ReplacePasswordAsync(string newPassword)
             => new OwnerPasswordReplacementService(

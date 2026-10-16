@@ -90,10 +90,17 @@ offline. It does not share LogicHost users, cookies, or SQL Server tables.
   configured password. It does not permit first-time seeding without one.
 - Local cookies are named `CameraAgent.Auth`, last 12 hours with sliding
   expiration, and revalidate the security stamp every 30 minutes.
-- CameraAgent has no inbound bearer or API-key authentication. Its central OAuth
-  and API-key modes authenticate outbound requests to LogicHost.
-- Local email delivery, local API keys, roles, two-factor authentication, and
-  passkeys are not implemented.
+- The site owner can create scoped local API keys (`Read` or `ReadWrite`) at
+  `/Account/Manage/ApiKeys` for the command line and automation. A key is
+  accepted only as `Authorization: Bearer hvo_sky_...` under
+  `/api/v1/operations`, maps onto the operations read and mutate policies, is
+  stored only as a SHA-256 in the local Identity database, and is revoked by
+  deleting it; owner password recovery revokes every key. See
+  `docs/contracts/cameraagent-operator-settings-v1.md`. CameraAgent accepts no
+  other inbound bearer token. Its central OAuth and API-key modes authenticate
+  outbound requests to LogicHost.
+- Local email delivery, roles, two-factor authentication, and passkeys are not
+  implemented.
 - Local self-registration is disabled. Operator pages, frame previews, gallery,
   artifact retrieval, capture controls, and outbox operations require the
   configured site owner; API denials return `401` or `403` instead of redirects.

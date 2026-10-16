@@ -51,6 +51,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
+using HVO.SkyMonitor.CameraAgent.Authentication;
+using HVO.SkyMonitor.CameraAgent.Settings;
 
 namespace HVO.SkyMonitor.CameraAgent;
 
@@ -82,6 +84,9 @@ public class Program
                 localSettings.FindOverriddenKeys,
                 provider.GetRequiredService<ILogger<OperatorSettingsFile>>()));
         }
+        builder.Services.AddSingleton(provider => new CameraAgentSettingSources(
+            provider.GetRequiredService<IConfiguration>(),
+            localSettings is null ? static _ => false : localSettings.IsSettingsFileProvider));
 
         var reverseProxy = builder.Configuration.GetSection(DeploymentReverseProxyOptions.SectionName).Get<DeploymentReverseProxyOptions>() ?? new();
         if (reverseProxy.Enabled)
@@ -296,6 +301,8 @@ public class Program
             ConfigureApplicationCookie(options, localIdentitySettings.CookieName));
 
         builder.Services.AddCameraAgentAuthorization();
+        builder.Services.AddScoped<CameraAgentApiKeyStore>();
+        builder.Services.AddScoped<CameraAgentSettingsService>();
         builder.Services.AddCameraAgentOutboxOperations();
         builder.Services.AddScoped<ICameraAgentOperatorUiService, CameraAgentOperatorUiService>();
         builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();
@@ -409,6 +416,7 @@ public class Program
         app.UseRouting();
 
         app.UseAuthentication();
+        app.UseMiddleware<CameraAgentApiKeyAuthenticationMiddleware>();
         app.UseMiddleware<OwnerBootstrapGateMiddleware>();
         app.UseAuthorization();
 
@@ -431,6 +439,7 @@ public class Program
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
         app.MapCameraAgentAutomationOperationsEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
+        app.MapCameraAgentSettingsEndpoints();
         app.MapCameraAgentNamedRigEndpoints();
         app.MapCameraAgentPipelineOperationsEndpoints();
         app.MapCameraAgentProcessingGraphOperationsEndpoints();
