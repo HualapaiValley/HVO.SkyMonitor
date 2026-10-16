@@ -113,6 +113,23 @@ public sealed class UpgradeNotesTests
     }
 
     [TestMethod]
+    public void Render_CarriageReturnInANote_StartsANewLineRatherThanOverwritingTheLine()
+    {
+        var plan = new LifecycleUpgradeNotes("1.0.0", "1.1.0", [new UpgradeNote("1.1.0", "DO NOT UPGRADE\rSafe to proceed.")]);
+
+        Assert.AreEqual(
+            string.Join(
+                Environment.NewLine,
+                "Upgrading from 1.0.0 to 1.1.0.",
+                string.Empty,
+                "Upgrade notes for 1.1.0:",
+                "  DO NOT UPGRADE",
+                "  Safe to proceed.",
+                string.Empty),
+            UpgradeNotes.Render(plan));
+    }
+
+    [TestMethod]
     public void Render_UnrecordedInstalledVersionAndNoNotes_SaySo()
     {
         Assert.AreEqual(

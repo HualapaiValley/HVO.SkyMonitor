@@ -64,12 +64,24 @@ public sealed class ReleaseManifestTests
     [DataRow("""{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0.0","text":"  "}]}""", "upgrade note 1 is not a release's version and its text")]
     [DataRow("""{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0","text":"x"}]}""", "upgrade note 1 is not a release's version and its text")]
     [DataRow("""{"schemaVersion":1,"version":"1.1.0","upgradeNotes":[{"version":"1.0.0","text":"x"},{"version":"1.1.0","text":"\u001b[2J"}]}""", "upgrade note 2 (1.1.0) contains control characters")]
+    [DataRow("""{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0.0","text":"DO NOT UPGRADE\rSafe to proceed."}]}""", "upgrade note 1 (1.0.0) contains control characters")]
+    [DataRow("""{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0.0","text":"One.\n\rTwo."}]}""", "upgrade note 1 (1.0.0) contains control characters")]
+    [DataRow("""{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0.0","text":"One.\r"}]}""", "upgrade note 1 (1.0.0) contains control characters")]
     [DataRow("""{"schemaVersion":1,"version":"1.1.0","upgradeNotes":[{"version":"1.1.0","text":"x"},{"version":"1.1.0+build","text":"y"}]}""", "it has more than one upgrade note for 1.1.0+build")]
     public void Parse_MalformedRelease_IsRefusedWithTheReason(string json, string reason)
     {
         var exception = Assert.ThrowsExactly<InstallerException>(() => ReleaseManifest.Parse(Encoding.UTF8.GetBytes(json)));
 
         Assert.AreEqual($"The installer will not use release.json: {reason}.", exception.Message);
+    }
+
+    [TestMethod]
+    public void Parse_CrlfLineEndings_AreReadAsLineFeeds()
+    {
+        var manifest = ReleaseManifest.Parse(Encoding.UTF8.GetBytes(
+            """{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0.0","text":"One.\r\n\r\nTwo.\r\n\tThree."}]}"""));
+
+        Assert.AreEqual("One.\n\nTwo.\n\tThree.", manifest.UpgradeNotes.Single().Text);
     }
 
     [TestMethod]

@@ -120,7 +120,9 @@ internal static class UpgradeNotes
         foreach (var note in plan.Notes)
         {
             text.AppendLine().AppendLine(CultureInfo.InvariantCulture, $"Upgrade notes for {note.Version}:");
-            foreach (var line in note.Text.Split('\n').Select(static line => line.TrimEnd('\r')))
+            // The reader leaves only LF line endings. Any other line break, a carriage return among them, also starts a
+            // new indented line, rather than moving back over what is already printed.
+            foreach (var line in note.Text.ReplaceLineEndings("\n").Split('\n'))
             {
                 text.AppendLine(line.Length == 0 ? line : "  " + line);
             }

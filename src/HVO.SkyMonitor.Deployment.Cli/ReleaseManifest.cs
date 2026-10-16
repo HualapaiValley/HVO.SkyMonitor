@@ -24,7 +24,8 @@ internal sealed record ReleaseManifest(string Version, IReadOnlyList<UpgradeNote
 
     /// <summary>
     /// Reads a release.json. Throws <see cref="InstallerException"/> naming what is wrong when it is not schema 1 of a
-    /// release version, or when its upgrade notes are not each a release's version and its text.
+    /// release version, or when its upgrade notes are not each a release's version and its text. A note's lines end in
+    /// LF, and its text holds no other control character but a tab.
     /// </summary>
     public static ReleaseManifest Parse(ReadOnlyMemory<byte> utf8Json)
     {
@@ -82,7 +83,10 @@ internal sealed record ReleaseManifest(string Version, IReadOnlyList<UpgradeNote
                 throw Invalid($"upgrade note {index} is not a release's version and its text");
             }
             // The notes are printed to the operator's terminal, so text that could drive it is refused rather than shown.
-            if (text.Any(static character => char.IsControl(character) && character is not ('\n' or '\r' or '\t')))
+            // A CRLF line ending is read as LF. A carriage return anywhere else would return to the start of the line and
+            // let what follows overwrite a warning, so it is refused like every other control character.
+            var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal);
+            if (lines.Any(static character => char.IsControl(character) && character is not ('\n' or '\t')))
             {
                 throw Invalid($"upgrade note {index} ({version}) contains control characters");
             }
@@ -90,7 +94,7 @@ internal sealed record ReleaseManifest(string Version, IReadOnlyList<UpgradeNote
             {
                 throw Invalid($"it has more than one upgrade note for {version}");
             }
-            read.Add(new UpgradeNote(version, text));
+            read.Add(new UpgradeNote(version, lines));
         }
         return [.. read];
     }
