@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Unicode;
 using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
@@ -33,8 +34,16 @@ internal sealed record ReleaseManifest(string Version, IReadOnlyList<UpgradeNote
         {
             throw Invalid($"it is larger than {MaximumLength} bytes");
         }
+        // The JSON reader decodes only the strings it is asked for, so text that is not Unicode is refused here, wherever
+        // it is in the document, rather than when, or whether, a member holding it is read: bytes that are not UTF-8,
+        // and half of a surrogate pair escaped on its own (\uD800), which the tokenizer passes.
+        if (!Utf8.IsValid(utf8Json.Span))
+        {
+            throw Invalid("it is not UTF-8 text");
+        }
         try
         {
+            DecodeEscapedStrings(utf8Json.Span);
             using var document = JsonDocument.Parse(utf8Json);
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
@@ -59,6 +68,25 @@ internal sealed record ReleaseManifest(string Version, IReadOnlyList<UpgradeNote
         catch (JsonException exception)
         {
             throw new InstallerException($"The installer cannot read {FileName}: it is not valid JSON.", exception);
+        }
+        catch (InvalidOperationException exception)
+        {
+            throw new InstallerException(
+                $"The installer will not use {FileName}: it contains a string that is not valid Unicode.", exception);
+        }
+    }
+
+    // Decodes every escaped member name and string once, which throws InvalidOperationException for one that is not
+    // Unicode text; one with no escapes is the UTF-8 already checked.
+    private static void DecodeEscapedStrings(ReadOnlySpan<byte> utf8Json)
+    {
+        var reader = new Utf8JsonReader(utf8Json);
+        while (reader.Read())
+        {
+            if (reader.TokenType is JsonTokenType.PropertyName or JsonTokenType.String && reader.ValueIsEscaped)
+            {
+                _ = reader.GetString();
+            }
         }
     }
 

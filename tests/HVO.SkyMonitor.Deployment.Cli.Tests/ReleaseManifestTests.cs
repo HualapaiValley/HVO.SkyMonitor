@@ -94,6 +94,32 @@ public sealed class ReleaseManifestTests
     }
 
     [TestMethod]
+    [DataRow("""{"schemaVersion":1,"version":"\uDC00"}""")]
+    [DataRow("""{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0.0","text":"Upgrade \uD800 now."}]}""")]
+    [DataRow("""{"schemaVersion":1,"\uD800":true,"version":"1.0.0"}""")]
+    [DataRow("""{"schemaVersion":1,"version":"1.0.0","images":[{"tag":"\uDBFFx"}]}""")]
+    public void Parse_EscapedLoneSurrogate_IsRefusedWhereverItIs(string json)
+    {
+        var exception = Assert.ThrowsExactly<InstallerException>(() => ReleaseManifest.Parse(Encoding.UTF8.GetBytes(json)));
+
+        Assert.AreEqual(
+            "The installer will not use release.json: it contains a string that is not valid Unicode.", exception.Message);
+    }
+
+    [TestMethod]
+    [DataRow("{\"schemaVersion\":1,\"version\":\"1.0.0\",\"upgradeNotes\":[{\"version\":\"1.0.0\",\"text\":\"Upgrade ", new byte[] { 0xC3, 0x28 }, " now.\"}]}")]
+    [DataRow("{\"schemaVersion\":1,\"version\":\"1.0.0\",\"upgradeNotes\":[{\"version\":\"1.0.0\",\"text\":\"Upgrade ", new byte[] { 0xED, 0xA0, 0x80 }, " now.\"}]}")]
+    [DataRow("{\"schemaVersion\":1,\"version\":\"1.0.0\",\"images\":{\"", new byte[] { 0xFF }, "\":[]}}")]
+    public void Parse_InvalidUtf8_IsRefusedWhereverItIs(string before, byte[] invalid, string after)
+    {
+        byte[] json = [.. Encoding.UTF8.GetBytes(before), .. invalid, .. Encoding.UTF8.GetBytes(after)];
+
+        var exception = Assert.ThrowsExactly<InstallerException>(() => ReleaseManifest.Parse(json));
+
+        Assert.AreEqual("The installer will not use release.json: it is not UTF-8 text.", exception.Message);
+    }
+
+    [TestMethod]
     public void Parse_DocumentLargerThanTheBound_IsRefusedBeforeParsing()
     {
         var oversized = new byte[ReleaseManifest.MaximumLength + 1];
