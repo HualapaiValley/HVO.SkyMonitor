@@ -131,6 +131,51 @@ public sealed class ReleaseManifestTests
             exception.Message);
     }
 
+    [TestMethod]
+    public void Parse_AsManyNotesAsTheLimit_AreReadAndOneMoreIsRefused()
+    {
+        Assert.HasCount(
+            ReleaseManifest.MaximumUpgradeNotes, ReleaseManifest.Parse(Notes(ReleaseManifest.MaximumUpgradeNotes)).UpgradeNotes);
+
+        var exception = Assert.ThrowsExactly<InstallerException>(
+            () => ReleaseManifest.Parse(Notes(ReleaseManifest.MaximumUpgradeNotes + 1)));
+
+        Assert.AreEqual(
+            $"The installer will not use release.json: it has more than {ReleaseManifest.MaximumUpgradeNotes} upgrade notes.",
+            exception.Message);
+    }
+
+    [TestMethod]
+    public async Task Parse_TheSizeLimitsWorthOfDistinctNotes_IsRefusedForItsCountBeforeAnyIsCompared()
+    {
+        // 25,000 distinct notes fit in the size limit. Checked against every earlier note they took about 312 million
+        // comparisons, minutes of work.
+        var json = Notes(25_000);
+        Assert.IsLessThan(ReleaseManifest.MaximumLength, json.Length);
+
+        var exception = await Task.Run(() => Assert.ThrowsExactly<InstallerException>(() => ReleaseManifest.Parse(json)))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.AreEqual(
+            $"The installer will not use release.json: it has more than {ReleaseManifest.MaximumUpgradeNotes} upgrade notes.",
+            exception.Message);
+    }
+
+    [TestMethod]
+    public async Task Parse_TheLargestValidRelease_IsReadInLinearTime()
+    {
+        // As many notes as the limit, each for a long pre-release that is costly to match, filling the size limit. Each
+        // version is matched once and a repeated release is found in a set, so this reads in milliseconds; checking each
+        // note against every earlier one matched half a million pairs and took tens of seconds.
+        var prerelease = string.Join('.', Enumerable.Repeat("a", 450));
+        var json = Notes(Enumerable.Range(0, ReleaseManifest.MaximumUpgradeNotes).Select(index => $"1.0.0-{prerelease}.{index}"));
+        Assert.IsLessThan(ReleaseManifest.MaximumLength, json.Length);
+
+        var manifest = await Task.Run(() => ReleaseManifest.Parse(json)).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.HasCount(ReleaseManifest.MaximumUpgradeNotes, manifest.UpgradeNotes);
+    }
+
     internal static byte[] Fixture()
     {
         using var stream = typeof(ReleaseManifestTests).Assembly.GetManifestResourceStream(
@@ -139,6 +184,14 @@ public sealed class ReleaseManifestTests
         stream.CopyTo(buffer);
         return buffer.ToArray();
     }
+
+    /// <summary>A release.json of 1.0.0 with a one-word note for each of <paramref name="count"/> distinct releases.</summary>
+    private static byte[] Notes(int count) => Notes(Enumerable.Range(0, count).Select(static index => $"1.{index}.0"));
+
+    private static byte[] Notes(IEnumerable<string> versions)
+        => Encoding.UTF8.GetBytes(
+            "{\"schemaVersion\":1,\"version\":\"1.0.0\",\"upgradeNotes\":[" +
+            string.Join(',', versions.Select(static version => "{\"version\":\"" + version + "\",\"text\":\"x\"}")) + "]}");
 
     internal static ReleaseManifest Release(string version, params (string Version, string Text)[] notes)
         => new(version, [.. notes.Select(static note => new UpgradeNote(note.Version, note.Text))]);

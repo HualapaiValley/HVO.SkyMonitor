@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.RegularExpressions;
 
 namespace HVO.SkyMonitor.Deployment;
@@ -17,7 +18,26 @@ internal static class ProductVersion
         RegexOptions.CultureInvariant);
 
     /// <summary>True when <paramref name="version"/> is a SemVer 2.0 version.</summary>
-    public static bool IsValid(string? version) => version is not null && Pattern.IsMatch(version);
+    public static bool IsValid([NotNullWhen(true)] string? version) => version is not null && Pattern.IsMatch(version);
+
+    /// <summary>
+    /// True when <paramref name="version"/> is a SemVer 2.0 version, with <paramref name="precedence"/> the version
+    /// without its build metadata. Two versions are the same release exactly when these are equal, since numbers carry
+    /// no leading zeros and words compare ordinally, so a set of them finds a repeated release with each version matched
+    /// once.
+    /// </summary>
+    public static bool TryGetPrecedence(string? version, [NotNullWhen(true)] out string? precedence)
+    {
+        if (!IsValid(version))
+        {
+            precedence = null;
+            return false;
+        }
+        // Only the build metadata's separator is a '+'.
+        var build = version.IndexOf('+', StringComparison.Ordinal);
+        precedence = build < 0 ? version : version[..build];
+        return true;
+    }
 
     /// <summary>
     /// Below zero when <paramref name="left"/> is an earlier release than <paramref name="right"/>, zero when they are

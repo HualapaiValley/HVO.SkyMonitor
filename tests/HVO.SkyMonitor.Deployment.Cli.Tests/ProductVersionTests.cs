@@ -40,6 +40,26 @@ public sealed class ProductVersionTests
     }
 
     [TestMethod]
+    public void TryGetPrecedence_IsTheSameExactlyForVersionsThatCompareEqual()
+    {
+        string[] versions = [.. Ascending, .. Ascending.Select(static version => version + "+build.7"), "1.0.0+0123456"];
+        foreach (var left in versions)
+        {
+            foreach (var right in versions)
+            {
+                Assert.IsTrue(ProductVersion.TryGetPrecedence(left, out var leftPrecedence));
+                Assert.IsTrue(ProductVersion.TryGetPrecedence(right, out var rightPrecedence));
+                Assert.AreEqual(
+                    ProductVersion.Compare(left, right) == 0,
+                    string.Equals(leftPrecedence, rightPrecedence, StringComparison.Ordinal),
+                    $"{left} against {right}");
+            }
+        }
+        Assert.IsFalse(ProductVersion.TryGetPrecedence("1.2", out var none));
+        Assert.IsNull(none);
+    }
+
+    [TestMethod]
     [DataRow("0.0.0")]
     [DataRow("1.2.3")]
     [DataRow("1.2.3-dev.4")]

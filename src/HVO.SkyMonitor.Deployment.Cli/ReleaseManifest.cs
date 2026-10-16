@@ -24,6 +24,13 @@ internal sealed record ReleaseManifest(string Version, IReadOnlyList<UpgradeNote
     public const int MaximumLength = 1024 * 1024;
 
     /// <summary>
+    /// The most upgrade notes read. A release.json carries the notes of every release that needed any, cumulatively, so
+    /// a thousand outlasts a release a week for nineteen years. The bound keeps what a hostile or corrupt source packs
+    /// into the size limit from costing more to read, order and print than a real release could.
+    /// </summary>
+    public const int MaximumUpgradeNotes = 1000;
+
+    /// <summary>
     /// Reads a release.json. Throws <see cref="InstallerException"/> naming what is wrong when it is not schema 1 of a
     /// release version, or when its upgrade notes are not each a release's version and its text. A note's lines end in
     /// LF, and its text holds no other control character but a tab.
@@ -100,13 +107,19 @@ internal sealed record ReleaseManifest(string Version, IReadOnlyList<UpgradeNote
         {
             throw Invalid("its upgrade notes are not a list");
         }
+        if (notes.GetArrayLength() > MaximumUpgradeNotes)
+        {
+            throw Invalid($"it has more than {MaximumUpgradeNotes} upgrade notes");
+        }
         var read = new List<UpgradeNote>();
+        // The releases read so far, each its version without build metadata, so a repeat is found as its note is read.
+        var releases = new HashSet<string>(StringComparer.Ordinal);
         var index = 0;
         foreach (var note in notes.EnumerateArray())
         {
             index++;
             if (note.ValueKind != JsonValueKind.Object || Text(note, "version") is not { } version ||
-                !ProductVersion.IsValid(version) || Text(note, "text") is not { } text)
+                !ProductVersion.TryGetPrecedence(version, out var precedence) || Text(note, "text") is not { } text)
             {
                 throw Invalid($"upgrade note {index} is not a release's version and its text");
             }
@@ -118,7 +131,7 @@ internal sealed record ReleaseManifest(string Version, IReadOnlyList<UpgradeNote
             {
                 throw Invalid($"upgrade note {index} ({version}) contains control characters");
             }
-            if (read.Any(existing => ProductVersion.Compare(existing.Version, version) == 0))
+            if (!releases.Add(precedence))
             {
                 throw Invalid($"it has more than one upgrade note for {version}");
             }
