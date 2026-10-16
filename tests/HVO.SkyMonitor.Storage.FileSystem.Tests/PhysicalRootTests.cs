@@ -25,6 +25,29 @@ public sealed class PhysicalRootTests
     }
 
     [TestMethod]
+    public void VerifyPath_InspectsMissingDescendantsWithoutOpeningOrCreatingTheRoot()
+    {
+        var missingRoot = Path.Combine(_temp, "not-created");
+        PhysicalRoot.VerifyPath(missingRoot, Path.Combine(missingRoot, "nested", "evidence.bin"), "probe");
+        Assert.IsFalse(Directory.Exists(missingRoot));
+        var fault = Assert.ThrowsExactly<FileSystemFaultException>(() =>
+            PhysicalRoot.VerifyPath(missingRoot, Path.Combine(missingRoot + "-alias", "evidence.bin"), "probe"));
+        Assert.AreEqual(FileSystemFaultKind.Containment, fault.Kind);
+        Assert.AreEqual("probe", fault.Operation);
+        Assert.ThrowsExactly<FileSystemFaultException>(() => PhysicalRoot.Open(missingRoot));
+    }
+
+    [TestMethod]
+    public void Resolve_FileSystemRootContainsItsDescendants()
+    {
+        var root = PhysicalRoot.Open(Path.GetPathRoot(_temp)!);
+        var name = $"hvo-root-probe-{Guid.NewGuid():N}";
+        var path = Path.Combine(root.Path, name);
+        Assert.IsTrue(root.IsInside(path));
+        Assert.AreEqual(path, root.Resolve(name));
+    }
+
+    [TestMethod]
     public void Open_CanonicalizesAndRequiresAnExistingPhysicalDirectory()
     {
         var root = PhysicalRoot.Open(_temp + Path.DirectorySeparatorChar);
