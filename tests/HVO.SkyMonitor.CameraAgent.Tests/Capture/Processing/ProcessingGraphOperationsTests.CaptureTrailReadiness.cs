@@ -81,7 +81,7 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(captureId, evidence.Target.CaptureId);
             File.Move(backup, payload);
             var audit = await evidenceOperations.ReleaseEvidenceAsync(evidence.Target, RawEvidenceReleaseAction.Revalidate,
-                "capture-trail-readiness", "issue-1005-test", "original-evidence-restored", CancellationToken.None)
+                "capture-trail-readiness", "issue-1005-test", "evidence-restored", CancellationToken.None)
                 .ConfigureAwait(false);
             Assert.AreEqual("issue-1005-test", audit.Audit.Actor);
             Assert.IsTrue(await ingress.InitializeForOperationsAsync(CancellationToken.None).ConfigureAwait(false));
