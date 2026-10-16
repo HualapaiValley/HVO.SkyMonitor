@@ -12,7 +12,7 @@ namespace HVO.SkyMonitor.Deployment.ReleaseTool;
 
 internal static partial class Program
 {
-    private const string Repository = "RoySalisbury/HVO.SkyMonitor";
+    private const string Repository = "HualapaiValley/HVO.SkyMonitor";
     // Matches the catalog snapshot resolver's manifest bound; the release tool reads at most one byte past it.
     internal const int MaximumCatalogManifestLength = 65_536;
     private static readonly string[] InstallerTargets = ["linux-x64", "linux-arm64"];

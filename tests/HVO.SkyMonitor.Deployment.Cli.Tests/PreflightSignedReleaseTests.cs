@@ -1219,7 +1219,7 @@ public sealed class PreflightSignedReleaseTests
                 DistributionSchemaVersions.ReleaseManifest,
                 DistributionManifestKind.ImageRelease,
                 new DistributionReleaseIdentity(
-                    "image", "1.2.3", "image-v1.2.3", "RoySalisbury/HVO.SkyMonitor", revision, new string('b', 40),
+                    "image", "1.2.3", "image-v1.2.3", "HualapaiValley/HVO.SkyMonitor", revision, new string('b', 40),
                     DateTimeOffset.Parse("2026-08-24T00:00:00Z", CultureInfo.InvariantCulture)),
                 new DistributionSigningIdentity(DistributionTrustRoot.Algorithm, trustRoot.KeyId),
                 artifacts,
@@ -1227,7 +1227,7 @@ public sealed class PreflightSignedReleaseTests
                 [
                     new DistributionImageIdentity(
                         "CameraAgent",
-                        "ghcr.io/roysalisbury/hvo.skymonitor/cameraagent",
+                        "ghcr.io/hualapaivalley/skymonitor-cameraagent",
                         $"sha256:{new string('d', 64)}",
                         revision,
                         new string('b', 40),
