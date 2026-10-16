@@ -8,6 +8,7 @@ using System.Text.Json.Serialization.Metadata;
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.Imaging;
 
@@ -30,7 +31,8 @@ public sealed class VirtualSkyCameraModule(
     ICameraModule,
     ICameraSetpointController,
     ICameraModuleConfigurationPreflight,
-    ICameraFocusPreviewCapture
+    ICameraFocusPreviewCapture,
+    ICameraSimulatedSkyRegime
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -56,6 +58,15 @@ public sealed class VirtualSkyCameraModule(
     public string DisplayName => "Virtual Sky Camera";
     public string ModuleType => "VirtualSky";
     public CameraModuleCapabilities Capabilities => CameraModuleCapabilities.StillFrames;
+
+    /// <summary>
+    /// A controlled night sky stays dark at every real Sun altitude, so capture control must not apply day or twilight
+    /// defaults to it. The daylight modes brighten with the real Sun and keep its regime.
+    /// </summary>
+    CaptureSolarRegime? ICameraSimulatedSkyRegime.SimulatedSolarRegime =>
+        _config is not null && _options.IlluminationMode == VirtualSkyIlluminationMode.ControlledNight
+            ? CaptureSolarRegime.Night
+            : null;
 
     public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken)
     {
