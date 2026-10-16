@@ -802,8 +802,8 @@ qualification profiles use that to retain full catalog depth.
   carries the file across a state reset.
 - Each save from the page names the file content it read, so a save never overwrites a hand edit made after
   the page was loaded; the page asks for a refresh instead. The file is watched, so the site profile and object
-  limit apply at once, the limit from the next sky map projection and the next capture; most other settings take
-  effect at the next CameraAgent start.
+  limit apply at once, the limit from the next sky map projection and the next capture of a camera module that
+  follows it (an exhaustive module never does); most other settings take effect at the next CameraAgent start.
 - A hand-edited file may contain comments and trailing commas, as the configuration loader allows. A save from
   the page keeps every setting but rewrites the file without its comments.
 - A malformed file stops CameraAgent at startup. A malformed edit made while CameraAgent runs leaves the file's

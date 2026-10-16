@@ -158,10 +158,12 @@ public sealed class StandaloneW6ProfileTests
             "99892B9195FDAF6800CB1B8D914B39A610A989B2775B2BD980E50EE8C15CCD80",
             CaptureScheduleContract.ComputeSha256(configuration.Schedule!));
         Assert.AreEqual(
-            "D59FA049B7A525571C3DB244C4BED80F7D6D4F4AD9AB15839F1F25A1962044BD",
+            "C27BB89E8678A021793F626E88158807F7C1C79C6000A00070043D863D31F4FD",
             LocalCaptureProfileContract.ComputeSha256(
                 LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!)));
         Assert.AreEqual(32768, configuration.Module.Options!.Value.GetProperty("maximumResults").GetInt32());
+        // The mono8 W6 control keeps full catalog depth instead of the operator's scene object limit.
+        Assert.AreEqual("Exhaustive", configuration.Module.Options.Value.GetProperty("stellarCandidateSelection").GetString());
         Assert.AreEqual(
             "EEED95D733FB1DA82DAB7D0AEBE692BCD6C95703EC4EDADD98C3453E65BBB38B",
             HistoricalCatalogCapProfileSha256(configuration));

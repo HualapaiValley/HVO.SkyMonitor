@@ -558,7 +558,17 @@ the catalog query. A profile that needs full catalog depth sets
 `"stellarCandidateSelection": "Exhaustive"`: it ignores the operator limit,
 uses the 32,768-candidate `maximumResults` safety bound instead of silently
 retaining the brightest 300 or 2,000, and exhaustion explicitly refuses the
-exposure. Transient star masks always use exhaustive selection.
+exposure. Transient star masks always use exhaustive selection. Every bundled
+qualification, comparison and measurement profile opts out this way, so its
+depth never depends on a host setting: the W1/W2 canonical workloads
+(`virtual-asi174.full.json`, `virtual-asi178mc.full.json`), the other
+`virtual-*.full.json` characterization profiles, the W6 controls
+(`cameraagent.standalone-w6.json`, `cameraagent.standalone-w6-mono8.json`),
+the split-host `*.full.json` modules, `cameraagent.asi178mc-comparison.json`
+and the `virtual-asi174-mono8-roi-bin4.json` readout fixture. The
+operator-facing `cameraagent.sample.json` and
+`cameraagent.standalone-production-smoke.json` follow the operator limit, as an
+installed camera does.
 
 `stellar-exposure-iau1976-bounded-midpoint-v1` projects the complete bounded
 selection over the exact celestial interval, including off-frame centers whose
