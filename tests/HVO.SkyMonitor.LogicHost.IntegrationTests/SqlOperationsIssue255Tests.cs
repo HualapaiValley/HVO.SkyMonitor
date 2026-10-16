@@ -31,19 +31,17 @@ public sealed class SqlOperationsIssue255Tests
         Justification = "The MSTest boundary must discard all raw setup, SQL, assertion, and cleanup exception details.")]
     public async Task OperatorToolkit_ProducesSanitizedEvidenceAndExactCleanup()
     {
-        var stage = new SafeStage("container-start");
-        try
-        {
-            await RunOperatorToolkitAsync(stage).ConfigureAwait(false);
-        }
-        catch (Exception exception)
-        {
-            var errorNumber = exception is SanitizedScriptException sanitized ? sanitized.SqlErrorNumber : 0;
-            throw new AssertFailedException($"Issue 255 sanitized stage '{stage.Value}' failed with bounded error {errorNumber}.");
-        }
+        var diagnostics = new SqlToolkitDiagnostics();
+        var stage = new SafeStage(diagnostics);
+        await diagnostics.AttemptAsync(ToolkitStage.ContainerStart,
+            () => RunOperatorToolkitAsync(stage, diagnostics)).ConfigureAwait(false);
+        diagnostics.ThrowIfFailed();
+        Console.WriteLine(diagnostics.Serialize());
     }
 
-    private static async Task RunOperatorToolkitAsync(SafeStage stage)
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Preserve body and cleanup failures as separate sanitized facts before disposal.")]
+    private static async Task RunOperatorToolkitAsync(SafeStage stage, SqlToolkitDiagnostics diagnostics)
     {
         var startedAt = DateTimeOffset.UtcNow;
         var runId = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
@@ -65,16 +63,28 @@ public sealed class SqlOperationsIssue255Tests
         var originalBlockedThreshold = 0;
         var originalShowAdvanced = 0;
 
-        await using var container = new MsSqlBuilder(IntegrationTestFixture.SqlServerImage)
+        var bodyResources = new List<(ToolkitStage Stage, IAsyncDisposable Resource)>();
+        var container = new MsSqlBuilder(IntegrationTestFixture.SqlServerImage)
             .WithPassword(Password)
             .WithEnvironment("ISSUE255_SQLCMD_USER", instanceLogin)
             .WithEnvironment("HVO_SQL_XE_ENABLE_TEST_FAULTS", "1")
             .Build();
-        await container.StartAsync().ConfigureAwait(false);
-        var adminConnectionString = container.GetConnectionString();
+        await using var containerLifetime = diagnostics.ObserveDisposal(ToolkitStage.ContainerDisposal, container);
+        string adminConnectionString;
         try
         {
-            stage.Value = "isolated-setup";
+            await container.StartAsync().ConfigureAwait(false);
+            adminConnectionString = container.GetConnectionString();
+        }
+        catch (Exception exception)
+        {
+            diagnostics.Record(exception);
+            return;
+        }
+        diagnostics.Stage = ToolkitStage.Body;
+        try
+        {
+            stage.Value = ToolkitBodyStep.IsolatedSetup;
             await using (var admin = await OpenAsync(adminConnectionString, "master").ConfigureAwait(false))
             {
                 originalBlockedThreshold = await ScalarAsync<int>(admin,
@@ -143,7 +153,7 @@ public sealed class SqlOperationsIssue255Tests
             var instanceConnectionString = CreatePrincipalConnectionString(adminConnectionString, instanceLogin);
             var databaseConnectionString = CreatePrincipalConnectionString(adminConnectionString, databaseLogin);
             var recoveryConnectionString = CreatePrincipalConnectionString(adminConnectionString, recoveryLogin);
-            stage.Value = "real-sqlcmd-adversarial";
+            stage.Value = ToolkitBodyStep.RealSqlcmdAdversarial;
             await AssertRealSqlCmdEscapingAsync(container, adminConnectionString, runId).ConfigureAwait(false);
             await using (var serverOperator = await OpenAsync(instanceConnectionString, "master").ConfigureAwait(false))
             {
@@ -158,7 +168,8 @@ public sealed class SqlOperationsIssue255Tests
                 await RecordPermissionAsync(databaseServer, permissionEvidence, "VIEW SERVER PERFORMANCE STATE", false).ConfigureAwait(false);
                 await RecordPermissionAsync(databaseServer, permissionEvidence, "ALTER ANY EVENT SESSION", false).ConfigureAwait(false);
             }
-            await using var databaseOperator = await OpenAsync(databaseConnectionString, databaseName).ConfigureAwait(false);
+            var databaseOperator = await OpenAsync(databaseConnectionString, databaseName).ConfigureAwait(false);
+            bodyResources.Add((ToolkitStage.DatabaseOperatorDisposal, databaseOperator));
             await RecordPermissionAsync(databaseOperator, permissionEvidence, "ALTER", false, "DATABASE").ConfigureAwait(false);
             await RecordPermissionAsync(databaseOperator, permissionEvidence, "VIEW DATABASE PERFORMANCE STATE", true, "DATABASE").ConfigureAwait(false);
             await RecordPermissionAsync(databaseOperator, permissionEvidence, "VIEW PERFORMANCE DEFINITION", true, "DATABASE").ConfigureAwait(false);
@@ -177,7 +188,7 @@ public sealed class SqlOperationsIssue255Tests
                 await RecordPermissionAsync(applicationDatabase, permissionEvidence, "ALTER", false, "DATABASE").ConfigureAwait(false);
             }
 
-            stage.Value = "query-store";
+            stage.Value = ToolkitBodyStep.QueryStore;
             var baselineResult = await ExecuteScriptAsync(databaseOperator, "query-store-capture.sql",
                 new Dictionary<string, string> { ["DatabaseName"] = databaseName }).ConfigureAwait(false);
             var baseline = RequireSingleRow(baselineResult, 0,
@@ -286,22 +297,23 @@ public sealed class SqlOperationsIssue255Tests
             RequireDecimal(queryMetrics, "weighted_logical_reads").Should().BePositive();
             AddOutput(allSanitizedOutput, inspectResult);
 
-            stage.Value = "extended-events";
+            stage.Value = ToolkitBodyStep.ExtendedEvents;
             var createEventRoot = await container.ExecAsync([
                 "install", "-d", "-m", "0750", "-o", "mssql", "-g", "mssql", "--", EventRootDirectory
             ]).ConfigureAwait(false);
             createEventRoot.ExitCode.Should().Be(0);
             await InstallXeWrapperAsync(container).ConfigureAwait(false);
-            stage.Value = "xe-wrapper-traversal-execution";
+            stage.Value = ToolkitBodyStep.XeWrapperTraversalExecution;
             var traversalAccepted = await RunXeWrapperPreflightAsync(container, "../not-a-run").ConfigureAwait(false);
-            stage.Value = "xe-wrapper-traversal-result";
+            stage.Value = ToolkitBodyStep.XeWrapperTraversalResult;
             traversalAccepted.Should().BeFalse();
-            stage.Value = "xe-invalid-instance-wide-selection";
-            await using var serverOperatorForXe = await OpenAsync(instanceConnectionString, "master").ConfigureAwait(false);
+            stage.Value = ToolkitBodyStep.XeInvalidInstanceWideSelection;
+            var serverOperatorForXe = await OpenAsync(instanceConnectionString, "master").ConfigureAwait(false);
+            bodyResources.Add((ToolkitStage.EventOperatorDisposal, serverOperatorForXe));
             foreach (var fault in new[] { "post-sql-parse", "postcheck-ownership" })
             {
                 var faultRun = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
-                stage.Value = $"xe-wrapper-production-{fault}";
+                stage.Value = fault == "post-sql-parse" ? ToolkitBodyStep.XeWrapperProductionPostSqlParse : ToolkitBodyStep.XeWrapperProductionPostcheckOwnership;
                 await SetServerPermissionAsync(adminConnectionString, instanceLogin, "ALTER ANY EVENT SESSION", grant: true).ConfigureAwait(false);
                 XeWrapperResult faultResult;
                 try
@@ -338,7 +350,7 @@ public sealed class SqlOperationsIssue255Tests
                 $"SELECT COUNT(*) FROM sys.server_event_sessions WHERE [name]=N'HvoSqlOps_{invalidXeRun}';").ConfigureAwait(false)).Should().Be(0);
 
             var invalidXePathRun = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
-            stage.Value = "xe-invalid-path";
+            stage.Value = ToolkitBodyStep.XeInvalidPath;
             var invalidXeDirectoryPath = $"/var/tmp/../hvo-xe-{invalidXePathRun}";
             var invalidXePath = $"{invalidXeDirectoryPath}/events";
             var invalidPathXe = await CaptureSanitizedScriptFailureAsync(() => ExecuteScriptAsync(
@@ -350,14 +362,14 @@ public sealed class SqlOperationsIssue255Tests
                 $"SELECT COUNT(*) FROM sys.server_event_sessions WHERE [name]=N'HvoSqlOps_{invalidXePathRun}';").ConfigureAwait(false)).Should().Be(0);
 
             var noncanonicalRun = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
-            stage.Value = "xe-noncanonical-path";
+            stage.Value = ToolkitBodyStep.XeNoncanonicalPath;
             var noncanonicalRoot = "/var/opt//mssql/data";
             var noncanonicalDirectory = $"{noncanonicalRoot}/hvo-xe-{noncanonicalRun}";
             _ = await CaptureSanitizedScriptFailureAsync(() => ExecuteScriptAsync(serverOperatorForXe, "xe-create.sql",
                 XeVariables(databaseName, noncanonicalRun, noncanonicalDirectory, $"{noncanonicalDirectory}/events", "1"))).ConfigureAwait(false);
 
             var failedStartRun = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
-            stage.Value = "xe-failed-start-cleanup";
+            stage.Value = ToolkitBodyStep.XeFailedStartCleanup;
             var missingDirectory = $"/root/hvo-xe-{failedStartRun}";
             var failedStartPath = $"{missingDirectory}/events";
             await SetServerPermissionAsync(adminConnectionString, instanceLogin, "ALTER ANY EVENT SESSION", grant: true).ConfigureAwait(false);
@@ -379,7 +391,7 @@ public sealed class SqlOperationsIssue255Tests
                 $"SELECT COUNT(*) FROM sys.server_event_sessions WHERE [name]=N'HvoSqlOps_{failedStartRun}';").ConfigureAwait(false)).Should().Be(0);
 
             var replacedTargetRun = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
-            stage.Value = "xe-wrapper-replaced-target-preflight";
+            stage.Value = ToolkitBodyStep.XeWrapperReplacedTargetPreflight;
             var replacedTargetDirectory = $"{EventRootDirectory}/hvo-xe-{replacedTargetRun}";
             var replacedTargetPath = $"{replacedTargetDirectory}/events";
             (await RunXeWrapperPreflightAsync(container, replacedTargetRun, stage).ConfigureAwait(false)).Should().BeTrue();
@@ -427,14 +439,14 @@ public sealed class SqlOperationsIssue255Tests
             replacedFiles.ExitCode.Should().Be(0);
 
             var reusedPrefixRun = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
-            stage.Value = "xe-wrapper-reused-run";
+            stage.Value = ToolkitBodyStep.XeWrapperReusedRun;
             (await RunXeWrapperPreflightAsync(container, reusedPrefixRun).ConfigureAwait(false)).Should().BeTrue();
             (await RunXeWrapperPreflightAsync(container, reusedPrefixRun).ConfigureAwait(false)).Should().BeFalse();
             var reusedPrefixDirectory = $"{EventRootDirectory}/hvo-xe-{reusedPrefixRun}";
             var removeReusedPrefix = await container.ExecAsync(["rmdir", "--", reusedPrefixDirectory]).ConfigureAwait(false);
             removeReusedPrefix.ExitCode.Should().Be(0);
 
-            stage.Value = "xe-wrapper-main-production";
+            stage.Value = ToolkitBodyStep.XeWrapperMainProduction;
             await SetServerPermissionAsync(adminConnectionString, instanceLogin, "ALTER ANY EVENT SESSION", grant: true).ConfigureAwait(false);
             XeWrapperResult mainWrapperResult;
             try
@@ -493,7 +505,7 @@ public sealed class SqlOperationsIssue255Tests
                 RequireInt64(row, "event_count") > 0).Should().BeTrue();
             AddOutput(allSanitizedOutput, xeReadResult);
 
-            stage.Value = "capacity";
+            stage.Value = ToolkitBodyStep.Capacity;
             await SetServerPermissionAsync(adminConnectionString, instanceLogin, "ALTER TRACE", grant: true).ConfigureAwait(false);
             ScriptResult capacityResult;
             try
@@ -510,17 +522,18 @@ public sealed class SqlOperationsIssue255Tests
             ValidateCapacity(capacityResult);
             AddOutput(allSanitizedOutput, capacityResult);
 
-            stage.Value = "maintenance";
-            await using var maintenanceOperator = await OpenAsync(instanceConnectionString, databaseName).ConfigureAwait(false);
+            stage.Value = ToolkitBodyStep.Maintenance;
+            var maintenanceOperator = await OpenAsync(instanceConnectionString, databaseName).ConfigureAwait(false);
+            bodyResources.Add((ToolkitStage.MaintenanceOperatorDisposal, maintenanceOperator));
             await RecordPermissionAsync(maintenanceOperator, permissionEvidence, "VIEW PERFORMANCE DEFINITION", true, "DATABASE").ConfigureAwait(false);
             await RecordPermissionAsync(maintenanceOperator, permissionEvidence, "VIEW SECURITY DEFINITION", false, "DATABASE").ConfigureAwait(false);
             var maintenanceResult = await ExecuteScriptAsync(maintenanceOperator, "maintenance-observe.sql",
                 new Dictionary<string, string> { ["DatabaseName"] = databaseName }).ConfigureAwait(false);
-            stage.Value = "maintenance-schema-content";
+            stage.Value = ToolkitBodyStep.MaintenanceSchemaContent;
             ValidateMaintenance(maintenanceResult, stage);
             AddOutput(allSanitizedOutput, maintenanceResult);
 
-            stage.Value = "backup-restore";
+            stage.Value = ToolkitBodyStep.BackupRestore;
             await using (var recovery = await OpenAsync(recoveryConnectionString, "master").ConfigureAwait(false))
             {
                 var missingRetentionRun = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
@@ -678,7 +691,8 @@ public sealed class SqlOperationsIssue255Tests
                 RequireText(offRollback, textOption).Should().Be(RequireText(offBaseline, textOption));
             (await QueryStoreOwnerCountAsync(databaseOperator).ConfigureAwait(false)).Should().Be(0);
 
-            await using var customAdmin = await OpenAsync(adminConnectionString, databaseName).ConfigureAwait(false);
+            var customAdmin = await OpenAsync(adminConnectionString, databaseName).ConfigureAwait(false);
+            bodyResources.Add((ToolkitStage.CustomAdminDisposal, customAdmin));
             await NonQueryAsync(customAdmin, """
                 ALTER DATABASE CURRENT SET QUERY_STORE = ON
                 (OPERATION_MODE=READ_WRITE, QUERY_CAPTURE_MODE=CUSTOM,
@@ -729,6 +743,7 @@ public sealed class SqlOperationsIssue255Tests
 
             var evidence = new
             {
+                Outcome = "body-complete",
                 Engine = "SQL Server 2022",
                 Image = IntegrationTestFixture.SqlServerImage,
                 Topology = "one dedicated isolated SQL Server container",
@@ -742,10 +757,17 @@ public sealed class SqlOperationsIssue255Tests
             var evidenceJson = JsonSerializer.Serialize(evidence);
             AssertForbiddenValuesAbsent([evidenceJson], runId, databaseName, instanceLogin, databaseLogin, recoveryLogin, runtimeLogin, migrationLogin, eventFilePath, backupFilePath, Password);
             Console.WriteLine(evidenceJson);
+            diagnostics.CompleteBody();
+        }
+        catch (Exception exception)
+        {
+            diagnostics.Record(exception);
         }
         finally
         {
-            await RestoreAndCleanupAsync(adminConnectionString, container, databaseName, instanceLogin, databaseLogin, recoveryLogin, runtimeLogin, migrationLogin,
+            foreach (var resource in bodyResources.AsEnumerable().Reverse())
+                await diagnostics.AttemptAsync(resource.Stage, () => resource.Resource.DisposeAsync().AsTask()).ConfigureAwait(false);
+            await RestoreAndCleanupAsync(diagnostics, adminConnectionString, container, databaseName, instanceLogin, databaseLogin, recoveryLogin, runtimeLogin, migrationLogin,
                 sessionName, eventFilePath, backupFilePath, originalBlockedThreshold, originalShowAdvanced).ConfigureAwait(false);
         }
     }
@@ -937,22 +959,22 @@ public sealed class SqlOperationsIssue255Tests
         if (result.ExitCode == 0) result.Stdout.Trim().Should().Be("xe-preflight-created");
         else if (stage is not null)
         {
-            stage.Value += result.Stderr switch
+            stage.PreflightReason = result.Stderr switch
             {
-                var value when value.Contains("canonical", StringComparison.Ordinal) => "-canonical-root",
-                var value when value.Contains("owner", StringComparison.Ordinal) => "-root-owner",
-                var value when value.Contains("writable", StringComparison.Ordinal) => "-root-mode",
-                var value when value.Contains("traverse", StringComparison.Ordinal) => "-service-access",
-                var value when value.Contains("lock", StringComparison.Ordinal) => "-lock",
-                var value when value.Contains("already exists", StringComparison.Ordinal) => "-existing-run",
-                var value when value.Contains("post-creation", StringComparison.Ordinal) => "-created-directory",
-                var value when value.Contains("prefix", StringComparison.Ordinal) => "-prefix",
-                var value when value.Contains("root or", StringComparison.Ordinal) => "-wrapper-identity",
-                var value when value.Contains("Usage", StringComparison.Ordinal) => "-usage",
-                var value when value.Contains("command not found", StringComparison.Ordinal) => "-missing-command",
-                var value when value.Contains("Permission denied", StringComparison.Ordinal) => "-permission",
-                var value when value.Contains("invalid", StringComparison.OrdinalIgnoreCase) => "-invalid-command-input",
-                _ => "-unclassified"
+                var value when value.Contains("canonical", StringComparison.Ordinal) => ToolkitPreflightReason.CanonicalRoot,
+                var value when value.Contains("owner", StringComparison.Ordinal) => ToolkitPreflightReason.RootOwner,
+                var value when value.Contains("writable", StringComparison.Ordinal) => ToolkitPreflightReason.RootMode,
+                var value when value.Contains("traverse", StringComparison.Ordinal) => ToolkitPreflightReason.ServiceAccess,
+                var value when value.Contains("lock", StringComparison.Ordinal) => ToolkitPreflightReason.Lock,
+                var value when value.Contains("already exists", StringComparison.Ordinal) => ToolkitPreflightReason.ExistingRun,
+                var value when value.Contains("post-creation", StringComparison.Ordinal) => ToolkitPreflightReason.CreatedDirectory,
+                var value when value.Contains("prefix", StringComparison.Ordinal) => ToolkitPreflightReason.Prefix,
+                var value when value.Contains("root or", StringComparison.Ordinal) => ToolkitPreflightReason.WrapperIdentity,
+                var value when value.Contains("Usage", StringComparison.Ordinal) => ToolkitPreflightReason.Usage,
+                var value when value.Contains("command not found", StringComparison.Ordinal) => ToolkitPreflightReason.MissingCommand,
+                var value when value.Contains("Permission denied", StringComparison.Ordinal) => ToolkitPreflightReason.Permission,
+                var value when value.Contains("invalid", StringComparison.OrdinalIgnoreCase) => ToolkitPreflightReason.InvalidCommandInput,
+                _ => ToolkitPreflightReason.Unclassified
             };
         }
         return result.ExitCode == 0;
@@ -1198,7 +1220,7 @@ public sealed class SqlOperationsIssue255Tests
         }
         catch (SqlException exception)
         {
-            throw new SanitizedScriptException(fileName, exception.Number);
+            throw new SanitizedScriptException(exception.Number);
         }
     }
 
@@ -1291,17 +1313,17 @@ public sealed class SqlOperationsIssue255Tests
 
     private static void ValidateMaintenance(ScriptResult result, SafeStage stage)
     {
-        stage.Value = "maintenance-result-count";
+        stage.Value = ToolkitBodyStep.MaintenanceResultCount;
         result.ResultSets.Should().HaveCount(2);
-        stage.Value = "maintenance-statistics-schema";
+        stage.Value = ToolkitBodyStep.MaintenanceStatisticsSchema;
         var statistics = RequireSingleRow(result, 0, "area", "statistics_count", "observed_rows", "modifications_since_update", "oldest_last_update_server_local", "newest_last_update_server_local");
-        stage.Value = "maintenance-statistics-content";
+        stage.Value = ToolkitBodyStep.MaintenanceStatisticsContent;
         RequireInt64(statistics, "statistics_count").Should().BePositive();
-        stage.Value = "maintenance-index-schema";
+        stage.Value = ToolkitBodyStep.MaintenanceIndexSchema;
         var indexes = RequireSingleRow(result, 1, "area", "partition_count", "page_count", "average_fragmentation_percent", "user_seeks", "user_scans", "user_lookups", "user_updates");
-        stage.Value = "maintenance-index-partitions";
+        stage.Value = ToolkitBodyStep.MaintenanceIndexPartitions;
         RequireInt64(indexes, "partition_count").Should().BePositive();
-        stage.Value = "maintenance-index-pages";
+        stage.Value = ToolkitBodyStep.MaintenanceIndexPages;
         RequireInt64(indexes, "page_count").Should().BeGreaterThanOrEqualTo(0);
     }
 
@@ -1375,6 +1397,7 @@ public sealed class SqlOperationsIssue255Tests
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "Cleanup must aggregate independent server-setting, SQL-artifact, and file failures without skipping later restoration steps.")]
     private static async Task RestoreAndCleanupAsync(
+        SqlToolkitDiagnostics diagnostics,
         string connectionString,
         MsSqlContainer container,
         string databaseName,
@@ -1389,72 +1412,99 @@ public sealed class SqlOperationsIssue255Tests
         int blockedThreshold,
         int showAdvanced)
     {
-        var failures = new List<Exception>();
         foreach (var setting in new[]
                  {
-                     (Name: "blocked process threshold (s)", Value: blockedThreshold),
-                     (Name: "show advanced options", Value: showAdvanced)
+                     (Name: "blocked process threshold (s)", Value: blockedThreshold, Restore: ToolkitStage.BlockedThresholdRestoration, Verify: ToolkitStage.BlockedThresholdVerification, Dispose: ToolkitStage.BlockedThresholdConnectionDisposal),
+                     (Name: "show advanced options", Value: showAdvanced, Restore: ToolkitStage.AdvancedOptionsRestoration, Verify: ToolkitStage.AdvancedOptionsVerification, Dispose: ToolkitStage.AdvancedOptionsConnectionDisposal)
                  })
         {
+            await diagnostics.AttemptAsync(setting.Restore, async () =>
+            {
+                var admin = await OpenAsync(connectionString, "master").ConfigureAwait(false);
+                try
+                {
+                    await diagnostics.AttemptAsync(setting.Restore, () => NonQueryAsync(admin,
+                        $"EXEC sys.sp_configure N'{setting.Name}', {setting.Value}; RECONFIGURE;")).ConfigureAwait(false);
+                    await diagnostics.AttemptAsync(setting.Verify, async () =>
+                    {
+                        var restored = await ScalarAsync<int>(admin,
+                            $"SELECT CONVERT(int, [value_in_use]) FROM sys.configurations WHERE [name]=N'{setting.Name}';").ConfigureAwait(false);
+                        if (restored != setting.Value) throw new InvalidOperationException();
+                    }).ConfigureAwait(false);
+                }
+                finally
+                {
+                    await diagnostics.AttemptAsync(setting.Dispose, () => admin.DisposeAsync().AsTask()).ConfigureAwait(false);
+                }
+            }).ConfigureAwait(false);
+        }
+
+        await diagnostics.AttemptAsync(ToolkitStage.SqlCleanupConnection, async () =>
+        {
+            var admin = await OpenAsync(connectionString, "master").ConfigureAwait(false);
             try
             {
-                await using var admin = await OpenAsync(connectionString, "master").ConfigureAwait(false);
-                await NonQueryAsync(admin, $"EXEC sys.sp_configure N'{setting.Name}', {setting.Value}; RECONFIGURE;").ConfigureAwait(false);
-                var restored = await ScalarAsync<int>(admin,
-                    $"SELECT CONVERT(int, [value_in_use]) FROM sys.configurations WHERE [name]=N'{setting.Name}';").ConfigureAwait(false);
-                if (restored != setting.Value)
-                    failures.Add(new InvalidOperationException("One server setting failed restoration verification."));
+                await diagnostics.CleanupSqlArtifactsAsync(cleanupStage => cleanupStage switch
+                {
+                    ToolkitStage.EventSessionCleanup => NonQueryAsync(admin, $"""
+                        IF EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE [name]=N'{sessionName}') ALTER EVENT SESSION [{sessionName}] ON SERVER STATE=STOP;
+                        IF EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE [name]=N'{sessionName}') DROP EVENT SESSION [{sessionName}] ON SERVER;
+                        """),
+                    ToolkitStage.VerificationDatabaseCleanup => NonQueryAsync(admin, $"""
+                        IF DB_ID(N'HvoVerify_{sessionName[10..]}') IS NOT NULL
+                        BEGIN
+                            ALTER DATABASE [HvoVerify_{sessionName[10..]}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                            DROP DATABASE [HvoVerify_{sessionName[10..]}];
+                        END;
+                        """),
+                    ToolkitStage.DatabaseCleanup => NonQueryAsync(admin, $"""
+                        IF DB_ID(N'{databaseName}') IS NOT NULL
+                        BEGIN
+                            ALTER DATABASE [{databaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                            DROP DATABASE [{databaseName}];
+                        END;
+                        """),
+                    ToolkitStage.PrincipalSessionCleanup => NonQueryAsync(admin, $"""
+                        DECLARE @kill nvarchar(max);
+                        SELECT @kill=STRING_AGG(CONVERT(nvarchar(max), N'KILL ' + CONVERT(nvarchar(11), [session_id]) + N';'), N'')
+                        FROM sys.dm_exec_sessions WHERE [login_name] IN (N'{instanceLogin}', N'{databaseLogin}', N'{recoveryLogin}', N'{runtimeLogin}', N'{migrationLogin}') AND [session_id]<>@@SPID;
+                        IF @kill IS NOT NULL EXEC sys.sp_executesql @kill;
+                        """),
+                    ToolkitStage.InstanceLoginCleanup => NonQueryAsync(admin, $"""
+                        IF SUSER_ID(N'{instanceLogin}') IS NOT NULL DROP LOGIN [{instanceLogin}];
+                        """),
+                    ToolkitStage.DatabaseLoginCleanup => NonQueryAsync(admin, $"""
+                        IF SUSER_ID(N'{databaseLogin}') IS NOT NULL DROP LOGIN [{databaseLogin}];
+                        """),
+                    ToolkitStage.RecoveryLoginCleanup => NonQueryAsync(admin, $"""
+                        IF SUSER_ID(N'{recoveryLogin}') IS NOT NULL DROP LOGIN [{recoveryLogin}];
+                        """),
+                    ToolkitStage.RuntimeLoginCleanup => NonQueryAsync(admin, $"""
+                        IF SUSER_ID(N'{runtimeLogin}') IS NOT NULL DROP LOGIN [{runtimeLogin}];
+                        """),
+                    ToolkitStage.MigrationLoginCleanup => NonQueryAsync(admin, $"""
+                        IF SUSER_ID(N'{migrationLogin}') IS NOT NULL DROP LOGIN [{migrationLogin}];
+                        """),
+                    _ => throw new InvalidOperationException()
+                }).ConfigureAwait(false);
             }
-            catch
+            catch (Exception exception)
             {
-                failures.Add(new InvalidOperationException("One server setting restoration operation failed."));
+                diagnostics.Record(exception);
             }
-        }
+            finally
+            {
+                await diagnostics.AttemptAsync(ToolkitStage.SqlCleanupConnectionDisposal, () => admin.DisposeAsync().AsTask()).ConfigureAwait(false);
+            }
+        }).ConfigureAwait(false);
 
-        try
-        {
-            await using var admin = await OpenAsync(connectionString, "master").ConfigureAwait(false);
-            await NonQueryAsync(admin, $"""
-                IF EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE [name]=N'{sessionName}') ALTER EVENT SESSION [{sessionName}] ON SERVER STATE=STOP;
-                IF EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE [name]=N'{sessionName}') DROP EVENT SESSION [{sessionName}] ON SERVER;
-                IF DB_ID(N'HvoVerify_{sessionName[10..]}') IS NOT NULL
-                BEGIN
-                    ALTER DATABASE [HvoVerify_{sessionName[10..]}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-                    DROP DATABASE [HvoVerify_{sessionName[10..]}];
-                END;
-                IF DB_ID(N'{databaseName}') IS NOT NULL
-                BEGIN
-                    ALTER DATABASE [{databaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-                    DROP DATABASE [{databaseName}];
-                END;
-                DECLARE @kill nvarchar(max);
-                SELECT @kill=STRING_AGG(CONVERT(nvarchar(max), N'KILL ' + CONVERT(nvarchar(11), [session_id]) + N';'), N'')
-                FROM sys.dm_exec_sessions WHERE [login_name] IN (N'{instanceLogin}', N'{databaseLogin}', N'{recoveryLogin}', N'{runtimeLogin}', N'{migrationLogin}') AND [session_id]<>@@SPID;
-                IF @kill IS NOT NULL EXEC sys.sp_executesql @kill;
-                IF SUSER_ID(N'{instanceLogin}') IS NOT NULL DROP LOGIN [{instanceLogin}];
-                IF SUSER_ID(N'{databaseLogin}') IS NOT NULL DROP LOGIN [{databaseLogin}];
-                IF SUSER_ID(N'{recoveryLogin}') IS NOT NULL DROP LOGIN [{recoveryLogin}];
-                IF SUSER_ID(N'{runtimeLogin}') IS NOT NULL DROP LOGIN [{runtimeLogin}];
-                IF SUSER_ID(N'{migrationLogin}') IS NOT NULL DROP LOGIN [{migrationLogin}];
-                """).ConfigureAwait(false);
-        }
-        catch
-        {
-            failures.Add(new InvalidOperationException("Run-owned SQL cleanup failed."));
-        }
-
-        try
+        await diagnostics.AttemptAsync(ToolkitStage.ExactFileCleanup, async () =>
         {
             await DeleteExactFilesAsync(container, eventFilePath, backupFilePath).ConfigureAwait(false);
+            diagnostics.Stage = ToolkitStage.ExactFileVerification;
             var files = await container.ExecAsync(["/bin/sh", "-c", $"if ls '{eventFilePath}'*.xel '{backupFilePath}' >/dev/null 2>&1; then exit 1; fi"]).ConfigureAwait(false);
-            if (files.ExitCode != 0) failures.Add(new InvalidOperationException("Run-owned file cleanup verification failed."));
-        }
-        catch
-        {
-            failures.Add(new InvalidOperationException("Run-owned file cleanup failed."));
-        }
-
-        if (failures.Count > 0) throw new AggregateException("Issue 255 cleanup had sanitized failures.", failures);
+            if (files.ExitCode != 0) throw new InvalidOperationException();
+        }).ConfigureAwait(false);
     }
 
     private static string CreatePrincipalConnectionString(string connectionString, string login) =>
@@ -1517,13 +1567,13 @@ public sealed class SqlOperationsIssue255Tests
     private sealed record PermissionEvidence(string Permission, string Scope, string Result);
     private sealed record XeWrapperResult(long ExitCode, string StandardOutput, string StandardError);
     private sealed record SanitizedEvent(string EventKind, string Attribution, string ParticipantSet, DateTimeOffset ObservedAtUtc);
-    private sealed class SafeStage(string value) { internal string Value { get; set; } = value; }
-
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1032:Implement standard exception constructors",
-        Justification = "The test-only exception deliberately accepts only a safe script basename and SQL error number.")]
-    private sealed class SanitizedScriptException(string scriptName, int sqlErrorNumber)
-        : Exception($"SQL operator script '{Path.GetFileName(scriptName)}' failed with SQL error {sqlErrorNumber}.")
+    private sealed class SafeStage(SqlToolkitDiagnostics diagnostics)
     {
-        internal int SqlErrorNumber { get; } = sqlErrorNumber;
+        internal ToolkitBodyStep Value
+        {
+            get => diagnostics.BodyStep;
+            set { diagnostics.BodyStep = value; diagnostics.PreflightReason = ToolkitPreflightReason.None; }
+        }
+        internal ToolkitPreflightReason PreflightReason { set => diagnostics.PreflightReason = value; }
     }
 }
