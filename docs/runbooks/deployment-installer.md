@@ -77,6 +77,9 @@ accepted as a sign-in name, and defaults to the non-routable
 `--password-file <owner-only-path>` for an operator-chosen temporary password of
 8 to 256 characters without control characters, or `--generate-password` for a
 random one written to the owner-only `config/owner-bootstrap/temporary-password`.
+A password file is read as UTF-8 with only its trailing line ending removed, by
+the installer and CameraAgent alike, so leading, trailing, and inner spaces are
+part of the password.
 `--json` selects the versioned structured result. `--dry-run` validates the catalog, Docker daemon, loaded image, generated
 configuration, and rendered Compose model using private temporary storage without
 creating the product root, loading/pulling an image, or starting a container.

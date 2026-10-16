@@ -605,7 +605,15 @@ public class Program
         {
             throw new InvalidOperationException("LocalIdentity:AdminPasswordFile must be a non-empty regular file no larger than 4096 bytes.");
         }
-        var password = File.ReadAllText(passwordFile).TrimEnd('\r', '\n');
+        string password;
+        try
+        {
+            password = OwnerPasswordFileText.Decode(File.ReadAllBytes(passwordFile));
+        }
+        catch (DecoderFallbackException exception)
+        {
+            throw new InvalidOperationException("LocalIdentity:AdminPasswordFile is not valid UTF-8.", exception);
+        }
         if (password.Length == 0)
         {
             throw new InvalidOperationException("LocalIdentity:AdminPasswordFile is empty.");

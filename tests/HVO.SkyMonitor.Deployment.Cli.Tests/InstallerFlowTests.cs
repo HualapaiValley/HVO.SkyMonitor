@@ -370,6 +370,79 @@ public sealed class InstallerFlowTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("  leading and inner\n", "  leading and inner", false)]
+    [DataRow("  leading and inner\r\n", "  leading and inner", false)]
+    [DataRow("trailing and inner  \n", "trailing and inner  ", false)]
+    [DataRow("trailing and inner  \r\n", "trailing and inner  ", false)]
+    [DataRow("skymonitor\r\n", "skymonitor", true)]
+    [DataRow(" skymonitor\n", " skymonitor", false)]
+    public async Task InstallAsync_PasswordFileWithSignificantSpaces_AuthenticatesWithThePasswordCameraAgentSeeds(
+        string content,
+        string seededPassword,
+        bool isDefault)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
+        if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
+        {
+            Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract.");
+        }
+
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-spaced-owner-{Guid.NewGuid():N}");
+        var inputRoot = Path.Combine(Path.GetTempPath(), $"hvo-installer-spaced-input-{Guid.NewGuid():N}");
+        var imageId = $"sha256:{new string('f', 64)}";
+        Directory.CreateDirectory(inputRoot);
+        var supplied = Path.Combine(inputRoot, "operator-password");
+        await File.WriteAllTextAsync(supplied, content);
+        File.SetUnixFileMode(supplied, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var request = new InstallRequest
+        {
+            AllowTestProductRoot = true,
+            InstanceId = Guid.Parse("5d0b8c51-7e0f-4a8e-9a73-1278a0d1e003"),
+            FriendlyName = "Spaced Password Camera",
+            OwnerEmail = "owner@example.test",
+            ProductRoot = root,
+            CatalogBundle = bundle,
+            ImageReference = imageId,
+            PasswordFile = supplied,
+            Port = SelectFreePort()
+        };
+        var runner = new InstallerProcessRunner(imageId, root, request.InstanceId.Value);
+        var owner = new InstallerOwnerClient();
+        try
+        {
+            var result = await CameraAgentInstaller.InstallAsync(
+                request,
+                runner,
+                _ => owner,
+                RuntimeUid,
+                RuntimeGid,
+                CancellationToken.None,
+                portAvailabilityProbe: new RecordingPortProbe().Probe);
+
+            // CameraAgent seeds the owner from the mounted file with this very reader (it is compiled from CameraAgent's
+            // own source), so authentication succeeds exactly when the bootstrap submits this value unchanged.
+            var cameraAgentSeeds = HVO.SkyMonitor.CameraAgent.Configuration.OwnerPasswordFileText.Decode(
+                await File.ReadAllBytesAsync(result.PasswordFile));
+            Assert.AreEqual(seededPassword, cameraAgentSeeds);
+            Assert.HasCount(2, owner.Passwords);
+            Assert.IsTrue(owner.Passwords.All(password => string.Equals(password, cameraAgentSeeds, StringComparison.Ordinal)));
+            Assert.AreEqual("owner-password-change-required", result.OwnerBootstrapState);
+            Assert.AreEqual(isDefault, result.OwnerPasswordIsDefault);
+        }
+        finally
+        {
+            Directory.Delete(inputRoot, recursive: true);
+            if (Directory.Exists(root))
+            {
+                SafeFileSystem.MakeTreeOwnerWritable(root);
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task InstallAsync_GeneratePassword_SeedsARandomTemporaryPasswordAndNamesItsFile()
     {
         var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");

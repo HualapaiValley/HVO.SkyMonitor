@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.Deployment.Contracts;
 using ContractReplayProfile = HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile;
 using HVO.SkyMonitor.Deployment.Distribution;
@@ -343,7 +344,7 @@ internal sealed class CameraAgentInstaller
             if (retainedCompletedResult is null)
             {
                 state = await RecordPhaseAsync(paths, state, InstallationPhase.OwnerBootstrap, cancellationToken).ConfigureAwait(false);
-                password = await ReadOwnerSecretAsync(passwordPath, cancellationToken).ConfigureAwait(false);
+                password = await ReadOwnerPasswordAsync(passwordPath, cancellationToken).ConfigureAwait(false);
                 ownerPasswordIsDefault = string.Equals(password, OwnerCredentialDefaults.Password, StringComparison.Ordinal);
                 ownerState = await ownerClient.ReadStateAsync(request.OwnerEmail, password, cancellationToken)
                     .ConfigureAwait(false);
@@ -875,6 +876,29 @@ internal sealed class CameraAgentInstaller
         => request.PasswordFile is null && !request.GeneratePassword
             ? CredentialFile.GetOrCreateKnownAsync(generatedPasswordPath, OwnerCredentialDefaults.Password, cancellationToken)
             : CredentialFile.GetOrCreateAsync(request.PasswordFile, generatedPasswordPath, cancellationToken);
+
+    /// <summary>
+    /// Reads the owner's temporary password exactly as CameraAgent seeds it from the mounted password file, so the
+    /// bootstrap check authenticates with, and classifies, the password the owner actually has.
+    /// </summary>
+    private static async Task<string> ReadOwnerPasswordAsync(string path, CancellationToken cancellationToken)
+    {
+        await using var stream = SafeFileSystem.OpenOwnerFileRead(path);
+        var content = new byte[stream.Length];
+        try
+        {
+            await stream.ReadExactlyAsync(content, cancellationToken).ConfigureAwait(false);
+            return OwnerPasswordFileText.Decode(content);
+        }
+        catch (System.Text.DecoderFallbackException exception)
+        {
+            throw new InstallerException("The owner temporary password file is not valid UTF-8.", exception);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(content);
+        }
+    }
 
     private static async Task<string> ReadOwnerSecretAsync(string path, CancellationToken cancellationToken)
     {

@@ -65,6 +65,61 @@ public sealed class LocalIdentityPasswordFileTests
     }
 
     [TestMethod]
+    [DataRow("  leading and inner\n", "  leading and inner")]
+    [DataRow("  leading and inner\r\n", "  leading and inner")]
+    [DataRow("trailing and inner  \n", "trailing and inner  ")]
+    [DataRow("trailing and inner  \r\n", "trailing and inner  ")]
+    [DataRow("\uFEFFwith-byte-order-mark\n", "with-byte-order-mark")]
+    [DataRow("no-line-ending", "no-line-ending")]
+    public void ApplyLocalIdentityPasswordFile_KeepsSignificantSpacesAndRemovesOnlyTheLineEnding(
+        string content,
+        string expectedPassword)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        ArgumentNullException.ThrowIfNull(expectedPassword);
+        var path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(path, content);
+            var configuration = new ConfigurationManager();
+            configuration["LocalIdentity:AdminPasswordFile"] = path;
+
+            Program.ApplyLocalIdentityPasswordFile(configuration);
+
+            Assert.AreEqual(expectedPassword, configuration["LocalIdentity:AdminPassword"]);
+            Assert.AreEqual(
+                expectedPassword,
+                HVO.SkyMonitor.CameraAgent.Configuration.OwnerPasswordFileText.Decode(File.ReadAllBytes(path)));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public void ApplyLocalIdentityPasswordFile_RejectsContentThatIsNotUtf8()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(path, [0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0xFF, 0x0A]);
+            var configuration = new ConfigurationManager();
+            configuration["LocalIdentity:AdminPasswordFile"] = path;
+
+            var exception = Assert.ThrowsExactly<InvalidOperationException>(
+                () => Program.ApplyLocalIdentityPasswordFile(configuration));
+
+            Assert.AreEqual("LocalIdentity:AdminPasswordFile is not valid UTF-8.", exception.Message);
+            Assert.IsNull(configuration["LocalIdentity:AdminPassword"]);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
     public void ApplyLocalIdentityPasswordFile_RejectsRelativePath()
     {
         var configuration = new ConfigurationManager();

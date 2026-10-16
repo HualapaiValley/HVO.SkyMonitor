@@ -126,6 +126,11 @@ email as its user name. The first authenticated owner session is redirected to
 password, a policy-valid new password, and matching confirmation. Until that
 transaction commits, ordinary CameraAgent pages and APIs are denied.
 
+CameraAgent reads `AdminPasswordFile` as strict UTF-8, ignores a leading
+byte-order mark, and removes only trailing carriage returns and line feeds;
+spaces are part of the password. The installer validates, authenticates with,
+and reads recovery passwords from files through the same reader.
+
 The installer's documented default temporary password is `skymonitor`, so a new
 installation's first sign-in is `admin` / `skymonitor`. A configured
 `AdminPassword` of exactly `skymonitor` is the only password the host seeds

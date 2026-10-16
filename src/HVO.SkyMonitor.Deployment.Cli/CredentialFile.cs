@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using HVO.SkyMonitor.CameraAgent.Configuration;
 
 namespace HVO.SkyMonitor.Deployment;
 
@@ -47,9 +48,9 @@ internal static class CredentialFile
     }
 
     /// <summary>
-    /// Requires the supplied password, without its trailing line ending, to be UTF-8 text of at least
-    /// <see cref="OwnerCredentialDefaults.MinimumPasswordLength"/> characters without control characters, which is
-    /// what CameraAgent accepts as a temporary owner password.
+    /// Requires the supplied password, read exactly as CameraAgent reads it (<see cref="OwnerPasswordFileText"/>), to
+    /// be at least <see cref="OwnerCredentialDefaults.MinimumPasswordLength"/> characters without control characters.
+    /// Leading, trailing, and inner spaces are part of the password.
     /// </summary>
     private static async Task ValidateSuppliedPasswordAsync(FileStream source, CancellationToken cancellationToken)
     {
@@ -58,9 +59,7 @@ internal static class CredentialFile
         string password;
         try
         {
-            password = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)
-                .GetString(content)
-                .TrimEnd('\r', '\n');
+            password = OwnerPasswordFileText.Decode(content);
         }
         catch (DecoderFallbackException exception)
         {
