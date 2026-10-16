@@ -132,6 +132,49 @@ public sealed class DefaultOwnerSignInAcceptanceTests
         }
     }
 
+    [TestMethod]
+    public async Task InstallerRecoveryClientRecoversWithEightToFifteenCharactersAndClearsTheLockout()
+    {
+        await using var host = await CameraAgentKestrelFixture.CreateAsync(
+            requireOwnerPasswordReplacement: true,
+            ownerPassword: DefaultPassword).ConfigureAwait(false);
+        var (firstSignIn, _, _) = await SignInAsync(host.BaseAddress, DefaultUserName, DefaultPassword).ConfigureAwait(false);
+        using (firstSignIn)
+        using (var accepted = await SubmitReplacementAsync(firstSignIn, ReplacementPassword).ConfigureAwait(false))
+        {
+            Assert.AreEqual("/", accepted.RequestMessage?.RequestUri?.AbsolutePath);
+        }
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            var (failed, _, _) = await SignInAsync(host.BaseAddress, DefaultUserName, "wrong-password").ConfigureAwait(false);
+            failed.Dispose();
+        }
+        await host.RestartWithoutPasswordAuthorityAsync().ConfigureAwait(false);
+
+        // Both lengths were refused by the client and by the recovery endpoint before the policy was relaxed.
+        foreach (var temporaryPassword in new[] { "ijklmnop", "ijklmnopqrstuvw" })
+        {
+            var recovery = new HVO.SkyMonitor.Deployment.OwnerRecoveryClient(host.RecoverySocketPath);
+            var state = await recovery.RecoverAsync(
+                Guid.NewGuid(),
+                CameraAgentKestrelFixture.LifecycleControlToken,
+                temporaryPassword,
+                CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(OwnerBootstrapStates.PasswordChangeRequired, state);
+            // Recovery cleared the lockout the failed sign-ins set, and the recovered owner must replace the password.
+            var (recovered, landing, _) = await SignInAsync(host.BaseAddress, DefaultUserName, temporaryPassword)
+                .ConfigureAwait(false);
+            using (recovered)
+            {
+                Assert.AreEqual(OwnerBootstrapGateMiddleware.ReplacementPath, landing, temporaryPassword);
+                Assert.AreEqual(
+                    OwnerBootstrapStates.PasswordChangeRequired,
+                    await OwnerBootstrapSession.ReadBootstrapStateAsync(recovered, SessionName).ConfigureAwait(false));
+            }
+        }
+    }
+
     private static async Task AssertOperationsDeniedUntilReplacementAsync(HttpClient client)
     {
         using var denied = await client.GetAsync(new Uri(OperationsPath, UriKind.Relative)).ConfigureAwait(false);
