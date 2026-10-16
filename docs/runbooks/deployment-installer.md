@@ -8,6 +8,29 @@ that install and `install --dry-run` evaluate. Catalog releases can be resolved 
 HTTPS mirrors, or signed release indexes; every source uses the same pinned
 signature, length, checksum, archive, and internal catalog validation.
 
+## HVO Install Contract
+
+The shared [HVO product installation and release contract](../hvo-install-contract.md)
+is the install experience this installer is being brought to under epic
+[#1318](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1318). This
+runbook describes the installer as it behaves today.
+
+**Current differences:**
+
+| Contract | Today | Issue |
+| --- | --- | --- |
+| Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | One `hvo-skymonitor` CLI, configured by flags or `--config`; no runtime client or wizard | [#1313](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1313), [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
+| `install.sh` entry point with `--check` and `--from DIR` | No `install.sh`; the self-contained CLI is run directly | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
+| Install and upgrade from a published release, by GHCR digest or offline archive | Nothing is published, so hosts install a locally built image by its loaded image ID | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309) |
+| `--version`, and upgrade notes printed before an upgrade | Neither | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312) |
+| `--plan`, `--answers FILE`, `backup` and `restore FILE`, exit codes 0/1/2/3/130 | `--dry-run` and `--config`; no `backup` or `restore`; a refusal such as failed host prerequisites exits `1` | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
+| An unchanged state contract upgrades without an operator assertion | Contrary to [Signed Image Release](#signed-image-release), `upgrade` requires `--migration-backward-compatible` even when the state contract is unchanged | [#1307](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1307) |
+| Swap upgrade that never copies bulk data, snapshotting only the small databases for a declared migration | Upgrade and rollback take a `tar` backup of the instance's configuration and state | [#1314](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1314); [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044) narrows to the `backup` command |
+| Containers default to at least 2 vCPUs and 4 GiB with a PID limit, set at install and kept across upgrade and rollback | CameraAgent runs with `cpus: "1"`, `mem_limit: 1G`, and `pids_limit: 256`, and its replay runner with `"0.5"`, `2G`, and `64` | [#1319](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1319) |
+| Settings catalogue served by the API | No catalogue | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
+| The `HualapaiValley/HVO.SkyMonitor` repository, and quoted values that match the image labels | Some commands below name `RoySalisbury/HVO.SkyMonitor`, and the [State Compatibility Boundary](#state-compatibility-boundary) example quotes raw-ingress schema 13 where the image declares 15 | [#1308](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1308) |
+| Machine install record `/etc/hvo/skymonitor/install.json` | Records live beneath each instance root (`instance-manifest.json`, `state/deployment/`) | No issue yet |
+
 ## Inputs
 
 Supply an immutable CameraAgent repository digest or an already loaded image ID,
