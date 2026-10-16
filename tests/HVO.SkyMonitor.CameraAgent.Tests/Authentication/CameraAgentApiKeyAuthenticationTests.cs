@@ -470,7 +470,6 @@ public sealed class CameraAgentApiKeyAuthenticationTests
         {
             await _app.StopAsync().ConfigureAwait(false);
             await _app.DisposeAsync().ConfigureAwait(false);
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             Directory.Delete(_root, recursive: true);
         }
     }

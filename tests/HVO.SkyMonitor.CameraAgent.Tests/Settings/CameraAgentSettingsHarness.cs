@@ -165,7 +165,6 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
     public void Dispose()
     {
         for (var index = _owned.Count - 1; index >= 0; index--) _owned[index].Dispose();
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         Directory.Delete(_root, recursive: true);
     }
 
