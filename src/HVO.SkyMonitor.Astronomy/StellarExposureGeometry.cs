@@ -2,14 +2,37 @@ using System.Collections.ObjectModel;
 
 namespace HVO.SkyMonitor.Astronomy;
 
-/// <summary>Explicit candidate and quadrature work bounds; exhaustion refuses the exposure.</summary>
+/// <summary>How the geometry builder applies <see cref="StellarExposureGeometryOptions.MaximumCandidates"/>.</summary>
+public enum StellarCandidateSelection
+{
+    /// <summary>
+    /// Evaluates every queried star and refuses the exposure when the merged magnitude and constellation-endpoint
+    /// query exceeds the bound. Star masks rely on this completeness.
+    /// </summary>
+    Exhaustive,
+
+    /// <summary>
+    /// Walks the merged query in magnitude-then-ID order and keeps the brightest stars whose support crosses the
+    /// frame during the exposure, up to the bound; past it, only constellation endpoint stars are still evaluated.
+    /// The cap is a magnitude rank rather than an instantaneous spatial cut, so a fainter star never displaces a
+    /// brighter one entering the sensor. A merged query within the bound gives exactly the
+    /// <see cref="Exhaustive"/> result.
+    /// </summary>
+    BrightestSupported
+}
+
+/// <summary>
+/// Explicit candidate and quadrature work bounds. Exhausting a work bound refuses the exposure; so does exceeding
+/// the candidate bound, unless <see cref="Selection"/> ranks the candidates instead.
+/// </summary>
 public sealed record StellarExposureGeometryOptions(
     int MaximumCandidates = 32768,
     int MaximumSamplesPerSource = 64,
     double MaximumStepPixels = .15,
     double PsfSupportRadiusPixels = 4,
     int MinimumSamplesPerSource = 1,
-    int MaximumDirectionEvaluations = 16000000)
+    int MaximumDirectionEvaluations = 16000000,
+    StellarCandidateSelection Selection = StellarCandidateSelection.Exhaustive)
 {
     /// <summary>Validates bounded candidate, temporal and optical support parameters.</summary>
     public void Validate()
@@ -18,7 +41,7 @@ public sealed record StellarExposureGeometryOptions(
             !double.IsFinite(MaximumStepPixels) || MaximumStepPixels is <= 0 or > .5 ||
             !double.IsFinite(PsfSupportRadiusPixels) || PsfSupportRadiusPixels is <= 0 or > 64 ||
             MinimumSamplesPerSource < 1 || MinimumSamplesPerSource > MaximumSamplesPerSource ||
-            MaximumDirectionEvaluations is < 1 or > 100000000)
+            MaximumDirectionEvaluations is < 1 or > 100000000 || !Enum.IsDefined(Selection))
             throw new ArgumentOutOfRangeException(nameof(StellarExposureGeometryOptions));
     }
 }
@@ -77,7 +100,7 @@ public sealed class StellarExposureGeometry
     public DateTimeOffset StartUtc { get; }
     /// <summary>Gets the exact celestial interval end.</summary>
     public DateTimeOffset EndUtc { get; }
-    /// <summary>Gets the complete queried candidate count before spatial rejection.</summary>
+    /// <summary>Gets the complete merged query count before spatial rejection or ranked selection.</summary>
     public int CandidateCount { get; }
     /// <summary>Gets uniform temporal slots before horizon-boundary subdivision.</summary>
     public int TemporalSlots { get; }
@@ -95,7 +118,10 @@ public sealed class StellarExposureGeometry
     public IReadOnlyList<StellarExposureObject> Sources { get; }
 }
 
-/// <summary>Projects a complete bounded magnitude query through the swept field, including off-frame PSF centers.</summary>
+/// <summary>
+/// Projects a complete bounded magnitude query through the swept field, including off-frame PSF centers, or only its
+/// brightest swept-supported stars when <see cref="StellarCandidateSelection.BrightestSupported"/> is requested.
+/// </summary>
 public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IConstellationTopology? constellationTopology = null)
 {
     // Slightly above the geometric sidereal angular rate, including the coordinate-model drift.
@@ -143,6 +169,8 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
         var queriedCandidates = await catalog.QueryCandidatesAsync(new(request.CatalogQuery.MaximumMagnitude), cancellationToken)
             .ConfigureAwait(false);
         var candidates = queriedCandidates;
+        var ranked = options.Selection == StellarCandidateSelection.BrightestSupported;
+        HashSet<string>? endpointIds = null;
         if (request.IncludeConstellationEndpointStars && request.ConstellationIds.Count > 0)
         {
             if (constellationTopology is null || catalog is not IHipparcosCatalog hipparcosCatalog)
@@ -152,8 +180,11 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
                 .Distinct(StringComparer.Ordinal).ToArray();
             var endpoints = await hipparcosCatalog.GetByHipparcosIdsAsync(ids, cancellationToken).ConfigureAwait(false);
             candidates = queriedCandidates.Concat(endpoints).DistinctBy(static source => source.Id, StringComparer.Ordinal).ToArray();
+            if (ranked) endpointIds = endpoints.Select(static source => source.Id).ToHashSet(StringComparer.Ordinal);
         }
-        if (candidates.Count > options.MaximumCandidates)
+        // Exhaustive selection refuses rather than silently keeping a subset. Ranked selection instead stops
+        // admitting non-endpoint stars once the bound is reached, in the same magnitude-then-ID walk below.
+        if (!ranked && candidates.Count > options.MaximumCandidates)
             throw new InvalidOperationException("stellar-exposure-candidate-budget-exceeded");
         var projector = ProjectorFactory.Create(expanded);
         var midpointProjector = ProjectorFactory.Create(projection);
@@ -162,6 +193,9 @@ public sealed class StellarExposureGeometryBuilder(ICelestialCatalog catalog, IC
         foreach (var source in candidates.OrderBy(static item => item.Magnitude).ThenBy(static item => item.Id, StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            // Only swept-supported stars fill the rank, so a star outside the field for the whole exposure never
+            // displaces one entering it. Past the rank only constellation endpoint stars are evaluated.
+            if (ranked && sources.Count >= options.MaximumCandidates && endpointIds?.Contains(source.Id) != true) continue;
             var samples = new List<StellarExposureSample>();
             for (var index = 0; index < slots; index++)
             {

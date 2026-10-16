@@ -6,6 +6,7 @@
       "seed": 2025,
       "maximumMagnitude": 6.5,
       "maximumResults": 32768,
+      "stellarCandidateSelection": "Exhaustive",
       "magnitudeZeroElectronsPerSecond": 300.0,
       "bortleClass": 3
     }

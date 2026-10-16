@@ -794,6 +794,14 @@ location page writes the site profile (observatory name, camera name, owner name
 `CameraAgent:Site` and the scene object limit to `CameraAgent:SkyMap:MaximumObjects`; any other setting can be
 added by hand. The page names the file it writes.
 
+The scene object limit (default 200, 1 to 5,000) is how many of the brightest catalog stars both the page's sky
+map and every VirtualSky capture use. A capture keeps the brightest stars whose image crosses the frame during
+the exposure, up to the limit, and always adds visible constellation figure stars and the planets, Sun and Moon
+on top. Lower values make night images faster; raising it, even above the camera module's `maximumResults`,
+deepens the star field at a higher cost per capture. A camera module that sets
+`"stellarCandidateSelection": "Exhaustive"` ignores the limit and keeps its complete `maximumResults` query;
+qualification profiles use that to retain full catalog depth.
+
 - Environment variables, the command line, and the installer's key-per-file settings in `config/secrets` take
   precedence over the file. The page says when one of them sets a value it edits, because saving that value in
   the file would have no effect.
@@ -806,7 +814,8 @@ added by hand. The page names the file it writes.
   carries the file across a state reset.
 - Each save from the page names the file content it read, so a save never overwrites a hand edit made after
   the page was loaded; the page asks for a refresh instead. The file is watched, so the site profile and object
-  limit apply at once; most other settings take effect at the next CameraAgent start.
+  limit apply at once, the limit from the next sky map projection and the next capture of a camera module that
+  follows it (an exhaustive module never does); most other settings take effect at the next CameraAgent start.
 - A hand-edited file may contain comments and trailing commas, as the configuration loader allows. A save from
   the page keeps every setting but rewrites the file without its comments.
 - A malformed file stops CameraAgent at startup. A malformed edit made while CameraAgent runs leaves the file's

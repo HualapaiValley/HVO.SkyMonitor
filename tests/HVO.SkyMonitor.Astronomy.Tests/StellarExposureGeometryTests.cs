@@ -8,6 +8,10 @@ public sealed class StellarExposureGeometryTests
     private static readonly ObserverLocation Observer = new(0, 0, 0);
     private static readonly CatalogMetadata Metadata = new("HYG", "fixture", new("https://astronexus.com/projects/hyg"),
         new string('A', 64), "CC BY-SA 4.0", "2");
+    private static readonly string[] TestConstellationIds = ["TST"];
+    private static readonly string[] RankedEnteringIds = ["entering", "inside"];
+    private static readonly string[] CompleteEnteringIds = ["entering", "inside", "fainter"];
+    private static readonly string[] RankedEndpointIds = ["brightest", "endpoint-a", "endpoint-b"];
 
     [TestMethod]
     public async Task Asi676TwentySecondEquatorialMotionAndShortPointLimit()
@@ -96,6 +100,121 @@ public sealed class StellarExposureGeometryTests
             await builder.BuildAsync(request, MidpointUtc.AddSeconds(-10), TimeSpan.FromSeconds(20),
                 new(MaximumSamplesPerSource: 1)).ConfigureAwait(false)).ConfigureAwait(false);
         StringAssert.Contains(temporalFailure.Message, "temporal-budget-exceeded", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task BrightestSupportedKeepsEnteringStarsInRankWhileExhaustiveStillRefuses()
+    {
+        var projection = Projection(ProjectionModel.Perspective);
+        var unbounded = projection with { EnforceSensorBounds = false };
+        // The brightest star never reaches the frame, so it must not use up the rank. The entering star's centre
+        // stays off the sensor but its PSF support crosses the edge, so it outranks fainter in-frame stars.
+        var catalog = new InMemoryCelestialCatalog([
+            AtPixel(unbounded, new(-200, 64)) with { Id = "outside", Magnitude = 0 },
+            AtPixel(unbounded, new(-1.5, 64)) with { Id = "entering", Magnitude = 1 },
+            AtPixel(projection, new(64, 64)) with { Id = "inside", Magnitude = 2 },
+            AtPixel(projection, new(32, 32)) with { Id = "fainter", Magnitude = 3 }
+        ]);
+        var builder = new StellarExposureGeometryBuilder(catalog);
+        var request = Request(projection);
+        var start = MidpointUtc.AddSeconds(-.05);
+        var exposure = TimeSpan.FromSeconds(.1);
+
+        var ranked = await builder.BuildAsync(request, start, exposure,
+            new(MaximumCandidates: 2, Selection: StellarCandidateSelection.BrightestSupported)).ConfigureAwait(false);
+        var complete = await builder.BuildAsync(request, start, exposure, new(MaximumCandidates: 4)).ConfigureAwait(false);
+
+        Assert.AreEqual(4, ranked.CandidateCount, "The candidate count still reports the complete merged query.");
+        CollectionAssert.AreEqual(RankedEnteringIds, ranked.Sources.Select(static item => item.Source.Id).ToArray());
+        Assert.IsNull(ranked.Sources[0].MidpointReference);
+        CollectionAssert.AreEqual(CompleteEnteringIds,
+            complete.Sources.Select(static item => item.Source.Id).ToArray());
+        Assert.IsLessThan(complete.DirectionEvaluations, ranked.DirectionEvaluations,
+            "Stars past the rank are not evaluated.");
+        var candidateFailure = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await builder.BuildAsync(request, start, exposure, new(MaximumCandidates: 2)).ConfigureAwait(false))
+            .ConfigureAwait(false);
+        StringAssert.Contains(candidateFailure.Message, "candidate-budget-exceeded", StringComparison.Ordinal);
+        var directionFailure = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await builder.BuildAsync(request, start, exposure, new(MaximumCandidates: 2,
+                MaximumDirectionEvaluations: ranked.DirectionEvaluations - 1,
+                Selection: StellarCandidateSelection.BrightestSupported)).ConfigureAwait(false)).ConfigureAwait(false);
+        StringAssert.Contains(directionFailure.Message, "direction-budget-exceeded", StringComparison.Ordinal);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            new StellarExposureGeometryOptions(Selection: (StellarCandidateSelection)2).Validate());
+    }
+
+    [TestMethod]
+    public async Task BrightestSupportedAddsSweptConstellationEndpointStarsBeyondTheRank()
+    {
+        var projection = Projection(ProjectionModel.Perspective);
+        var unbounded = projection with { EnforceSensorBounds = false };
+        var catalog = new InMemoryCelestialCatalog([
+            AtPixel(projection, new(64, 64)) with { Id = "brightest", Magnitude = 1 },
+            AtPixel(projection, new(40, 40)) with { Id = "skipped", Magnitude = 2 },
+            AtPixel(projection, new(90, 90)) with { Id = "endpoint-a", Magnitude = 5, HipparcosId = "1" },
+            AtPixel(projection, new(20, 100)) with { Id = "endpoint-b", Magnitude = 8, HipparcosId = "2" },
+            AtPixel(unbounded, new(-200, 64)) with { Id = "endpoint-outside", Magnitude = 6, HipparcosId = "3" }
+        ]);
+        var topology = new InMemoryConstellationTopology([new("TST", "1", "2"), new("TST", "2", "3")]);
+        var builder = new StellarExposureGeometryBuilder(catalog, topology);
+        // The magnitude query stops at 7, so the fainter endpoint star arrives only through the endpoint merge.
+        var request = new VisibleSceneRequest(MidpointUtc, Observer, projection, new(7, 1), Metadata,
+            constellationIds: TestConstellationIds, includeConstellationEndpointStars: true);
+
+        var ranked = await builder.BuildAsync(request, MidpointUtc.AddSeconds(-.05), TimeSpan.FromSeconds(.1),
+            new(MaximumCandidates: 1, Selection: StellarCandidateSelection.BrightestSupported)).ConfigureAwait(false);
+
+        Assert.AreEqual(5, ranked.CandidateCount);
+        CollectionAssert.AreEqual(RankedEndpointIds,
+            ranked.Sources.Select(static item => item.Source.Id).ToArray());
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await builder.BuildAsync(request,
+            MidpointUtc.AddSeconds(-.05), TimeSpan.FromSeconds(.1), new(MaximumCandidates: 1)).ConfigureAwait(false))
+            .ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow(5)]
+    [DataRow(6)]
+    [DataRow(32768)]
+    public async Task BrightestSupportedWithinTheBoundIsIdenticalToExhaustiveSelection(int maximumCandidates)
+    {
+        var projection = Projection(ProjectionModel.EquidistantFisheye);
+        var belowHorizon = EquatorialPrecession.PrecessToJ2000(CoordinateTransforms.HorizontalToEquatorial(
+            new(-30, 0), MidpointUtc, Observer.LatitudeDegrees, Observer.LongitudeDegrees), MidpointUtc);
+        var catalog = new InMemoryCelestialCatalog([
+            AtPixel(projection, new(64, 64)) with { Id = "centre", Magnitude = 1 },
+            AtPixel(projection, new(20, 64)) with { Id = "west", Magnitude = 2, HipparcosId = "1" },
+            AtPixel(projection, new(64, 110)) with { Id = "south", Magnitude = 2 },
+            new("below", "below", belowHorizon.RightAscensionHours, belowHorizon.DeclinationDegrees, 3),
+            AtPixel(projection, new(100, 30)) with { Id = "endpoint", Magnitude = 9, HipparcosId = "2" }
+        ]);
+        var topology = new InMemoryConstellationTopology([new("TST", "1", "2")]);
+        var builder = new StellarExposureGeometryBuilder(catalog, topology);
+        var request = new VisibleSceneRequest(MidpointUtc, Observer, projection, new(7, 1), Metadata,
+            horizonPolicy: HorizonPolicy.GeometricHorizon, constellationIds: TestConstellationIds, includeConstellationEndpointStars: true);
+        var start = MidpointUtc.AddSeconds(-10);
+        var exposure = TimeSpan.FromSeconds(20);
+
+        var exhaustive = await builder.BuildAsync(request, start, exposure,
+            new(MaximumCandidates: maximumCandidates)).ConfigureAwait(false);
+        var ranked = await builder.BuildAsync(request, start, exposure,
+            new(MaximumCandidates: maximumCandidates, Selection: StellarCandidateSelection.BrightestSupported))
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(5, exhaustive.CandidateCount);
+        Assert.HasCount(4, exhaustive.Sources);
+        Assert.AreEqual(exhaustive.CandidateCount, ranked.CandidateCount);
+        Assert.AreEqual(exhaustive.TemporalSlots, ranked.TemporalSlots);
+        Assert.AreEqual(exhaustive.DirectionEvaluations, ranked.DirectionEvaluations);
+        Assert.AreEqual(exhaustive.MaximumSampleMotionPixels, ranked.MaximumSampleMotionPixels);
+        Assert.HasCount(exhaustive.Sources.Count, ranked.Sources);
+        foreach (var (expected, actual) in exhaustive.Sources.Zip(ranked.Sources))
+        {
+            Assert.AreEqual(expected.Source, actual.Source);
+            Assert.AreEqual(expected.MidpointReference, actual.MidpointReference);
+            CollectionAssert.AreEqual(expected.Samples.ToArray(), actual.Samples.ToArray());
+        }
     }
 
     [TestMethod]
