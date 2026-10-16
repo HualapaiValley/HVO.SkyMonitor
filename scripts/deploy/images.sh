@@ -156,12 +156,15 @@ deploy_images_validate_inspect() {
 deploy_images_build_archive() {
     local component="$1" dockerfile="$2" architecture="$3" repository="$4" tag="$5" revision="$6" tree="$7" created="$8" sdk="$9" artifact_root="${10}" builder="${11}"
     local temporary="$artifact_root/.${component}-${architecture}.${run_id}.tmp.tar" config config_name config_digest archive_digest final
+    local -a build_args=()
+    # The CameraAgent Dockerfile stamps the revision into its published assemblies; LogicHost declares no such argument.
+    [[ "$component" != cameraAgent ]] || build_args=(--build-arg "HVO_SOURCE_REVISION=$revision")
     if [[ -e "$temporary" || -L "$temporary" ]]; then
         [[ -f "$temporary" && ! -L "$temporary" && "$(stat -c '%u:%h' "$temporary" 2>/dev/null)" == "$(id -u):1" ]] ||
           { deploy_fail images "$component-$architecture" unsafe-temporary; return 1; }
         rm -f -- "$temporary" || { deploy_fail images "$component-$architecture" temporary-remove-failed; return 1; }
     fi
-    docker buildx build --builder "$builder" --platform "linux/$architecture" --file "$REPO_ROOT/$dockerfile" \
+    docker buildx build --builder "$builder" --platform "linux/$architecture" --file "$REPO_ROOT/$dockerfile" "${build_args[@]}" \
       --label "org.opencontainers.image.revision=$revision" --label "org.opencontainers.image.created=$created" \
       --label "org.opencontainers.image.ref.name=$repository:$tag" --label "io.hvoskymonitor.component=$component" \
       --label "io.hvoskymonitor.source-tree=$tree" --label "io.hvoskymonitor.dotnet-sdk=$sdk" \
@@ -253,6 +256,9 @@ deploy_images_observe_registry() {
 deploy_images_resolve_registry() {
     local component="$1" dockerfile="$2" platforms_json="$3" repository="$4" tag="$5" revision="$6" tree="$7" created="$8" sdk="$9" builder="${10}"
     local platforms status
+    local -a build_args=()
+    # The CameraAgent Dockerfile stamps the revision into its published assemblies; LogicHost declares no such argument.
+    [[ "$component" != cameraAgent ]] || build_args=(--build-arg "HVO_SOURCE_REVISION=$revision")
     if deploy_images_observe_registry "$component" "$platforms_json" "$repository" "$tag" "$revision" "$tree" "$created" "$sdk" "$builder"; then
         return 0
     else
@@ -260,7 +266,7 @@ deploy_images_resolve_registry() {
     fi
     [[ "$status" == 2 ]] || return "$status"
     platforms="$(jq -r 'map("linux/" + .) | join(",")' <<< "$platforms_json")"
-    if ! docker buildx build --builder "$builder" --platform "$platforms" --file "$REPO_ROOT/$dockerfile" \
+    if ! docker buildx build --builder "$builder" --platform "$platforms" --file "$REPO_ROOT/$dockerfile" "${build_args[@]}" \
       --label "org.opencontainers.image.revision=$revision" --label "org.opencontainers.image.created=$created" \
       --label "org.opencontainers.image.ref.name=$repository:$tag" --label "io.hvoskymonitor.component=$component" \
       --label "io.hvoskymonitor.source-tree=$tree" --label "io.hvoskymonitor.dotnet-sdk=$sdk" \

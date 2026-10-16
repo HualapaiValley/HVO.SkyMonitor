@@ -434,7 +434,9 @@ evidence. `images` rejects dirty source even when preflight declared
 `allow-dirty`. It records the committed Git tree ID and checks clean HEAD and
 that tree before and after every component build and again throughout resume and
 distribution. Builds label the revision, tree ID, commit timestamp, source
-repository/tag, component, and pinned .NET SDK version. The source tag must be
+repository/tag, component, and pinned .NET SDK version. CameraAgent builds also
+pass the revision as `HVO_SOURCE_REVISION`, so the Software page and telemetry
+name the same commit as the label. The source tag must be
 exactly `rev-<source.revision>`; `latest`, embedded tags or digests, URL schemes,
 credentials, and ports in repository values are rejected.
 
