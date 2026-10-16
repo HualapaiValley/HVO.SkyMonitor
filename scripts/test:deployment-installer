@@ -605,6 +605,8 @@ if [[ -z "$baseline_revision" ]]; then
       --instance-id "$instance_id" \
       --product-root "$root/product" \
       --json >"$root/$evidence_name.json"
+    # A container running any image other than the manifest's reports outcome "drifted" and still exits zero.
+    test "$(jq -er '.outcome' "$root/$evidence_name.json")" = status
     test "$(jq -er '.image.imageId' "$root/$evidence_name.json")" = "$expected"
     test "$(jq -er '.running' "$root/$evidence_name.json")" = true
     test "$(jq -er '.healthy' "$root/$evidence_name.json")" = true
