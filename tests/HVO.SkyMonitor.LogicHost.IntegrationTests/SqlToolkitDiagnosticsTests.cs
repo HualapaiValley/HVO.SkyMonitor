@@ -36,7 +36,7 @@ public sealed class SqlToolkitDiagnosticsTests
         fact.GetProperty("Category").GetString().Should().Be("io");
         var failure = Assert.ThrowsExactly<AssertFailedException>(diagnostics.ThrowIfFailed);
         failure.InnerException.Should().BeNull();
-        failure.ToString().Should().NotContain(Secret);
+        AssertNoSecrets(failure.ToString());
         failure.Message.Should().Contain("body-complete");
     }
 
@@ -65,7 +65,8 @@ public sealed class SqlToolkitDiagnosticsTests
             .Should().Equal("aggregate", "invalid-operation", "sql", "sql-script");
         facts.Select(fact => fact.GetProperty("SqlErrorNumber").GetInt32()).Should().Equal(0, 0, 1205, 50001);
         facts.Should().OnlyContain(fact => fact.GetProperty("Stage").GetString() == "MigrationLoginCleanup");
-        diagnostics.Serialize().Should().NotContain(Secret).And.NotContain("SqlException");
+        AssertNoSecrets(diagnostics.Serialize());
+        diagnostics.Serialize().Should().NotContain("SqlException");
     }
 
     [TestMethod]
@@ -122,6 +123,12 @@ public sealed class SqlToolkitDiagnosticsTests
         public ValueTask DisposeAsync() => ValueTask.FromException(new IOException(Secret));
     }
 
+    private static void AssertNoSecrets(string output)
+    {
+        foreach (var canary in new[] { "secret-canary", "private-login", "/private/run-owned/path", "SELECT private_payload", Secret })
+            output.Should().NotContain(canary);
+    }
+
     private static JsonElement[] ReadFacts(SqlToolkitDiagnostics diagnostics)
     {
         using var document = JsonDocument.Parse(diagnostics.Serialize());
@@ -131,8 +138,14 @@ public sealed class SqlToolkitDiagnosticsTests
     private static SqlException CreateSqlException(int number)
     {
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        var constructor = typeof(SqlError).GetConstructors(flags).Single(item => item.GetParameters().Length == 9);
-        var error = constructor.Invoke([number, (byte)0, (byte)16, Secret, Secret, Secret, 1, (uint)0, null]);
+        var constructor = typeof(SqlError).GetConstructors(flags)
+            .Where(item => item.GetParameters().Length > 0 && item.GetParameters()[0].ParameterType == typeof(int))
+            .OrderByDescending(item => item.GetParameters().Length).First();
+        var arguments = constructor.GetParameters().Select((parameter, index) => index == 0
+            ? number
+            : parameter.ParameterType == typeof(string) ? Secret
+            : parameter.ParameterType.IsValueType ? Activator.CreateInstance(parameter.ParameterType) : null).ToArray();
+        var error = constructor.Invoke(arguments);
         var errors = (SqlErrorCollection)Activator.CreateInstance(typeof(SqlErrorCollection), nonPublic: true)!;
         typeof(SqlErrorCollection).GetMethod("Add", flags)!.Invoke(errors, [error]);
         return (SqlException)typeof(SqlException).GetMethod("CreateException", BindingFlags.Static | BindingFlags.NonPublic,

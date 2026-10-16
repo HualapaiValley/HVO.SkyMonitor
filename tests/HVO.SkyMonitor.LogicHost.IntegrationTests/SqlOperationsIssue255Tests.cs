@@ -1574,7 +1574,11 @@ public sealed class SqlOperationsIssue255Tests
     private sealed record SanitizedEvent(string EventKind, string Attribution, string ParticipantSet, DateTimeOffset ObservedAtUtc);
     private sealed class SafeStage(SqlToolkitDiagnostics diagnostics)
     {
-        internal ToolkitBodyStep Value { get => diagnostics.BodyStep; set => diagnostics.BodyStep = value; }
+        internal ToolkitBodyStep Value
+        {
+            get => diagnostics.BodyStep;
+            set { diagnostics.BodyStep = value; diagnostics.PreflightReason = ToolkitPreflightReason.None; }
+        }
         internal ToolkitPreflightReason PreflightReason { set => diagnostics.PreflightReason = value; }
     }
 }
