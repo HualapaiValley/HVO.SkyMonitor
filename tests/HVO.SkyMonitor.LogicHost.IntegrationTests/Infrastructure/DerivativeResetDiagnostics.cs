@@ -49,6 +49,7 @@ internal static class DerivativeResetDiagnostics
         var started = DateTimeOffset.UtcNow;
         DateTimeOffset? ended = null;
         var succeeded = false;
+        int? resetSqlNumber = null;
         try
         {
             try
@@ -85,6 +86,11 @@ internal static class DerivativeResetDiagnostics
                 await reset().ConfigureAwait(false);
                 succeeded = true;
             }
+            catch (SqlException error)
+            {
+                resetSqlNumber = error.Number;
+                throw;
+            }
             finally
             {
                 ended = DateTimeOffset.UtcNow;
@@ -107,7 +113,7 @@ internal static class DerivativeResetDiagnostics
                 await P5TrialDiagnostics.WriteAsync(directory, "derivative-reset.json", new
                 {
                     schemaVersion = 1, selection, processId = Environment.ProcessId,
-                    session, started, ended, succeeded, commandTimeoutSeconds = db.Database.GetCommandTimeout() ?? 30,
+                    session, started, ended, succeeded, resetSqlNumber, commandTimeoutSeconds = db.Database.GetCommandTimeout() ?? 30,
                     targetRowsReadUncommitted = targetRows,
                     maximumSamples = DerivativeResetEvidence.MaximumSamples, samples, plans, errors,
                     ownerAttribution = "Session/process and transaction lifetime observations only; worker ownership requires separate stack correlation."
@@ -186,15 +192,25 @@ internal static class DerivativeResetDiagnostics
         using var command = connection.CreateCommand();
         command.CommandTimeout = 2;
         command.CommandText = """
-            SELECT TOP (4) q.query_hash, q.query_plan_hash, HASHBYTES('SHA2_256', t.text), CONVERT(nvarchar(max), p.query_plan), q.last_execution_time
-            FROM sys.dm_exec_query_stats q
-            CROSS APPLY sys.dm_exec_sql_text(q.sql_handle) t
+            WITH candidates AS (
+                SELECT q.query_hash, q.query_plan_hash, q.plan_handle, q.last_execution_time,
+                    HASHBYTES('SHA2_256', t.text) AS command_hash,
+                    CASE WHEN t.objectid = OBJECT_ID('dbo.TR_CentralDerivativeJobs_GraphIdentityImmutable') THEN 1 ELSE 0 END AS is_trigger,
+                    ROW_NUMBER() OVER (PARTITION BY CASE WHEN t.objectid = OBJECT_ID('dbo.TR_CentralDerivativeJobs_GraphIdentityImmutable')
+                        THEN 1 ELSE 0 END ORDER BY q.last_execution_time DESC) AS candidate_rank
+                FROM sys.dm_exec_query_stats q
+                CROSS APPLY sys.dm_exec_sql_text(q.sql_handle) t
+                WHERE ((CHARINDEX('WHERE [c].[Status] <> N''Completed''', t.text) > 0
+                        AND CHARINDEX('[c].[LeaseExpiresAtUtc] = NULL', t.text) > 0
+                        AND t.text LIKE '%UPDATE%' AND t.text NOT LIKE '%sys.dm_exec_query_stats%')
+                    OR t.objectid = OBJECT_ID('dbo.TR_CentralDerivativeJobs_GraphIdentityImmutable'))
+            )
+            SELECT q.query_hash, q.query_plan_hash, q.command_hash, CONVERT(nvarchar(max), p.query_plan), q.last_execution_time, q.is_trigger
+            FROM candidates q
             CROSS APPLY sys.dm_exec_query_plan(q.plan_handle) p
-            WHERE p.dbid = DB_ID() AND DATALENGTH(CONVERT(nvarchar(max), p.query_plan)) <= 1048576
-              AND ((t.text LIKE '%UPDATE%' AND t.text LIKE '%CentralDerivativeJobs%' AND t.text LIKE '%LeaseExpiresAtUtc%'
-                    AND t.text NOT LIKE '%sys.dm_exec_query_stats%')
-                   OR t.objectid = OBJECT_ID('dbo.TR_CentralDerivativeJobs_GraphIdentityImmutable'))
-            ORDER BY q.last_execution_time DESC
+            WHERE q.candidate_rank <= 2 AND p.dbid = DB_ID()
+                AND DATALENGTH(CONVERT(nvarchar(max), p.query_plan)) <= 1048576
+            ORDER BY q.is_trigger, q.last_execution_time DESC
             """;
         var result = new List<object>();
         await using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
@@ -202,7 +218,7 @@ internal static class DerivativeResetDiagnostics
         {
             result.Add(new
             {
-                kind = "cached-estimated-projection-not-actual", queryHash = Convert.ToHexString((byte[])reader[0]),
+                kind = "cached-estimated-projection-not-actual", source = reader.GetInt32(5) == 1 ? "graph-identity-trigger" : "reset-sql-shape", queryHash = Convert.ToHexString((byte[])reader[0]),
                 planHash = Convert.ToHexString((byte[])reader[1]), commandHash = Convert.ToHexString((byte[])reader[2]),
                 projection = DerivativeResetEvidence.ProjectPlan(reader.GetString(3)).ToString(), lastExecution = reader.GetDateTime(4)
             });
