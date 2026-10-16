@@ -53,11 +53,19 @@ formatting, and package audit only for full-mode changes.
 branch protection already requires. Draft `development/v1` pull requests run it
 too, because Preflight runs on drafts.
 
-- **Scope.** Every non-merge commit reachable from the checked-out commit, which
-  is the pull request's merge commit or the pushed head. It reads each commit's
-  added and changed lines, so a credential that a later commit deleted is still
-  found. Other branches in the clone are not scanned; their own pull requests
-  scan them.
+- **Scope.** Every commit reachable from the checked-out commit, which is the
+  pull request's merge commit or the pushed head. It reads the lines each commit
+  added, so a credential that a later commit deleted is still found.
+  - A merge is read as the difference between Git's own re-merge of its two
+    parents and the committed result (`git log --diff-merges=remerge`, Git 2.36
+    or newer). Whatever a conflict resolution or any other change made in the
+    merge added is scanned.
+  - A type change, such as a symlink replaced by a regular file, is read like
+    any added file. gitleaks does not read deleted or binary files.
+  - A merge of more than two parents is refused, because Git shows no diff for
+    one.
+  - Other branches in the clone are not scanned; their own pull requests scan
+    them.
 - **Pinning.** The script downloads the release archive for Linux x64 or ARM64
   or macOS ARM64 or x64, checks it against the SHA-256 pinned in the script, and
   checks `gitleaks version`. To update gitleaks, change `GITLEAKS_VERSION` and all
@@ -65,13 +73,24 @@ too, because Preflight runs on drafts.
   below. `HVO_GITLEAKS_CACHE_DIR` keeps the archive between runs and is verified
   on every use. `HVO_GITLEAKS_BIN` names a binary for another platform; only its
   version is checked.
-- **Completeness.** Both workflows check out the full history (`fetch-depth: 0`).
-  The script refuses a shallow clone and fails unless gitleaks reports scanning
-  exactly the commits `git log` selects, so a partial or empty scan cannot pass.
-- **Output.** A finding is printed as its rule, path, line, commit, and
-  fingerprint. gitleaks runs with `--redact` and the script never prints the
-  matched text. Exit status 0 means no findings, 1 findings, and 2 that the scan
-  could not run.
+- **Completeness.** Both workflows check out the full history (`fetch-depth: 0`),
+  and the script refuses a shallow clone.
+  - Before the scan, the script lists every reachable commit from the same
+    patches gitleaks reads. It counts the commits that added text, meaning a hunk
+    in a file the commit does not delete; that is when gitleaks counts a commit.
+  - The other commits added no text: empty commits, deletions, pure renames,
+    mode changes, empty or binary files, and merges whose resolution added
+    nothing. The result line reports them separately.
+  - The scan fails if gitleaks reports a different number of commits or logs any
+    error, so a partial, cut-short or empty scan cannot pass.
+- **Output.** The script prints its own counts and, for a finding, the rule,
+  path, line and commit.
+  - gitleaks runs with `--redact`.
+  - Its log is never shown, because it can quote `.gitleaks.toml` or scanned
+    text: a malformed expression makes gitleaks panic and print it. A failure is
+    described in the script's own words.
+  - Exit status 0 means no findings, 1 findings, and 2 that the scan could not
+    run.
 - **Exceptions.** `.gitleaks.toml` is the only place to record one. Each entry
   gives its reason and names its rules, its paths, and the historical commits it
   covers, so it cannot hide a finding in a later commit. Inline `gitleaks:allow`
@@ -79,7 +98,9 @@ too, because Preflight runs on drafts.
   `scripts/test:ci-secret-scan` enforces this shape. History is never rewritten:
   revoke or rotate a real credential, then record its historical commit. An entry
   names commits, so it holds only for merge-commit merges; a squash or rebase
-  merge lands different commits.
+  merge lands different commits. gitleaks matches a file in a merge's conflict
+  resolution as `b/<path>`, so an entry for one must match that form; the scan
+  prints the plain path.
 
 The first full scan, on 2026-10-16 at `43ef6d4a`, reported 28 findings in 1,871
 commits. Five reviewed entries cover them. One holds true positives that are
@@ -96,13 +117,24 @@ Run the scan and its contract test locally the way CI does:
 ./scripts/test:ci-secret-scan
 ```
 
-On home-dev-01 at `43ef6d4a` gitleaks scanned 1,871 commits (95 MB of patches)
-in 3.7 s, 5 s with the archive download, and the contract test's 11 cases took
-3.4 s. The contract test runs the real scan against fixture repositories with a
-credential generated at run time: one a later commit deleted, one carrying an
-inline `gitleaks:allow` comment, one on another branch, a shallow clone, a
-`.gitleaksignore` file, a wrong gitleaks version, and a tampered archive. It
-fails if any output shows that credential.
+On home-dev-01 at `ab21a86e`, the script accounted for all 2,471 reachable
+commits. gitleaks scanned the 1,953 that added text (95 MB of patches), 79 of
+them merge resolutions, and the script took 5.6 s in total with a cached
+archive (6.1 s with the download). The contract test's 25 cases took 9.3 s.
+
+The contract test runs the real scan against fixture repositories with an
+obviously fake credential assembled at run time. It fails if any output shows
+that credential. Its cases cover:
+
+- a credential a later commit deleted, an inline `gitleaks:allow` comment, and
+  another branch;
+- credentials that only a conflict resolution, or a merge to a file neither
+  side changed, added;
+- a symlink replaced by a file holding a credential;
+- seven commit shapes that add no text;
+- refusals: an octopus merge, a malformed `.gitleaks.toml` expression, a scan
+  cut short, git failing under gitleaks, a shallow clone, a `.gitleaksignore`
+  file, a wrong gitleaks version, and a tampered archive.
 
 ## Base-Image Updates
 
