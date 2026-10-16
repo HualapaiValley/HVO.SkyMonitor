@@ -86,7 +86,8 @@ internal sealed class OwnerPasswordRecoveryService(
         if (operationId == Guid.Empty ||
             string.IsNullOrWhiteSpace(challenge) ||
             temporaryPassword is null ||
-            temporaryPassword.Length is < 16 or > 256 ||
+            temporaryPassword.Length < CameraAgentIdentityPolicy.MinimumPasswordLength ||
+            temporaryPassword.Length > CameraAgentIdentityPolicy.MaximumRecoveryPasswordLength ||
             temporaryPassword.Any(static character => character is < '!' or > '~') ||
             !PasswordBootstrapAuthorityWasRemoved())
         {
@@ -146,6 +147,10 @@ internal sealed class OwnerPasswordRecoveryService(
             }
 
             owner.PasswordChangeRequired = true;
+            // Local recovery proves owner authority, so it also clears a sign-in lockout and the failure count that
+            // would otherwise keep the recovered owner out until the lockout expires.
+            owner.LockoutEnd = null;
+            owner.AccessFailedCount = 0;
             var update = await userManager.UpdateAsync(owner).ConfigureAwait(false);
             if (!update.Succeeded)
             {

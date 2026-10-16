@@ -17,6 +17,9 @@ public sealed class InstallerFlowTests
     private static readonly uint RuntimeUid = NativeLinux.getuid();
     private static readonly uint RuntimeGid = NativeLinux.getgid();
 
+    // The bootstrap reads owner state once with password authority and once after it is removed.
+    private static readonly string[] DefaultPasswordReadTwice = ["skymonitor", "skymonitor"];
+
     [TestMethod]
     public void IsAllowedOwnerBootstrapState_AllowsOnlyInstalledStateOrCompletedReplacement()
     {
@@ -74,6 +77,8 @@ public sealed class InstallerFlowTests
                 RuntimeGid,
                 CancellationToken.None,
                 portAvailabilityProbe: probe.Probe);
+            Assert.IsTrue(first.OwnerPasswordIsDefault);
+            CollectionAssert.AreEqual(DefaultPasswordReadTwice, owner.Passwords);
             owner.CurrentInstallationState = "owner-ready";
             var passwordSha256 = await SafeFileSystem.ComputeSha256Async(first.PasswordFile, CancellationToken.None);
             var manifestPath = Path.Combine(first.InstanceRoot, "instance-manifest.json");
@@ -152,6 +157,7 @@ public sealed class InstallerFlowTests
             Assert.AreEqual(legacyInProcessManifestJson, await File.ReadAllTextAsync(manifestPath));
             Assert.AreEqual(legacyInProcessResultJson, await File.ReadAllTextAsync(resultPath));
             Assert.AreEqual(passwordSha256, await SafeFileSystem.ComputeSha256Async(second.PasswordFile, CancellationToken.None));
+            Assert.IsTrue(second.OwnerPasswordIsDefault);
             Assert.IsFalse(File.Exists(Path.Combine(
                 first.InstanceRoot,
                 "config",
@@ -280,9 +286,205 @@ public sealed class InstallerFlowTests
 
             Assert.AreEqual(InstallationOutcome.Installed, resumed.Outcome);
             Assert.AreEqual("owner-password-change-required", resumed.OwnerBootstrapState);
+            // The resume authenticates with the default credential the failed run already published.
+            Assert.IsTrue(resumed.OwnerPasswordIsDefault);
+            Assert.AreEqual("skymonitor\n", await File.ReadAllTextAsync(resumed.PasswordFile));
             Assert.AreEqual(3, runner.ComposeUpCount);
             // Retained state keeps a resume from re-admitting the port, exactly as the production path does.
             Assert.AreEqual(1, probe.Invocations);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                SafeFileSystem.MakeTreeOwnerWritable(root);
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstallAsync_WithoutOwnerEmailOrPasswordOption_SeedsTheDocumentedDefaultSignIn()
+    {
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
+        if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
+        {
+            Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract.");
+        }
+
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-default-owner-{Guid.NewGuid():N}");
+        var imageId = $"sha256:{new string('d', 64)}";
+        var request = new InstallRequest
+        {
+            AllowTestProductRoot = true,
+            InstanceId = Guid.Parse("5d0b8c51-7e0f-4a8e-9a73-1278a0d1e001"),
+            FriendlyName = "Default Owner Camera",
+            ProductRoot = root,
+            CatalogBundle = bundle,
+            ImageReference = imageId,
+            Port = SelectFreePort()
+        };
+        var runner = new InstallerProcessRunner(imageId, root, request.InstanceId.Value);
+        var owner = new InstallerOwnerClient { ExpectedOwnerEmail = "owner@cameraagent.local" };
+        try
+        {
+            var result = await CameraAgentInstaller.InstallAsync(
+                request,
+                runner,
+                _ => owner,
+                RuntimeUid,
+                RuntimeGid,
+                CancellationToken.None,
+                portAvailabilityProbe: new RecordingPortProbe().Probe);
+
+            Assert.AreEqual(InstallationOutcome.Installed, result.Outcome);
+            Assert.AreEqual("owner-password-change-required", result.OwnerBootstrapState);
+            Assert.AreEqual("owner@cameraagent.local", result.OwnerEmail);
+            Assert.IsTrue(result.OwnerPasswordIsDefault);
+            CollectionAssert.AreEqual(DefaultPasswordReadTwice, owner.Passwords);
+            Assert.AreEqual(
+                Path.Combine(result.ConfigRoot, "owner-bootstrap", "temporary-password"),
+                result.PasswordFile);
+            Assert.AreEqual("skymonitor\n", await File.ReadAllTextAsync(result.PasswordFile));
+            Assert.AreEqual(
+                "owner@cameraagent.local",
+                await File.ReadAllTextAsync(Path.Combine(result.ConfigRoot, "secrets", "LocalIdentity__AdminEmail")));
+            Assert.IsFalse(File.Exists(Path.Combine(result.ConfigRoot, "secrets", "LocalIdentity__AdminPasswordFile")));
+            Assert.AreEqual(
+                "Sign in as admin / skymonitor; a password change is required at first sign-in.",
+                Program.OwnerSignInInstruction(result));
+            using var retained = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(
+                result.InstanceRoot, "state", "deployment", "installation-result.json")));
+            Assert.IsTrue(retained.RootElement.GetProperty("ownerPasswordIsDefault").GetBoolean());
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                SafeFileSystem.MakeTreeOwnerWritable(root);
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("  leading and inner\n", "  leading and inner", false)]
+    [DataRow("  leading and inner\r\n", "  leading and inner", false)]
+    [DataRow("trailing and inner  \n", "trailing and inner  ", false)]
+    [DataRow("trailing and inner  \r\n", "trailing and inner  ", false)]
+    [DataRow("skymonitor\r\n", "skymonitor", true)]
+    [DataRow(" skymonitor\n", " skymonitor", false)]
+    public async Task InstallAsync_PasswordFileWithSignificantSpaces_AuthenticatesWithThePasswordCameraAgentSeeds(
+        string content,
+        string seededPassword,
+        bool isDefault)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
+        if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
+        {
+            Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract.");
+        }
+
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-spaced-owner-{Guid.NewGuid():N}");
+        var inputRoot = Path.Combine(Path.GetTempPath(), $"hvo-installer-spaced-input-{Guid.NewGuid():N}");
+        var imageId = $"sha256:{new string('f', 64)}";
+        Directory.CreateDirectory(inputRoot);
+        var supplied = Path.Combine(inputRoot, "operator-password");
+        await File.WriteAllTextAsync(supplied, content);
+        File.SetUnixFileMode(supplied, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var request = new InstallRequest
+        {
+            AllowTestProductRoot = true,
+            InstanceId = Guid.Parse("5d0b8c51-7e0f-4a8e-9a73-1278a0d1e003"),
+            FriendlyName = "Spaced Password Camera",
+            OwnerEmail = "owner@example.test",
+            ProductRoot = root,
+            CatalogBundle = bundle,
+            ImageReference = imageId,
+            PasswordFile = supplied,
+            Port = SelectFreePort()
+        };
+        var runner = new InstallerProcessRunner(imageId, root, request.InstanceId.Value);
+        var owner = new InstallerOwnerClient();
+        try
+        {
+            var result = await CameraAgentInstaller.InstallAsync(
+                request,
+                runner,
+                _ => owner,
+                RuntimeUid,
+                RuntimeGid,
+                CancellationToken.None,
+                portAvailabilityProbe: new RecordingPortProbe().Probe);
+
+            // CameraAgent seeds the owner from the mounted file with this very reader (it is compiled from CameraAgent's
+            // own source), so authentication succeeds exactly when the bootstrap submits this value unchanged.
+            var cameraAgentSeeds = HVO.SkyMonitor.CameraAgent.Configuration.OwnerPasswordFileText.Decode(
+                await File.ReadAllBytesAsync(result.PasswordFile));
+            Assert.AreEqual(seededPassword, cameraAgentSeeds);
+            Assert.HasCount(2, owner.Passwords);
+            Assert.IsTrue(owner.Passwords.All(password => string.Equals(password, cameraAgentSeeds, StringComparison.Ordinal)));
+            Assert.AreEqual("owner-password-change-required", result.OwnerBootstrapState);
+            Assert.AreEqual(isDefault, result.OwnerPasswordIsDefault);
+        }
+        finally
+        {
+            Directory.Delete(inputRoot, recursive: true);
+            if (Directory.Exists(root))
+            {
+                SafeFileSystem.MakeTreeOwnerWritable(root);
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstallAsync_GeneratePassword_SeedsARandomTemporaryPasswordAndNamesItsFile()
+    {
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
+        if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
+        {
+            Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract.");
+        }
+
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-generated-owner-{Guid.NewGuid():N}");
+        var imageId = $"sha256:{new string('e', 64)}";
+        var request = new InstallRequest
+        {
+            AllowTestProductRoot = true,
+            InstanceId = Guid.Parse("5d0b8c51-7e0f-4a8e-9a73-1278a0d1e002"),
+            FriendlyName = "Generated Owner Camera",
+            OwnerEmail = "owner@example.test",
+            ProductRoot = root,
+            CatalogBundle = bundle,
+            ImageReference = imageId,
+            GeneratePassword = true,
+            Port = SelectFreePort()
+        };
+        var runner = new InstallerProcessRunner(imageId, root, request.InstanceId.Value);
+        var owner = new InstallerOwnerClient();
+        try
+        {
+            var result = await CameraAgentInstaller.InstallAsync(
+                request,
+                runner,
+                _ => owner,
+                RuntimeUid,
+                RuntimeGid,
+                CancellationToken.None,
+                portAvailabilityProbe: new RecordingPortProbe().Probe);
+
+            Assert.AreEqual("owner-password-change-required", result.OwnerBootstrapState);
+            Assert.IsFalse(result.OwnerPasswordIsDefault);
+            Assert.HasCount(2, owner.Passwords);
+            Assert.AreEqual(owner.Passwords[0], owner.Passwords[1]);
+            Assert.IsGreaterThanOrEqualTo(32, owner.Passwords[0].Length);
+            Assert.AreNotEqual("skymonitor", owner.Passwords[0]);
+            Assert.AreEqual($"Temporary password file: {result.PasswordFile}", Program.OwnerSignInInstruction(result));
         }
         finally
         {
@@ -664,6 +866,8 @@ public sealed class InstallerFlowTests
     {
         private int stateReadCount;
         public string CurrentInstallationState { get; set; } = "owner-password-change-required";
+        public string ExpectedOwnerEmail { get; init; } = "owner@example.test";
+        public List<string> Passwords { get; } = [];
 
         public Task WaitForHealthAsync(
             ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null)
@@ -675,8 +879,10 @@ public sealed class InstallerFlowTests
         public Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Assert.AreEqual("owner@example.test", ownerEmail);
-            Assert.IsGreaterThanOrEqualTo(16, password.Length);
+            // The installer authenticates by the owner email, which every CameraAgent image resolves.
+            Assert.AreEqual(ExpectedOwnerEmail, ownerEmail);
+            Assert.IsGreaterThanOrEqualTo(8, password.Length);
+            Passwords.Add(password);
             return Task.FromResult(stateReadCount++ == 0
                 ? "owner-temporary-password"
                 : "owner-password-change-required");

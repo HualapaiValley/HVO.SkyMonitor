@@ -1,9 +1,14 @@
 using System.Security.Claims;
 using HVO.SkyMonitor.CameraAgent.Authorization;
+using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.Data;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -134,17 +139,100 @@ public sealed class OwnerBootstrapGateMiddlewareTests
         Assert.AreEqual(StatusCodes.Status401Unauthorized, context.Response.StatusCode);
     }
 
+    [TestMethod]
+    public async Task DefaultSeededOwner_CannotReachOrdinaryPagesOrApisUntilThePasswordIsReplaced()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync().ConfigureAwait(false);
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddDataProtection();
+        services.AddDbContext<ApplicationDbContext>(options =>
+        {
+            options.UseSqlite(connection);
+            options.ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning));
+        });
+        services.AddIdentityCore<ApplicationUser>(options => options.Stores.SchemaVersion = IdentitySchemaVersions.Version3)
+            .AddEntityFrameworkStores<ApplicationDbContext>()
+            .AddCameraAgentPasswordPolicy()
+            .AddDefaultTokenProviders();
+        services.AddSingleton(Options.Create(new LocalIdentityOptions
+        {
+            AdminEmail = "owner@cameraagent.test",
+            AdminPassword = "skymonitor"
+        }));
+        services.AddSingleton<CameraAgentIdentitySeeder>();
+        using var provider = services.BuildServiceProvider();
+        await provider.GetRequiredService<CameraAgentIdentitySeeder>().InitializeAsync(CancellationToken.None)
+            .ConfigureAwait(false);
+        using var scope = provider.CreateScope();
+        var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+        var owner = await CameraAgentIdentityPolicy.FindSignInUserAsync(users, "admin").ConfigureAwait(false);
+        Assert.IsNotNull(owner);
+        Assert.IsTrue(await users.CheckPasswordAsync(owner, "skymonitor").ConfigureAwait(false));
+        var identityOptions = Options.Create(new IdentityOptions());
+
+        foreach (var path in new[] { "/", "/operations", "/Account/Manage/ChangePassword", "/api/v1/operations/summary" })
+        {
+            var nextCalled = false;
+            var middleware = new OwnerBootstrapGateMiddleware(
+                _ =>
+                {
+                    nextCalled = true;
+                    return Task.CompletedTask;
+                },
+                NullLogger<OwnerBootstrapGateMiddleware>.Instance);
+            var context = CreateContext(path, owner.Id, owner.SecurityStamp!);
+
+            await middleware.InvokeAsync(context, users, identityOptions).ConfigureAwait(false);
+
+            Assert.IsFalse(nextCalled, path);
+            if (path.StartsWith("/api", StringComparison.Ordinal))
+            {
+                Assert.AreEqual(StatusCodes.Status403Forbidden, context.Response.StatusCode, path);
+            }
+            else
+            {
+                Assert.AreEqual(StatusCodes.Status302Found, context.Response.StatusCode, path);
+                Assert.AreEqual(OwnerBootstrapGateMiddleware.ReplacementPath, context.Response.Headers.Location.ToString(), path);
+            }
+        }
+
+        var replacement = new OwnerPasswordReplacementService(
+            scope.ServiceProvider.GetRequiredService<ApplicationDbContext>(),
+            users);
+        Assert.IsTrue((await replacement.ReplaceAsync(owner, "skymonitor", "abcdefgh").ConfigureAwait(false)).Succeeded);
+        var readyNextCalled = false;
+        var readyMiddleware = new OwnerBootstrapGateMiddleware(
+            _ =>
+            {
+                readyNextCalled = true;
+                return Task.CompletedTask;
+            },
+            NullLogger<OwnerBootstrapGateMiddleware>.Instance);
+
+        await readyMiddleware.InvokeAsync(
+            CreateContext("/api/v1/operations/summary", owner.Id, owner.SecurityStamp!),
+            users,
+            identityOptions).ConfigureAwait(false);
+
+        Assert.IsTrue(readyNextCalled);
+    }
+
     private static DefaultHttpContext CreateContext(string path, bool includeSecurityStamp = true)
+        => CreateContext(path, "owner", includeSecurityStamp ? SecurityStamp : null);
+
+    private static DefaultHttpContext CreateContext(string path, string ownerId, string? securityStamp)
     {
         var context = new DefaultHttpContext();
         context.Request.Path = path;
         context.Response.Body = new MemoryStream();
-        var claims = new List<Claim> { new(ClaimTypes.NameIdentifier, "owner") };
-        if (includeSecurityStamp)
+        var claims = new List<Claim> { new(ClaimTypes.NameIdentifier, ownerId) };
+        if (securityStamp is not null)
         {
             claims.Add(new Claim(
                 new IdentityOptions().ClaimsIdentity.SecurityStampClaimType,
-                SecurityStamp));
+                securityStamp));
         }
         context.User = new ClaimsPrincipal(new ClaimsIdentity(
             claims,

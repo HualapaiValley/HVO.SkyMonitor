@@ -53,6 +53,102 @@ public sealed class CameraAgentIdentitySeederTests
     }
 
     [TestMethod]
+    public async Task InitializeAsync_SeedsTheDocumentedDefaultOwnerThatMustReplaceItsPassword()
+    {
+        using var fixture = await IdentityFixture.CreateAsync(adminPassword: "skymonitor").ConfigureAwait(false);
+
+        await fixture.InitializeSeederAsync().ConfigureAwait(false);
+        // A restart that still carries the default seeds nothing new and finds no conflict with durable state.
+        await fixture.InitializeSeederAsync().ConfigureAwait(false);
+
+        var owner = await fixture.FindByEmailAsync(ConfiguredEmail).ConfigureAwait(false);
+        Assert.IsNotNull(owner);
+        Assert.AreEqual("admin", owner.UserName);
+        Assert.AreEqual(ConfiguredEmail, owner.Email);
+        Assert.IsTrue(owner.IsSiteOwner);
+        Assert.IsTrue(owner.PasswordChangeRequired);
+        Assert.IsTrue(owner.LockoutEnabled);
+        Assert.AreEqual(1, await fixture.CountOwnersAsync().ConfigureAwait(false));
+        Assert.AreEqual(OwnerBootstrapStates.TemporaryPassword, await fixture.GetBootstrapStateAsync().ConfigureAwait(false));
+        Assert.IsTrue(await fixture.CheckPasswordAsync("skymonitor").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_SeedsTheConfiguredUserName()
+    {
+        using var fixture = await IdentityFixture.CreateAsync(adminUserName: "observatory-owner").ConfigureAwait(false);
+
+        await fixture.InitializeSeederAsync().ConfigureAwait(false);
+
+        var owner = await fixture.FindByEmailAsync(ConfiguredEmail).ConfigureAwait(false);
+        Assert.IsNotNull(owner);
+        Assert.AreEqual("observatory-owner", owner.UserName);
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_KeepsTheEmailUserNameOfAnOwnerSeededBeforeUserNames()
+    {
+        using var fixture = await IdentityFixture.CreateAsync().ConfigureAwait(false);
+        await fixture.CreateUserAsync(
+            ConfiguredEmail,
+            ConfiguredPassword,
+            isSiteOwner: true,
+            passwordChangeRequired: true).ConfigureAwait(false);
+
+        await fixture.InitializeSeederAsync().ConfigureAwait(false);
+
+        var owner = await fixture.FindByEmailAsync(ConfiguredEmail).ConfigureAwait(false);
+        Assert.IsNotNull(owner);
+        Assert.AreEqual(ConfiguredEmail, owner.UserName);
+        Assert.AreEqual(1, await fixture.CountOwnersAsync().ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_RejectsAUserNameHeldByAnotherAccount()
+    {
+        using var fixture = await IdentityFixture.CreateAsync().ConfigureAwait(false);
+        await fixture.CreateUserAsync(
+            "previous-owner@cameraagent.test",
+            "PreviousOwner!123",
+            isSiteOwner: true,
+            userName: "admin").ConfigureAwait(false);
+
+        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            fixture.InitializeSeederAsync).ConfigureAwait(false);
+
+        Assert.AreEqual("The configured owner user name is already used by another local account.", exception.Message);
+        Assert.IsNull(await fixture.FindByEmailAsync(ConfiguredEmail).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow("SkyMonitor")]
+    [DataRow("abcdefg")]
+    public async Task InitializeAsync_RejectsAConfiguredPasswordOutsideThePolicy(string password)
+    {
+        using var fixture = await IdentityFixture.CreateAsync(adminPassword: password).ConfigureAwait(false);
+
+        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            fixture.InitializeSeederAsync).ConfigureAwait(false);
+
+        Assert.AreEqual("Could not seed default admin user", exception.Message);
+        Assert.IsNull(await fixture.FindByEmailAsync(ConfiguredEmail).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task InitializeAsync_EnablesSignInLockoutForAnExistingOwner()
+    {
+        using var fixture = await IdentityFixture.CreateAsync().ConfigureAwait(false);
+        await fixture.CreateUserAsync(ConfiguredEmail, ConfiguredPassword, isSiteOwner: true).ConfigureAwait(false);
+        await fixture.DisableLockoutAsync(ConfiguredEmail).ConfigureAwait(false);
+
+        await fixture.InitializeSeederAsync().ConfigureAwait(false);
+
+        var owner = await fixture.FindByEmailAsync(ConfiguredEmail).ConfigureAwait(false);
+        Assert.IsNotNull(owner);
+        Assert.IsTrue(owner.LockoutEnabled);
+    }
+
+    [TestMethod]
     public async Task InitializeAsync_AllowsMissingPasswordOnlyForDurableOwner()
     {
         using var fixture = await IdentityFixture.CreateAsync(
@@ -165,7 +261,8 @@ public sealed class CameraAgentIdentitySeederTests
 
         public static async Task<IdentityFixture> CreateAsync(
             string adminPassword = ConfiguredPassword,
-            bool allowMissingPassword = false)
+            bool allowMissingPassword = false,
+            string adminUserName = LocalIdentityOptions.DefaultAdminUserName)
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync().ConfigureAwait(false);
@@ -183,10 +280,12 @@ public sealed class CameraAgentIdentitySeederTests
                     options.Stores.SchemaVersion = IdentitySchemaVersions.Version3;
                 })
                 .AddEntityFrameworkStores<ApplicationDbContext>()
+                .AddCameraAgentPasswordPolicy()
                 .AddDefaultTokenProviders();
             services.AddSingleton<IOptions<LocalIdentityOptions>>(Options.Create(new LocalIdentityOptions
             {
                 AdminEmail = ConfiguredEmail,
+                AdminUserName = adminUserName,
                 AdminPassword = adminPassword,
                 AllowMissingAdminPassword = allowMissingPassword
             }));
@@ -205,14 +304,15 @@ public sealed class CameraAgentIdentitySeederTests
             string email,
             string password,
             bool isSiteOwner,
-            bool passwordChangeRequired = false)
+            bool passwordChangeRequired = false,
+            string? userName = null)
         {
             using var scope = _serviceProvider.CreateScope();
             var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
             var result = await userManager.CreateAsync(
                 new ApplicationUser
                 {
-                    UserName = email,
+                    UserName = userName ?? email,
                     Email = email,
                     EmailConfirmed = true,
                     IsSiteOwner = isSiteOwner,
@@ -221,6 +321,16 @@ public sealed class CameraAgentIdentitySeederTests
                 password).ConfigureAwait(false);
 
             Assert.IsTrue(result.Succeeded, string.Join(", ", result.Errors.Select(error => error.Description)));
+        }
+
+        public async Task DisableLockoutAsync(string email)
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            var user = await users.FindByEmailAsync(email).ConfigureAwait(false);
+            Assert.IsNotNull(user);
+            var result = await users.SetLockoutEnabledAsync(user, enabled: false).ConfigureAwait(false);
+            Assert.IsTrue(result.Succeeded, string.Join(", ", result.Errors.Select(static error => error.Description)));
         }
 
         public Task InitializeSeederAsync()

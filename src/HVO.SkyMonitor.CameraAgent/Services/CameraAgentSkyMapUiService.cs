@@ -56,7 +56,7 @@ internal interface ICameraAgentSkyMapUiService
 }
 
 /// <summary>Everything the Observatory &amp; location page shows besides geometry and the projected scene.</summary>
-/// <param name="OwnerLoginEmail">The local owner account's email, offered as the default owner contact.</param>
+/// <param name="OwnerLoginEmail">The local owner account's email, offered as the default owner contact; null when it is the non-routable installer default.</param>
 /// <param name="ObjectLimit">The sky map object bound in the settings file, or null when this host loads none.</param>
 /// <param name="ActorNames">
 /// The sign-in name of every account that recorded a manual location change, keyed by the account identifier the
@@ -277,7 +277,12 @@ internal sealed class CameraAgentSkyMapUiService(
             var profile = await siteProfileStore.GetAsync(cancellationToken).ConfigureAwait(false);
             var options = hostOptions?.Value ?? new CameraAgentHostOptions();
             var map = options.SiteMap;
-            var ownerEmail = localIdentityOptions?.Value.AdminEmail;
+            // The non-routable default an installation without an owner email receives is nobody's contact address.
+            var ownerEmail = localIdentityOptions?.Value.AdminEmail?.Trim();
+            if (string.Equals(ownerEmail, LocalIdentityOptions.DefaultAdminEmail, StringComparison.OrdinalIgnoreCase))
+            {
+                ownerEmail = null;
+            }
             // Read after the profile: were the file to change between the two reads, a save naming the profile's
             // older version is refused as a conflict rather than overwriting the newer value shown here.
             var objectLimit = settingsFile is null
@@ -285,7 +290,7 @@ internal sealed class CameraAgentSkyMapUiService(
                 : ReadObjectLimit(await settingsFile.ReadAsync(cancellationToken).ConfigureAwait(false));
             return OperatorUiResult<CameraAgentSiteView>.Success(new CameraAgentSiteView(
                 profile,
-                string.IsNullOrWhiteSpace(ownerEmail) ? null : ownerEmail.Trim(),
+                string.IsNullOrWhiteSpace(ownerEmail) ? null : ownerEmail,
                 await ReadAssignmentAsync(options, cancellationToken).ConfigureAwait(false),
                 new CameraAgentSiteMapSettings(
                     map.Enabled, map.TileTemplate, map.Attribution, map.AttributionLink, map.Zoom),

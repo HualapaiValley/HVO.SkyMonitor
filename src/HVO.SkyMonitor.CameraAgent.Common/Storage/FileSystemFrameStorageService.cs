@@ -93,13 +93,10 @@ public sealed class FileSystemFrameStorageService(
         var relativePayloadPath = Path.GetRelativePath(storageRoot, payloadPath);
         ValidateVersionedDescriptorAgreement(descriptor, artifact, frame);
 
-        var directoryExisted = Directory.Exists(directory);
+        CameraAgentFileSystem.EnsureStorageRootDurable(storageRoot);
         Directory.CreateDirectory(directory);
         RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, directory);
-        if (!directoryExisted)
-        {
-            RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, directory);
-        }
+        RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, directory);
         var payloadExists = File.Exists(payloadPath);
         var sidecarExists = File.Exists(metadataPath);
         var upgradeProducerSidecar = await ValidateExistingVersionedEvidenceAsync(
@@ -138,12 +135,8 @@ public sealed class FileSystemFrameStorageService(
             }
 
             var indexDirectory = Path.Combine(storageRoot, "index");
-            var indexDirectoryExisted = Directory.Exists(indexDirectory);
             Directory.CreateDirectory(indexDirectory);
-            if (!indexDirectoryExisted)
-            {
-                RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, indexDirectory);
-            }
+            RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, indexDirectory);
             var indexPath = Path.Combine(indexDirectory, $"frames_{timestamp:yyyy-MM-dd}.jsonl");
             var indexGate = FrameIndexLock.ForRoot(storageRoot);
             await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -340,7 +333,7 @@ public sealed class FileSystemFrameStorageService(
                 try
                 {
                     await File.WriteAllLinesAsync(temporaryPath, remainingLines, cancellationToken).ConfigureAwait(false);
-                    File.Move(temporaryPath, indexPath, overwrite: true);
+                    CameraAgentFileSystem.PublishPrepared(storageRoot, temporaryPath, indexPath, overwrite: true);
                 }
                 finally
                 {
@@ -377,16 +370,14 @@ public sealed class FileSystemFrameStorageService(
             {
                 await stream.WriteAsync(content, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
-                stream.Flush(flushToDisk: true);
-#pragma warning restore CA1849
+                CameraAgentFileSystem.FlushFile(stream);
             }
             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, Path.GetDirectoryName(destinationPath)!);
             try
             {
-                File.Move(temporaryPath, destinationPath, overwrite: false);
+                CameraAgentFileSystem.PublishPrepared(storageRoot, temporaryPath, destinationPath, overwrite: false);
             }
-            catch (IOException) when (File.Exists(destinationPath))
+            catch (IOException exception) when (!FileSystemFaultCompatibility.IsContainmentFailure(exception) && File.Exists(destinationPath))
             {
                 var existing = await File.ReadAllBytesAsync(destinationPath, cancellationToken).ConfigureAwait(false);
                 if (!existing.AsSpan().SequenceEqual(content.Span))
@@ -426,12 +417,10 @@ public sealed class FileSystemFrameStorageService(
             {
                 await stream.WriteAsync(content, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
-                stream.Flush(flushToDisk: true);
-#pragma warning restore CA1849
+                CameraAgentFileSystem.FlushFile(stream);
             }
             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, destinationPath);
-            File.Move(temporaryPath, destinationPath, overwrite: true);
+            CameraAgentFileSystem.PublishPrepared(storageRoot, temporaryPath, destinationPath, overwrite: true);
             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, destinationPath);
             RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(destinationPath)!);
         }
@@ -648,9 +637,7 @@ public sealed class FileSystemFrameStorageService(
         await stream.WriteAsync(line, cancellationToken).ConfigureAwait(false);
         await stream.WriteAsync(NewLineBytes, cancellationToken).ConfigureAwait(false);
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
-#pragma warning disable CA1849 // FlushAsync does not provide a flush-to-disk contract.
-        stream.Flush(flushToDisk: true);
-#pragma warning restore CA1849
+        CameraAgentFileSystem.FlushFile(stream);
     }
 
     private static async Task EnsureIndexEntryAsync(

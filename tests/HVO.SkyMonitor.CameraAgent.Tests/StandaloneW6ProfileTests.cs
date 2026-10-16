@@ -60,10 +60,12 @@ public sealed class StandaloneW6ProfileTests
         var localProfileSha256 = LocalCaptureProfileContract.ComputeSha256(
             LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!));
         Assert.AreEqual(
-            "CB42AAEE50DD957AAC7330AA65391814C7AC415CAA4D535230B16BDDA04709B8",
+            "86F33CC1F53B39B3307B3100FB942348A16C4DB8AEFB3B1987C542E23D020CB5",
             localProfileSha256,
             localProfileSha256);
         Assert.AreEqual(32768, configuration.Module.Options!.Value.GetProperty("maximumResults").GetInt32());
+        // The W6 qualification keeps full catalog depth instead of the operator's scene object limit.
+        Assert.AreEqual("Exhaustive", configuration.Module.Options.Value.GetProperty("stellarCandidateSelection").GetString());
         Assert.AreEqual(
             "6081518D9D7349F2333671C28AFAB11AF7ACEA63276AA990F54250632BCD54E3",
             HistoricalCatalogCapProfileSha256(configuration));
@@ -156,10 +158,12 @@ public sealed class StandaloneW6ProfileTests
             "99892B9195FDAF6800CB1B8D914B39A610A989B2775B2BD980E50EE8C15CCD80",
             CaptureScheduleContract.ComputeSha256(configuration.Schedule!));
         Assert.AreEqual(
-            "D59FA049B7A525571C3DB244C4BED80F7D6D4F4AD9AB15839F1F25A1962044BD",
+            "C27BB89E8678A021793F626E88158807F7C1C79C6000A00070043D863D31F4FD",
             LocalCaptureProfileContract.ComputeSha256(
                 LocalCaptureProfileDefinition.CreateForConfiguration(configuration, configuration.Schedule!)));
         Assert.AreEqual(32768, configuration.Module.Options!.Value.GetProperty("maximumResults").GetInt32());
+        // The mono8 W6 control keeps full catalog depth instead of the operator's scene object limit.
+        Assert.AreEqual("Exhaustive", configuration.Module.Options.Value.GetProperty("stellarCandidateSelection").GetString());
         Assert.AreEqual(
             "EEED95D733FB1DA82DAB7D0AEBE692BCD6C95703EC4EDADD98C3453E65BBB38B",
             HistoricalCatalogCapProfileSha256(configuration));
@@ -469,10 +473,12 @@ public sealed class StandaloneW6ProfileTests
 
     private static string HistoricalCatalogCapProfileSha256(CameraModuleConfig configuration)
     {
-        // Only the explicitly enlarged safety cap may change these pinned profile identities.
+        // Only the explicitly enlarged safety cap and the explicit exhaustive opt-out from the operator's scene
+        // object limit (#1277) may change these pinned profile identities.
         var options = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, System.Text.Json.JsonElement>>(
             configuration.Module.Options!.Value.GetRawText())!;
         options["maximumResults"] = System.Text.Json.JsonSerializer.SerializeToElement(300);
+        options.Remove("stellarCandidateSelection");
         var historical = configuration with
         {
             Module = configuration.Module with

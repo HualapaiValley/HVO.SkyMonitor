@@ -21,7 +21,6 @@ directory produced by the deterministic catalog tooling:
 ```bash
 hvo-skymonitor cameraagent install \
   --friendly-name "North All-Sky Camera" \
-  --owner-email admin@home.lan \
   --bind-address 127.0.0.1 \
   --port 5130 \
   --catalog-bundle /srv/hvo/hyg-v4.2-p3-s2-r1.bundle \
@@ -41,7 +40,6 @@ hvo-skymonitor cameraagent install \
   --catalog-manifest /srv/hvo/catalog-release/catalog-manifest.json \
   --no-download \
   --friendly-name "North All-Sky Camera" \
-  --owner-email admin@home.lan \
   --image-ref sha256:<loaded-image-id>
 ```
 
@@ -69,10 +67,21 @@ under `$XDG_STATE_HOME/hvo/skymonitor/distribution`, or
 is not removed by ordinary cache cleanup.
 
 Use `--image-archive /srv/hvo/cameraagent.tar` together with
-`--image-archive-sha256 <sha256>` for an offline image load. Use
-`--password-file <owner-only-path>` for an operator-supplied temporary password;
-otherwise the installer generates one. `--json` selects the versioned structured
-result. `--dry-run` validates the catalog, Docker daemon, loaded image, generated
+`--image-archive-sha256 <sha256>` for an offline image load.
+
+A new CameraAgent's first sign-in is the documented default, user name `admin`
+and password `skymonitor`, and CameraAgent requires that password to be
+replaced at first sign-in (see [Bootstrap And Recovery](#bootstrap-and-recovery)).
+`--owner-email` is optional: it sets the owner's durable email, which is also
+accepted as a sign-in name, and defaults to the non-routable
+`owner@cameraagent.local`. Instead of the default password, use
+`--password-file <owner-only-path>` for an operator-chosen temporary password of
+8 to 256 characters without control characters, or `--generate-password` for a
+random one written to the owner-only `config/owner-bootstrap/temporary-password`.
+A password file is read as UTF-8 with only its trailing line ending removed, by
+the installer and CameraAgent alike, so leading, trailing, and inner spaces are
+part of the password.
+`--json` selects the versioned structured result. `--dry-run` validates the catalog, Docker daemon, loaded image, generated
 configuration, and rendered Compose model using private temporary storage without
 creating the product root, loading/pulling an image, or starting a container.
 
@@ -961,6 +970,9 @@ catalog, image, Docker daemon, Compose template/model, configuration, rig,
 schedule, deployment-location snapshot, and installation-verification token
 hash identities. Password and verification-token content is never written to
 the manifest, result, phase state, Compose environment, logs, or terminal output.
+The one exception is the public, documented default owner password: when it
+seeded the owner, the result records `ownerPasswordIsDefault: true` and the human
+output names it.
 Signed installs additionally retain the release train/version/tag, exact
 manifest and asset length/hash, signing key ID, source and resolved public URI,
 verification result/time, and provenance identity without authentication data.
@@ -990,6 +1002,14 @@ location page writes the site profile (observatory name, camera name, owner name
 `CameraAgent:Site` and the scene object limit to `CameraAgent:SkyMap:MaximumObjects`; any other setting can be
 added by hand. The page names the file it writes.
 
+The scene object limit (default 200, 1 to 5,000) is how many of the brightest catalog stars both the page's sky
+map and every VirtualSky capture use. A capture keeps the brightest stars whose image crosses the frame during
+the exposure, up to the limit, and always adds visible constellation figure stars and the planets, Sun and Moon
+on top. Lower values make night images faster; raising it, even above the camera module's `maximumResults`,
+deepens the star field at a higher cost per capture. A camera module that sets
+`"stellarCandidateSelection": "Exhaustive"` ignores the limit and keeps its complete `maximumResults` query;
+qualification profiles use that to retain full catalog depth.
+
 - Environment variables, the command line, and the installer's key-per-file settings in `config/secrets` take
   precedence over the file. The page says when one of them sets a value it edits, because saving that value in
   the file would have no effect.
@@ -1002,7 +1022,8 @@ added by hand. The page names the file it writes.
   carries the file across a state reset.
 - Each save from the page names the file content it read, so a save never overwrites a hand edit made after
   the page was loaded; the page asks for a refresh instead. The file is watched, so the site profile and object
-  limit apply at once; most other settings take effect at the next CameraAgent start.
+  limit apply at once, the limit from the next sky map projection and the next capture of a camera module that
+  follows it (an exhaustive module never does); most other settings take effect at the next CameraAgent start.
 - A hand-edited file may contain comments and trailing commas, as the configuration loader allows. A save from
   the page keeps every setting but rewrites the file without its comments.
 - A malformed file stops CameraAgent at startup. A malformed edit made while CameraAgent runs leaves the file's
@@ -1022,6 +1043,35 @@ removes `LocalIdentity__AdminPasswordFile` authority, recreates the exact
 Compose service, and requires the durable `owner-password-change-required`
 state. The operator completes password replacement through CameraAgent.
 
+Unless `--password-file` or `--generate-password` was given, the seeded owner
+is user name `admin` with password `skymonitor`, and the installer prints:
+
+```text
+Sign in as admin / skymonitor; a password change is required at first sign-in.
+```
+
+Otherwise it prints the owner-only temporary password file instead. The
+installer authenticates its own bootstrap check with the owner email, which
+every supported CameraAgent image resolves; the browser accepts either the user
+name or the email. The default password requires a CameraAgent image that
+includes issue #1278; install an older image with `--generate-password` or
+`--password-file`.
+
+> **Takeover window.** Until the first sign-in replaces the default, anyone who
+> can reach the CameraAgent port can sign in as `admin` / `skymonitor` and claim
+> the camera by choosing the new password. Keep the default loopback
+> `--bind-address 127.0.0.1` until the password is replaced. A non-loopback
+> address still requires `--acknowledge-plaintext-http`; when you use one, sign
+> in and replace the default immediately after the install completes, or install
+> with `--password-file` or `--generate-password` instead.
+
+The replacement, and every later password, needs at least 8 characters and has
+no character-class rules; it cannot be `skymonitor` in any letter case, the
+user name, or the current password. Five failed sign-ins lock the account for
+five minutes, and the sign-in page says so. Owner recovery below also clears a
+lockout. An installation upgraded from an installer that predates issue #1278
+keeps its owner's email as the user name; sign in with that email.
+
 If the owner loses the durable password after initial setup, recover access from
 the CameraAgent host as the Docker-capable deployment runtime user, never as
 root:
@@ -1031,7 +1081,9 @@ hvo-skymonitor cameraagent recover-owner --instance-id <uuid> --generate-passwor
 ```
 
 Alternatively, provide an absolute owner-only mode `0400` or `0600` file with
-`--password-file`. Password input is never accepted on the command line. The
+`--password-file`, holding 8 to 256 printable ASCII characters without spaces;
+CameraAgent refuses the documented default as a recovery password. Password
+input is never accepted on the command line. The
 command validates the installed manifest/result, runtime UID/GID, product and
 instance locks, and the retained lifecycle-control credential. It contacts the
 installed CameraAgent directly through `<state-root>/identity/owner.sock`, which

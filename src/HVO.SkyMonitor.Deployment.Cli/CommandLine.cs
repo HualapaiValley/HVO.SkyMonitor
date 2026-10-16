@@ -139,7 +139,7 @@ internal static class CommandLine
             {
                 InstanceId = ParseGuid(Get(values, "--instance-id"), "--instance-id"),
                 FriendlyName = RequireOrPrompt(values, "--friendly-name", "Friendly name: "),
-                OwnerEmail = RequireOrPrompt(values, "--owner-email", "Owner email: "),
+                OwnerEmail = Get(values, "--owner-email") ?? OwnerCredentialDefaults.Email,
                 BindAddress = Get(values, "--bind-address") ?? "127.0.0.1",
                 Port = ParseInt(Get(values, "--port"), 5130, "--port"),
                 ProductRoot = Get(values, "--product-root") ?? productionProductRoot,
