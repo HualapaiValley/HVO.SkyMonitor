@@ -81,7 +81,10 @@ random one written to the owner-only `config/owner-bootstrap/temporary-password`
 A password file is read as UTF-8 with only its trailing line ending removed, by
 the installer and CameraAgent alike, so leading, trailing, and inner spaces are
 part of the password.
-`--json` selects the versioned structured result. `--dry-run` validates the catalog, Docker daemon, loaded image, generated
+`--json` selects the versioned structured result. Its `warnings` array lists each
+[advisory host finding](#host-prerequisites) as a `code` and a `message`, and is
+empty when there is none; the retained `state/deployment/installation-result.json`
+does not carry it. `--dry-run` validates the catalog, Docker daemon, loaded image, generated
 configuration, and rendered Compose model using private temporary storage without
 creating the product root, loading/pulling an image, or starting a container.
 
@@ -127,9 +130,11 @@ and report every finding together so the host can be fixed in one pass:
 One finding is advisory and never refuses: `docker-host-memory-below-limit`
 reports that Docker's host has less memory (`MemTotal`) than the CameraAgent
 memory limit. The limit is still applied, but it cannot stop CameraAgent from
-exhausting that host's memory. The human form renders it on standard error with
-the rest of the report and the installation proceeds; with `--json` it is not
-rendered, because standard error is reserved for an error object.
+exhausting that host's memory. The installation proceeds either way. The human
+form renders the finding on standard error with the rest of the report. With
+`--json`, standard error is reserved for an error object, so the result on
+standard output reports it in `warnings` instead, for the install and the dry run
+alike.
 
 A capability `docker info` does not report counts as unsupported. Free space is
 measured on the filesystem that actually stores each root, at its nearest

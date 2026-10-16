@@ -301,6 +301,19 @@ public sealed record InstallationState(
     string? FailureCode = null,
     string? FailureMessage = null);
 
+/// <summary>
+/// An advisory condition the installer found that does not refuse the installation, such as a Docker host with less
+/// memory than the CameraAgent memory limit.
+/// </summary>
+/// <param name="Code">The stable code of the finding, for example <c>docker-host-memory-below-limit</c>.</param>
+/// <param name="Message">What was observed, what was expected, and the remedy.</param>
+public sealed record InstallationWarning(string Code, string Message);
+
+/// <summary>
+/// The outcome of <c>cameraagent install</c> or its dry run. The installer retains it as
+/// <c>state/deployment/installation-result.json</c> without its warnings: they describe the host one invocation
+/// evaluated, so only the result that invocation reports carries them.
+/// </summary>
 public sealed record InstallationResult(
     int SchemaVersion,
     InstallationOutcome Outcome,
@@ -338,4 +351,6 @@ public sealed record InstallationResult(
     string OwnerBootstrapState,
     DateTimeOffset CompletedUtc,
     CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess,
-    bool OwnerPasswordIsDefault = false);
+    bool OwnerPasswordIsDefault = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<InstallationWarning>? Warnings = null);

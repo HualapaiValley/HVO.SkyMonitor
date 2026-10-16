@@ -57,9 +57,9 @@ internal sealed class CameraAgentInstaller
             var plannedRequest = ApplySignedImage(request with { CatalogBundle = dryRunCatalog.BundlePath }, dryRunImage);
             // A dry run evaluates the same host prerequisites an install does, so a host that cannot run the instance
             // as deployed is refused by the plan rather than discovered after the product root exists.
-            _ = await EnsureHostPrerequisitesAsync(plannedRequest, docker, hostEnvironment, cancellationToken)
+            var (_, plannedWarnings) = await EnsureHostPrerequisitesAsync(plannedRequest, docker, hostEnvironment, cancellationToken)
                 .ConfigureAwait(false);
-            return await PlanAsync(
+            var plan = await PlanAsync(
                     plannedRequest,
                     dryRunCatalog.Evidence,
                     paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(dryRunCatalog.BundlePath).CatalogId),
@@ -68,6 +68,7 @@ internal sealed class CameraAgentInstaller
                     dryRunImage?.Image,
                     cancellationToken)
                 .ConfigureAwait(false);
+            return plan with { Warnings = plannedWarnings };
         }
 
         if (uid == 0)
@@ -89,7 +90,7 @@ internal sealed class CameraAgentInstaller
 
         // Every host prerequisite is evaluated, and every finding reported together, before the product root is
         // prepared or anything else is created.
-        var preflightDaemon = await EnsureHostPrerequisitesAsync(request, docker, hostEnvironment, cancellationToken)
+        var (preflightDaemon, warnings) = await EnsureHostPrerequisitesAsync(request, docker, hostEnvironment, cancellationToken)
             .ConfigureAwait(false);
         ValidateCatalogInput(request.CatalogBundle!);
         // The bundle's approved specification selects the side-by-side catalog root this instance installs into.
@@ -494,7 +495,9 @@ internal sealed class CameraAgentInstaller
                 InstallationPhase.Completed,
                 cancellationToken,
                 InstallationStatus.Completed).ConfigureAwait(false);
-            return result;
+            // The warnings describe the host this invocation evaluated, so only the reported result carries them: the
+            // retained result was written, and a completed re-run compared with it, without them.
+            return result with { Warnings = warnings };
         }
         catch (OperationCanceledException exception)
         {
@@ -1140,11 +1143,11 @@ internal sealed class CameraAgentInstaller
     }
 
     /// <summary>
-    /// Evaluates the host prerequisites and returns the daemon identity they were read from. Both storage requirements
-    /// (see <see cref="StorageRequirements"/>) are measured on the filesystem that actually stores each root, and summed
-    /// when they share one.
+    /// Evaluates the host prerequisites and returns the daemon identity they were read from, with the advisory findings
+    /// as warnings for the structured result. Both storage requirements (see <see cref="StorageRequirements"/>) are
+    /// measured on the filesystem that actually stores each root, and summed when they share one.
     /// </summary>
-    private static async Task<DockerDaemonIdentity> EnsureHostPrerequisitesAsync(
+    private static async Task<(DockerDaemonIdentity Daemon, IReadOnlyList<InstallationWarning> Warnings)> EnsureHostPrerequisitesAsync(
         InstallRequest request,
         DockerClient docker,
         IHostEnvironment hostEnvironment,
@@ -1164,12 +1167,13 @@ internal sealed class CameraAgentInstaller
             throw new HostPrerequisiteException(report);
         }
         // An advisory finding does not refuse the installation, so it is rendered here or the operator would never see
-        // it. A --json invocation reserves standard error for one error object, as the state preflight does.
+        // it. A --json invocation reserves standard error for one error object, as the state preflight does, and
+        // reports the finding in its structured result instead.
         if (report.Findings.Count > 0 && !request.Json)
         {
             await Console.Error.WriteLineAsync(HostPrerequisites.Render(report)).ConfigureAwait(false);
         }
-        return capabilities.Daemon;
+        return (capabilities.Daemon, HostPrerequisites.Warnings(report));
     }
 
     /// <summary>

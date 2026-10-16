@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
@@ -7,11 +8,20 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// <summary>
 /// The CameraAgent container limits an installation records with the instance, renders into its Compose file, and
 /// holds a re-run to: the defaults, operator-set limits, an instance an earlier installer completed without a record,
-/// and a host whose memory is below the limit.
+/// and a host whose memory is below the limit, whose advisory the human form renders on standard error and the
+/// <c>--json</c> result reports as a warning.
 /// </summary>
 public sealed partial class InstallerFlowTests
 {
     private const long ResourceGibibyte = 1024L * 1024 * 1024;
+
+    // What the installer reports for a 2 GiB Docker host and the default 4 GiB memory limit.
+    private const string MemoryAdvisoryMessage =
+        "docker info .MemTotal: observed MemTotal=2147483648 bytes; expected at least 4294967296 bytes (4 GiB) for the " +
+        "CameraAgent memory limit. " + HostPrerequisites.MemoryCapacityRemediation;
+
+    private static string LowMemoryDockerInfo =>
+        SupportedDockerInfo.Replace("\"MemTotal\":8442572800", "\"MemTotal\":2147483648", StringComparison.Ordinal);
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
@@ -145,6 +155,115 @@ public sealed partial class InstallerFlowTests
         }
     }
 
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstallAsync_JsonInstallOnAHostWithLessMemoryThanTheLimit_ReportsTheAdvisoryAsAWarning()
+    {
+        var bundle = RequireProductionCatalogBundle();
+        var (defaultRequest, root) = ResourceRequest(bundle, Guid.Parse("5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b"));
+        var request = defaultRequest with { Json = true };
+        var runner = new InstallerProcessRunner(request.ImageReference, root, request.InstanceId!.Value)
+        {
+            DockerInfo = LowMemoryDockerInfo
+        };
+        var owner = new InstallerOwnerClient();
+        try
+        {
+            var (installed, error) = await InstallCapturingStandardErrorAsync(request, runner, owner);
+
+            // Standard error stays reserved for an error object; the advisory is in the result instead.
+            Assert.AreEqual(string.Empty, error);
+            var reported = ReportedJson(installed);
+            Assert.AreEqual("Installed", (string?)reported["outcome"]);
+            AssertMemoryAdvisory(reported);
+
+            // The retained result is the reported one without its warnings, so a completed re-run still matches it,
+            // and reports the advisory again.
+            var resultPath = Path.Combine(installed.StateRoot, "deployment", "installation-result.json");
+            var retained = await File.ReadAllTextAsync(resultPath);
+            Assert.IsTrue(reported.Remove("warnings"));
+            Assert.IsTrue(JsonNode.DeepEquals(reported, JsonNode.Parse(retained)), retained);
+
+            var (rerun, rerunError) = await InstallCapturingStandardErrorAsync(request, runner, owner);
+            Assert.AreEqual(string.Empty, rerunError);
+            AssertMemoryAdvisory(ReportedJson(rerun));
+            Assert.AreEqual(retained, await File.ReadAllTextAsync(resultPath));
+        }
+        finally
+        {
+            DeleteResourceRoot(root);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstallAsync_JsonDryRun_ReportsTheMemoryAdvisoryAsAWarningAndNoneOnASupportedHost()
+    {
+        var bundle = RequireProductionCatalogBundle();
+        var (defaultRequest, root) = ResourceRequest(bundle, Guid.Parse("7c8d9e0f-1a2b-4c3d-9e4f-5a6b7c8d9e0f"));
+        var request = defaultRequest with { DryRun = true, Json = true };
+        var owner = new InstallerOwnerClient();
+        try
+        {
+            var (supported, supportedError) = await InstallCapturingStandardErrorAsync(
+                request, new InstallerProcessRunner(request.ImageReference, root, request.InstanceId!.Value), owner);
+
+            Assert.AreEqual(string.Empty, supportedError);
+            var supportedPlan = ReportedJson(supported);
+            Assert.AreEqual("Planned", (string?)supportedPlan["outcome"]);
+            Assert.IsEmpty(ReportedWarnings(supportedPlan));
+
+            var (planned, error) = await InstallCapturingStandardErrorAsync(
+                request,
+                new InstallerProcessRunner(request.ImageReference, root, request.InstanceId!.Value)
+                {
+                    DockerInfo = LowMemoryDockerInfo
+                },
+                owner);
+
+            Assert.AreEqual(string.Empty, error);
+            var plan = ReportedJson(planned);
+            Assert.AreEqual("Planned", (string?)plan["outcome"]);
+            AssertMemoryAdvisory(plan);
+            Assert.IsFalse(Directory.Exists(root));
+        }
+        finally
+        {
+            DeleteResourceRoot(root);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstallAsync_HumanInstallOnAHostWithLessMemoryThanTheLimit_RendersTheAdvisoryOnStandardError()
+    {
+        var bundle = RequireProductionCatalogBundle();
+        var (request, root) = ResourceRequest(bundle, Guid.Parse("9e0f1a2b-3c4d-4e5f-8a6b-7c8d9e0f1a2b"));
+        var runner = new InstallerProcessRunner(request.ImageReference, root, request.InstanceId!.Value)
+        {
+            DockerInfo = LowMemoryDockerInfo
+        };
+        var owner = new InstallerOwnerClient();
+        try
+        {
+            var (installed, error) = await InstallCapturingStandardErrorAsync(request, runner, owner);
+
+            Assert.AreEqual(InstallationOutcome.Installed, installed.Outcome);
+            StringAssert.Contains(
+                error,
+                $"CameraAgent host prerequisites for product root {root}: satisfied.",
+                StringComparison.Ordinal);
+            StringAssert.Contains(
+                error,
+                "- [advisory] docker-host-memory-below-limit (capacity) at " + MemoryAdvisoryMessage,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteResourceRoot(root);
+        }
+    }
+
     private static string RequireProductionCatalogBundle()
     {
         // Environment-gated like every installer flow contract: the real catalog bundle is restored by the Unit lane.
@@ -185,6 +304,43 @@ public sealed partial class InstallerFlowTests
             CancellationToken.None,
             portAvailabilityProbe: new RecordingPortProbe().Probe,
             hostEnvironment: new FakeHostEnvironment());
+
+    private static async Task<(InstallationResult Result, string Error)> InstallCapturingStandardErrorAsync(
+        InstallRequest request,
+        InstallerProcessRunner runner,
+        InstallerOwnerClient owner)
+    {
+        var original = Console.Error;
+        using var error = new StringWriter();
+        Console.SetError(error);
+        try
+        {
+            var result = await InstallResourceRequestAsync(request, runner, owner);
+            return (result, error.ToString());
+        }
+        finally
+        {
+            Console.SetError(original);
+        }
+    }
+
+    /// <summary>The result exactly as <c>cameraagent install --json</c> writes it to standard output.</summary>
+    private static JsonObject ReportedJson(InstallationResult result)
+        => JsonNode.Parse(JsonSerializer.Serialize(result, DeploymentJsonContext.Default.InstallationResult))!.AsObject();
+
+    private static JsonArray ReportedWarnings(JsonObject reported)
+    {
+        var warnings = reported["warnings"] as JsonArray;
+        Assert.IsNotNull(warnings, $"the JSON result reports a warnings array: {reported}");
+        return warnings;
+    }
+
+    private static void AssertMemoryAdvisory(JsonObject reported)
+    {
+        var warning = ReportedWarnings(reported).Single()!.AsObject();
+        Assert.AreEqual("docker-host-memory-below-limit", (string?)warning["code"]);
+        Assert.AreEqual(MemoryAdvisoryMessage, (string?)warning["message"]);
+    }
 
     private static void DeleteResourceRoot(string root)
     {

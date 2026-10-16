@@ -222,7 +222,7 @@ internal static class HostPrerequisites
         foreach (var finding in report.Findings)
         {
             builder.AppendLine(CultureInfo.InvariantCulture,
-                $"- [{(finding.Blocking ? "blocking" : "advisory")}] {finding.Code} ({finding.Boundary}) at {finding.Path}: observed {finding.Observed ?? "none"}; expected {finding.Expected ?? "unspecified"}. {finding.Remediation}");
+                $"- [{(finding.Blocking ? "blocking" : "advisory")}] {finding.Code} ({finding.Boundary}) at {Describe(finding)}");
         }
         if (report.Findings.Count == 0)
         {
@@ -230,6 +230,23 @@ internal static class HostPrerequisites
         }
         return builder.ToString().TrimEnd();
     }
+
+    /// <summary>
+    /// The advisory findings of a report that does not refuse the installation, as the warnings its structured result
+    /// carries. A <c>--json</c> invocation does not render them, because standard error is reserved for an error object.
+    /// </summary>
+    public static IReadOnlyList<InstallationWarning> Warnings(HostPrerequisiteReport report)
+    {
+        ArgumentNullException.ThrowIfNull(report);
+        return report.Findings
+            .Where(static finding => !finding.Blocking)
+            .Select(static finding => new InstallationWarning(finding.Code, Describe(finding)))
+            .ToArray();
+    }
+
+    /// <summary>Where a finding was measured, what was observed and expected there, and its remedy.</summary>
+    private static string Describe(HostPrerequisiteFinding finding)
+        => $"{finding.Path}: observed {finding.Observed ?? "none"}; expected {finding.Expected ?? "unspecified"}. {finding.Remediation}";
 
     private static void EvaluateResourceLimits(
         List<HostPrerequisiteFinding> findings,
