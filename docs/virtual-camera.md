@@ -540,9 +540,25 @@ each aperture. Zero source photons never qualify by saturation. The configured H
 separate from this sensitivity ceiling; both and the limiting-depth flag are
 recorded. The legacy magnitude is treated as approximate V-like photometry,
 not as new HYG 4.4 band/epoch semantics or a completeness guarantee for a real
-camera. PSF size does not change with source magnitude. Normal profiles use a
-32,768-candidate safety bound instead of silently retaining the brightest 300
-or 2,000; exhaustion explicitly refuses the exposure.
+camera. PSF size does not change with source magnitude.
+
+The star limit for one capture comes from the host's operator scene object
+limit, `CameraAgent:SkyMap:MaximumObjects` (default 200), read once per
+capture; without a host limit it is the module's `maximumResults`. The
+geometry walks the complete merged magnitude and constellation-endpoint query
+in magnitude-then-ID order and keeps the brightest stars whose PSF support
+crosses the frame during the exposure, up to the limit; past it, only
+constellation endpoint stars are still evaluated. Solar-system bodies and the
+resolved Sun and Moon disks are never counted. This is a magnitude rank, not an
+instantaneous spatial cut, so a fainter star never displaces a brighter one
+entering the sensor, and a query within the limit gives exactly the exhaustive
+result. The effective limit is recorded as `stellarMaximumCandidates`, the mode
+as `stellarCandidateSelection`, and the limit enters the scene identity through
+the catalog query. A profile that needs full catalog depth sets
+`"stellarCandidateSelection": "Exhaustive"`: it ignores the operator limit,
+uses the 32,768-candidate `maximumResults` safety bound instead of silently
+retaining the brightest 300 or 2,000, and exhaustion explicitly refuses the
+exposure. Transient star masks always use exhaustive selection.
 
 `stellar-exposure-iau1976-bounded-midpoint-v1` projects the complete bounded
 selection over the exact celestial interval, including off-frame centers whose

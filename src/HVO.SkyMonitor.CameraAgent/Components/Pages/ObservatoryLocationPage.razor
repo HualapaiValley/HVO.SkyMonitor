@@ -194,7 +194,7 @@ else
                 <div><dt>Scene object limit</dt><dd>@_state.MaximumObjects.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) brightest</dd></div>
                 <div class="full"><dt>License</dt><dd>@_state.Catalog.License</dd></div>
             </dl>
-            <p class="site-note">Only the active catalog is shown. Other installed versions are selected on the host with <code>hvo-skymonitor catalog select</code>, which restarts CameraAgent on the chosen version. The object limit is set under Operator settings below.</p>
+            <p class="site-note">Only the active catalog is shown. Other installed versions are selected on the host with <code>hvo-skymonitor catalog select</code>, which restarts CameraAgent on the chosen version. The object limit is set under Operator settings below. It bounds the brightest stars on this sky map and in every virtual sky capture; constellation figure stars and planets are always added on top.</p>
         </section>
 
         <section class="ops-panel" aria-labelledby="site-rig-heading">
@@ -395,12 +395,13 @@ else
                             <button type="button" class="text-button" disabled="@(objectLimit.SavedValue is null)" @onclick="() => SaveObjectLimitAsync(useDefault: true)">Use default</button>
                         </div>
                     </fieldset>
+                    <p class="site-note">The scene object limit is how many of the brightest catalog stars the sky map shows and a virtual sky capture draws and labels. Visible constellation figure stars and solar-system bodies are always included beyond it. Lower values make images faster; raise it for a deeper star field.</p>
                     @if (objectLimit.Overridden)
                     {
                         <p class="site-note">Another setting source supplies the object limit, so the value saved here has no effect until that source no longer sets it.</p>
                     }
                 }
-                <p class="site-note">Other settings can be added to this file by hand; it loads over the image's defaults and survives upgrades. On an installer deployment it is <code>state/identity/appsettings.local.json</code> in the instance directory. The object limit and site profile apply at once; most other settings take effect at the next CameraAgent start.</p>
+                <p class="site-note">Other settings can be added to this file by hand; it loads over the image's defaults and survives upgrades. On an installer deployment it is <code>state/identity/appsettings.local.json</code> in the instance directory. The object limit and site profile apply at once, the limit from the next projection and capture; most other settings take effect at the next CameraAgent start.</p>
             }
         </section>
     </div>
