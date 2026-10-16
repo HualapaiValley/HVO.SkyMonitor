@@ -73,7 +73,7 @@ history, log, or issue comment. Install the public identifier with:
 ```bash
 gh variable set COVERAGE_GIST_ID \
   --body aec5c0f8e0741d964da6859ec4466740 \
-  --repo RoySalisbury/HVO.SkyMonitor
+  --repo HualapaiValley/HVO.SkyMonitor
 ```
 
 The publication step is best-effort because `Required CI` is the protected

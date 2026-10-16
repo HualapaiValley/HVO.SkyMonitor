@@ -148,10 +148,10 @@ cleaned up.
 ## Signed Image Release
 
 > `linux/arm64` installation is qualified natively: the `open(2)` flag defect
-> ([#603](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/603)) is fixed,
+> ([#603](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/603)) is fixed,
 > the advisory arm64 workflow runs this CLI's Unit suite, and the complete signed
 > installer lifecycle has run on aarch64 under
-> [#651](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/651). The campaign
+> [#651](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/651). The campaign
 > uses locally signed published-format candidates. An archive downloaded from an
 > actual production release remains untested because no production release exists;
 > preserve that publication/download caveat until the first release smoke.
@@ -1155,21 +1155,28 @@ to healthy without regenerating identity or credentials.
 ## State Compatibility Boundary
 
 The CameraAgent image declares the durable state contract it reads and writes rather than a generic
-compatibility promise:
+compatibility promise, through these labels:
 
 ```text
-io.hvo.skymonitor.state-compatibility=cameraagent-state-v2
-io.hvo.skymonitor.minimum-compatible-revision=70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f
-io.hvo.skymonitor.identity-migration=20260827053715_InitialIdentity
-io.hvo.skymonitor.raw-ingress-schema=13
-io.hvo.skymonitor.catalog-manifest-version=2
+io.hvo.skymonitor.state-compatibility
+io.hvo.skymonitor.minimum-compatible-revision
+io.hvo.skymonitor.identity-migration
+io.hvo.skymonitor.raw-ingress-schema
+io.hvo.skymonitor.raw-ingress-migration
+io.hvo.skymonitor.catalog-manifest-version
 ```
+
+The `LABEL` instruction in `src/HVO.SkyMonitor.CameraAgent/Dockerfile` is the source of their current values;
+this runbook does not restate them. Read the values an image actually carries with
+`docker image inspect --format '{{json .Config.Labels}}' <image>`.
 
 **CameraAgent state produced before `70ecdd3` is an incompatible source for a direct in-place upgrade.** Those
 revisions wrote catalog manifest version 1, Identity migration `20251125021552_CreateLocalIdentity`, and
-raw-ingress schema 11. The current image requires manifest version 2, migration
-`20260827053715_InitialIdentity`, and schema 13. There is no supported automatic migration from
-schema 12 or earlier: a populated schema-12 journal is rejected by preflight before drain, backup,
+raw-ingress schema 11. The current image requires the catalog manifest version, Identity migration, and
+raw-ingress schema its labels declare, and migrates an earlier canonical raw journal only through the transition
+its `io.hvo.skymonitor.raw-ingress-migration` label names, as described in
+[Edge work persisted across an upgrade](#edge-work-persisted-across-an-upgrade). There is no supported automatic
+migration from schema 12 or earlier: a populated schema-12 journal is rejected by preflight before drain, backup,
 stop, or Compose mutation, and runtime startup also refuses it without changing its contents.
 Upgrading such an instance requires the CameraAgent-only reset below or an equivalent explicit
 state-disposition procedure. The superseded `backward-compatible` label value remains readable only so an
@@ -1744,11 +1751,11 @@ release_root="$(mktemp -d /srv/hvo/image-release-smoke.XXXXXX)"
 evidence_root=/srv/hvo/evidence/<issue-or-release>/<timestamp>
 mkdir -m 700 "$evidence_root"
 
-test "$(gh release view "$release_tag" --repo RoySalisbury/HVO.SkyMonitor \
+test "$(gh release view "$release_tag" --repo HualapaiValley/HVO.SkyMonitor \
   --json isDraft --jq .isDraft)" = false
-gh release view "$release_tag" --repo RoySalisbury/HVO.SkyMonitor \
+gh release view "$release_tag" --repo HualapaiValley/HVO.SkyMonitor \
   --json tagName,targetCommitish,url >"$evidence_root/release.json"
-gh release download "$release_tag" --repo RoySalisbury/HVO.SkyMonitor \
+gh release download "$release_tag" --repo HualapaiValley/HVO.SkyMonitor \
   --dir "$release_root"
 
 dotnet restore tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj
@@ -1851,7 +1858,7 @@ Resolve a signed installer-index default or exact indexed version with:
 
 ```bash
 ./scripts/install-hvo-skymonitor.sh \
-  --index https://github.com/RoySalisbury/HVO.SkyMonitor/releases/download/installer-index-3/installer-release-index.json \
+  --index https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/installer-index-3/installer-release-index.json \
   --version 1.0.0 \
   /opt/hvo-installer-1.0.0
 ```

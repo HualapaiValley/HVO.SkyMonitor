@@ -233,7 +233,7 @@ host can execute is smoke-tested; the other architecture's runtime evidence
 belongs to a host of that architecture.
 
 The `open(2)` flag defect that blocked `linux/arm64`
-([#603](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/603)) is fixed:
+([#603](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/603)) is fixed:
 the CameraAgent runtime and the deployment CLI select `O_DIRECTORY` and
 `O_NOFOLLOW` per processor architecture, and the SQLite catalog selects
 `O_NOFOLLOW` the same way (the arm and powerpc ABIs override the asm-generic
@@ -241,11 +241,11 @@ values that x86-64 uses). The advisory native arm64 workflow
 (`.github/workflows/cameraagent-arm64.yml`) runs the CameraAgent, acceptance,
 catalog, and deployment CLI Unit suites on aarch64 and smoke-tests a natively
 built image there. The signed-release installer campaign
-([#598](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/598)) proves the
+([#598](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/598)) proves the
 signed lifecycle on `linux/amd64`: both architectures of both candidates are
 built, identity-derived, scanned, and signed, and the amd64 archive is the one that an
 installation consumes and runs. The native `linux/arm64` qualification under
-[#651](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/651) runs that same
+[#651](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/651) runs that same
 two-candidate signed install, upgrade, rollback, refusal, and uninstall campaign
 on aarch64. It verifies the complete published-format candidate packages before
 reuse and after the lifecycle, and proves that both native release archives run.
