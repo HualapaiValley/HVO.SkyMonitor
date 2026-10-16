@@ -151,6 +151,17 @@ public sealed class DurableSyncTests
     }
 
     [TestMethod]
+    public void LinuxSync_RejectsAnInvalidHandleBeforeCallingFsync()
+    {
+        // The guard precedes any libc call, so the Linux dispatch is exercised on every platform.
+        using var invalid = new Microsoft.Win32.SafeHandles.SafeFileHandle(-1, ownsHandle: false);
+
+        var fault = Assert.ThrowsExactly<ArgumentException>(() => DurableSync.Directory(invalid, _temp, isLinux: true));
+
+        Assert.AreEqual("handle", fault.ParamName);
+    }
+
+    [TestMethod]
     public void File_RefusesToFollowASymbolicLinkOnLinux()
     {
         if (!OperatingSystem.IsLinux())
