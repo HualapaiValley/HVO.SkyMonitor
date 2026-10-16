@@ -118,6 +118,19 @@ public sealed class SqlToolkitDiagnosticsTests
         Assert.ThrowsExactly<AssertFailedException>(diagnostics.ThrowIfFailed).ToString().Should().NotContain(Secret);
     }
 
+    [TestMethod]
+    public async Task LargeBodyAggregateCannotHideLaterCleanupOrDisposalFailure()
+    {
+        var diagnostics = new SqlToolkitDiagnostics { Stage = ToolkitStage.Body };
+        diagnostics.Record(new AggregateException(Secret, Enumerable.Range(0, 100).Select(_ => new SecretCanaryException(Secret))));
+        await diagnostics.AttemptAsync(ToolkitStage.ExactFileCleanup, () => Task.FromException(new IOException(Secret))).ConfigureAwait(false);
+        await using (diagnostics.ObserveDisposal(ToolkitStage.ContainerDisposal, new FailingDisposable())) { }
+        ReadFacts(diagnostics).Length.Should().Be(SqlToolkitDiagnostics.MaximumFacts);
+        ReadFacts(diagnostics).Select(fact => fact.GetProperty("Stage").GetString()).Should().Contain(["Body", "ExactFileCleanup", "ContainerDisposal"]);
+        Enum.GetValues<ToolkitStage>().Length.Should().BeLessThan(SqlToolkitDiagnostics.MaximumFacts);
+        AssertNoSecrets(Assert.ThrowsExactly<AssertFailedException>(diagnostics.ThrowIfFailed).ToString());
+    }
+
     private sealed class FailingDisposable : IAsyncDisposable
     {
         public ValueTask DisposeAsync() => ValueTask.FromException(new IOException(Secret));

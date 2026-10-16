@@ -68,7 +68,16 @@ internal sealed class SqlToolkitDiagnostics
         while (pending.Count > 0 && visited++ < MaximumExceptionNodes)
         {
             var current = pending.Pop();
-            if (failures.Count == MaximumFacts) { truncated = true; break; }
+            var safeStage = Enum.IsDefined(Stage) ? Stage.ToString() : "Body";
+            if (failures.Count == MaximumFacts)
+            {
+                truncated = true;
+                // Preserve a root fact for a newly failing stage even after a large body aggregate.
+                // MaximumFacts exceeds the closed stage count, so a full list has a duplicate stage.
+                var repeatedStage = failures.GroupBy(fact => fact.Stage).First(group => group.Count() > 1).Key;
+                if (visited != 1 || failures.Any(fact => fact.Stage == safeStage)) break;
+                failures.RemoveAt(failures.FindLastIndex(fact => fact.Stage == repeatedStage));
+            }
             var category = current switch
             {
                 SqlException => "sql",
@@ -89,7 +98,7 @@ internal sealed class SqlToolkitDiagnostics
                 SanitizedScriptException script => script.SqlErrorNumber,
                 _ => 0
             };
-            failures.Add(new(Enum.IsDefined(Stage) ? Stage.ToString() : "Body", category, number,
+            failures.Add(new(safeStage, category, number,
                 Stage == ToolkitStage.Body && Enum.IsDefined(BodyStep) ? BodyStep.ToString() : null,
                 Stage == ToolkitStage.Body && Enum.IsDefined(PreflightReason) ? PreflightReason.ToString() : null));
             if (current is AggregateException aggregate)
