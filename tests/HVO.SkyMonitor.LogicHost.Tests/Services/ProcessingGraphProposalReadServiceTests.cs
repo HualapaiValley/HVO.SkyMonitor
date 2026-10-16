@@ -83,9 +83,19 @@ public sealed class ProcessingGraphProposalReadServiceTests
         Assert.IsNull(await ReadAsync(service, proposal, system).ConfigureAwait(false));
         Assert.IsNull(await ReadAsync(service, proposal, new ClaimsPrincipal([Principal("member").Identities.Single(), Principal("other").Identities.Single()])).ConfigureAwait(false));
         // Independent immutable installation identities must agree with the proposal, not just its FK.
-        proposal.InstallationPublicId = Guid.NewGuid();
+        var inconsistent = new CentralProcessingGraphDeliveryProposal
+        {
+            LogicalCameraInstallation = proposal.LogicalCameraInstallation,
+            LogicalCameraInstallationId = proposal.LogicalCameraInstallationId,
+            RegistrationId = proposal.RegistrationId,
+            InstallationPublicId = Guid.NewGuid(),
+            CapabilitySnapshotSha256 = proposal.CapabilitySnapshotSha256,
+            IssuedAtUtc = proposal.IssuedAtUtc,
+            ExpiresAtUtc = proposal.ExpiresAtUtc
+        };
+        db.Add(inconsistent);
         await db.SaveChangesAsync().ConfigureAwait(false);
-        Assert.IsNull(await ReadAsync(service, proposal).ConfigureAwait(false));
+        Assert.IsNull(await ReadAsync(service, inconsistent).ConfigureAwait(false));
     }
 
     [TestMethod]
