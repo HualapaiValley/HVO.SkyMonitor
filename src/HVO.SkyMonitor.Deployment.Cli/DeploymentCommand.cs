@@ -24,6 +24,9 @@ internal abstract record DeploymentCommand(bool Json)
 
 internal sealed record InstallDeploymentCommand(InstallRequest Request) : DeploymentCommand(Request.Json);
 
+/// <summary>A request for usage text, which is printed and changes nothing.</summary>
+internal sealed record HelpCommand(string Usage) : DeploymentCommand(Json: false);
+
 internal sealed record OwnerRecoveryRequest(
     Guid? InstanceId,
     string ProductRoot,

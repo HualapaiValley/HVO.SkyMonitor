@@ -341,6 +341,12 @@ internal sealed class InstallUsageException : Exception
         : base(message, innerException)
     {
     }
+
+    /// <summary>
+    /// The usage the command line attached to a mistake made in it, printed after the reason. An exception raised
+    /// by an operation already under way has none.
+    /// </summary>
+    public string? Usage { get; set; }
 }
 
 [JsonSourceGenerationOptions(
