@@ -1080,10 +1080,9 @@ internal sealed class CameraAgentInstaller
     }
 
     /// <summary>
-    /// Evaluates the host prerequisites and returns the daemon identity they were read from. The product root's
-    /// filesystem must hold the catalog twice, the privately staged image archive, and headroom; Docker's data root
-    /// must hold the loaded image (twice the archive, for its unpacked layers) and headroom. Both are measured on the
-    /// filesystem that actually stores them, and summed when they share one.
+    /// Evaluates the host prerequisites and returns the daemon identity they were read from. Both storage requirements
+    /// (see <see cref="StorageRequirements"/>) are measured on the filesystem that actually stores each root, and summed
+    /// when they share one.
     /// </summary>
     private static async Task<DockerDaemonIdentity> EnsureHostPrerequisitesAsync(
         InstallRequest request,
@@ -1092,15 +1091,27 @@ internal sealed class CameraAgentInstaller
         CancellationToken cancellationToken)
     {
         var capabilities = await docker.ReadHostCapabilitiesAsync(cancellationToken).ConfigureAwait(false);
-        var bundleBytes = Directory.EnumerateFiles(request.CatalogBundle!).Sum(path => new FileInfo(path).Length);
-        var archiveBytes = request.ImageArchive is null ? 0 : new FileInfo(request.ImageArchive).Length;
+        var (productRootBytes, dockerRootBytes) = StorageRequirements(request.CatalogBundle!, request.ImageArchive);
         var report = HostPrerequisites.Evaluate(
             capabilities,
             request.ProductRoot,
-            checked(bundleBytes * 2 + archiveBytes + HostPrerequisites.StorageHeadroomBytes),
-            checked(archiveBytes * 2 + HostPrerequisites.StorageHeadroomBytes),
+            productRootBytes,
+            dockerRootBytes,
             hostEnvironment);
         return report.Satisfied ? capabilities.Daemon : throw new HostPrerequisiteException(report);
+    }
+
+    /// <summary>
+    /// The bytes an installation needs on each filesystem: <c>2 × (catalog bundle + image archive) + 1 GiB</c> on the one
+    /// holding the product root, and <c>2 × image archive + 1 GiB</c> on the one holding Docker's data root.
+    /// </summary>
+    internal static (long ProductRootBytes, long DockerRootBytes) StorageRequirements(string catalogBundle, string? imageArchive)
+    {
+        var bundleBytes = Directory.EnumerateFiles(catalogBundle).Sum(path => new FileInfo(path).Length);
+        var archiveBytes = imageArchive is null ? 0 : new FileInfo(imageArchive).Length;
+        return (
+            checked((2 * (bundleBytes + archiveBytes)) + HostPrerequisites.StorageHeadroomBytes),
+            checked((2 * archiveBytes) + HostPrerequisites.StorageHeadroomBytes));
     }
 
     internal static void EnsureImageSupportsCatalog(ImageInstallationIdentity image, string catalogId)

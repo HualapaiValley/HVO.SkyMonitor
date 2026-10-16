@@ -2,7 +2,7 @@
 
 SkyMonitor owns one production product root: `/var/lib/hvo/skymonitor` by
 default, or the root named by the root-owned host policy
-`/etc/hvo/skymonitor/host.json` (`{"productRoot": "/srv/data/hvo-skymonitor"}`),
+`/etc/hvo/skymonitor/host.json` (`{"productRoot": "/srv/data/hvo-skymonitor", "mountPoint": "/srv"}`),
 which places it on another filesystem without a bind mount. Application
 instances and catalogs are separate identity domains beneath that root:
 
@@ -19,8 +19,9 @@ The host policy, its validation, and `hvo-skymonitor host set-product-root` are
 described in
 [deployment-installer.md](deployment-installer.md#production-product-root-on-another-filesystem):
 the file and every component of the root must be `root:root` and not writable by
-group or other users, the root must exist, contain no symbolic link, and live on
-one mount, and a root that already holds instances is never moved. Each instance
+group or other users, the root must exist, use only portable path characters,
+contain no symbolic link, live on one mount, and resolve through the recorded
+mount, and a root that already holds instances is never moved. Each instance
 keeps its Compose files inside its own `config/compose`, so configuration and
 state stay one backup unit wherever the root lives. Isolated contract tests may
 use a disposable root beneath their private `/tmp/hvo-deploy-test.*` directory.

@@ -109,7 +109,7 @@ and report every finding together so the host can be fixed in one pass:
 | `docker-cpu-quota-unsupported` | `docker info` reports `CpuCfsQuota: true`, so the Compose `cpus` quota is enforced |
 | `docker-pids-limit-unsupported` | `docker info` reports `PidsLimit: true`, so the Compose `pids_limit` is enforced |
 | `tar-missing` | an executable `tar` on `PATH`; upgrade and rollback run it for the consistent instance backup |
-| `product-root-storage-insufficient` | room on the filesystem that holds the product root: twice the catalog bundle, the staged image archive, and 1 GiB |
+| `product-root-storage-insufficient` | room on the filesystem that holds the product root: twice the catalog bundle and image archive together, plus 1 GiB |
 | `docker-root-storage-insufficient` | room on the filesystem that holds Docker's `DockerRootDir`: twice the image archive and 1 GiB |
 | `docker-root-unreported` | `docker info` reports an absolute `DockerRootDir` |
 
@@ -808,7 +808,7 @@ mounted under `/srv`, names the production product root in the root-owned host
 policy instead of bind-mounting it over `/var/lib/hvo/skymonitor`:
 
 ```json
-{"productRoot": "/srv/data/hvo-skymonitor"}
+{"productRoot": "/srv/data/hvo-skymonitor", "mountPoint": "/srv"}
 ```
 
 Write it with the convenience command, as the deployment user, **before the
@@ -825,11 +825,23 @@ always writes `/etc/hvo/skymonitor/host.json`. It re-reads and re-validates the
 existing policy itself, refuses to move a production root whose `cameraagents` or
 `logichosts` directory holds any entry, creates only the final product-root
 directory (`root:root 0755`) beneath an existing validated parent, and publishes
-the file atomically (`root:root 0644`). The command then reads the policy back as
-the deployment user and requires it to name exactly the requested root.
-Restating the current root reports `unchanged`. Relocating a root that already
-holds instances is not supported: their manifests and Compose files name the old
-root.
+the file atomically (`root:root 0644`). It records `mountPoint`, the mount point
+of the filesystem the root resolves through at that moment (from
+`/proc/self/mountinfo`; `/srv` on a host whose NVMe is mounted there). The command
+then reads the policy back as the deployment user and requires it to name
+exactly the requested root and mount. Restating the current root reports
+`unchanged`, or `updated` when it adds a missing or stale `mountPoint`.
+Relocating a root that already holds instances is not supported: their manifests
+and Compose files name the old root.
+
+The empty-root check and the publication run under a root-only lock,
+`/run/hvo-skymonitor-host-policy.lock` (`root:root 0600`, so no other user can
+open or hold it). The privileged preparation holds the same lock while it re-reads
+the policy and creates an instance root, so an instance can never appear under
+the old root between the check and the moment the policy stops naming it: the
+preparation either completes first, and the move is then refused because the root
+holds an instance, or runs after the move and is refused because the policy no
+longer names the root it was asked to prepare.
 
 Without the file, behaviour is unchanged. When the file exists, every command
 reads it once while parsing its command line and fails closed unless all of these
@@ -837,18 +849,29 @@ hold:
 
 - the file and every directory from `/` to it are `root:root` and not writable by
   group or other users; the file is a regular file with one link, at most 4 KiB,
-  holding a JSON object with exactly one `productRoot` string;
+  holding a JSON object with exactly one `productRoot` string and at most one
+  `mountPoint` string; a duplicate or unknown member is refused;
 - `productRoot` is an absolute normalized path other than `/`, with no `.`/`..`,
-  repeated or trailing `/`, or control characters;
+  repeated or trailing `/`, and every segment uses only ASCII letters, digits,
+  `.`, `_` and `-` without a leading `-`. The generated Compose environment file
+  and bind mounts carry such a path literally; `$`, `#` after whitespace, `:`,
+  quotes, and whitespace would be interpolated, cut off, or split by Compose;
 - the product root already exists, and it and every component from `/` are
   `root:root` directories that are not symbolic links and not writable by group or
   other users;
 - nothing is mounted beneath the product root, so the whole root lives on one
-  mount. A mount exactly at the root is accepted.
+  mount. A mount exactly at the root is accepted;
+- when the policy records `mountPoint`, which must be the root or one of its
+  ancestors, a filesystem is mounted there and the product root resolves through
+  exactly that mount.
 
-An unmounted data filesystem therefore stops every command with the missing
-root named, instead of writing to the directory beneath the mount point. Fix an
-invalid policy with `sudo` directly; `host set-product-root` refuses to replace a
+With `mountPoint` recorded, an unmounted data filesystem stops every command,
+naming the mount point, even when a directory of the same name remains on the
+parent filesystem, which is what is left behind when the filesystem was mounted
+exactly at the root. Without `mountPoint`, which only a hand-written policy can
+lack, the check is weaker: an unmounted filesystem fails closed only when the
+root directory itself disappears with it. Run `host set-product-root` with the
+same root to record the mount point. Fix an invalid policy with `sudo` directly; `host set-product-root` refuses to replace a
 policy it cannot validate. The narrow `sudo` helpers for preparation and purge
 also read and validate the policy themselves and act only on the root it resolves,
 never on a root their arguments merely name. The clock-synchronization gate
@@ -885,10 +908,15 @@ verification result/time, and provenance identity without authentication data.
 
 The installer creates the product root through one narrow `sudo`-executed
 internal preparation command when needed. That command prepares only the
-production product root the host policy resolves: under the default root it may
-also create `/var/lib/hvo`, and under a policy root it validates the existing root
-and creates its `cameraagents`, `logichosts`, and `catalogs` namespaces as
-`root:root 0755`. The installer then performs catalog, configuration,
+production product root the host policy resolves, under the host-policy lock:
+under the default root it may also create `/var/lib/hvo`, and under a policy root
+it validates the existing root and creates its `cameraagents`, `logichosts`, and
+`catalogs` namespaces as `root:root 0755`. `catalog install` and `catalog gc` use
+the same command's product form (`--product-root`, `--uid`, `--gid`, no instance)
+when the runtime user is denied creating the runtime-owned `operations` directory
+or an approved catalog root beneath the root-owned namespace; neither command ever
+changes the shared root's ownership or mode, under the default root or a policy
+root. The installer then performs catalog, configuration,
 Docker, Compose, and HTTP work as the invoking Docker-capable runtime user. Do
 not invoke the whole installer through `sudo`. Purge uses one other narrow
 `sudo`-executed internal command, described with purge below, for the two

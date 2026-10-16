@@ -166,6 +166,32 @@ public sealed class HostPrerequisitesTests
         Assert.IsFalse(LinuxHostEnvironment.Instance.HasExecutable($"hvo-not-a-tool-{Guid.NewGuid():N}"));
     }
 
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void StorageRequirements_ReserveTwiceTheBundleAndArchiveOnTheProductRootAndTwiceTheArchiveForDocker()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-storage-budget-{Guid.NewGuid():N}");
+        var bundle = Path.Combine(root, "catalog.bundle");
+        var archive = Path.Combine(root, "cameraagent.tar");
+        Directory.CreateDirectory(bundle);
+        try
+        {
+            File.WriteAllBytes(Path.Combine(bundle, "catalog.sqlite"), new byte[3000]);
+            File.WriteAllBytes(Path.Combine(bundle, "manifest.json"), new byte[1000]);
+            File.WriteAllBytes(archive, new byte[700]);
+
+            var withArchive = CameraAgentInstaller.StorageRequirements(bundle, archive);
+            var withoutArchive = CameraAgentInstaller.StorageRequirements(bundle, null);
+
+            Assert.AreEqual((2 * (4000L + 700) + HostPrerequisites.StorageHeadroomBytes, 2 * 700L + HostPrerequisites.StorageHeadroomBytes), withArchive);
+            Assert.AreEqual((2 * 4000L + HostPrerequisites.StorageHeadroomBytes, HostPrerequisites.StorageHeadroomBytes), withoutArchive);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static DockerHostCapabilities Supported()
         => new(Daemon, MemoryLimit: true, CpuCfsQuota: true, PidsLimit: true, "2", DockerRoot, []);
 }

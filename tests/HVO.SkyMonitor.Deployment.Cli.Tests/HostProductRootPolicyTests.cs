@@ -127,6 +127,13 @@ public sealed class HostProductRootPolicyTests
     [DataRow("{\"productRoot\":null}", DisplayName = "null")]
     [DataRow("{}", DisplayName = "missing")]
     [DataRow("{\"productRoot\":\"{trust}/srv/data\",\"owner\":\"root\"}", DisplayName = "unknown-member")]
+    [DataRow("{\"productRoot\":\"{trust}/srv/data\",\"productRoot\":\"{trust}/srv/other\"}", DisplayName = "conflicting-duplicate-root")]
+    [DataRow("{\"productRoot\":\"{trust}/srv/data\",\"productRoot\":\"{trust}/srv/data\"}", DisplayName = "repeated-duplicate-root")]
+    [DataRow("{\"productRoot\":\"{trust}/srv/data\",\"mountPoint\":\"/\",\"mountPoint\":\"{trust}\"}", DisplayName = "duplicate-mount-point")]
+    [DataRow("{\"productRoot\":\"{trust}/srv/data\",\"mountPoint\":\"{trust}/var\"}", DisplayName = "mount-point-not-an-ancestor")]
+    [DataRow("{\"productRoot\":\"{trust}/srv/$HOME\"}", DisplayName = "compose-interpolation")]
+    [DataRow("{\"productRoot\":\"{trust}/srv/data #note\"}", DisplayName = "compose-comment")]
+    [DataRow("{\"productRoot\":\"{trust}/srv/a:b\"}", DisplayName = "compose-volume-separator")]
     [DataRow("[\"{trust}/srv/data\"]", DisplayName = "array")]
     [DataRow("productRoot={trust}/srv/data", DisplayName = "not-json")]
     public void Resolve_PolicyThatDoesNotNameAnAbsoluteNormalizedRoot_IsRefused(string content)
@@ -215,7 +222,9 @@ public sealed class HostProductRootPolicyTests
         using (var policy = JsonDocument.Parse(File.ReadAllText(host.Location.PolicyPath)))
         {
             Assert.AreEqual(root, policy.RootElement.GetProperty("productRoot").GetString());
-            Assert.AreEqual(1, policy.RootElement.EnumerateObject().Count());
+            // The mount that holds the root is recorded so an unmounted filesystem fails closed later.
+            Assert.AreEqual(MountPointHolding(root), policy.RootElement.GetProperty("mountPoint").GetString());
+            Assert.AreEqual(2, policy.RootElement.EnumerateObject().Count());
         }
         Assert.AreEqual(new ProductionProductRoot(root, FromPolicy: true), HostProductRootPolicy.Resolve(host.Location));
         Assert.IsEmpty(Directory.GetFiles(Path.GetDirectoryName(host.Location.PolicyPath)!, "*.tmp"));
@@ -247,8 +256,11 @@ public sealed class HostProductRootPolicyTests
 
         StringAssert.Contains(refused.Message, "already holds instances", StringComparison.Ordinal);
         Assert.AreEqual(policy, File.ReadAllText(host.Location.PolicyPath));
-        // Re-stating the root that holds the instances is not a move.
+        // Re-stating the root that holds the instances is not a move: it only records the hand-written policy's
+        // missing mount point, and then reports no change.
+        Assert.AreEqual(HostPolicyChange.Updated, HostProductRootPolicy.Apply(host.Location, current).Outcome);
         Assert.AreEqual(HostPolicyChange.Unchanged, HostProductRootPolicy.Apply(host.Location, current).Outcome);
+        Assert.AreEqual(current, HostProductRootPolicy.Resolve(host.Location).Path);
     }
 
     [TestMethod]
@@ -533,6 +545,311 @@ public sealed class HostProductRootPolicyTests
         Assert.IsFalse(PrivilegedPurgeNamespace.TryParse(helper, policy.Path, out _));
     }
 
+    [TestMethod]
+    [DataRow("/srv/$HOME/hvo", DisplayName = "dollar")]
+    [DataRow("/srv/data #comment", DisplayName = "space-hash")]
+    [DataRow("/srv/a:b", DisplayName = "colon")]
+    [DataRow("/srv/it's", DisplayName = "single-quote")]
+    [DataRow("/srv/\"q\"", DisplayName = "double-quote")]
+    [DataRow("/srv/a\\b", DisplayName = "backslash")]
+    [DataRow("/srv/a=b", DisplayName = "equals")]
+    [DataRow("/srv/{x}", DisplayName = "brace")]
+    [DataRow("/srv/a*b", DisplayName = "glob")]
+    [DataRow("/srv/a;b", DisplayName = "semicolon")]
+    [DataRow("/srv/d\u00e9j\u00e0", DisplayName = "non-ascii")]
+    [DataRow("/srv/-data", DisplayName = "leading-dash")]
+    public void ProductRootTextError_RejectsCharactersComposeWouldNotCarryLiterally(string root)
+    {
+        StringAssert.Contains(HostProductRootPolicy.ProductRootTextError(root), "segments may contain only", StringComparison.Ordinal);
+        Assert.IsNull(HostProductRootPolicy.ProductRootTextError("/srv/data-1/hvo_sky.monitor/A9"));
+        Assert.IsNull(HostProductRootPolicy.ProductRootTextError(InstallRequest.DefaultProductRoot));
+    }
+
+    /// <summary>
+    /// The generated environment file and Compose model carry an accepted root literally: every bind source and every
+    /// root variable names exactly the root, with nothing interpolated, commented out, or split.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void ComposeRendering_AcceptedRootCharacters_AreCarriedLiterally()
+    {
+        using var host = new PolicyHost();
+        var root = host.CreateDirectory("srv/data-1/hvo_sky.monitor-A9");
+        Assert.IsNull(HostProductRootPolicy.ProductRootTextError(root));
+        var paths = InstallationPaths.Create(root, Guid.NewGuid(), HygV42.CatalogId);
+
+        var compose = WriteCompose(paths);
+
+        var environment = File.ReadAllLines(compose.EnvironmentFile).ToDictionary(
+            static line => line[..line.IndexOf('=', StringComparison.Ordinal)],
+            static line => line[(line.IndexOf('=', StringComparison.Ordinal) + 1)..],
+            StringComparer.Ordinal);
+        Assert.AreEqual(paths.ConfigRoot, environment["HVO_CONFIG_ROOT"]);
+        Assert.AreEqual(paths.StateRoot, environment["HVO_STATE_ROOT"]);
+        Assert.AreEqual(paths.CatalogRoot, environment["HVO_CATALOG_ROOT"]);
+        Assert.IsTrue(environment.Values.Where(value => value.StartsWith(root, StringComparison.Ordinal))
+            .All(static value => value.All(static character => !char.IsWhiteSpace(character) && character is not ('$' or '#' or ':' or '"' or '\''))));
+    }
+
+    /// <summary>
+    /// The real Compose implementation renders every bind source of an accepted root exactly. It needs the Docker CLI
+    /// and Compose plugin but no daemon, so it runs with the Unit lane's invalid endpoint.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task ComposeConfig_AcceptedRootCharacters_RenderEveryBindSourceExactly()
+    {
+        var runner = new ProcessRunner();
+        ProcessResult version;
+        try
+        {
+            version = await runner.RunAsync("docker", ["compose", "version", "--short"], CancellationToken.None);
+        }
+        catch (InstallerException)
+        {
+            version = new ProcessResult(127, string.Empty, "docker is unavailable");
+        }
+        if (version.ExitCode != 0)
+        {
+            Assert.Inconclusive("The Docker CLI with the Compose plugin is required to render the Compose model.");
+        }
+
+        using var host = new PolicyHost();
+        var root = host.CreateDirectory("srv/data-1/hvo_sky.monitor-A9");
+        var paths = InstallationPaths.Create(root, Guid.NewGuid(), HygV42.CatalogId);
+        var compose = WriteCompose(paths);
+
+        var rendered = await runner.RunAsync(
+            "docker",
+            ["compose", "--project-name", compose.ProjectName, "--env-file", compose.EnvironmentFile, "--file", compose.ComposeFile,
+                "config", "--format", "json"],
+            CancellationToken.None);
+
+        Assert.AreEqual(0, rendered.ExitCode, rendered.StandardError);
+        using var model = JsonDocument.Parse(rendered.StandardOutput);
+        var sources = model.RootElement.GetProperty("services").EnumerateObject()
+            .SelectMany(static service => service.Value.GetProperty("volumes").EnumerateArray())
+            .Where(static volume => volume.GetProperty("type").GetString() == "bind")
+            .Select(static volume => volume.GetProperty("source").GetString()!)
+            .ToArray();
+        string[] expected =
+        [
+            Path.Combine(paths.ConfigRoot, "secrets"),
+            Path.Combine(paths.ConfigRoot, "camera-module.json"),
+            paths.CatalogRoot,
+            Path.Combine(paths.StateRoot, "identity"),
+            Path.Combine(paths.StateRoot, "raw")
+        ];
+        CollectionAssert.IsSubsetOf(expected, sources);
+        Assert.IsTrue(sources.All(source => source.StartsWith(root + "/", StringComparison.Ordinal)), string.Join(", ", sources));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void PolicyChangeAndPrivilegedPreparation_ShareOneLock_SoAnInstanceCreatedUnderTheOldRootStopsTheMove()
+    {
+        using var host = new PolicyHost();
+        var current = host.CreateDirectory("srv/data/current");
+        var next = host.CreateDirectory("srv/data/next");
+        host.WritePolicy(current);
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        string? instance = null;
+
+        // Preparation resolves the policy and creates the instance while holding the lock.
+        var preparation = Task.Run(() => PrivilegedPreparation.PrepareUnderHostPolicy(host.Location, current, production =>
+        {
+            Assert.AreEqual(current, production.Path);
+            entered.Set();
+            Assert.IsTrue(release.Wait(TimeSpan.FromSeconds(30)), "The test never released the preparation.");
+            instance = Path.Combine(current, "cameraagents", Guid.NewGuid().ToString("D"));
+            Directory.CreateDirectory(instance);
+        }));
+        Assert.IsTrue(entered.Wait(TimeSpan.FromSeconds(30)), "Preparation never took the host-policy lock.");
+
+        // The policy change waits for the same lock instead of checking the still-empty root and publishing.
+        var change = Task.Run(() => HostProductRootPolicy.Apply(host.Location, next));
+        Assert.IsFalse(change.Wait(TimeSpan.FromMilliseconds(500)), "The policy change did not wait for the preparation lock.");
+        StringAssert.Contains(File.ReadAllText(host.Location.PolicyPath), current, StringComparison.Ordinal);
+
+        release.Set();
+        Assert.AreEqual(0, preparation.GetAwaiter().GetResult());
+        var refused = Assert.ThrowsExactly<InstallerException>(() => change.GetAwaiter().GetResult());
+        StringAssert.Contains(refused.Message, "already holds instances", StringComparison.Ordinal);
+        Assert.AreEqual(current, HostProductRootPolicy.Resolve(host.Location).Path);
+        Assert.IsTrue(Directory.Exists(instance));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void PrivilegedPreparation_WaitsForAHeldPolicyLockAndRefusesARootThePolicyNoLongerNames()
+    {
+        using var host = new PolicyHost();
+        var current = host.CreateDirectory("srv/data/current");
+        var next = host.CreateDirectory("srv/data/next");
+        host.WritePolicy(current);
+        var prepared = 0;
+
+        Task<int> preparation;
+        using (HostProductRootPolicy.AcquireLock(host.Location))
+        {
+            preparation = Task.Run(() => PrivilegedPreparation.PrepareUnderHostPolicy(
+                host.Location, current, _ => Interlocked.Increment(ref prepared)));
+            Assert.IsFalse(preparation.Wait(TimeSpan.FromMilliseconds(500)), "Preparation did not wait for the held lock.");
+            Assert.AreEqual(0, prepared);
+        }
+        Assert.AreEqual(0, preparation.GetAwaiter().GetResult());
+        Assert.AreEqual(1, prepared);
+
+        // Once the policy names another root, preparation for the old root is refused before anything is created.
+        Assert.AreEqual(HostPolicyChange.Updated, HostProductRootPolicy.Apply(host.Location, next).Outcome);
+        Assert.AreEqual(2, PrivilegedPreparation.PrepareUnderHostPolicy(
+            host.Location, current, _ => throw new AssertFailedException("The old root was prepared.")));
+        Assert.AreEqual(0, PrivilegedPreparation.PrepareUnderHostPolicy(host.Location, next, _ => { }));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void AcquireLock_RefusesALockFileOthersCouldOpenOrReplace()
+    {
+        using var host = new PolicyHost();
+        using (HostProductRootPolicy.AcquireLock(host.Location))
+        {
+            Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(host.Location.LockPath));
+            var busy = Assert.ThrowsExactly<InstallerException>(
+                () => HostProductRootPolicy.AcquireLock(host.Location, TimeSpan.FromMilliseconds(200)));
+            StringAssert.Contains(busy.Message, "is busy", StringComparison.Ordinal);
+        }
+
+        File.SetUnixFileMode(host.Location.LockPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.OtherRead);
+        var readable = Assert.ThrowsExactly<InstallerException>(() => HostProductRootPolicy.AcquireLock(host.Location));
+        StringAssert.Contains(readable.Message, "mode 0600", StringComparison.Ordinal);
+
+        File.Delete(host.Location.LockPath);
+        File.CreateSymbolicLink(host.Location.LockPath, Path.Combine(host.TrustRoot, "elsewhere.lock"));
+        Assert.ThrowsExactly<InstallerException>(() => HostProductRootPolicy.AcquireLock(host.Location));
+        Assert.IsFalse(File.Exists(Path.Combine(host.TrustRoot, "elsewhere.lock")));
+    }
+
+    [TestMethod]
+    public void PrivilegedPreparationHelper_ParsesTheInstanceAndProductFormsExactly()
+    {
+        var instanceId = Guid.NewGuid();
+        var instance = PrivilegedPreparation.HelperArguments(
+            new PrivilegedPreparation.Invocation("/srv/data/hvo-skymonitor", instanceId, 1000, 1001)).Skip(2).ToArray();
+        var product = PrivilegedPreparation.HelperArguments(
+            new PrivilegedPreparation.Invocation("/srv/data/hvo-skymonitor", null, 1000, 1001)).Skip(2).ToArray();
+        string[] productForm = ["internal-prepare", "--product-root", "/srv/data/hvo-skymonitor", "--uid", "1000", "--gid", "1001"];
+
+        CollectionAssert.AreEqual(productForm, product);
+        Assert.IsTrue(PrivilegedPreparation.TryParse(instance, out var parsedInstance));
+        Assert.AreEqual(new PrivilegedPreparation.Invocation("/srv/data/hvo-skymonitor", instanceId, 1000, 1001), parsedInstance);
+        Assert.IsTrue(PrivilegedPreparation.TryParse(product, out var parsedProduct));
+        Assert.AreEqual(new PrivilegedPreparation.Invocation("/srv/data/hvo-skymonitor", null, 1000, 1001), parsedProduct);
+        foreach (var (arguments, index, value) in new (string[], int, string)[]
+                 {
+                     (product, 0, "internal-purge-namespace"), (product, 1, "--root"), (product, 3, "--instance-id"),
+                     (product, 4, "0"), (product, 4, "+1000"), (product, 6, "-1"), (instance, 3, "--uid"),
+                     (instance, 4, instanceId.ToString("N"))
+                 })
+        {
+            var changed = (string[])arguments.Clone();
+            changed[index] = value;
+            Assert.IsFalse(PrivilegedPreparation.TryParse(changed, out _), $"{index}={value}");
+        }
+        Assert.IsFalse(PrivilegedPreparation.TryParse([.. product, "--force"], out _));
+        Assert.IsFalse(PrivilegedPreparation.TryParse(product[..^1], out _));
+        if (NativeLinux.getuid() != 0)
+        {
+            Assert.AreEqual(2, PrivilegedPreparation.RunInternal(product));
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Apply_RecordsTheMountHoldingTheRootAndResolveFailsClosedWhenItIsNotMounted()
+    {
+        using var host = new PolicyHost();
+        host.CreateDirectory("srv/data");
+        var root = Path.Combine(host.TrustRoot, "srv/data/hvo-skymonitor");
+        Assert.AreEqual(HostPolicyChange.Updated, HostProductRootPolicy.Apply(host.Location, root).Outcome);
+        Assert.AreEqual(root, HostProductRootPolicy.Resolve(host.Location).Path);
+
+        // A filesystem that was mounted at the root's ancestor and is now absent: the directories remain on the parent
+        // filesystem, but nothing is mounted where the policy says the root's filesystem lives.
+        var unmounted = Path.Combine(host.TrustRoot, "srv");
+        host.WritePolicyText(JsonSerializer.Serialize(new Dictionary<string, string>
+        {
+            ["productRoot"] = root,
+            ["mountPoint"] = unmounted
+        }));
+        var refused = Assert.ThrowsExactly<InstallerException>(() => HostProductRootPolicy.Resolve(host.Location));
+        StringAssert.Contains(refused.Message, $"mounted at '{unmounted}', but nothing is mounted there", StringComparison.Ordinal);
+
+        // A hand-written policy without a mount point is upgraded by restating the same root.
+        host.WritePolicy(root);
+        Assert.AreEqual(HostPolicyChange.Updated, HostProductRootPolicy.Apply(host.Location, root).Outcome);
+        Assert.AreEqual(HostPolicyChange.Unchanged, HostProductRootPolicy.Apply(host.Location, root).Outcome);
+        using var policy = JsonDocument.Parse(File.ReadAllText(host.Location.PolicyPath));
+        Assert.AreEqual(MountPointHolding(root), policy.RootElement.GetProperty("mountPoint").GetString());
+    }
+
+    [TestMethod]
+    public void EnsureMountedOn_RequiresTheRootToResolveThroughTheRecordedMount()
+    {
+        const string mountInfo =
+            "22 1 179:2 / / rw,relatime shared:1 - ext4 /dev/mmcblk0p2 rw\n" +
+            "30 22 259:2 / /srv rw,relatime shared:2 - ext4 /dev/nvme0n1p2 rw\n" +
+            "41 30 259:3 / /srv/data rw,relatime shared:3 - ext4 /dev/nvme0n1p3 rw\n";
+
+        HostProductRootPolicy.EnsureMountedOn("/srv/hvo-skymonitor", 30, "/srv", mountInfo);
+        Assert.AreEqual("/srv", HostProductRootPolicy.MountPointOf(30, mountInfo));
+        Assert.AreEqual("/", HostProductRootPolicy.MountPointOf(22, mountInfo));
+
+        // /srv unmounted: the root's directory now resolves through the root filesystem.
+        var absent = Assert.ThrowsExactly<InstallerException>(() => HostProductRootPolicy.EnsureMountedOn(
+            "/srv/hvo-skymonitor", 22, "/srv", mountInfo.Replace("30 22 259:2 / /srv rw", "99 22 0:1 / /mnt rw", StringComparison.Ordinal)));
+        StringAssert.Contains(absent.Message, "nothing is mounted there", StringComparison.Ordinal);
+
+        // Mounted, but the root resolves through another mount (something mounted over part of the path).
+        var other = Assert.ThrowsExactly<InstallerException>(
+            () => HostProductRootPolicy.EnsureMountedOn("/srv/data/hvo-skymonitor", 41, "/srv", mountInfo));
+        StringAssert.Contains(other.Message, "is not on the filesystem mounted at '/srv'", StringComparison.Ordinal);
+        Assert.ThrowsExactly<InstallerException>(() => HostProductRootPolicy.MountPointOf(77, mountInfo));
+    }
+
+    private static string MountPointHolding(string path)
+    {
+        var mountId = NativeLinux.GetNodeIdentity(path).MountId;
+        return HostProductRootPolicy.MountPointOf(mountId, File.ReadAllText(HostProductRootPolicy.MountInfoPath));
+    }
+
+    private static ComposeFiles WriteCompose(InstallationPaths paths)
+    {
+        var request = new InstallRequest
+        {
+            FriendlyName = "Compose Path",
+            OwnerEmail = "owner@example.test",
+            ProductRoot = paths.ProductRoot,
+            ImageReference = $"sha256:{new string('a', 64)}",
+            CatalogBundle = Path.Combine(paths.ProductRoot, "catalog.bundle")
+        };
+        Directory.CreateDirectory(paths.CatalogRoot);
+        return ComposeDeployment.Write(
+            request,
+            paths,
+            Guid.Parse(Path.GetFileName(paths.InstanceRoot)),
+            Guid.NewGuid(),
+            NativeLinux.getuid(),
+            NativeLinux.getgid(),
+            $"sha256:{new string('a', 64)}",
+            HygV42.PackageVersion,
+            Path.Combine(paths.ConfigRoot, "owner-password"),
+            "verification-token",
+            "lifecycle-token",
+            passwordAuthorityEnabled: false);
+    }
+
     private sealed class RecordingRunner(ProcessResult result) : IProcessRunner
     {
         public List<(string FileName, IReadOnlyList<string> Arguments)> Invocations { get; } = [];
@@ -561,7 +878,9 @@ public sealed class HostProductRootPolicyTests
                 TrustRoot,
                 NativeLinux.getuid(),
                 NativeLinux.getgid(),
-                DefaultRoot);
+                DefaultRoot,
+                Path.Combine(TrustRoot, "run/hvo-skymonitor-host-policy.lock"));
+            CreateDirectory("run");
         }
 
         public string TrustRoot { get; }

@@ -568,6 +568,68 @@ public sealed class InstallerFlowTests
     }
 
     /// <summary>
+    /// The product-root threshold the installer computes is twice the catalog bundle and image archive plus 1 GiB:
+    /// one byte short is refused naming exactly that requirement, and exactly that much is admitted.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstallAsync_ProductRootStorageThreshold_IsTwiceTheBundleAndArchivePlusHeadroom()
+    {
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
+        if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
+        {
+            Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the installer flow contract.");
+        }
+
+        var scratch = Path.Combine(Path.GetTempPath(), $"hvo-installer-budget-{Guid.NewGuid():N}");
+        var root = Path.Combine(scratch, "product");
+        var archive = Path.Combine(scratch, "cameraagent.tar");
+        Directory.CreateDirectory(scratch);
+        await File.WriteAllBytesAsync(archive, new byte[4096]);
+        File.SetUnixFileMode(archive, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var imageId = $"sha256:{new string('b', 64)}";
+        var request = new InstallRequest
+        {
+            AllowTestProductRoot = true,
+            InstanceId = Guid.Parse("3c6f1d2e-8a47-4b59-9d10-7e2f4a6b8c31"),
+            FriendlyName = "Budget Camera",
+            OwnerEmail = "owner@example.test",
+            ProductRoot = root,
+            CatalogBundle = bundle,
+            ImageReference = imageId,
+            ImageArchive = archive,
+            ImageArchiveSha256 = await SafeFileSystem.ComputeSha256Async(archive, CancellationToken.None),
+            DryRun = true,
+            Port = SelectFreePort()
+        };
+        var bundleBytes = Directory.EnumerateFiles(bundle).Sum(static path => new FileInfo(path).Length);
+        var required = (2 * (bundleBytes + 4096)) + HostPrerequisites.StorageHeadroomBytes;
+        var runner = new InstallerProcessRunner(imageId, root, request.InstanceId.Value);
+        try
+        {
+            var shortHost = new FakeHostEnvironment { FileSystems = { [root] = new HostFileSystemMeasurement("/srv/data", "259:2", required - 1) } };
+            var refused = await Assert.ThrowsExactlyAsync<HostPrerequisiteException>(() => CameraAgentInstaller.InstallAsync(
+                request, runner, _ => new InstallerOwnerClient(), RuntimeUid, RuntimeGid, CancellationToken.None,
+                portAvailabilityProbe: (_, _) => { }, hostEnvironment: shortHost));
+            var finding = refused.Report!.Findings.Single();
+            Assert.AreEqual("product-root-storage-insufficient", finding.Code);
+            StringAssert.Contains(finding.Expected, $"at least {required} bytes", StringComparison.Ordinal);
+
+            var exactHost = new FakeHostEnvironment { FileSystems = { [root] = new HostFileSystemMeasurement("/srv/data", "259:2", required) } };
+            var planned = await CameraAgentInstaller.InstallAsync(
+                request, runner, _ => new InstallerOwnerClient(), RuntimeUid, RuntimeGid, CancellationToken.None,
+                portAvailabilityProbe: (_, _) => { }, hostEnvironment: exactHost);
+            Assert.AreEqual(InstallationOutcome.Planned, planned.Outcome);
+            Assert.IsFalse(Directory.Exists(root));
+        }
+        finally
+        {
+            SafeFileSystem.MakeTreeOwnerWritable(scratch);
+            Directory.Delete(scratch, recursive: true);
+        }
+    }
+
+    /// <summary>
     /// Reserves an OS-selected loopback port and releases it, so no fixture depends on a fixed host port.
     /// </summary>
     private static int SelectFreePort()
