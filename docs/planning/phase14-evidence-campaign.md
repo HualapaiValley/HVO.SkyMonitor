@@ -36,7 +36,10 @@ value to map to an inventory row or carry a reasoned exclusion.
 the product pin named under Source Families, is excluded rather than added as a
 row: it cannot be evidenced at that pin, and a new row would change the canonical
 inventory digest that the accepted #971 import binds. Its coverage remains with
-the Development v1 CameraAgent unit tests.
+the Development v1 CameraAgent unit tests. A future campaign whose product pin
+contains this fault point should reassess the exclusion and supply matching
+scenario and evidence coverage under that campaign's own pinned definition,
+leaving this closed historical inventory and its #971 binding intact.
 
 The definition contract binds the canonical inventory SHA-256 and maps every row
 exactly once:
