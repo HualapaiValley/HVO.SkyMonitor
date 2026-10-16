@@ -2,6 +2,7 @@ using System.Linq;
 using System.Globalization;
 using System.Diagnostics.CodeAnalysis;
 using HVO.Enterprise.Telemetry;
+using HVO.Enterprise.Telemetry.Configuration;
 using HVO.Enterprise.Telemetry.OpenTelemetry;
 using HVO.Enterprise.Telemetry.Serilog;
 using Microsoft.AspNetCore.Builder;
@@ -99,13 +100,34 @@ public static class SkyMonitorObservabilityExtensions
     /// <summary>
     /// Configures the shared HVO telemetry stack and OTLP export.
     /// </summary>
-    public static IHostApplicationBuilder AddSkyMonitorObservability(this IHostApplicationBuilder builder)
+    /// <param name="builder">The host builder.</param>
+    /// <param name="serviceVersion">
+    /// The host build identity, normally its informational version (<c>&lt;version&gt;+&lt;revision&gt;</c>), reported by
+    /// the telemetry startup line and the <c>service.version</c> resource attribute. A configured
+    /// <c>Telemetry:ServiceVersion</c> takes precedence; when neither is present the version stays unset.
+    /// </param>
+    public static IHostApplicationBuilder AddSkyMonitorObservability(
+        this IHostApplicationBuilder builder,
+        string? serviceVersion = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
-        ConfigureSerilog(builder);
-        builder.Services.AddTelemetry(builder.Configuration.GetSection("Telemetry"));
+        var telemetrySection = builder.Configuration.GetSection("Telemetry");
+        var resolvedServiceVersion = ResolveServiceVersion(telemetrySection["ServiceVersion"], serviceVersion);
+        ConfigureSerilog(builder, resolvedServiceVersion);
+        builder.Services.AddTelemetry(telemetrySection);
+        if (resolvedServiceVersion is not null)
+        {
+            builder.Services.Configure<TelemetryOptions>(options => options.ServiceVersion = resolvedServiceVersion);
+        }
         builder.Services.AddOpenTelemetryExport(options =>
         {
+            if (resolvedServiceVersion is not null)
+            {
+                // The export package adds service.version only alongside a configured service name, so the resource
+                // also carries it directly and keeps the build identity when OTEL_SERVICE_NAME is not set.
+                options.ServiceVersion = resolvedServiceVersion;
+                options.ResourceAttributes["service.version"] = resolvedServiceVersion;
+            }
             // Preserve OTLP/HTTP signal paths using the collector's standard SDK environment settings.
             options.EnableTraceExport = false;
             options.EnableMetricsExport = false;
@@ -271,9 +293,14 @@ public static class SkyMonitorObservabilityExtensions
         return !string.IsNullOrWhiteSpace(configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]);
     }
 
+    internal static string? ResolveServiceVersion(string? configuredServiceVersion, string? buildServiceVersion)
+        => !string.IsNullOrWhiteSpace(configuredServiceVersion)
+            ? configuredServiceVersion
+            : string.IsNullOrWhiteSpace(buildServiceVersion) ? null : buildServiceVersion;
+
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
         Justification = "The created Serilog root logger owns and disposes its registered telemetry sink.")]
-    private static void ConfigureSerilog(IHostApplicationBuilder builder)
+    private static void ConfigureSerilog(IHostApplicationBuilder builder, string? serviceVersion)
     {
         var loggerConfiguration = new LoggerConfiguration()
             .MinimumLevel.Information()
@@ -294,6 +321,14 @@ public static class SkyMonitorObservabilityExtensions
         if (!string.IsNullOrWhiteSpace(endpoint))
         {
             var serviceName = builder.Configuration["OTEL_SERVICE_NAME"] ?? builder.Environment.ApplicationName;
+            var resourceAttributes = new Dictionary<string, object>
+            {
+                ["service.name"] = serviceName
+            };
+            if (serviceVersion is not null)
+            {
+                resourceAttributes["service.version"] = serviceVersion;
+            }
             var telemetryLogger = new LoggerConfiguration()
                 .MinimumLevel.Verbose()
                 .WriteTo.OpenTelemetry(options =>
@@ -303,10 +338,7 @@ public static class SkyMonitorObservabilityExtensions
                     options.IncludedData = IncludedData.TraceIdField |
                         IncludedData.SpanIdField |
                         IncludedData.SourceContextAttribute;
-                    options.ResourceAttributes = new Dictionary<string, object>
-                    {
-                        ["service.name"] = serviceName
-                    };
+                    options.ResourceAttributes = resourceAttributes;
                 })
                 .CreateLogger();
             loggerConfiguration.WriteTo.Sink(new SanitizedOpenTelemetryLogSink(telemetryLogger));

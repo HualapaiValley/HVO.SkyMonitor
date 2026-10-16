@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Net;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -102,7 +103,9 @@ public class Program
             });
         }
 
-        builder.AddSkyMonitorObservability();
+        // The Software page reads the same informational version, so telemetry and the UI name one build identity.
+        builder.AddSkyMonitorObservability(
+            typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion);
 
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddSingleton<ICorrelationIdAccessor, HttpContextCorrelationIdAccessor>();
