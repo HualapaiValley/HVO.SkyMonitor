@@ -56,6 +56,9 @@ archive="$root/cameraagent.tar"
 baseline_revision="${HVO_INSTALLER_BASELINE_REVISION:-}"
 install_tag="hvo-skymonitor-cameraagent:installer-contract-$$"
 candidate_tag=""
+variant_base_tag="hvo-skymonitor-cameraagent:installer-variant-base-$$"
+routine_tag="hvo-skymonitor-cameraagent:installer-routine-$$"
+migrating_tag="hvo-skymonitor-cameraagent:installer-migrating-$$"
 declare -A signed_loaded_images=()
 signed_source_worktrees=()
 port=55415
@@ -75,6 +78,9 @@ cleanup() {
   done
   for signed_worktree in "${signed_source_worktrees[@]}"; do
     git worktree remove --force "$signed_worktree" >/dev/null 2>&1 || true
+  done
+  for variant_tag in "$migrating_tag" "$routine_tag" "$variant_base_tag"; do
+    docker image rm --force "$variant_tag" >/dev/null 2>&1 || true
   done
   docker image rm --force "$install_tag" >/dev/null 2>&1 || true
   if [[ -n "$candidate_tag" ]]; then
@@ -579,6 +585,103 @@ test "$(jq -er '.CameraAgent.SkyMap.MaximumObjects' "$operator_settings_path")" 
 
 printf 'CameraAgent state preflight and operator-confirmed reset contract passed for instance %s.\n' "$instance_id"
 
+# --migration-backward-compatible asserts that the prior image can read the state a migrating candidate leaves
+# behind, so a routine upgrade must not need it (#1307). Both candidates are the installed image with labels added.
+# The routine one declares exactly the installed state boundaries and must upgrade without the assertion. The
+# migrating one declares a different minimum compatible revision, a state boundary the persisted-state preflight
+# never compares with the instance, so only the assertion gate can refuse it. A baseline-revision run may install an
+# image that predates the boundary labels, from which no upgrade is routine, so it keeps its own asserted upgrade.
+if [[ -z "$baseline_revision" ]]; then
+  lifecycle_state="$root/product/operations/cameraagent-$instance_id.lifecycle.json"
+  state_boundary_labels() {
+    docker image inspect "$1" | jq -cS '.[0].Config.Labels | with_entries(select(.key | IN(
+      "io.hvo.skymonitor.state-compatibility", "io.hvo.skymonitor.minimum-compatible-revision",
+      "io.hvo.skymonitor.identity-migration", "io.hvo.skymonitor.raw-ingress-schema",
+      "io.hvo.skymonitor.raw-ingress-migration", "io.hvo.skymonitor.catalog-manifest-version")))'
+  }
+  assert_running_image() {
+    local expected="$1" evidence_name="$2"
+    "$publish_root/HVO.SkyMonitor.Deployment.Cli" status \
+      --instance-id "$instance_id" \
+      --product-root "$root/product" \
+      --json >"$root/$evidence_name.json"
+    # A container running any image other than the manifest's reports outcome "drifted" and still exits zero.
+    test "$(jq -er '.outcome' "$root/$evidence_name.json")" = status
+    test "$(jq -er '.image.imageId' "$root/$evidence_name.json")" = "$expected"
+    test "$(jq -er '.running' "$root/$evidence_name.json")" = true
+    test "$(jq -er '.healthy' "$root/$evidence_name.json")" = true
+  }
+  # Every boundary except the optional raw-ingress migration must be declared, or no upgrade from this image could
+  # be routine and the routine case below would prove nothing.
+  jq -e '.[0].Config.Labels as $labels | [
+      "io.hvo.skymonitor.state-compatibility", "io.hvo.skymonitor.minimum-compatible-revision",
+      "io.hvo.skymonitor.identity-migration", "io.hvo.skymonitor.raw-ingress-schema",
+      "io.hvo.skymonitor.catalog-manifest-version"
+    ] | all(. as $label | ($labels[$label] // "") != "")' <(docker image inspect "$image_id") >/dev/null
+  test "$(docker image inspect --format '{{index .Config.Labels "io.hvo.skymonitor.state-compatibility"}}' "$image_id")" = \
+    cameraagent-state-v2
+  docker image tag "$image_id" "$variant_base_tag"
+  printf 'FROM %s\nLABEL io.hvo.skymonitor.installer-campaign=routine-upgrade\n' "$variant_base_tag" |
+    docker build --quiet --tag "$routine_tag" - >/dev/null
+  printf 'FROM %s\nLABEL io.hvo.skymonitor.installer-campaign=migrating-upgrade io.hvo.skymonitor.minimum-compatible-revision=%s\n' \
+    "$variant_base_tag" 0000000000000000000000000000000000000000 |
+    docker build --quiet --tag "$migrating_tag" - >/dev/null
+  routine_image_id="$(docker image inspect --format '{{.Id}}' "$routine_tag")"
+  migrating_image_id="$(docker image inspect --format '{{.Id}}' "$migrating_tag")"
+  test "$routine_image_id" != "$image_id"
+  test "$migrating_image_id" != "$image_id"
+  test "$(state_boundary_labels "$routine_image_id")" = "$(state_boundary_labels "$image_id")"
+  test "$(state_boundary_labels "$migrating_image_id")" != "$(state_boundary_labels "$image_id")"
+
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent upgrade \
+    --instance-id "$instance_id" \
+    --product-root "$root/product" \
+    --image-ref "$routine_image_id" \
+    --no-download \
+    --json >"$root/routine-upgrade.json"
+  test "$(jq -er '.outcome' "$root/routine-upgrade.json")" = completed
+  test "$(jq -er '.image.imageId' "$root/routine-upgrade.json")" = "$routine_image_id"
+  assert_running_image "$routine_image_id" routine-upgrade-status
+
+  # Refused after the operation is journalled and before any mutation, so the refusal is terminal and the instance,
+  # its manifest, and its running image are unchanged.
+  manifest_before_migration="$(sha256sum "$instance_root/instance-manifest.json" | cut -d ' ' -f 1)"
+  if "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent upgrade \
+    --instance-id "$instance_id" \
+    --product-root "$root/product" \
+    --image-ref "$migrating_image_id" \
+    --no-download \
+    --json >"$root/migrating-refused.json" 2>"$root/migrating-refused-error.json"; then
+    printf 'An upgrade declaring a state migration was admitted without --migration-backward-compatible.\n' >&2
+    exit 1
+  fi
+  test ! -s "$root/migrating-refused.json"
+  test "$(jq -er '.errorCode' "$root/migrating-refused-error.json")" = installation-failed
+  jq -e '.message | contains("declares a CameraAgent state migration") and
+    contains("io.hvo.skymonitor.minimum-compatible-revision installed ")' \
+    "$root/migrating-refused-error.json" >/dev/null
+  test "$(jq -er '.kind' "$lifecycle_state")" = Upgrade
+  test "$(jq -er '.status' "$lifecycle_state")" = Failed
+  test "$(jq -er '.failureCode' "$lifecycle_state")" = lifecycle-refused
+  test "$(jq -er '.mutationStarted' "$lifecycle_state")" = false
+  test "$(sha256sum "$instance_root/instance-manifest.json" | cut -d ' ' -f 1)" = "$manifest_before_migration"
+  assert_running_image "$routine_image_id" migrating-refused-status
+
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent upgrade \
+    --instance-id "$instance_id" \
+    --product-root "$root/product" \
+    --image-ref "$migrating_image_id" \
+    --no-download \
+    --migration-backward-compatible \
+    --json >"$root/migrating-upgrade.json"
+  test "$(jq -er '.outcome' "$root/migrating-upgrade.json")" = completed
+  test "$(jq -er '.image.imageId' "$root/migrating-upgrade.json")" = "$migrating_image_id"
+  assert_running_image "$migrating_image_id" migrating-upgrade-status
+
+  printf 'State-migration assertion contract passed for instance %s: routine upgrade without the assertion, migrating candidate refused without it and admitted with it.\n' \
+    "$instance_id"
+fi
+
 printf 'Disposable offline installer contract passed for instance %s.\n' "$instance_id"
 
 # The signed CameraAgent image train is proved end to end here: two real release candidates, a real container,
@@ -697,6 +800,19 @@ if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
   test "$(jq -er '.signing.keyId' "$signed_manifest_a")" = "$signed_key_id"
   test "$(jq -er '.signing.keyId' "$signed_manifest_b")" = "$signed_key_id"
   test "$(jq -er '.release.version' "$signed_manifest_b")" = "$signed_version_b"
+  # An operator asserts --migration-backward-compatible only for a candidate that declares a state migration (#1307),
+  # so every signed transition passes it only when the two releases declare different state boundaries. Built from
+  # adjacent revisions they normally declare the same ones, and every upgrade below then runs without it.
+  signed_state_boundaries() {
+    jq -cS '.images[0].compatibility | {stateContract, minimumCompatibleRevision, identityMigration, rawIngressSchema,
+      rawIngressMigration, catalogManifestVersion}' "$1"
+  }
+  signed_migration_arguments=()
+  signed_migration_assertion="not asserted: both releases declare the same state boundaries"
+  if [[ "$(signed_state_boundaries "$signed_manifest_a")" != "$(signed_state_boundaries "$signed_manifest_b")" ]]; then
+    signed_migration_arguments=(--migration-backward-compatible)
+    signed_migration_assertion="asserted: the releases declare different state boundaries"
+  fi
 
   # Each refused release is a manifest and signature in its own directory that names the real published archives
   # through --asset-base-url, so nothing copies or links a gigabyte of archives, the published candidates keep
@@ -1059,7 +1175,7 @@ SIGNED_DOCKER_SHIM
     --channel local \
     --image-manifest "$signed_manifest_b" \
     --no-download \
-    --migration-backward-compatible \
+    "${signed_migration_arguments[@]}" \
     --json >"$root/signed-production-trust.json" 2>"$root/signed-production-trust-error.json"; then
     printf 'The production trust root accepted a release signed by the campaign key.\n' >&2
     exit 1
@@ -1123,7 +1239,7 @@ SIGNED_DOCKER_SHIM
       --channel local \
       --image-manifest "$signed_manifest_b" \
       --no-download \
-      --migration-backward-compatible \
+      "${signed_migration_arguments[@]}" \
       --json >"$root/signed-post-mutation-failure.json" 2>"$root/signed-post-mutation-failure-error.json"; then
     printf 'The injected post-mutation candidate verification failure unexpectedly succeeded.\n' >&2
     exit 1
@@ -1191,7 +1307,7 @@ SIGNED_DOCKER_SHIM
     --channel local \
     --image-manifest "$signed_manifest_b" \
     --no-download \
-    --migration-backward-compatible \
+    "${signed_migration_arguments[@]}" \
     --resume \
     --json >"$root/signed-upgrade.json"
   read_signed_status signed-status-upgrade
@@ -1214,7 +1330,7 @@ SIGNED_DOCKER_SHIM
     --product-root "$root/product" \
     --image-ref "$(jq -er '.image.imageId' "$root/signed-install.json")" \
     --no-download \
-    --migration-backward-compatible \
+    "${signed_migration_arguments[@]}" \
     --json >"$root/signed-image-reference-upgrade.json"
   read_signed_status signed-status-image-reference-upgrade
   capture_signed_state 03d-image-reference-upgrade signed-image-reference-upgrade signed-status-image-reference-upgrade
@@ -1233,7 +1349,7 @@ SIGNED_DOCKER_SHIM
     --channel local \
     --image-manifest "$signed_manifest_b" \
     --no-download \
-    --migration-backward-compatible \
+    "${signed_migration_arguments[@]}" \
     --json >"$root/signed-reupgrade.json"
   read_signed_status signed-status-reupgrade
   capture_signed_state 03e-signed-upgrade-release-b signed-reupgrade signed-status-reupgrade
@@ -1266,7 +1382,7 @@ SIGNED_DOCKER_SHIM
       --image-manifest "$manifest" \
       --asset-base-url "$asset_base" \
       --no-download \
-      --migration-backward-compatible \
+      "${signed_migration_arguments[@]}" \
       --json >"$root/signed-$label.json" 2>"$root/signed-$label-error.json"; then
       printf '%s\n' "$failure" >&2
       exit 1
@@ -1317,7 +1433,7 @@ SIGNED_DOCKER_SHIM
     --image-manifest "$signed_manifest_contradicting" \
     --asset-base-url "$signed_workspace/release-b" \
     --no-download \
-    --migration-backward-compatible \
+    "${signed_migration_arguments[@]}" \
     --json >"$root/signed-contradicting.json" 2>"$root/signed-contradicting-error.json"; then
     printf 'A release contradicting the image labels was accepted.\n' >&2
     exit 1
@@ -1361,7 +1477,7 @@ SIGNED_DOCKER_SHIM
     --image-manifest "$signed_manifest_contradicting" \
     --asset-base-url "$signed_workspace/release-b" \
     --no-download \
-    --migration-backward-compatible \
+    "${signed_migration_arguments[@]}" \
     --resume \
     --json >"$root/signed-contradicting-resume.json" 2>"$root/signed-contradicting-resume-error.json"; then
     printf 'A refused upgrade was resumed.\n' >&2
@@ -1435,6 +1551,7 @@ SIGNED_DOCKER_SHIM
     printf 'release %s revision %s image %s\n' "$signed_version_a" "$signed_revision_a" "$signed_image_a"
     printf 'release %s revision %s image %s\n' "$signed_version_b" "$signed_revision_b" "$signed_image_b"
     printf 'post-mutation verification injection: one healthy candidate container inspection reported privileged; exact rollback restored release %s and capture advanced\n' "$signed_version_a"
+    printf 'state migration assertion: %s\n' "$signed_migration_assertion"
     printf 'campaign host architecture: %s\n' "$host_machine_architecture"
     printf 'campaign native platform: linux/%s\n' "$host_image_architecture"
     printf 'campaign CLI runtime: %s\n' "$host_cli_runtime"

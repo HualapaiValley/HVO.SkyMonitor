@@ -723,7 +723,7 @@ internal static class CameraAgentStatePreflight
 
     internal static long ReadRawIngressVersion(string databasePath) => ReadRawIngressSchema(databasePath).UserVersion;
 
-    private static (long UserVersion, long SchemaObjects) ReadRawIngressSchema(string databasePath)
+    internal static (long UserVersion, long SchemaObjects) ReadRawIngressSchema(string databasePath)
     {
         using var database = ReadOnlyDatabase.Open(databasePath);
         return ReadRawIngressSchema(database.Connection);
