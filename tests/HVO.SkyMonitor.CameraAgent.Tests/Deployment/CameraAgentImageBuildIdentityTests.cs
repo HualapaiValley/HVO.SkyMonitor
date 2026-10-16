@@ -12,6 +12,10 @@ public sealed class CameraAgentImageBuildIdentityTests
     private const string StampArguments =
         "\"-p:InformationalVersion=${HVO_VERSION}\" \"-p:SourceRevisionId=${HVO_SOURCE_REVISION}\"";
 
+    // Each stage inherits the one declared default instead of restating it.
+    private static readonly string[] StageIdentityDeclarations =
+        ["ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION", "ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION"];
+
     [TestMethod]
     public void Dockerfile_DeclaresADevelopmentVersionAndAnUnknownRevisionByDefault()
     {
@@ -21,9 +25,8 @@ public sealed class CameraAgentImageBuildIdentityTests
 
         CollectionAssert.Contains(global, "ARG HVO_VERSION=0.0.0-dev");
         CollectionAssert.Contains(global, "ARG HVO_SOURCE_REVISION=unknown");
-        // Each stage inherits the one declared default instead of restating it.
         CollectionAssert.AreEqual(
-            new[] { "ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION", "ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION" },
+            StageIdentityDeclarations,
             instructions[firstStage..].Where(static instruction => instruction.StartsWith("ARG HVO_", StringComparison.Ordinal)).ToArray());
     }
 
@@ -42,7 +45,7 @@ public sealed class CameraAgentImageBuildIdentityTests
         Assert.HasCount(2, publishes);
         foreach (var (instruction, _) in publishes)
         {
-            StringAssert.Contains(instruction, StampArguments);
+            StringAssert.Contains(instruction, StampArguments, StringComparison.Ordinal);
         }
         // A change of revision alone must keep reusing restore and the source copy.
         Assert.IsGreaterThan(build.IndexOf("COPY src/ src/"), identity);
@@ -58,8 +61,8 @@ public sealed class CameraAgentImageBuildIdentityTests
         var runtime = instructions[runtimeStage..];
         var label = runtime.Single(static instruction => instruction.StartsWith("LABEL ", StringComparison.Ordinal));
 
-        StringAssert.Contains(label, "org.opencontainers.image.version=\"${HVO_VERSION}\"");
-        StringAssert.Contains(label, "org.opencontainers.image.revision=\"${HVO_SOURCE_REVISION}\"");
+        StringAssert.Contains(label, "org.opencontainers.image.version=\"${HVO_VERSION}\"", StringComparison.Ordinal);
+        StringAssert.Contains(label, "org.opencontainers.image.revision=\"${HVO_SOURCE_REVISION}\"", StringComparison.Ordinal);
         // The package install and payload copy stay cached across revisions.
         Assert.IsGreaterThan(
             runtime.FindLastIndex(static instruction => instruction.StartsWith("COPY --from=build ", StringComparison.Ordinal)),
