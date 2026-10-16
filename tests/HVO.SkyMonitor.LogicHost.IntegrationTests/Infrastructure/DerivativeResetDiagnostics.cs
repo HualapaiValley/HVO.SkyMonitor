@@ -141,8 +141,8 @@ internal static class DerivativeResetDiagnostics
         command.CommandTimeout = 2;
         command.CommandText = """
             SELECT TOP (64) s.session_id, s.login_time, s.host_process_id, s.open_transaction_count,
-                s.cpu_time, s.reads, s.writes, s.logical_reads, r.blocking_session_id, r.wait_type,
-                r.wait_time, r.wait_resource, r.cpu_time, r.reads, r.writes, r.logical_reads,
+                s.cpu_time AS session_cpu_ms, s.reads AS session_reads, s.writes AS session_writes, s.logical_reads AS session_logical_reads, r.blocking_session_id, r.wait_type,
+                r.wait_time, r.wait_resource, r.cpu_time AS request_cpu_ms, r.reads AS request_reads, r.writes AS request_writes, r.logical_reads AS request_logical_reads,
                 r.query_hash, r.query_plan_hash, r.start_time,
                 (SELECT MIN(t.transaction_begin_time) FROM sys.dm_tran_session_transactions st
                  JOIN sys.dm_tran_active_transactions t ON st.transaction_id = t.transaction_id
@@ -165,14 +165,14 @@ internal static class DerivativeResetDiagnostics
             for (var index = 0; index < reader.FieldCount; index++)
             {
                 var value = await reader.IsDBNullAsync(index, token).ConfigureAwait(false) ? null : reader.GetValue(index);
-                values[reader.GetName(index)] = value switch
+                values.Add(reader.GetName(index), value switch
                 {
                     byte[] bytes => Convert.ToHexString(bytes),
                     string text when index == 11 => SafeWaitResource(text),
                     string text when index == 9 && text.Length <= 64 && text.All(character => char.IsAsciiLetterOrDigit(character) || character == '_') => text,
                     string => "redacted",
                     _ => value
-                };
+                });
             }
             result.Add(values);
         }
