@@ -10,6 +10,7 @@ namespace HVO.SkyMonitor.IntegrationTests.Infrastructure;
 /// <summary>Closed projections only: SQL text, literals, names and exception messages never leave the collector.</summary>
 internal static class DerivativeResetEvidence
 {
+    private static readonly string[] HostCounterFiles = ["/proc/stat", "/proc/meminfo", "/proc/vmstat"];
     internal const int MaximumSamples = 90;
     internal const int MaximumBytes = 8 * 1024 * 1024;
     internal static readonly TimeSpan Window = TimeSpan.FromSeconds(90);
@@ -87,7 +88,10 @@ internal static class DerivativeResetEvidence
     internal static object HostSnapshot() => new
     {
         utc = DateTimeOffset.UtcNow,
-        counters = NumericLines(string.Join('\n', new[] { "/proc/stat", "/proc/meminfo", "/proc/vmstat" }.Select(File.ReadAllText))),
+        counters = NumericLines(string.Join('\n', HostCounterFiles.Select(File.ReadAllText))),
+        diskCounters = NumericLines(string.Join('\n', File.ReadLines("/proc/diskstats").Take(128)
+            .Select(line => line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+            .Where(parts => parts.Length >= 14).Select(parts => $"{parts[0]}:{parts[1]} " + string.Join(' ', parts.Skip(3))))),
         // PID/counters identify competing processes without exposing argv, users or environment.
         processes = ReadProcesses()
     };

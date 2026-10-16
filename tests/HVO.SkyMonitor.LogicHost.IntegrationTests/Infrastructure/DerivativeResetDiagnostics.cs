@@ -18,7 +18,7 @@ internal static class DerivativeResetDiagnostics
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Opt-in diagnostics must preserve the original reset exception; only closed error codes are retained.")]
     internal static async Task RunAsync(ApplicationDbContext db, string site, Func<Task> reset,
-        Func<CancellationToken, Task<(string Id, long ExitCode, string Counters)>> container)
+        Func<CancellationToken, Task<(string Id, long? ExitCode, string Counters)>> container)
     {
         var directory = Environment.GetEnvironmentVariable("HVO_RESET_DIAGNOSTICS_DIRECTORY");
         if (string.IsNullOrWhiteSpace(directory))
@@ -54,7 +54,7 @@ internal static class DerivativeResetDiagnostics
             try
             {
                 var builder = new SqlConnectionStringBuilder(connection.ConnectionString) { Pooling = false, ConnectTimeout = 2 };
-                await db.Database.OpenConnectionAsync(deadline.Token).ConfigureAwait(false);
+                if (opened) { await db.Database.OpenConnectionAsync(deadline.Token).ConfigureAwait(false); }
                 session = connection.ServerProcessId;
                 observer = new SqlConnection(builder.ConnectionString);
                 await observer.OpenAsync(deadline.Token).ConfigureAwait(false);
@@ -114,8 +114,12 @@ internal static class DerivativeResetDiagnostics
                 }, DerivativeResetEvidence.MaximumBytes).ConfigureAwait(false);
             }
             catch (Exception error) { Console.WriteLine($"Reset diagnostic retention failed: {Error(error)}"); }
-            if (observer is not null) { await observer.DisposeAsync().ConfigureAwait(false); }
-            if (opened) { await db.Database.CloseConnectionAsync().ConfigureAwait(false); }
+            try
+            {
+                if (observer is not null) { await observer.DisposeAsync().ConfigureAwait(false); }
+                if (opened) { await db.Database.CloseConnectionAsync().ConfigureAwait(false); }
+            }
+            catch (Exception error) { Console.WriteLine($"Reset diagnostic disposal failed: {Error(error)}"); }
         }
     }
 
@@ -154,7 +158,7 @@ internal static class DerivativeResetDiagnostics
             var values = new Dictionary<string, object?>(StringComparer.Ordinal);
             for (var index = 0; index < reader.FieldCount; index++)
             {
-                var value = reader.IsDBNull(index) ? null : reader.GetValue(index);
+                var value = await reader.IsDBNullAsync(index, token).ConfigureAwait(false) ? null : reader.GetValue(index);
                 values[reader.GetName(index)] = value switch
                 {
                     byte[] bytes => Convert.ToHexString(bytes),
