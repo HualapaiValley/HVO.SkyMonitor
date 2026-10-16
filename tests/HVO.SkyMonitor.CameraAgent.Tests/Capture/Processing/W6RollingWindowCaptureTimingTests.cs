@@ -113,6 +113,7 @@ public sealed class W6RollingWindowCaptureTimingTests
             Assert.IsNotNull(rolling);
             Assert.HasCount(1, rolling.Outputs);
             var stackCount = rolling.Outputs[0].Descriptor!.Artifact.SourceArtifactIds.Count;
+            Assert.AreEqual(WindowSize, stackCount);
 
             var evidence = new
             {

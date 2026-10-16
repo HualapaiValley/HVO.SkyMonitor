@@ -111,6 +111,36 @@ public sealed class FilesystemObjectBackupTests
         return sb.ToString();
     }
 
+    internal async Task VerifyCommittedMarkerDurabilityBeforeRollbackDeletionAsync()
+    {
+        var control = FilesystemObjectStoreFaultTests.RequireKernelRetryControl();
+        await Put(Artifacts, "a", "new-a");
+        await Put(Diagnostics, "d", "new-d");
+        foreach (var bucket in Buckets)
+        {
+            var replaced = Path.Combine(_root, bucket + ".replaced");
+            Directory.CreateDirectory(replaced);
+            await File.WriteAllTextAsync(Path.Combine(replaced, "old-marker"), "old");
+        }
+        await WriteRestoreMarker("committed", hadPrevious: true);
+        _store.Dispose();
+        FilesystemObjectStoreFaultTests.ArmKernelRetryFault(control, _root);
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            Assert.ThrowsExactly<HVO.SkyMonitor.Storage.FileSystem.FileSystemFaultException>(() =>
+                FilesystemObjectBackup.RecoverInterruptedRestore(HVO.SkyMonitor.Storage.FileSystem.PhysicalRoot.Open(_root), Buckets));
+            foreach (var bucket in Buckets)
+                Assert.IsTrue(File.Exists(Path.Combine(_root, bucket + ".replaced", "old-marker")),
+                    "A visible committed marker cannot authorize rollback destruction before its durability barrier succeeds.");
+        }
+        FilesystemObjectStoreFaultTests.WaitForKernelController(control + ".released");
+        FilesystemObjectBackup.RecoverInterruptedRestore(HVO.SkyMonitor.Storage.FileSystem.PhysicalRoot.Open(_root), Buckets);
+        using var recovered = OpenStore(_root);
+        Assert.AreEqual("new-a", await Read(recovered, Artifacts, "a"));
+        Assert.AreEqual("new-d", await Read(recovered, Diagnostics, "d"));
+        Assert.IsFalse(File.Exists(Path.Combine(_root, FilesystemObjectBackup.RestoreMarkerFileName)));
+    }
+
     [TestMethod]
     public async Task BackupRecordsEveryLiveObjectExactlyAndNothingElse()
     {
