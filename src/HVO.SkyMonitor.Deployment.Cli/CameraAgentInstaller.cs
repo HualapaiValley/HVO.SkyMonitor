@@ -223,8 +223,8 @@ internal sealed class CameraAgentInstaller
                 state = await RecordPhaseAsync(paths, state, InstallationPhase.Configuration, cancellationToken).ConfigureAwait(false);
             }
             var generatedPasswordPath = Path.Combine(paths.ConfigRoot, "owner-bootstrap", "temporary-password");
-            var passwordPath = retainedCompletedResult?.PasswordFile ?? await CredentialFile.GetOrCreateAsync(
-                    request.PasswordFile,
+            var passwordPath = retainedCompletedResult?.PasswordFile ?? await CreateOwnerPasswordAsync(
+                    request,
                     generatedPasswordPath,
                     cancellationToken).ConfigureAwait(false);
             var verificationTokenPath = Path.Combine(paths.ConfigRoot, "installation-verification", "token");
@@ -336,11 +336,15 @@ internal sealed class CameraAgentInstaller
             await ownerClient.WaitForHealthAsync(ProductionCatalog.Get(catalog.CatalogId), cancellationToken).ConfigureAwait(false);
 
             var ownerState = retainedCompletedResult?.OwnerBootstrapState ?? "owner-temporary-password";
+            // Whether the owner's first sign-in is the documented default comes from the credential actually seeded,
+            // not from this invocation's flags, because a resumed installation keeps the credential its first run wrote.
+            var ownerPasswordIsDefault = retainedCompletedResult?.OwnerPasswordIsDefault ?? false;
             string? password = null;
             if (retainedCompletedResult is null)
             {
                 state = await RecordPhaseAsync(paths, state, InstallationPhase.OwnerBootstrap, cancellationToken).ConfigureAwait(false);
                 password = await ReadOwnerSecretAsync(passwordPath, cancellationToken).ConfigureAwait(false);
+                ownerPasswordIsDefault = string.Equals(password, OwnerCredentialDefaults.Password, StringComparison.Ordinal);
                 ownerState = await ownerClient.ReadStateAsync(request.OwnerEmail, password, cancellationToken)
                     .ConfigureAwait(false);
                 if (ownerState == "owner-temporary-password")
@@ -436,6 +440,7 @@ internal sealed class CameraAgentInstaller
                 image,
                 daemon,
                 ownerState,
+                ownerPasswordIsDefault,
                 DateTimeOffset.UtcNow);
             if (retainedCompletedResult is not null)
             {
@@ -583,7 +588,8 @@ internal sealed class CameraAgentInstaller
                 Healthy: false,
                 "planned",
                 DateTimeOffset.UtcNow,
-                (ContractReplayProfile)request.ReplayProfile);
+                (ContractReplayProfile)request.ReplayProfile,
+                OwnerPasswordIsDefault: request.PasswordFile is null && !request.GeneratePassword);
         }
         finally
         {
@@ -707,6 +713,7 @@ internal sealed class CameraAgentInstaller
                 image,
                 daemon,
                 "owner-password-change-required",
+                retainedResult.OwnerPasswordIsDefault,
                 retainedResult.CompletedUtc);
             if (candidateResult != retainedResult)
             {
@@ -815,6 +822,7 @@ internal sealed class CameraAgentInstaller
         ImageInstallationIdentity image,
         DockerDaemonIdentity daemon,
         string ownerState,
+        bool ownerPasswordIsDefault,
         DateTimeOffset completedUtc)
         => new(
             DeploymentSchemaVersions.InstallationResult,
@@ -852,7 +860,21 @@ internal sealed class CameraAgentInstaller
             Healthy: true,
             ownerState,
             completedUtc,
-            (ContractReplayProfile)request.ReplayProfile);
+            (ContractReplayProfile)request.ReplayProfile,
+            ownerPasswordIsDefault);
+
+    /// <summary>
+    /// Publishes the owner's temporary password: the operator's <c>--password-file</c>, a random password for
+    /// <c>--generate-password</c>, or otherwise the documented default. A credential an earlier run already
+    /// published is kept unchanged.
+    /// </summary>
+    private static Task<string> CreateOwnerPasswordAsync(
+        InstallRequest request,
+        string generatedPasswordPath,
+        CancellationToken cancellationToken)
+        => request.PasswordFile is null && !request.GeneratePassword
+            ? CredentialFile.GetOrCreateKnownAsync(generatedPasswordPath, OwnerCredentialDefaults.Password, cancellationToken)
+            : CredentialFile.GetOrCreateAsync(request.PasswordFile, generatedPasswordPath, cancellationToken);
 
     private static async Task<string> ReadOwnerSecretAsync(string path, CancellationToken cancellationToken)
     {

@@ -177,7 +177,7 @@ internal static class Program
         await Console.Out.WriteLineAsync($"Instance: {result.InstanceId:D} ({result.FriendlyName})").ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"URL: {result.Url}").ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"Owner: {result.OwnerEmail}").ConfigureAwait(false);
-        await Console.Out.WriteLineAsync($"Temporary password file: {result.PasswordFile}").ConfigureAwait(false);
+        await Console.Out.WriteLineAsync(OwnerSignInInstruction(result)).ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"Instance root: {result.InstanceRoot}").ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"Configuration: {result.ConfigurationSha256}").ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"Rig profile: {result.RigProfileName} / {result.RigProfileVersion}").ConfigureAwait(false);
@@ -187,6 +187,15 @@ internal static class Program
         await Console.Out.WriteLineAsync($"Runtime: {result.RuntimeUid}:{result.RuntimeGid}; alive={result.Alive}; healthy={result.Healthy}").ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"State: {result.OwnerBootstrapState}").ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Tells the operator how to sign in for the first time. The documented default is named outright because it is
+    /// public by design; any other temporary password is only ever referred to by its owner-only file.
+    /// </summary>
+    internal static string OwnerSignInInstruction(HVO.SkyMonitor.Deployment.Contracts.InstallationResult result)
+        => result.OwnerPasswordIsDefault
+            ? $"Sign in as {OwnerCredentialDefaults.UserName} / {OwnerCredentialDefaults.Password}; a password change is required at first sign-in."
+            : $"Temporary password file: {result.PasswordFile}";
 
     private static async Task WriteLifecycleResultAsync(HVO.SkyMonitor.Deployment.Contracts.LifecycleResult result)
     {

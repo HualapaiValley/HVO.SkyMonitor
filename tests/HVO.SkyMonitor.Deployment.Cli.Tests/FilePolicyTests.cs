@@ -108,6 +108,90 @@ public sealed class FilePolicyTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CredentialFile_KnownDefaultIsPublishedOwnerOnlyAndRetainedOnResume()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-{Guid.NewGuid():N}");
+        var path = Path.Combine(root, "owner-bootstrap", "temporary-password");
+        try
+        {
+            var first = await CredentialFile.GetOrCreateKnownAsync(path, "skymonitor", CancellationToken.None);
+            var second = await CredentialFile.GetOrCreateKnownAsync(path, "something-else", CancellationToken.None);
+
+            Assert.AreEqual(path, first);
+            Assert.AreEqual(first, second);
+            CollectionAssert.AreEqual("skymonitor\n"u8.ToArray(), await File.ReadAllBytesAsync(first));
+            Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(first));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("abcdefgh\n")]
+    [DataRow("abcdefgh")]
+    [DataRow("pass phrase with spaces\r\n")]
+    public async Task CredentialFile_SuppliedPasswordOfEightOrMoreCharactersIsCopied(string content)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-{Guid.NewGuid():N}");
+        var supplied = Path.Combine(root, "supplied-password");
+        var generated = Path.Combine(root, "owner-bootstrap", "temporary-password");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await File.WriteAllTextAsync(supplied, content);
+            File.SetUnixFileMode(supplied, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            var published = await CredentialFile.GetOrCreateAsync(supplied, generated, CancellationToken.None);
+
+            Assert.AreEqual(generated, published);
+            Assert.AreEqual(content, await File.ReadAllTextAsync(published));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(new byte[] { 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67 }, "length is invalid")]
+    [DataRow(new byte[] { 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x0A }, "content is invalid")]
+    [DataRow(new byte[] { 0x61, 0x62, 0x63, 0x09, 0x64, 0x65, 0x66, 0x67, 0x68 }, "content is invalid")]
+    [DataRow(new byte[] { 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0xFF }, "not valid UTF-8")]
+    public async Task CredentialFile_SuppliedPasswordOutsideThePolicyIsRejected(byte[] content, string expectedMessage)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        ArgumentNullException.ThrowIfNull(expectedMessage);
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-{Guid.NewGuid():N}");
+        var supplied = Path.Combine(root, "supplied-password");
+        var generated = Path.Combine(root, "owner-bootstrap", "temporary-password");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await File.WriteAllBytesAsync(supplied, content);
+            File.SetUnixFileMode(supplied, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+            var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
+                () => CredentialFile.GetOrCreateAsync(supplied, generated, CancellationToken.None));
+
+            StringAssert.Contains(exception.Message, expectedMessage, StringComparison.Ordinal);
+            Assert.IsFalse(File.Exists(generated));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void ProtectedFilesAndLocks_RejectLinks()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-{Guid.NewGuid():N}");

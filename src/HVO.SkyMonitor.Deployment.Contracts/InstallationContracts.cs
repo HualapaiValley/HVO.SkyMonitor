@@ -323,4 +323,5 @@ public sealed record InstallationResult(
     bool Healthy,
     string OwnerBootstrapState,
     DateTimeOffset CompletedUtc,
-    CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess);
+    CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess,
+    bool OwnerPasswordIsDefault = false);

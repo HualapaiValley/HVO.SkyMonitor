@@ -268,7 +268,7 @@ internal static class OwnerRecoveryManager
     private static async Task<string> ReadPasswordAsync(string path, CancellationToken cancellationToken)
     {
         SafeFileSystem.ValidateOwnerFile(path);
-        if (new FileInfo(path).Length is < 16 or > 256)
+        if (new FileInfo(path).Length is < OwnerCredentialDefaults.MinimumPasswordLength or > OwnerCredentialDefaults.MaximumPasswordLength)
         {
             throw new InstallerException("The owner recovery password file length is invalid.");
         }
@@ -284,7 +284,9 @@ internal static class OwnerRecoveryManager
         {
             throw new InstallerException("The owner recovery password file is not valid UTF-8.", exception);
         }
-        if (password.Length is < 16 or > 256 || password.Any(static character => character is < '!' or > '~'))
+        if (password.Length < OwnerCredentialDefaults.MinimumPasswordLength ||
+            password.Length > OwnerCredentialDefaults.MaximumPasswordLength ||
+            password.Any(static character => character is < '!' or > '~'))
         {
             throw new InstallerException("The owner recovery password file content is invalid.");
         }
