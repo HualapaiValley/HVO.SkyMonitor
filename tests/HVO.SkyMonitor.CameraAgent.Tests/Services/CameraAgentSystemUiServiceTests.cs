@@ -291,6 +291,7 @@ public sealed class CameraAgentSystemUiServiceTests
     [DataRow("1.4.2", "1.4.2", null)]
     [DataRow("1.4.2+abc123", "1.4.2", "abc123")]
     [DataRow("1.4.2+0123456789abcdef0123", "1.4.2", "0123456789ab")]
+    [DataRow("0.0.0-dev+unknown", "0.0.0-dev", "unknown")]
     public void SplitVersion_SeparatesAndShortensTheRevision(string? informational, string version, string? revision)
         => Assert.AreEqual((version, revision), CameraAgentSystemUiService.SplitVersion(informational));
 

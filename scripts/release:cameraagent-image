@@ -176,6 +176,7 @@ build_platform() {
     "${prefix[@]}" buildx build "${selector[@]}" \
         --platform "linux/${architecture}" \
         --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
+        --build-arg "HVO_VERSION=${version}" \
         --build-arg "HVO_SOURCE_REVISION=${revision}" \
         --provenance false \
         --output "type=docker,dest=${destination}" \
@@ -235,6 +236,16 @@ docker run --rm --entrypoint /bin/sh "$loaded_reference" -c \
     >/dev/null
 docker run --rm --network none --entrypoint /app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner \
     "$loaded_reference" --capabilities >/dev/null
+# The release version and revision must reach the version label and the published assemblies, not only the revision
+# label. Both platforms share one label set, which create-image requires, so the host platform speaks for the label.
+[[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$loaded_reference")" \
+    == "$version" ]] || { printf 'The image version label does not name release version %s.\n' "$version" >&2; exit 1; }
+docker run --rm --network none --entrypoint /bin/sh "$loaded_reference" -c \
+    'grep -qaF "$1" /app/HVO.SkyMonitor.CameraAgent.dll && grep -qaF "$1" /app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner.dll' \
+    stamp "${version}+${revision}" || {
+    printf 'The published assemblies do not carry the informational version %s+%s.\n' "$version" "$revision" >&2
+    exit 1
+}
 
 scan_report="$work/image-vulnerability-scan.json"
 if [[ "$scanner" == trivy ]]; then
@@ -378,6 +389,7 @@ if [[ "$push" == 1 ]]; then
         "${push_prefix[@]}" buildx build "${push_selector[@]}" \
             --platform linux/amd64,linux/arm64 \
             --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
+            --build-arg "HVO_VERSION=${version}" \
             --build-arg "HVO_SOURCE_REVISION=${revision}" \
             --provenance mode=max \
             --sbom true \
