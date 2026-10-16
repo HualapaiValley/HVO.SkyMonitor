@@ -109,11 +109,21 @@ public static class SkyMonitorObservabilityExtensions
     public static IHostApplicationBuilder AddSkyMonitorObservability(
         this IHostApplicationBuilder builder,
         string? serviceVersion = null)
+        => AddSkyMonitorObservability(builder, serviceVersion, Environment.GetEnvironmentVariable);
+
+    /// <summary>
+    /// Configures observability, reading the OTLP environment variables that the log sink applies through
+    /// <paramref name="getEnvironmentVariable"/>.
+    /// </summary>
+    internal static IHostApplicationBuilder AddSkyMonitorObservability(
+        IHostApplicationBuilder builder,
+        string? serviceVersion,
+        Func<string, string?> getEnvironmentVariable)
     {
         ArgumentNullException.ThrowIfNull(builder);
         var telemetrySection = builder.Configuration.GetSection("Telemetry");
         var resolvedServiceVersion = ResolveServiceVersion(telemetrySection["ServiceVersion"], serviceVersion);
-        ConfigureSerilog(builder, resolvedServiceVersion);
+        ConfigureSerilog(builder, resolvedServiceVersion, getEnvironmentVariable);
         builder.Services.AddTelemetry(telemetrySection);
         if (resolvedServiceVersion is not null)
         {
@@ -300,7 +310,10 @@ public static class SkyMonitorObservabilityExtensions
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
         Justification = "The created Serilog root logger owns and disposes its registered telemetry sink.")]
-    private static void ConfigureSerilog(IHostApplicationBuilder builder, string? serviceVersion)
+    private static void ConfigureSerilog(
+        IHostApplicationBuilder builder,
+        string? serviceVersion,
+        Func<string, string?> getEnvironmentVariable)
     {
         var loggerConfiguration = new LoggerConfiguration()
             .MinimumLevel.Information()
@@ -331,22 +344,52 @@ public static class SkyMonitorObservabilityExtensions
             }
             var telemetryLogger = new LoggerConfiguration()
                 .MinimumLevel.Verbose()
-                .WriteTo.OpenTelemetry(options =>
-                {
-                    options.Endpoint = endpoint.TrimEnd('/') + "/v1/logs";
-                    options.Protocol = OtlpProtocol.HttpProtobuf;
-                    options.IncludedData = IncludedData.TraceIdField |
-                        IncludedData.SpanIdField |
-                        IncludedData.SourceContextAttribute;
-                    options.ResourceAttributes = resourceAttributes;
-                })
+                .WriteTo.OpenTelemetry(
+                    options =>
+                    {
+                        options.Endpoint = endpoint.TrimEnd('/') + "/v1/logs";
+                        options.Protocol = OtlpProtocol.HttpProtobuf;
+                        options.IncludedData = IncludedData.TraceIdField |
+                            IncludedData.SpanIdField |
+                            IncludedData.SourceContextAttribute;
+                        options.ResourceAttributes = resourceAttributes;
+                    },
+                    KeepServiceVersion(getEnvironmentVariable, serviceVersion))
                 .CreateLogger();
             loggerConfiguration.WriteTo.Sink(new SanitizedOpenTelemetryLogSink(telemetryLogger));
         }
 
-        Log.Logger = loggerConfiguration.CreateLogger();
+        var logger = loggerConfiguration.CreateLogger();
+        Log.Logger = logger;
         builder.Logging.ClearProviders();
-        builder.Logging.AddSerilog(Log.Logger, dispose: true);
+        builder.Logging.AddSerilog(logger, dispose: true);
+    }
+
+    /// <summary>
+    /// Keeps the resolved <c>service.version</c> on the OTLP log resource. The log sink applies the OTLP environment
+    /// variables after its options, and each <c>OTEL_RESOURCE_ATTRIBUTES</c> entry overwrites the key it names, so the
+    /// resolved version is appended as the last entry. The endpoint, headers, service name and other resource
+    /// attributes still come from the environment; without a resolved version the environment is read unchanged.
+    /// </summary>
+    private static Func<string, string?> KeepServiceVersion(
+        Func<string, string?> getEnvironmentVariable,
+        string? serviceVersion)
+    {
+        if (serviceVersion is null)
+        {
+            return getEnvironmentVariable;
+        }
+
+        var serviceVersionAttribute = "service.version=" + Uri.EscapeDataString(serviceVersion);
+        return name =>
+        {
+            var value = getEnvironmentVariable(name);
+            if (!string.Equals(name, "OTEL_RESOURCE_ATTRIBUTES", StringComparison.Ordinal))
+            {
+                return value;
+            }
+            return string.IsNullOrWhiteSpace(value) ? serviceVersionAttribute : value + "," + serviceVersionAttribute;
+        };
     }
 
     internal static void ApplyCategoryLogLevel(
