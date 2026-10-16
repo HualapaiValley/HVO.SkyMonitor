@@ -107,6 +107,47 @@ selecting records. Missing and unauthorized resources have the same result.
 List operations use increasing record IDs and bounded `take` values, rather
 than offsets or unbounded history reads.
 
+Discover binding IDs for one retained installation with:
+
+```text
+GET /api/internal/observatories/{observatoryId}/cameras/{logicalCameraId}/installations/{installationId}/execution-evidence/bindings
+```
+
+`installationId` is exactly the central `LogicalCameraInstallation.Id` primary
+key, also exposed as `LogicalCameraInstallationId` in the existing binding view.
+It is **not** `InstallationPublicId`; the endpoint never tries the other identity
+when a lookup fails. The retained installation links `LogicalCameraId` and
+`RegistrationId`; its camera supplies `ObservatoryId`. Binding creation verifies
+that registration and installation relationship and pins the then-approved
+installation public identity. Discovery resolves this full route relationship,
+current user membership and API credential observatory scope before selecting
+bindings for that registration and exact central installation.
+
+`ExecutionEvidenceService.ListInstallationBindingsAsync(observatoryId,
+logicalCameraId, installationId, userId, observatoryScope, cancellationToken)`
+returns `ExecutionEvidenceInstallationBindingsView`: `Bindings` contains only
+existing `ExecutionEvidenceBindingView` fields, ordered by binding ID, and
+`Truncated` explicitly reports an additional retained row. The fixed limit is
+16; SQL selects at most 17 rows through the existing `(RegistrationId, Id)`
+index, including one sentinel. There is no cursor, offset, total count, or
+all-installation search. Creation retains its configurable per-registration
+maximum of 1–16 (default 4); discovery's fixed ceiling does not change that
+policy. A truncated result is incomplete and must not be interpreted as the
+installation's complete binding history.
+
+Viewer, Manager and Owner members can read within credential scope. An
+A-scoped key cannot read B even when its owner belongs to both. An authorized
+installation without bindings returns `200` with `Bindings: []` and
+`Truncated: false`; missing or denied relationships return nondisclosing `404`
+(service `null`). Existing credential policy rejects unauthenticated/invalid
+credentials. Cancellation propagates through authority and binding SQL reads.
+Retired/replaced installations and revoked registrations remain readable under
+current membership; no active-registration requirement or successor fallback
+changes their original binding identities. This discovery read performs no
+writes and returns no keys, canonical bodies, artifact availability, or inferred
+execution success. Existing binding-ID reads below remain the next explicit
+step; discovery does not fetch their children.
+
 Availability reports can include artifacts from earlier captures or additional
 outputs. Associating a report with an execution does not assert that every
 reported artifact was produced by that execution.

@@ -10,7 +10,7 @@ namespace HVO.SkyMonitor.LogicHost.Controllers;
 
 [ApiController]
 [Route("api/internal/execution-evidence/bindings")]
-internal sealed class ExecutionEvidenceController(ExecutionEvidenceService service) : ControllerBase
+internal sealed partial class ExecutionEvidenceController(ExecutionEvidenceService service) : ControllerBase
 {
     [HttpPost]
     [Authorize(Policy = AuthorizationPolicyNames.ApiKeyReadWrite)]
