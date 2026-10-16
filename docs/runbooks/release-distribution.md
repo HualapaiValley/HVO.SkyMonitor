@@ -17,7 +17,7 @@ runbook describes the current release design; no release has been published yet.
 | `install.sh`, `release.json`, and `SHA256SUMS`; trust is `SHA256SUMS` plus GitHub build-provenance attestations only | ES256-signed manifests and indexes per train, verified against the embedded [trust root](#trust-root); the owner retired all three on 2026-10-16 (contract section 10) | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309), [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310), [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
 | Images at `ghcr.io/hualapaivalley/skymonitor-cameraagent`, always by digest, with `latest` moved for the newest final release | No image has been published yet, and this runbook forbids `latest` | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
 | `CHANGELOG.md` and `docs/upgrade-notes/X.Y.Z.md` | Neither exists | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312), [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
-| Branch and check settings (contract section 2) | Squash and rebase merges are allowed, merged branches are kept, release tags have no ruleset, CI has no secret scan, and Dependabot does not update Docker base images | No issue yet |
+| Branch and check settings (contract section 2) | CI scans the history for secrets and Dependabot updates the Docker base-image digests. Squash and rebase merges are still allowed, merged branches are kept, and release tags have no ruleset; the recommended [repository settings](../development-v1.md#repository-settings) await the owner's approval | [#1321](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1321) |
 
 ## Boundary And Identity
 

@@ -15,7 +15,7 @@ remains in Build. Both are intentionally absent from the short workflow.
 | --- | --- |
 | **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
 | **Catalog Contracts** | Full-mode hosted build and smoke validation of the exact HYG v42 production catalog contracts, retained as a one-day workflow artifact. Skipped in classified reduced mode. |
-| **Quality** | Workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
+| **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
 | **Unit Tests** | 7077 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
@@ -43,6 +43,92 @@ label so ready `development/v1` checks are not queued behind a qualification
 fan-out; see `docs/runbooks/ci-runner-capacity.md`. This allocation keeps the long
 deployment harness off hosted minutes. Quality performs .NET setup, restore,
 formatting, and package audit only for full-mode changes.
+
+## Secret Scan
+
+`scripts/ci:secret-scan` scans the Git history for committed credentials with
+[gitleaks](https://github.com/gitleaks/gitleaks) 8.30.1 and its default rules
+(#1321). It runs in **Development v1 / Preflight** and in **Quality**, so every
+`development/v1` and `main` pull request and push is scanned inside a check that
+branch protection already requires. Draft `development/v1` pull requests run it
+too, because Preflight runs on drafts.
+
+- **Scope.** Every non-merge commit reachable from the checked-out commit, which
+  is the pull request's merge commit or the pushed head. It reads each commit's
+  added and changed lines, so a credential that a later commit deleted is still
+  found. Other branches in the clone are not scanned; their own pull requests
+  scan them.
+- **Pinning.** The script downloads the release archive for Linux x64 or ARM64
+  or macOS ARM64 or x64, checks it against the SHA-256 pinned in the script, and
+  checks `gitleaks version`. To update gitleaks, change `GITLEAKS_VERSION` and all
+  four checksums from the release's checksums file, then rerun both commands
+  below. `HVO_GITLEAKS_CACHE_DIR` keeps the archive between runs and is verified
+  on every use. `HVO_GITLEAKS_BIN` names a binary for another platform; only its
+  version is checked.
+- **Completeness.** Both workflows check out the full history (`fetch-depth: 0`).
+  The script refuses a shallow clone and fails unless gitleaks reports scanning
+  exactly the commits `git log` selects, so a partial or empty scan cannot pass.
+- **Output.** A finding is printed as its rule, path, line, commit, and
+  fingerprint. gitleaks runs with `--redact` and the script never prints the
+  matched text. Exit status 0 means no findings, 1 findings, and 2 that the scan
+  could not run.
+- **Exceptions.** `.gitleaks.toml` is the only place to record one. Each entry
+  gives its reason and names its rules, its paths, and the historical commits it
+  covers, so it cannot hide a finding in a later commit. Inline `gitleaks:allow`
+  comments are ignored and a `.gitleaksignore` file is refused.
+  `scripts/test:ci-secret-scan` enforces this shape. History is never rewritten:
+  revoke or rotate a real credential, then record its historical commit. An entry
+  names commits, so it holds only for merge-commit merges; a squash or rebase
+  merge lands different commits.
+
+The first full scan, on 2026-10-16 at `43ef6d4a`, reported 28 findings in 1,871
+commits. Five reviewed entries cover them. One holds true positives that are
+inert: Data Protection key rings from local development runs, committed in
+November 2025, expired on 2026-02-12, and removed from the tree. The rest are an
+Application Insights connection string (a resource identifier, not a secret),
+test-only values, PEM header literals and synthetic AWS-shaped vectors in the
+processing-graph secret filter, and generic-rule matches on ordinary words.
+
+Run the scan and its contract test locally the way CI does:
+
+```bash
+./scripts/ci:secret-scan
+./scripts/test:ci-secret-scan
+```
+
+On home-dev-01 at `43ef6d4a` gitleaks scanned 1,871 commits (95 MB of patches)
+in 3.7 s, 5 s with the archive download, and the contract test's 11 cases took
+3.4 s. The contract test runs the real scan against fixture repositories with a
+credential generated at run time: one a later commit deleted, one carrying an
+inline `gitleaks:allow` comment, one on another branch, a shallow clone, a
+`.gitleaksignore` file, a wrong gitleaks version, and a tampered archive. It
+fails if any output shows that credential.
+
+## Base-Image Updates
+
+Dependabot proposes updates for the digest-pinned base images of the CameraAgent
+and LogicHost Dockerfiles (`docker` in `.github/dependabot.yml`). It updates only
+`FROM` lines, so the CameraAgent Dockerfile pins its images on the `dotnet-sdk`
+and `dotnet-aspnet` alias stages, and its build and runtime stages select them
+through `DOTNET_SDK_IMAGE` and `DOTNET_ASPNET_IMAGE`. The ARM64 advisory build
+passes resolved native references through the same arguments. Updates are weekly
+and grouped per image across both Dockerfiles (`group-by: dependency-name`), so
+the two hosts keep the same bases.
+
+- `dotnet/aspnet` receives patch releases and digest refreshes. A new major
+  version is ignored, because it is a target-framework migration.
+- `dotnet/sdk` receives digest refreshes of the pinned tag only. `global.json`
+  requires that SDK exactly (`rollForward: disable`), so a new SDK is a manual
+  change to `global.json`, both Dockerfiles, and the other SDK pins together.
+
+Development v1 CI does not build images; full qualification's Deployment
+Contracts job does. Build both images locally before merging a base-image pull
+request:
+
+```bash
+docker build -f src/HVO.SkyMonitor.CameraAgent/Dockerfile .
+docker build -f src/HVO.SkyMonitor.LogicHost/Dockerfile .
+```
 
 ## Coverage Badge Publication
 
@@ -280,7 +366,9 @@ and snapshot; adding a second migration fails CI during the pre-release period.
 Protect `main` with the stable `Required CI` check and require branches to be
 current before merge. GitHub enforces current-head CI and conversation
 resolution; independent review is an additional repository-process requirement,
-not an approving-review branch-protection rule. The complete review-provider,
+not an approving-review branch-protection rule. The merge-method, branch-deletion
+and release-tag settings the install contract requires await the owner's
+approval; see [Repository Settings](../development-v1.md#repository-settings). The complete review-provider,
 correction-cap, finalization-lock, and merge procedure is defined by
 `.agents/skills/pr-lifecycle/SKILL.md`.
 

@@ -235,6 +235,11 @@ Use the step-by-step procedures and rollback rules in the
   intervals when correlation is required.
 - Treat terminal scrollback, shell history, CI output, traces, crash dumps, and
   support archives as possible leakage channels.
+- CI scans the whole Git history for committed credentials with
+  `./scripts/ci:secret-scan`; run it before pushing. A credential that reached a
+  commit is exposed: revoke or rotate it rather than rewriting history. The
+  [secret scan](../runbooks/ci-pipeline.md#secret-scan) section describes how a
+  reviewed exception is recorded.
 
 ## Certificates and Data Protection
 
