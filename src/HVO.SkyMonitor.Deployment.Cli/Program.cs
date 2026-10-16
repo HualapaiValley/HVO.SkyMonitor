@@ -38,7 +38,11 @@ internal static class Program
             // A --config install can select JSON output without a --json token, so the error stream mode follows
             // the parsed command once parsing succeeds; the argv guess only covers a parse failure.
             jsonErrors = command.Json;
-            if (command is InstallDeploymentCommand install)
+            if (command is HelpCommand help)
+            {
+                await Console.Out.WriteAsync(help.Usage).ConfigureAwait(false);
+            }
+            else if (command is InstallDeploymentCommand install)
             {
                 var result = await CameraAgentInstaller.InstallAsync(install.Request, cancellation.Token).ConfigureAwait(false);
                 if (install.Json)
@@ -151,6 +155,13 @@ internal static class Program
                 }
             }
             return 0;
+        }
+        catch (InstallUsageException exception) when (exception.Usage is not null && !jsonErrors)
+        {
+            // A command-line mistake is not an installation attempt: say what was wrong, then how to use the command.
+            await Console.Error.WriteLineAsync(Redaction.SafeDiagnostic(exception.Message)).ConfigureAwait(false);
+            await Console.Error.WriteAsync(exception.Usage).ConfigureAwait(false);
+            return 2;
         }
         catch (InstallUsageException exception)
         {
