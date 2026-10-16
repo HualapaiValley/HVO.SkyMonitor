@@ -84,7 +84,10 @@ values in that manifest.
 The split-host `measure` phase is an executable deployment harness for W1/W2.
 `deploy/split-host/workloads/canonical-workloads.json`, not inventory, pins each
 profile path, source/config/options identities, dimensions, format, seed, exact
-five-operation warm-up, 30 measured operations, and concurrency. The phase
+five-operation warm-up, 30 measured operations, and concurrency. Both W1 and W2
+set `"stellarCandidateSelection": "Exhaustive"`, so their measured star depth is
+the profile's own 32,768-candidate query and never the target's operator scene
+object limit; that opt-out is part of the pinned options hash. The phase
 activates the selected profile, restarts the target, and uses authenticated
 pause/resume capture control to delimit both windows. After each pause it rejects
 in-flight overshoot, proves the exact ordered sequence/capture-ID set, and waits
