@@ -140,6 +140,28 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
         return $"{name} ({(risk ? "unvalidated model" : "model not flagged unvalidated")})";
     }
 
+    private static string? ProjectedSkyLighting(JsonElement definition)
+        => definition.TryGetProperty("illuminationMode", out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString() : null;
+
+    private static bool FixedSkyBackground(NamedEquipmentDetail? detail)
+        => detail is not null &&
+            JsonSerializer.SerializeToElement(detail.Definition, WebJson).TryGetProperty("fixedSkyBackground", out var value) &&
+            value.ValueKind == JsonValueKind.True;
+
+    private static string SkyLightingLabel(NamedEquipmentDetail? detail)
+    {
+        if (detail is null) return "Equipment unavailable";
+        var choice = ProjectedSkyLighting(JsonSerializer.SerializeToElement(detail.Definition, WebJson));
+        var label = EquipmentFormModel.SkyLightingChoices.Where(c => c.Value == choice).Select(c => c.Label)
+            .FirstOrDefault() ?? "Not readable";
+        return FixedSkyBackground(detail) ? $"{label} (overridden by a fixed sky background)" : label;
+    }
+
+    private static string SkyLightingHelp(string choice)
+        => EquipmentFormModel.SkyLightingChoices.Where(c => c.Value == choice).Select(c => c.Help).FirstOrDefault()
+            ?? string.Empty;
+
     private async Task<NamedEquipmentDetail?> CameraDetailAsync(string? revisionId)
     {
         if (string.IsNullOrEmpty(revisionId)) return null;
@@ -279,7 +301,8 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
             var json = JsonSerializer.SerializeToElement(_basis.Definition, WebJson);
             _form = _kind switch
             {
-                "camera" => EquipmentFormModel.FromCamera(json.Deserialize<NamedCameraEquipment>(WebJson)!),
+                "camera" => EquipmentFormModel.FromCamera(json.Deserialize<NamedCameraEquipment>(WebJson)!,
+                    ProjectedSkyLighting(json)),
                 "optics" => EquipmentFormModel.FromOptics(json.Deserialize<HVO.SkyMonitor.AgentCore.OpticsProfile>(WebJson)!),
                 _ => EquipmentFormModel.FromMount(json.Deserialize<HVO.SkyMonitor.AgentCore.RigOrientation>(WebJson)!)
             };
@@ -878,7 +901,7 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
 
     private List<CompareRow> CompareRows(NamedRigRevision? active, NamedRigRevision selected)
     {
-        var rows = new List<CompareRow>(8);
+        var rows = new List<CompareRow>(9);
         void Add(string label, string? activeValue, string selectedValue)
             => rows.Add(new CompareRow(label, activeValue ?? "Not active", selectedValue,
                 activeValue is not null && !string.Equals(activeValue, selectedValue, StringComparison.Ordinal)));
@@ -888,12 +911,18 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
         Add("Camera", active is null ? null : EquipmentLabel(_activeCamera), EquipmentLabel(_selectedCamera));
         Add("Model", active is null ? null : CameraModel(_activeCamera), CameraModel(_selectedCamera));
         Add("Module", active is null ? null : Words(active.Module.Type), Words(selected.Module.Type));
+        if (active?.Module.Type == "VirtualSky" || selected.Module.Type == "VirtualSky")
+            Add("Sky lighting", active is null ? null : SkyLightingSummary(active, _activeCamera),
+                SkyLightingSummary(selected, _selectedCamera));
         Add("Sensor", active is null ? null : SensorSummary(active.Rig), SensorSummary(selected.Rig));
         Add("Readout", active is null ? null : ReadoutSummary(active.Rig), ReadoutSummary(selected.Rig));
         Add("Optics", active is null ? null : OpticsSummary(active.Rig), OpticsSummary(selected.Rig));
         Add("Mount", active is null ? null : MountSummary(active.Rig), MountSummary(selected.Rig));
         return rows;
     }
+
+    private static string SkyLightingSummary(NamedRigRevision revision, NamedEquipmentDetail? camera)
+        => revision.Module.Type == "VirtualSky" ? SkyLightingLabel(camera) : "Not applicable";
 
     private static string EquipmentLabel(NamedEquipmentDetail? detail)
         => detail is null ? "Equipment unavailable" : $"{detail.DisplayName} v{detail.RevisionNumber}";
