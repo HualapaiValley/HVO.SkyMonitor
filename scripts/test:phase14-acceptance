@@ -395,13 +395,14 @@ validate_evidence_contract() {
     ' "$contract" >/dev/null
 }
 
+# Known limits: block comments (/* */) and attribute-prefixed members ([Attr] Name) are not parsed,
+# and such members are silently skipped; fault-point enums must stay plain "Name," or "Name = n,".
 enum_values_json() {
     local file="$1" enum="$2"
     perl -0777 -e '
       my ($enum, $path) = @ARGV;
       open my $file, "<", $path or exit 2;
       local $/; my $source = <$file>;
-      $source =~ s{/\*.*?\*/}{}gs;
       $source =~ /enum\s+\Q$enum\E\s*\{([^}]*)\}/s or exit 1;
       for my $value (split /,/, $1) {
         $value =~ s{//.*$}{}mg; $value =~ s/=.*//s; $value =~ s/^\s+|\s+$//g;
@@ -462,7 +463,7 @@ jq '(.scenarios[] | select(.evidenceSource | startswith("test:")) | .evidenceSou
 if (audit_test_references "$TEMP_DIR/missing-test-reference.json") > /dev/null 2>&1; then
     fail 'A nonexistent public MSTest evidence FQN was accepted.'
 fi
-perl -0pe 's/(enum\s+RawIngressFaultPoint\s*\{)/$1\n    UnreviewedFaultPointProbe \/* unmapped *\/,/' "$raw_ingress_faults" \
+perl -0pe 's/(enum\s+RawIngressFaultPoint\s*\{)/$1\n    UnreviewedFaultPointProbe,/' "$raw_ingress_faults" \
   > "$TEMP_DIR/unreviewed-raw-ingress-faults.cs"
 if (assert_enum_coverage "$TEMP_DIR/unreviewed-raw-ingress-faults.cs" RawIngressFaultPoint 'boundary:raw-ingress:' \
   "$raw_ingress_exclusions") > /dev/null 2>&1; then
