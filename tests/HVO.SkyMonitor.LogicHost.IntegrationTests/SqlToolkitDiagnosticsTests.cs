@@ -131,6 +131,29 @@ public sealed class SqlToolkitDiagnosticsTests
         AssertNoSecrets(Assert.ThrowsExactly<AssertFailedException>(diagnostics.ThrowIfFailed).ToString());
     }
 
+    [TestMethod]
+    public async Task SqlCleanupOrchestrationContinuesAfterEarlyAndMultipleFailures()
+    {
+        var diagnostics = new SqlToolkitDiagnostics { Stage = ToolkitStage.Body };
+        diagnostics.Record(new AssertFailedException(Secret));
+        var executed = new List<ToolkitStage>();
+        await diagnostics.CleanupSqlArtifactsAsync(stage =>
+        {
+            executed.Add(stage);
+            return stage is ToolkitStage.EventSessionCleanup or ToolkitStage.InstanceLoginCleanup
+                ? Task.FromException(new IOException(Secret)) : Task.CompletedTask;
+        }).ConfigureAwait(false);
+        executed.Should().Equal(ToolkitStage.EventSessionCleanup, ToolkitStage.VerificationDatabaseCleanup,
+            ToolkitStage.DatabaseCleanup, ToolkitStage.PrincipalSessionCleanup, ToolkitStage.InstanceLoginCleanup,
+            ToolkitStage.DatabaseLoginCleanup, ToolkitStage.RecoveryLoginCleanup, ToolkitStage.RuntimeLoginCleanup,
+            ToolkitStage.MigrationLoginCleanup);
+        await diagnostics.AttemptAsync(ToolkitStage.ExactFileCleanup, () => Task.FromException(new UnauthorizedAccessException(Secret))).ConfigureAwait(false);
+        await using (diagnostics.ObserveDisposal(ToolkitStage.ContainerDisposal, new FailingDisposable())) { }
+        ReadFacts(diagnostics).Select(fact => fact.GetProperty("Stage").GetString()).Should().Equal(
+            "Body", "EventSessionCleanup", "InstanceLoginCleanup", "ExactFileCleanup", "ContainerDisposal");
+        AssertNoSecrets(Assert.ThrowsExactly<AssertFailedException>(diagnostics.ThrowIfFailed).ToString());
+    }
+
     private sealed class FailingDisposable : IAsyncDisposable
     {
         public ValueTask DisposeAsync() => ValueTask.FromException(new IOException(Secret));

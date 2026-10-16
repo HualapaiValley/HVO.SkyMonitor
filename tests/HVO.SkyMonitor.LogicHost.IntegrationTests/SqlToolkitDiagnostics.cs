@@ -53,6 +53,19 @@ internal sealed class SqlToolkitDiagnostics
         catch (Exception exception) { Record(exception); }
     }
 
+    internal async Task CleanupSqlArtifactsAsync(Func<ToolkitStage, Task> execute)
+    {
+        foreach (var stage in new[]
+                 {
+                     ToolkitStage.EventSessionCleanup, ToolkitStage.VerificationDatabaseCleanup,
+                     ToolkitStage.DatabaseCleanup, ToolkitStage.PrincipalSessionCleanup,
+                     ToolkitStage.InstanceLoginCleanup, ToolkitStage.DatabaseLoginCleanup,
+                     ToolkitStage.RecoveryLoginCleanup, ToolkitStage.RuntimeLoginCleanup,
+                     ToolkitStage.MigrationLoginCleanup
+                 })
+            await AttemptAsync(stage, () => execute(stage)).ConfigureAwait(false);
+    }
+
     internal IAsyncDisposable ObserveDisposal(ToolkitStage stage, IAsyncDisposable resource) => new ObservedDisposal(this, stage, resource);
 
     private sealed class ObservedDisposal(SqlToolkitDiagnostics diagnostics, ToolkitStage stage, IAsyncDisposable resource) : IAsyncDisposable

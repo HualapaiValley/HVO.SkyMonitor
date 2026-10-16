@@ -1444,54 +1444,49 @@ public sealed class SqlOperationsIssue255Tests
             var admin = await OpenAsync(connectionString, "master").ConfigureAwait(false);
             try
             {
-                diagnostics.Stage = ToolkitStage.EventSessionCleanup;
-                await NonQueryAsync(admin, $"""
-                IF EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE [name]=N'{sessionName}') ALTER EVENT SESSION [{sessionName}] ON SERVER STATE=STOP;
-                IF EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE [name]=N'{sessionName}') DROP EVENT SESSION [{sessionName}] ON SERVER;
-                """).ConfigureAwait(false);
-                diagnostics.Stage = ToolkitStage.VerificationDatabaseCleanup;
-                await NonQueryAsync(admin, $"""
-                IF DB_ID(N'HvoVerify_{sessionName[10..]}') IS NOT NULL
-                BEGIN
-                    ALTER DATABASE [HvoVerify_{sessionName[10..]}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-                    DROP DATABASE [HvoVerify_{sessionName[10..]}];
-                END;
-                """).ConfigureAwait(false);
-                diagnostics.Stage = ToolkitStage.DatabaseCleanup;
-                await NonQueryAsync(admin, $"""
-                IF DB_ID(N'{databaseName}') IS NOT NULL
-                BEGIN
-                    ALTER DATABASE [{databaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-                    DROP DATABASE [{databaseName}];
-                END;
-                """).ConfigureAwait(false);
-                diagnostics.Stage = ToolkitStage.PrincipalSessionCleanup;
-                await NonQueryAsync(admin, $"""
-                DECLARE @kill nvarchar(max);
-                SELECT @kill=STRING_AGG(CONVERT(nvarchar(max), N'KILL ' + CONVERT(nvarchar(11), [session_id]) + N';'), N'')
-                FROM sys.dm_exec_sessions WHERE [login_name] IN (N'{instanceLogin}', N'{databaseLogin}', N'{recoveryLogin}', N'{runtimeLogin}', N'{migrationLogin}') AND [session_id]<>@@SPID;
-                IF @kill IS NOT NULL EXEC sys.sp_executesql @kill;
-                """).ConfigureAwait(false);
-                diagnostics.Stage = ToolkitStage.InstanceLoginCleanup;
-                await NonQueryAsync(admin, $"""
-                IF SUSER_ID(N'{instanceLogin}') IS NOT NULL DROP LOGIN [{instanceLogin}];
-                """).ConfigureAwait(false);
-                diagnostics.Stage = ToolkitStage.DatabaseLoginCleanup;
-                await NonQueryAsync(admin, $"""
-                IF SUSER_ID(N'{databaseLogin}') IS NOT NULL DROP LOGIN [{databaseLogin}];
-                """).ConfigureAwait(false);
-                diagnostics.Stage = ToolkitStage.RecoveryLoginCleanup;
-                await NonQueryAsync(admin, $"""
-                IF SUSER_ID(N'{recoveryLogin}') IS NOT NULL DROP LOGIN [{recoveryLogin}];
-                """).ConfigureAwait(false);
-                diagnostics.Stage = ToolkitStage.RuntimeLoginCleanup;
-                await NonQueryAsync(admin, $"""
-                IF SUSER_ID(N'{runtimeLogin}') IS NOT NULL DROP LOGIN [{runtimeLogin}];
-                """).ConfigureAwait(false);
-                diagnostics.Stage = ToolkitStage.MigrationLoginCleanup;
-                await NonQueryAsync(admin, $"""
-                IF SUSER_ID(N'{migrationLogin}') IS NOT NULL DROP LOGIN [{migrationLogin}];
-                """).ConfigureAwait(false);
+                await diagnostics.CleanupSqlArtifactsAsync(cleanupStage => cleanupStage switch
+                {
+                    ToolkitStage.EventSessionCleanup => NonQueryAsync(admin, $"""
+                        IF EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE [name]=N'{sessionName}') ALTER EVENT SESSION [{sessionName}] ON SERVER STATE=STOP;
+                        IF EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE [name]=N'{sessionName}') DROP EVENT SESSION [{sessionName}] ON SERVER;
+                        """),
+                    ToolkitStage.VerificationDatabaseCleanup => NonQueryAsync(admin, $"""
+                        IF DB_ID(N'HvoVerify_{sessionName[10..]}') IS NOT NULL
+                        BEGIN
+                            ALTER DATABASE [HvoVerify_{sessionName[10..]}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                            DROP DATABASE [HvoVerify_{sessionName[10..]}];
+                        END;
+                        """),
+                    ToolkitStage.DatabaseCleanup => NonQueryAsync(admin, $"""
+                        IF DB_ID(N'{databaseName}') IS NOT NULL
+                        BEGIN
+                            ALTER DATABASE [{databaseName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                            DROP DATABASE [{databaseName}];
+                        END;
+                        """),
+                    ToolkitStage.PrincipalSessionCleanup => NonQueryAsync(admin, $"""
+                        DECLARE @kill nvarchar(max);
+                        SELECT @kill=STRING_AGG(CONVERT(nvarchar(max), N'KILL ' + CONVERT(nvarchar(11), [session_id]) + N';'), N'')
+                        FROM sys.dm_exec_sessions WHERE [login_name] IN (N'{instanceLogin}', N'{databaseLogin}', N'{recoveryLogin}', N'{runtimeLogin}', N'{migrationLogin}') AND [session_id]<>@@SPID;
+                        IF @kill IS NOT NULL EXEC sys.sp_executesql @kill;
+                        """),
+                    ToolkitStage.InstanceLoginCleanup => NonQueryAsync(admin, $"""
+                        IF SUSER_ID(N'{instanceLogin}') IS NOT NULL DROP LOGIN [{instanceLogin}];
+                        """),
+                    ToolkitStage.DatabaseLoginCleanup => NonQueryAsync(admin, $"""
+                        IF SUSER_ID(N'{databaseLogin}') IS NOT NULL DROP LOGIN [{databaseLogin}];
+                        """),
+                    ToolkitStage.RecoveryLoginCleanup => NonQueryAsync(admin, $"""
+                        IF SUSER_ID(N'{recoveryLogin}') IS NOT NULL DROP LOGIN [{recoveryLogin}];
+                        """),
+                    ToolkitStage.RuntimeLoginCleanup => NonQueryAsync(admin, $"""
+                        IF SUSER_ID(N'{runtimeLogin}') IS NOT NULL DROP LOGIN [{runtimeLogin}];
+                        """),
+                    ToolkitStage.MigrationLoginCleanup => NonQueryAsync(admin, $"""
+                        IF SUSER_ID(N'{migrationLogin}') IS NOT NULL DROP LOGIN [{migrationLogin}];
+                        """),
+                    _ => throw new InvalidOperationException()
+                }).ConfigureAwait(false);
             }
             catch (Exception exception)
             {
