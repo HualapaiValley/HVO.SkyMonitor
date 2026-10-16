@@ -207,8 +207,11 @@ public sealed class CameraAgentOperatorUiServiceTests
         var product = await service.GetProductDetailAsync(Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
         var delivery = await service.GetDeliveryRecordsAsync(CancellationToken.None).ConfigureAwait(false);
         var reconciliation = await service.GetStorageReconciliationAsync(CancellationToken.None).ConfigureAwait(false);
+        var frozenStack = await service.SaveFrozenLayeredPresentationAsync(Guid.NewGuid(), new string('A', 64),
+            [], CancellationToken.None).ConfigureAwait(false);
 
-        Assert.AreEqual(19, authentication.ReadCount);
+        Assert.AreEqual(20, authentication.ReadCount);
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, frozenStack.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, transient.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, delivery.Kind);
         Assert.AreEqual(OperatorUiResultKind.Unauthorized, reconciliation.Kind);
@@ -235,7 +238,7 @@ public sealed class CameraAgentOperatorUiServiceTests
         authorization.Verify(service => service.AuthorizeAsync(
             principal,
             null,
-            CameraAgentAuthorizationPolicyNames.OperationsMutateV1), Times.Exactly(4));
+            CameraAgentAuthorizationPolicyNames.OperationsMutateV1), Times.Exactly(5));
     }
 
     [TestMethod]

@@ -106,6 +106,12 @@ public sealed record CameraAgentTransientFinalEvidence(
 
 public interface ICameraAgentTransientOperatorProjection
 {
+    ValueTask<CameraAgentCaptureTrails> GetCaptureTrailsAsync(
+        Guid captureId,
+        CancellationToken cancellationToken)
+        => ValueTask.FromResult(new CameraAgentCaptureTrails(
+            captureId, "Unavailable", [], true, "Capture-linked measured trail evidence is unavailable."));
+
     ValueTask<CameraAgentTransientOperatorPage> GetPageAsync(
         CameraAgentTransientOperatorQuery query,
         CancellationToken cancellationToken);

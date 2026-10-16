@@ -9,7 +9,7 @@ using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Transients;
 
-internal sealed class SqliteCameraAgentTransientOperatorProjection : ICameraAgentTransientOperatorProjection
+internal sealed partial class SqliteCameraAgentTransientOperatorProjection : ICameraAgentTransientOperatorProjection
 {
     internal const int DefaultPageSize = 25;
     internal const int MaximumPageSize = 100;

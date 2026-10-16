@@ -264,7 +264,8 @@ internal static class CameraAgentGalleryEndpoints
 
         var presentation = result.Presentation;
         var etag = $"\"{presentation.SvgChecksumSha256}\"";
-        context.Response.Headers.CacheControl = "private, max-age=31536000, immutable";
+        // This capture URL can acquire a new immutable composition as evidence is finalized.
+        context.Response.Headers.CacheControl = "private, no-cache";
         context.Response.Headers.Vary = "Cookie";
         context.Response.Headers.ETag = etag;
         context.Response.Headers.XContentTypeOptions = "nosniff";
@@ -313,6 +314,24 @@ internal static class CameraAgentGalleryEndpoints
             presentation.WidthPixels,
             presentation.HeightPixels,
             presentation.Layers,
+            TrailEvidence = presentation.TrailEvidence is { } evidence ? new
+            {
+                SchemaVersion = HVO.SkyMonitor.CameraAgent.Common.Transients.CameraAgentCaptureTrails.SchemaVersion,
+                evidence.State,
+                evidence.Incomplete,
+                evidence.Reason,
+                PositionalUncertainty = "Unavailable",
+                Trails = evidence.Trails.Select(static trail => new
+                {
+                    trail.CandidateId,
+                    trail.EventId,
+                    trail.State,
+                    SourceCaptureId = trail.SourceManifest.Descriptor.Capture.CaptureId,
+                    SourceArtifactId = trail.SourceManifest.Descriptor.Artifact.ArtifactId,
+                    trail.DetectorInput.Source.ObservationStartedUtc,
+                    trail.DetectorInput.Source.ObservationEndedUtc
+                }).ToArray()
+            } : null,
             SvgUrl = FormattableString.Invariant($"/api/v1/operations/gallery/{captureId:D}/presentation.svg"),
             BasePreviewUrl = FormattableString.Invariant(
                 $"/api/v1/operations/artifacts/{presentation.BaseArtifactId:D}/preview")
@@ -331,8 +350,10 @@ internal static class CameraAgentGalleryEndpoints
         {
             return Results.Forbid();
         }
-        var result = await materializer.SaveAsync(
-            captureId, request.EnabledLayerIdentitySha256 ?? [], actor, cancellationToken).ConfigureAwait(false);
+        var result = request.ManifestIdentitySha256 is null
+            ? await materializer.SaveAsync(captureId, request.EnabledLayerIdentitySha256 ?? [], actor, cancellationToken).ConfigureAwait(false)
+            : await materializer.SaveFrozenAsync(captureId, request.ManifestIdentitySha256,
+                request.EnabledLayerIdentitySha256 ?? [], actor, cancellationToken).ConfigureAwait(false);
         if (result.Status == CameraAgentPresentationMaterializationStatus.Saved && result.Receipt is { } receipt)
         {
             return receipt.Replayed
@@ -370,7 +391,8 @@ internal static class CameraAgentGalleryEndpoints
     }
 
     private sealed record CameraAgentPresentationMaterializationRequest(
-        IReadOnlyList<string>? EnabledLayerIdentitySha256);
+        IReadOnlyList<string>? EnabledLayerIdentitySha256,
+        string? ManifestIdentitySha256 = null);
 
     private sealed class CameraAgentGalleryEndpointQuery
     {

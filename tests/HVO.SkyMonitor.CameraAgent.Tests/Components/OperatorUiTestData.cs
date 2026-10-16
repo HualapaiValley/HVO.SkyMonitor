@@ -318,6 +318,15 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
     public ValueTask<OperatorUiResult<CameraAgentProductDetail>> GetProductDetailAsync(Guid artifactId, CancellationToken cancellationToken) => ProductDetailHandler(artifactId, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetLayeredPresentationAsync(Guid captureId, CancellationToken cancellationToken) => PresentationHandler(captureId, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveLayeredPresentationAsync(Guid captureId, IReadOnlyList<string> enabledLayerIdentitySha256, CancellationToken cancellationToken) => MaterializationHandler(captureId, enabledLayerIdentitySha256, cancellationToken);
+
+    internal Func<Guid, string, IReadOnlyList<string>, CancellationToken, ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>>> FrozenMaterializationHandler { get; set; } =
+        (_, _, _, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Failure(
+            OperatorUiResultKind.Conflict, "The selected composition is unavailable."));
+
+    public ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveFrozenLayeredPresentationAsync(
+        Guid captureId, string manifestIdentitySha256, IReadOnlyList<string> enabledLayerIdentitySha256,
+        CancellationToken cancellationToken)
+        => FrozenMaterializationHandler(captureId, manifestIdentitySha256, enabledLayerIdentitySha256, cancellationToken);
     public ValueTask<OperatorUiResult<OperatorOutboxPage>> GetQuarantinePageAsync(string kind, string? storageAlias, string? cursor, int pageSize, CancellationToken cancellationToken) => QuarantineHandler(kind, storageAlias, cursor, pageSize, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentSystemStatus>> GetSystemStatusAsync(CancellationToken cancellationToken) => SystemHandler(cancellationToken);
     public ValueTask<OperatorUiResult<IReadOnlyList<CameraAgentDeliveryRecord>>> GetDeliveryRecordsAsync(CancellationToken cancellationToken) => DeliveryHandler(cancellationToken);
