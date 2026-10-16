@@ -31,6 +31,68 @@ public sealed class AtomicPublisherTests
         => async (stream, ct) => await stream.WriteAsync(content, ct);
 
     [TestMethod]
+    public void EnsureDirectoryExistingPathDoesNotBypassUnsupportedSynchronization()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.IsFalse(DurableSync.SupportsDirectorySync);
+            return;
+        }
+        // procfs is an existing physical directory whose fsync returns EINVAL.
+        var root = PhysicalRoot.Open("/proc");
+        var failure = Assert.ThrowsExactly<FileSystemFaultException>(() => AtomicPublisher.EnsureDirectory(root, root.Path));
+        Assert.AreEqual(FileSystemFaultKind.Io, failure.Kind);
+    }
+
+    [TestMethod]
+    [DataRow(PublicationPhase.FileFlushed, false)]
+    [DataRow(PublicationPhase.Renamed, true)]
+    [DataRow(PublicationPhase.DirectorySynced, true)]
+    public async Task Publish_ObserverFaultPreservesTheExactVisibilityBoundary(PublicationPhase stop, bool published)
+    {
+        var observed = new List<PublicationPhase>();
+        var injected = new InvalidOperationException("publication boundary");
+        var fault = await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            AtomicPublisher.PublishAsync(_root, "evidence.bin", PublishMode.CreateNew, Bytes([1, 2, 3]),
+                phase =>
+                {
+                    observed.Add(phase);
+                    Assert.AreEqual(phase != PublicationPhase.FileFlushed, File.Exists(Path.Combine(_temp, "evidence.bin")));
+                    if (phase == stop) throw injected;
+                }, CancellationToken.None));
+        Assert.AreSame(injected, fault);
+        CollectionAssert.AreEqual(Enum.GetValues<PublicationPhase>().Take((int)stop + 1).ToArray(), observed.ToArray());
+        Assert.AreEqual(published, File.Exists(Path.Combine(_temp, "evidence.bin")));
+        if (published) CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, await File.ReadAllBytesAsync(Path.Combine(_temp, "evidence.bin")));
+        Assert.IsEmpty(Directory.GetFiles(_temp, "*.tmp"));
+    }
+
+    [TestMethod]
+    public void PublishPrepared_PreservesCallerOwnedTemporaryOnConflictAndRejectsDifferentDirectories()
+    {
+        var temporary = Path.Combine(_temp, "caller-owned.tmp");
+        var final = Path.Combine(_temp, "existing.bin");
+        File.WriteAllBytes(temporary, [1, 2, 3]);
+        File.WriteAllBytes(final, [4, 5, 6]);
+        var conflict = Assert.ThrowsExactly<FileSystemFaultException>(() =>
+            AtomicPublisher.PublishPrepared(_root, temporary, final, PublishMode.CreateNew));
+        Assert.AreEqual(FileSystemFaultKind.AlreadyExists, conflict.Kind);
+        CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, File.ReadAllBytes(temporary));
+        CollectionAssert.AreEqual(new byte[] { 4, 5, 6 }, File.ReadAllBytes(final));
+
+        var otherDirectory = Path.Combine(_temp, "other");
+        Directory.CreateDirectory(otherDirectory);
+        var outside = Assert.ThrowsExactly<FileSystemFaultException>(() =>
+            AtomicPublisher.PublishPrepared(_root, temporary, Path.Combine(otherDirectory, "target.bin"), PublishMode.CreateNew));
+        Assert.AreEqual(FileSystemFaultKind.Containment, outside.Kind);
+        Assert.IsTrue(File.Exists(temporary));
+
+        AtomicPublisher.PublishPrepared(_root, temporary, final, PublishMode.Replace);
+        Assert.IsFalse(File.Exists(temporary));
+        CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, File.ReadAllBytes(final));
+    }
+
+    [TestMethod]
     public async Task Publish_CreatesDirectoriesWritesContentAndLeavesNoTemporary()
     {
         var content = Encoding.UTF8.GetBytes("hello");

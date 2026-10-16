@@ -27,6 +27,19 @@ public sealed class PhysicalRoot
     public string Path { get; }
 
     /// <summary>
+    /// Inspect containment and links without opening or creating the root. Missing descendants
+    /// are allowed, including descendants of a root the caller will create later. This is a
+    /// path check only; callers still own directory creation and must recheck before use.
+    /// </summary>
+    public static void VerifyPath(string rootPath, string absolutePath, string operation)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(rootPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(absolutePath);
+        var root = new PhysicalRoot(System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(rootPath)));
+        root.EnsureNoLinksBetweenRootAnd(absolutePath, operation);
+    }
+
+    /// <summary>
     /// Bind to an existing directory. Fails with <see cref="FileSystemFaultKind.Containment"/> if
     /// the path is relative, is not a directory, or is a symbolic link; fails with
     /// <see cref="FileSystemFaultKind.NotFound"/> if it does not exist.
@@ -94,7 +107,9 @@ public sealed class PhysicalRoot
     {
         var full = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(absolutePath));
         return string.Equals(full, Path, _comparison)
-            || full.StartsWith(Path + System.IO.Path.DirectorySeparatorChar, _comparison);
+            || full.StartsWith(
+                System.IO.Path.EndsInDirectorySeparator(Path) ? Path : Path + System.IO.Path.DirectorySeparatorChar,
+                _comparison);
     }
 
     private void EnsureNoLinksBetweenRootAnd(string absolutePath, string operation)
