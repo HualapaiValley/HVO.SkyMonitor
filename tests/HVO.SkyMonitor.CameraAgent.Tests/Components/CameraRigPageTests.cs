@@ -21,6 +21,10 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 [TestCategory("Unit")]
 public sealed class CameraRigPageTests
 {
+    private static readonly string[] SkyLightingLabels = ["Uniform daylight", "Realistic daylight", "No daylight"];
+    private static readonly string[] SkyLightingValues = ["LegacyScalarSolar", "SolarDriven", "ControlledNight"];
+    private static readonly string[] SkyLightingSubmissionFields = ["module", "sensor", "readout", "illuminationMode"];
+
     [TestMethod]
     public void FreshVirtualSkyInventory_CreatesStarterAndOpensTypedCameraEditor()
     {
@@ -825,6 +829,83 @@ public sealed class CameraRigPageTests
     }
 
     [TestMethod]
+    public void VirtualSkyCamera_EditorOffersSkyLightingAndSubmitsOnlyTheChoice()
+    {
+        var service = new FakeRigService
+        {
+            ActiveModuleType = "VirtualSky",
+            VirtualSkyCameras = { ["camera-v1"] = ("LegacyScalarSolar", false) }
+        };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.WaitForAssertion(() => Assert.AreEqual("Uniform daylight", ModuleFact(cut, "Sky lighting")));
+        cut.Find("#rig-camera-edit").Click();
+        var lighting = cut.WaitForElement("#rig-sky-lighting");
+        Assert.AreEqual("LegacyScalarSolar", lighting.GetAttribute("value"));
+        CollectionAssert.AreEqual(SkyLightingLabels,
+            lighting.QuerySelectorAll("option").Select(option => option.TextContent).ToArray());
+        CollectionAssert.AreEqual(SkyLightingValues,
+            lighting.QuerySelectorAll("option").Select(option => option.GetAttribute("value")).ToArray());
+        StringAssert.Contains(cut.Find("#rig-sky-lighting-help").TextContent,
+            "Capture windows, sunrise, sunset and the observing day still follow the real Sun.", StringComparison.Ordinal);
+        Assert.IsFalse(cut.Find("dialog").TextContent.Contains("fixed sky background", StringComparison.Ordinal));
+        lighting.Change("ControlledNight");
+        StringAssert.Contains(cut.Find("#rig-sky-lighting-help").TextContent, "treats every frame as night", StringComparison.Ordinal);
+        Assert.AreEqual(0, service.SaveCount);
+
+        DialogPrimary(cut).Click();
+
+        cut.WaitForAssertion(() => Assert.AreEqual(1, service.SaveCount));
+        Assert.AreEqual("camera-v1", service.SavedBasisRevisionId);
+        Assert.AreEqual("ControlledNight", service.SavedDefinition.GetProperty("illuminationMode").GetString());
+        CollectionAssert.AreEquivalent(SkyLightingSubmissionFields,
+            service.SavedDefinition.EnumerateObject().Select(property => property.Name).ToArray());
+        var module = service.SavedDefinition.GetProperty("module");
+        Assert.AreEqual("VirtualSky", module.GetProperty("type").GetString());
+        Assert.AreEqual(1, module.EnumerateObject().Count());
+    }
+
+    [TestMethod]
+    public void VirtualSkyCamera_ShowsFixedBackgroundOverrideAndLightingChangesInRevisionCompare()
+    {
+        var service = new FakeRigService
+        {
+            ActiveModuleType = "VirtualSky",
+            VirtualSkyCameras = { ["camera-v1"] = ("SolarDriven", true), ["camera-v2"] = ("ControlledNight", false) }
+        };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".rig-provenance").TextContent, "older-v3", StringComparison.Ordinal));
+        const string overridden = "Realistic daylight (overridden by a fixed sky background)";
+        Assert.AreEqual(overridden, ModuleFact(cut, "Sky lighting"));
+        Assert.AreEqual(overridden, CompareValue(cut, "Sky lighting", "active"));
+        var selected = cut.FindAll(".rig-compare tbody tr").Single(row => row.QuerySelector("th")!.TextContent == "Sky lighting")
+            .QuerySelector("td.rig-selected strong");
+        Assert.AreEqual("No daylight", selected?.TextContent);
+
+        cut.Find("#rig-camera-edit").Click();
+        cut.WaitForAssertion(() => Assert.AreEqual("SolarDriven", cut.Find("#rig-sky-lighting").GetAttribute("value")));
+        StringAssert.Contains(cut.Find("dialog").TextContent,
+            "This camera sets a fixed sky background (backgroundElectronsPerSecond), which overrides the sky lighting choice",
+            StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void PhysicalCamera_OffersNoSkyLightingAndSubmitsNone()
+    {
+        var service = new FakeRigService();
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.Find("#rig-camera-edit").Click();
+        cut.WaitForAssertion(() => Assert.AreEqual("camera-v1", cut.FindAll("dialog select")[0].GetAttribute("value")));
+        Assert.IsEmpty(cut.FindAll("#rig-sky-lighting"));
+        Assert.IsFalse(cut.Markup.Contains("Sky lighting", StringComparison.Ordinal));
+        DialogPrimary(cut).Click();
+        cut.WaitForAssertion(() => Assert.AreEqual(1, service.SaveCount));
+        Assert.IsFalse(service.SavedDefinition.TryGetProperty("illuminationMode", out _));
+    }
+
+    [TestMethod]
     public void NonInstalledOlderRevision_CannotBeRevised()
     {
         using var context = CreateContext(new FakeRigService());
@@ -1122,6 +1203,10 @@ public sealed class CameraRigPageTests
         => cut.FindAll(".rig-compare tbody tr").Single(r => r.QuerySelector("th")!.TextContent == label)
             .QuerySelector($"td.rig-{column}")!.TextContent;
 
+    private static string ModuleFact(IRenderedComponent<CameraRigPage> cut, string term)
+        => cut.FindAll("[aria-labelledby='rig-module-heading'] dl > div").Single(d => d.QuerySelector("dt")!.TextContent == term)
+            .QuerySelector("dd")!.TextContent;
+
     private static string SelectionFact(IRenderedComponent<CameraRigPage> cut, string term)
         => cut.FindAll("[aria-label='Rig selection'] dl > div").Single(d => d.QuerySelector("dt")!.TextContent == term)
             .QuerySelector("dd")!.TextContent;
@@ -1131,6 +1216,9 @@ public sealed class CameraRigPageTests
         private readonly NamedRigRevision _rig;
         private readonly NamedRigInventory _inventory;
         internal bool VirtualOnly { get; set; }
+        internal string ActiveModuleType { init => _rig = _rig with { Module = new(value) }; }
+        /// <summary>Camera revisions projected as VirtualSky, with their sky lighting choice and fixed-background flag.</summary>
+        internal Dictionary<string, (string? Lighting, bool FixedBackground)> VirtualSkyCameras { get; } = [];
         internal bool ExistingOpticsCopy { get; set; }
         internal bool SaveConflict { get; set; }
         internal string? StarterTemplate { get; private set; }
@@ -1271,6 +1359,20 @@ public sealed class CameraRigPageTests
         {
             if (_deferredEquipment.TryGetValue(revisionId, out var queue) && queue.Count > 0)
                 return new(queue.Dequeue().Task);
+            if (VirtualSkyCameras.TryGetValue(revisionId, out var virtualSky))
+            {
+                var definition = new
+                {
+                    module = new { type = "VirtualSky" },
+                    sensor = _rig.Rig.Sensor,
+                    readout = _rig.Rig.Readout,
+                    illuminationMode = virtualSky.Lighting,
+                    fixedSkyBackground = virtualSky.FixedBackground
+                };
+                return ValueTask.FromResult(OperatorUiResult<NamedEquipmentDetail>.Success(revisionId == "camera-v1"
+                    ? new("camera", "camera", "Installed camera", 1, revisionId, definition, true, false)
+                    : new(revisionId, "camera", "New camera", 1, revisionId, definition, false, false)));
+            }
             return ValueTask.FromResult(OperatorUiResult<NamedEquipmentDetail>.Success(revisionId == _savedEquipment?.RevisionId
                 ? new(_savedEquipment.DefinitionId, _savedEquipment.Kind, _savedEquipment.DisplayName, 2,
                     revisionId, SavedDefinition, false, true)

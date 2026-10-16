@@ -8,6 +8,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -184,6 +186,257 @@ public sealed class SqliteCaptureScheduleStoreTests
         }
         finally { Directory.Delete(root, recursive: true); }
     }
+
+    [TestMethod]
+    public async Task VirtualSkyCameraFromBasis_RoundTripsSkyLightingAndPreservesEveryOtherModuleOption()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var ingress = new JournalInitializer(root);
+            using var schedule = new SqliteCaptureScheduleStore(ingress, options, TimeProvider.System);
+            var active = await schedule.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
+            var profiles = new SqliteNamedRigProfileStore(ingress, options, TimeProvider.System, schedule);
+            var rig = active.ActiveRevision.Profile.Rig;
+            var basisOptions = System.Text.Json.JsonSerializer.SerializeToElement(new
+            {
+                seed = 42,
+                bortleClass = 4,
+                magnitudeZeroElectronsPerSecond = 300,
+                renderSolarSystemDisks = true,
+                solarSystemBodies = MoonOnly,
+                shotNoiseEnabled = true
+            });
+            var basis = await profiles.SaveEquipmentAsync(null, "camera", "Virtual camera",
+                System.Text.Json.JsonSerializer.SerializeToElement(new NamedCameraEquipment(
+                    new CameraModuleDescriptor("VirtualSky", basisOptions), rig.Sensor, rig.Readout)),
+                CancellationToken.None).ConfigureAwait(false);
+            var draft = await profiles.SaveProfileNameAsync(null, "Virtual draft", CancellationToken.None).ConfigureAwait(false);
+            var optics = await profiles.SaveEquipmentAsync(null, "optics", "Optics",
+                System.Text.Json.JsonSerializer.SerializeToElement(rig.Optics), CancellationToken.None).ConfigureAwait(false);
+            var mount = await profiles.SaveEquipmentAsync(null, "mount", "Mount",
+                System.Text.Json.JsonSerializer.SerializeToElement(rig.Orientation), CancellationToken.None).ConfigureAwait(false);
+            async Task<System.Text.Json.JsonElement> StoredOptionsAsync(string cameraRevisionId)
+                => (await profiles.ComposeAsync(draft.ProfileId, cameraRevisionId, optics.RevisionId, mount.RevisionId,
+                    CancellationToken.None).ConfigureAwait(false)).Module.Options!.Value;
+            async Task<NamedEquipmentDefinition> SaveChoiceAsync(NamedEquipmentDefinition from, string choice,
+                bool duplicate = false, string? sensorName = null)
+            {
+                var projected = await ProjectedCameraAsync(profiles, from.RevisionId).ConfigureAwait(false);
+                Assert.IsFalse(projected.GetRawText().Contains("magnitudeZero", StringComparison.OrdinalIgnoreCase));
+                Assert.IsFalse(projected.GetProperty("module").TryGetProperty("options", out _));
+                var camera = System.Text.Json.JsonSerializer.Deserialize<NamedCameraEquipment>(projected, ProjectionJson)!;
+                var form = EquipmentFormModel.FromCamera(camera, projected.GetProperty("illuminationMode").GetString());
+                form.SkyLighting = choice;
+                form.SensorName = sensorName ?? form.SensorName;
+                Assert.IsTrue(form.TryApplyCamera(camera, out var submission, out var errors), string.Join(" ", errors));
+                Assert.IsFalse(submission.GetProperty("module").TryGetProperty("options", out _));
+                Assert.AreEqual(choice, submission.GetProperty("illuminationMode").GetString());
+                return await profiles.SaveEquipmentAsync(duplicate ? null : from.DefinitionId, "camera",
+                    duplicate ? "Virtual camera copy" : "Virtual camera", submission, CancellationToken.None,
+                    from.RevisionId, duplicate ? null : from.RevisionId).ConfigureAwait(false);
+            }
+            static System.Text.Json.Nodes.JsonNode With(System.Text.Json.JsonElement options, string? choice)
+            {
+                var node = System.Text.Json.Nodes.JsonNode.Parse(options.GetRawText())!.AsObject();
+                if (choice is not null) node["illuminationMode"] = choice;
+                return node;
+            }
+
+            var projectedBasis = await ProjectedCameraAsync(profiles, basis.RevisionId).ConfigureAwait(false);
+            Assert.AreEqual("LegacyScalarSolar", projectedBasis.GetProperty("illuminationMode").GetString());
+            Assert.IsFalse(projectedBasis.GetProperty("fixedSkyBackground").GetBoolean());
+
+            var night = await SaveChoiceAsync(basis, "ControlledNight").ConfigureAwait(false);
+            Assert.AreEqual(basis.DefinitionId, night.DefinitionId);
+            Assert.AreEqual(2, night.RevisionNumber);
+            var nightOptions = await StoredOptionsAsync(night.RevisionId).ConfigureAwait(false);
+            Assert.IsTrue(System.Text.Json.Nodes.JsonNode.DeepEquals(With(basisOptions, "ControlledNight"),
+                System.Text.Json.Nodes.JsonNode.Parse(nightOptions.GetRawText())));
+            var typed = System.Text.Json.JsonSerializer.Deserialize<VirtualSkyCameraModuleOptions>(nightOptions,
+                StrictModuleOptionsJson)!;
+            Assert.AreEqual(VirtualSkyIlluminationMode.ControlledNight, typed.IlluminationMode);
+            Assert.AreEqual(42, typed.Seed);
+            Assert.AreEqual(4, typed.BortleClass);
+
+            // An unchanged choice keeps the basis module options exactly while another field changes.
+            var renamed = await SaveChoiceAsync(night, "ControlledNight", sensorName: "Renamed virtual sensor").ConfigureAwait(false);
+            Assert.AreEqual(3, renamed.RevisionNumber);
+            Assert.AreEqual(nightOptions.GetRawText(), (await StoredOptionsAsync(renamed.RevisionId).ConfigureAwait(false)).GetRawText());
+
+            // Returning to the default removes the option, restoring the basis options.
+            var uniform = await SaveChoiceAsync(renamed, "LegacyScalarSolar").ConfigureAwait(false);
+            Assert.IsTrue(System.Text.Json.Nodes.JsonNode.DeepEquals(With(basisOptions, null),
+                System.Text.Json.Nodes.JsonNode.Parse((await StoredOptionsAsync(uniform.RevisionId).ConfigureAwait(false)).GetRawText())));
+
+            var copy = await SaveChoiceAsync(basis, "SolarDriven", duplicate: true).ConfigureAwait(false);
+            Assert.AreNotEqual(basis.DefinitionId, copy.DefinitionId);
+            Assert.IsTrue(System.Text.Json.Nodes.JsonNode.DeepEquals(With(basisOptions, "SolarDriven"),
+                System.Text.Json.Nodes.JsonNode.Parse((await StoredOptionsAsync(copy.RevisionId).ConfigureAwait(false)).GetRawText())));
+
+            // Every choice is its own immutable revision, so the history keeps each one.
+            foreach (var (revision, choice) in new[]
+            {
+                (basis, "LegacyScalarSolar"), (night, "ControlledNight"), (renamed, "ControlledNight"),
+                (uniform, "LegacyScalarSolar"), (copy, "SolarDriven")
+            })
+            {
+                Assert.AreEqual(choice, (await ProjectedCameraAsync(profiles, revision.RevisionId).ConfigureAwait(false))
+                    .GetProperty("illuminationMode").GetString());
+            }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
+    public async Task VirtualSkyCameraFromBasis_RejectsAnythingButAnAllowListedSkyLightingChoice()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var ingress = new JournalInitializer(root);
+            using var schedule = new SqliteCaptureScheduleStore(ingress, options, TimeProvider.System);
+            var active = await schedule.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
+            var profiles = new SqliteNamedRigProfileStore(ingress, options, TimeProvider.System, schedule);
+            var rig = active.ActiveRevision.Profile.Rig;
+            var basis = await profiles.SaveEquipmentAsync(null, "camera", "Virtual camera",
+                System.Text.Json.JsonSerializer.SerializeToElement(new NamedCameraEquipment(
+                    new CameraModuleDescriptor("VirtualSky", System.Text.Json.JsonSerializer.SerializeToElement(new { seed = 42 })),
+                    rig.Sensor, rig.Readout)), CancellationToken.None).ConfigureAwait(false);
+            var zwo = await profiles.SaveEquipmentAsync(null, "camera", "ZWO camera",
+                System.Text.Json.JsonSerializer.SerializeToElement(new NamedCameraEquipment(
+                    new CameraModuleDescriptor("ZwoAsi", System.Text.Json.JsonSerializer.SerializeToElement(new
+                    {
+                        libraryPathEnvironmentVariable = "ASI_SDK_PATH",
+                        cameraSerialEnvironmentVariable = "ASI_SERIAL",
+                        expectedModel = "ASI676MC"
+                    })), rig.Sensor, rig.Readout)), CancellationToken.None).ConfigureAwait(false);
+            var sensor = System.Text.Json.JsonSerializer.Serialize(rig.Sensor, ProjectionJson);
+            var readout = System.Text.Json.JsonSerializer.Serialize(rig.Readout, ProjectionJson);
+            string Definition(string module, string extra)
+                => $$"""{"module":{{module}},"sensor":{{sensor}},"readout":{{readout}}{{extra}}}""";
+
+            foreach (var (module, extra) in new[]
+            {
+                ("""{"type":"VirtualSky"}""", ""","illuminationMode":"PretendNight" """),
+                ("""{"type":"VirtualSky"}""", ""","illuminationMode":"controllednight" """),
+                ("""{"type":"VirtualSky"}""", ""","illuminationMode":"2" """),
+                ("""{"type":"VirtualSky"}""", ""","illuminationMode":2"""),
+                ("""{"type":"VirtualSky"}""", ""","illuminationMode":null"""),
+                ("""{"type":"VirtualSky"}""", ""","illuminationMode":["ControlledNight"]"""),
+                ("""{"type":"VirtualSky"}""", ""","illuminationMode":"SolarDriven","IlluminationMode":"ControlledNight" """),
+                ("""{"type":"VirtualSky"}""", ""","illuminationMode":"ControlledNight","backgroundElectronsPerSecond":5"""),
+                ("""{"type":"VirtualSky"}""", ""","illuminationMode":"ControlledNight","options":{"seed":1}"""),
+                ("""{"type":"VirtualSky"}""", ""","bortleClass":9"""),
+                ("""{"type":"VirtualSky","options":{"illuminationMode":"ControlledNight"}}""", ""),
+                ("""{"type":"VirtualSky","illuminationMode":"ControlledNight"}""", "")
+            })
+            {
+                using var document = System.Text.Json.JsonDocument.Parse(Definition(module, extra));
+                await Assert.ThrowsExactlyAsync<ArgumentException>(() => profiles.SaveEquipmentAsync(basis.DefinitionId,
+                    "camera", "Virtual camera", document.RootElement, CancellationToken.None, basis.RevisionId,
+                    basis.RevisionId), module + extra).ConfigureAwait(false);
+                await Assert.ThrowsExactlyAsync<ArgumentException>(() => profiles.SaveEquipmentAsync(null,
+                    "camera", "Rejected copy", document.RootElement, CancellationToken.None, basis.RevisionId),
+                    module + extra).ConfigureAwait(false);
+            }
+
+            // A physical camera basis never accepts the choice, and a definition without a basis cannot carry it.
+            using (var physical = System.Text.Json.JsonDocument.Parse(Definition("""{"type":"ZwoAsi"}""",
+                ""","illuminationMode":"ControlledNight" """)))
+            {
+                await Assert.ThrowsExactlyAsync<ArgumentException>(() => profiles.SaveEquipmentAsync(null,
+                    "camera", "Rejected ZWO copy", physical.RootElement, CancellationToken.None, zwo.RevisionId)).ConfigureAwait(false);
+            }
+            var unbased = System.Text.Json.Nodes.JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(new NamedCameraEquipment(
+                new CameraModuleDescriptor("VirtualSky", System.Text.Json.JsonSerializer.SerializeToElement(new { seed = 42 })),
+                rig.Sensor, rig.Readout)))!.AsObject();
+            unbased["illuminationMode"] = "ControlledNight";
+            await Assert.ThrowsExactlyAsync<ArgumentException>(() => profiles.SaveEquipmentAsync(null, "camera",
+                "Rejected full definition", System.Text.Json.JsonSerializer.SerializeToElement(unbased),
+                CancellationToken.None)).ConfigureAwait(false);
+
+            var inventory = await profiles.GetInventoryAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(1, inventory.Equipment.Single(item => item.DefinitionId == basis.DefinitionId).RevisionNumber);
+            Assert.IsFalse(inventory.Equipment.Any(item => item.DisplayName.StartsWith("Rejected", StringComparison.Ordinal)));
+            Assert.AreEqual("LegacyScalarSolar", (await ProjectedCameraAsync(profiles, basis.RevisionId).ConfigureAwait(false))
+                .GetProperty("illuminationMode").GetString());
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
+    public async Task CameraProjection_ReportsSkyLightingAndFixedBackgroundOnlyForVirtualSky()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+            var ingress = new JournalInitializer(root);
+            using var schedule = new SqliteCaptureScheduleStore(ingress, options, TimeProvider.System);
+            var active = await schedule.InitializeAsync(Configuration(), CancellationToken.None).ConfigureAwait(false);
+            var profiles = new SqliteNamedRigProfileStore(ingress, options, TimeProvider.System, schedule);
+            var rig = active.ActiveRevision.Profile.Rig;
+            async Task<System.Text.Json.JsonElement> ProjectAsync(string type, object? moduleOptions)
+            {
+                var saved = await profiles.SaveEquipmentAsync(null, "camera", $"Camera {Guid.NewGuid():N}",
+                    System.Text.Json.JsonSerializer.SerializeToElement(new NamedCameraEquipment(new CameraModuleDescriptor(type,
+                        moduleOptions is null ? null : System.Text.Json.JsonSerializer.SerializeToElement(moduleOptions)),
+                        rig.Sensor, rig.Readout)), CancellationToken.None).ConfigureAwait(false);
+                return await ProjectedCameraAsync(profiles, saved.RevisionId).ConfigureAwait(false);
+            }
+
+            var fixedBackground = await ProjectAsync("VirtualSky",
+                new { illuminationMode = "SolarDriven", backgroundElectronsPerSecond = 7.5 }).ConfigureAwait(false);
+            Assert.AreEqual("SolarDriven", fixedBackground.GetProperty("illuminationMode").GetString());
+            Assert.IsTrue(fixedBackground.GetProperty("fixedSkyBackground").GetBoolean());
+            Assert.IsFalse(fixedBackground.GetRawText().Contains("backgroundElectronsPerSecond", StringComparison.OrdinalIgnoreCase));
+            Assert.IsFalse(fixedBackground.GetRawText().Contains("7.5", StringComparison.Ordinal));
+
+            var omitted = await ProjectAsync("VirtualSky", null).ConfigureAwait(false);
+            Assert.AreEqual("LegacyScalarSolar", omitted.GetProperty("illuminationMode").GetString());
+            Assert.IsFalse(omitted.GetProperty("fixedSkyBackground").GetBoolean());
+            var nullBackground = await ProjectAsync("VirtualSky", new Dictionary<string, object?>
+            {
+                ["IlluminationMode"] = "controllednight",
+                ["backgroundElectronsPerSecond"] = null
+            }).ConfigureAwait(false);
+            Assert.AreEqual("ControlledNight", nullBackground.GetProperty("illuminationMode").GetString());
+            Assert.IsFalse(nullBackground.GetProperty("fixedSkyBackground").GetBoolean());
+            Assert.AreEqual(System.Text.Json.JsonValueKind.Null,
+                (await ProjectAsync("VirtualSky", new { illuminationMode = 2 }).ConfigureAwait(false))
+                    .GetProperty("illuminationMode").ValueKind);
+
+            var physical = await ProjectAsync("ZwoAsi", new
+            {
+                libraryPathEnvironmentVariable = "ASI_SDK_PATH",
+                cameraSerialEnvironmentVariable = "ASI_SERIAL",
+                expectedModel = "ASI676MC",
+                illuminationMode = "ControlledNight",
+                backgroundElectronsPerSecond = 7.5
+            }).ConfigureAwait(false);
+            Assert.AreEqual(System.Text.Json.JsonValueKind.Null, physical.GetProperty("illuminationMode").ValueKind);
+            Assert.AreEqual(System.Text.Json.JsonValueKind.Null, physical.GetProperty("fixedSkyBackground").ValueKind);
+            Assert.AreEqual("ASI676MC", physical.GetProperty("expectedModel").GetString());
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private static readonly System.Text.Json.JsonSerializerOptions ProjectionJson = new(System.Text.Json.JsonSerializerDefaults.Web);
+    private static readonly string[] MoonOnly = ["Moon"];
+    // VirtualSky reads its options this strictly, so a merge that left a stray member would fail here.
+    private static readonly System.Text.Json.JsonSerializerOptions StrictModuleOptionsJson = new(System.Text.Json.JsonSerializerDefaults.Web)
+    {
+        UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow
+    };
+
+    /// <summary>The camera definition as the Camera &amp; rig page receives it.</summary>
+    private static async Task<System.Text.Json.JsonElement> ProjectedCameraAsync(SqliteNamedRigProfileStore profiles,
+        string revisionId)
+        => System.Text.Json.JsonSerializer.SerializeToElement(
+            (await profiles.GetEquipmentAsync(revisionId, CancellationToken.None).ConfigureAwait(false)).Definition, ProjectionJson);
 
     [TestMethod]
     public async Task NamedRigStage_RejectsScheduleActivatedAfterPreviewAndConflictingReplay()

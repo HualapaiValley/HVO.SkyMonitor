@@ -378,8 +378,9 @@ bodies; constellation lines can still use all resolved endpoints.
   degrees the color multiplier is neutral. This is not atmospheric radiative
   transfer, calibrated solar photometry, a resolved Sun, or a weather model.
 - `ControlledNight`: use the Bortle night rate at the actual celestial time.
-  Stars keep moving and actual Sun altitude/azimuth remain recorded. This mode
-  does not turn an operational daytime capture into astronomical night.
+  Stars keep moving and actual Sun altitude/azimuth remain recorded. Capture
+  control treats the rendered sky as night, but this mode does not move the
+  capture schedule, which still follows the real Sun (see #1296 below).
 
 An explicit `backgroundElectronsPerSecond` overrides every mode with the same
 uniform electron rate, preserving deterministic fixtures. The requested mode,
@@ -431,6 +432,67 @@ display pixels. Auto-stretched previews are not absolute-brightness evidence.
 This prototype is available for the explicitly authorized #1134 preparation
 route; production qualification still requires the complete candidate and PR
 gates and the recorded sample disposition.
+
+### Choosing the sky lighting on the Camera & rig page (#1296)
+
+When the camera module is `VirtualSky`, the camera equipment editor on
+**Operations > Camera & rig** (`/operations/camera`) offers the three modes as
+**Sky lighting**:
+
+| Choice | `illuminationMode` | Meaning |
+| --- | --- | --- |
+| Uniform daylight (default) | omitted (`LegacyScalarSolar`) | The whole sky brightens evenly with the real Sun's altitude. |
+| Realistic daylight | `SolarDriven` | The clear-sky approximation above: a bounded blue sky and a warm, Sun-facing horizon. |
+| No daylight | `ControlledNight` | A Bortle night sky at the actual celestial time; stars keep moving. |
+
+Saving appends an immutable camera revision, revised or duplicated like any
+other equipment change, so each choice stays visible in the camera revision
+history and in the Compare & stage table. It takes effect only after the camera
+is composed into a rig revision, previewed, staged and CameraAgent restarts.
+
+The choice is the only module option the page handles. The browser never
+receives module options: the camera projection carries the current choice and
+whether the revision sets `backgroundElectronsPerSecond`, and the submission
+carries only `illuminationMode` with one of the three exact names above. The
+store merges that value into the basis revision's module options and keeps every
+other option as it was. Choosing Uniform daylight removes the option, so the
+default stays written by omission; an unchanged choice keeps the basis options
+exactly. Any other value, any other module option, a physical camera basis, or a
+definition without a basis revision is rejected. When the revision sets
+`backgroundElectronsPerSecond`, the page says that the fixed background
+overrides the lighting choice in the rendered image.
+
+Image-facing capture decisions follow the rendered sky; the schedule keeps the
+real Sun:
+
+- With No daylight, the capture-control solar regime is `Night` at every real
+  Sun altitude. Host-metered exposure and gain start from the envelope's night
+  defaults and are never reset to day or twilight defaults at sunrise or sunset,
+  and the capture-cycle evidence records `solarRegime: Night`, matching the
+  image. The daylight modes keep the real-Sun regime, and physical camera
+  modules are unchanged.
+- Auto exposure semantics do not change. With host-metered control, exposure and
+  gain are metered toward the target within the envelope's minimum and maximum in
+  every lighting mode; the regime only selects the starting setpoint and the
+  reset on a regime change. With control disabled, the fixed setpoint applies.
+- Host-metered control is what records a regime, and every consumer of it then
+  sees `Night` for a No daylight frame: edge and central cloud assessment
+  evaluate it as a night image rather
+  than rejecting it as daylight, the environmental `RegimeChange` trigger does
+  not fire at the real sunrise or sunset (switching the lighting choice across a
+  restart can fire it once), and the capture-control metrics and traces carry
+  the same `regime` label.
+- Capture windows, observing-day boundaries, sunrise and sunset events, and
+  nightly, still-product and time-lapse source windows still use the real Sun.
+  The installer profile captures only from sunset to sunrise, so recording a
+  virtual night sky around the clock also needs a daytime window on the Capture
+  schedule page.
+- Frames still record `skyIlluminationMode`, the real Sun's
+  `stellarSolarAltitudeDegrees` and `skySolarAzimuthDegrees`, and
+  `stellarSolarRegime`, which remains the real-Sun classification used by the
+  background model rather than the capture-control regime.
+- The daylight modes classify the real Sun at the capture time even when
+  `fixedSceneUtc` or `fixedSequenceStartUtc` renders a different celestial time.
 
 ### Resolved Sun and Moon footprints (#518)
 

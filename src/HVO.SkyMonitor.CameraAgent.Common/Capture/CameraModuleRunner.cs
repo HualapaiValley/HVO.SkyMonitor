@@ -714,6 +714,10 @@ internal sealed class CameraModuleRunner
         {
             throw new InvalidOperationException("Host-metered capture control requires a planet ephemeris.");
         }
+        if ((_module as ICameraSimulatedSkyRegime)?.SimulatedSolarRegime is { } simulated)
+        {
+            return simulated;
+        }
         var policy = config.Rig.ControlPolicy!.SolarRegimes ?? new CaptureSolarRegimePolicy();
         var observatory = config.ResolveObservatory(utc);
         var classification = SolarAltitudeClassifier.Classify(
