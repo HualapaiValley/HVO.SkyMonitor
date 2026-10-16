@@ -154,5 +154,9 @@ public sealed class PresentationEndpointTests
             Guid captureId,
             CancellationToken cancellationToken) => ValueTask.FromResult(
                 Result ?? new(CameraAgentLayeredPresentationStatus.Found, Presentation));
+
+        public ValueTask<CameraAgentLayeredPresentationResult> GetCurrentAsync(
+            Guid captureId,
+            CancellationToken cancellationToken) => GetAsync(captureId, cancellationToken);
     }
 }

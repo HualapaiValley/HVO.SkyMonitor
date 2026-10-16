@@ -43,7 +43,7 @@ internal sealed partial class CaptureProcessingPersistence
             if (descriptor.Layout.Width != source.Layout.Width || descriptor.Layout.Height != source.Layout.Height ||
                 descriptor.Timing.ExposureStartedUtc != source.Timing.ExposureStartedUtc ||
                 descriptor.Timing.ExposureEndedUtc != source.Timing.ExposureEndedUtc ||
-                !await HasSourcePixelMappingAsync(baseOutput, source, [], 0, cancellationToken).ConfigureAwait(false) ||
+                !await HasSourcePixelMappingAsync(baseOutput, source, _store.ReadOutputByArtifactIdAsync, cancellationToken).ConfigureAwait(false) ||
                 evidence.Trails.Any(trail => trail.SourceManifest.Descriptor != source))
             {
                 return Unsupported("Measured trails do not have an exact source/exposure mapping to this presentation base.");
@@ -197,10 +197,19 @@ internal sealed partial class CaptureProcessingPersistence
             evidence with { State = "Unavailable", Incomplete = true, Reason = reason });
     }
 
-    private async ValueTask<bool> HasSourcePixelMappingAsync(DurableProcessingOutput output,
-        ReconstructionDescriptor source, HashSet<Guid> visited, int depth, CancellationToken cancellationToken)
+    internal const int MaximumLineageHops = 8;
+
+    internal static ValueTask<bool> HasSourcePixelMappingAsync(DurableProcessingOutput output,
+        ReconstructionDescriptor source, Func<Guid, CancellationToken, ValueTask<DurableProcessingOutput?>> readOutput,
+        CancellationToken cancellationToken) =>
+        HasSourcePixelMappingAsync(output, source, readOutput, [], MaximumLineageHops, cancellationToken);
+
+    // Every source edge, including the final edge into the raw source, consumes one hop of the budget.
+    private static async ValueTask<bool> HasSourcePixelMappingAsync(DurableProcessingOutput output,
+        ReconstructionDescriptor source, Func<Guid, CancellationToken, ValueTask<DurableProcessingOutput?>> readOutput,
+        HashSet<Guid> visited, int remainingHops, CancellationToken cancellationToken)
     {
-        if (depth > 8 || !visited.Add(output.ArtifactId) || output.AvailabilityState != "Available" ||
+        if (!visited.Add(output.ArtifactId) || output.AvailabilityState != "Available" ||
             output.Descriptor is not { } descriptor || descriptor.Capture.CaptureId != source.Capture.CaptureId ||
             descriptor.Layout.Width != source.Layout.Width || descriptor.Layout.Height != source.Layout.Height ||
             descriptor.Timing.ExposureStartedUtc != source.Timing.ExposureStartedUtc ||
@@ -216,7 +225,7 @@ internal sealed partial class CaptureProcessingPersistence
         }
         if (output.ArtifactId == source.Artifact.ArtifactId)
             return output.Artifact.ChecksumSha256 == source.Artifact.ChecksumSha256;
-        if (!TransientTrailPresentation.PreservesSourcePixels(output.Artifact.Role, output.Artifact.Recipe, output.Algorithms)) return false;
+        if (remainingHops < 1 || !TransientTrailPresentation.PreservesSourcePixels(output.Artifact.Role, output.Artifact.Recipe, output.Algorithms)) return false;
         var ids = descriptor.Artifact.SourceArtifactIds;
         if (ids.Count is < 1 or > 100 || ids.Distinct().Count() != ids.Count) return false;
         if (output.Artifact.Recipe.Name is BuiltInProcessingRecipes.FixedPreview or BuiltInProcessingRecipes.EncodedPreview or
@@ -227,8 +236,9 @@ internal sealed partial class CaptureProcessingPersistence
         foreach (var id in candidates)
         {
             if (id == source.Artifact.ArtifactId) return true;
-            var parent = await _store.ReadOutputByArtifactIdAsync(id, cancellationToken).ConfigureAwait(false);
-            if (parent is not null && await HasSourcePixelMappingAsync(parent, source, visited, depth + 1, cancellationToken).ConfigureAwait(false))
+            var parent = await readOutput(id, cancellationToken).ConfigureAwait(false);
+            if (parent is not null && await HasSourcePixelMappingAsync(parent, source, readOutput, visited, remainingHops - 1,
+                cancellationToken).ConfigureAwait(false))
                 return true;
         }
         return false;

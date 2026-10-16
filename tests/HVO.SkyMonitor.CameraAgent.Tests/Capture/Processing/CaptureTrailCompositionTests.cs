@@ -85,6 +85,50 @@ public sealed partial class DurableCaptureProcessingTests
                 1, workerLogger.Object, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, processed.Outcome,
                 processed.Reason + string.Join("\n", workerLogger.Invocations.Select(value => string.Join(" ", value.Arguments))));
+            var rollingOutput = await store.ReadOutputByArtifactIdAsync(combinedArtifact.ArtifactId, CancellationToken.None)
+                .ConfigureAwait(false) ?? throw new AssertFailedException("The rolling mean output was not retained.");
+            var previewOutput = await store.ReadOutputByArtifactIdAsync(
+                ProcessingIdentity.CreateArtifactId(preview.Products.Single().OutputIdentitySha256), CancellationToken.None)
+                .ConfigureAwait(false) ?? throw new AssertFailedException("The preview base output was not retained.");
+            Assert.IsTrue(await CaptureProcessingPersistence.HasSourcePixelMappingAsync(previewOutput, descriptor,
+                store.ReadOutputByArtifactIdAsync, CancellationToken.None).ConfigureAwait(false));
+            static DurableProcessingOutput Relink(DurableProcessingOutput output, Guid artifactId, Guid sourceArtifactId)
+            {
+                var retained = output.Descriptor ?? throw new AssertFailedException("The retained output has no descriptor.");
+                return output with
+                {
+                    ArtifactId = artifactId,
+                    Descriptor = retained with
+                    {
+                        Artifact = retained.Artifact with { ArtifactId = artifactId, SourceArtifactIds = [sourceArtifactId] }
+                    }
+                };
+            }
+            async ValueTask<bool> MapsThroughAsync(Guid baseSourceArtifactId, Dictionary<Guid, DurableProcessingOutput> lineage) =>
+                await CaptureProcessingPersistence.HasSourcePixelMappingAsync(Relink(previewOutput, Guid.NewGuid(), baseSourceArtifactId),
+                    descriptor, (id, _) => ValueTask.FromResult<DurableProcessingOutput?>(lineage.GetValueOrDefault(id)),
+                    CancellationToken.None).ConfigureAwait(false);
+            async ValueTask<bool> MapsThroughRollingChainAsync(int rollingCount)
+            {
+                var lineage = new Dictionary<Guid, DurableProcessingOutput>();
+                var previous = descriptor.Artifact.ArtifactId;
+                for (var index = 0; index < rollingCount; index++)
+                {
+                    var link = Relink(rollingOutput, Guid.NewGuid(), previous);
+                    lineage.Add(link.ArtifactId, link);
+                    previous = link.ArtifactId;
+                }
+                return await MapsThroughAsync(previous, lineage).ConfigureAwait(false);
+            }
+            // R1005-1-F2: the preview base over N rolling means is N + 1 source edges, the last one into the raw source.
+            Assert.IsTrue(await MapsThroughRollingChainAsync(CaptureProcessingPersistence.MaximumLineageHops - 1).ConfigureAwait(false));
+            Assert.IsFalse(await MapsThroughRollingChainAsync(CaptureProcessingPersistence.MaximumLineageHops).ConfigureAwait(false));
+            var (cycleStart, cycleEnd) = (Guid.NewGuid(), Guid.NewGuid());
+            Assert.IsFalse(await MapsThroughAsync(cycleStart, new()
+            {
+                [cycleStart] = Relink(rollingOutput, cycleStart, cycleEnd),
+                [cycleEnd] = Relink(rollingOutput, cycleEnd, cycleStart)
+            }).ConfigureAwait(false));
             Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found,
                 (await missingService.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false)).Status);
             var originals = await store.ReadCaptureProductsAsync(captureId, OverlayManifestV1.CurrentSchemaVersion, 2,
@@ -108,8 +152,20 @@ public sealed partial class DurableCaptureProcessingTests
                 new(source.EvidenceId, 2, 2, new(0, 0, 2, 2), [new(0.5, 0.5), new(1.5, 1.5)]));
             var evidence = new CameraAgentCaptureTrails(captureId, "MeasuredEvidence", [measured], false);
             var projection = new Mock<ICameraAgentTransientOperatorProjection>(MockBehavior.Strict);
+            TaskCompletionSource? holdNextProjection = null;
+            var heldProjection = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            async ValueTask<CameraAgentCaptureTrails> ProjectAsync()
+            {
+                var snapshot = evidence;
+                if (Interlocked.Exchange(ref holdNextProjection, null) is { } release)
+                {
+                    heldProjection.TrySetResult();
+                    await release.Task.ConfigureAwait(false);
+                }
+                return snapshot;
+            }
             projection.Setup(value => value.GetCaptureTrailsAsync(captureId, It.IsAny<CancellationToken>()))
-                .Returns(() => ValueTask.FromResult(evidence));
+                .Returns(() => ProjectAsync());
             var disabledProjection = new Mock<ICameraAgentTransientOperatorProjection>(MockBehavior.Strict);
             var disabledService = new CameraAgentLayeredPresentationService(store, artifacts,
                 disabledProjection.Object, persistence, Options.Create(new CameraAgentHostOptions
@@ -203,7 +259,28 @@ public sealed partial class DurableCaptureProcessingTests
             CollectionAssert.Contains(savedOutput.Artifact.SourceArtifactIds.ToArray(), first.Presentation.ManifestArtifactId);
             var savedBytes = await File.ReadAllBytesAsync(Path.Combine(root, savedOutput.PayloadRelativePath)).ConfigureAwait(false);
 
+            // R1005-1-F1: a read that already projected the shown evidence and is still in flight must not validate a
+            // save requested after newer evidence was committed.
+            var releaseHeldProjection = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            holdNextProjection = releaseHeldProjection;
+            var inFlight = presentations.GetAsync(captureId, CancellationToken.None).AsTask();
+            await heldProjection.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
             evidence = evidence with { Trails = [measured with { State = "ConfirmedMeteor", FinalizationIdentitySha256 = new string('C', 64) }] };
+            CameraAgentPresentationMaterializationResult interleaved;
+            try
+            {
+                interleaved = await materializer.SaveFrozenAsync(captureId, first.Presentation.ManifestIdentitySha256,
+                    [trailLayer.IdentitySha256], "operator-test", CancellationToken.None).AsTask()
+                    .WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            }
+            finally
+            {
+                releaseHeldProjection.TrySetResult();
+            }
+            Assert.AreEqual(CameraAgentPresentationMaterializationStatus.Conflict, interleaved.Status, interleaved.Reason);
+            var heldRead = await inFlight.ConfigureAwait(false);
+            Assert.AreEqual(first.Presentation.ManifestIdentitySha256, heldRead.Presentation!.ManifestIdentitySha256);
+            CollectionAssert.AreEqual(savedBytes, await File.ReadAllBytesAsync(Path.Combine(root, savedOutput.PayloadRelativePath)).ConfigureAwait(false));
             var stale = await materializer.SaveFrozenAsync(captureId, first.Presentation.ManifestIdentitySha256,
                 [trailLayer.IdentitySha256], "operator-test", CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentPresentationMaterializationStatus.Conflict, stale.Status);

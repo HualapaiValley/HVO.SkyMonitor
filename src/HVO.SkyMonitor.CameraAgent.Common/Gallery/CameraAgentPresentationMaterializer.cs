@@ -71,7 +71,9 @@ internal sealed class CameraAgentPresentationMaterializer(
             return new(CameraAgentPresentationMaterializationStatus.Conflict,
                 Reason: "The selected composition is unavailable.");
         }
-        var current = await presentations.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
+        // The private current projection is the save's linearization point: evidence committed before the save
+        // began is observed, and a later change is ordered after this save of the immutable shown composition.
+        var current = await presentations.GetCurrentAsync(captureId, cancellationToken).ConfigureAwait(false);
         if (current.Presentation is not { } presentation ||
             presentation.ManifestIdentitySha256 != manifestIdentitySha256 || presentation.ManifestArtifactId == Guid.Empty)
         {

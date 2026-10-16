@@ -58,6 +58,14 @@ public interface ICameraAgentLayeredPresentationService
     ValueTask<CameraAgentLayeredPresentationResult> GetAsync(
         Guid captureId,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Projects the presentation from evidence read after this call begins. Unlike <see cref="GetAsync"/>, it never
+    /// joins an in-flight read whose evidence snapshot may predate the caller.
+    /// </summary>
+    ValueTask<CameraAgentLayeredPresentationResult> GetCurrentAsync(
+        Guid captureId,
+        CancellationToken cancellationToken);
 }
 
 internal sealed class CameraAgentLayeredPresentationService(
@@ -102,8 +110,20 @@ internal sealed class CameraAgentLayeredPresentationService(
         return await flight.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<CameraAgentLayeredPresentationResult> GetCurrentAsync(
+        Guid captureId,
+        CancellationToken cancellationToken)
+    {
+        if (captureId == Guid.Empty)
+        {
+            return Unavailable("Capture presentation is unavailable.");
+        }
+        // A private flight: joining a shared one could return evidence projected before this request.
+        return await BuildAsync(captureId, shared: false).WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The authenticated presentation boundary returns only fixed failure states for malformed retained evidence.")]
-    private async Task<CameraAgentLayeredPresentationResult> BuildAsync(Guid captureId)
+    private async Task<CameraAgentLayeredPresentationResult> BuildAsync(Guid captureId, bool shared = true)
     {
         try
         {
@@ -256,9 +276,12 @@ internal sealed class CameraAgentLayeredPresentationService(
         }
         finally
         {
-            lock (_cacheGate)
+            if (shared)
             {
-                _flights.Remove(captureId);
+                lock (_cacheGate)
+                {
+                    _flights.Remove(captureId);
+                }
             }
         }
     }

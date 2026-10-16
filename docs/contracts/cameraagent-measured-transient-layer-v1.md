@@ -44,6 +44,7 @@ not confirm a meteor.
 The base must be a reconstructable packed raster with the same source grid,
 capture, recorded exposure bounds, rig, orientation, sensor and location.
 Membership is checked through at most eight immutable processing lineage hops,
+each source edge including the final edge into the raw source counting as one hop,
 with at most 100 source references per admitted window. Only pinned producer
 and algorithm versions known to preserve pixel coordinates are accepted:
 full-size fixed/encoded preview, unregistered linear arithmetic rolling mean,
@@ -79,7 +80,10 @@ publication validates the base and retained layer products once.
 Grouped SVG and packed raster materialization consume the same manifest,
 payloads and selected layer identities. A frozen save request includes the
 shown manifest identity; changed evidence yields Conflict instead of silently
-substituting a different stack. Saved products retain the composed manifest and
+substituting a different stack. The save validates against a private projection
+read after the request begins and never joins an earlier in-flight read, so any
+evidence committed before the save is observed; that projection is the save's
+linearization point and a later change is ordered after the save. Saved products retain the composed manifest and
 selected layer lineage and remain immutable when later evidence changes.
 Legacy save requests continue to use the original manifest and cannot select a
 supplemental identity implicitly.
