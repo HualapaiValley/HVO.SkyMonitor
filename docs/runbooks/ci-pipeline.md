@@ -661,13 +661,22 @@ DOCKER_HOST=unix:///var/run/docker.sock dotnet test tests/HVO.SkyMonitor.LogicHo
 ```
 
 Integration uses the existing fixture's real HTTP/TestServer and SQL Server.
-Its large-history case appends 10,000 retrieval facts to one retained proposal
-and another 10,000 across 200 unrelated proposals. After one warm-up, it records
-three product SELECTs, the actual indexed fact rows examined/returned, response
-bytes and one observed HTTP duration. It verifies the latest 50 plus one
-sentinel through `(ProposalId, RecordedAtUtc, Id)`, equal timestamp ordering,
-explicit truncation and a concurrent insert. Fixture startup and seeding are
-outside that observation; this is bounded-read evidence, with no percentile,
+Its faithful large-history case uses one initial LogicHost retrieval and one
+valid acceptance per proposal, followed by 10,000 alternating activation/rollback
+facts for the selected retained proposal and another 10,000 across 200 unrelated
+proposals (402 initial retrieval/acceptance facts). The fixture compiles a valid
+CameraAgent graph, preserves its exact revision/local/hash identities, validates
+every acceptance and lifecycle transition against the delivered writer rules,
+and enforces issuance and monotonically recorded UTC ordering. The concurrent
+append goes through the real delivery acknowledgement service. Direct bounded
+batch seeding keeps setup outside the observed read.
+
+After one warm-up, it records three product SELECTs, the actual existing fact
+index rows examined/returned (and clustered-key lookups), response bytes and one
+observed HTTP duration for the latest 50 plus one sentinel. Separate explicitly
+synthetic duplicate-retrieval rows test adversarial equal-timestamp ordering;
+those rows are excluded from faithful workload cost. Fixture startup and seeding
+are outside the observation; this is bounded-read evidence, with no percentile,
 speedup, full-history snapshot or production qualification claim. Raw SQL plan
 XML and observed values are retained in TRX output with the exact source/DLL/PDB
 provenance in the issue/PR evidence archive.

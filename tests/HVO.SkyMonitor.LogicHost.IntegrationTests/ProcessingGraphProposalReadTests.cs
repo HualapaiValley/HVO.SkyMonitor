@@ -7,13 +7,17 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
 using FluentAssertions;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.TestSupport;
+using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -208,10 +212,11 @@ public sealed class ProcessingGraphProposalReadTests
     }
 
     [TestMethod]
-    public async Task Http_LargeHistoryReadsIndexedBoundedRowsWithEqualTimesAndConcurrentInsert()
+    public async Task Http_FaithfulLargeHistoryReadsIndexedBoundedRowsAndConcurrentLifecycleAppend()
     {
         var seed = await SeedAsync(pending: true).ConfigureAwait(false);
-        await SeedHistoryAsync(seed, 10000).ConfigureAwait(false);
+        var history = await SeedFaithfulHistoryAsync(seed, 10000).ConfigureAwait(false);
+        seed = history.Seed;
         var probe = new ReadProbe();
         using var factory = CreateFactory(probe);
         using var client = await KeyClientAsync(factory, seed).ConfigureAwait(false);
@@ -237,26 +242,29 @@ public sealed class ProcessingGraphProposalReadTests
         var expected = await db.CentralProcessingGraphDeliveryFacts.AsNoTracking().Where(fact => fact.ProposalId == seed.Proposal.Id)
             .OrderByDescending(fact => fact.RecordedAtUtc).ThenByDescending(fact => fact.Id).Take(50).ToArrayAsync().ConfigureAwait(false);
         result.Facts.Select(fact => fact.Id).Should().Equal(expected.Select(fact => fact.Id));
-        result.Facts.Select(fact => fact.RecordedAtUtc).Distinct().Should().ContainSingle();
-        TestContext.WriteLine($"source workload=1270-v1 retainedFacts=10000 unrelatedFacts=10000 unrelatedProposals=200 concurrency=1 warmup=1 observedOperations=1 productSQL=3 factRowsReturned=51 outputFacts=50 responseBytes={payload.Length} observedHttpMs={clock.Elapsed.TotalMilliseconds.ToString(CultureInfo.InvariantCulture)}");
+        result.Facts.Select(fact => fact.RecordedAtUtc).Distinct().Should().HaveCount(50);
+        foreach (var fact in result.Facts)
+        {
+            fact.Kind.Should().BeOneOf("Activated", "RolledBack");
+            fact.LocalRevisionId.Should().Be(history.Accepted.LocalRevisionId);
+            fact.DefinitionIdentitySha256.Should().Be(history.Accepted.DefinitionIdentitySha256);
+            fact.SharedPlanIdentitySha256.Should().Be(history.Accepted.SharedPlanIdentitySha256);
+            fact.LocalPlanIdentitySha256.Should().Be(history.Accepted.LocalPlanIdentitySha256);
+        }
+        TestContext.WriteLine($"source workload=1270-v2-faithful retainedLifecycleFacts=10000 unrelatedLifecycleFacts=10000 unrelatedProposals=200 initialRetrievedAndAcceptedFacts=402 transitionRulesValidated=20201 concurrency=1 warmup=1 observedOperations=1 productSQL=3 factRowsReturned=51 outputFacts=50 responseBytes={payload.Length} observedHttpMs={clock.Elapsed.TotalMilliseconds.ToString(CultureInfo.InvariantCulture)}");
         TestContext.WriteLine(factsCommand.Sql);
         // Insert while the next request is between the proposal and fact commands. The new read
         // may see the appended immutable fact; it remains deterministic and bounded, without a snapshot promise.
-        var inserted = new CentralProcessingGraphDeliveryFact
-        {
-            ProposalId = seed.Proposal.Id,
-            Kind = "Retrieved",
-            Source = "LogicHost",
-            OccurredAtUtc = seed.Now.AddMinutes(45),
-            RecordedAtUtc = seed.Now.AddMinutes(45),
-            ReasonCode = "proposal-retrieved"
-        };
+        var inserted = LifecycleFact(seed.Proposal, history.Accepted, history.Latest, 10000);
         probe.BeforeFacts = async () =>
         {
             await using var insertion = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
             var writer = insertion.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            writer.Add(inserted);
-            await writer.SaveChangesAsync().ConfigureAwait(false);
+            var registration = await writer.DeviceRegistrations.AsNoTracking()
+                .SingleAsync(item => item.Id == seed.Proposal.RegistrationId).ConfigureAwait(false);
+            var acknowledgement = await insertion.ServiceProvider.GetRequiredService<IProcessingGraphDeliveryService>()
+                .AcknowledgeAsync(registration, ToContract(inserted), CancellationToken.None).ConfigureAwait(false);
+            acknowledgement.Disposition.Should().Be(ProcessingGraphFactAcknowledgementDisposition.Recorded);
         };
         using var concurrent = await client.GetAsync(Path(seed)).ConfigureAwait(false);
         concurrent.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -268,6 +276,7 @@ public sealed class ProcessingGraphProposalReadTests
         var one = JsonSerializer.Deserialize<ProcessingGraphProposalReadResult>(await small.Content.ReadAsByteArrayAsync().ConfigureAwait(false))!;
         one.Facts.Should().ContainSingle().Which.Id.Should().Be(inserted.Id);
         one.FactsAreTruncated.Should().BeTrue();
+        await AssertSyntheticEqualTimeOrderAsync(seed, client).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -437,53 +446,203 @@ public sealed class ProcessingGraphProposalReadTests
             LocalPlanIdentitySha256 = kind is "Accepted" or "Activated" or "RolledBack" ? new string('f', 64) : null
         };
 
-    private static async Task SeedHistoryAsync(Seed seed, int count)
+    private static async Task<ProtocolHistory> SeedFaithfulHistoryAsync(Seed seed, int count)
     {
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        var unrelated = Enumerable.Range(0, 200).Select(index => new CentralProcessingGraphDeliveryProposal
+        var definition = CreateEdgeDefinition();
+        var portable = ProcessingGraphCompiler.Compile(definition);
+        var edge = ProcessingGraphCompiler.Compile(definition, new(ProcessingGraphHosts.CameraAgent, []));
+        portable.IsValid.Should().BeTrue();
+        edge.IsValid.Should().BeTrue();
+        var revision = new CentralProcessingGraphRevision
+        {
+            Name = definition.Name,
+            Revision = definition.Revision,
+            DefinitionJson = Encoding.UTF8.GetString(ProcessingGraphJson.SerializeCanonical(definition)),
+            DefinitionIdentitySha256 = portable.Plan!.DefinitionIdentitySha256,
+            PortablePlanIdentitySha256 = portable.Plan.PlanIdentitySha256,
+            EdgePlanIdentitySha256 = edge.Plan!.PlanIdentitySha256,
+            CreatedAtUtc = seed.Now.AddMinutes(-2),
+            CreatedByUserId = seed.OwnerId,
+            PublishedAtUtc = seed.Now.AddMinutes(-1),
+            PublishedByUserId = seed.OwnerId
+        };
+        var assignment = new CentralProcessingGraphAssignment
+        {
+            Revision = revision,
+            RevisionId = revision.Id,
+            TargetHost = CentralProcessingGraphTargetHost.Edge,
+            Scope = CentralProcessingGraphAssignmentScope.LogicalCamera,
+            ObservatoryId = seed.ObservatoryId,
+            LogicalCameraId = seed.Camera.Id,
+            EffectiveFromUtc = seed.Now.AddMinutes(-1),
+            CreatedAtUtc = seed.Now.AddMinutes(-1),
+            ActorUserId = seed.OwnerId,
+            ReasonCode = "faithful-history"
+        };
+        var capabilities = ProcessingGraphAgentCapabilities.Create([BuiltInProcessingRecipes.EncodedPreview]);
+        var proposals = Enumerable.Range(0, 201).Select(index => new CentralProcessingGraphDeliveryProposal
+        {
+            AssignmentId = assignment.Id,
+            Revision = revision,
+            RevisionId = revision.Id,
+            RegistrationId = seed.Proposal.RegistrationId,
+            LogicalCameraInstallationId = seed.Installation.Id,
+            InstallationPublicId = seed.Installation.InstallationPublicId,
+            CapabilitySnapshotSha256 = capabilities.IdentitySha256,
+            ExpectedActiveLocalRevisionId = Hash($"prior-local-{index.ToString(CultureInfo.InvariantCulture)}"),
+            IssuedAtUtc = seed.Now.AddSeconds(index * 15),
+            ExpiresAtUtc = seed.Now.AddSeconds(index * 15).AddMinutes(5)
+        }).ToArray();
+        var all = new List<CentralProcessingGraphDeliveryFact>();
+        CentralProcessingGraphDeliveryFact? primaryAccepted = null;
+        CentralProcessingGraphDeliveryFact? primaryLatest = null;
+        foreach (var proposal in proposals)
+        {
+            proposal.IssuedAtUtc.Should().BeBefore(seed.Installation.RetiredAtUtc!.Value);
+            var retrieved = new CentralProcessingGraphDeliveryFact
+            {
+                ProposalId = proposal.Id,
+                Kind = "Retrieved",
+                Source = "LogicHost",
+                OccurredAtUtc = proposal.IssuedAtUtc,
+                RecordedAtUtc = proposal.IssuedAtUtc,
+                ReasonCode = "proposal-retrieved"
+            };
+            var accepted = new CentralProcessingGraphDeliveryFact
+            {
+                ProposalId = proposal.Id,
+                Kind = "Accepted",
+                Source = "CameraAgent",
+                OccurredAtUtc = proposal.IssuedAtUtc.AddMilliseconds(1),
+                RecordedAtUtc = proposal.IssuedAtUtc.AddMilliseconds(2),
+                LocalRevisionId = Hash($"local-{proposal.Id:D}"),
+                DefinitionIdentitySha256 = revision.DefinitionIdentitySha256,
+                SharedPlanIdentitySha256 = revision.EdgePlanIdentitySha256,
+                LocalPlanIdentitySha256 = Hash($"local-plan-{proposal.Id:D}"),
+                ReasonCode = "proposal-accepted"
+            };
+            ProcessingGraphDeliveryService.ValidateTransition(proposal, ToContract(accepted), new(true, null, null));
+            all.Add(retrieved);
+            all.Add(accepted);
+            CentralProcessingGraphDeliveryFact? latest = null;
+            var lifecycleCount = proposal.Id == proposals[0].Id ? count : count / 200;
+            for (var index = 0; index < lifecycleCount; index++)
+            {
+                latest = LifecycleFact(proposal, accepted, latest, index);
+                all.Add(latest);
+            }
+            if (proposal.Id == proposals[0].Id)
+            {
+                primaryAccepted = accepted;
+                primaryLatest = latest;
+            }
+        }
+        all.GroupBy(fact => fact.ProposalId).Should().OnlyContain(group =>
+            group.Count(fact => fact.Kind == "Retrieved") == 1 && group.Count(fact => fact.Kind == "Accepted") == 1);
+        all.Should().OnlyContain(fact => fact.RecordedAtUtc >= fact.OccurredAtUtc && fact.OccurredAtUtc.Offset == TimeSpan.Zero);
+        db.AddRange(revision, assignment);
+        db.AddRange(proposals);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        db.ChangeTracker.Clear();
+        foreach (var batch in all.Chunk(1000))
+        {
+            db.AddRange(batch);
+            await db.SaveChangesAsync().ConfigureAwait(false);
+            db.ChangeTracker.Clear();
+        }
+        var selected = seed with { Proposal = proposals[0], Proposals = proposals, AllFacts = all.ToArray() };
+        return new(selected, primaryAccepted!, primaryLatest!);
+    }
+
+    private static CentralProcessingGraphDeliveryFact LifecycleFact(
+        CentralProcessingGraphDeliveryProposal proposal,
+        CentralProcessingGraphDeliveryFact accepted,
+        CentralProcessingGraphDeliveryFact? latest,
+        int index)
+    {
+        var fact = new CentralProcessingGraphDeliveryFact
+        {
+            ProposalId = proposal.Id,
+            Kind = index % 2 == 0 ? "Activated" : "RolledBack",
+            Source = "CameraAgent",
+            OccurredAtUtc = proposal.IssuedAtUtc.AddMilliseconds(index + 3),
+            RecordedAtUtc = proposal.IssuedAtUtc.AddMilliseconds(index + 4),
+            LocalRevisionId = accepted.LocalRevisionId,
+            DefinitionIdentitySha256 = accepted.DefinitionIdentitySha256,
+            SharedPlanIdentitySha256 = accepted.SharedPlanIdentitySha256,
+            LocalPlanIdentitySha256 = accepted.LocalPlanIdentitySha256,
+            ReasonCode = index % 2 == 0 ? "local-activation" : "local-rollback"
+        };
+        ProcessingGraphDeliveryService.ValidateTransition(proposal, ToContract(fact), new(true, accepted, latest));
+        fact.RecordedAtUtc.Should().BeAfter(latest?.RecordedAtUtc ?? accepted.RecordedAtUtc);
+        return fact;
+    }
+
+    private static ProcessingGraphDeliveryFactV1 ToContract(CentralProcessingGraphDeliveryFact fact)
+        => new(ProcessingGraphDeliverySchemaVersions.Current, fact.Id, fact.ProposalId,
+            Enum.Parse<ProcessingGraphDeliveryFactKind>(fact.Kind), fact.OccurredAtUtc,
+            fact.LocalRevisionId, fact.DefinitionIdentitySha256, fact.SharedPlanIdentitySha256,
+            fact.LocalPlanIdentitySha256, fact.ReasonCode);
+
+    private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+
+    private static ProcessingGraphDefinition CreateEdgeDefinition()
+    {
+        _ = BuiltInProcessingRecipes.TryGetDefinition(BuiltInProcessingRecipes.EncodedPreview, out var recipe);
+        return new(ProcessingGraphSchemaVersions.Current, $"proposal-history-{Guid.NewGuid():N}", "1",
+            [new ProcessingGraphSourceDefinition("$raw", [new ProcessingGraphProductContract(FrameArtifactRole.Raw, "source", ProcessingProductKind.PixelData)])],
+            [new ProcessingGraphNodeDefinition("Preview", BuiltInProcessingRecipes.EncodedPreview,
+                CentralDerivativeRecipeCatalog.PreviewRecipeVersion, ProcessingOperationKind.Transform, true,
+                ProcessingGraphNodeFailurePolicy.Required, 0,
+                BuiltInProcessingRecipes.NormalizeOptions(BuiltInProcessingRecipes.EncodedPreview,
+                    CaptureContractJson.SerializeToElement(new EncodedPreviewOptions())),
+                [new ProcessingGraphDependencyDefinition("$raw")],
+                [new ProcessingGraphInputContract([FrameArtifactRole.Raw], [ProcessingProductKind.PixelData], [], [], [])],
+                [new ProcessingGraphProductContract(FrameArtifactRole.Preview, CentralDerivativeRecipeCatalog.PreviewVariant,
+                    ProcessingProductKind.PixelData, recipe, MediaType: "image/jpeg")],
+                null, [], [ProcessingGraphHosts.CameraAgent])]);
+    }
+
+    private async Task AssertSyntheticEqualTimeOrderAsync(Seed seed, HttpClient client)
+    {
+        // Deliberately adversarial persisted data: duplicate retrievals with equal recorded times
+        // cannot be produced by the writer. This isolates read ordering, not faithful workload cost.
+        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+        var proposal = new CentralProcessingGraphDeliveryProposal
         {
             AssignmentId = seed.Proposal.AssignmentId,
             RevisionId = seed.Proposal.RevisionId,
             RegistrationId = seed.Proposal.RegistrationId,
             LogicalCameraInstallationId = seed.Installation.Id,
             InstallationPublicId = seed.Installation.InstallationPublicId,
-            CapabilitySnapshotSha256 = new string('a', 64),
-            IssuedAtUtc = seed.Now.AddSeconds(index),
-            ExpiresAtUtc = seed.Now.AddDays(1)
-        }).ToArray();
-        db.AddRange(unrelated);
-        await db.SaveChangesAsync().ConfigureAwait(false);
-        db.ChangeTracker.Clear();
-        for (var offset = 0; offset < count; offset += 500)
+            CapabilitySnapshotSha256 = seed.Proposal.CapabilitySnapshotSha256,
+            IssuedAtUtc = seed.Now,
+            ExpiresAtUtc = seed.Now.AddHours(1)
+        };
+        var facts = Enumerable.Range(0, 70).Select(_ => new CentralProcessingGraphDeliveryFact
         {
-            for (var index = offset; index < Math.Min(count, offset + 500); index++)
-            {
-                // Repeated retrievals are valid append-only delivery facts, with tied recorded UTC
-                // values across a large retained proposal and independent unrelated histories.
-                db.Add(new CentralProcessingGraphDeliveryFact
-                {
-                    ProposalId = seed.Proposal.Id,
-                    Kind = "Retrieved",
-                    Source = "LogicHost",
-                    OccurredAtUtc = seed.Now.AddMilliseconds(index),
-                    RecordedAtUtc = seed.Now.AddMinutes(30),
-                    ReasonCode = "proposal-retrieved"
-                });
-                db.Add(new CentralProcessingGraphDeliveryFact
-                {
-                    ProposalId = unrelated[index % unrelated.Length].Id,
-                    Kind = "Retrieved",
-                    Source = "LogicHost",
-                    OccurredAtUtc = seed.Now.AddMilliseconds(index),
-                    RecordedAtUtc = seed.Now.AddMinutes(30),
-                    ReasonCode = "proposal-retrieved"
-                });
-            }
-            await db.SaveChangesAsync().ConfigureAwait(false);
-            db.ChangeTracker.Clear();
-        }
+            ProposalId = proposal.Id,
+            Kind = "Retrieved",
+            Source = "LogicHost",
+            OccurredAtUtc = seed.Now,
+            RecordedAtUtc = seed.Now,
+            ReasonCode = "synthetic-equal-time"
+        }).ToArray();
+        db.Add(proposal);
+        db.AddRange(facts);
+        await db.SaveChangesAsync().ConfigureAwait(false);
+        using var response = await client.GetAsync(Path(seed, proposal: proposal.Id)).ConfigureAwait(false);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var page = JsonSerializer.Deserialize<ProcessingGraphProposalReadResult>(await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false))!;
+        page.Facts.Select(fact => fact.Id).Should().Equal(Ordered(facts).Take(50).Select(fact => fact.Id));
+        page.FactsAreTruncated.Should().BeTrue();
+        TestContext.WriteLine("separate adversarial equal-recorded-time coverage=70 synthetic duplicate retrievals; not included in faithful workload measurement");
     }
+
+    private sealed record ProtocolHistory(Seed Seed, CentralProcessingGraphDeliveryFact Accepted, CentralProcessingGraphDeliveryFact Latest);
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
         Justification = "Replays captured EF-generated SELECT text and its original typed parameters; no external SQL is accepted.")]
