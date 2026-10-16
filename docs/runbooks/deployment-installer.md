@@ -29,7 +29,7 @@ runbook describes the installer as it behaves today.
 | Containers default to at least 2 vCPUs and 4 GiB with a PID limit, set at install and kept across upgrade and rollback | CameraAgent runs with `cpus: "1"`, `mem_limit: 1G`, and `pids_limit: 256`, and its replay runner with `"0.5"`, `2G`, and `64` | [#1319](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1319) |
 | Settings catalogue served by the API | No catalogue | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
 | The `HualapaiValley/HVO.SkyMonitor` repository, and quoted values that match the image labels | Some commands below name `RoySalisbury/HVO.SkyMonitor`, and the [State Compatibility Boundary](#state-compatibility-boundary) example quotes raw-ingress schema 13 where the image declares 15 | [#1308](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1308) |
-| Machine install record `/etc/hvo/skymonitor/install.json` | Records live beneath each instance root (`instance-manifest.json`, `state/deployment/`) | No issue yet |
+| Machine install record `/etc/hvo-sky/install.json` | Records live beneath each instance root (`instance-manifest.json`, `state/deployment/`) | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315), path [#1313](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1313) |
 
 ## Inputs
 

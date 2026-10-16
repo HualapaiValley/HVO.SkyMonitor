@@ -1,6 +1,6 @@
 # HVO Product Installation and Release Contract
 
-Status: **draft 2**, 2026-10-16. It includes the owner's decisions of 2026-10-16. Owner: roys.
+Status: **draft 3**, 2026-10-16. It includes the owner's decisions of 2026-10-16. Owner: roys.
 
 This contract is the one install and release experience shared by the HVO products. It covers HVO.RoofController
 and HVO.SkyMonitor: CameraAgent now, and LogicHost when its installer lifecycle exists. Each product implements it in its own
@@ -103,7 +103,7 @@ Every release carries assets with these names and kinds:
 curl -fsSL https://github.com/HualapaiValley/<repo>/releases/latest/download/install.sh | bash -s -- [installer arguments]
 ```
 
-`install.sh`, as RoofController's does:
+`install.sh` does the following. RoofController's implements all of it except installing from offline image archives, which HVO.RoofController#127 adds:
 - is wrapped in a function, so a truncated download runs nothing;
 - refuses to run without a baked-in version;
 - checks everything before changing anything:
@@ -117,7 +117,9 @@ curl -fsSL https://github.com/HualapaiValley/<repo>/releases/latest/download/ins
     support for CameraAgent;
 - can install Docker or enable a prerequisite only when asked (`--install-docker` and the like);
 - with `--check`, stops after the checks;
-- with `--from DIR`, takes the release files, offline image archives included, from a folder instead of GitHub;
+- with `--from DIR`, takes the release files, offline image archives included, from a folder instead of GitHub. It must
+  not contact the registry in that mode. This is new for both products; RoofController's `--from` still pulls images from
+  GHCR until HVO.RoofController#127;
 - verifies the downloaded installer against `SHA256SUMS`, against the attestation when `gh` is signed in, and against
   its own `--version`;
 - hands its remaining arguments to the installer.
@@ -151,10 +153,10 @@ curl -fsSL https://github.com/HualapaiValley/<repo>/releases/latest/download/ins
 - **Secrets** are never accepted on the command line and never written to answers, install records or logs. They are
   given interactively, from a file flag (`--*-password-file`), or generated.
 - **Idempotent:** a second run with the same answers prints "Nothing to change".
-- **Install record:** `/etc/hvo/<product>/install.json` for machine roles, `~/.config/hvo/<product>/install.json` for user
+- **Install record:** `/etc/hvo-<product>/install.json` for machine roles, `~/.config/hvo-<product>/install.json` for user
   roles. It holds no secrets: `version`, `previousVersion`, `rolledBackFrom`, and the roles or instances installed.
-  RoofController's existing `/etc/hvo-roof` location is a known deviation until a migration is approved.
-- **Data** goes under `/var/lib/hvo/<product>/`, or a product root the operator chooses through a root-owned host policy.
+- **Data** goes under `/var/lib/hvo-<product>/`, or a product root the operator chooses through a root-owned host policy.
+- `<product>` is the short name used in the binaries: `roof` or `sky` (section 9).
 
 ## 6. Upgrade and rollback
 
@@ -216,7 +218,8 @@ does with `hvo-roof`. It sits beside the installer: the installer owns lifecycle
 | Installer | `hvo-roof-install` | `hvo-sky-install` (today `hvo-skymonitor`; rename before the first release) |
 | Runtime client | `hvo-roof` | `hvo-sky` |
 | Images | `roof-controller`, `roof-hat-emulator` | `skymonitor-cameraagent`, `skymonitor-logichost` |
-| Config root | `/etc/hvo-roof` (deviation) | `/etc/hvo/skymonitor` |
+| Config root | `/etc/hvo-roof` | `/etc/hvo-sky` (today `/etc/hvo/skymonitor`; renamed by #1313) |
+| Data root | `/var/lib/hvo-roof` | `/var/lib/hvo-sky` (today `/var/lib/hvo/skymonitor`; renamed by #1313) |
 
 ## 10. Decisions
 
@@ -228,7 +231,6 @@ Owner decisions of 2026-10-16:
    command. SkyMonitor #1044's scope narrows to that command.
 3. **Container resources:** at least 2 vCPUs and 4 GiB, adjustable by the operator (section 7).
 4. **Naming:** `hvo-sky-install` and `hvo-sky`, as proposed (section 9).
-
-Still open:
-
-- **RoofController config location:** whether to migrate `/etc/hvo-roof` to `/etc/hvo/roof`.
+5. **File locations:** RoofController's flat style, named after the binary, is the pattern: `/etc/hvo-roof` and
+   `/etc/hvo-sky`. RoofController does not migrate (HVO.RoofController#132, closed). SkyMonitor renames its paths before its
+   first release (#1313).
