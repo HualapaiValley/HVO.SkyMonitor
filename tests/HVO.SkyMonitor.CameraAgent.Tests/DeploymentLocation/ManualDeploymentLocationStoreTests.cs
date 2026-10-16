@@ -319,7 +319,8 @@ public sealed class ManualDeploymentLocationStoreTests
         }
 
         _timeProvider.UtcNow = Now.AddSeconds(3);
-        using var reconfigured = CreateStore();
+        var logger = new RecordingLogger<ProtectedDeploymentLocationStore>();
+        using var reconfigured = CreateStore(logger);
         var configured = await reconfigured.InitializeAsync(
             CreateSeed(20.5, 30.5, 400, "UTC"), CancellationToken.None).ConfigureAwait(false);
 
@@ -329,6 +330,11 @@ public sealed class ManualDeploymentLocationStoreTests
         Assert.IsNotNull(reconfigured.Manual.OverrideSupersededAtUtc);
         // The audit history survives supersession.
         Assert.HasCount(1, reconfigured.Manual.History);
+        // Supersession is the documented precedence rule succeeding, so it is never a warning (#1295).
+        Assert.AreEqual(LogLevel.Information, logger.Entries.Single(static entry => entry.EventId == 7306).Level);
+        Assert.IsFalse(
+            logger.Entries.Any(static entry => entry.Level >= LogLevel.Warning),
+            string.Join(Environment.NewLine, logger.Entries.Where(static entry => entry.Level >= LogLevel.Warning)));
     }
 
     [TestMethod]
@@ -750,12 +756,12 @@ public sealed class ManualDeploymentLocationStoreTests
             CentralIntegration = new CentralIntegrationOptions { Mode = mode }
         });
 
-    private ProtectedDeploymentLocationStore CreateStore()
+    private ProtectedDeploymentLocationStore CreateStore(ILogger<ProtectedDeploymentLocationStore>? logger = null)
         => new(
             _options,
             _protector,
             _timeProvider,
-            NullLogger<ProtectedDeploymentLocationStore>.Instance);
+            logger ?? NullLogger<ProtectedDeploymentLocationStore>.Instance);
 
     private static DeploymentLocationSeed CreateSeed(
         double latitude,
@@ -786,6 +792,8 @@ public sealed class ManualDeploymentLocationStoreTests
 
         internal List<int> EventIds { get; } = [];
 
+        internal List<(LogLevel Level, int EventId)> Entries { get; } = [];
+
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
         public bool IsEnabled(LogLevel logLevel) => true;
@@ -798,6 +806,7 @@ public sealed class ManualDeploymentLocationStoreTests
             Func<TState, Exception?, string> formatter)
         {
             EventIds.Add(eventId.Id);
+            Entries.Add((logLevel, eventId.Id));
             Messages.Add(formatter(state, exception));
         }
     }

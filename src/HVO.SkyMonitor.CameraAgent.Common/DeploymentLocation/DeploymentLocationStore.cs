@@ -1447,7 +1447,7 @@ internal static partial class DeploymentLocationLog
         "Deployment location {LocationId} manual coordinate entry {Sequence} recorded; the next start appends its deployment version")]
     internal static partial void ManualEntryRecorded(ILogger logger, string locationId, long sequence);
 
-    [LoggerMessage(7306, LogLevel.Warning,
+    [LoggerMessage(7306, LogLevel.Information,
         "Deployment location {LocationId} manual override superseded by a changed startup configuration seed")]
     internal static partial void ManualOverrideSuperseded(ILogger logger, string locationId);
 }
