@@ -71,8 +71,9 @@ transport. Browsing reads only that canonical form. A malformed, unversioned,
 or unsupported sidecar is skipped and never downgraded to another parser.
 Before publishing a v2 sidecar, storage verifies every overlapping frame and
 artifact fact, writes the payload, then streams SHA-256 from the published file.
-An ordinary v2 save failure makes a best-effort attempt to remove payload or
-sidecar files published by that invocation without hiding the original error.
+An ordinary v2 save failure removes only that invocation's temporary files.
+Already-published immutable payloads and sidecars remain for idempotent retry and
+reconciliation; a failed compatibility-index append does not discard evidence.
 Browsing also requires the sidecar path and byte length to match the selected
 payload; checksum verification remains mandatory when bytes are reconstructed
 or transferred rather than forcing a full-frame scan for every gallery listing.

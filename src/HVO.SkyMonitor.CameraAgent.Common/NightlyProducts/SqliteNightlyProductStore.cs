@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -942,8 +943,6 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
         return content;
     }
 
-    [SuppressMessage("Reliability", "CA1849:Call async methods when in an async method",
-        Justification = "Flush(true) is the only API that forces the file to stable storage before the move.")]
     private static void WriteDurably(string root, string path, ReadOnlySpan<byte> content)
     {
         var temporary = string.Concat(path, ".", Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture), ".tmp");
@@ -953,14 +952,14 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
                 temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
             {
                 stream.Write(content);
-                stream.Flush(flushToDisk: true);
+                CameraAgentFileSystem.FlushFile(stream);
             }
             RawIngressFileStore.EnsureNoSymbolicLinks(root, temporary);
             if (new FileInfo(path).LinkTarget is not null)
             {
                 throw new IOException("A nightly product file must not be a symbolic link.");
             }
-            File.Move(temporary, path, overwrite: true);
+            CameraAgentFileSystem.PublishPrepared(root, temporary, path, overwrite: true);
         }
         finally
         {
