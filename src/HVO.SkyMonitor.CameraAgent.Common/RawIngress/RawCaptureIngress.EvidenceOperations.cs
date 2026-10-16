@@ -6,8 +6,9 @@ internal sealed partial class RawCaptureIngress
 {
     async ValueTask<bool> IRawCaptureIngress.InitializeForOperationsAsync(CancellationToken cancellationToken)
     {
-        await InitializeEvidenceOperationsAsync(cancellationToken).ConfigureAwait(false);
-        return !Volatile.Read(ref _evidenceUnavailable);
+        var ready = await InitializeEvidenceOperationsAsync(cancellationToken).ConfigureAwait(false);
+        _faultInjector.BeforeOperationsReadinessDecision();
+        return ready;
     }
 
     public async ValueTask<RawEvidencePage> ReadEvidencePageAsync(
@@ -67,19 +68,8 @@ internal sealed partial class RawCaptureIngress
     private static bool ValidEvidenceOperatorValue(string value)
         => !string.IsNullOrWhiteSpace(value) && value.Length <= 128 && !value.Any(char.IsControl);
 
-    private async Task InitializeEvidenceOperationsAsync(CancellationToken cancellationToken)
-    {
-        if (Volatile.Read(ref _journalValidated) && Volatile.Read(ref _evidenceUnavailable)) return;
-        try
-        {
-            await InitializeAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (InvalidDataException) when (_journalValidated && _evidenceUnavailable)
-        {
-            // A validated journal with evidence failures must remain operable while capture admission refuses it.
-            if ((await _journal.ReadHealthTotalsAsync(cancellationToken).ConfigureAwait(false)).FailureCount == 0) throw;
-        }
-    }
+    private ValueTask<bool> InitializeEvidenceOperationsAsync(CancellationToken cancellationToken)
+        => InitializeCoreAsync(allowEvidenceUnavailable: true, cancellationToken);
 
     private async Task RevalidateEvidenceAsync(RawIngressJournalEntry entry, CancellationToken cancellationToken)
     {

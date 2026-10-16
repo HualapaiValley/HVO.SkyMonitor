@@ -30,6 +30,16 @@ internal sealed class ProcessingGraphsController(
         return Ok(await catalog.ListRevisionsAsync(take, cancellationToken).ConfigureAwait(false));
     }
 
+    [HttpGet("revisions/{revisionId:guid}")]
+    [Authorize(Policy = AuthorizationPolicyNames.ApiKeyRead)]
+    public async Task<ActionResult<CentralProcessingGraphRevisionView>> GetRevisionAsync(
+        Guid revisionId,
+        CancellationToken cancellationToken)
+    {
+        var revision = await catalog.GetRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false);
+        return revision is null ? NotFound() : Ok(revision);
+    }
+
     [HttpPost("revisions")]
     [Authorize(Policy = AuthorizationPolicyNames.ApiKeyReadWrite)]
     [RequestSizeLimit(ProcessingGraphJson.MaximumDocumentBytes + 16 * 1024)]
