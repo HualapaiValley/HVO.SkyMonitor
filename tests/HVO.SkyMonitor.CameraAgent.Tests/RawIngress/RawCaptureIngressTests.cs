@@ -3401,7 +3401,8 @@ public sealed partial class RawCaptureIngressTests
         RawIngressState state,
         IRawIngressFaultInjector? faultInjector = null,
         TimeProvider? timeProvider = null,
-        ILogger<RawCaptureIngress>? logger = null)
+        ILogger<RawCaptureIngress>? logger = null,
+        CaptureMaintenanceGate? maintenanceGate = null)
     {
         return new RawCaptureIngress(
             Options.Create(new CameraAgentHostOptions
@@ -3415,7 +3416,8 @@ public sealed partial class RawCaptureIngressTests
             timeProvider ?? TimeProvider.System,
             new RawIngressTelemetry(state),
             logger ?? NullLogger<RawCaptureIngress>.Instance,
-            faultInjector ?? new NullRawIngressFaultInjector());
+            faultInjector ?? new NullRawIngressFaultInjector(),
+            maintenanceGate: maintenanceGate);
     }
 
     private static CameraModuleConfig CreateConfiguration()

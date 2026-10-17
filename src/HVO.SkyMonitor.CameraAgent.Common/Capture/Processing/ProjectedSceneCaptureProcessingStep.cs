@@ -12,7 +12,8 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
     ProjectedSceneCaptureProcessingStepOptions options,
     IProjectedSceneStagingStore stagingStore,
     IProjectedSceneStagingReader stagingReader,
-    CameraAgentRecipeExecutionAdapter adapter)
+    CameraAgentRecipeExecutionAdapter adapter,
+    CaptureMaintenanceGate? maintenance = null)
     : ConfigurableCaptureProcessingStep<ProjectedSceneCaptureProcessingStepOptions>(metadata, options),
        IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep, IDurableCaptureProcessingPostCommit,
        IFrozenAuxiliaryInputCaptureProcessingStep
@@ -206,6 +207,19 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
                 ProjectedSceneStageKey: { Length: 64 } stageKey
             }) return;
+        // A snapshot restore can rewind this node, and its re-run reads the stage again, so the stage is removed only
+        // under the capture maintenance barrier; a held removal runs once capture admission opens.
+        using var lease = maintenance?.TryEnterIfInitialized();
+        if (maintenance is not null && lease is null)
+        {
+            maintenance.DeferUntilRunning(token => RemoveStageAsync(stageKey, token));
+            return;
+        }
+        await RemoveStageAsync(stageKey, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask RemoveStageAsync(string stageKey, CancellationToken cancellationToken)
+    {
         await stagingStore.MarkCompletedAsync(stageKey, cancellationToken).ConfigureAwait(false);
         await stagingStore.DeleteCompletedAsync(stageKey, cancellationToken).ConfigureAwait(false);
     }

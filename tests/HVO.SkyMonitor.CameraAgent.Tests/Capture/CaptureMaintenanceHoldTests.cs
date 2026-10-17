@@ -79,6 +79,40 @@ public sealed class CaptureMaintenanceHoldTests
         entry.Dispose();
         Assert.AreEqual(CaptureAdmissionState.Paused, (await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false)).State);
     }
+
+    [TestMethod]
+    public async Task Gate_GrantsALeaseOnlyWhileCaptureRuns_AndRunsDeferredCleanupOnceItResumes()
+    {
+        // The gate is how code admission depends on reaches the barrier: it never initializes admission, grants nothing
+        // while capture is paused, holds the pause back like any lease, and runs what was deferred once capture opens.
+        // Before a coordinator exists there is nothing to honour.
+        using var root = new MaintenanceHoldRoot();
+        using (var withoutAdmission = root.Gate.TryEnterIfInitialized())
+        {
+            Assert.IsNotNull(withoutAdmission, "A process with no admission coordinator has no pause to honour.");
+        }
+        using var admission = await root.AdmissionAsync(paused: true).ConfigureAwait(false);
+        Assert.IsNull(root.Gate.TryEnterIfInitialized());
+        var ran = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        root.Gate.DeferUntilRunning(_ =>
+        {
+            ran.TrySetResult();
+            return ValueTask.CompletedTask;
+        });
+        await Task.Delay(TimeSpan.FromMilliseconds(200)).ConfigureAwait(false);
+        Assert.IsFalse(ran.Task.IsCompleted, "Deferred cleanup ran while capture was paused.");
+
+        await admission.ResumeAsync("gate-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+
+        await ran.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        var lease = root.Gate.TryEnterIfInitialized();
+        Assert.IsNotNull(lease);
+        var pause = admission.PauseAsync("gate-barrier", null, "installer-lifecycle:test", null, CancellationToken.None);
+        await Task.Delay(TimeSpan.FromMilliseconds(300)).ConfigureAwait(false);
+        Assert.IsFalse(pause.IsCompleted, "The pause was acknowledged while a gate lease was held.");
+        lease.Dispose();
+        Assert.AreEqual(CaptureAdmissionState.Paused, (await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false)).State);
+    }
 }
 
 /// <summary>A raw-ingress root whose capture admission a test can leave running or durably paused.</summary>
@@ -93,6 +127,9 @@ internal sealed class MaintenanceHoldRoot : IDisposable
     }
 
     public string Path { get; }
+
+    /// <summary>The maintenance gate every coordinator this root creates attaches to.</summary>
+    public CaptureMaintenanceGate Gate { get; } = new();
 
     /// <summary>
     /// A coordinator initialized from the durable journal, as a freshly started image sees it. With
@@ -116,7 +153,8 @@ internal sealed class MaintenanceHoldRoot : IDisposable
     }
 
     private CaptureAdmissionCoordinator Create(CaptureControlTelemetry telemetry)
-        => new(new JournalIngress(Path), Options.Create(new CameraAgentHostOptions { RawIngressRoot = Path }), TimeProvider.System, telemetry);
+        => new(new JournalIngress(Path), Options.Create(new CameraAgentHostOptions { RawIngressRoot = Path }), TimeProvider.System, telemetry,
+            maintenanceGate: Gate);
 
     public void Dispose()
     {

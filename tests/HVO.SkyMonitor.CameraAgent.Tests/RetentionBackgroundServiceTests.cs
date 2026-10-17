@@ -688,6 +688,134 @@ public sealed class RetentionBackgroundServiceTests
     }
 
     [TestMethod]
+    public async Task AcknowledgeAsync_RemovalBlockedOnItsLockHoldsThePauseUntilThePayloadIsGone()
+    {
+        // An upload acknowledged while capture runs removes its payload under the maintenance barrier: the installer's
+        // pause is not acknowledged while that removal waits for its lock, and nothing is removed after it (#1314 R10).
+        using var hold = new Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: false).ConfigureAwait(false);
+        var archive = CreateRoot();
+        try
+        {
+            using var outbox = new SqliteArtifactOutbox();
+            var (stored, manifest, lease) = await PendingUploadAsync(archive, outbox).ConfigureAwait(false);
+            var state = new HVO.SkyMonitor.CameraAgent.Common.Upload.ArtifactOutboxState();
+            using var telemetry = new HVO.SkyMonitor.CameraAgent.Common.Upload.ArtifactOutboxTelemetry(state, TimeProvider.System);
+            var service = CreateDrainService(outbox, hold.Path, state, telemetry, admission);
+            var gate = StorageLifecycleLock.ForRoot(archive);
+            await gate.WaitAsync().ConfigureAwait(false);
+            Task acknowledge;
+            Task<HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlCommandResult> pause;
+            try
+            {
+                acknowledge = service.AcknowledgeAsync(archive, lease, Acknowledged(manifest), CancellationToken.None);
+                await Task.Delay(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
+                Assert.IsFalse(acknowledge.IsCompleted);
+                pause = admission.PauseAsync("upload-barrier", null, "installer-lifecycle:test", null, CancellationToken.None);
+                await Task.Delay(TimeSpan.FromMilliseconds(400)).ConfigureAwait(false);
+                Assert.IsFalse(pause.IsCompleted, "The pause was acknowledged while an admitted upload removal waited to delete.");
+            }
+            finally
+            {
+                gate.Release();
+            }
+            await acknowledge.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            await pause.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            Assert.IsFalse(File.Exists(stored.PayloadPath));
+        }
+        finally
+        {
+            DeleteRoot(archive);
+        }
+    }
+
+    [TestMethod]
+    public async Task AcknowledgeAsync_WhileAFailedCandidateRunsPaused_KeepsTheArchivePayloadItsRestoredRowNeeds()
+    {
+        // The previous image queued an archive upload, and the installer snapshotted the outbox while capture was
+        // paused. The candidate, started under that pause, completes the upload and then fails; its recovery restores
+        // the outbox, whose row still names the upload as pending, so the payload must still be there (#1314 R10).
+        using var hold = new Capture.MaintenanceHoldRoot();
+        var archive = CreateRoot();
+        var snapshot = Path.Combine(Path.GetTempPath(), $"hvo-upload-snapshot-{Guid.NewGuid():N}.db");
+        try
+        {
+            using var outbox = new SqliteArtifactOutbox();
+            var stored = await CreateStoredArtifactAsync(archive, "archived", Guid.NewGuid()).ConfigureAwait(false);
+            var manifest = CreateManifest(archive, stored.ArtifactId, stored.RelativePath);
+            await outbox.EnqueueAsync(archive, manifest, CancellationToken.None).ConfigureAwait(false);
+            var database = Path.Combine(archive, "outbox", "artifact-outbox.db");
+            await CopyDatabaseAsync(database, snapshot).ConfigureAwait(false);
+            var lease = await outbox.ClaimAsync(archive, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            using var admission = await hold.AdmissionAsync(paused: true).ConfigureAwait(false);
+            var state = new HVO.SkyMonitor.CameraAgent.Common.Upload.ArtifactOutboxState();
+            using var telemetry = new HVO.SkyMonitor.CameraAgent.Common.Upload.ArtifactOutboxTelemetry(state, TimeProvider.System);
+            var service = CreateDrainService(outbox, hold.Path, state, telemetry, admission);
+
+            await service.AcknowledgeAsync(archive, lease, Acknowledged(manifest), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsTrue(File.Exists(stored.PayloadPath), "A paused candidate removed an uploaded payload.");
+            Assert.IsTrue(File.Exists(stored.MetadataPath));
+            await CopyDatabaseAsync(snapshot, database).ConfigureAwait(false);
+            var restored = await outbox.ClaimAsync(archive, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(restored, "The restored outbox no longer names the upload as pending.");
+            Assert.AreEqual(stored.ArtifactId, restored.Record.ArtifactId);
+            Assert.IsTrue(File.Exists(Path.Combine(archive, restored.Record.RelativeArtifactPath!.Replace('/', Path.DirectorySeparatorChar))));
+        }
+        finally
+        {
+            DeleteRoot(archive);
+            File.Delete(snapshot);
+        }
+    }
+
+    private static async Task<(StoredArtifact Stored, ArtifactManifestV2 Manifest, ArtifactOutboxLease Lease)> PendingUploadAsync(
+        string archive, SqliteArtifactOutbox outbox)
+    {
+        var stored = await CreateStoredArtifactAsync(archive, "archived", Guid.NewGuid()).ConfigureAwait(false);
+        var manifest = CreateManifest(archive, stored.ArtifactId, stored.RelativePath);
+        await outbox.EnqueueAsync(archive, manifest, CancellationToken.None).ConfigureAwait(false);
+        var lease = await outbox.ClaimAsync(archive, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        return (stored, manifest, lease);
+    }
+
+    private static ArtifactUploadResult Acknowledged(ArtifactManifestV2 manifest)
+        => new(ArtifactUploadDisposition.Acknowledged, "accepted", Acknowledgement: CreateAcknowledgement(manifest));
+
+    /// <summary>Copies one SQLite database over another through the backup API, as a snapshot and its restore do.</summary>
+    private static async Task CopyDatabaseAsync(string source, string destination)
+    {
+        using var from = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={source};Pooling=False");
+        using var to = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={destination};Pooling=False");
+        await from.OpenAsync().ConfigureAwait(false);
+        await to.OpenAsync().ConfigureAwait(false);
+        from.BackupDatabase(to);
+    }
+
+    private static HVO.SkyMonitor.CameraAgent.Common.Upload.ArtifactOutboxDrainService CreateDrainService(
+        IArtifactOutbox outbox,
+        string rawIngressRoot,
+        HVO.SkyMonitor.CameraAgent.Common.Upload.ArtifactOutboxState state,
+        HVO.SkyMonitor.CameraAgent.Common.Upload.ArtifactOutboxTelemetry telemetry,
+        HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureAdmissionCoordinator admission)
+    {
+        var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = rawIngressRoot });
+        return new(
+            new StubConfigurationAccessor(), outbox,
+            new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance),
+            new HVO.SkyMonitor.CameraAgent.Common.Upload.ArtifactUploadClient(new NoHttpClients(), options, TimeProvider.System),
+            options, TimeProvider.System, NullLogger<HVO.SkyMonitor.CameraAgent.Common.Upload.ArtifactOutboxDrainService>.Instance,
+            state, telemetry, new HVO.SkyMonitor.CameraAgent.Common.Fleet.FleetRuntimeState(TimeProvider.System), admission: admission);
+    }
+
+    private sealed class NoHttpClients : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => throw new NotSupportedException("These tests upload nothing.");
+    }
+
+    [TestMethod]
     public async Task ApplyRetentionAsync_MissingPendingPayloadFailsClosed()
     {
         var root = CreateRoot();

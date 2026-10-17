@@ -11,7 +11,8 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 namespace HVO.SkyMonitor.CameraAgent.Common.Storage;
 
 public sealed class FileSystemFrameStorageService(
-    ILogger<FileSystemFrameStorageService> logger) : IFrameStorageService, IDisposable
+    ILogger<FileSystemFrameStorageService> logger,
+    Capture.CaptureMaintenanceGate? maintenance = null) : IFrameStorageService, IDisposable
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -131,6 +132,12 @@ public sealed class FileSystemFrameStorageService(
             }
             else if (upgradeProducerSidecar)
             {
+                // Rewriting a durable sidecar in place changes bytes a restored processing row may have recorded, so
+                // it holds the capture maintenance barrier; while capture is not running the save fails retryably
+                // and the node runs again once capture opens.
+                using var lease = maintenance?.TryEnterIfInitialized();
+                if (maintenance is not null && lease is null)
+                    throw new Capture.CaptureMaintenanceHeldException("A producer sidecar upgrade");
                 await ReplaceAtomicallyAsync(storageRoot, metadataPath, sidecar, cancellationToken).ConfigureAwait(false);
             }
 

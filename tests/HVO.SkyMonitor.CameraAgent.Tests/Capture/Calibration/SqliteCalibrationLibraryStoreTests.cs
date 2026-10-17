@@ -546,6 +546,51 @@ public sealed partial class SqliteCalibrationLibraryStoreTests
     }
 
     [TestMethod]
+    public async Task ReconcileAsync_UnderADurablePause_MovesNoRemnantUntilAStartWithoutOne()
+    {
+        // A candidate started under the installer's pause moves no calibration evidence a restore could need; the move
+        // is made at the next start without a pause (#1314 R10).
+        var root = CreateRoot();
+        try
+        {
+            Directory.CreateDirectory(root);
+            await new SqliteRawCaptureJournal(
+                Path.Combine(root, "journal", "raw-ingress.db"), 1)
+                .InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var source = Path.Combine(root, "calibration", "synthetic", new string('B', 64));
+            Directory.CreateDirectory(source);
+            await File.WriteAllBytesAsync(Path.Combine(source, "bias.bin"), [1, 2, 3, 4]).ConfigureAwait(false);
+            await SetCaptureStateAsync(root, "paused").ConfigureAwait(false);
+            using var store = new SqliteCalibrationLibraryStore(
+                new InitializedIngress(), CreateOptions(root), TimeProvider.System);
+            var reconciler = new CalibrationLibraryReconciler(store, CreateOptions(root));
+
+            var held = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Assert.AreEqual(0, held.Quarantined);
+            Assert.AreEqual(1, held.Held);
+            Assert.IsTrue(Directory.Exists(source));
+            await SetCaptureStateAsync(root, "running").ConfigureAwait(false);
+            var moved = await reconciler.ReconcileAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(1, moved.Quarantined);
+            Assert.IsFalse(Directory.Exists(source));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    private static async Task SetCaptureStateAsync(string root, string state)
+    {
+        using var connection = await OpenAsync(root).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE capture_control_state SET state = $state WHERE state_key = 1;";
+        command.Parameters.AddWithValue("$state", state);
+        Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task ReconcileAsync_MissingMarkerForAdoptedBundleFailsWithoutMovingRetainedEvidence()
     {
         var root = CreateRoot();

@@ -43,6 +43,9 @@ internal sealed partial class RawCaptureIngress :
     private readonly CaptureLaneTelemetry? _laneTelemetry;
     private readonly CapturePipelineTraceStore? _captureTraceStore;
     private bool _initialized;
+    private readonly Capture.CaptureMaintenanceGate? _maintenanceGate;
+    private int _completedInitializations;
+    private bool _maintenanceDeferred;
     private bool _journalValidated;
     private bool _evidenceUnavailable;
     private bool _capacityRevalidationRequired;
@@ -67,7 +70,8 @@ internal sealed partial class RawCaptureIngress :
         CapturePipelineTraceStore? captureTraceStore = null,
         IProjectedSceneStagingReconciler? projectedSceneStaging = null,
         ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null,
-        ProcessingGraphOperationsCoordinator? graphOperations = null)
+        ProcessingGraphOperationsCoordinator? graphOperations = null,
+        Capture.CaptureMaintenanceGate? maintenanceGate = null)
     {
         _options = options.Value;
         _capacityProvider = capacityProvider;
@@ -83,6 +87,8 @@ internal sealed partial class RawCaptureIngress :
         _projectedSceneStaging = projectedSceneStaging;
         _projectedSceneLifecycle = projectedSceneLifecycle;
         _graphOperations = graphOperations;
+        _maintenanceGate = maintenanceGate;
+        if (maintenanceGate is not null) maintenanceGate.CaptureRunning += RunDeferredMaintenance;
         var resolvedLaneFaultInjector = laneFaultInjector ?? new NullCaptureLaneFaultInjector();
         var root = Path.GetFullPath(_options.RawIngressRoot);
         _journal = new SqliteRawCaptureJournal(
@@ -160,27 +166,39 @@ internal sealed partial class RawCaptureIngress :
                     _telemetry.RecordFileFlush,
                     _telemetry.RecordDirectorySync,
                     _lanePolicy.Definitions)
-                     .RunAsync(cancellationToken).ConfigureAwait(false);
+                     .RunAsync(EnterInitializationMaintenanceAsync, cancellationToken).ConfigureAwait(false);
                 var projectedSceneBacklog = 0;
-                // Startup stage cleanup deletes unowned stages, so a durable pause holds it exactly as it holds the
-                // background reconciliation; the persisted state is read from the journal, not from capture admission.
-                if (_projectedSceneStaging is not null &&
-                    !await _journal.ReadCaptureAdmissionRunningAsync(cancellationToken).ConfigureAwait(false))
+                var heldBy = HeldBy();
+                if (reconciliation.MaintenanceDeferred > 0)
                 {
-                    _logger.MaintenanceHeld("Startup projected-scene stage reconciliation", Capture.CaptureAdmissionState.Paused);
+                    _logger.MaintenanceHeld("Raw-ingress evidence quarantine", heldBy);
                 }
-                else if (_projectedSceneStaging is not null)
+                var stagesHeld = false;
+                if (_projectedSceneStaging is not null)
                 {
-                    using var stageLease = _projectedSceneLifecycle is null
-                        ? null
-                        : await _projectedSceneLifecycle.AcquireReconciliationLeaseAsync(cancellationToken).ConfigureAwait(false);
-                    var ownedStageKeys = await GetOwnedStageKeysAsync(cancellationToken).ConfigureAwait(false);
-                    var protectedStageKeys = new HashSet<string>(ownedStageKeys, StringComparer.Ordinal);
-                    if (stageLease is not null) protectedStageKeys.UnionWith(stageLease.PendingStageKeys);
-                    var staged = await _projectedSceneStaging.ReconcileAsync(protectedStageKeys, cancellationToken).ConfigureAwait(false);
-                    projectedSceneBacklog = staged.BacklogCount;
-                    reconciliation = reconciliation with { ProjectedSceneStageBacklog = projectedSceneBacklog };
+                    // Stage cleanup deletes unowned stages, so it runs only under the maintenance barrier, as the
+                    // background reconciliation does.
+                    using var maintenance = await EnterInitializationMaintenanceAsync(cancellationToken).ConfigureAwait(false);
+                    if (maintenance is null)
+                    {
+                        stagesHeld = true;
+                        _logger.MaintenanceHeld("Startup projected-scene stage reconciliation", heldBy);
+                    }
+                    else
+                    {
+                        using var stageLease = _projectedSceneLifecycle is null
+                            ? null
+                            : await _projectedSceneLifecycle.AcquireReconciliationLeaseAsync(cancellationToken).ConfigureAwait(false);
+                        var ownedStageKeys = await GetOwnedStageKeysAsync(cancellationToken).ConfigureAwait(false);
+                        var protectedStageKeys = new HashSet<string>(ownedStageKeys, StringComparer.Ordinal);
+                        if (stageLease is not null) protectedStageKeys.UnionWith(stageLease.PendingStageKeys);
+                        var staged = await _projectedSceneStaging.ReconcileAsync(protectedStageKeys, cancellationToken).ConfigureAwait(false);
+                        projectedSceneBacklog = staged.BacklogCount;
+                        reconciliation = reconciliation with { ProjectedSceneStageBacklog = projectedSceneBacklog };
+                    }
                 }
+                // Whatever was held runs again once capture admission opens (CaptureMaintenanceGate.CaptureRunning).
+                Volatile.Write(ref _maintenanceDeferred, reconciliation.MaintenanceDeferred > 0 || stagesHeld);
                 await _laneStore.InitializeLanesAsync(cancellationToken).ConfigureAwait(false);
                 await RefreshLaneStateAsync(cancellationToken).ConfigureAwait(false);
                 reconciliationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
@@ -192,14 +210,16 @@ internal sealed partial class RawCaptureIngress :
                 RevalidateCapacityAfterFailure();
                 var baseAvailability = health.FailureCount > 0
                     ? RawIngressAvailability.Unhealthy
-                    : health.QuarantineCount > 0 || reconciliation.IndexProjectionFailures > 0
+                    : health.QuarantineCount > 0 || reconciliation.IndexProjectionFailures > 0 || reconciliation.MaintenanceDeferred > 0
                         ? RawIngressAvailability.Degraded
                         : RawIngressAvailability.Accepting;
                 var baseReason = baseAvailability == RawIngressAvailability.Accepting
                     ? "accepting"
                     : reconciliation.IndexProjectionFailures > 0
                         ? "index-projection-failed"
-                        : "reconciliation-findings";
+                        : reconciliation.MaintenanceDeferred > 0 && health.QuarantineCount == 0
+                            ? "reconciliation-held"
+                            : "reconciliation-findings";
                 _state.Set(
                     baseAvailability,
                     baseReason,
@@ -233,6 +253,7 @@ internal sealed partial class RawCaptureIngress :
                 {
                     _logger.RawIngressRecovered();
                 }
+                Interlocked.Increment(ref _completedInitializations);
                 Volatile.Write(ref _initialized, true);
                 return true;
             }
@@ -825,7 +846,8 @@ internal sealed partial class RawCaptureIngress :
         {
             return;
         }
-        var degraded = underPressure || baseline.QuarantineCount > 0 || baseline.Reason == "index-projection-failed";
+        var degraded = underPressure || baseline.QuarantineCount > 0 ||
+                       baseline.Reason is "index-projection-failed" or "reconciliation-held";
         _state.UpdateBaseStatus(
             degraded ? RawIngressAvailability.Degraded : RawIngressAvailability.Accepting,
             underPressure ? "disk-pressure" : degraded ? baseline.Reason : "accepting");
@@ -1107,8 +1129,45 @@ internal sealed partial class RawCaptureIngress :
             ? reason
             : "handler-failure";
 
+    /// <summary>
+    /// The capture maintenance barrier for a deletion or move this initialization makes, or null while it is held.
+    /// Admission initialization waits for the first raw-ingress initialization, so no pause can be acknowledged before
+    /// that one ends, and the durable admission state this journal records decides. A later re-initialization runs
+    /// while admission can be paused, so it needs a maintenance lease, which it takes without initializing admission.
+    /// </summary>
+    private async ValueTask<IDisposable?> EnterInitializationMaintenanceAsync(CancellationToken cancellationToken)
+    {
+        if (Volatile.Read(ref _completedInitializations) > 0 && _maintenanceGate is not null)
+            return _maintenanceGate.TryEnterIfInitialized();
+        return await _journal.HasDurablePauseAsync(cancellationToken).ConfigureAwait(false)
+            ? null
+            : NoLease.Instance;
+    }
+
+    private Capture.CaptureAdmissionState HeldBy()
+        => Volatile.Read(ref _completedInitializations) > 0 && _maintenanceGate?.HeldBy is { } state &&
+           state != Capture.CaptureAdmissionState.Unavailable
+            ? state
+            : Capture.CaptureAdmissionState.Paused;
+
+    /// <summary>Runs the reconciliation a held initialization deferred, on the next operation after capture opens.</summary>
+    private void RunDeferredMaintenance()
+    {
+        if (Volatile.Read(ref _maintenanceDeferred)) Volatile.Write(ref _initialized, false);
+    }
+
+    private sealed class NoLease : IDisposable
+    {
+        public static readonly NoLease Instance = new();
+
+        public void Dispose()
+        {
+        }
+    }
+
     public void Dispose()
     {
+        if (_maintenanceGate is not null) _maintenanceGate.CaptureRunning -= RunDeferredMaintenance;
         _initializeGate.Dispose();
         _acceptGate.Dispose();
         _processLock?.Dispose();
