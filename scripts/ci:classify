@@ -89,10 +89,10 @@ is_deployment_path() {
   local path="$1"
 
   case "$path" in
-    .github/workflows/ci.yml | .github/workflows/release.yml | .dockerignore | .env.template | docker-compose.apps.yml | global.json)
+    .github/workflows/ci.yml | .github/workflows/release.yml | .github/workflows/prerelease.yml | .dockerignore | .env.template | docker-compose.apps.yml | global.json)
       return 0
       ;;
-    scripts/ci:* | scripts/test:ci-classification | scripts/release:cameraagent-image | scripts/lib/*)
+    scripts/ci:* | scripts/test:ci-classification | scripts/release:* | scripts/test:release-install | scripts/test:release-scripts | scripts/lib/*)
       return 0
       ;;
     scripts/deploy:environment | scripts/deploy/* | scripts/install-hvo-sky-install.sh)
@@ -162,11 +162,11 @@ select_deployment_suites() {
       deployment_shards="true"
       deployment_installer="true"
       ;;
-    .github/workflows/release.yml)
+    .github/workflows/release.yml | .github/workflows/prerelease.yml)
       deployment_catalog="true"
       deployment_installer="true"
       ;;
-    scripts/install-hvo-sky-install.sh | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/release:cameraagent-image | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.Deployment.Distribution/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
+    scripts/install-hvo-sky-install.sh | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/release:* | scripts/test:release-install | scripts/test:release-scripts | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.Deployment.Distribution/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
       deployment_installer="true"
       ;;
     scripts/qualify:filesystem-object-store | scripts/test:filesystem-object-store-qualification)

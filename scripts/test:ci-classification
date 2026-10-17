@@ -245,6 +245,11 @@ verify_deployment_installer_path() {
 
 # Release-shell validation changes must select the tests that execute their gates even when no .NET path changes.
 verify_deployment_installer_path "scripts/release:cameraagent-image"
+verify_deployment_installer_path "scripts/release:assets"
+verify_deployment_installer_path "scripts/release:push-image"
+verify_deployment_installer_path "scripts/release:prerelease-gate"
+verify_deployment_installer_path "scripts/test:release-install"
+verify_deployment_installer_path "scripts/test:release-scripts"
 verify_deployment_installer_path "scripts/lib/component-inventory.jq"
 verify_deployment_installer_path "scripts/lib/component-inventory-count.jq"
 
@@ -474,6 +479,7 @@ verify_component_plan "THIRD-PARTY-NOTICES.md" full false true true true true tr
 complete_matrix_paths=(
   ".github/workflows/ci.yml"
   ".github/workflows/release.yml"
+  ".github/workflows/prerelease.yml"
   "scripts/ci:classify"
   "scripts/ci:require"
   "scripts/ci:component-build"
@@ -584,6 +590,7 @@ verify_targeted_suites() {
 
 verify_targeted_suites ".github/workflows/ci.yml" true true true
 verify_targeted_suites ".github/workflows/release.yml" true false true
+verify_targeted_suites ".github/workflows/prerelease.yml" true false true
 verify_targeted_suites "scripts/catalog/install-hyg-v42.sh" true true false
 verify_targeted_suites "scripts/ci:component-build" true true true
 verify_targeted_suites "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" true true false

@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# Tests the decisions the pre-release workflow's scripts make, with fake gh, skopeo and docker commands, so they are
+# proved without GitHub, a registry or a build:
+#   scripts/release:prerelease-gate  admits a green, annotated vX.Y.Z-dev.N tag on development/v1 and refuses the rest;
+#   scripts/release:push-image       pushes a release version only, and fails unless the registry serves the archive's
+#                                    digest;
+#   scripts/release:assets           refuses bad arguments before it builds anything.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+test_root="$(mktemp -d)"
+trap 'rm -rf "$test_root"' EXIT
+fake_bin="$test_root/bin"
+mkdir "$fake_bin"
+export PATH="$fake_bin:$PATH"
+
+fail() {
+    printf 'test:release-scripts: %s\n' "$*" >&2
+    exit 1
+}
+
+# The workflow runs each script by its path, so each must be executable as committed.
+for script in release:assets release:push-image release:prerelease-gate test:release-install test:release-scripts; do
+    [[ -x "$repo_root/scripts/$script" ]] || fail "scripts/$script is not executable."
+done
+
+commit=0123456789abcdef0123456789abcdef01234567
+other=fedcba9876543210fedcba9876543210fedcba98
+tag_object=1111111111111111111111111111111111111111
+
+# A fake gh that answers the gate's API reads from files the cases write under $FAKE_GH.
+cat >"$fake_bin/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1" == api ]] || { printf 'unexpected gh %s\n' "$*" >&2; exit 90; }
+shift
+jq_filter=""
+path=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --jq) jq_filter="$2"; shift 2 ;;
+        --method | -f) shift 2 ;;
+        --paginate) shift ;;
+        *) path="$1"; shift ;;
+    esac
+done
+key="$(printf '%s' "${path%%\?*}" | tr '/' '_')"
+file="$FAKE_GH/$key.json"
+[[ -f "$file" ]] || { printf 'gh: Not Found (%s)\n' "$path" >&2; exit 1; }
+if [[ -n "$jq_filter" ]]; then jq -r "$jq_filter" "$file"; else cat "$file"; fi
+FAKE_GH
+chmod +x "$fake_bin/gh"
+
+repo=repos_HualapaiValley_HVO.SkyMonitor
+gate_case() {
+    export FAKE_GH="$test_root/gh-$1"
+    rm -rf "$FAKE_GH"
+    mkdir -p "$FAKE_GH"
+    printf '{"object":{"type":"tag","sha":"%s"}}\n' "$tag_object" >"$FAKE_GH/${repo}_git_ref_tags_v1.2.0-dev.3.json"
+    printf '{"object":{"type":"commit","sha":"%s"}}\n' "$commit" >"$FAKE_GH/${repo}_git_tags_$tag_object.json"
+    printf '{"status":"behind"}\n' >"$FAKE_GH/${repo}_compare_development_v1...$commit.json"
+    printf '{"workflow_runs":[{"id":7,"run_number":7,"head_sha":"%s","event":"push","head_branch":"development/v1","status":"completed","conclusion":"success","html_url":"https://example.test/7"},{"id":3,"run_number":3,"head_sha":"%s","event":"push","head_branch":"development/v1","status":"completed","conclusion":"failure","html_url":"https://example.test/3"}]}\n' \
+        "$commit" "$commit" >"$FAKE_GH/${repo}_actions_workflows_development-v1.yml_runs.json"
+    printf '{"jobs":[{"name":"Development v1 / Preflight","conclusion":"success"},{"name":"Development v1 / Build and Unit","conclusion":"success"}]}\n' \
+        >"$FAKE_GH/${repo}_actions_runs_7_jobs.json"
+    printf '[{"tag_name":"v1.2.0-dev.2"}]\n' >"$FAKE_GH/${repo}_releases.json"
+    printf '{"commit":{"committer":{"date":"2026-10-17T18:00:00Z"}}}\n' >"$FAKE_GH/${repo}_commits_$commit.json"
+}
+
+expect_gate_refusal() {
+    local label="$1" message="$2" tag="${3:-v1.2.0-dev.3}" sha="${4:-$commit}"
+    if GITHUB_REPOSITORY=HualapaiValley/HVO.SkyMonitor "$repo_root/scripts/release:prerelease-gate" "$tag" "$sha" \
+        >"$test_root/gate.out" 2>"$test_root/gate.err"; then
+        fail "the gate admitted $label."
+    fi
+    grep -Fq -- "$message" "$test_root/gate.err" || {
+        cat "$test_root/gate.err" >&2
+        fail "the gate refused $label without saying: $message"
+    }
+}
+
+# A green, annotated pre-release tag on development/v1 is admitted, and the run's outputs are written.
+gate_case admitted
+GITHUB_REPOSITORY=HualapaiValley/HVO.SkyMonitor "$repo_root/scripts/release:prerelease-gate" v1.2.0-dev.3 "$commit" >"$test_root/gate.out"
+[[ "$(cat "$test_root/gate.out")" == $'version=1.2.0-dev.3\ntag=v1.2.0-dev.3\ncommit='"$commit"$'\ncreated=2026-10-17T18:00:00Z' ]] ||
+    fail "the gate's outputs are wrong: $(cat "$test_root/gate.out")"
+
+gate_case shape
+for tag in v1.2.0 v1.2.0-rc.1 1.2.0-dev.3 v1.2.0-dev.03 v1.2.0-dev.3+build v1.2-dev.3; do
+    expect_gate_refusal "the tag $tag" "is not an integration pre-release tag, vX.Y.Z-dev.N." "$tag"
+done
+expect_gate_refusal "a short commit" "is not a 40-character commit ID." v1.2.0-dev.3 0123456
+
+gate_case lightweight
+printf '{"object":{"type":"commit","sha":"%s"}}\n' "$commit" >"$FAKE_GH/${repo}_git_ref_tags_v1.2.0-dev.3.json"
+expect_gate_refusal "a lightweight tag" "is a lightweight tag"
+
+gate_case retargeted
+printf '{"object":{"type":"commit","sha":"%s"}}\n' "$other" >"$FAKE_GH/${repo}_git_tags_$tag_object.json"
+expect_gate_refusal "a tag naming another commit" "names $other, not the commit $commit"
+
+gate_case missing-tag
+rm "$FAKE_GH/${repo}_git_ref_tags_v1.2.0-dev.3.json"
+expect_gate_refusal "a deleted tag" "The tag v1.2.0-dev.3 does not exist."
+
+gate_case off-branch
+printf '{"status":"diverged"}\n' >"$FAKE_GH/${repo}_compare_development_v1...$commit.json"
+expect_gate_refusal "a commit off development/v1" "is not on development/v1 (compared with it, it is diverged)"
+
+gate_case ahead
+printf '{"status":"ahead"}\n' >"$FAKE_GH/${repo}_compare_development_v1...$commit.json"
+expect_gate_refusal "a commit ahead of development/v1" "is not on development/v1 (compared with it, it is ahead)"
+
+gate_case no-run
+printf '{"workflow_runs":[]}\n' >"$FAKE_GH/${repo}_actions_workflows_development-v1.yml_runs.json"
+expect_gate_refusal "a commit with no push run" "has no Development v1 push run on development/v1."
+
+gate_case other-runs
+printf '{"workflow_runs":[{"id":9,"run_number":9,"head_sha":"%s","event":"pull_request","head_branch":"development/v1","status":"completed","conclusion":"success","html_url":"x"},{"id":8,"run_number":8,"head_sha":"%s","event":"push","head_branch":"feature/x","status":"completed","conclusion":"success","html_url":"x"},{"id":10,"run_number":10,"head_sha":"%s","event":"push","head_branch":"development/v1","status":"completed","conclusion":"success","html_url":"x"}]}\n' \
+    "$commit" "$commit" "$other" >"$FAKE_GH/${repo}_actions_workflows_development-v1.yml_runs.json"
+expect_gate_refusal "a commit green only on a pull request, another branch or another commit" "has no Development v1 push run on development/v1."
+
+gate_case running
+printf '{"workflow_runs":[{"id":8,"run_number":8,"head_sha":"%s","event":"push","head_branch":"development/v1","status":"in_progress","conclusion":null,"html_url":"https://example.test/8"},{"id":7,"run_number":7,"head_sha":"%s","event":"push","head_branch":"development/v1","status":"completed","conclusion":"success","html_url":"https://example.test/7"}]}\n' \
+    "$commit" "$commit" >"$FAKE_GH/${repo}_actions_workflows_development-v1.yml_runs.json"
+expect_gate_refusal "a commit whose newest run is still going" "has not finished"
+
+gate_case red
+printf '{"workflow_runs":[{"id":8,"run_number":8,"head_sha":"%s","event":"push","head_branch":"development/v1","status":"completed","conclusion":"failure","html_url":"https://example.test/8"},{"id":7,"run_number":7,"head_sha":"%s","event":"push","head_branch":"development/v1","status":"completed","conclusion":"success","html_url":"https://example.test/7"}]}\n' \
+    "$commit" "$commit" >"$FAKE_GH/${repo}_actions_workflows_development-v1.yml_runs.json"
+expect_gate_refusal "a commit whose newest run failed" "is failure, not green."
+
+gate_case skipped-job
+printf '{"jobs":[{"name":"Development v1 / Preflight","conclusion":"success"},{"name":"Development v1 / Build and Unit","conclusion":"skipped"}]}\n' \
+    >"$FAKE_GH/${repo}_actions_runs_7_jobs.json"
+expect_gate_refusal "a run whose Build and Unit job was skipped" "has Development v1 / Build and Unit skipped, not success."
+
+gate_case missing-job
+printf '{"jobs":[{"name":"Development v1 / Build and Unit","conclusion":"success"}]}\n' >"$FAKE_GH/${repo}_actions_runs_7_jobs.json"
+expect_gate_refusal "a run without its Preflight job" "has Development v1 / Preflight missing, not success."
+
+gate_case released
+printf '[{"tag_name":"v1.2.0-dev.3"}]\n' >"$FAKE_GH/${repo}_releases.json"
+expect_gate_refusal "a tag already released" "A release for v1.2.0-dev.3 already exists"
+
+# The push script: a release version alone, through skopeo, and the digest read back must be the archive's.
+index_digest="sha256:$(printf 'index' | sha256sum | cut -d ' ' -f 1)"
+mkdir "$test_root/layout"
+printf '{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"%s","size":5}]}\n' \
+    "$index_digest" >"$test_root/layout/index.json"
+tar -cf "$test_root/image.oci.tar" -C "$test_root/layout" index.json
+# A fake skopeo whose registry has the tag only once something was copied there, unless a case says it had it already
+# (FAKE_SKOPEO_EXISTING) or cannot be read (FAKE_SKOPEO_INSPECT_ERROR); after a copy it serves FAKE_SKOPEO_SERVED.
+cat >"$fake_bin/skopeo" <<'FAKE_SKOPEO'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FAKE_SKOPEO_LOG"
+case "$1" in
+    copy)
+        status="${FAKE_SKOPEO_COPY_STATUS:-0}"
+        [[ "$status" != 0 ]] || : >"$FAKE_SKOPEO_LOG.copied"
+        exit "$status"
+        ;;
+    inspect)
+        if [[ -e "$FAKE_SKOPEO_LOG.copied" ]]; then
+            printf '%s' "${FAKE_SKOPEO_SERVED:-index}"
+        elif [[ -n "${FAKE_SKOPEO_INSPECT_ERROR:-}" ]]; then
+            printf 'time="x" level=fatal msg="%s"\n' "$FAKE_SKOPEO_INSPECT_ERROR" >&2
+            exit 1
+        elif [[ -n "${FAKE_SKOPEO_EXISTING:-}" ]]; then
+            printf '%s' "$FAKE_SKOPEO_EXISTING"
+        else
+            printf 'time="x" level=fatal msg="reading manifest 1.2.0-dev.3: manifest unknown"\n' >&2
+            exit 1
+        fi
+        ;;
+    *) exit 90 ;;
+esac
+FAKE_SKOPEO
+chmod +x "$fake_bin/skopeo"
+export FAKE_SKOPEO_LOG="$test_root/skopeo.log"
+reset_registry() {
+    : >"$FAKE_SKOPEO_LOG"
+    rm -f "$FAKE_SKOPEO_LOG.copied"
+}
+reset_registry
+
+pushed="$("$repo_root/scripts/release:push-image" "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3)"
+[[ "$pushed" == "$index_digest" ]] || fail "the push printed $pushed, not the archive's digest."
+grep -Fxq "copy --dest-tls-verify=true --retry-times 3 --all --preserve-digests oci-archive:$test_root/image.oci.tar docker://ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3" \
+    "$FAKE_SKOPEO_LOG" || fail "the push did not copy every platform with its digests."
+
+expect_push_refusal() {
+    local label="$1" message="$2"
+    shift 2
+    if "$repo_root/scripts/release:push-image" "$@" >/dev/null 2>"$test_root/push.err"; then
+        fail "the push admitted $label."
+    fi
+    grep -Fq -- "$message" "$test_root/push.err" || { cat "$test_root/push.err" >&2; fail "the push refused $label without saying: $message"; }
+}
+reset_registry
+expect_push_refusal "latest" "is not a release version" "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:latest
+expect_push_refusal "an untagged repository" "is not <repository>:<tag>" "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent
+expect_push_refusal "--insecure to a remote registry" "--insecure is only for a registry on this host" \
+    --insecure "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3
+[[ ! -s "$FAKE_SKOPEO_LOG" ]] || fail "a refused push reached skopeo."
+
+# A version tag the registry has for another image is never moved, and nothing is copied.
+FAKE_SKOPEO_EXISTING=other expect_push_refusal "a tag the registry has for another image" "a version tag is never moved" \
+    "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3
+! grep -q '^copy' "$FAKE_SKOPEO_LOG" || fail "the push copied over a tag that names another image."
+reset_registry
+FAKE_SKOPEO_INSPECT_ERROR="unauthorized: authentication required" expect_push_refusal "a registry it cannot read" \
+    "cannot tell whether" "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3
+! grep -q '^copy' "$FAKE_SKOPEO_LOG" || fail "the push copied to a registry it could not read."
+# A rerun pushes the same image to the tag again.
+reset_registry
+rerun="$(FAKE_SKOPEO_EXISTING=index "$repo_root/scripts/release:push-image" "$test_root/image.oci.tar" \
+    ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3)"
+[[ "$rerun" == "$index_digest" ]] || fail "a rerun of the same image was not admitted."
+
+reset_registry
+FAKE_SKOPEO_SERVED=other expect_push_refusal "a registry serving another image" "not $index_digest, the image the archive holds" \
+    "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3
+reset_registry
+FAKE_SKOPEO_COPY_STATUS=1 expect_push_refusal "a failed copy" "cannot push" \
+    "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3
+reset_registry
+"$repo_root/scripts/release:push-image" --insecure "$test_root/image.oci.tar" localhost:5000/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3 >/dev/null
+grep -Fq -- "--dest-tls-verify=false" "$FAKE_SKOPEO_LOG" || fail "--insecure did not reach skopeo for a registry on this host."
+
+# The asset script refuses bad arguments before it builds anything.
+cat >"$fake_bin/docker" <<'FAKE_DOCKER'
+#!/usr/bin/env bash
+printf 'the asset script ran docker before refusing its arguments\n' >&2
+exit 90
+FAKE_DOCKER
+chmod +x "$fake_bin/docker"
+cp "$fake_bin/docker" "$fake_bin/dotnet"
+expect_assets_refusal() {
+    local message="$1"
+    shift
+    if "$repo_root/scripts/release:assets" "$@" >/dev/null 2>"$test_root/assets.err"; then
+        fail "the asset script admitted $*."
+    fi
+    grep -Fq -- "$message" "$test_root/assets.err" || { cat "$test_root/assets.err" >&2; fail "the asset script refused $* without saying: $message"; }
+}
+expect_assets_refusal "must be a release version" --version 1.2.0+build --output "$test_root/out" --image-oci "$test_root/out.tar"
+expect_assets_refusal "must be a release version" --version v1.2.0 --output "$test_root/out" --image-oci "$test_root/out.tar"
+expect_assets_refusal "already exists" --version 1.2.0-dev.3 --output "$test_root" --image-oci "$test_root/out.tar"
+expect_assets_refusal "--platforms must be" --version 1.2.0-dev.3 --output "$test_root/out" --image-oci "$test_root/out.tar" --platforms linux/386
+expect_assets_refusal "Usage:" --version 1.2.0-dev.3 --output "$test_root/out"
+expect_assets_refusal "is not this checkout's HEAD" --version 1.2.0-dev.3 --output "$test_root/out" --image-oci "$test_root/out.tar" \
+    --commit "$other"
+
+printf 'Release script tests passed.\n'

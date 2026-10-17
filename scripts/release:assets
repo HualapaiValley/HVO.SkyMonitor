@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# Builds a release's files into one folder (install contract section 4), from the committed revision this checkout is at:
+#
+#   hvo-sky-install-linux-x64, hvo-sky-install-linux-arm64   the installers, stamped <version>+<commit>
+#   skymonitor-cameraagent-<version>-linux-<arch>.oci.tar     an offline image archive per platform
+#   <catalog version>.bundle.tar.gz                           the approved catalog bundle, under its own version
+#   install.sh                                                when --install-script names one (#1311)
+#   release.json, SHA256SUMS                                  the manifest, and every file's SHA-256
+#
+# The CameraAgent image is built once, for every platform, into the OCI archive --image-oci names. That archive is what
+# scripts/release:push-image pushes, byte for byte, so the registry's digest is the digest release.json names, and the
+# offline archives are split from it. The release workflow (.github/workflows/prerelease.yml) runs exactly this script;
+# run it locally to reproduce a release's files without pushing or publishing anything.
+set -euo pipefail
+
+usage() {
+    cat >&2 <<'USAGE'
+Usage: scripts/release:assets --version <version> --output <folder> --image-oci <file> [options]
+
+Required:
+  --version <version>          The release's version, such as 1.2.0-dev.3 (no build metadata).
+  --output <folder>            The folder to write the release's files into. Must not exist.
+  --image-oci <file>           Where to write the multi-platform OCI image archive the release pushes. Must not exist.
+
+Options:
+  --commit <sha>               The commit to build; it must be this checkout's HEAD. Default: HEAD.
+  --created <utc>              The release's time, such as 2026-10-17T18:00:00Z. Default: the commit's time.
+  --platforms <list>           linux/amd64,linux/arm64 (the default), or one of them for a local single-platform build.
+  --builder <name>             The buildx builder to build the image with. Default: the current one.
+  --image-repository <repo>    Default: ghcr.io/hualapaivalley/skymonitor-cameraagent.
+  --catalog-bundle <folder>    The approved catalog bundle. Default: build HYG 4.2 with scripts/catalog/build-hyg-v42.sh --fetch.
+  --install-script <file>      Attach this install.sh.
+  --allow-dirty                Build a modified checkout (local experiments only; the release workflow never passes it).
+USAGE
+    exit 2
+}
+
+fail() {
+    printf 'release:assets: %s\n' "$*" >&2
+    exit 1
+}
+
+version="" output="" image_oci="" commit="" created="" platforms="linux/amd64,linux/arm64" builder=""
+repository="ghcr.io/hualapaivalley/skymonitor-cameraagent" catalog_bundle="" install_script="" allow_dirty=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --version) version="${2:-}"; shift 2 ;;
+        --output) output="${2:-}"; shift 2 ;;
+        --image-oci) image_oci="${2:-}"; shift 2 ;;
+        --commit) commit="${2:-}"; shift 2 ;;
+        --created) created="${2:-}"; shift 2 ;;
+        --platforms) platforms="${2:-}"; shift 2 ;;
+        --builder) builder="${2:-}"; shift 2 ;;
+        --image-repository) repository="${2:-}"; shift 2 ;;
+        --catalog-bundle) catalog_bundle="${2:-}"; shift 2 ;;
+        --install-script) install_script="${2:-}"; shift 2 ;;
+        --allow-dirty) allow_dirty=1; shift ;;
+        -h | --help) usage ;;
+        *) printf 'Unknown option: %s\n' "$1" >&2; usage ;;
+    esac
+done
+
+[[ -n "$version" && -n "$output" && -n "$image_oci" ]] || usage
+# SemVer without build metadata: the version names the tag, the image tag and the files.
+identifier='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+[[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-${identifier}(\.${identifier})*)?$ ]] ||
+    fail "--version must be a release version such as 1.2.0 or 1.2.0-dev.3, not '$version'."
+[[ ! -e "$output" ]] || fail "$output already exists."
+[[ ! -e "$image_oci" ]] || fail "$image_oci already exists."
+[[ -z "$catalog_bundle" || -d "$catalog_bundle" ]] || fail "--catalog-bundle $catalog_bundle is not a folder."
+[[ -z "$install_script" || -f "$install_script" ]] || fail "--install-script $install_script is not a file."
+case "$platforms" in
+    linux/amd64,linux/arm64 | linux/amd64 | linux/arm64) ;;
+    *) fail "--platforms must be linux/amd64,linux/arm64 or one of them." ;;
+esac
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+head="$(git rev-parse HEAD)"
+commit="${commit:-$head}"
+[[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail "--commit must be a 40-character lowercase commit ID."
+[[ "$commit" == "$head" ]] || fail "--commit $commit is not this checkout's HEAD ($head): check the commit out first."
+if [[ "$allow_dirty" == 0 ]] && { ! git diff-index --quiet HEAD -- || [[ -n "$(git ls-files --others --exclude-standard)" ]]; }; then
+    fail "the checkout is modified; a release is built from an exact committed revision."
+fi
+created="${created:-$(date -u -d "$(git show -s --format=%cI "$commit")" +%Y-%m-%dT%H:%M:%SZ)}"
+[[ "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
+    fail "--created must be a UTC time such as 2026-10-17T18:00:00Z."
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/hvo-release-assets.XXXXXX")"
+cleanup() {
+    chmod -R u+w "$work" 2>/dev/null || true
+    rm -rf "$work"
+}
+trap cleanup EXIT
+
+printf 'Release %s from commit %s, created %s, for %s\n' "$version" "$commit" "$created" "$platforms" >&2
+
+# The installers, stamped with the release's version and commit (install contract section 1).
+case "$(uname -m)" in
+    x86_64) host_rid=linux-x64 ;;
+    aarch64 | arm64) host_rid=linux-arm64 ;;
+    *) fail "unsupported build host architecture $(uname -m)." ;;
+esac
+for rid in linux-x64 linux-arm64; do
+    dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --configuration Release \
+        --runtime "$rid" --output "$work/installer-$rid" \
+        "-p:InformationalVersion=$version" "-p:SourceRevisionId=$commit" -nodeReuse:false -p:UseSharedCompilation=false >&2
+    installer="$work/installer-$rid/HVO.SkyMonitor.Deployment.Cli"
+    # The release ships the executable alone, so nothing it loads may be left beside it. Symbols and the static SQLite
+    # library (*.a, for native linking only) are never loaded.
+    beside="$(find "$work/installer-$rid" -mindepth 1 -maxdepth 1 ! -name HVO.SkyMonitor.Deployment.Cli ! -name '*.pdb' ! -name '*.a' -printf '%f ')"
+    [[ -z "$beside" ]] || fail "the $rid installer publish left files beside the executable, which a release does not ship: $beside"
+    if [[ "$rid" == "$host_rid" ]]; then
+        actual="$(env -i HOME="$work" PATH=/usr/bin:/bin "$installer" --version)"
+        [[ "$actual" == "$version+$commit" ]] || fail "the $rid installer reports '$actual', not '$version+$commit'."
+    else
+        grep -aqF "$version+$commit" "$installer" || fail "the $rid installer does not carry '$version+$commit'."
+    fi
+done
+
+# The image, every platform at once, into the OCI archive that is pushed as it is. No BuildKit provenance or SBOM: the
+# release's build-provenance attestation covers the image, and BuildKit's would add an unknown/unknown platform.
+builder_arguments=()
+[[ -z "$builder" ]] || builder_arguments=(--builder "$builder")
+docker buildx build "${builder_arguments[@]}" \
+    --platform "$platforms" \
+    --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
+    --build-arg "HVO_VERSION=$version" \
+    --build-arg "HVO_SOURCE_REVISION=$commit" \
+    --provenance=false \
+    --sbom=false \
+    --output "type=oci,dest=$image_oci" \
+    . >&2
+
+# The approved catalog bundle, its bytes checked against the catalog registry by the release tool.
+if [[ -z "$catalog_bundle" ]]; then
+    ./scripts/catalog/build-hyg-v42.sh --fetch "$work/catalog-build" >&2
+    bundles=("$work"/catalog-build/*.bundle)
+    [[ ${#bundles[@]} -eq 1 && -d "${bundles[0]}" ]] || fail "the catalog build did not produce exactly one bundle."
+    catalog_bundle="${bundles[0]}"
+fi
+
+tool_arguments=(
+    create-release
+    --version "$version"
+    --commit "$commit"
+    --created-utc "$created"
+    --image-repository "$repository"
+    --image-archive "$image_oci"
+    --platforms "$platforms"
+    --installer-linux-x64 "$work/installer-linux-x64/HVO.SkyMonitor.Deployment.Cli"
+    --installer-linux-arm64 "$work/installer-linux-arm64/HVO.SkyMonitor.Deployment.Cli"
+    --catalog-bundle "$catalog_bundle"
+    --output "$output"
+)
+[[ ! -d docs/upgrade-notes ]] || tool_arguments+=(--upgrade-notes docs/upgrade-notes)
+[[ -z "$install_script" ]] || tool_arguments+=(--install-script "$install_script")
+dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
+    --configuration Release -warnaserror -nodeReuse:false -p:UseSharedCompilation=false >&2
+digest="$(dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
+    --no-build --configuration Release -- "${tool_arguments[@]}")"
+
+# What was written is what release.json and SHA256SUMS say.
+(cd "$output" && sha256sum --check --strict --quiet SHA256SUMS) || fail "SHA256SUMS does not match the files written."
+jq -e --arg version "$version" --arg commit "$commit" --arg digest "$digest" '
+    .version == $version and .commit == $commit and .images["skymonitor-cameraagent"].digest == $digest
+' "$output/release.json" >/dev/null || fail "release.json does not name the release that was built."
+index_digest="$(tar -xOf "$image_oci" index.json | jq -r '.manifests[0].digest')"
+[[ "$index_digest" == "$digest" ]] || fail "release.json names $digest, but the image archive holds $index_digest."
+
+printf 'Release %s written to %s; image %s@%s\n' "$version" "$output" "$repository" "$digest" >&2
+printf '%s\n' "$digest"
