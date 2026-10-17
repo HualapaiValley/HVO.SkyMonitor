@@ -155,8 +155,11 @@ already present:
 ```bash
 ./scripts/catalog/build-hyg-v42.sh --fetch \
   --install-root /var/lib/hvo-sky/catalogs/hyg-v42-production \
-  /var/lib/hvo/catalog-build
+  ./artifacts/hyg-v42
 ```
+
+The last argument is an operator-chosen build output directory that must not
+already exist, as in [production catalog installation](../catalog/production-install.md).
 
 Run the smoke against the installation root, not a bundle or SQLite file.
 
