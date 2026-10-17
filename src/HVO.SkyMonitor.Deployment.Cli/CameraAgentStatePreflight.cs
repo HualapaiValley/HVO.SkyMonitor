@@ -501,7 +501,7 @@ internal static class CameraAgentStatePreflight
         {
             (applied, uninitialized) = ReadIdentityLineage(databasePath);
         }
-        catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException or InstallerException)
         {
             findings.Add(new CameraAgentStatePreflightFinding(
                 "identity-lineage-unreadable", boundary, Blocking: true, databasePath,
@@ -705,11 +705,16 @@ internal static class CameraAgentStatePreflight
             {
                 using var command = connection.CreateCommand();
                 command.CommandText =
-                    "SELECT MigrationId FROM __EFMigrationsHistory ORDER BY MigrationId;";
+                    "SELECT typeof(MigrationId), MigrationId FROM __EFMigrationsHistory ORDER BY MigrationId;";
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
-                    migrations.Add(reader.GetString(0));
+                    // A recovery can read a history a candidate wrote, so a row in another shape is a lineage the
+                    // preflight cannot read, reported as such rather than cast.
+                    var type = reader.GetString(0);
+                    if (type != "text")
+                        throw new InstallerException($"The Identity migration history holds a migration ID stored as {type}, not text.");
+                    migrations.Add(reader.GetString(1));
                 }
             }
         }
