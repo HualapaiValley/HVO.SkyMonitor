@@ -73,8 +73,8 @@ too, because Preflight runs on drafts.
       index, under its own commit's header, and gitleaks reads that synthetic
       history in git mode through a stand-in `git`.
     - So each finding carries the real commit and the file's path, and the
-      exceptions apply to it exactly as to any other finding. A finding read
-      twice is reported once.
+      exceptions apply to it exactly as to any other finding. A finding
+      reported twice, identical in every field, is counted once.
     - A file that `.gitattributes` marks as binary is therefore read in full at
       every commit that changes it.
   - Every text line in a scanned tree is therefore either a line some commit's
@@ -103,6 +103,15 @@ too, because Preflight runs on drafts.
     error, so a partial, cut-short or empty scan cannot pass. A problem git
     reports while gitleaks reads the history, such as a malformed
     `.gitattributes` line, fails it too.
+  - gitleaks scans whatever its `git log` writes and notes a failed or killed
+    git only in its debug log, so a reader that stopped part way through a
+    commit would still be counted. gitleaks therefore reads through a stand-in
+    `git` that appends a completion record, signed with a nonce for this run,
+    only after its whole output was written: the real `git log` must exit 0,
+    and the files scanned in full are recorded commit by commit with their
+    file and byte counts. A record that is missing or differs in any way fails
+    the scan, and gitleaks must report reading every byte of the files scanned
+    in full.
   - Configuration cannot hide content. `--root` shows the root commit under
     `log.showRoot=false`. The other `git log` options pin textconv and external
     diff drivers, the `a/` and `b/` prefixes, `diff.relative`, colour, rename
@@ -133,10 +142,17 @@ too, because Preflight runs on drafts.
       credential. That is about 48 bits, enough to narrow a search; shorter
       runs are mostly the fixed prefixes that rules match on, such as `ghp_`,
       and ordinary words;
-    - or anything gitleaks finds when it reads the rule IDs and paths as text
-      with the same rules. That covers a credential in a file name or a
-      custom rule ID that is not itself a finding. If that check cannot run,
-      every rule ID and path is withheld.
+    - or anything gitleaks finds when it reads the rule IDs and paths as text.
+      That covers a credential in a file name or a custom rule ID that is not
+      itself a finding. It reads them with gitleaks' default rules, which the
+      scanned repository cannot change, and again with `.gitleaks.toml` when
+      that declares rules of its own, so the repository can only add to the
+      check. Inline `gitleaks:allow` comments are ignored, and gitleaks runs in
+      the private directory, so no `.gitleaksignore` file applies. If that
+      check cannot run, or gitleaks does not report reading every byte, every
+      rule ID and path is withheld.
+    - The check weighs every finding gitleaks reported, before identical ones
+      are counted once, so two credentials on one line are both weighed.
   - No tool's diagnostics are shown, because git and gitleaks can quote
     `.gitleaks.toml`, `.gitattributes` or scanned text: a malformed expression
     makes gitleaks panic and print it, and git quotes a malformed attribute
@@ -179,7 +195,7 @@ commits. gitleaks scanned the 1,956 that added text (95 MB of patches), 79 of
 them merge resolutions, and the script took 5.6 s in total with a cached
 archive. Git shows 28 added or changed files in the history as binary diffs;
 each one's new blob is binary, so no file was scanned in full. The contract
-test's 47 cases took about 28 s.
+test's 59 cases took about 40 s.
 
 The contract test runs the real scan against fixture repositories with an
 obviously fake credential assembled at run time. It fails if any output shows
@@ -202,8 +218,14 @@ cover:
 - a grafts file with Git's warning off, a caller's `GIT_GRAFT_FILE` and
   `GIT_DIR`, and a commit-graph file edited to drop a parent;
 - withheld metadata: files named after the credential, part of it, or another
-  credential; rule IDs that hold a credential; and the check of rule IDs and
-  paths failing;
+  credential, also beside a `.gitleaksignore` and with `gitleaks:allow` in the
+  name; rule IDs that hold a credential; a `.gitleaks.toml` that redefines a
+  default rule, and one with a custom credential format; two credentials on
+  one line; and the check of rule IDs and paths failing or reading part of the
+  names;
+- readers that do not finish: the history's `git log` exiting or killed part
+  way through a commit, and the files scanned in full cut off, killed, short of
+  a file, or without this run's completion record;
 - a credential only in the root commit under `log.showRoot=false`, and again
   under hostile repository configuration and a replacement ref;
 - output: a malformed `.gitattributes` attribute name, git failing before the
