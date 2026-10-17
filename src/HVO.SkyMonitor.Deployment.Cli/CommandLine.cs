@@ -9,13 +9,16 @@ internal static class CommandLine
 {
     private const string Executable = "hvo-skymonitor";
 
+    /// <summary>The option that prints the installer's build identity; it is accepted only on its own.</summary>
+    internal const string VersionOption = "--version";
+
     private static readonly string[] InstallValueOptions =
     [
         "--config", "--instance-id", "--friendly-name", "--owner-email", "--bind-address", "--port",
         "--product-root", "--catalog-bundle", "--catalog-manifest", "--catalog-index", "--catalog-version", "--asset-base-url", "--channel", "--image-ref", "--image-archive",
         "--image-archive-sha256", "--image-manifest", "--image-index", "--image-version",
         "--password-file", "--latitude", "--longitude",
-        "--elevation", "--time-zone", "--replay-profile"
+        "--elevation", "--time-zone", "--replay-profile", "--cpus", "--memory"
     ];
 
     private static readonly string[] InstallFlags =
@@ -107,10 +110,15 @@ internal static class CommandLine
     {
         ArgumentNullException.ThrowIfNull(args);
         ArgumentNullException.ThrowIfNull(context);
-        // Help is answered before the host policy is read, so it works even where that policy is refused.
+        // Help and the version are answered before the host policy is read, so they work even where that policy is
+        // refused, and without Docker.
         if (HelpFor(args) is { } help)
         {
             return new HelpCommand(help);
+        }
+        if (args is [VersionOption])
+        {
+            return new VersionCommand(InstallerBuildIdentity.Current);
         }
         try
         {
@@ -156,6 +164,7 @@ internal static class CommandLine
         return usage
             .AppendLine()
             .AppendLine(CultureInfo.InvariantCulture, $"Run '{Executable} <command> --help' to list the options of one command.")
+            .AppendLine(CultureInfo.InvariantCulture, $"Run '{Executable} {VersionOption}' to print this installer's version and commit.")
             .ToString();
     }
 
@@ -220,7 +229,7 @@ internal static class CommandLine
     private static string UnknownCommand(string[] args) => args switch
     {
         [] => "Missing command.",
-        [var first, var second, ..] when IsHelpOption(first) || first == "help" =>
+        [var first, var second, ..] when IsHelpOption(first) || first == "help" || first == VersionOption =>
             $"Unexpected argument '{second}' after '{first}'.",
         [var group] when IsGroup(group) => $"Missing command after '{group}'.",
         [var group, var name, ..] when IsGroup(group) && name.StartsWith('-') => $"Missing command after '{group}'.",
@@ -359,7 +368,9 @@ internal static class CommandLine
                 LongitudeDegrees = ParseDouble(Get(values, "--longitude"), 0, "--longitude"),
                 ElevationMeters = ParseDouble(Get(values, "--elevation"), 0, "--elevation"),
                 TimeZoneId = Get(values, "--time-zone") ?? "UTC",
-                ReplayProfile = ParseReplayProfile(Get(values, "--replay-profile"))
+                ReplayProfile = ParseReplayProfile(Get(values, "--replay-profile")),
+                Cpus = ParseCpus(Get(values, "--cpus")),
+                Memory = Get(values, "--memory")
             };
         }
 
@@ -439,6 +450,11 @@ internal static class CommandLine
         => value is null ? fallback : double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
             ? parsed
             : throw new InstallUsageException($"{option} must be a number.");
+
+    private static decimal? ParseCpus(string? value)
+        => value is null ? null : decimal.TryParse(value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var parsed)
+            ? parsed
+            : throw new InstallUsageException("--cpus must be a number.");
 
     private static DistributionChannel ParseChannel(string? value)
         => value switch

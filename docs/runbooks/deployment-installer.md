@@ -8,6 +8,12 @@ that install and `install --dry-run` evaluate. Catalog releases can be resolved 
 HTTPS mirrors, or signed release indexes; every source uses the same pinned
 signature, length, checksum, archive, and internal catalog validation.
 
+`hvo-skymonitor --version` prints the installer's version and the commit it was built from, as
+`<version>+<40-character commit>`, and exits 0. Like `--help`, it needs no Docker and does not read the
+[host policy](#production-product-root-on-another-filesystem), so it works even where that policy is refused. A build
+given no version is `0.0.0-dev`, and a build without a checkout or a supplied commit prints `0.0.0-dev+unknown`.
+[Build Evidence](#build-evidence) describes how a publish is stamped.
+
 ## HVO Install Contract
 
 The shared [HVO product installation and release contract](../hvo-install-contract.md)
@@ -22,12 +28,11 @@ runbook describes the installer as it behaves today.
 | Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | One `hvo-skymonitor` CLI, configured by flags or `--config`; no runtime client or wizard | [#1313](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1313), [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
 | `install.sh` entry point with `--check` and `--from DIR` | No `install.sh`; the self-contained CLI is run directly | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
 | Install and upgrade from a published release, by GHCR digest or offline archive | Nothing is published, so hosts install a locally built image by its loaded image ID | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309) |
-| `--version`, and upgrade notes printed before an upgrade | Neither | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312) |
+| `--version`, and upgrade notes printed before an upgrade | `--version` reports the installer build identity. The release.json reader and pre-upgrade notes are implemented; the release acquisition path that supplies them is pending #1309 (see [Upgrade notes and older targets](#upgrade-notes-and-older-targets)) | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312) |
 | `--plan`, `--answers FILE`, `backup` and `restore FILE`, exit codes 0/1/2/3/130 | `--dry-run` and `--config`; no `backup` or `restore`; a refusal such as failed host prerequisites exits `1` | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
-| An unchanged state contract upgrades without an operator assertion | Contrary to [Signed Image Release](#signed-image-release), `upgrade` requires `--migration-backward-compatible` even when the state contract is unchanged | [#1307](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1307) |
 | Swap upgrade that never copies bulk data, snapshotting only the small databases for a declared migration | Upgrade and rollback take a `tar` backup of the instance's configuration and state | [#1314](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1314); [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044) narrows to the `backup` command |
-| Containers default to at least 2 vCPUs and 4 GiB with a PID limit, set at install and kept across upgrade and rollback | CameraAgent runs with `cpus: "1"`, `mem_limit: 1G`, and `pids_limit: 256`, and its replay runner with `"0.5"`, `2G`, and `64` | [#1319](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1319) |
-| Settings catalogue served by the API | No catalogue | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
+| Container limits kept in the install record and changed with a re-run | Limits are set at install and recorded in the instance's `instance-manifest.json`. A re-run with different `--cpus` or `--memory` is refused, and an installed instance's limits change only when an upgrade moves limits the operator did not set to the new default (see [Container Resources](#container-resources)) | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
+| Settings catalogue served by the API | CameraAgent serves the [operator settings catalogue and group writes](../contracts/cameraagent-operator-settings-v1.md) through its operations API; the owner creates API keys for non-browser clients | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
 | Machine install record `/etc/hvo-sky/install.json` | Records live beneath each instance root (`instance-manifest.json`, `state/deployment/`) | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315), path [#1313](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1313) |
 
 ## Inputs
@@ -103,13 +108,17 @@ random one written to the owner-only `config/owner-bootstrap/temporary-password`
 A password file is read as UTF-8 with only its trailing line ending removed, by
 the installer and CameraAgent alike, so leading, trailing, and inner spaces are
 part of the password.
-`--json` selects the versioned structured result. `--dry-run` validates the catalog, Docker daemon, loaded image, generated
+`--json` selects the versioned structured result. Its `warnings` array lists each
+[advisory host finding](#host-prerequisites) as a `code` and a `message`, and is
+empty when there is none; the retained `state/deployment/installation-result.json`
+does not carry it. `--dry-run` validates the catalog, Docker daemon, loaded image, generated
 configuration, and rendered Compose model using private temporary storage without
 creating the product root, loading/pulling an image, or starting a container.
 
 Missing required values are prompted only on an interactive terminal. A strict
 JSON config may be supplied with `--config`; value options cannot be mixed with
-it. Flags such as `--dry-run`, `--json`, `--no-download`, and the explicit non-loopback HTTP
+it. Its `cpus` number and `memory` string are the `--cpus` and `--memory`
+[container limits](#container-resources). Flags such as `--dry-run`, `--json`, `--no-download`, and the explicit non-loopback HTTP
 acknowledgement may still be applied. A configuration that does not name
 `productRoot` installs into the production product root, as the command-line form
 does; one that names a root keeps it and is validated like `--product-root`.
@@ -139,10 +148,20 @@ and report every finding together so the host can be fixed in one pass:
 | `docker-memory-limit-unsupported` | `docker info` reports `MemoryLimit: true`, so the Compose `mem_limit` is enforced |
 | `docker-cpu-quota-unsupported` | `docker info` reports `CpuCfsQuota: true`, so the Compose `cpus` quota is enforced |
 | `docker-pids-limit-unsupported` | `docker info` reports `PidsLimit: true`, so the Compose `pids_limit` is enforced |
+| `docker-host-cpus-insufficient` | `docker info` reports at least as many CPUs (`NCPU`) as the CameraAgent [CPU limit](#container-resources); Docker refuses to create a container with a larger quota |
 | `tar-missing` | an executable `tar` on `PATH`; upgrade and rollback run it for the consistent instance backup |
 | `product-root-storage-insufficient` | room on the filesystem that holds the product root: twice the catalog bundle and image archive together, plus 1 GiB |
 | `docker-root-storage-insufficient` | room on the filesystem that holds Docker's `DockerRootDir`: twice the image archive and 1 GiB |
 | `docker-root-unreported` | `docker info` reports an absolute `DockerRootDir` |
+
+One finding is advisory and never refuses: `docker-host-memory-below-limit`
+reports that Docker's host has less memory (`MemTotal`) than the CameraAgent
+memory limit. The limit is still applied, but it cannot stop CameraAgent from
+exhausting that host's memory. The installation proceeds either way. The human
+form renders the finding on standard error with the rest of the report. With
+`--json` install, standard error is reserved for an error object, so the result on
+standard output reports it in `warnings` instead, for the install and the dry run
+alike.
 
 A capability `docker info` does not report counts as unsupported. Free space is
 measured on the filesystem that actually stores each root, at its nearest
@@ -166,6 +185,99 @@ carries one error object with `errorCode` `host-prerequisites`; the exit code is
 so neither is required. Uninstall, purge, and the other lifecycle commands do not
 evaluate these prerequisites, so a host that loses limit support can still be
 cleaned up.
+
+## Container Resources
+
+The installer limits the CameraAgent container to **2 CPUs, 4 GiB of memory and
+256 PIDs** unless the operator sets other limits, as section 7 of the shared HVO
+install contract requires. Raise them when installing:
+
+```bash
+hvo-skymonitor cameraagent install ... --cpus 3 --memory 6g
+```
+
+- `--cpus` is a number from 2 to 1024 with at most two decimal places, such as
+  `2.5`.
+- `--memory` is whole mebibytes or gibibytes, such as `6144m` or `6g`, from `4g`
+  to `1024g`.
+- In a `--config` file they are the `cpus` number and the `memory` string, for
+  example `"cpus": 3, "memory": "6g"`. Leaving a member out, or setting it to
+  `null`, leaves that limit to the default.
+- A limit below 2 CPUs or 4 GiB is **refused** as a usage error with exit code
+  `2`. No acknowledgement admits one: the contract makes these limits a floor,
+  and [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044)
+  records the out-of-memory cold start the former 1 GiB limit produced.
+- The PIDs limit stays at 256 and is not set by the operator. It bounds runaway
+  process and thread creation rather than capacity, and the .NET runtime adds
+  only about one thread for each CPU it is given.
+- The optional [local replay runner](#local-replay-runner) keeps its own 0.5 CPU,
+  2 GiB and 64 PID limits. They bound one sandboxed replay at a time and are not
+  changed by these options.
+
+Install and `install --dry-run` check the limits against the host Docker runs on
+before anything is created (see [Host Prerequisites](#host-prerequisites)). A
+CPU limit above the CPUs Docker reports is refused, because Docker would refuse
+to create the container. A memory limit above the host's memory is the advisory
+`docker-host-memory-below-limit`, and the installation proceeds: a 4 GB
+Raspberry Pi reports slightly less than 4 GiB, and refusing it would turn away a
+host that runs CameraAgent.
+
+The limits are recorded as `resources` in the instance's
+`instance-manifest.json`:
+
+```json
+"resources": {
+  "cpus": 2,
+  "memoryBytes": 4294967296,
+  "pidsLimit": 256,
+  "cpusSetByOperator": false,
+  "memorySetByOperator": false
+}
+```
+
+A `...SetByOperator` flag is `true` when the operator gave that limit, even if
+the value equals the default. A limit the operator did not give follows the
+installer default:
+
+- **Upgrade** keeps every limit the operator set and moves every other limit to
+  the upgrading installer's default.
+- **Rollback** runs the previous image with the Compose model retained from
+  before the upgrade, authenticated against its recorded identity, and gives it
+  the limits the instance records. A rollback never returns an instance to limits
+  it has left.
+- **Reinstall** keeps the recorded limits, and so does a re-run of a completed
+  install. A re-run is held to the same request: adding, dropping or changing
+  `--cpus` or `--memory` is refused with `The retained installation state belongs
+  to different immutable inputs`. The same limit written another way, such as
+  `6g` and `6144m`, is the same request.
+- A failed upgrade candidate restores the exact prior Compose file and manifest,
+  limits included.
+- The limits of an installed instance cannot be changed yet, apart from the
+  default moving on upgrade.
+
+An instance installed before limits were recorded has no `resources` member. It
+runs the original 1 CPU, 1 GiB and 256 PID limits. No operator could set them,
+because the installer had no option for them, so none counts as set by the
+operator. Its next `cameraagent upgrade` moves it to 2 CPUs and 4 GiB and records
+`resources` with both flags `false`; until then a re-run of its install keeps the
+original limits exactly. A runtime `docker update` override, such as a memory
+override approved during recovery, is not an installer setting: it is not
+recorded, and the container an upgrade creates carries the recorded limits.
+
+An upgrade refuses, before it touches anything, a Compose file whose CameraAgent
+limit lines differ from the limits its manifest records. Lifecycle commands do not
+run the host check, so on a host with fewer than 2 CPUs the upgrade that moves an
+instance to the defaults fails when Docker refuses the candidate, and the
+automatic restore returns it to its prior image and limits.
+
+Confirm what Docker applied with:
+
+```bash
+docker inspect --format '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.PidsLimit}}' \
+  hvo-skymonitor-<instance-uuid-without-dashes>
+```
+
+The defaults report `2000000000 4294967296 256`.
 
 ## Signed Image Release
 
@@ -298,7 +410,8 @@ can be evaluated against persisted state first without acquiring, loading, or st
 [State Compatibility Boundary](#state-compatibility-boundary).
 
 `--migration-backward-compatible` remains a separate operator assertion about the
-candidate's state migration and is required only when the candidate declares one.
+candidate's state migration and is required only when the candidate declares one;
+[CameraAgent Lifecycle](#cameraagent-lifecycle) defines exactly when that is.
 Do not add it to a routine upgrade; doing so defeats the gate it exists for.
 
 ### Edge work persisted across an upgrade
@@ -599,6 +712,11 @@ every transition the retained release record has to follow:
 | Refused: resuming the refused upgrade | `cameraagent upgrade --image-manifest <contradicting> --resume` | still absent; the journal is byte-identical |
 | State-compatibility preflight on what the sequence left behind | `cameraagent preflight` | still absent |
 | Uninstall without `--resume` after the refusal | `cameraagent uninstall` | still absent; the container is gone |
+
+Every upgrade in the table passes `--migration-backward-compatible` only when
+the two releases declare different state boundaries, as an operator would. Two
+releases built from adjacent revisions normally declare the same ones, so their
+upgrades then run without it. `summary.txt` records which applied.
 
 Each refusal targets its own gate. The production-trust-root refusal and the
 four derived-release refusals share the acquirer's single diagnostic, because
@@ -1225,8 +1343,9 @@ hvo-skymonitor cameraagent preflight --instance-id <uuid> \
   --image-version 1.5.0 --asset-base-url https://mirror.example/releases
 ```
 
-A `--json` install or lifecycle invocation reserves standard error for its single error object, so the
-rendered report is written there only in human form. Read the complete report from
+With `--json`, an install or lifecycle invocation reports on standard error only in one-line JSON objects: any events,
+such as an upgrade's notes (see [Upgrade notes and older targets](#upgrade-notes-and-older-targets)), then at most one
+error object, last. The rendered report is therefore written there only in human form. Read the complete report from
 `state/deployment/state-preflight.json`, or from `cameraagent preflight --json` on standard output; a
 `--dry-run` deliberately retains nothing, and its error message still enumerates every blocking code.
 
@@ -1268,7 +1387,8 @@ LocalRunner instance needs, therefore no longer preflights clean only to be refu
 **A compatible signed-release preflight is still not a promise that the upgrade will proceed.** It compares
 persisted state and the declared contract identities against this instance. Gates that need the image itself run
 only during the upgrade: the labels the loaded image actually carries are compared against the signed record, and
-a candidate declaring a state migration still requires `--migration-backward-compatible`. When either signed
+a candidate declaring a state migration still requires `--migration-backward-compatible` (see
+[CameraAgent Lifecycle](#cameraagent-lifecycle)). When either signed
 identity for the selected platform (`offlineArchiveImageId` or `manifestDigest`) equals the installed
 `manifest.image.imageId`, preflight remains compatible but includes the non-blocking
 `candidate-image-already-active` advisory. The advisory tells the operator that no upgrade action is needed; an
@@ -1369,17 +1489,42 @@ without accepting an operator password file. Image references must be immutable 
 ```bash
 hvo-skymonitor status --instance-id <uuid> --json
 hvo-skymonitor cameraagent upgrade --instance-id <uuid> \
-  --image-ref <repository@sha256:digest> --migration-backward-compatible
+  --image-ref <repository@sha256:digest>
 hvo-skymonitor cameraagent rollback --instance-id <uuid>
 hvo-skymonitor cameraagent uninstall --instance-id <uuid>
 hvo-skymonitor cameraagent reinstall --instance-id <uuid>
 ```
 
-`--migration-backward-compatible` is the operator's explicit acknowledgement that no transactional restore
-path is being reserved. It is necessary but not sufficient: the candidate must also declare the current
-`cameraagent-state-v2` contract, and the persisted state must satisfy every declared boundary described in
-[State Compatibility Boundary](#state-compatibility-boundary). A rollback target installed before that label
-correction is accepted as a known contract because no state migration occurs on the way back.
+An upgrade whose candidate declares the installed state contract needs no further assertion. The candidate
+declares a state migration, and the upgrade then also requires `--migration-backward-compatible`, when any of
+these holds:
+
+- A persisted-state boundary label differs between the installed image and the candidate, compared exactly:
+  `io.hvo.skymonitor.state-compatibility` (on the installed side, the contract the instance manifest records),
+  `minimum-compatible-revision`, `identity-migration`, `raw-ingress-schema`, `raw-ingress-migration`, or
+  `catalog-manifest-version`.
+- Either image omits one of those labels other than `raw-ingress-migration`, so the two cannot be compared.
+  Only an image that migrates an earlier raw journal declares `raw-ingress-migration`, so both omitting it is
+  agreement.
+- The persisted raw-ingress journal exists and is initialized, and its `PRAGMA user_version` is not the
+  candidate's `raw-ingress-schema`, or the journal cannot be read. A journal at `user_version` 0 with no schema
+  objects is one the runtime has not initialized yet, which is a fresh start rather than a migration.
+
+The check runs after the state preflight, so an incompatible persisted state is reported first, and before the
+backup, the drain, and any Compose change. Its refusal names every difference, for example
+`io.hvo.skymonitor.raw-ingress-schema installed 14, candidate 15`, and is journalled as a terminal refusal that
+blocks no later operation. The contract-identity labels (`component`, `configuration-contract`,
+`catalog-contract`, `replay-runner-contract`) are not state: a mismatch there is refused whether or not the
+assertion is given.
+
+`--migration-backward-compatible` asserts that the prior image can read the state a migrating candidate leaves
+behind. A candidate that fails after it starts is restored by starting the prior image again on that state; the
+pre-mutation backup is not restored, so no transactional restore path is reserved. The assertion is necessary but
+not sufficient: the candidate must also declare the current `cameraagent-state-v2` contract, and the persisted
+state must satisfy every declared boundary described in [State Compatibility Boundary](#state-compatibility-boundary).
+Supplying it for a candidate that declares no migration is accepted and changes nothing, but passing it habitually
+would admit the next real migration unexamined. A rollback never requires it, and a rollback target installed
+before that label correction is accepted as a known contract because no state migration occurs on the way back.
 
 Each transition pins the Docker endpoint and daemon identity, validates the
 rendered Compose model, records pre-mutation continuity, creates and validates a
@@ -1390,6 +1535,51 @@ the exact command with `--resume`. A failed candidate restores the exact prior
 Compose, image, and identity records before capture resumes. Noncurrent manifests
 and results are rejected before lifecycle state mutation; invalid candidate images
 or rollback models are rejected before runtime mutation.
+
+### Upgrade notes and older targets
+
+An upgrade from a release reads the release's `release.json` (install contract sections 4 and 6). Before it changes
+anything, including before the lifecycle journal, it does two things:
+
+- It prints the upgrade notes of every release after the installed version, up to the release the target belongs to.
+  A release candidate shows its release's notes. `--dry-run` shows them too.
+- It refuses a target older than the installed version, says that an upgrade never goes back, and names
+  `hvo-skymonitor cameraagent rollback --instance-id <uuid>`.
+
+Upgrade-note text follows one terminal-safety rule. CRLF becomes LF; LF and TAB are retained, so tabs keep their
+existing terminal spacing behavior. All other Unicode controls (Cc), all format characters (Cf), line and paragraph
+separators (Zl/Zp), private-use characters (Co), and Unicode noncharacters are refused. This includes bidi controls,
+LRM/RLM/ALM, zero-width formatting, BOM (U+FEFF), and soft hyphen. A refusal names the note's version and the first
+unsafe code point as `U+XXXX` (at least four hexadecimal digits), without echoing its text. Ordinary letters,
+punctuation, symbols, combining marks and spaces in any script remain valid.
+
+Human rendering applies the same rule as defense in depth for directly constructed notes: unsafe code points appear
+visibly as `<U+XXXX>`, including lone CRs and U+2028/U+2029. Only CRLF is normalized to LF; unsafe Unicode separators
+are escaped rather than turned into extra lines.
+
+With `--json`, standard output carries only the one result, which is written when the upgrade ends, so the notes are
+written to standard error first as one `upgrade-notes` event on a single line:
+
+```json
+{"schemaVersion":1,"event":"upgrade-notes","upgradeNotes":{"installedVersion":"1.0.0","targetVersion":"1.2.0","notes":[{"version":"1.1.0","text":"Nothing to do by hand."},{"version":"1.2.0","text":"Read the Camera \u0026 rig page after upgrading."}]}}
+```
+
+- The event comes before the journal, the backup, the pause and the image change, so a caller sees the notes before
+  anything changes. A failed upgrade has already written it, and its error object follows it.
+- `installedVersion` is `null` when it is not recorded. `text` keeps its line breaks as `\n`.
+- The result repeats the notes in its `upgradeNotes` member. A result with no `release.json` behind it has no such
+  member.
+- A refused older target writes no event, only the error object.
+- Read standard error line by line: an object with `event` is an event, one with `errorCode` is the error, and callers
+  ignore event names they do not know.
+
+The installed version is the one the retained release record names for the running image. An instance installed from an
+image reference records none. Its upgrade then shows every note up to the target, says that the installed version is not
+recorded, and cannot apply the older-target refusal.
+
+No current upgrade source supplies a `release.json`. The reader and the upgrade step that uses it are in place. The
+release acquisition that selects the candidate image from the same `release.json`, and records the installed release
+version, comes with #1309. Until then, image-reference and signed-manifest upgrades show no notes.
 
 ### Restore Only After an Interrupted Upgrade
 
@@ -1637,10 +1827,11 @@ so a signed release can be proved against the bytes an operator receives:
 
 ```bash
 # Install, health, replay-runner health, stop-and-reinstall idempotence, preflight,
-# bind-source ownership and mode, uninstall, and the explicit reset, against a
-# published archive rather than a locally built image. The authenticated owner
-# recovery, upgrade, and rollback contract belongs to the baseline-revision run
-# and is not exercised here.
+# bind-source ownership and mode, uninstall, the explicit reset, and the
+# migration-assertion upgrades, against a published archive rather than a locally
+# built image. The authenticated owner recovery and rollback contract, with its
+# upgrade from an older baseline, belongs to the baseline-revision run and is not
+# exercised here.
 case "$(uname -m)" in
   x86_64) release_architecture=amd64 ;;
   aarch64|arm64) release_architecture=arm64 ;;
@@ -1836,6 +2027,13 @@ dotnet publish src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.Camera
   --configuration Release --runtime linux-arm64
 ```
 
+Each installer publish is stamped with its version and commit. A publish given no version is `0.0.0-dev+<commit>`. A
+release passes `-p:InformationalVersion=<version> -p:SourceRevisionId=<40-character commit>`. The build refuses a
+version that is not 1-128 letters, digits, periods and hyphens, and a commit that is not 40 lowercase hexadecimal
+digits or `unknown`. `scripts/ci:component-publish delivery`, the Architecture & Publish job and the release workflow
+each check that `--version` prints exactly `<version>+<commit>`. On ARM64 they check that the binary contains that
+string.
+
 Run the x64 output with `--capabilities`; require protocol version `1` and
 completed runtime/native-library warmup. On an ARM64 builder, the existing
 `scripts/test:cameraagent-arm64-ci` gate performs the equivalent native publish,
@@ -1843,6 +2041,14 @@ capability, image, and constrained-container checks.
 
 The campaign additionally proves the state preflight, the operator-confirmed CameraAgent-only reset, and the
 reset-then-reinstall convergence against a real image and a real product root.
+
+It then proves the migration assertion against two variants of the installed image that differ from it only in
+added labels. An upgrade to the variant that declares the same state boundaries completes without
+`--migration-backward-compatible`. The variant that declares a different `minimum-compatible-revision` is refused
+without it, leaving the instance, its manifest, and its running image unchanged and the refusal journalled as
+terminal, and the same upgrade then completes with it. A run with `HVO_INSTALLER_BASELINE_REVISION` skips this
+step, because its baseline image may predate the boundary labels, and keeps the assertion on its own baseline
+upgrade.
 
 Run the disposable installer contract against the current image with
 `./scripts/test:deployment-installer`. To validate an owner-recovery image

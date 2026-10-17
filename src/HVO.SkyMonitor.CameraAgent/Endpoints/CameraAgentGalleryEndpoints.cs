@@ -376,6 +376,12 @@ internal static class CameraAgentGalleryEndpoints
         EndpointFilterInvocationContext context,
         EndpointFilterDelegate next)
     {
+        if (CameraAgentCredentialAccess.IsApiKey(context.HttpContext.User))
+        {
+            // An API key travels only in the Authorization header, which a cross-site request cannot carry.
+            return await next(context).ConfigureAwait(false);
+        }
+
         try
         {
             await context.HttpContext.RequestServices.GetRequiredService<IAntiforgery>()

@@ -276,8 +276,9 @@ internal static class CameraAgentStatePreflight
             return report;
         }
 
-        // The rendered report carries every boundary at once, but a --json invocation reserves standard error for
-        // exactly one JSON object, so that form relies on the enumerated codes and the retained report instead.
+        // The rendered report carries every boundary at once, but a --json invocation keeps standard error to one-line
+        // JSON objects ending in its one error object, so that form relies on the enumerated codes and the retained
+        // report instead.
         if (renderToStandardError)
         {
             await Console.Error.WriteLineAsync(Render(report)).ConfigureAwait(false);
@@ -723,7 +724,7 @@ internal static class CameraAgentStatePreflight
 
     internal static long ReadRawIngressVersion(string databasePath) => ReadRawIngressSchema(databasePath).UserVersion;
 
-    private static (long UserVersion, long SchemaObjects) ReadRawIngressSchema(string databasePath)
+    internal static (long UserVersion, long SchemaObjects) ReadRawIngressSchema(string databasePath)
     {
         using var database = ReadOnlyDatabase.Open(databasePath);
         return ReadRawIngressSchema(database.Connection);

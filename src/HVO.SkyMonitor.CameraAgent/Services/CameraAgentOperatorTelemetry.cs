@@ -19,6 +19,7 @@ internal sealed partial class CameraAgentOperatorTelemetry : IDisposable
     private readonly Counter<long> _transientQueries;
     private readonly Histogram<double> _transientQueryDuration;
     private readonly Histogram<long> _transientResponseBytes;
+    private readonly Counter<long> _apiKeyAuthentications;
     private readonly ILogger _logger;
 
     public CameraAgentOperatorTelemetry(ILogger<CameraAgentOperatorTelemetry>? logger = null)
@@ -34,6 +35,7 @@ internal sealed partial class CameraAgentOperatorTelemetry : IDisposable
         _transientQueries = _meter.CreateCounter<long>("hvo.transient.operator.queries");
         _transientQueryDuration = _meter.CreateHistogram<double>("hvo.transient.operator.query.duration", "ms");
         _transientResponseBytes = _meter.CreateHistogram<long>("hvo.transient.operator.response.bytes", "By");
+        _apiKeyAuthentications = _meter.CreateCounter<long>("camera_agent.api_key.authentications", "{authentication}");
     }
 
     internal Activity? StartPlanPreview() => _activities.StartActivity("processing-plan.preview");
@@ -57,6 +59,10 @@ internal sealed partial class CameraAgentOperatorTelemetry : IDisposable
         _planMutations.Add(1, new TagList { { "action", action }, { "outcome", outcome } });
         PlanMutationCompleted(_logger, action, outcome);
     }
+
+    /// <summary>Counts one presented API key by outcome, <c>accepted</c> or <c>rejected</c>; never the key itself.</summary>
+    internal void RecordApiKeyAuthentication(string outcome)
+        => _apiKeyAuthentications.Add(1, new TagList { { "outcome", outcome } });
 
     internal void RecordComparison(TimeSpan duration, long outputBytes, string outcome)
     {
