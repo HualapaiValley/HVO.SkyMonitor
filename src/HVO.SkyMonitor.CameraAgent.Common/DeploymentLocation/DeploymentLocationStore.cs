@@ -51,6 +51,15 @@ public interface IDeploymentLocationStore
         => ValueTask.FromException<ManualDeploymentLocationResult>(
             new NotSupportedException("This deployment-location store does not support manual coordinate mutation."));
 
+    /// <summary>
+    /// Finds the original resolved coordinates of a retained manual command for partial-request replay.
+    /// Applying the command still validates its payload and whether it has been superseded.
+    /// </summary>
+    ValueTask<ManualDeploymentLocationAuditEntry?> FindManualCommandAsync(
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+        => ValueTask.FromResult<ManualDeploymentLocationAuditEntry?>(null);
+
     ValueTask<DeploymentLocationSnapshot> InitializeAsync(
         DeploymentLocationSeed seed,
         CancellationToken cancellationToken);
@@ -291,6 +300,23 @@ public sealed class ProtectedDeploymentLocationStore(
             var (path, _, _) = EnsureStatePaths();
             await WriteAsync(path, updated, cancellationToken).ConfigureAwait(false);
             Volatile.Write(ref _history, updated);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async ValueTask<ManualDeploymentLocationAuditEntry?> FindManualCommandAsync(
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Search the durable replay window, which is larger than the operator-facing history projection.
+            return _manual?.Entries.FirstOrDefault(entry =>
+                string.Equals(entry.IdempotencyKey, idempotencyKey.Trim(), StringComparison.Ordinal));
         }
         finally
         {

@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Components.Layout;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Settings;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 
@@ -493,7 +494,7 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
         if (!useDefault && !string.IsNullOrWhiteSpace(_objectLimitInput))
         {
             if (!int.TryParse(_objectLimitInput.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ||
-                parsed is < 1 or > CameraAgentSkyMapProjection.MaximumConfigurableObjects)
+                ObjectLimit.Check(parsed) is not null)
             {
                 SetNotice(ObjectLimitRule, error: true);
                 return;
@@ -535,9 +536,17 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
         SetNotice(result.Message ?? "The object limit could not be saved.", error: true);
     }
 
-    private static string ObjectLimitRule { get; } = string.Create(
+    private static string ObjectLimitRule => ObjectLimit.NumberRule;
+
+    private static CameraAgentSettingDefinition ObjectLimit => CameraAgentSettingsCatalogue.MaximumSceneObjects;
+
+    /// <summary>The object limit field label: the catalogue's title and range.</summary>
+    private static string ObjectLimitLabel => string.Create(
         CultureInfo.InvariantCulture,
-        $"The object limit must be a whole number from 1 to {CameraAgentSkyMapProjection.MaximumConfigurableObjects:N0}.");
+        $"{ObjectLimit.Title} (brightest objects, {ObjectLimit.Minimum:N0} to {ObjectLimit.Maximum:N0})");
+
+    private static string ObjectLimitPlaceholder
+        => Convert.ToString(ObjectLimit.Default, CultureInfo.InvariantCulture) ?? string.Empty;
 
     private static string DescribeLocation(ManualDeploymentLocationResult result) => result.Status switch
     {
@@ -566,36 +575,29 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
         longitude = 0;
         elevation = 0;
         timeZoneId = _timeZoneInput?.Trim() ?? string.Empty;
-        if (!TryParseNumber(_latitudeInput, -90, 90, out latitude))
+        if (!TryParseCoordinate(CameraAgentSettingsCatalogue.Latitude, _latitudeInput, out latitude) ||
+            !TryParseCoordinate(CameraAgentSettingsCatalogue.Longitude, _longitudeInput, out longitude) ||
+            !TryParseCoordinate(CameraAgentSettingsCatalogue.Elevation, _elevationInput, out elevation))
         {
-            SetNotice("Latitude must be a number between -90 and 90 degrees.", error: true);
             return false;
         }
-        if (!TryParseNumber(_longitudeInput, -180, 180, out longitude))
+        if (CameraAgentSettingsCatalogue.TimeZone.Check(timeZoneId) is { } zoneProblem)
         {
-            SetNotice("Longitude must be a number between -180 and 180 degrees, east positive.", error: true);
-            return false;
-        }
-        if (!TryParseNumber(
-                _elevationInput,
-                ManualDeploymentLocationContract.MinimumElevationMeters,
-                ManualDeploymentLocationContract.MaximumElevationMeters,
-                out elevation))
-        {
-            SetNotice(
-                $"Elevation must be a number between {ManualDeploymentLocationContract.MinimumElevationMeters:F0} "
-                + $"and {ManualDeploymentLocationContract.MaximumElevationMeters:F0} metres.",
-                error: true);
-            return false;
-        }
-        if (timeZoneId.Length == 0)
-        {
-            SetNotice(
-                "Time zone must be an IANA identifier this host can resolve, such as America/Phoenix or UTC.",
-                error: true);
+            SetNotice(zoneProblem, error: true);
             return false;
         }
         return true;
+    }
+
+    /// <summary>Parses a coordinate within the catalogue's bounds, or shows the catalogue's rule.</summary>
+    private bool TryParseCoordinate(CameraAgentSettingDefinition definition, string value, out double parsed)
+    {
+        if (TryParseNumber(value, definition.Minimum!.Value, definition.Maximum!.Value, out parsed))
+        {
+            return true;
+        }
+        SetNotice(definition.NumberRule, error: true);
+        return false;
     }
 
     /// <summary>Parses within the same bounds the message advertises, so the guidance is truthful.</summary>

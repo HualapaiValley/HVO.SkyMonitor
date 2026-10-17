@@ -10,6 +10,7 @@ using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.CameraAgent.Data;
+using HVO.SkyMonitor.CameraAgent.Settings;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Identity;
@@ -376,12 +377,11 @@ internal sealed class CameraAgentSkyMapUiService(
             return OperatorUiResult<CameraAgentObjectLimitSetting>.Failure(
                 OperatorUiResultKind.Unavailable, NoSettingsFileMessage);
         }
-        if (maximumObjects is < 1 or > CameraAgentSkyMapProjection.MaximumConfigurableObjects ||
-            string.IsNullOrWhiteSpace(expectedVersion))
+        var objectLimit = CameraAgentSettingsCatalogue.MaximumSceneObjects;
+        if (objectLimit.Check(maximumObjects) is not null || string.IsNullOrWhiteSpace(expectedVersion))
         {
             return OperatorUiResult<CameraAgentObjectLimitSetting>.Failure(
-                OperatorUiResultKind.Invalid,
-                $"The object limit must be a whole number from 1 to {CameraAgentSkyMapProjection.MaximumConfigurableObjects:N0}.");
+                OperatorUiResultKind.Invalid, objectLimit.NumberRule);
         }
         try
         {
@@ -389,7 +389,7 @@ internal sealed class CameraAgentSkyMapUiService(
                 expectedVersion,
                 new Dictionary<string, JsonNode?>(StringComparer.Ordinal)
                 {
-                    [SkyMapOptions.MaximumObjectsKey] = maximumObjects is { } value ? JsonValue.Create(value) : null
+                    [objectLimit.ConfigurationKey!] = maximumObjects is { } value ? JsonValue.Create(value) : null
                 },
                 actor,
                 cancellationToken).ConfigureAwait(false);
@@ -417,8 +417,8 @@ internal sealed class CameraAgentSkyMapUiService(
     private CameraAgentObjectLimitSetting ReadObjectLimit(OperatorSettingsSnapshot snapshot)
         => new(
             snapshot.Version,
-            snapshot.GetValue(SkyMapOptions.MaximumObjectsKey),
-            settingsFile?.FindOverriddenKeys([SkyMapOptions.MaximumObjectsKey]).Count > 0);
+            snapshot.GetValue(CameraAgentSettingsCatalogue.MaximumSceneObjects.ConfigurationKey!),
+            settingsFile?.FindOverriddenKeys([CameraAgentSettingsCatalogue.MaximumSceneObjects.ConfigurationKey!]).Count > 0);
 
     /// <summary>Maps a rejected profile command to fixed operator-facing guidance.</summary>
     internal static string DescribeProfileFailure(SiteProfileResult result)
@@ -429,14 +429,10 @@ internal sealed class CameraAgentSkyMapUiService(
             (SiteProfileLimits.ExpectedVersionConflictReasonCode, _) => SettingsConflictMessage,
             (SiteProfileLimits.UnreadableReasonCode, _) => SettingsUnreadableMessage,
             (SiteProfileLimits.UnavailableReasonCode, _) => NoSettingsFileMessage,
-            (_, "observatoryName") =>
-                $"Observatory name must be at most {SiteProfileLimits.MaximumNameLength} characters without control characters.",
-            (_, "cameraName") =>
-                $"Camera name must be at most {SiteProfileLimits.MaximumNameLength} characters without control characters.",
-            (_, "ownerName") =>
-                $"Owner name must be at most {SiteProfileLimits.MaximumNameLength} characters without control characters.",
-            (_, "ownerContact") =>
-                $"Owner contact must be at most {SiteProfileLimits.MaximumContactLength} characters without control characters.",
+            (_, "observatoryName") => CameraAgentSettingsCatalogue.ObservatoryName.TextRule,
+            (_, "cameraName") => CameraAgentSettingsCatalogue.CameraName.TextRule,
+            (_, "ownerName") => CameraAgentSettingsCatalogue.OwnerName.TextRule,
+            (_, "ownerContact") => CameraAgentSettingsCatalogue.OwnerContact.TextRule,
             _ => "The profile change was rejected before anything durable changed."
         };
     }
@@ -538,15 +534,13 @@ internal sealed class CameraAgentSkyMapUiService(
             return "This command identifier was recorded against coordinates a configuration change has since "
                 + "superseded. Refresh and submit the entry again.";
         }
-        return result.FieldPath switch
+        // The store names a rejected field by its settings catalogue key, whose rule is the guidance.
+        return CameraAgentSettingsCatalogue.Find(result.FieldPath) switch
         {
-            "location.latitudeDegrees" => "Latitude must be a number between -90 and 90 degrees.",
-            "location.longitudeDegrees" => "Longitude must be a number between -180 and 180 degrees, east positive.",
-            "location.elevationMeters" =>
-                $"Elevation must be a number between {ManualDeploymentLocationContract.MinimumElevationMeters:F0} "
-                + $"and {ManualDeploymentLocationContract.MaximumElevationMeters:F0} metres.",
-            "location.timeZoneId" =>
-                "Time zone must be an IANA identifier this host can resolve, such as America/Phoenix or UTC.",
+            { Group: CameraAgentSettingsCatalogue.LocationGroup, Type: CameraAgentSettingType.Number } coordinate =>
+                coordinate.NumberRule,
+            { Group: CameraAgentSettingsCatalogue.LocationGroup } zone => zone.Check(string.Empty)
+                ?? "The coordinate entry was rejected before anything durable changed.",
             _ => "The coordinate entry was rejected before anything durable changed."
         };
     }

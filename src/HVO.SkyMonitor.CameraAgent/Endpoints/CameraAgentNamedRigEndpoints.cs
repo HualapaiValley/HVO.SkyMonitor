@@ -19,7 +19,7 @@ internal static class CameraAgentNamedRigEndpoints
         {
             if (!HttpMethods.IsPost(context.HttpContext.Request.Method))
                 return await next(context).ConfigureAwait(false);
-            if (context.HttpContext.Features.Get<IAntiforgeryValidationFeature>()?.IsValid != true)
+            if (!CameraAgentCredentialAccess.IsForgeryProtected(context.HttpContext))
                 return Results.Problem(statusCode: StatusCodes.Status400BadRequest,
                     title: "The rig profile request is invalid.");
             return await next(context).ConfigureAwait(false);

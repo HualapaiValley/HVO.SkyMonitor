@@ -28,11 +28,11 @@ public sealed class SettingsFileSiteProfileStore(
     ILogger<SettingsFileSiteProfileStore> logger,
     OperatorSettingsFile? settingsFile = null) : ISiteProfileStore, IDisposable
 {
-    internal const string SectionKey = "CameraAgent:Site";
-    internal const string ObservatoryNameKey = SectionKey + ":ObservatoryName";
-    internal const string CameraNameKey = SectionKey + ":CameraName";
-    internal const string OwnerNameKey = SectionKey + ":OwnerName";
-    internal const string OwnerContactKey = SectionKey + ":OwnerContact";
+    public const string SectionKey = "CameraAgent:Site";
+    public const string ObservatoryNameKey = SectionKey + ":ObservatoryName";
+    public const string CameraNameKey = SectionKey + ":CameraName";
+    public const string OwnerNameKey = SectionKey + ":OwnerName";
+    public const string OwnerContactKey = SectionKey + ":OwnerContact";
     internal const string InstallerNameKey = "CameraAgent:DisplayName";
     internal const string MigrationActor = "site-profile-migration";
 
