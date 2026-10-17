@@ -118,7 +118,9 @@ internal sealed class CameraAgentStateStoreHarness : IDisposable
 
     /// <summary>
     /// The complete schema of a store as the previous release's exact validators see it: every object's type, owning
-    /// table and SQL (whitespace-normalized), plus the user version.
+    /// table and SQL (whitespace-normalized), the user version, and the rows that record the store's version, since a
+    /// version kept in a row (a <c>*_schema</c> or <c>*_metadata</c> table's version column, or the EF migration
+    /// history) can change without any DDL changing.
     /// </summary>
     public static SortedDictionary<string, string> ReadSchema(string path)
     {
@@ -129,16 +131,53 @@ internal sealed class CameraAgentStateStoreHarness : IDisposable
             version.CommandText = "PRAGMA user_version;";
             schema["pragma:user_version"] = Convert.ToString(version.ExecuteScalar(), CultureInfo.InvariantCulture)!;
         }
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name;";
-        using var reader = command.ExecuteReader();
-        while (reader.Read())
+        var tables = new List<string>();
+        using (var command = connection.CreateCommand())
         {
-            schema[$"{reader.GetString(0)}:{reader.GetString(1)}"] =
-                $"{reader.GetString(2)}|{(reader.IsDBNull(3) ? string.Empty : Normalize(reader.GetString(3)))}";
+            command.CommandText = "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name;";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                schema[$"{reader.GetString(0)}:{reader.GetString(1)}"] =
+                    $"{reader.GetString(2)}|{(reader.IsDBNull(3) ? string.Empty : Normalize(reader.GetString(3)))}";
+                if (reader.GetString(0) == "table") tables.Add(reader.GetString(1));
+            }
+        }
+        foreach (var table in tables)
+        {
+            foreach (var column in Columns(connection, table).Where(column => IsVersionColumn(table, column)))
+            {
+                using var values = connection.CreateCommand();
+#pragma warning disable CA2100 // Table and column names come from sqlite_schema and are quoted as identifiers.
+                values.CommandText = $"SELECT DISTINCT CAST({Quote(column)} AS TEXT) FROM {Quote(table)} ORDER BY 1;";
+#pragma warning restore CA2100
+                using var reader = values.ExecuteReader();
+                var recorded = new List<string>();
+                while (reader.Read()) recorded.Add(reader.IsDBNull(0) ? "NULL" : reader.GetString(0));
+                schema[$"version:{table}.{column}"] = string.Join(",", recorded);
+            }
         }
         return schema;
     }
+
+    private static bool IsVersionColumn(string table, string column)
+        => table == "__EFMigrationsHistory"
+            ? column == "MigrationId"
+            : (table.EndsWith("_schema", StringComparison.Ordinal) || table.EndsWith("_metadata", StringComparison.Ordinal)) &&
+              column is "version" or "schema_version";
+
+    private static List<string> Columns(SqliteConnection connection, string table)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT name FROM pragma_table_info($table);";
+        command.Parameters.AddWithValue("$table", table);
+        using var reader = command.ExecuteReader();
+        var columns = new List<string>();
+        while (reader.Read()) columns.Add(reader.GetString(0));
+        return columns;
+    }
+
+    private static string Quote(string identifier) => $"\"{identifier.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
 
     /// <summary>The objects whose definitions differ between two schemas, by key.</summary>
     public static IReadOnlyList<string> Differences(

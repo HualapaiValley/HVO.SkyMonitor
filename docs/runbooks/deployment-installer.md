@@ -1663,14 +1663,15 @@ first, remove in a later release. The unit test `PreviousReleaseStoreReadability
 store to it. `tests/fixtures/state-compatibility/previous-release/` freezes each of the previous release's stores as a
 SQL image at the location the instance keeps it, for the storage roots the fixture's `manifest.json` names. Each image
 holds every table, its metadata rows, every index, trigger and view, and the user version. Every CameraAgent store
-validates its own schema exactly, so the test compares the complete schema object by object as normalized SQL. It fails
-in either of two cases:
+validates its own schema exactly, so the test compares the complete schema object by object as normalized SQL. It also
+compares the rows that record a store's version: the version column of a `*_schema` or `*_metadata` table, and the EF
+migration history. It fails in either of two cases:
 
 - the stores the current code creates differ from the images;
 - the previous release's stores, once the current code has opened and migrated them, differ from the images.
 
-A processing table gaining a column while `capture_processing_schema` stays at 8 fails it, and so does a new table,
-index or column in any other store, or a changed user version. The fixture changes only in the release pull request
+A processing table gaining a column while `capture_processing_schema` stays at 8 fails it. So does a new table, index
+or column in any other store, a changed user version, a fleet `schema_version` bump, or an added EF migration. The fixture changes only in the release pull request
 that cuts a version (`HVO_WRITE_PREVIOUS_RELEASE_FIXTURES` regenerates it). A change that cannot meet the rule is
 declared in the fixture's `snapshotRollbackExceptions`, naming:
 

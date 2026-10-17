@@ -13,7 +13,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.State;
 /// previous release's stores are frozen as SQL images in <c>tests/fixtures/state-compatibility/previous-release</c>:
 /// every table, its fresh metadata rows, every index, trigger and view, and the user version, at the location an
 /// instance keeps the store, for the storage roots the manifest names. Every CameraAgent store validates its own
-/// schema exactly, so the expectation is the complete schema, compared object by object.
+/// schema exactly, so the expectation is the complete schema, compared object by object, together with the rows that
+/// record a store's version.
 /// </para>
 /// <para>
 /// Two directions are checked. The stores this release creates must be exactly the previous release's. And the
@@ -77,9 +78,12 @@ public sealed class PreviousReleaseStoreReadabilityTests
     [DataRow("raw/.fleet/fleet-status.db", "ALTER TABLE fleet_status_records ADD COLUMN added_by_next_release TEXT;")]
     [DataRow("archive/outbox/artifact-outbox.db", "CREATE INDEX ix_added_by_next_release ON artifact_outbox_records(record_id);")]
     [DataRow("identity/cameraagent_identity.db", "ALTER TABLE AspNetUsers ADD COLUMN added_by_next_release TEXT;")]
+    [DataRow("raw/.fleet/fleet-status.db", "UPDATE fleet_status_metadata SET schema_version = schema_version + 1;")]
+    [DataRow("identity/cameraagent_identity.db", "INSERT INTO \"__EFMigrationsHistory\" VALUES('29990101000000_AddedByNextRelease', '10.0.13');")]
     public async Task TheRuleRefusesAStoreThePreviousReleaseWouldReject(string location, string change)
     {
-        // The check bites, including a processing table gaining a column while the processing schema stays at 8.
+        // The check bites, including a processing table gaining a column while the processing schema stays at 8, and a
+        // version kept in a row changing while no DDL does.
         ArgumentNullException.ThrowIfNull(location);
         var previous = PreviousRelease.Load();
         using var harness = CameraAgentStateStoreHarness.Create(previous.StorageRoots);
