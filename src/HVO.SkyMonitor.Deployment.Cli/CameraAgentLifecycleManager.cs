@@ -473,11 +473,12 @@ internal sealed class CameraAgentLifecycleManager
         catch (Exception exception) when (!request.DryRun && exception is not OperationCanceledException)
         {
             // Every gate between the journal entry above and the mutation record (release label agreement, the
-            // already-active and contract checks, the state preflight, the owner-state read, Compose staging) runs
-            // before the instance is touched. A refusal there is settled as terminal so the journal never reports a
-            // running operation that never started, which would otherwise block rollback, uninstall, and any other
-            // upgrade behind a --resume the same gate would refuse again. A cancellation is not a refusal: its
-            // unmutated journal stays resumable and, like any unmutated record, never blocks another operation.
+            // already-active and contract checks, the state preflight, the migration assertion, the owner-state read,
+            // Compose staging) runs before the instance is touched. A refusal there is settled as terminal so the
+            // journal never reports a running operation that never started, which would otherwise block rollback,
+            // uninstall, and any other upgrade behind a --resume the same gate would refuse again. A cancellation is
+            // not a refusal: its unmutated journal stays resumable and, like any unmutated record, never blocks
+            // another operation.
             await SettleRefusedOperationAsync(paths, operation, exception).ConfigureAwait(false);
             throw;
         }
@@ -591,10 +592,6 @@ internal sealed class CameraAgentLifecycleManager
             throw new InstallerException("The candidate image does not declare the required CameraAgent configuration and catalog contracts.");
         }
         CameraAgentInstaller.EnsureImageSupportsCatalog(candidate, manifest.Catalog.CatalogId);
-        if (!rollback && !request.MigrationBackwardCompatible)
-        {
-            throw new InstallerException("The candidate does not declare backward-compatible state migration; an explicit transactional restore path is required.");
-        }
         if (!rollback && !CameraAgentStateContract.IsCurrent(candidate.UpgradeCompatibility))
         {
             throw new InstallerException(
@@ -628,6 +625,19 @@ internal sealed class CameraAgentLifecycleManager
             rollback ? CameraAgentStateContractPolicy.AllowLegacy : CameraAgentStateContractPolicy.RequireCurrent,
             signedImage?.Release.Tag)
             .ConfigureAwait(false);
+        // The preflight has proved the persisted state readable and within the candidate's boundaries, so what remains
+        // is whether the candidate changes that state. A failed candidate is restored by starting the prior image on
+        // the state it leaves behind, so a migration needs the operator's assertion; an unchanged contract does not.
+        if (!rollback && !request.MigrationBackwardCompatible)
+        {
+            var migration = CameraAgentStateMigration.DeclaredChanges(
+                paths, manifest.Image, manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility, candidate);
+            if (migration.Count > 0)
+            {
+                throw new InstallerException(
+                    $"The candidate declares a CameraAgent state migration ({string.Join("; ", migration)}). A failed candidate is restored onto the state it leaves behind, so an explicit transactional restore path is required; pass --migration-backward-compatible only when the prior image can read the migrated state.");
+            }
+        }
         if (operation.CandidateImage is not null && operation.CandidateImage != candidate)
             throw new InstallerException("The retained image operation has a different candidate identity.");
         operation = operation with
@@ -719,12 +729,11 @@ internal sealed class CameraAgentLifecycleManager
             : ReplaceEnvironmentValue(originalEnvironment, "CAMERAAGENT_IMAGE", candidate.ImageId);
         var stagedEnvironment = Path.Combine(operationRoot, "candidate.env");
         var stagedCompose = Path.Combine(operationRoot, "candidate-compose.yml");
+        var sourceCompose = rollback
+            ? await File.ReadAllTextAsync(retainedRollbackCompose, cancellationToken).ConfigureAwait(false)
+            : originalCompose;
         SafeFileSystem.WriteTextAtomic(stagedEnvironment, candidateEnvironment);
-        SafeFileSystem.WriteTextAtomic(
-            stagedCompose,
-            rollback
-                ? await File.ReadAllTextAsync(retainedRollbackCompose, cancellationToken).ConfigureAwait(false)
-                : originalCompose);
+        SafeFileSystem.WriteTextAtomic(stagedCompose, sourceCompose);
         var candidateCompose = compose with { ComposeFile = stagedCompose, EnvironmentFile = stagedEnvironment };
         var renderedCandidate = await docker.ComposeAsync(
             candidateCompose.ComposeFile, candidateCompose.EnvironmentFile, candidateCompose.ProjectName, ["config"], cancellationToken)
@@ -732,6 +741,23 @@ internal sealed class CameraAgentLifecycleManager
         var candidateComposeSha256 = ComposeDeployment.ComputeSha256(renderedCandidate.StandardOutput);
         if (rollback && candidateComposeSha256 != manifest.PreviousComposeModelSha256)
             throw new InstallerException("The retained rollback Compose model differs from its authenticated identity.");
+        // An upgrade moves each CameraAgent limit the operator did not set to this installer's default, which is how an
+        // instance that records no limits leaves the original 1 CPU and 1 GiB. A rollback keeps the limits the instance
+        // records, so the previous image never returns to limits the instance has left. The retained rollback file was
+        // authenticated above, before its limits are replaced.
+        var candidateResources = rollback ? manifest.Resources : CameraAgentContainerResources.UpgradeTarget(manifest.Resources);
+        var limitedCompose = CameraAgentContainerResources.WithLimits(
+            sourceCompose,
+            candidateResources ?? CameraAgentContainerResources.Legacy,
+            rollback ? null : manifest.Resources ?? CameraAgentContainerResources.Legacy);
+        if (!string.Equals(limitedCompose, sourceCompose, StringComparison.Ordinal))
+        {
+            SafeFileSystem.WriteTextAtomic(stagedCompose, limitedCompose);
+            renderedCandidate = await docker.ComposeAsync(
+                candidateCompose.ComposeFile, candidateCompose.EnvironmentFile, candidateCompose.ProjectName, ["config"], cancellationToken)
+                .ConfigureAwait(false);
+            candidateComposeSha256 = ComposeDeployment.ComputeSha256(renderedCandidate.StandardOutput);
+        }
         var baseAddress = installationResult.Url;
         var lifecycle = CreateLifecycleClient(baseAddress, lifecycleClientFactory);
         var candidateLifecycle = lifecycle;
@@ -858,6 +884,7 @@ internal sealed class CameraAgentLifecycleManager
                 UpgradeCompatibility = candidate.UpgradeCompatibility ?? "requires-declared-compatible-migration",
                 LifecycleControlTokenSha256 = ComposeDeployment.ComputeSha256(lifecycleControlToken),
                 PreviousComposeModelSha256 = manifest.ComposeModelSha256,
+                Resources = candidateResources,
                 LastLifecycleOperationId = operation.OperationId,
                 UpdatedUtc = DateTimeOffset.UtcNow
             };
@@ -1961,6 +1988,7 @@ internal sealed class CameraAgentLifecycleManager
             !HasValue(manifest.RigProfileVersion) || !HasValue(manifest.ScheduleSchemaVersion) ||
             !HasValue(manifest.ScheduleState) || !IsSha256(manifest.InstallationVerificationTokenSha256) ||
             !IsSha256(manifest.ComposeModelSha256) || !IsValidCatalog(manifest.Catalog) ||
+            manifest.Resources is not null && !CameraAgentContainerResources.IsValid(manifest.Resources) ||
             !CameraAgentImageContract.SupportsCatalog(manifest.Image?.CatalogContract, manifest.Catalog.CatalogId) ||
             manifest.Catalog.InstallRoot != Path.Combine(manifest.ProductRoot, "catalogs", manifest.Catalog.CatalogId) ||
             !IsSha256(manifest.LifecycleControlTokenSha256) ||

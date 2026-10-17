@@ -70,6 +70,8 @@ public sealed class ProgramOutputTests
           --elevation <value>
           --time-zone <value>
           --replay-profile <value>
+          --cpus <value>
+          --memory <value>
           --dry-run
           --resume
           --json

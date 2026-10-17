@@ -41,7 +41,7 @@ Horizons and table order express portfolio priority, not contributor ownership
 or repository-wide implementation slots. An assigned developer owns the complete
 issue lifecycle and records the claim on that issue as defined in AGENTS.md.
 Technical dependencies and explicit scope exclusions remain binding. The approved
-multi-developer rollout [#847](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/847)
+multi-developer rollout [#847](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/847)
 authorizes the independent scopes below and removes their scheduling-only holds;
 it does not grant ownership of an already claimed issue or blanket activation of
 Research, Deferred, or other unapproved work. Start authorization is separate from
@@ -56,11 +56,11 @@ and remaining product outcomes retain their scope under Next.
 
 Standalone CameraAgent completion (`RM-017`) is Delivered. Its retained follow-ups
 are ordinary component issues, not an initiative: the real Phase 14 import at the
-pinned head ([#971](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/971),
+pinned head ([#971](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/971),
 dependency-ready after [#981](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/981)),
 with the closed replay-evidence projection
-([#973](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/973)) and #197 summary
-schema bump ([#974](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/974))
+([#973](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/973)) and #197 summary
+schema bump ([#974](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/974))
 retained as delivered history.
 Shared CI, architecture-test, or combined-fixture changes still require affected
 regression evidence, but that evidence does not transfer product ownership between
@@ -71,14 +71,14 @@ hosts. The detailed provider decision and support envelope are recorded in
 
 | ID | Initiative | Outcome | Owning epic or issue | Dependencies and boundary |
 | --- | --- | --- | --- | --- |
-| `RM-018` | LogicHost network operations and distribution | Complete LogicHost as an independently validated and released central multi-observatory product, including immutable CameraAgent execution-evidence import, protected observatory and logical-camera workspaces, signed LogicHost lifecycle distribution, and exact-digest optional two-host acceptance. | [Epic #531](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/531) | The standalone qualification gate (`RM-017`) is satisfied. #847 authorizes #538 importer work consuming delivered #537, independent #855 API/UI discovery for #539 separate from imported views, and independent #856 packaging preparation for #540 only. It consumes stable CameraAgent and shared contracts without reopening CameraAgent features or making LogicHost part of acquisition correctness. The final `RM-016` storage disposition is recorded below; #499 closes after its reviewed documentation closeout. That satisfies the storage release gate while #538–#541 retain their own implementation and exact-artifact acceptance. `RM-016` is not absorbed into this initiative. |
+| `RM-018` | LogicHost network operations and distribution | Complete LogicHost as an independently validated and released central multi-observatory product, including immutable CameraAgent execution-evidence import, protected observatory and logical-camera workspaces, signed LogicHost lifecycle distribution, and exact-digest optional two-host acceptance. | [Epic #531](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/531) | The standalone qualification gate (`RM-017`) is satisfied. #847 authorizes #538 importer work consuming delivered #537, independent #855 API/UI discovery for #539 separate from imported views, and independent #856 packaging preparation for #540 only. It consumes stable CameraAgent and shared contracts without reopening CameraAgent features or making LogicHost part of acquisition correctness. The final `RM-016` storage disposition is recorded below; #499 closes after its reviewed documentation closeout. That satisfies the storage release gate while #538–#541 retain their own implementation and exact-artifact acceptance. `RM-016` is not absorbed into this initiative. |
 
 The deferred CameraAgent storage/upload naming cleanup
-[#142](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/142) inherits
+[#142](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/142) inherits
 delivered `RM-004`. Its #433 vocabulary prerequisite is complete, but the
 naming-only residual is not approved for automatic start.
 
-Celestial-fidelity epic [#520](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/520)
+Celestial-fidelity epic [#520](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/520)
 inherits delivered `RM-001`. Its delivered foundation is retained history:
 the bounded virtual astrometry and optical-calibration milestone
 [#1098](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1098) (#1100-#1106),
@@ -97,15 +97,15 @@ The operator then
 as an opt-in queue targeting `development/v1`: whole-pipeline performance
 [#1170](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1170), projection
 families [#1126](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1126),
-measured associations [#526](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/526),
-astrometry recipes and calculators [#523](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/523),
+measured associations [#526](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/526),
+astrometry recipes and calculators [#523](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/523),
 deeper HYG selections [#1167](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1167),
 long exposures [#1168](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1168),
 registered stacking [#1169](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1169),
-Sun and Moon footprints [#518](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/518),
-HYG 4.4 [#521](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/521), OpenNGC
-[#525](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/525) and extended
-deep-sky rendering [#524](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/524).
+Sun and Moon footprints [#518](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/518),
+HYG 4.4 [#521](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/521), OpenNGC
+[#525](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/525) and extended
+deep-sky rendering [#524](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/524).
 This activation keeps the technical dependencies (#526 before #523; #523 and
 #1168 before #1169; #521 and #518 before #525, then #524), existing claims,
 per-issue claims and the draft-first review cycle. It does not change unrelated
@@ -142,10 +142,10 @@ the deferred features. Physical qualification remains separate.
 
 | ID | Initiative | Outcome | Owning epic or issue | Dependencies and boundary |
 | --- | --- | --- | --- | --- |
-| `RM-006` | Certified processing extension platform | Add signed, versioned extension lifecycle and a bounded external-processing bridge without exposing host infrastructure or weakening reproducibility. | [#140](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/140) | Consumes layered producer/compositor/encoder contracts from `RM-004` and complements, but does not duplicate, `RM-005` runners. |
-| `RM-007` | Native camera artifacts and pluggable formats | Preserve camera-native and proprietary source bytes, decode them into canonical processing frames, and produce versioned scientific, display, and export formats. | [#141](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/141) | Builds on certified extensions and layered composition. It does not identify demosaiced, corrected, or lossy data as raw evidence. |
-| `RM-015` | Production multichannel notifications | Add production transactional email and SMS delivery, durable LogicHost in-app notifications, and optional bounded CameraAgent notifications. | [Epic #455](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/455) | Selects providers and CameraAgent delivery topology through an explicit decision checkpoint. Mailpit remains development/test-only and is excluded from official release installation; standalone CameraAgent correctness never depends on notifications, LogicHost, or an external provider. |
-| `RM-019` | Remote and cloud object-storage profiles | Add independently qualified remote-filesystem, external S3, and native Azure Blob profiles behind LogicHost `IObjectStore` for larger LAN and cloud deployments. | [Epic #588](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/588); [#589](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/589)-[#591](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/591) | vNext after the `RM-016` application contract and local topology stabilize. It does not block `RM-016` or the first `RM-018` release. Each provider and topology requires independent security, recovery, backup, observability, and performance evidence; a same-host qualification does not certify NFS, SMB, NAS, or a remote service. |
+| `RM-006` | Certified processing extension platform | Add signed, versioned extension lifecycle and a bounded external-processing bridge without exposing host infrastructure or weakening reproducibility. | [#140](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/140) | Consumes layered producer/compositor/encoder contracts from `RM-004` and complements, but does not duplicate, `RM-005` runners. |
+| `RM-007` | Native camera artifacts and pluggable formats | Preserve camera-native and proprietary source bytes, decode them into canonical processing frames, and produce versioned scientific, display, and export formats. | [#141](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/141) | Builds on certified extensions and layered composition. It does not identify demosaiced, corrected, or lossy data as raw evidence. |
+| `RM-015` | Production multichannel notifications | Add production transactional email and SMS delivery, durable LogicHost in-app notifications, and optional bounded CameraAgent notifications. | [Epic #455](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/455) | Selects providers and CameraAgent delivery topology through an explicit decision checkpoint. Mailpit remains development/test-only and is excluded from official release installation; standalone CameraAgent correctness never depends on notifications, LogicHost, or an external provider. |
+| `RM-019` | Remote and cloud object-storage profiles | Add independently qualified remote-filesystem, external S3, and native Azure Blob profiles behind LogicHost `IObjectStore` for larger LAN and cloud deployments. | [Epic #588](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/588); [#589](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/589)-[#591](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/591) | vNext after the `RM-016` application contract and local topology stabilize. It does not block `RM-016` or the first `RM-018` release. Each provider and topology requires independent security, recovery, backup, observability, and performance evidence; a same-host qualification does not certify NFS, SMB, NAS, or a remote service. |
 
 For `RM-018`, imported API/UI views integrate only after the #538 importer
 contracts and evidence are available; independent #855 discovery for #539 does not
@@ -159,19 +159,19 @@ preparation nor a combined run substitutes for standalone qualification.
 
 | ID | Initiative | Decision outcome | Owning issue | Boundary |
 | --- | --- | --- | --- | --- |
-| `RM-008` | Stream-native fireball detection V2 | Produce a reviewed design for buffered streams, temporal evidence, event promotion, clips/stills, and optional accelerated or external assessment. | [#143](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/143) | Research and issue decomposition only; no production implementation or physical sensitivity claim is committed. |
-| `RM-009` | Physical environmental source acquisition | Define CameraAgent-local adapters, schedules, provenance, health, and evidence for weather stations, sky-temperature sensors, SQM devices, and online providers. | [#158](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/158) | No hardware vendor or online provider is selected. LogicHost does not poll local devices or become part of acquisition correctness. |
+| `RM-008` | Stream-native fireball detection V2 | Produce a reviewed design for buffered streams, temporal evidence, event promotion, clips/stills, and optional accelerated or external assessment. | [#143](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/143) | Research and issue decomposition only; no production implementation or physical sensitivity claim is committed. |
+| `RM-009` | Physical environmental source acquisition | Define CameraAgent-local adapters, schedules, provenance, health, and evidence for weather stations, sky-temperature sensors, SQM devices, and online providers. | [#158](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/158) | No hardware vendor or online provider is selected. LogicHost does not poll local devices or become part of acquisition correctness. |
 
 ## Deferred
 
 | ID | Initiative | Retained outcome | Owning issue | Reason deferred |
 | --- | --- | --- | --- | --- |
-| `RM-010` | Production profiling and observability operations | Add bounded always-on signals and a secure escalation path to short .NET/Linux profiling with measured telemetry overhead. | [#244](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/244) | Existing evidence is sufficient for current delivery; broad profiling remains low priority unless an active defect requires a focused prerequisite. |
-| `RM-012` | Physical camera soak and USB qualification | Produce sustained matched ARM64/x64 acquisition and multi-camera USB isolation evidence or a deterministic failing-layer diagnosis. | [#288](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/288) | Requires suitable physical hardware, stable power/cooling, and controlled USB topology. |
-| `RM-013` | Native ARM64 CI evidence | Add advisory native Linux ARM64 build, publish, container, catalog, and VirtualSky smoke evidence before deciding whether it becomes required. | [#381](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/381) | Depends on available native runner capacity and remains advisory until measured evidence supports a required gate. |
+| `RM-010` | Production profiling and observability operations | Add bounded always-on signals and a secure escalation path to short .NET/Linux profiling with measured telemetry overhead. | [#244](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/244) | Existing evidence is sufficient for current delivery; broad profiling remains low priority unless an active defect requires a focused prerequisite. |
+| `RM-012` | Physical camera soak and USB qualification | Produce sustained matched ARM64/x64 acquisition and multi-camera USB isolation evidence or a deterministic failing-layer diagnosis. | [#288](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/288) | Requires suitable physical hardware, stable power/cooling, and controlled USB topology. |
+| `RM-013` | Native ARM64 CI evidence | Add advisory native Linux ARM64 build, publish, container, catalog, and VirtualSky smoke evidence before deciding whether it becomes required. | [#381](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/381) | Depends on available native runner capacity and remains advisory until measured evidence supports a required gate. |
 
-Deferred validation follow-ups [#252](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/252)
-and [#262](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/262)
+Deferred validation follow-ups [#252](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/252)
+and [#262](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/262)
 inherit `RM-001`; they validate delivered boundaries and are not separate
 portfolio initiatives.
 
@@ -180,14 +180,14 @@ portfolio initiatives.
 | ID | Initiative | Delivered outcome | Owning epic or issues |
 | --- | --- | --- | --- |
 | `RM-016` | Provider-neutral LogicHost object storage | Delivered the provider-neutral `IObjectStore` boundary, host-neutral filesystem primitives, qualified one-writer native Linux same-host ext4 profile and supported filesystem deployment/fixture adoption without MinIO server/control-plane ownership. The [final qualification disposition](validation/logichost-filesystem-qualification-586.md#final-disposition) preserves exact measurement/image identities and topology limits. Optional #587 and future RM-019 profiles are separate. | [Epic #499](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/499); #584, #592, #585, #586 and #506 are closed. |
-| `RM-001` | Virtual-first SkyMonitor platform | Standalone CameraAgent plus optional reconstructable LogicHost processing, weather/cloud/transient workflows, UI, recovery, and production-readiness foundations. | [Epic #89](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/89). Nested epics #59, #60, #62, #64, #65, #109, #205, and #243 inherit this ID. |
-| `RM-002` | Deferred Phase 14 evidence campaign | Imported, executed, aggregated, and dispositioned exhaustive evidence without reopening virtual-first completion. | [#305](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/305); children #318-#322 inherit this ID. |
-| `RM-003` | Installable and lifecycle-managed deployment | Delivered multi-instance-safe persistent layout, a self-contained installer, transactional upgrade/rollback/uninstall, and signed release/catalog distribution without adding physical-camera discovery or vendor SDK installation. | [#414](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/414), [#415](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/415), [#416](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/416), and [#417](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/417) |
-| `RM-005` | Local-first processing graphs and distributed runners | Delivered CameraAgent edge processing graphs, central graph execution, processing-runner-v1 with the self-hosted runner, fair scheduling and entitlements, and elastic provider boundaries with the local-process adapter; the LogicHost-only test and heterogeneous-fleet follow-ups #632, #854, and #613 are dispositioned. | [Epic #421](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/421); children #422-#430 |
-| `RM-004` | Canonical layered capture products | Delivered immutable base imagery, durable projected scenes and analytical layers, deterministic on-demand presentation, and explicit materialization across standalone CameraAgent and LogicHost. | [Epic #436](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/436); CameraAgent PR #454 and LogicHost PR #456 |
-| `RM-011` | Direct ZWO camera enablement | Added the optional direct ZWO CameraAgent adapter and retained Linux x64 ASI178MC and ARM64 ASI676MC functional deployment evidence. | [#265](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/265), [#266](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/266), and [#267](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/267) |
-| `RM-017` | Standalone CameraAgent product completion | Delivered the standalone-complete acceptance record: campaign `issue-211-final-20260922T033329Z` generation 1 on head `8388002ce69aa1fa194e7644bd8f35352ac10acf` with `acceptanceReady=true` (five W6 trials, Mono8, both W6 replay profiles, #197 dual-agent, four component lanes, exact-head protected CI, zero central traffic), assembled by the #961 tooling, validated by the #535 final-head validator, and published as an immutable owner-private generation. Epic #513 and milestone 2 are closed. | [Epic #513](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/513); [#535](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/535); [Standalone CameraAgent Product Completion milestone](https://github.com/RoySalisbury/HVO.SkyMonitor/milestone/2) |
-| `RM-014` | CameraAgent presentation experience | Delivered an authenticated image-led current view, accessible presentation-first capture detail and enlargement, bounded archive browsing, and a separate retained technical operations workspace. | [Epic #438](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/438); design checkpoint PR #453 |
+| `RM-001` | Virtual-first SkyMonitor platform | Standalone CameraAgent plus optional reconstructable LogicHost processing, weather/cloud/transient workflows, UI, recovery, and production-readiness foundations. | [Epic #89](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/89). Nested epics #59, #60, #62, #64, #65, #109, #205, and #243 inherit this ID. |
+| `RM-002` | Deferred Phase 14 evidence campaign | Imported, executed, aggregated, and dispositioned exhaustive evidence without reopening virtual-first completion. | [#305](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/305); children #318-#322 inherit this ID. |
+| `RM-003` | Installable and lifecycle-managed deployment | Delivered multi-instance-safe persistent layout, a self-contained installer, transactional upgrade/rollback/uninstall, and signed release/catalog distribution without adding physical-camera discovery or vendor SDK installation. | [#414](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/414), [#415](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/415), [#416](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/416), and [#417](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/417) |
+| `RM-005` | Local-first processing graphs and distributed runners | Delivered CameraAgent edge processing graphs, central graph execution, processing-runner-v1 with the self-hosted runner, fair scheduling and entitlements, and elastic provider boundaries with the local-process adapter; the LogicHost-only test and heterogeneous-fleet follow-ups #632, #854, and #613 are dispositioned. | [Epic #421](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/421); children #422-#430 |
+| `RM-004` | Canonical layered capture products | Delivered immutable base imagery, durable projected scenes and analytical layers, deterministic on-demand presentation, and explicit materialization across standalone CameraAgent and LogicHost. | [Epic #436](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/436); CameraAgent PR #454 and LogicHost PR #456 |
+| `RM-011` | Direct ZWO camera enablement | Added the optional direct ZWO CameraAgent adapter and retained Linux x64 ASI178MC and ARM64 ASI676MC functional deployment evidence. | [#265](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/265), [#266](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/266), and [#267](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/267) |
+| `RM-017` | Standalone CameraAgent product completion | Delivered the standalone-complete acceptance record: campaign `issue-211-final-20260922T033329Z` generation 1 on head `8388002ce69aa1fa194e7644bd8f35352ac10acf` with `acceptanceReady=true` (five W6 trials, Mono8, both W6 replay profiles, #197 dual-agent, four component lanes, exact-head protected CI, zero central traffic), assembled by the #961 tooling, validated by the #535 final-head validator, and published as an immutable owner-private generation. Epic #513 and milestone 2 are closed. | [Epic #513](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/513); [#535](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/535); [Standalone CameraAgent Product Completion milestone](https://github.com/HualapaiValley/HVO.SkyMonitor/milestone/2) |
+| `RM-014` | CameraAgent presentation experience | Delivered an authenticated image-led current view, accessible presentation-first capture detail and enlargement, bounded archive browsing, and a separate retained technical operations workspace. | [Epic #438](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/438); design checkpoint PR #453 |
 
 Delivered does not imply broader physical calibration or field-performance
 acceptance; `RM-017`'s completion statement excludes physical field qualification

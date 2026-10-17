@@ -146,6 +146,19 @@ public sealed record DockerDaemonIdentity(
     string Architecture,
     string ServerVersion);
 
+/// <summary>
+/// The CameraAgent container's Compose resource limits recorded with an instance. A limit the operator did not set
+/// follows the installer default, so an upgrade moves it to the upgrading installer's default; a limit the operator
+/// set is kept. A manifest written before this record existed carries none: that instance runs the original
+/// 1 CPU, 1 GiB and 256 PID limits, which no operator could set.
+/// </summary>
+public sealed record ContainerResourceLimits(
+    decimal Cpus,
+    long MemoryBytes,
+    int PidsLimit,
+    bool CpusSetByOperator,
+    bool MemorySetByOperator);
+
 public sealed record InstanceManifest(
     int SchemaVersion,
     string Product,
@@ -192,7 +205,8 @@ public sealed record InstanceManifest(
     DateTimeOffset? UpdatedUtc = null,
     string? LifecycleControlTokenSha256 = null,
     string? PreviousComposeModelSha256 = null,
-    CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess);
+    CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess,
+    ContainerResourceLimits? Resources = null);
 
 public sealed record LifecycleOperationState(
     int SchemaVersion,
@@ -317,6 +331,19 @@ public sealed record InstallationState(
     string? FailureCode = null,
     string? FailureMessage = null);
 
+/// <summary>
+/// An advisory condition the installer found that does not refuse the installation, such as a Docker host with less
+/// memory than the CameraAgent memory limit.
+/// </summary>
+/// <param name="Code">The stable code of the finding, for example <c>docker-host-memory-below-limit</c>.</param>
+/// <param name="Message">What was observed, what was expected, and the remedy.</param>
+public sealed record InstallationWarning(string Code, string Message);
+
+/// <summary>
+/// The outcome of <c>cameraagent install</c> or its dry run. The installer retains it as
+/// <c>state/deployment/installation-result.json</c> without its warnings: they describe the host one invocation
+/// evaluated, so only the result that invocation reports carries them.
+/// </summary>
 public sealed record InstallationResult(
     int SchemaVersion,
     InstallationOutcome Outcome,
@@ -354,4 +381,6 @@ public sealed record InstallationResult(
     string OwnerBootstrapState,
     DateTimeOffset CompletedUtc,
     CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess,
-    bool OwnerPasswordIsDefault = false);
+    bool OwnerPasswordIsDefault = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<InstallationWarning>? Warnings = null);
