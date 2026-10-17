@@ -104,8 +104,9 @@ gh api -X PATCH repos/HualapaiValley/HVO.SkyMonitor \
   -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled'
 ```
 
-If a workflow later creates `v*` tags, for example for integration pre-releases
-(#1309), add its actor as a ruleset bypass at that time.
+The [integration pre-release workflow](runbooks/prereleases.md) creates no tags:
+the owner pushes them, so it needs no bypass. If a workflow later creates `v*`
+tags, add its actor as a ruleset bypass at that time.
 
 ## Review
 
@@ -135,3 +136,5 @@ It can be run on demand with `gh workflow run promote-main.yml`.
 ## Deployment
 
 Supported deployment operations use `HVO.SkyMonitor.Deployment.Cli`. Development v1 CI does not perform deployment, release packaging, complete integration qualification, coverage aggregation, or production mutation.
+
+An annotated `vX.Y.Z-dev.<n>` tag that the owner pushes on a green `development/v1` commit publishes an integration pre-release for smoke testing; see [Integration Pre-releases](runbooks/prereleases.md).

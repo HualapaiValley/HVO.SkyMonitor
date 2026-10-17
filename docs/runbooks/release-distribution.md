@@ -1,5 +1,12 @@
 # Signed Distribution Releases
 
+> **Retired.** The owner retired SkyMonitor's key-signed manifests and indexes on 2026-10-16 (install contract
+> section 10). The installer no longer reads them: it installs from a release's `release.json` and `SHA256SUMS`
+> ([deployment-installer.md](deployment-installer.md#release-install)), and integration pre-releases are published
+> as [prereleases.md](prereleases.md) describes. The signing workflow, release tool commands and bootstrap script this
+> runbook describes stay in the repository until [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310)
+> replaces them with the final-release workflow.
+
 ## HVO Install Contract
 
 The shared [HVO product installation and release contract](../hvo-install-contract.md)
@@ -12,10 +19,10 @@ runbook describes the current release design; no release has been published yet.
 | Contract | Today | Issue |
 | --- | --- | --- |
 | One product version, `VersionPrefix` in `Directory.Build.props`, tagged `vX.Y.Z` on `main`; catalogs keep their own train | Independent installer, catalog, and image trains, each with its own version, tags, and signed index sequence | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
-| Integration pre-releases `vX.Y.Z-dev.<n>` from `development/v1` | None | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309) |
+| Integration pre-releases `vX.Y.Z-dev.<n>` from `development/v1` | Published by `.github/workflows/prerelease.yml` from the owner's tag ([prereleases.md](prereleases.md)) | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309) |
 | A tag starts the workflow, which reuses CI as gates, drafts the release, installs from the draft on x64 and arm64, and waits for an approved publish | Dispatched from `main` with a `PUBLISH` confirmation; the `production-release` environment has no protection rules | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
-| `install.sh`, `release.json`, and `SHA256SUMS`; trust is `SHA256SUMS` plus GitHub build-provenance attestations only | ES256-signed manifests and indexes per train, verified against the embedded [trust root](#trust-root); the owner retired all three on 2026-10-16 (contract section 10) | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309), [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310), [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
-| Images at `ghcr.io/hualapaivalley/skymonitor-cameraagent`, always by digest, with `latest` moved for the newest final release | No image has been published yet, and this runbook forbids `latest` | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
+| `install.sh`, `release.json`, and `SHA256SUMS`; trust is `SHA256SUMS` plus GitHub build-provenance attestations only | Integration pre-releases carry `release.json`, `SHA256SUMS` and attestations, and the installer reads only those. `install.sh` does not exist yet. This runbook's signed trains remain for final releases until #1310 | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310), [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
+| Images at `ghcr.io/hualapaivalley/skymonitor-cameraagent`, always by digest, with `latest` moved for the newest final release | Integration pre-releases push `<version>` alone and are referenced by digest; no final release exists, so nothing moves `latest` | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
 | `CHANGELOG.md` and `docs/upgrade-notes/X.Y.Z.md` | `CHANGELOG.md` exists with Unreleased entries; versioned upgrade-note files are added when cutting a release | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312), [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
 | Branch and check settings (contract section 2) | CI scans the history for secrets and Dependabot updates the Docker base-image digests. Squash and rebase merges are still allowed, merged branches are kept, and release tags have no ruleset; the recommended [repository settings](../development-v1.md#repository-settings) await the owner's approval | [#1321](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1321) |
 
