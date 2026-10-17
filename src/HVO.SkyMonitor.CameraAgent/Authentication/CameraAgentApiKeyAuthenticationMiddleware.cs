@@ -76,16 +76,22 @@ internal sealed partial class CameraAgentApiKeyAuthenticationMiddleware(
     }
 
     /// <summary>
-    /// Whether any <c>Authorization</c> value is a bearer credential in this host's key format. Other bearer or basic
-    /// credentials, for example from a reverse proxy, are left to the rest of the pipeline as before.
+    /// A token beginning with the literal key prefix at the start of an Authorization value or after whitespace or
+    /// a comma presents a key, under any scheme. Detect the attempt before validating syntax, including coalesced
+    /// or duplicate values. Credentials with no such token belong to the rest of the pipeline.
     /// </summary>
     private static bool PresentsApiKey(HttpRequest request)
     {
         foreach (var value in request.Headers.Authorization)
         {
-            if (TryReadBearer(value) is { } token && CameraAgentApiKeyToken.HasPrefix(token))
+            if (value is null) continue;
+            for (var index = 0; index < value.Length; index++)
             {
-                return true;
+                if ((index == 0 || char.IsWhiteSpace(value[index - 1]) || value[index - 1] == ',') &&
+                    value.AsSpan(index).StartsWith(CameraAgentApiKeyToken.Prefix, StringComparison.Ordinal))
+                {
+                    return true;
+                }
             }
         }
 
@@ -108,7 +114,7 @@ internal sealed partial class CameraAgentApiKeyAuthenticationMiddleware(
         }
 
         var token = value[(BearerScheme.Length + 1)..].Trim();
-        return token.Length == 0 || token.Contains(' ', StringComparison.Ordinal) ? null : token;
+        return token.Length == 0 || token.Any(char.IsWhiteSpace) ? null : token;
     }
 
     private static async Task<ClaimsPrincipal> CreatePrincipalAsync(

@@ -220,13 +220,72 @@ public sealed class CameraAgentApiKeyAuthenticationTests
     }
 
     [TestMethod]
-    public async Task OtherAuthorizationSchemes_AreLeftToTheSessionAsBeforeAsync()
+    [DataRow("embedded-space", false)]
+    [DataRow("embedded-space", true)]
+    [DataRow("embedded-tab", false)]
+    [DataRow("embedded-tab", true)]
+    [DataRow("trailing-junk", false)]
+    [DataRow("trailing-junk", true)]
+    [DataRow("comma-key-first", false)]
+    [DataRow("comma-key-first", true)]
+    [DataRow("comma-key-last", false)]
+    [DataRow("comma-key-last", true)]
+    [DataRow("duplicated", false)]
+    [DataRow("duplicated", true)]
+    [DataRow("other-scheme", false)]
+    [DataRow("other-scheme", true)]
+    [DataRow("raw", false)]
+    [DataRow("raw", true)]
+    public async Task MalformedKeyWithASession_NeverReachesReadOrMutationAsync(string kind, bool mutation)
+    {
+        var fixture = await PipelineFixture.CreateAsync().ConfigureAwait(false);
+        await using var fixtureLease = fixture.ConfigureAwait(false);
+        var key = await fixture.CreateKeyAsync(ApiKeyAccessLevel.Read).ConfigureAwait(false);
+        using var client = await fixture.SignedInClientAsync().ConfigureAwait(false);
+        var antiforgery = await client.GetStringAsync(new Uri("/test/antiforgery", UriKind.Relative)).ConfigureAwait(false);
+        client.DefaultRequestHeaders.Add("X-Test-Antiforgery", antiforgery);
+        using var sessionChange = await client.PostAsync(new Uri(MutatePath, UriKind.Relative), null).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, sessionChange.StatusCode);
+        var callsBefore = fixture.EndpointCalls.Count;
+        string[] headers = kind switch
+        {
+            "embedded-space" => [$"Bearer {key[..25]} {key[25..]}"],
+            "embedded-tab" => [$"Bearer {key[..25]}\t{key[25..]}"],
+            "trailing-junk" => [$"Bearer {key} extra"],
+            "comma-key-first" => [$"Bearer {key}, Bearer unrelated-test-token"],
+            "comma-key-last" => [$"Bearer unrelated-test-token, Bearer {key}"],
+            "duplicated" => ["Bearer unrelated-test-token", $"Bearer {key}"],
+            "other-scheme" => [$"ApiKey {key}"],
+            _ => [key]
+        };
+        var method = mutation ? HttpMethod.Post : HttpMethod.Get;
+        using var request = new HttpRequestMessage(method, method == HttpMethod.Get ? ReadPath : MutatePath);
+        Assert.IsTrue(request.Headers.TryAddWithoutValidation("Authorization", headers));
+        using var response = await client.SendAsync(request).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, response.StatusCode, $"{kind}: {method}");
+        Assert.AreEqual("Bearer error=\"invalid_token\"", response.Headers.WwwAuthenticate.Single().ToString());
+        Assert.IsTrue(response.Headers.CacheControl!.NoStore);
+        Assert.AreEqual("{\"status\":401,\"title\":\"The API key is not valid.\"}",
+            await response.Content.ReadAsStringAsync().ConfigureAwait(false));
+        Assert.AreEqual(callsBefore, fixture.EndpointCalls.Count);
+        var secret = key[(CameraAgentApiKeyToken.Prefix.Length + CameraAgentApiKeyToken.IdLength + 1)..];
+        foreach (var credential in headers.Append(secret))
+        {
+            Assert.IsFalse(fixture.Logs.Any(entry => entry.Message.Contains(credential, StringComparison.Ordinal) ||
+                entry.State.Contains(credential, StringComparison.Ordinal)));
+        }
+    }
+
+    [TestMethod]
+    [DataRow("Basic", "cHJveHk6cHJveHk=")]
+    [DataRow("Bearer", "unrelated-test-token")]
+    public async Task OtherAuthorizationSchemes_AreLeftToTheSessionAsBeforeAsync(string scheme, string credential)
     {
         var fixture = await PipelineFixture.CreateAsync().ConfigureAwait(false);
         await using var fixtureLease = fixture.ConfigureAwait(false);
         using var client = await fixture.SignedInClientAsync().ConfigureAwait(false);
         // A reverse proxy in front of CameraAgent may add its own credentials.
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", "cHJveHk6cHJveHk=");
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(scheme, credential);
 
         using var read = await client.GetAsync(new Uri(ReadPath, UriKind.Relative)).ConfigureAwait(false);
 
@@ -312,6 +371,8 @@ public sealed class CameraAgentApiKeyAuthenticationTests
 
         internal IReadOnlyCollection<LogEntry> Logs => LogQueue;
 
+        internal ConcurrentQueue<string> EndpointCalls { get; private init; } = new();
+
         private ConcurrentQueue<LogEntry> LogQueue { get; }
 
         internal static async Task<PipelineFixture> CreateAsync()
@@ -340,7 +401,7 @@ public sealed class CameraAgentApiKeyAuthenticationTests
             builder.Services.AddCameraAgentAuthorization();
             builder.Services.AddScoped<CameraAgentApiKeyStore>();
             builder.Services.AddSingleton<CameraAgentOperatorTelemetry>();
-            builder.Services.AddAntiforgery();
+            builder.Services.AddAntiforgery(options => options.HeaderName = "X-Test-Antiforgery");
             var app = builder.Build();
             try
             {
@@ -349,7 +410,8 @@ public sealed class CameraAgentApiKeyAuthenticationTests
                 app.UseMiddleware<OwnerBootstrapGateMiddleware>();
                 app.UseAuthorization();
                 app.UseAntiforgery();
-                MapEndpoints(app);
+                var calls = new ConcurrentQueue<string>();
+                MapEndpoints(app, calls);
 
                 string ownerId;
                 var scope = app.Services.CreateAsyncScope();
@@ -372,7 +434,7 @@ public sealed class CameraAgentApiKeyAuthenticationTests
                 }
 
                 await app.StartAsync().ConfigureAwait(false);
-                return new PipelineFixture(app, root, ownerId, logs);
+                return new PipelineFixture(app, root, ownerId, logs) { EndpointCalls = calls };
             }
             catch
             {
@@ -437,7 +499,7 @@ public sealed class CameraAgentApiKeyAuthenticationTests
             return client;
         }
 
-        private static void MapEndpoints(WebApplication app)
+        private static void MapEndpoints(WebApplication app, ConcurrentQueue<string> calls)
         {
             app.MapPost("/test/sign-in", static async (
                     SignInManager<ApplicationUser> signIn,
@@ -448,13 +510,23 @@ public sealed class CameraAgentApiKeyAuthenticationTests
                     return Results.Ok();
                 })
                 .AllowAnonymous();
+            app.MapGet("/test/antiforgery", static (HttpContext context, IAntiforgery antiforgery) =>
+                    Results.Text(antiforgery.GetAndStoreTokens(context).RequestToken!))
+                .RequireAuthorization();
             var operations = app.MapGroup("/api/v1/operations/test");
-            operations.MapGet("/read", static (HttpContext context) => Results.Ok(ProbeOf(context.User)))
+            operations.MapGet("/read", (HttpContext context) =>
+                {
+                    calls.Enqueue(ReadPath);
+                    return Results.Ok(ProbeOf(context.User));
+                })
                 .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1);
-            operations.MapPost("/mutate", static (HttpContext context) =>
-                    CameraAgentCredentialAccess.IsForgeryProtected(context)
+            operations.MapPost("/mutate", (HttpContext context) =>
+                {
+                    calls.Enqueue(MutatePath);
+                    return CameraAgentCredentialAccess.IsForgeryProtected(context)
                         ? Results.Ok(ProbeOf(context.User))
-                        : Results.BadRequest())
+                        : Results.BadRequest();
+                })
                 .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
                 .WithMetadata(new RequireAntiforgeryTokenAttribute());
             operations.MapGet("/session-only", static () => Results.Ok())

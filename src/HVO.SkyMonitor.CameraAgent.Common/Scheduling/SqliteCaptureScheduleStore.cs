@@ -358,6 +358,26 @@ public sealed class SqliteCaptureScheduleStore(
         return snapshot;
     }
 
+    /// <summary>The original action and target of a revision command; payload matching remains the mutation's job.</summary>
+    internal async Task<(bool Rollback, string RevisionId)?> FindRevisionCommandAsync(
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        _ = await _rawCaptureIngress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT command_kind, result_active_revision_id FROM capture_schedule_commands WHERE idempotency_key = $key;";
+        command.Parameters.AddWithValue("$key", idempotencyKey);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+        return reader.GetString(0) switch
+        {
+            "activate" => (false, reader.GetString(1)),
+            "rollback" => (true, reader.GetString(1)),
+            _ => throw new CaptureScheduleStoreConflictException("The idempotency key belongs to another command.")
+        };
+    }
+
     public async Task<CaptureScheduleRevisionSnapshot> GetRevisionAsync(
         string revisionId,
         CancellationToken cancellationToken)

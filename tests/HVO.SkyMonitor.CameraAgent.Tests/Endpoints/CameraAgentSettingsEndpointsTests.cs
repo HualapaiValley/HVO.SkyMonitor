@@ -154,6 +154,24 @@ public sealed class CameraAgentSettingsEndpointsTests
             problem.RootElement.GetProperty("settings").GetProperty("camera.skyLighting").GetString());
     }
 
+    [TestMethod]
+    public async Task Put_WhenTheStoreReadFails_ReturnsUnavailableBeforeValidationOrReadOnlyAsync()
+    {
+        using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
+        using var app = CreateApp(harness);
+        var version = (await harness.GroupAsync("location").ConfigureAwait(false)).Version;
+        harness.Location.FailRead = true;
+
+        var response = await InvokeAsync(app, Put, Credential.ReadWriteKey, group: "location",
+            json: $$$"""{"expectedVersion":"{{{version}}}","values":{"location.latitudeDegrees":31.5}}""")
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(StatusCodes.Status503ServiceUnavailable, response.Status);
+        using var problem = JsonDocument.Parse(response.Body);
+        Assert.AreEqual("settings.unavailable", problem.RootElement.GetProperty("code").GetString());
+        Assert.IsEmpty(harness.Location.Requests);
+    }
+
     private enum Credential
     {
         None,

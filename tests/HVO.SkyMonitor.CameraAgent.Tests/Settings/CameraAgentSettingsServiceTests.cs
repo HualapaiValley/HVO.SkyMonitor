@@ -358,6 +358,41 @@ public sealed class CameraAgentSettingsServiceTests
     }
 
     [TestMethod]
+    [DataRow(0)]
+    [DataRow(1)]
+    [DataRow(51)]
+    public async Task Location_RealStore_ReplaysTheOriginalPartialCommandAfterStateAdvancesAsync(int laterChanges)
+    {
+        using var harness = await CameraAgentSettingsHarness.CreateAsync(realLocation: true).ConfigureAwait(false);
+        var before = await harness.GroupAsync("location").ConfigureAwait(false);
+        var values = new Dictionary<string, object?> { ["location.latitudeDegrees"] = 31.5 };
+        var saved = await harness.WriteAsync("location", before.Version, values,
+            idempotencyKey: "test-location-replay").ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.PendingRestart, saved.Outcome, saved.Message);
+        Assert.AreNotEqual(before.Version, saved.Group!.Version);
+        for (var index = 0; index < laterChanges; index++)
+        {
+            var current = await harness.GroupAsync("location").ConfigureAwait(false);
+            var next = await harness.WriteAsync("location", current.Version,
+                new Dictionary<string, object?> { ["location.longitudeDegrees"] = -110 + index / 10d })
+                .ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentSettingsWriteOutcome.PendingRestart, next.Outcome, next.Message);
+        }
+        var sequence = harness.LocationStore.Manual.ManualSequence;
+        var governing = harness.LocationStore.Manual.Override;
+        var retry = await harness.WriteAsync("location", before.Version, values,
+            idempotencyKey: "test-location-replay").ConfigureAwait(false);
+        var different = await harness.WriteAsync("location", before.Version,
+            new Dictionary<string, object?> { ["location.latitudeDegrees"] = 32 },
+            idempotencyKey: "test-location-replay").ConfigureAwait(false);
+
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.PendingRestart, retry.Outcome, retry.Message);
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Conflict, different.Outcome);
+        Assert.AreEqual(sequence, harness.LocationStore.Manual.ManualSequence);
+        Assert.AreEqual(governing, harness.LocationStore.Manual.Override);
+    }
+
+    [TestMethod]
     public async Task SkyLighting_StagesARigRevisionForTheNextStartAsync()
     {
         using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
@@ -435,7 +470,7 @@ public sealed class CameraAgentSettingsServiceTests
     }
 
     [TestMethod]
-    public async Task Schedule_AppliesTheDraftAndRollsBackAtTheCaptureBoundaryAsync()
+    public async Task Schedule_AppliesRollsBackAndReappliesAtTheCaptureBoundaryAsync()
     {
         using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
         var initial = (await harness.Schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevision;
@@ -470,6 +505,80 @@ public sealed class CameraAgentSettingsServiceTests
         Assert.AreEqual(CameraAgentSettingsWriteOutcome.Applied, rolledBack.Outcome, rolledBack.Message);
         Assert.AreEqual(initial.RevisionId,
             (await harness.Schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevision.RevisionId);
+
+        Assert.IsTrue(rolledBack.Group!.Settings.Single().AllowedValues!.Any(choice => choice.Value == draft.RevisionId));
+        var reapplied = await harness.WriteAsync("schedule", rolledBack.Group.Version, new Dictionary<string, object?>
+        {
+            ["schedule.activeRevision"] = draft.RevisionId
+        }).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Applied, reapplied.Outcome, reapplied.Message);
+        Assert.AreEqual(draft.RevisionId,
+            (await harness.Schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevision.RevisionId);
+    }
+
+    [TestMethod]
+    [DataRow(false, 0)]
+    [DataRow(true, 0)]
+    [DataRow(false, 21)]
+    [DataRow(true, 21)]
+    public async Task Schedule_RealStore_ReplaysActivationAndRollbackWithoutReapplyingAsync(bool rollback, int laterRevisions)
+    {
+        using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
+        var initial = (await harness.Schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevision;
+        var staged = await harness.StageScheduleDraftAsync("replay-draft", 2).ConfigureAwait(false);
+        var draft = staged.PendingRevision!;
+        if (rollback)
+        {
+            var applied = await harness.WriteAsync("schedule", staged.Version.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                new Dictionary<string, object?> { ["schedule.activeRevision"] = draft.RevisionId }).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentSettingsWriteOutcome.Applied, applied.Outcome, applied.Message);
+        }
+        var before = await harness.GroupAsync("schedule").ConfigureAwait(false);
+        var target = rollback ? initial.RevisionId : draft.RevisionId;
+        var other = rollback ? draft.RevisionId : initial.RevisionId;
+        var values = new Dictionary<string, object?> { ["schedule.activeRevision"] = target.ToUpperInvariant() };
+        var saved = await harness.WriteAsync("schedule", before.Version, values,
+            idempotencyKey: "test-schedule-replay", reason: "test reason").ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Applied, saved.Outcome, saved.Message);
+        Assert.AreNotEqual(before.Version, saved.Group!.Version);
+        var retry = await harness.WriteAsync("schedule", before.Version, values,
+            idempotencyKey: "test-schedule-replay", reason: "test reason").ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Applied, retry.Outcome, retry.Message);
+
+        var moved = await harness.WriteAsync("schedule", saved.Group.Version,
+            new Dictionary<string, object?> { ["schedule.activeRevision"] = other }).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Applied, moved.Outcome, moved.Message);
+        for (var index = 0; index < laterRevisions; index++)
+        {
+            var later = await harness.StageScheduleDraftAsync($"later-{index}", 3 + index % 7).ConfigureAwait(false);
+            other = later.PendingRevision!.RevisionId;
+            moved = await harness.WriteAsync("schedule", later.Version.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                new Dictionary<string, object?> { ["schedule.activeRevision"] = other }).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentSettingsWriteOutcome.Applied, moved.Outcome, moved.Message);
+        }
+        if (laterRevisions > 0)
+        {
+            Assert.IsFalse(moved.Group!.Settings.Single().AllowedValues!.Any(choice => choice.Value == target));
+        }
+        var lateRetry = await harness.WriteAsync("schedule", before.Version, values,
+            idempotencyKey: "test-schedule-replay", reason: "test reason").ConfigureAwait(false);
+        var different = await harness.WriteAsync("schedule", moved.Group!.Version,
+            new Dictionary<string, object?> { ["schedule.activeRevision"] = other },
+            idempotencyKey: "test-schedule-replay", reason: "test reason").ConfigureAwait(false);
+        var invalid = await harness.WriteAsync("schedule", before.Version,
+            new Dictionary<string, object?> { ["schedule.activeRevision"] = " " },
+            idempotencyKey: "test-schedule-replay").ConfigureAwait(false);
+        var changedReason = await harness.WriteAsync("schedule", before.Version, values,
+            idempotencyKey: "test-schedule-replay", reason: "different test reason").ConfigureAwait(false);
+
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Applied, lateRetry.Outcome, lateRetry.Message);
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Conflict, different.Outcome);
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Conflict, changedReason.Outcome);
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Invalid, invalid.Outcome, invalid.Message);
+        var after = await harness.Schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(moved.Group.Version, after.Version.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        Assert.AreEqual(other, after.ActiveRevision.RevisionId);
+        Assert.AreEqual(other, harness.Runtime.Snapshot!.Revision.RevisionId);
     }
 
     [TestMethod]

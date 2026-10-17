@@ -13,6 +13,7 @@ using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Settings;
 using HVO.SkyMonitor.Common.Configuration;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -21,7 +22,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Settings;
 
 /// <summary>
 /// The settings service over the stores a host uses: a real operator settings file and site profile store, real
-/// named-rig and schedule stores over a temporary journal, and a recording deployment-location store.
+/// named-rig and schedule stores over a temporary journal, and a real protected or recording deployment-location store.
 /// </summary>
 internal sealed class CameraAgentSettingsHarness : IDisposable
 {
@@ -39,6 +40,7 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
     public ConfigurationManager Configuration { get; private set; } = default!;
     public OperatorSettingsFile SettingsFile { get; private set; } = default!;
     public RecordingLocationStore Location { get; } = new();
+    public IDeploymentLocationStore LocationStore { get; private set; } = default!;
     public SqliteNamedRigProfileStore Named { get; private set; } = default!;
     public SqliteCaptureScheduleStore Schedule { get; private set; } = default!;
     public CaptureScheduleRuntimeCoordinator Runtime { get; private set; } = default!;
@@ -52,7 +54,8 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
     public static async Task<CameraAgentSettingsHarness> CreateAsync(
         string moduleType = "VirtualSky",
         IReadOnlyDictionary<string, string?>? overrides = null,
-        bool configured = true)
+        bool configured = true,
+        bool realLocation = false)
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-settings-harness", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -96,6 +99,17 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
             var named = new SqliteNamedRigProfileStore(ingress, hostOptions, TimeProvider.System, schedule, runtime);
             _ = await named.ImportActiveAsync(active.ActiveRevision, CancellationToken.None).ConfigureAwait(false);
 
+            harness.LocationStore = harness.Location;
+            if (realLocation)
+            {
+                var protector = new DataProtectionDeploymentLocationProtector(
+                    DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(root, "keys"))));
+                var location = harness.Own(new ProtectedDeploymentLocationStore(hostOptions, protector,
+                    TimeProvider.System, NullLogger<ProtectedDeploymentLocationStore>.Instance));
+                _ = await location.InitializeAsync(new DeploymentLocationSeed("site", "installer", null, null, null,
+                    new ObservatoryLocation(35, -114, 1000, "UTC")), CancellationToken.None).ConfigureAwait(false);
+                harness.LocationStore = location;
+            }
             harness.Configuration = configuration;
             harness.SettingsFile = settingsFile;
             harness.Named = named;
@@ -107,7 +121,7 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
                 new CameraAgentSettingSources(configuration, local.IsSettingsFileProvider),
                 sceneObjects,
                 site,
-                harness.Location,
+                harness.LocationStore,
                 named,
                 runtime,
                 new FixedConfigurationAccessor(configured ? camera : null),
@@ -212,8 +226,16 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
         public DeploymentLocationSnapshot? Active { get; set; } = DeploymentLocationSnapshot.Create(
             "site", 3, "installer", null, DateTimeOffset.UnixEpoch, null, 35, -114, 1000, "UTC");
 
-        public ManualDeploymentLocationState Manual { get; set; } = new(
+        private ManualDeploymentLocationState _manual = new(
             true, "site", 3, 3, 4, null, 0, false, false, false, null, null, []);
+
+        public bool FailRead { get; set; }
+
+        public ManualDeploymentLocationState Manual
+        {
+            get => FailRead ? throw new IOException("Test location store unavailable.") : _manual;
+            set => _manual = value;
+        }
 
         public List<ManualDeploymentLocationRequest> Requests { get; } = [];
 

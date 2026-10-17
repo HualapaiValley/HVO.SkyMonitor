@@ -60,7 +60,11 @@ characters) are recorded with a location or schedule change; a settings-file cha
 
 Every value is validated against the catalogue before any store sees it, and the group's store then checks the
 caller's version atomically, so a change made in between — including a hand edit of the settings file — is never
-overwritten.
+overwritten. For location and schedule commands, retrying the original request with its original `expectedVersion`
+and `Idempotency-Key` resolves the durable replay before checking for a fresh version conflict. Omitted location
+fields keep the coordinates resolved for the original command, even after later changes. Reusing the key with
+different durable content is refused by the store. A successful replay returns the successful status with the group
+as it is now and never reapplies the old state. The location store's replay window is its 500 retained commands.
 
 | Result | Status | `code` |
 | --- | --- | --- |
@@ -88,9 +92,14 @@ A key never satisfies owner bootstrap, key management, the account pages, the we
 - **Format.** `hvo_sky_` + a 16-character public key identifier + `_` + 256 random bits in base64url (68 characters).
   The identifier is safe to show and log; the prefix lets secret scanners recognise a leaked key.
 - **Transport.** Only `Authorization: Bearer <key>`, and only under `/api/v1/operations`. A key in a query string,
-  another header or another scheme is never read. Elsewhere the header is ignored and the session decides. A presented
-  key decides the request alone: a session cookie on the same request is ignored, so a key never borrows the session's
-  access. Another `Authorization` scheme, such as a reverse proxy's `Basic`, is left to the session as before.
+  another header or another scheme is never accepted. Elsewhere the header is ignored and the session decides.
+  Under the operations path, an `Authorization` token starting with the literal, case-sensitive `hvo_sky_` prefix
+  at the start of a header value or after whitespace or a comma counts as presenting a key, under any scheme.
+  A presented key decides the request alone: a session cookie on the same request is ignored. Exactly one
+  `Authorization` value containing a valid `Bearer <key>` credential is required; embedded whitespace, trailing
+  junk, comma-coalesced values, duplicate values and a key under another scheme or raw in the header receive the
+  same generic 401 as a bad key. Basic credentials and unrelated bearer tokens without a key-prefixed token are
+  left to the session as before.
 - **Storage.** The local identity database keeps each key as an authentication token of the owner account: the
   identifier, the SHA-256 of the whole key, the access level, the label and the creation time. The key itself is shown
   once, in the response that creates it (`Cache-Control: no-store`), and is never stored or logged. The identity

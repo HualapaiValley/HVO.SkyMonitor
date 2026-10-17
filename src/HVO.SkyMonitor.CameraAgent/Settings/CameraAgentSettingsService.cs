@@ -109,6 +109,11 @@ internal sealed partial class CameraAgentSettingsService(
         }
 
         var current = await ReadGroupAsync(found, cancellationToken).ConfigureAwait(false);
+        if (current.Settings.Any(setting => setting.Source == CameraAgentSettingSource.Unavailable))
+        {
+            return new(CameraAgentSettingsWriteOutcome.Unavailable, current, current.ReadOnlyReason);
+        }
+
         var reason = request.Reason?.Trim();
         if (string.IsNullOrWhiteSpace(request.ExpectedVersion) || request.Values is null || request.Values.Count == 0 ||
             reason is { Length: > CameraAgentSettingsContract.MaximumReasonLength } ||
@@ -120,6 +125,13 @@ internal sealed partial class CameraAgentSettingsService(
                 current,
                 "A settings change needs the group's expectedVersion and at least one value; a reason is at most " +
                 $"{CameraAgentSettingsContract.MaximumReasonLength} characters without control characters.");
+        }
+
+        if (found.Name == CameraAgentSettingsCatalogue.ScheduleGroup && idempotencyKey is not null &&
+            await TryReplayScheduleAsync(found, current, request, actor, idempotencyKey, reason, cancellationToken)
+                .ConfigureAwait(false) is { } replay)
+        {
+            return replay;
         }
 
         var (values, problems) = Parse(found, current, request.Values);
@@ -141,7 +153,9 @@ internal sealed partial class CameraAgentSettingsService(
                 readOnly);
         }
 
-        if (!string.Equals(request.ExpectedVersion, current.Version, StringComparison.Ordinal))
+        if (!string.Equals(request.ExpectedVersion, current.Version, StringComparison.Ordinal) &&
+            !(idempotencyKey is not null && found.Name is
+                CameraAgentSettingsCatalogue.LocationGroup or CameraAgentSettingsCatalogue.ScheduleGroup))
         {
             return Conflict(current);
         }
@@ -156,11 +170,11 @@ internal sealed partial class CameraAgentSettingsService(
                     cancellationToken).ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.SkyMapGroup => await WriteSkyMapAsync(found, values, current.Version, actor,
                     cancellationToken).ConfigureAwait(false),
-                CameraAgentSettingsCatalogue.LocationGroup => await WriteLocationAsync(found, values, current.Version,
+                CameraAgentSettingsCatalogue.LocationGroup => await WriteLocationAsync(found, values, request.ExpectedVersion!,
                     actor, command, reason, cancellationToken).ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.CameraGroup => await WriteCameraAsync(found, values, current.Version, actor,
                     cancellationToken).ConfigureAwait(false),
-                CameraAgentSettingsCatalogue.ScheduleGroup => await WriteScheduleAsync(found, values, current.Version,
+                CameraAgentSettingsCatalogue.ScheduleGroup => await WriteScheduleAsync(found, values, request.ExpectedVersion!,
                     actor, command, reason, cancellationToken).ConfigureAwait(false),
                 _ => throw new InvalidOperationException($"The settings group {found.Name} has no writer.")
             };
@@ -455,16 +469,19 @@ internal sealed partial class CameraAgentSettingsService(
         var manual = deploymentLocationStore.Manual;
         var active = deploymentLocationStore.Active!;
         // Values left out keep the coordinates that will govern the next start: the newest manual entry when there is
-        // one, else the active version. The store refuses the command unless the caller's version is still current.
+        // one, else the active version. A replay keeps its original resolved fields even after later writes.
+        // The store checks replay content first and refuses fresh commands unless the caller's version is current.
+        var replay = await deploymentLocationStore.FindManualCommandAsync(idempotencyKey, cancellationToken)
+            .ConfigureAwait(false);
         var basis = manual.Override;
         var result = await deploymentLocationStore.ApplyManualAsync(
             new ManualDeploymentLocationRequest(
-                Number(CameraAgentSettingsCatalogue.Latitude, basis?.LatitudeDegrees ?? active.LatitudeDegrees),
-                Number(CameraAgentSettingsCatalogue.Longitude, basis?.LongitudeDegrees ?? active.LongitudeDegrees),
-                Number(CameraAgentSettingsCatalogue.Elevation, basis?.ElevationMeters ?? active.ElevationMeters),
+                Number(CameraAgentSettingsCatalogue.Latitude, replay?.LatitudeDegrees ?? basis?.LatitudeDegrees ?? active.LatitudeDegrees),
+                Number(CameraAgentSettingsCatalogue.Longitude, replay?.LongitudeDegrees ?? basis?.LongitudeDegrees ?? active.LongitudeDegrees),
+                Number(CameraAgentSettingsCatalogue.Elevation, replay?.ElevationMeters ?? basis?.ElevationMeters ?? active.ElevationMeters),
                 values.TryGetValue(CameraAgentSettingsCatalogue.TimeZone.Key, out var zone)
                     ? (string)zone!
-                    : basis?.TimeZoneId ?? active.TimeZoneId,
+                    : replay?.TimeZoneId ?? basis?.TimeZoneId ?? active.TimeZoneId,
                 knownVersion,
                 manualSequence,
                 idempotencyKey,
@@ -642,6 +659,50 @@ internal sealed partial class CameraAgentSettingsService(
             : $"Revision {number}";
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "A replay logs internal failures and returns a fixed unavailable outcome, as a fresh write does.")]
+    private async Task<CameraAgentSettingsWriteResult?> TryReplayScheduleAsync(
+        CameraAgentSettingsGroup group,
+        CameraAgentSettingsGroupState current,
+        CameraAgentSettingsUpdateRequest request,
+        string actor,
+        string idempotencyKey,
+        string? reason,
+        CancellationToken cancellationToken)
+    {
+        // A retained command can outlive the current enum choices. Only an exact durable match may skip that list.
+        if (request.Values!.Count != 1 ||
+            !request.Values.TryGetValue(CameraAgentSettingsCatalogue.ActiveScheduleRevision.Key, out var element) ||
+            element.ValueKind != JsonValueKind.String || element.GetString() is not { Length: > 0 and <= 128 } target ||
+            string.IsNullOrWhiteSpace(target) ||
+            !long.TryParse(request.ExpectedVersion, NumberStyles.None, CultureInfo.InvariantCulture, out var version))
+        {
+            return null;
+        }
+        try
+        {
+            return await scheduleRuntime.TryReplayRevisionAsync(target, idempotencyKey, version, actor, reason,
+                    cancellationToken).ConfigureAwait(false) is null
+                ? null
+                : new(CameraAgentSettingsWriteOutcome.Applied,
+                    await ReadGroupAsync(group, cancellationToken).ConfigureAwait(false));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (CaptureScheduleStoreConflictException)
+        {
+            return Conflict(current);
+        }
+        catch (Exception exception)
+        {
+            LogWriteFailed(logger, exception, group.Name);
+            return new(CameraAgentSettingsWriteOutcome.Unavailable, current,
+                "The settings change could not be completed.");
+        }
+    }
+
     private async Task<CameraAgentSettingsWriteResult> WriteScheduleAsync(
         CameraAgentSettingsGroup group,
         Dictionary<string, object?> values,
@@ -652,16 +713,25 @@ internal sealed partial class CameraAgentSettingsService(
         CancellationToken cancellationToken)
     {
         var target = (string)values[CameraAgentSettingsCatalogue.ActiveScheduleRevision.Key]!;
+        if (!long.TryParse(expectedVersion, NumberStyles.None, CultureInfo.InvariantCulture, out var version))
+        {
+            return Conflict(await ReadGroupAsync(group, cancellationToken).ConfigureAwait(false));
+        }
         var state = await scheduleRuntime.GetOperatorStateAsync(cancellationToken).ConfigureAwait(false);
+        if (version != state.StateVersion)
+        {
+            return Conflict(await ReadGroupAsync(group, cancellationToken).ConfigureAwait(false));
+        }
         if (string.Equals(target, state.ActiveRevision.RevisionId, StringComparison.Ordinal))
         {
             return new(CameraAgentSettingsWriteOutcome.Unchanged, await ReadGroupAsync(group, cancellationToken)
                 .ConfigureAwait(false));
         }
 
-        var rollback = !string.Equals(target, state.PendingRevision?.RevisionId, StringComparison.Ordinal);
+        var revision = state.History.FirstOrDefault(item => item.RevisionId == target)
+            ?? (state.PendingRevision?.RevisionId == target ? state.PendingRevision : null);
+        var rollback = revision is not null && revision.RevisionNumber < state.ActiveRevision.RevisionNumber;
         var action = rollback ? "rollback" : "activate";
-        var version = long.Parse(expectedVersion, NumberStyles.Integer, CultureInfo.InvariantCulture);
         using var activity = telemetry.StartPlanMutation(action);
         CameraAgentSettingsWriteResult result;
         try
