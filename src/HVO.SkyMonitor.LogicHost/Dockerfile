@@ -34,7 +34,7 @@ WORKDIR /src/src/HVO.SkyMonitor.LogicHost
 RUN dotnet publish HVO.SkyMonitor.LogicHost.csproj -c Release -o /app/publish
 
 # Stage 2: Runtime
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.12@sha256:6a94333d37514e385650a3c81a55e5350b67253dbe136e9cf17e499c35606a8c
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.13@sha256:d5633778c754e89a386882eddf8dbee6942447a8a4b8267c19cf1e1158d0b0ac
 WORKDIR /app
 
 # Install curl for health checks
