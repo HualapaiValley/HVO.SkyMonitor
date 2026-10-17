@@ -21,7 +21,7 @@ must not redefine its policy inconsistently.
   qualification. Whole-repository ShellCheck and exhaustive category discovery
   run in full CI; changes to shell/category behavior still need focused local
   validation of that behavior.
-- Use the SDK pinned in `global.json` (`10.0.401`, stable releases only) and the solution `HVO.SkyMonitor.v9.slnx`.
+- Use the SDK pinned in `global.json` (`10.0.402`, stable releases only) and the solution `HVO.SkyMonitor.v9.slnx`.
 - Package versions are centralized in `Directory.Packages.props`; do not put `Version` attributes on individual `PackageReference` items.
 - The complete Tier C/M local candidate gate is:
   ```bash
