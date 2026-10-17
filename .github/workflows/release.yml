@@ -149,8 +149,13 @@ jobs:
               ./scripts/release:cameraagent-image \
                 --version "$VERSION" --revision "$SOURCE_SHA" --scanner trivy --push --output "$candidate"
           elif [[ "$TRAIN" == "installer" ]]; then
-            dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --no-restore --configuration Release --runtime linux-x64 --output "$RUNNER_TEMP/linux-x64"
-            dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --no-restore --configuration Release --runtime linux-arm64 --output "$RUNNER_TEMP/linux-arm64"
+            dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --no-restore --configuration Release --runtime linux-x64 --output "$RUNNER_TEMP/linux-x64" \
+              -p:InformationalVersion="$VERSION" -p:SourceRevisionId="$SOURCE_SHA"
+            dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --no-restore --configuration Release --runtime linux-arm64 --output "$RUNNER_TEMP/linux-arm64" \
+              -p:InformationalVersion="$VERSION" -p:SourceRevisionId="$SOURCE_SHA"
+            # The shipped installers name exactly the release version and commit (install contract section 1, #1312).
+            test "$("$RUNNER_TEMP/linux-x64/HVO.SkyMonitor.Deployment.Cli" --version)" = "$VERSION+$SOURCE_SHA"
+            grep -aqF "$VERSION+$SOURCE_SHA" "$RUNNER_TEMP/linux-arm64/HVO.SkyMonitor.Deployment.Cli"
             dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj --no-build --configuration Release -- create-installer \
               --version "$VERSION" --revision "$SOURCE_SHA" --tree "$tree" --created-utc "$created" \
               --linux-x64 "$RUNNER_TEMP/linux-x64/HVO.SkyMonitor.Deployment.Cli" \

@@ -27,6 +27,9 @@ internal sealed record InstallDeploymentCommand(InstallRequest Request) : Deploy
 /// <summary>A request for usage text, which is printed and changes nothing.</summary>
 internal sealed record HelpCommand(string Usage) : DeploymentCommand(Json: false);
 
+/// <summary>A request for the installer's build identity, which is printed and changes nothing.</summary>
+internal sealed record VersionCommand(string Identity) : DeploymentCommand(Json: false);
+
 internal sealed record OwnerRecoveryRequest(
     Guid? InstanceId,
     string ProductRoot,
@@ -219,9 +222,21 @@ internal sealed record LifecycleRequest : DeploymentCommand
     public string? AssetBaseUrl { get; init; }
     public DistributionChannel Channel { get; init; }
 
+    /// <summary>
+    /// The release.json of the release an upgrade installs, when its source provides one. The upgrade shows its notes
+    /// and refuses an older target before anything changes. No command-line source sets it yet: the release.json
+    /// acquisition that also selects the candidate image from it is #1309's, so a document is never paired with an
+    /// image it does not describe. It is not part of the request hash, because it adds no input to the operation.
+    /// </summary>
+    public ReleaseManifest? TargetRelease { get; init; }
+
     public void Validate()
     {
         ProductRootAdmission.Validate(ProductRoot, ProductionProductRoot, AllowTestProductRoot);
+        if (TargetRelease is not null && Operation != LifecycleOperationKind.Upgrade)
+        {
+            throw new InstallUsageException("A release's upgrade notes apply only to an upgrade.");
+        }
         if (Operation is not null and not LifecycleOperationKind.CatalogInstall and not LifecycleOperationKind.CatalogGarbageCollect
                 and not LifecycleOperationKind.CatalogCheck &&
             InstanceId is null)

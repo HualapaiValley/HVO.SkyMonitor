@@ -123,6 +123,7 @@ allowlisted_paths=(
   "README.md"
   "AGENTS.md"
   "CLAUDE.md"
+  "CHANGELOG.md"
   "THIRD-PARTY-NOTICES.md"
   ".agents/skills/pr-lifecycle/SKILL.md"
   ".devcontainer/devcontainer.json"

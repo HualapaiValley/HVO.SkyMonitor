@@ -8,6 +8,12 @@ that install and `install --dry-run` evaluate. Catalog releases can be resolved 
 HTTPS mirrors, or signed release indexes; every source uses the same pinned
 signature, length, checksum, archive, and internal catalog validation.
 
+`hvo-skymonitor --version` prints the installer's version and the commit it was built from, as
+`<version>+<40-character commit>`, and exits 0. Like `--help`, it needs no Docker and does not read the
+[host policy](#production-product-root-on-another-filesystem), so it works even where that policy is refused. A build
+given no version is `0.0.0-dev`, and a build without a checkout or a supplied commit prints `0.0.0-dev+unknown`.
+[Build Evidence](#build-evidence) describes how a publish is stamped.
+
 ## HVO Install Contract
 
 The shared [HVO product installation and release contract](../hvo-install-contract.md)
@@ -22,7 +28,7 @@ runbook describes the installer as it behaves today.
 | Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | One `hvo-skymonitor` CLI, configured by flags or `--config`; no runtime client or wizard | [#1313](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1313), [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
 | `install.sh` entry point with `--check` and `--from DIR` | No `install.sh`; the self-contained CLI is run directly | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
 | Install and upgrade from a published release, by GHCR digest or offline archive | Nothing is published, so hosts install a locally built image by its loaded image ID | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309) |
-| `--version`, and upgrade notes printed before an upgrade | Neither | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312) |
+| `--version`, and upgrade notes printed before an upgrade | `--version` reports the installer build identity. The release.json reader and pre-upgrade notes are implemented; the release acquisition path that supplies them is pending #1309 (see [Upgrade notes and older targets](#upgrade-notes-and-older-targets)) | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312) |
 | `--plan`, `--answers FILE`, `backup` and `restore FILE`, exit codes 0/1/2/3/130 | `--dry-run` and `--config`; no `backup` or `restore`; a refusal such as failed host prerequisites exits `1` | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
 | Swap upgrade that never copies bulk data, snapshotting only the small databases for a declared migration | Upgrade and rollback take a `tar` backup of the instance's configuration and state | [#1314](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1314); [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044) narrows to the `backup` command |
 | Container limits kept in the install record and changed with a re-run | Limits are set at install and recorded in the instance's `instance-manifest.json`. A re-run with different `--cpus` or `--memory` is refused, and an installed instance's limits change only when an upgrade moves limits the operator did not set to the new default (see [Container Resources](#container-resources)) | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
@@ -153,7 +159,7 @@ reports that Docker's host has less memory (`MemTotal`) than the CameraAgent
 memory limit. The limit is still applied, but it cannot stop CameraAgent from
 exhausting that host's memory. The installation proceeds either way. The human
 form renders the finding on standard error with the rest of the report. With
-`--json`, standard error is reserved for an error object, so the result on
+`--json` install, standard error is reserved for an error object, so the result on
 standard output reports it in `warnings` instead, for the install and the dry run
 alike.
 
@@ -1337,8 +1343,9 @@ hvo-skymonitor cameraagent preflight --instance-id <uuid> \
   --image-version 1.5.0 --asset-base-url https://mirror.example/releases
 ```
 
-A `--json` install or lifecycle invocation reserves standard error for its single error object, so the
-rendered report is written there only in human form. Read the complete report from
+With `--json`, an install or lifecycle invocation reports on standard error only in one-line JSON objects: any events,
+such as an upgrade's notes (see [Upgrade notes and older targets](#upgrade-notes-and-older-targets)), then at most one
+error object, last. The rendered report is therefore written there only in human form. Read the complete report from
 `state/deployment/state-preflight.json`, or from `cameraagent preflight --json` on standard output; a
 `--dry-run` deliberately retains nothing, and its error message still enumerates every blocking code.
 
@@ -1528,6 +1535,51 @@ the exact command with `--resume`. A failed candidate restores the exact prior
 Compose, image, and identity records before capture resumes. Noncurrent manifests
 and results are rejected before lifecycle state mutation; invalid candidate images
 or rollback models are rejected before runtime mutation.
+
+### Upgrade notes and older targets
+
+An upgrade from a release reads the release's `release.json` (install contract sections 4 and 6). Before it changes
+anything, including before the lifecycle journal, it does two things:
+
+- It prints the upgrade notes of every release after the installed version, up to the release the target belongs to.
+  A release candidate shows its release's notes. `--dry-run` shows them too.
+- It refuses a target older than the installed version, says that an upgrade never goes back, and names
+  `hvo-skymonitor cameraagent rollback --instance-id <uuid>`.
+
+Upgrade-note text follows one terminal-safety rule. CRLF becomes LF; LF and TAB are retained, so tabs keep their
+existing terminal spacing behavior. All other Unicode controls (Cc), all format characters (Cf), line and paragraph
+separators (Zl/Zp), private-use characters (Co), and Unicode noncharacters are refused. This includes bidi controls,
+LRM/RLM/ALM, zero-width formatting, BOM (U+FEFF), and soft hyphen. A refusal names the note's version and the first
+unsafe code point as `U+XXXX` (at least four hexadecimal digits), without echoing its text. Ordinary letters,
+punctuation, symbols, combining marks and spaces in any script remain valid.
+
+Human rendering applies the same rule as defense in depth for directly constructed notes: unsafe code points appear
+visibly as `<U+XXXX>`, including lone CRs and U+2028/U+2029. Only CRLF is normalized to LF; unsafe Unicode separators
+are escaped rather than turned into extra lines.
+
+With `--json`, standard output carries only the one result, which is written when the upgrade ends, so the notes are
+written to standard error first as one `upgrade-notes` event on a single line:
+
+```json
+{"schemaVersion":1,"event":"upgrade-notes","upgradeNotes":{"installedVersion":"1.0.0","targetVersion":"1.2.0","notes":[{"version":"1.1.0","text":"Nothing to do by hand."},{"version":"1.2.0","text":"Read the Camera \u0026 rig page after upgrading."}]}}
+```
+
+- The event comes before the journal, the backup, the pause and the image change, so a caller sees the notes before
+  anything changes. A failed upgrade has already written it, and its error object follows it.
+- `installedVersion` is `null` when it is not recorded. `text` keeps its line breaks as `\n`.
+- The result repeats the notes in its `upgradeNotes` member. A result with no `release.json` behind it has no such
+  member.
+- A refused older target writes no event, only the error object.
+- Read standard error line by line: an object with `event` is an event, one with `errorCode` is the error, and callers
+  ignore event names they do not know.
+
+The installed version is the one the retained release record names for the running image. An instance installed from an
+image reference records none. Its upgrade then shows every note up to the target, says that the installed version is not
+recorded, and cannot apply the older-target refusal.
+
+No current upgrade source supplies a `release.json`. The reader and the upgrade step that uses it are in place. The
+release acquisition that selects the candidate image from the same `release.json`, and records the installed release
+version, comes with #1309. Until then, image-reference and signed-manifest upgrades show no notes.
 
 ### Restore Only After an Interrupted Upgrade
 
@@ -1974,6 +2026,13 @@ dotnet publish src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.Camera
 dotnet publish src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj \
   --configuration Release --runtime linux-arm64
 ```
+
+Each installer publish is stamped with its version and commit. A publish given no version is `0.0.0-dev+<commit>`. A
+release passes `-p:InformationalVersion=<version> -p:SourceRevisionId=<40-character commit>`. The build refuses a
+version that is not 1-128 letters, digits, periods and hyphens, and a commit that is not 40 lowercase hexadecimal
+digits or `unknown`. `scripts/ci:component-publish delivery`, the Architecture & Publish job and the release workflow
+each check that `--version` prints exactly `<version>+<commit>`. On ARM64 they check that the binary contains that
+string.
 
 Run the x64 output with `--capabilities`; require protocol version `1` and
 completed runtime/native-library warmup. On an ARM64 builder, the existing
