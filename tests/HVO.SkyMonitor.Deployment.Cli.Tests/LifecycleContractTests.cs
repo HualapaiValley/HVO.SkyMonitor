@@ -142,7 +142,7 @@ public sealed partial class LifecycleContractTests
         Assert.IsTrue(File.Exists(stateSentinel));
         Assert.IsTrue(File.Exists(fixture.Paths.ManifestPath));
         Assert.IsNotNull(result.ResumeCommand);
-        Assert.AreEqual($"hvo-skymonitor cameraagent reinstall --instance-id {fixture.InstanceId:D}", result.ResumeCommand);
+        Assert.AreEqual($"hvo-sky-install cameraagent reinstall --instance-id {fixture.InstanceId:D}", result.ResumeCommand);
     }
 
     [TestMethod]

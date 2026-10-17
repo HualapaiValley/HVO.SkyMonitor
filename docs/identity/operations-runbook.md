@@ -289,7 +289,7 @@ email address. Generated confirmation/reset/change-email routes do not issue or
 consume tokens, and the configured owner email is read-only in the browser.
 
 Offline owner recovery uses
-`hvo-skymonitor cameraagent recover-owner --instance-id <uuid>
+`hvo-sky-install cameraagent recover-owner --instance-id <uuid>
 (--generate-password|--password-file <absolute-owner-only-file>)`. The CLI must
 run locally as the installed runtime user. The recorded installation must be
 running on Linux with explicit missing-password mode, removed password
@@ -674,7 +674,7 @@ as a metric label.
 | Device calls fail after restore | Restore CameraAgent `device-secrets.dat` with its matching Data Protection key ring and confirm central registration is Active and unexpired. |
 | Cookies fail after rebuild | Verify the matching host's `DataProtection-Keys` bind mount was preserved and readable. |
 | CameraAgent owner is redirected after login | Complete `/Account/ReplaceTemporaryPassword`; inspect the bounded owner-bootstrap status without recording credential values. |
-| CameraAgent owner password is lost | On the installed host, run `hvo-skymonitor cameraagent recover-owner --instance-id <uuid> --generate-password` as the deployment runtime user. Use `--resume` only for the same interrupted operation, replace the temporary password immediately, and remove the generated file. |
+| CameraAgent owner password is lost | On the installed host, run `hvo-sky-install cameraagent recover-owner --instance-id <uuid> --generate-password` as the deployment runtime user. Use `--resume` only for the same interrupted operation, replace the temporary password immediately, and remove the generated file. |
 | Owner recovery returns unsupported or a public recovery route returns `404` | Confirm the command runs as the installed runtime user on the installed Linux host, the lifecycle-control token and mirror still match the manifest, runtime password authority is removed, and `<state-root>/identity/owner.sock` is the expected owner-only socket. Never retry against a TCP URL or paste the token into a request. |
 | Owner recovery reports a conflict | Inspect owner/bootstrap ambiguity and retained manifest correlation. Do not modify Identity SQLite. |
 | CameraAgent starts without an owner password | This is valid only with a durable owner and explicit `AllowMissingAdminPassword=true`. Initial seeding still requires a temporary password. |

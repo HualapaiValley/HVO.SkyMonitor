@@ -12,7 +12,7 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 ### Added
 
-- `hvo-skymonitor --version` prints the installer's version and the commit it was built from, as
+- `hvo-sky-install --version` prints the installer's version and the commit it was built from, as
   `<version>+<commit>`. A development build prints `0.0.0-dev+<commit>`, or `0.0.0-dev+unknown` if built without a
   checkout. (#1312)
 - **Operations > Camera & rig** offers **Sky lighting** for a VirtualSky camera: uniform daylight (the default),
@@ -23,9 +23,15 @@ onward; earlier development is recorded in its pull requests. A release renames 
 - A CameraAgent image names its version and commit, `<version>+<commit>`, in four places: the System > Software page,
   the startup log line, telemetry `service.version`, and the `org.opencontainers.image.version` image label. That label
   is no longer inherited from the Ubuntu base image. (#1305)
-- `hvo-skymonitor --help`, `-h` and `help` print usage on standard output and exit 0, and so does help for a single
-  command (`hvo-skymonitor cameraagent install --help`). A command-line mistake prints the reason and usage on standard
+- `hvo-sky-install --help`, `-h` and `help` print usage on standard output and exit 0, and so does help for a single
+  command (`hvo-sky-install cameraagent install --help`). A command-line mistake prints the reason and usage on standard
   error and exits 2, without the `Installation failed:` prefix. (#1302)
+- The installer is `hvo-sky-install` (it was `hvo-skymonitor`), and `hvo-sky` is reserved for the runtime client.
+  Release archives are `hvo-sky-install-v<version>-linux-<arch>.tar.gz`. Fixed locations use the flat `hvo-sky` style:
+  the host policy is `/etc/hvo-sky/host.json`, the default product root is `/var/lib/hvo-sky`, the host-policy lock is
+  `/run/hvo-sky-host-policy.lock`, per-user distribution state and cache are under `~/.local/state/hvo-sky` and
+  `~/.cache/hvo-sky`, and the replay runner's default socket is `/run/hvo-sky/replay-runner.sock`. Nothing had been
+  released, so there is no alias or migration: reinstall development hosts. (#1313)
 - Successful raw ingress SQLite commits and checkpoints are logged at Debug instead of Warning. A manual location
   override superseded by configuration is logged at Information. Warnings now mean something did not work. (#1303)
 

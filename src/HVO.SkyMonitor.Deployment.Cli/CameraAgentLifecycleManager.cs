@@ -2323,7 +2323,7 @@ internal sealed class CameraAgentLifecycleManager
             healthy,
             [paths.ConfigRoot, paths.StateRoot, paths.CatalogRoot],
             manifest.LifecycleCondition == InstanceLifecycleCondition.Uninstalled
-                ? $"hvo-skymonitor cameraagent reinstall --instance-id {manifest.InstanceId:D}"
+                ? $"hvo-sky-install cameraagent reinstall --instance-id {manifest.InstanceId:D}"
                 : null,
             DateTimeOffset.UtcNow);
 

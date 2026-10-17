@@ -1,6 +1,6 @@
 # CameraAgent Deployment Installer
 
-The `hvo-skymonitor` self-contained Linux CLI installs one local, standalone
+The `hvo-sky-install` self-contained Linux CLI installs one local, standalone
 VirtualSky CameraAgent without a repository checkout or a target-host .NET
 runtime. Docker Engine and the Compose plugin are the only application-runtime
 prerequisites; the host must also pass the [host prerequisites](#host-prerequisites)
@@ -8,7 +8,7 @@ that install and `install --dry-run` evaluate. Catalog releases can be resolved 
 HTTPS mirrors, or signed release indexes; every source uses the same pinned
 signature, length, checksum, archive, and internal catalog validation.
 
-`hvo-skymonitor --version` prints the installer's version and the commit it was built from, as
+`hvo-sky-install --version` prints the installer's version and the commit it was built from, as
 `<version>+<40-character commit>`, and exits 0. Like `--help`, it needs no Docker and does not read the
 [host policy](#production-product-root-on-another-filesystem), so it works even where that policy is refused. A build
 given no version is `0.0.0-dev`, and a build without a checkout or a supplied commit prints `0.0.0-dev+unknown`.
@@ -25,7 +25,7 @@ runbook describes the installer as it behaves today.
 
 | Contract | Today | Issue |
 | --- | --- | --- |
-| Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | One `hvo-skymonitor` CLI, configured by flags or `--config`; no runtime client or wizard | [#1313](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1313), [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
+| Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | The `hvo-sky-install` CLI, configured by flags or `--config`; no runtime client or wizard | [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
 | `install.sh` entry point with `--check` and `--from DIR` | No `install.sh`; the self-contained CLI is run directly | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
 | Install and upgrade from a published release, by GHCR digest or offline archive | Nothing is published, so hosts install a locally built image by its loaded image ID | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309) |
 | `--version`, and upgrade notes printed before an upgrade | `--version` reports the installer build identity. The release.json reader and pre-upgrade notes are implemented; the release acquisition path that supplies them is pending #1309 (see [Upgrade notes and older targets](#upgrade-notes-and-older-targets)) | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312) |
@@ -33,7 +33,7 @@ runbook describes the installer as it behaves today.
 | Swap upgrade that never copies bulk data, snapshotting only the small databases for a declared migration | Upgrade and rollback take a `tar` backup of the instance's configuration and state | [#1314](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1314); [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044) narrows to the `backup` command |
 | Container limits kept in the install record and changed with a re-run | Limits are set at install and recorded in the instance's `instance-manifest.json`. A re-run with different `--cpus` or `--memory` is refused, and an installed instance's limits change only when an upgrade moves limits the operator did not set to the new default (see [Container Resources](#container-resources)) | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
 | Settings catalogue served by the API | No catalogue | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
-| Machine install record `/etc/hvo-sky/install.json` | Records live beneath each instance root (`instance-manifest.json`, `state/deployment/`) | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315), path [#1313](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1313) |
+| Machine install record `/etc/hvo-sky/install.json` | Records live beneath each instance root (`instance-manifest.json`, `state/deployment/`); `/etc/hvo-sky/` holds only the host policy | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
 
 ## Inputs
 
@@ -46,7 +46,7 @@ The compatibility form below consumes the internally verified local catalog
 directory produced by the deterministic catalog tooling:
 
 ```bash
-hvo-skymonitor cameraagent install \
+hvo-sky-install cameraagent install \
   --friendly-name "North All-Sky Camera" \
   --bind-address 127.0.0.1 \
   --port 5130 \
@@ -62,7 +62,7 @@ For a signed offline catalog release, place `catalog-manifest.json`,
 `catalog-manifest.json.sig`, and the referenced bundle together and use:
 
 ```bash
-hvo-skymonitor cameraagent install \
+hvo-sky-install cameraagent install \
   --channel local \
   --catalog-manifest /srv/hvo/catalog-release/catalog-manifest.json \
   --no-download \
@@ -79,8 +79,8 @@ hash, and signing identity. Channels are `stable`, `nightly`, `prerelease`, and
 
 `--no-download` permits local inputs and fully verified cache hits but performs
 no HTTP request and no Docker registry pull. The user cache is
-`$XDG_CACHE_HOME/hvo/skymonitor/distribution`, or
-`~/.cache/hvo/skymonitor/distribution` when `XDG_CACHE_HOME` is unset. Cache
+`$XDG_CACHE_HOME/hvo-sky/distribution`, or
+`~/.cache/hvo-sky/distribution` when `XDG_CACHE_HOME` is unset. Cache
 hits are rehashed, partial transfers use signed lengths and HTTP ranges, invalid
 complete or partial bytes are removed, and signed-index sequence/hash state
 prevents rollback. Network requests are HTTPS-only with bounded redirects,
@@ -89,8 +89,8 @@ authentication uses `HVO_GITHUB_TOKEN`; credentials are sent only to the
 original `github.com` request and never retained as evidence.
 
 Signed-index rollback state is durable rather than cache data. It is stored
-under `$XDG_STATE_HOME/hvo/skymonitor/distribution`, or
-`~/.local/state/hvo/skymonitor/distribution` when `XDG_STATE_HOME` is unset, and
+under `$XDG_STATE_HOME/hvo-sky/distribution`, or
+`~/.local/state/hvo-sky/distribution` when `XDG_STATE_HOME` is unset, and
 is not removed by ordinary cache cleanup.
 
 Use `--image-archive /srv/hvo/cameraagent.tar` together with
@@ -127,7 +127,7 @@ To serve the camera on a LAN address, bind it there and acknowledge plaintext
 HTTP:
 
 ```bash
-hvo-skymonitor cameraagent install ... \
+hvo-sky-install cameraagent install ... \
   --bind-address 192.168.2.138 --port 5130 --acknowledge-plaintext-http
 ```
 
@@ -193,7 +193,7 @@ The installer limits the CameraAgent container to **2 CPUs, 4 GiB of memory and
 install contract requires. Raise them when installing:
 
 ```bash
-hvo-skymonitor cameraagent install ... --cpus 3 --memory 6g
+hvo-sky-install cameraagent install ... --cpus 3 --memory 6g
 ```
 
 - `--cpus` is a number from 2 to 1024 with at most two decimal places, such as
@@ -301,7 +301,7 @@ An air-gapped installation receives the release directory on local media and
 needs neither registry access nor a source checkout:
 
 ```bash
-hvo-skymonitor cameraagent install \
+hvo-sky-install cameraagent install \
   --channel local \
   --image-manifest /media/hvo/image-v1.4.0/image-manifest.json \
   --catalog-manifest /media/hvo/catalog-release/catalog-manifest.json \
@@ -365,7 +365,7 @@ a release that does not publish that architecture is refused, naming what it
 publishes, before anything is downloaded:
 
 ```bash
-hvo-skymonitor cameraagent upgrade \
+hvo-sky-install cameraagent upgrade \
   --instance-id <uuid> \
   --channel local \
   --image-manifest /media/hvo/image-v1.5.0/image-manifest.json \
@@ -861,7 +861,7 @@ Archived replay remains in the CameraAgent process by default. Select the
 optional long-lived local process boundary only during installation:
 
 ```bash
-hvo-skymonitor cameraagent install \
+hvo-sky-install cameraagent install \
   --replay-profile local-runner \
   <other-required-inputs>
 ```
@@ -935,7 +935,7 @@ W6 performance disposition defined in
 
 Production installation uses the production product root and the canonical
 layout in [product-instance-layout.md](product-instance-layout.md). The
-production product root is `/var/lib/hvo/skymonitor`, unless the root-owned host
+production product root is `/var/lib/hvo-sky`, unless the root-owned host
 policy described below names another one. Every command defaults to it, so an
 instance is found under a relocated root with no extra option. The
 `--product-root` override is rejected for any other root unless the invocation
@@ -948,13 +948,13 @@ file cannot reach the decision at all because the flag is never deserialized.
 Tests that need a temporary root set that admission on the request they build
 rather than mutating the environment of the process they share. The host policy
 location is carried the same way: a test states its own policy location on the
-request it parses, and production always reads `/etc/hvo/skymonitor/host.json`.
+request it parses, and production always reads `/etc/hvo-sky/host.json`.
 
 ### Production product root on another filesystem
 
 A host that keeps application data on another filesystem, for example NVMe
 mounted under `/srv`, names the production product root in the root-owned host
-policy instead of bind-mounting it over `/var/lib/hvo/skymonitor`:
+policy instead of bind-mounting it over `/var/lib/hvo-sky`:
 
 ```json
 {"productRoot": "/srv/data/hvo-skymonitor", "mountPoint": "/srv"}
@@ -965,12 +965,12 @@ first instance is installed**:
 
 ```bash
 sudo install -d -o root -g root -m 0755 /srv/data   # the parent must already exist
-hvo-skymonitor host set-product-root /srv/data/hvo-skymonitor
+hvo-sky-install host set-product-root /srv/data/hvo-skymonitor
 ```
 
 The command escalates through one narrow `sudo`-executed internal command,
 `internal-set-product-root --product-root <path>`, which accepts nothing else and
-always writes `/etc/hvo/skymonitor/host.json`. It re-reads and re-validates the
+always writes `/etc/hvo-sky/host.json`. It re-reads and re-validates the
 existing policy itself, refuses to move a production root whose `cameraagents` or
 `logichosts` directory holds any entry, creates only the final product-root
 directory (`root:root 0755`) beneath an existing validated parent, and publishes
@@ -987,7 +987,7 @@ Relocating a root that already holds instances is not supported: their manifests
 and Compose files name the old root.
 
 The empty-root check and the publication run under a root-only lock,
-`/run/hvo-skymonitor-host-policy.lock` (`root:root 0600`, so no other user can
+`/run/hvo-sky-host-policy.lock` (`root:root 0600`, so no other user can
 open or hold it). The privileged preparation holds the same lock while it re-reads
 the policy and creates an instance root, so an instance can never appear under
 the old root between the check and the moment the policy stops naming it: the
@@ -1050,43 +1050,43 @@ backup unit.
 Every command refuses a policy that does not validate, including
 `host set-product-root`, which validates the existing policy before it writes a
 new one. A recorded `mountPoint` that is no longer a mount, or a hand edit that
-broke the file, therefore needs a privileged repair, which no `hvo-skymonitor`
+broke the file, therefore needs a privileged repair, which no `hvo-sky-install`
 command performs.
 
-A manual edit of `/etc/hvo/skymonitor/host.json` does **not** take the
-host-policy lock (`/run/hvo-skymonitor-host-policy.lock`) that
+A manual edit of `/etc/hvo-sky/host.json` does **not** take the
+host-policy lock (`/run/hvo-sky-host-policy.lock`) that
 `host set-product-root` and the privileged preparation hold. A command started
 while the file is being changed can therefore resolve a different production
-root, for example create a new instance under `/var/lib/hvo/skymonitor` while
+root, for example create a new instance under `/var/lib/hvo-sky` while
 the policy is briefly absent, and that instance would then block restoring the
 real root. Repair only inside a maintenance window:
 
 1. **Open the window.** Stop or hold every automation that runs
-   `hvo-skymonitor`, and run no `hvo-skymonitor` command by hand: no
+   `hvo-sky-install`, and run no `hvo-sky-install` command by hand: no
    `cameraagent install`, `upgrade`, `rollback`, `reinstall`, `uninstall`,
    `purge`, `reset-state`, `recover-owner`, `preflight`, no `catalog` command, no
    `host` command, and no `status`, until step 5 is done. Confirm that nothing is
-   running: `pgrep -af hvo-skymonitor` must print nothing. Running CameraAgent
+   running: `pgrep -af hvo-sky-install` must print nothing. Running CameraAgent
    containers are unaffected and keep running.
 2. **Repair in place, preferring storage over the file.** If the intended
    filesystem can be mounted, mount it at the recorded `mountPoint`, confirm it
    with `findmnt -no SOURCE,UUID <mountPoint>`, and change nothing in the file.
 3. **Otherwise edit only the mount field.** Run
-   `sudo editor /etc/hvo/skymonitor/host.json` and either correct `mountPoint`
+   `sudo editor /etc/hvo-sky/host.json` and either correct `mountPoint`
    or delete just the `mountPoint` member so the setter records it again. Keep
    `productRoot` exactly as it was: it is the root the instances live under.
    Keep the file `root:root 0644`.
 4. **Never delete the file while instances exist under its `productRoot`.**
-   Without the file every command falls back to `/var/lib/hvo/skymonitor`, so the
+   Without the file every command falls back to `/var/lib/hvo-sky`, so the
    instances under the policy root become unreachable: `status` and every
    lifecycle command look only in the root in force. Remove `host.json` only when
    that root is empty, after every instance under it has been uninstalled and
    purged.
 5. **Re-establish and verify, then close the window.** Run
-   `hvo-skymonitor host set-product-root <the same productRoot>`, which validates
+   `hvo-sky-install host set-product-root <the same productRoot>`, which validates
    the repaired policy and records the mount point that currently holds the
-   root, then `hvo-skymonitor status`, and confirm that every expected instance ID
-   is listed. Only then resume automation and other `hvo-skymonitor` commands.
+   root, then `hvo-sky-install status`, and confirm that every expected instance ID
+   is listed. Only then resume automation and other `hvo-sky-install` commands.
 
 The installer records owner-only files beneath the UUID instance root:
 
@@ -1120,9 +1120,10 @@ verification result/time, and provenance identity without authentication data.
 The installer creates the product root through one narrow `sudo`-executed
 internal preparation command when needed. That command prepares only the
 production product root the host policy resolves, under the host-policy lock:
-under the default root it may also create `/var/lib/hvo`, and under a policy root
-it validates the existing root and creates its `cameraagents`, `logichosts`, and
-`catalogs` namespaces as `root:root 0755`. `catalog install` and `catalog gc` use
+under the default root it may also create `/var/lib/hvo-sky` itself, and under a
+policy root it validates the existing root; under either it creates the
+`cameraagents`, `logichosts`, and `catalogs` namespaces as `root:root 0755`.
+`catalog install` and `catalog gc` use
 the same command's product form (`--product-root`, `--uid`, `--gid`, no instance)
 when the runtime user is denied creating the runtime-owned `operations` directory
 or an approved catalog root beneath the root-owned namespace; neither command ever
@@ -1217,7 +1218,7 @@ the CameraAgent host as the Docker-capable deployment runtime user, never as
 root:
 
 ```bash
-hvo-skymonitor cameraagent recover-owner --instance-id <uuid> --generate-password
+hvo-sky-install cameraagent recover-owner --instance-id <uuid> --generate-password
 ```
 
 Alternatively, provide an absolute owner-only mode `0400` or `0600` file with
@@ -1283,7 +1284,7 @@ Each mutation publishes a durable phase. A failed run retains redacted state and
 diagnostics. Resume only an explicitly known instance:
 
 ```bash
-hvo-skymonitor cameraagent install --resume --instance-id <uuid> <same-inputs>
+hvo-sky-install cameraagent install --resume --instance-id <uuid> <same-inputs>
 ```
 
 Immutable input drift fails closed before production configuration or container
@@ -1332,12 +1333,12 @@ establish. Install and upgrade retain the report at `state/deployment/state-pref
 it on demand without starting, loading, pulling, or mutating anything:
 
 ```bash
-hvo-skymonitor cameraagent preflight --instance-id <uuid> --json
-hvo-skymonitor cameraagent preflight --instance-id <uuid> \
+hvo-sky-install cameraagent preflight --instance-id <uuid> --json
+hvo-sky-install cameraagent preflight --instance-id <uuid> \
   --image-ref <repository@sha256:digest>
-hvo-skymonitor cameraagent preflight --instance-id <uuid> \
+hvo-sky-install cameraagent preflight --instance-id <uuid> \
   --image-manifest /media/hvo/image-v1.5.0/image-manifest.json
-hvo-skymonitor cameraagent preflight --instance-id <uuid> \
+hvo-sky-install cameraagent preflight --instance-id <uuid> \
   --channel stable --no-download \
   --image-index https://mirror.example/indexes/image-stable-index.json \
   --image-version 1.5.0 --asset-base-url https://mirror.example/releases
@@ -1395,7 +1396,7 @@ identity for the selected platform (`offlineArchiveImageId` or `manifestDigest`)
 attempted upgrade to that same image is still refused outright.
 
 Rollback state is retained per operating-system user
-(`$XDG_STATE_HOME/hvo/skymonitor/distribution`, else `~/.local/state/...`), so run the preflight as the same
+(`$XDG_STATE_HOME/hvo-sky/distribution`, else `~/.local/state/...`), so run the preflight as the same
 user that will run the upgrade for its rollback protection to consult the same floor.
 
 The command exits `0` when compatible and `1` with error code `state-incompatible` otherwise. Each finding
@@ -1456,12 +1457,12 @@ file over the operator's settings. A copy whose content differs from the setting
 operator.
 
 ```bash
-hvo-skymonitor cameraagent uninstall --instance-id <uuid>
-hvo-skymonitor cameraagent reset-state --instance-id <uuid> \
+hvo-sky-install cameraagent uninstall --instance-id <uuid>
+hvo-sky-install cameraagent reset-state --instance-id <uuid> \
   --confirm-instance-id <uuid> --dry-run
-hvo-skymonitor cameraagent reset-state --instance-id <uuid> \
+hvo-sky-install cameraagent reset-state --instance-id <uuid> \
   --confirm-instance-id <uuid>
-hvo-skymonitor cameraagent install --instance-id <uuid> <same immutable inputs>
+hvo-sky-install cameraagent install --instance-id <uuid> <same immutable inputs>
 ```
 
 `--dry-run` records the same authenticated deletion inventory and prints the exact destructive and preserved
@@ -1487,12 +1488,12 @@ health, installation identity, owner identity, and runtime ownership are verifie
 without accepting an operator password file. Image references must be immutable digests:
 
 ```bash
-hvo-skymonitor status --instance-id <uuid> --json
-hvo-skymonitor cameraagent upgrade --instance-id <uuid> \
+hvo-sky-install status --instance-id <uuid> --json
+hvo-sky-install cameraagent upgrade --instance-id <uuid> \
   --image-ref <repository@sha256:digest>
-hvo-skymonitor cameraagent rollback --instance-id <uuid>
-hvo-skymonitor cameraagent uninstall --instance-id <uuid>
-hvo-skymonitor cameraagent reinstall --instance-id <uuid>
+hvo-sky-install cameraagent rollback --instance-id <uuid>
+hvo-sky-install cameraagent uninstall --instance-id <uuid>
+hvo-sky-install cameraagent reinstall --instance-id <uuid>
 ```
 
 An upgrade whose candidate declares the installed state contract needs no further assertion. The candidate
@@ -1544,7 +1545,7 @@ anything, including before the lifecycle journal, it does two things:
 - It prints the upgrade notes of every release after the installed version, up to the release the target belongs to.
   A release candidate shows its release's notes. `--dry-run` shows them too.
 - It refuses a target older than the installed version, says that an upgrade never goes back, and names
-  `hvo-skymonitor cameraagent rollback --instance-id <uuid>`.
+  `hvo-sky-install cameraagent rollback --instance-id <uuid>`.
 
 Upgrade-note text follows one terminal-safety rule. CRLF becomes LF; LF and TAB are retained, so tabs keep their
 existing terminal spacing behavior. All other Unicode controls (Cc), all format characters (Cf), line and paragraph
@@ -1589,7 +1590,7 @@ an operator-image upgrade whose exact original runtime is already healthy, the
 bounded recovery-only form is:
 
 ```bash
-hvo-skymonitor cameraagent upgrade \
+hvo-sky-install cameraagent upgrade \
   --instance-id <original-instance-uuid> \
   --image-ref <original-request-candidate-reference> \
   <same-original-request-options> \
@@ -1741,7 +1742,7 @@ operation ID. Once the operator has confirmed that the tree was removed outside
 the CLI, they rerun the same command with that ID as an explicit disposition:
 
 ```bash
-hvo-skymonitor cameraagent purge --instance-id <uuid> --confirm-instance-id <uuid> \
+hvo-sky-install cameraagent purge --instance-id <uuid> --confirm-instance-id <uuid> \
   --resume --confirm-removed-operation-id <operation-id>
 ```
 
@@ -1779,11 +1780,11 @@ disposition is required, and the operator who supplies it is attesting removal.
 Catalog versions are explicit per instance:
 
 ```bash
-hvo-skymonitor catalog install --catalog-bundle /owner-private/catalog.bundle
-hvo-skymonitor catalog select --instance-id <uuid> --catalog-version <version>
-hvo-skymonitor catalog rollback --instance-id <uuid>
-hvo-skymonitor catalog gc --catalog-version <version>
-hvo-skymonitor catalog check --catalog-manifest <signed-manifest-url-or-path>
+hvo-sky-install catalog install --catalog-bundle /owner-private/catalog.bundle
+hvo-sky-install catalog select --instance-id <uuid> --catalog-version <version>
+hvo-sky-install catalog rollback --instance-id <uuid>
+hvo-sky-install catalog gc --catalog-version <version>
+hvo-sky-install catalog check --catalog-manifest <signed-manifest-url-or-path>
 ```
 
 Each approved catalog ID has its own root,
@@ -2079,13 +2080,13 @@ licenses, and attribution. The optional bootstrap script downloads and verifies
 only the selected self-contained CLI archive:
 
 ```bash
-./scripts/install-hvo-skymonitor.sh 1.0.0 /opt/hvo-installer-1.0.0
+./scripts/install-hvo-sky-install.sh 1.0.0 /opt/hvo-installer-1.0.0
 ```
 
 Resolve a signed installer-index default or exact indexed version with:
 
 ```bash
-./scripts/install-hvo-skymonitor.sh \
+./scripts/install-hvo-sky-install.sh \
   --index https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/installer-index-3/installer-release-index.json \
   --version 1.0.0 \
   /opt/hvo-installer-1.0.0

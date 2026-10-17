@@ -98,7 +98,7 @@ public sealed partial class LifecycleContractTests
 
         Assert.AreEqual(
             "1.3.0 is installed, which is newer than the upgrade target 1.2.0; an upgrade never goes back. " +
-            $"To return to the previous image, run 'hvo-skymonitor cameraagent rollback --instance-id {fixture.InstanceId:D}'.",
+            $"To return to the previous image, run 'hvo-sky-install cameraagent rollback --instance-id {fixture.InstanceId:D}'.",
             exception.Message);
         // Nothing was journaled, shown, paused or changed, so no refused operation is left to settle or resume.
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));

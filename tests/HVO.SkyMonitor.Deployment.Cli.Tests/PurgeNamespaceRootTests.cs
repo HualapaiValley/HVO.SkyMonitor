@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// <summary>
 /// Manual real-root contracts for the purge namespace boundary. Each case runs the published Deployment CLI as the
 /// unprivileged runtime user inside a disposable private mount namespace: <c>/var/lib</c> is a namespace-private tmpfs
-/// and <c>/var/lib/hvo/skymonitor</c> is a bind of a fresh staging tree carrying the installer's real
+/// and <c>/var/lib/hvo-sky</c> is a bind of a fresh staging tree carrying the installer's real
 /// <c>root:root 0755</c> namespace ownership, so the runtime user meets the kernel denial of the field incident and the
 /// real <c>sudo</c> route hands only the rename and the removal to the real root helper. The host's <c>/var/lib</c>
 /// and every installed instance stay untouched; Docker is only queried. Requires Linux, a non-root runner with
@@ -29,8 +29,8 @@ public sealed class PurgeNamespaceRootTests
         "staging=$1\n" +
         "shift\n" +
         "mount -t tmpfs -o mode=0755,size=1m hvo-purge-test /var/lib\n" +
-        "mkdir -m 0755 /var/lib/hvo /var/lib/hvo/skymonitor\n" +
-        "mount --bind \"$staging\" /var/lib/hvo/skymonitor\n" +
+        "mkdir -m 0755 /var/lib/hvo-sky\n" +
+        "mount --bind \"$staging\" /var/lib/hvo-sky\n" +
         "exec \"$@\"\n";
 
     public TestContext TestContext { get; set; } = null!;
@@ -160,7 +160,7 @@ public sealed class PurgeNamespaceRootTests
         Assert.AreEqual(2, (await staging.RunHelperAsync(
             HelperArguments(PrivilegedPurgeNamespace.Action.Quarantine, instanceId, operationId, identity with { Uid = identity.Uid + 1 }))).ExitCode);
         Assert.AreEqual(2, (await staging.RunHelperAsync(
-            [.. quarantine.Select(static argument => argument == InstallRequest.DefaultProductRoot ? "/var/lib/hvo/other" : argument)])).ExitCode);
+            [.. quarantine.Select(static argument => argument == InstallRequest.DefaultProductRoot ? "/var/lib/hvo-sky-other" : argument)])).ExitCode);
 
         // Identity and namespace refusals leave the instance where it is.
         await AssertHelperRefusedAsync(staging,
@@ -245,7 +245,7 @@ public sealed class PurgeNamespaceRootTests
 
     /// <summary>
     /// An uninstalled instance staged in a disposable tree that records the default product root, so that once the
-    /// tree is bound at <c>/var/lib/hvo/skymonitor</c> in a private namespace it is the installation the CLI resolves.
+    /// tree is bound at <c>/var/lib/hvo-sky</c> in a private namespace it is the installation the CLI resolves.
     /// </summary>
     private sealed class RootStaging : IDisposable
     {

@@ -11,12 +11,12 @@ public sealed class FilePolicyTests
     {
         var instanceId = Guid.Parse("6bc13a6b-4728-4ecf-99d3-c1865536a67b");
 
-        var paths = InstallationPaths.Create("/var/lib/hvo/skymonitor", instanceId, "hyg-v42-production");
+        var paths = InstallationPaths.Create("/var/lib/hvo-sky", instanceId, "hyg-v42-production");
 
         Assert.AreEqual(
-            "/var/lib/hvo/skymonitor/cameraagents/6bc13a6b-4728-4ecf-99d3-c1865536a67b",
+            "/var/lib/hvo-sky/cameraagents/6bc13a6b-4728-4ecf-99d3-c1865536a67b",
             paths.InstanceRoot);
-        Assert.AreEqual("/var/lib/hvo/skymonitor/catalogs/hyg-v42-production", paths.CatalogRoot);
+        Assert.AreEqual("/var/lib/hvo-sky/catalogs/hyg-v42-production", paths.CatalogRoot);
     }
 
     [TestMethod]

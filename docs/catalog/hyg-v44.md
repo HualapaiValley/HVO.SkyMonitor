@@ -132,8 +132,8 @@ not change how a star's position is computed.
 Each approved lineage has its own root under the product root:
 
 ```text
-/var/lib/hvo/skymonitor/catalogs/hyg-v42-production/versions/hyg-v4.2-p3-s2-r1
-/var/lib/hvo/skymonitor/catalogs/hyg-v44-production/versions/hyg-v4.4-p4-s3-r1
+/var/lib/hvo-sky/catalogs/hyg-v42-production/versions/hyg-v4.2-p3-s2-r1
+/var/lib/hvo-sky/catalogs/hyg-v44-production/versions/hyg-v4.4-p4-s3-r1
 ```
 
 `catalog install` reads the catalog ID from the bundle manifest, checks it
@@ -141,10 +141,10 @@ against the registry and installs the bundle beneath that lineage's root. It doe
 not select the catalog for any instance:
 
 ```bash
-hvo-skymonitor catalog install --catalog-bundle /owner-private/hyg-v4.4-p4-s3-r1.bundle
-hvo-skymonitor catalog select --instance-id <uuid> --catalog-version hyg-v4.4-p4-s3-r1
-hvo-skymonitor catalog rollback --instance-id <uuid>
-hvo-skymonitor catalog check --catalog-manifest <signed-manifest-url-or-path>
+hvo-sky-install catalog install --catalog-bundle /owner-private/hyg-v4.4-p4-s3-r1.bundle
+hvo-sky-install catalog select --instance-id <uuid> --catalog-version hyg-v4.4-p4-s3-r1
+hvo-sky-install catalog rollback --instance-id <uuid>
+hvo-sky-install catalog check --catalog-manifest <signed-manifest-url-or-path>
 ```
 
 Package versions are unique across lineages, so `--catalog-version` names exactly

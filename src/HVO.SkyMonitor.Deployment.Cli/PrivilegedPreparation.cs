@@ -141,7 +141,6 @@ internal static class PrivilegedPreparation
                 invocation.Uid,
                 invocation.Gid,
                 requireRoot: true,
-                production.FromPolicy,
                 includeInstance: invocation.InstanceId is not null));
         }
         catch (Exception exception) when (exception is InstallerException or IOException or UnauthorizedAccessException)
@@ -173,23 +172,18 @@ internal static class PrivilegedPreparation
     }
 
     /// <summary>
-    /// The root-owned shared namespaces the privileged preparation creates or validates. Under the default root that
-    /// includes <c>/var/lib/hvo</c>, which it may create; a host-policy root already exists with every component
-    /// validated as <c>root:root</c> by the policy, so only the root and its namespaces are listed.
+    /// The root-owned shared namespaces the privileged preparation creates or validates: the product root and its
+    /// namespaces. The default root <c>/var/lib/hvo-sky</c> sits directly in the system's <c>/var/lib</c>, which
+    /// preparation neither creates nor claims; a host-policy root already exists with every component validated as
+    /// <c>root:root</c> by the policy.
     /// </summary>
-    internal static IReadOnlyList<string> RootOwnedNamespaces(string productRoot, bool fromPolicy)
-    {
-        var namespaces = new List<string>();
-        if (!fromPolicy)
-        {
-            namespaces.Add(Path.GetDirectoryName(InstallRequest.DefaultProductRoot)!);
-        }
-        namespaces.Add(productRoot);
-        namespaces.Add(Path.Combine(productRoot, "cameraagents"));
-        namespaces.Add(Path.Combine(productRoot, "logichosts"));
-        namespaces.Add(Path.Combine(productRoot, "catalogs"));
-        return namespaces;
-    }
+    internal static IReadOnlyList<string> RootOwnedNamespaces(string productRoot) =>
+    [
+        productRoot,
+        Path.Combine(productRoot, "cameraagents"),
+        Path.Combine(productRoot, "logichosts"),
+        Path.Combine(productRoot, "catalogs")
+    ];
 
     /// <summary>
     /// Creates only what is missing, as owner-only directories: an existing product root, namespace, or runtime
@@ -226,7 +220,6 @@ internal static class PrivilegedPreparation
         uint uid,
         uint gid,
         bool requireRoot,
-        bool fromPolicy = false,
         bool includeInstance = true)
     {
         if (requireRoot && NativeLinux.getuid() != 0)
@@ -252,7 +245,7 @@ internal static class PrivilegedPreparation
             return;
         }
 
-        foreach (var directory in RootOwnedNamespaces(paths.ProductRoot, fromPolicy))
+        foreach (var directory in RootOwnedNamespaces(paths.ProductRoot))
         {
             CreateOrValidateRootDirectory(directory);
         }

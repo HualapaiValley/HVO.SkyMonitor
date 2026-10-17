@@ -80,7 +80,7 @@ retrying.
 docker build -f src/HVO.SkyMonitor.ProcessingRunner/Dockerfile -t hvo-processing-runner:<revision> .
 docker buildx build --platform linux/arm64 -f src/HVO.SkyMonitor.ProcessingRunner/Dockerfile -t hvo-processing-runner:<revision>-arm64 .
 HVO_SKYMONITOR_REVISION=<revision> HVO_RUNNER_LOGICHOST_URL=https://logichost.lan \
-  HVO_RUNNER_CLIENT_SECRET_PATH=/etc/hvo/runner-secret \
+  HVO_RUNNER_CLIENT_SECRET_PATH=/etc/hvo-sky/runner-secret \
   docker compose -f deploy/split-host/compose.processing-runner.yml up -d
 ```
 
