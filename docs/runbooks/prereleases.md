@@ -88,6 +88,14 @@ These settings are the owner's; the workflow cannot change them:
   and the gate then also requires a green `development/v1` commit.
 - **The arm64 runner's egress** must reach `ghcr.io` and `pkg-containers.githubusercontent.com`. The install test pulls
   the image from there, so a blocked runner fails every pre-release at that job, before anything is published.
+- **Memory cgroups on every arm64 host**, the runner included. The install test's `cameraagent install` checks the
+  [host prerequisites](deployment-installer.md#host-prerequisites). They refuse a Docker daemon that cannot enforce
+  the CameraAgent memory, CPU and PIDs limits (`docker-memory-limit-unsupported` and its CPU and PIDs companions). A
+  Raspberry Pi's firmware adds `cgroup_disable=memory` to the kernel command line, so a Pi needs a space and
+  `cgroup_enable=memory` appended to the end of the single line in `/boot/firmware/cmdline.txt`, then a reboot.
+  `docker info` must then report `MemoryLimit`, `CpuCfsQuota` and `PidsLimit` as `true`. As of 2026-10-17,
+  `github-runner-pi-01` and `skymonitor01` both meet this. A runner that does not fails every pre-release at the
+  Install and Upgrade job, before anything is published. Once it is fixed, **Re-run failed jobs** completes the run.
 - **The `skymonitor-cameraagent` package's visibility.** A new GHCR package is private, so a host must sign in to
   `ghcr.io` before it can pull by digest. The offline archives need no sign-in.
 
