@@ -52,7 +52,7 @@ finish() {
 is_secret_scan_contract_path() {
   # The gitleaks version and archive checksums are pinned in ci:secret-scan.
   case "$1" in
-    scripts/ci:secret-scan | scripts/test:ci-secret-scan | .gitleaks.toml | *.gitleaksignore | .gitattributes | \
+    scripts/ci:secret-scan | scripts/test:ci-secret-scan | .gitleaks.toml | *.gitleaksignore | *.gitattributes | \
       .github/workflows/development-v1.yml | .github/workflows/ci.yml | scripts/ci:classify)
       return 0
       ;;

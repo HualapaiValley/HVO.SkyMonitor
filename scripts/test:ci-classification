@@ -186,6 +186,8 @@ secret_scan_contract_paths=(
   "docs/.gitleaksignore"
   "docs/nested/fixture.gitleaksignore"
   ".gitattributes"
+  "scripts/.gitattributes"
+  "tests/fixtures/x/.gitattributes"
   ".github/workflows/development-v1.yml"
   ".github/workflows/ci.yml"
   "scripts/ci:classify"

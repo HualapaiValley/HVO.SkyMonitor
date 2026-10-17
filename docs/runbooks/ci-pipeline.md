@@ -58,7 +58,7 @@ It always runs on `development/v1` pushes and in Full Quality. On a PR,
 Preflight runs it when the classifier's `secret_scan_contract` output selects
 it for changes to any of these inputs: the scanner (including its pinned
 gitleaks version/checksums), its contract test, `.gitleaks.toml`,
-`.gitattributes`, any path matching `*.gitleaksignore` at the root or any
+any path matching `*.gitattributes` or `*.gitleaksignore` at the root or any
 depth, either scanner workflow (`development-v1.yml` or `ci.yml`), or the
 classifier itself. Pushes retain the classifier's non-PR full-mode convention.
 Missing commits, empty ranges, failed or malformed diffs, missing/non-regular
