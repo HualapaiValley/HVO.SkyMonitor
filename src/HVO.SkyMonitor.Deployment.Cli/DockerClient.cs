@@ -170,41 +170,13 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                      imageConfig.TryGetProperty("Labels", out var imageLabels)
             ? imageLabels
             : default;
-        var upgradeCompatibility = labels.ValueKind == JsonValueKind.Object &&
-                                   labels.TryGetProperty("io.hvo.skymonitor.state-compatibility", out var compatibility)
-            ? compatibility.GetString()
-            : null;
-        var sourceRevision = labels.ValueKind == JsonValueKind.Object &&
-                             labels.TryGetProperty("org.opencontainers.image.revision", out var revision)
-            ? revision.GetString()
-            : null;
-        var component = Label(labels, "io.hvo.skymonitor.component");
-        var configurationContract = Label(labels, "io.hvo.skymonitor.configuration-contract");
-        var catalogContract = Label(labels, "io.hvo.skymonitor.catalog-contract");
-        var replayRunnerContract = Label(labels, "io.hvo.skymonitor.replay-runner-contract");
-        var minimumCompatibleRevision = Label(labels, "io.hvo.skymonitor.minimum-compatible-revision");
-        var identityMigration = Label(labels, "io.hvo.skymonitor.identity-migration");
-        var rawIngressSchema = Label(labels, "io.hvo.skymonitor.raw-ingress-schema");
-        var rawIngressMigration = Label(labels, "io.hvo.skymonitor.raw-ingress-migration");
-        var catalogManifestVersion = Label(labels, "io.hvo.skymonitor.catalog-manifest-version");
-
-        var installationIdentity = new ImageInstallationIdentity(
+        var installationIdentity = CameraAgentImageLabels.Identity(
             request.ImageArchive is null ? "registry" : "archive",
             reference,
             imageId,
             imageArchitecture,
             request.ImageArchiveSha256,
-            UpgradeCompatibility: upgradeCompatibility,
-            SourceRevision: sourceRevision,
-            Component: component,
-            ConfigurationContract: configurationContract,
-            CatalogContract: catalogContract,
-            ReplayRunnerContract: replayRunnerContract,
-            MinimumCompatibleRevision: minimumCompatibleRevision,
-            IdentityMigration: identityMigration,
-            RawIngressSchema: rawIngressSchema,
-            CatalogManifestVersion: catalogManifestVersion,
-            RawIngressMigration: rawIngressMigration);
+            labels);
         if (signedImage is not null)
         {
             EnsureSignedImageAgreement(signedImage, installationIdentity);
@@ -695,10 +667,6 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                                               option.Equals("size=67108864", StringComparison.OrdinalIgnoreCase)) == 1;
     }
 
-    private static string? Label(JsonElement labels, string name)
-        => labels.ValueKind == JsonValueKind.Object && labels.TryGetProperty(name, out var value)
-            ? value.GetString()
-            : null;
 
     private async Task<ProcessResult> RunDockerAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {

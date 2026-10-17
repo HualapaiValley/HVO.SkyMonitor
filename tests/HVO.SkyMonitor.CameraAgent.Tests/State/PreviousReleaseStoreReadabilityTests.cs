@@ -20,9 +20,15 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.State;
 /// Two directions are checked. The stores this release creates must be exactly the previous release's. And the
 /// previous release's stores, once this release has opened them (and migrated them, if it does), must still be exactly
 /// the previous release's. A change the previous release cannot read fails here. It ships only as a declared
-/// <c>snapshotRollbackExceptions</c> entry naming the store, its objects, and the image state-boundary label whose
-/// change makes the installer treat the upgrade as a migration that snapshots the stores and rolls back by restoring
-/// them. The fixture changes only in the release pull request that cuts a version.
+/// <c>snapshotRollbackExceptions</c> entry naming the store, its objects, an image state-boundary label, that label's
+/// value on the previous release (frozen with the stores in <c>imageLabels</c>) and its value on this release. The
+/// fixture changes only in the release pull request that cuts a version.
+/// </para>
+/// <para>
+/// This test only checks that an exception is well formed and matches this release's Dockerfile. Whether the label
+/// change really makes the installer snapshot the stores is proved in Deployment.Cli.Tests
+/// (<c>CameraAgentSnapshotRollbackExceptionTests</c>) through the installer's own label reading and boundary
+/// comparison, so no copy of that comparison lives here.
 /// </para>
 /// </remarks>
 [TestClass]
@@ -30,14 +36,6 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.State;
 [DoNotParallelize]
 public sealed class PreviousReleaseStoreReadabilityTests
 {
-    /// <summary>The image labels the installer compares to decide that an upgrade declares a state migration.</summary>
-    private static readonly HashSet<string> InstallerStateBoundaryLabels = new(StringComparer.Ordinal)
-    {
-        "io.hvo.skymonitor.state-compatibility", "io.hvo.skymonitor.minimum-compatible-revision",
-        "io.hvo.skymonitor.identity-migration", "io.hvo.skymonitor.raw-ingress-schema",
-        "io.hvo.skymonitor.raw-ingress-migration", "io.hvo.skymonitor.catalog-manifest-version"
-    };
-
     [TestMethod]
     public async Task CurrentStores_AreExactlyThePreviousReleaseStores()
     {
@@ -176,14 +174,24 @@ public sealed class PreviousReleaseStoreReadabilityTests
                 static store => store.GetProperty("location").GetString()!,
                 static store => store.GetProperty("dump").GetString()!,
                 StringComparer.Ordinal);
+            var previousLabels = root.GetProperty("imageLabels").EnumerateObject()
+                .ToDictionary(static label => label.Name, static label => label.Value.GetString()!, StringComparer.Ordinal);
+            var currentLabels = HVO.SkyMonitor.CameraAgent.Tests.Deployment.CameraAgentStateCompatibilityLabelTests.ReadImageLabels();
             var exceptions = new List<(string, HashSet<string>, string)>();
             foreach (var exception in root.GetProperty("snapshotRollbackExceptions").EnumerateArray())
             {
+                var location = exception.GetProperty("location").GetString()!;
                 var label = exception.GetProperty("stateBoundaryLabel").GetString()!;
-                // A declared exception is detected by the installer only through a state-boundary label it compares.
-                Assert.IsTrue(InstallerStateBoundaryLabels.Contains(label),
-                    $"Exception label '{label}' is not a state boundary the installer compares, so it would not snapshot the stores.");
-                exceptions.Add((exception.GetProperty("location").GetString()!,
+                var previousValue = exception.GetProperty("previousValue").GetString();
+                var candidateValue = exception.GetProperty("candidateValue").GetString();
+                // An exception is bound to the label values the two releases actually declare; whether that change
+                // makes the installer take a snapshot is proved by the installer's own comparison in Deployment.Cli.Tests.
+                Assert.IsTrue(dumps.ContainsKey(location), $"Exception names '{location}', which is not a previous-release store.");
+                Assert.AreEqual(previousLabels.GetValueOrDefault(label), previousValue,
+                    $"Exception for '{location}' names a previous '{label}' the frozen release does not declare.");
+                Assert.AreEqual(currentLabels.GetValueOrDefault(label), candidateValue,
+                    $"Exception for '{location}' names a '{label}' this release's Dockerfile does not declare.");
+                exceptions.Add((location,
                     exception.GetProperty("objects").EnumerateArray().Select(static item => item.GetString()!).ToHashSet(StringComparer.Ordinal),
                     label));
             }
@@ -208,6 +216,9 @@ public sealed class PreviousReleaseStoreReadabilityTests
             {
                 schemaVersion = 1,
                 release = "development/v1 baseline",
+                // The image labels the frozen release declares, so a declared exception is bound to a real boundary change.
+                imageLabels = new SortedDictionary<string, string>(
+                    HVO.SkyMonitor.CameraAgent.Tests.Deployment.CameraAgentStateCompatibilityLabelTests.ReadImageLabels(), StringComparer.Ordinal),
                 note = "The previous CameraAgent release's SQLite stores, as images that rebuild each one. No release has shipped, so the current development/v1 stores stand in. Regenerate them only in the release pull request that cuts a version, with HVO_WRITE_PREVIOUS_RELEASE_FIXTURES set when running PreviousReleaseStoreReadabilityTests; an ordinary pull request that needs a different image is shipping a store the previous release cannot read.",
                 storageRoots = harness.StorageRoots,
                 stores,

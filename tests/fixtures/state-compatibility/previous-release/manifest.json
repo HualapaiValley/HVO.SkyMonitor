@@ -1,7 +1,19 @@
 {
   "schemaVersion": 1,
   "release": "development/v1 baseline",
-  "note": "The previous CameraAgent release\u0027s SQLite stores, as images that rebuild each one. No release has shipped, so the current development/v1 stores stand in. Regenerate them only in the release pull request that cuts a version, with HVO_WRITE_PREVIOUS_RELEASE_FIXTURES set when running PreviousReleaseStoreReadabilityTests; an ordinary pull request that needs a different image is shipping a store the previous release cannot read.",
+  "imageLabels": {
+    "io.hvo.skymonitor.catalog-contract": "hvo-approved-catalogs-v1",
+    "io.hvo.skymonitor.catalog-manifest-version": "2",
+    "io.hvo.skymonitor.component": "CameraAgent",
+    "io.hvo.skymonitor.configuration-contract": "cameraagent-install-v1",
+    "io.hvo.skymonitor.identity-migration": "20260827053715_InitialIdentity",
+    "io.hvo.skymonitor.minimum-compatible-revision": "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f",
+    "io.hvo.skymonitor.raw-ingress-migration": "canonical-v13-v14-to-v15",
+    "io.hvo.skymonitor.raw-ingress-schema": "15",
+    "io.hvo.skymonitor.replay-runner-contract": "local-replay-runner-v1",
+    "io.hvo.skymonitor.state-compatibility": "cameraagent-state-v2"
+  },
+  "note": "The previous CameraAgent release's SQLite stores, as images that rebuild each one. No release has shipped, so the current development/v1 stores stand in. Regenerate them only in the release pull request that cuts a version, with HVO_WRITE_PREVIOUS_RELEASE_FIXTURES set when running PreviousReleaseStoreReadabilityTests; an ordinary pull request that needs a different image is shipping a store the previous release cannot read.",
   "storageRoots": [
     "/app/data/raw",
     "/app/data/archive",
