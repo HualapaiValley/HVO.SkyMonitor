@@ -52,6 +52,35 @@ public sealed class RetentionBackgroundServiceTests
     }
 
     [TestMethod]
+    public async Task ApplyRetentionAsync_DurablyPausedAdmission_DeletesNothingUntilCaptureResumes()
+    {
+        // An upgrade candidate starts on the journal the installer paused. Its retention must not delete what the
+        // previous image needs while the swap is undecided, and runs normally once the installer resumes capture.
+        using var hold = new Capture.MaintenanceHoldRoot();
+        var root = hold.Path;
+        var expired = Path.Combine(root, "frames", "2020", "01", "01", "Raw", "expired.bin");
+        Directory.CreateDirectory(Path.GetDirectoryName(expired)!);
+        await File.WriteAllTextAsync(expired, "retained").ConfigureAwait(false);
+        using var admission = await hold.AdmissionAsync(paused: true).ConfigureAwait(false);
+        var pressure = new StoragePressureState();
+        var service = new RetentionBackgroundService(
+            new StubConfigurationAccessor(),
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
+            new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero)), new SqliteArtifactOutbox(),
+            new FixedCapacityProvider(50), pressure,
+            NullLogger<RetentionBackgroundService>.Instance, admission: admission);
+
+        await service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual("retained", await File.ReadAllTextAsync(expired).ConfigureAwait(false));
+        // Capacity is still measured and published while deletions wait, so the operations summary stays current.
+        Assert.IsNotNull(pressure.Get(root));
+
+        await admission.ResumeAsync("retention-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        await service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(File.Exists(expired));
+    }
+
+    [TestMethod]
     public async Task ApplyRetentionAsync_UnderPressureShortensEligibleHistoryButPreservesCurrentDay()
     {
         var root = CreateRoot();

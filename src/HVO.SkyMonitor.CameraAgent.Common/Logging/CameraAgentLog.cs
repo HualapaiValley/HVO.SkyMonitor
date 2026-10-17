@@ -290,4 +290,7 @@ internal static partial class CameraAgentLog
 
     [LoggerMessage(EventId = 2075, Level = LogLevel.Debug, Message = "Capture minimum-start deadline overran by {OverrunMilliseconds} ms")]
     public static partial void CaptureDeadlineOverrun(this ILogger logger, double overrunMilliseconds);
+
+    [LoggerMessage(EventId = 2102, Level = LogLevel.Information, Message = "{Maintenance} held while capture admission is {AdmissionState}; nothing was deleted")]
+    public static partial void MaintenanceHeld(this ILogger logger, string maintenance, Capture.CaptureAdmissionState admissionState);
 }

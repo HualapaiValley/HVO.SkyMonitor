@@ -41,6 +41,30 @@ public sealed class ProjectedSceneStageReconciliationServiceTests
     }
 
     [TestMethod]
+    public async Task ReconcileOnceAsync_DurablyPausedAdmission_DeletesNoStageUntilCaptureResumes()
+    {
+        using var hold = new Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: true).ConfigureAwait(false);
+        var owners = new RecordingOwnerProvider();
+        var reconciler = new RecordingReconciler([new ProjectedSceneStageReconciliationResult(1, 1, 0)]);
+        var state = new RawIngressState(TimeProvider.System);
+        using var telemetry = new RawIngressTelemetry(state);
+        var service = new ProjectedSceneStageReconciliationService(
+            new StubIngress(), owners, reconciler, state, telemetry, TimeProvider.System,
+            new ProjectedSceneStageLifecycleCoordinator(),
+            NullLogger<ProjectedSceneStageReconciliationService>.Instance, admission);
+
+        var held = await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(new ProjectedSceneStageReconciliationResult(0, 0, 0), held);
+        Assert.AreEqual(0, owners.CallCount);
+        await admission.ResumeAsync("stage-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        var resumed = await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1, resumed.Deleted);
+        Assert.AreEqual(1, owners.CallCount);
+    }
+
+    [TestMethod]
     public async Task ReconcileLease_BlocksConcurrentStageRegistrationUntilSnapshotAndScanComplete()
     {
         using var lifecycle = new ProjectedSceneStageLifecycleCoordinator();

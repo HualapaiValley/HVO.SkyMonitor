@@ -288,6 +288,27 @@ public sealed class DerivedProductReconcilerTests
         return new(Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }));
     }
 
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task RunOnceAsync_DurablyPausedAdmission_CleansNothingUntilCaptureResumes()
+    {
+        // An upgrade candidate starts on the journal the installer paused; reconciliation must not remove derived
+        // files the previous image may still need until the installer resumes capture.
+        using var hold = new HVO.SkyMonitor.CameraAgent.Tests.Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: true).ConfigureAwait(false);
+        var temporary = Path.Combine(hold.Path, "derived", "2026-10-16", "partial.tmp");
+        Directory.CreateDirectory(Path.GetDirectoryName(temporary)!);
+        await File.WriteAllTextAsync(temporary, "in flight").ConfigureAwait(false);
+        var service = await CreateReconciliationServiceAsync(hold.Path, admission: admission).ConfigureAwait(false);
+
+        await service.RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(File.Exists(temporary));
+
+        await admission.ResumeAsync("derived-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        await service.RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(File.Exists(temporary));
+    }
+
     private static string CreateRoot()
     {
         var root = Path.Combine(Path.GetTempPath(), "skymonitor-derived-reconciliation", Guid.NewGuid().ToString("N"));
@@ -297,7 +318,8 @@ public sealed class DerivedProductReconcilerTests
 
     private static async Task<DerivedProductReconciliationService> CreateReconciliationServiceAsync(
         string root,
-        IRawCaptureIngress? rawIngress = null)
+        IRawCaptureIngress? rawIngress = null,
+        HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureAdmissionCoordinator? admission = null)
     {
         if (Directory.Exists(root))
         {
@@ -319,7 +341,8 @@ public sealed class DerivedProductReconcilerTests
             provider.GetRequiredService<CaptureProcessingState>(),
             provider.GetRequiredService<CaptureDistributionService>(),
             NullLogger<DerivedProductReconciliationService>.Instance,
-            rawIngress);
+            rawIngress,
+            admission);
     }
 
     private sealed class FailingIngress : IRawCaptureIngress

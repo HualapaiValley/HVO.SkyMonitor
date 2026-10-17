@@ -13,7 +13,8 @@ internal sealed class ProjectedSceneStageReconciliationService(
     RawIngressTelemetry telemetry,
     TimeProvider timeProvider,
     ProjectedSceneStageLifecycleCoordinator lifecycle,
-    ILogger<ProjectedSceneStageReconciliationService> logger) : BackgroundService
+    ILogger<ProjectedSceneStageReconciliationService> logger,
+    Capture.CaptureAdmissionCoordinator? admission = null) : BackgroundService
 {
     private static readonly TimeSpan BacklogDelay = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan PeriodicDelay = TimeSpan.FromMinutes(5);
@@ -47,6 +48,12 @@ internal sealed class ProjectedSceneStageReconciliationService(
     internal async ValueTask<ProjectedSceneStageReconciliationResult> ReconcileOnceAsync(
         CancellationToken cancellationToken)
     {
+        // Stage reconciliation deletes unowned stages, so it is held with retention.
+        if (await Capture.CaptureMaintenanceHold.HeldByAsync(admission, cancellationToken).ConfigureAwait(false) is { } heldBy)
+        {
+            logger.MaintenanceHeld("Projected-scene stage reconciliation", heldBy);
+            return new(0, 0, 0);
+        }
         using var lease = await lifecycle.AcquireReconciliationLeaseAsync(cancellationToken).ConfigureAwait(false);
         var owned = await ownerProvider.GetOwnedStageKeysAsync(cancellationToken).ConfigureAwait(false);
         var protectedKeys = new HashSet<string>(owned, StringComparer.Ordinal);

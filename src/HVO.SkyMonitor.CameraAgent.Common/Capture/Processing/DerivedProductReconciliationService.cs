@@ -14,7 +14,8 @@ internal sealed class DerivedProductReconciliationService(
     CaptureProcessingState state,
     Capture.Distribution.CaptureDistributionService distribution,
     ILogger<DerivedProductReconciliationService> logger,
-    IRawCaptureIngress? rawIngress = null) : BackgroundService
+    IRawCaptureIngress? rawIngress = null,
+    CaptureAdmissionCoordinator? admission = null) : BackgroundService
 {
     internal async ValueTask RunOnceAsync(CancellationToken cancellationToken)
     {
@@ -25,6 +26,16 @@ internal sealed class DerivedProductReconciliationService(
             if (rawIngress is not null)
             {
                 await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            }
+            // Reconciliation moves and deletes derived products, so it is held with retention. The read-only evidence
+            // inventory is still refreshed, so the operations summary stays current while capture is paused.
+            if (await CaptureMaintenanceHold.HeldByAsync(admission, cancellationToken).ConfigureAwait(false) is { } heldBy)
+            {
+                var heldInventory = await store.ReadAvailabilityInventoryAsync(cancellationToken).ConfigureAwait(false);
+                state.SetProcessingEvidence(heldInventory.MissingCount, heldInventory.QuarantinedCount);
+                logger.MaintenanceHeld("Derived-product reconciliation", heldBy);
+                activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+                return;
             }
             var reconciler = new DerivedProductReconciler(
                 options.Value.RawIngressRoot, store, options.Value.DerivedProductLifecycle, TimeProvider.System,

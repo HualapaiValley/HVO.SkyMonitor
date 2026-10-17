@@ -24,6 +24,16 @@ Retention fails closed for a storage root before deleting anything when:
 - a pending payload is missing;
 - cancellation is requested while pending manifests are scanned.
 
+Retention, derived-product reconciliation and projected-scene stage reconciliation
+delete nothing while capture admission is not running. An installer upgrade or
+rollback pauses admission durably before it stops the previous image and resumes
+it only after the swap is decided, so a candidate image cannot delete frames,
+archives or derived products the previous image still needs. An operator pause
+holds them too; nothing new is captured while paused. Each skipped pass logs
+`<maintenance> held while capture admission is <state>; nothing was deleted` at
+Information, and the next pass after capture resumes runs normally. See
+[Swap upgrade and database snapshots](deployment-installer.md#swap-upgrade-and-database-snapshots).
+
 The completion log records the storage root, deleted file count, and number of
 protected pending artifacts. A repeated `Retention sweep failed` event requires
 operator investigation; do not edit the outbox database or delete evidence
