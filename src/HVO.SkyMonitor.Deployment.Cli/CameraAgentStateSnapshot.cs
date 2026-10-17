@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -244,8 +245,9 @@ internal static class CameraAgentStateSnapshot
     /// the restored bytes. Before it returns, the directory of every store it restored or removed is synced together
     /// with each directory above it to the product root, whether or not this attempt created it, so the caller's
     /// completion record never outlives a directory entry an interrupted attempt created and never synced.
-    /// <paramref name="carry"/> is the planned carry (<see cref="CameraAgentStateCounters.PlanCarry"/>). A store whose
-    /// carry still fails is left exactly as the snapshot recorded it and returned with why, and the restore goes on.
+    /// <paramref name="carry"/> is the planned carry (<see cref="CameraAgentStateCounters.PlanCarry"/>). It is applied to
+    /// each store's staged copy before that copy replaces the live store; a store whose carry still fails is installed
+    /// exactly as the snapshot recorded it and returned with why, and the restore goes on.
     /// </summary>
     public static async Task<IReadOnlyList<(string What, string Reason)>> RestoreAsync(
         InstallationPaths paths,
@@ -293,10 +295,9 @@ internal static class CameraAgentStateSnapshot
             }
             if (File.Exists(target)) EnsureRegularStore(target, database.RelativePath);
             var temporary = Path.Combine(directory, $".{Path.GetFileName(target)}.restore-{snapshot.SnapshotId:N}.tmp");
-            if (File.Exists(temporary)) File.Delete(temporary);
-            var copied = await CopySyncedAsync(SnapshotFile(root, database), temporary, cancellationToken).ConfigureAwait(false);
-            if (copied != database.Sha256)
-                throw new InstallerException($"The restored copy of '{database.RelativePath}' differs from its snapshot.");
+            // The counters are carried into this staged copy before it replaces anything, so the live store is only ever
+            // the snapshot's bytes or a verified carried copy, each installed by one rename.
+            var installed = await StageAsync(root, database, temporary, carry, uncarried, cancellationToken).ConfigureAwait(false);
             foreach (var sidecar in CameraAgentStateLayout.SqliteSidecarSuffixes.Select(suffix => target + suffix))
             {
                 if (!File.Exists(sidecar)) continue;
@@ -307,14 +308,8 @@ internal static class CameraAgentStateSnapshot
             StepCompleted($"restore-sidecars-removed:{database.RelativePath}");
             File.Move(temporary, target, overwrite: true);
             NativeLinux.FlushDirectory(directory);
-            if (await SafeFileSystem.ComputeSha256Async(target, cancellationToken).ConfigureAwait(false) != database.Sha256)
-                throw new InstallerException($"The restored '{database.RelativePath}' differs from its snapshot.");
-            // The restored counters are raised to the marks the instance had already handed out; SQLite syncs the
-            // database on commit, and the directory sync makes its rollback journal's removal durable. A carry that
-            // still fails rolls back, leaving the store as the snapshot recorded it.
-            if (CameraAgentStateCounters.Apply(target, database.RelativePath, carry) is { } failure)
-                uncarried.Add(($"the counters of '{database.RelativePath}'", failure));
-            NativeLinux.FlushDirectory(directory);
+            if (await SafeFileSystem.ComputeSha256Async(target, cancellationToken).ConfigureAwait(false) != installed)
+                throw new InstallerException($"The restored '{database.RelativePath}' differs from the copy staged for it.");
             touchedDirectories.Add(directory);
             StepCompleted($"restore:{database.RelativePath}");
         }
@@ -338,6 +333,59 @@ internal static class CameraAgentStateSnapshot
         }
         StepCompleted("restore-directories-synced");
         return uncarried;
+    }
+
+    /// <summary>
+    /// Stages the snapshot's copy of <paramref name="database"/> at <paramref name="temporary"/>, with its counters carried
+    /// when the plan has any, and returns the SHA-256 of the copy the caller is to install. The carry runs on the staged
+    /// copy only (<see cref="CameraAgentStateCounters.CarryStaged"/>), and a carried copy is synced before its hash is
+    /// taken. If the carry fails in any way, the staged copy and its sidecars are discarded, the snapshot is copied again
+    /// pure, and the store is reported as not carried. A pure copy that fails, the first or the second, propagates, so the
+    /// restore stays pending and nothing records it complete.
+    /// </summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Any failure of the carry on the staged copy falls back to a pure copy of the snapshot; a failure of the pure copy propagates.")]
+    private static async Task<string> StageAsync(
+        string root,
+        StateSnapshotDatabase database,
+        string temporary,
+        IReadOnlyList<StateCounterFloor> carry,
+        List<(string What, string Reason)> uncarried,
+        CancellationToken cancellationToken)
+    {
+        DiscardStaged(temporary);
+        await CopyPureAsync(root, database, temporary, cancellationToken).ConfigureAwait(false);
+        if (!carry.Any(floor => floor.Store == database.RelativePath)) return database.Sha256!;
+        try
+        {
+            CameraAgentStateCounters.CarryStaged(temporary, database.RelativePath, carry);
+            SyncFile(temporary);
+            return await SafeFileSystem.ComputeSha256Async(temporary, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            uncarried.Add(($"the counters of '{database.RelativePath}'", exception.Message));
+        }
+        DiscardStaged(temporary);
+        StepCompleted($"restore-recopy:{database.RelativePath}");
+        await CopyPureAsync(root, database, temporary, cancellationToken).ConfigureAwait(false);
+        return database.Sha256!;
+    }
+
+    /// <summary>Copies the snapshot's file to <paramref name="temporary"/>, synced, and proves it equal to the snapshot.</summary>
+    private static async Task CopyPureAsync(string root, StateSnapshotDatabase database, string temporary, CancellationToken cancellationToken)
+    {
+        var copied = await CopySyncedAsync(SnapshotFile(root, database), temporary, cancellationToken).ConfigureAwait(false);
+        if (copied != database.Sha256)
+            throw new InstallerException($"The restored copy of '{database.RelativePath}' differs from its snapshot.");
+    }
+
+    /// <summary>Removes a staged copy and any rollback journal, write-ahead log or wal-index a carry left beside it.</summary>
+    private static void DiscardStaged(string temporary)
+    {
+        foreach (var file in CameraAgentStateLayout.SqliteSidecarSuffixes.Select(suffix => temporary + suffix).Prepend(temporary))
+        {
+            if (File.Exists(file)) File.Delete(file);
+        }
     }
 
     /// <summary>Unlinks a store and its SQLite sidecars, each proved a regular file first, and syncs its directory.</summary>

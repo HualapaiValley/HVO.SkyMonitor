@@ -35,9 +35,11 @@ namespace HVO.SkyMonitor.Deployment;
 /// <para>
 /// Carrying is best effort and total (#1314 R17–R20). Every carry is planned before any store is replaced
 /// (<see cref="PlanCarry"/>): each floor is screened against the target snapshot, and what remains for a store is
-/// carried and verified on a scratch copy of it, which proves it against the store's real constraints. A floor that
-/// cannot be carried, or a store whose trial or final carry fails in any way, is put back as the snapshot recorded it and
-/// named on standard error, so a value a candidate or a snapshot holds can never stop a restore.
+/// carried and verified on a scratch copy of it, which proves it against the store's real constraints. The restore then
+/// carries the same floors into its staged copy of each store, before that copy replaces the live one
+/// (<see cref="CarryStaged"/>), so the live store is only ever the snapshot's bytes or a verified carried copy installed
+/// by rename. A floor that cannot be carried, or a store whose trial or staged carry fails in any way, is put back as the
+/// snapshot recorded it and named on standard error, so a value a candidate or a snapshot holds can never stop a restore.
 /// </para>
 /// <para>
 /// <see cref="Local"/> lists every other counter-like column the stores have, with why it never leaves the instance or
@@ -188,9 +190,12 @@ internal static class CameraAgentStateCounters
 
     /// <summary>
     /// Runs at each step of reading, planning and applying a carry, named <c>read:&lt;store&gt;</c>, <c>trim</c>,
-    /// <c>screen:&lt;store&gt;</c>, <c>trial:&lt;store&gt;</c>, <c>trial-verify:&lt;store&gt;</c>, <c>apply:&lt;store&gt;</c>
-    /// or <c>apply-verify:&lt;store&gt;</c>. Fault-injection tests throw from it to prove every step degrades rather than
-    /// blocks a restore; production leaves it empty.
+    /// <c>screen:&lt;store&gt;</c>, <c>trial:&lt;store&gt;</c>, <c>trial-verify:&lt;store&gt;</c>,
+    /// <c>trial-commit:&lt;store&gt;</c>, and, on the staged copy, <c>apply:&lt;store&gt;</c>,
+    /// <c>apply-verify:&lt;store&gt;</c>, <c>apply-commit:&lt;store&gt;</c>, <c>apply-closed:&lt;store&gt;</c> and
+    /// <c>apply-readback:&lt;store&gt;</c>. Fault-injection tests throw from it, or damage the file being carried, to prove
+    /// every step degrades rather than blocks a restore and never leaves the live store partly written; production leaves
+    /// it empty.
     /// </summary>
     internal static Action<string> CarryStep { get; set; } = static _ => { };
 
@@ -343,26 +348,34 @@ internal static class CameraAgentStateCounters
     }
 
     /// <summary>
-    /// Carries each floor into the restored store at <paramref name="path"/> and verifies it, in one transaction. Any
-    /// failure rolls the transaction back, so the store stays exactly as the snapshot recorded it, and is returned as
-    /// why its counters were not carried; it never throws. SQLite syncs the database on commit; the caller syncs the
-    /// directory.
+    /// Carries each floor into <paramref name="staged"/>, a copy of the snapshot's store that has not replaced anything
+    /// yet, and proves the copy fit to install: one transaction that commits only when every floor reads back, a clean
+    /// close that leaves no rollback journal or write-ahead log beside it, <c>PRAGMA integrity_check</c>, and every floor
+    /// read back again from the closed file. It throws on any failure, and the caller then discards the copy and installs
+    /// a pure one, so a carry can never leave the live store partly written. SQLite syncs the database on commit; the
+    /// caller syncs the file again before it is renamed into place.
     /// </summary>
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Applying a carry never blocks a restore; a failure rolls back and is reported.")]
-    public static string? Apply(string path, string relative, IReadOnlyList<StateCounterFloor> floors)
+    public static void CarryStaged(string staged, string relative, IReadOnlyList<StateCounterFloor> floors)
     {
         ArgumentNullException.ThrowIfNull(floors);
         var pending = floors.Where(floor => floor.Store == relative).ToArray();
-        if (pending.Length == 0) return null;
-        try
+        if (pending.Length == 0) return;
+        ApplyAndVerify(staged, relative, pending, "apply");
+        CarryStep($"apply-closed:{relative}");
+        foreach (var sidecar in CameraAgentStateLayout.SqliteSidecarSuffixes.Select(suffix => staged + suffix))
         {
-            ApplyAndVerify(path, relative, pending, "apply");
-            return null;
+            if (File.Exists(sidecar))
+                throw new InstallerException($"The carried copy of '{relative}' left '{Path.GetFileName(sidecar)}' behind when it closed.");
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        using var connection = OpenImmutable(staged);
+        using (var integrity = connection.CreateCommand())
         {
-            return exception.Message;
+            integrity.CommandText = "PRAGMA integrity_check;";
+            if (!string.Equals(integrity.ExecuteScalar() as string, "ok", StringComparison.Ordinal))
+                throw new InstallerException($"The carried copy of '{relative}' does not pass its integrity check.");
         }
+        CarryStep($"apply-readback:{relative}");
+        VerifyCarried(connection, null, relative, pending);
     }
 
     /// <summary>
@@ -521,6 +534,15 @@ internal static class CameraAgentStateCounters
             }
         }
         CarryStep($"{phase}-verify:{relative}");
+        VerifyCarried(connection, transaction, relative, pending);
+        CarryStep($"{phase}-commit:{relative}");
+        transaction.Commit();
+    }
+
+    /// <summary>Reads every floor back through the same readers, and throws unless each is carried or needs nothing.</summary>
+    private static void VerifyCarried(
+        SqliteConnection connection, SqliteTransaction? transaction, string relative, IReadOnlyList<StateCounterFloor> pending)
+    {
         foreach (var floor in pending)
         {
             var counter = Find(floor);
@@ -535,7 +557,6 @@ internal static class CameraAgentStateCounters
             if (carried.Value < floor.Value)
                 throw new InstallerException($"The restored '{relative}' rewound its {counter.Name} counter.");
         }
-        transaction.Commit();
     }
 
     private static void ApplyHighWater(SqliteConnection connection, SqliteTransaction transaction, Counter counter, StateCounterFloor floor, string relative)
