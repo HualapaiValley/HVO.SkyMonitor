@@ -15,7 +15,7 @@ remains in Build. Both are intentionally absent from the short workflow.
 | --- | --- |
 | **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
 | **Catalog Contracts** | Full-mode hosted build and smoke validation of the exact HYG v42 production catalog contracts, retained as a one-day workflow artifact. Skipped in classified reduced mode. |
-| **Quality** | Workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
+| **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
 | **Unit Tests** | 7464 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
@@ -43,6 +43,224 @@ label so ready `development/v1` checks are not queued behind a qualification
 fan-out; see `docs/runbooks/ci-runner-capacity.md`. This allocation keeps the long
 deployment harness off hosted minutes. Quality performs .NET setup, restore,
 formatting, and package audit only for full-mode changes.
+
+## Secret Scan
+
+`scripts/ci:secret-scan` scans the Git history for committed credentials with
+[gitleaks](https://github.com/gitleaks/gitleaks) 8.30.1 and its default rules
+(#1321). It runs in **Development v1 / Preflight** and in **Quality**, so every
+`development/v1` and `main` pull request and push is scanned inside a check that
+branch protection already requires. Draft `development/v1` pull requests run it
+too, because Preflight runs on drafts.
+
+- **Scope.** Every commit reachable from the checked-out commit, which is the
+  pull request's merge commit or the pushed head. It reads the lines each commit
+  added, so a credential that a later commit deleted is still found.
+  - A merge is read as the difference between Git's own re-merge of its two
+    parents and the committed result (`git log --diff-merges=remerge`, Git 2.36
+    or newer). Whatever a conflict resolution or any other change made in the
+    merge added is scanned.
+  - A type change, such as a symlink replaced by a regular file, is read like
+    any added file. gitleaks does not read deleted or binary files.
+  - A file that Git shows as a binary diff gives gitleaks no text, even when
+    its new content is text: a binary file turned into text, even by deleting
+    the NUL bytes around a line it already held, a binary conflict that a merge
+    resolved as text, or a text file that `.gitattributes` marks as binary
+    (`-diff`). When the new blob is text by Git's own rule (no NUL byte in its
+    first 8000 bytes), the script scans its whole content, not only the lines
+    its diff adds.
+    - The script writes each such file as a creation diff, from a temporary
+      index, under its own commit's header, and gitleaks reads that synthetic
+      history in git mode through a stand-in `git`.
+    - So each finding carries the real commit and the file's path, and the
+      exceptions apply to it exactly as to any other finding. A finding
+      reported twice, identical in every field, is counted once.
+    - A file that `.gitattributes` marks as binary is therefore read in full at
+      every commit that changes it.
+  - Every text line in a scanned tree is therefore either a line some commit's
+    text diff added or part of a file scanned in full. Only content that is
+    binary by Git's rule is not read.
+  - A merge of more than two parents is refused, because Git shows no diff for
+    one.
+  - Other branches in the clone are not scanned; their own pull requests scan
+    them.
+- **Pinning.** The script downloads the release archive for Linux x64 or ARM64
+  or macOS ARM64 or x64, checks it against the SHA-256 pinned in the script, and
+  checks `gitleaks version`. To update gitleaks, change `GITLEAKS_VERSION` and all
+  four checksums from the release's checksums file, then rerun both commands
+  below. `HVO_GITLEAKS_CACHE_DIR` keeps the archive between runs and is verified
+  on every use. `HVO_GITLEAKS_BIN` names a binary for another platform; only its
+  version is checked.
+- **Completeness.** Both workflows check out the full history (`fetch-depth: 0`),
+  and the script refuses a shallow clone.
+  - Before the scan, the script lists every reachable commit from the same
+    patches gitleaks reads. It counts the commits that added text, meaning a hunk
+    in a file the commit does not delete; that is when gitleaks counts a commit.
+  - The other commits added no text: empty commits, deletions, pure renames,
+    mode changes, empty or binary files, and merges whose resolution added
+    nothing. The result line reports them separately.
+  - The scan fails if gitleaks reports a different number of commits or logs any
+    error, so a partial, cut-short or empty scan cannot pass. A problem git
+    reports while gitleaks reads the history, such as a malformed
+    `.gitattributes` line, fails it too.
+  - gitleaks scans whatever its `git log` writes and notes a failed or killed
+    git only in its debug log, so a reader that stopped part way through a
+    commit would still be counted. gitleaks therefore reads through a stand-in
+    `git` that appends a completion record, signed with a nonce for this run,
+    only after its whole output was written: the real `git log` must exit 0,
+    and the files scanned in full are recorded commit by commit with their
+    file and byte counts. A record that is missing or differs in any way fails
+    the scan, and gitleaks must report reading every byte of the files scanned
+    in full.
+  - Configuration cannot hide content. `--root` shows the root commit under
+    `log.showRoot=false`. The other `git log` options pin textconv and external
+    diff drivers, the `a/` and `b/` prefixes, `diff.relative`, colour, rename
+    detection, the diff algorithm and the commit header format, and
+    `GIT_CONFIG_COUNT` pins `core.bigFileThreshold`, `core.quotePath` and
+    `core.commitGraph=false`. Both override every configuration file, the
+    repository's `.git/config` included, which `GIT_CONFIG_GLOBAL=/dev/null`
+    would not.
+  - The history cannot be cut short or swapped.
+    - Every inherited `GIT_*` and `GITLEAKS_*` variable is removed, so
+      `GIT_DIR`, `GIT_OBJECT_DIRECTORY`, `GIT_GRAFT_FILE`, `GIT_SHALLOW_FILE`
+      or `GIT_CONFIG_PARAMETERS` cannot redirect Git.
+    - Grafts are off (`GIT_GRAFT_FILE=/dev/null`), and a grafts file in the
+      repository is refused outright.
+    - Replacement refs are ignored (`GIT_NO_REPLACE_OBJECTS=1`), and commit
+      parents are read from the commits, not from the local commit-graph
+      cache.
+    - Alternates need nothing: objects are named by their content, so an
+      alternate can only supply an object, never change one, and a missing
+      object fails the scan.
+- **Output.** The script prints its own counts and, for a finding, the rule,
+  path, line and commit.
+  - The matched text is never printed. gitleaks' report holds it, unredacted,
+    so the script can check what it prints. The report stays in the script's
+    private temporary directory and is removed on exit.
+  - A rule ID or path that holds part of a credential is withheld:
+    - the finding's whole match, or any run of 8 characters of any finding's
+      credential. That is about 48 bits, enough to narrow a search; shorter
+      runs are mostly the fixed prefixes that rules match on, such as `ghp_`,
+      and ordinary words;
+    - or anything gitleaks finds when it reads the rule IDs and paths as text.
+      That covers a credential in a file name or a custom rule ID that is not
+      itself a finding. It reads them with gitleaks' default rules, which the
+      scanned repository cannot change, and always again with
+      `.gitleaks.toml`, as gitleaks parses it, for its custom rules, so the
+      repository can only add to the check. Inline `gitleaks:allow` comments
+      are ignored, and gitleaks runs in the private directory, so no
+      `.gitleaksignore` file applies. If either read fails, or does not report
+      reading every byte, every rule ID and path is withheld.
+    - The check weighs every finding gitleaks reported, before identical ones
+      are counted once, so two credentials on one line are both weighed.
+  - No tool's diagnostics are shown, because git and gitleaks can quote
+    `.gitleaks.toml`, `.gitattributes` or scanned text: a malformed expression
+    makes gitleaks panic and print it, and git quotes a malformed attribute
+    name. A failure is described in the script's own words.
+  - A finding's path is printed only when it is printable ASCII; any other
+    path is replaced by a placeholder. The commit is always printed, so a
+    withheld finding can still be traced.
+  - Exit status 0 means no findings, 1 findings, and 2 that the scan could not
+    run.
+- **Exceptions.** `.gitleaks.toml` is the only place to record one. Each entry
+  gives its reason and names its rules, its paths, and the historical commits it
+  covers, so it cannot hide a finding in a later commit. Inline `gitleaks:allow`
+  comments are ignored and a `.gitleaksignore` file is refused.
+  `scripts/test:ci-secret-scan` enforces this shape. History is never rewritten:
+  revoke or rotate a real credential, then record its historical commit. An entry
+  names commits, so it holds only for merge-commit merges; a squash or rebase
+  merge lands different commits. gitleaks matches a file in a merge's conflict
+  resolution as `b/<path>`, so an entry for one must match that form; the scan
+  prints the plain path. A file scanned in full is matched by its plain path,
+  and an entry for it names each commit that changes it.
+
+The first full scan, on 2026-10-16 at `43ef6d4a`, reported 28 findings in 1,871
+commits. Five reviewed entries cover them. One holds true positives that are
+inert: Data Protection key rings from local development runs, committed in
+November 2025, expired on 2026-02-12, and removed from the tree. The rest are an
+Application Insights connection string (a resource identifier, not a secret,
+removed from the tree on 2026-07-12 and now only in history), test-only values,
+PEM header literals and synthetic AWS-shaped vectors in the processing-graph
+secret filter, and generic-rule matches on ordinary words.
+
+Run the scan and its contract test locally the way CI does:
+
+```bash
+./scripts/ci:secret-scan
+./scripts/test:ci-secret-scan
+```
+
+On home-dev-01 at `06cf385b`, the script accounted for all 2,474 reachable
+commits. gitleaks scanned the 1,956 that added text (95 MB of patches), 79 of
+them merge resolutions, and the script took 5.6 s in total with a cached
+archive. Git shows 28 added or changed files in the history as binary diffs;
+each one's new blob is binary, so no file was scanned in full. The contract
+test's 62 cases took about 45 s.
+
+The contract test runs the real scan against fixture repositories with an
+obviously fake credential assembled at run time. It fails if any output shows
+that credential or holds a character that is not printable ASCII. Its cases
+cover:
+
+- a credential a later commit deleted, an inline `gitleaks:allow` comment, and
+  another branch;
+- credentials that only a conflict resolution, or a merge to a file neither
+  side changed, added;
+- a symlink replaced by a file holding a credential;
+- text that Git shows as a binary diff: a binary conflict resolved as text, a
+  binary file replaced by text (with a file read in both passes reported once),
+  a file that `.gitattributes` marks as binary, and clean text that replaced a
+  binary file;
+- files scanned in full: a credential line a binary file already held, kept as
+  it turns to text, before and after a later deletion; a merge resolution that
+  keeps a line of the binary side; a binary file renamed as it turns to text;
+  and a commit-scoped exception that covers exactly its commit and path;
+- a grafts file with Git's warning off, a caller's `GIT_GRAFT_FILE` and
+  `GIT_DIR`, and a commit-graph file edited to drop a parent;
+- withheld metadata: files named after the credential, part of it, or another
+  credential, also beside a `.gitleaksignore` and with `gitleaks:allow` in the
+  name; rule IDs that hold a credential; a `.gitleaks.toml` that redefines a
+  default rule, and custom credential formats under `[[rules]]`, `[["rules"]]`
+  and `[['rules']]`; two credentials on one line; and the check of rule IDs
+  and paths failing, or either of its reads getting part of the names;
+- readers that do not finish: the history's `git log` exiting or killed part
+  way through a commit, and the files scanned in full cut off, killed, short of
+  a file, or without this run's completion record;
+- a credential only in the root commit under `log.showRoot=false`, and again
+  under hostile repository configuration and a replacement ref;
+- output: a malformed `.gitattributes` attribute name, git failing before the
+  scan, and a revision, each holding the credential, and a finding in a path
+  with a control character;
+- seven commit shapes that add no text;
+- refusals: an octopus merge, a malformed `.gitleaks.toml` expression, a scan
+  cut short, git failing under gitleaks, a shallow clone, a `.gitleaksignore`
+  file, a wrong gitleaks version, and a tampered archive.
+
+## Base-Image Updates
+
+Dependabot proposes updates for the digest-pinned base images of the CameraAgent
+and LogicHost Dockerfiles (`docker` in `.github/dependabot.yml`). It updates only
+`FROM` lines, so the CameraAgent Dockerfile pins its images on the `dotnet-sdk`
+and `dotnet-aspnet` alias stages, and its build and runtime stages select them
+through `DOTNET_SDK_IMAGE` and `DOTNET_ASPNET_IMAGE`. The ARM64 advisory build
+passes resolved native references through the same arguments. Updates are weekly
+and grouped per image across both Dockerfiles (`group-by: dependency-name`), so
+the two hosts keep the same bases.
+
+- `dotnet/aspnet` receives patch releases and digest refreshes. A new major
+  version is ignored, because it is a target-framework migration.
+- `dotnet/sdk` receives digest refreshes of the pinned tag only. `global.json`
+  requires that SDK exactly (`rollForward: disable`), so a new SDK is a manual
+  change to `global.json`, both Dockerfiles, and the other SDK pins together.
+
+Development v1 CI does not build images; full qualification's Deployment
+Contracts job does. Build both images locally before merging a base-image pull
+request:
+
+```bash
+docker build -f src/HVO.SkyMonitor.CameraAgent/Dockerfile .
+docker build -f src/HVO.SkyMonitor.LogicHost/Dockerfile .
+```
 
 ## Coverage Badge Publication
 
@@ -280,7 +498,9 @@ and snapshot; adding a second migration fails CI during the pre-release period.
 Protect `main` with the stable `Required CI` check and require branches to be
 current before merge. GitHub enforces current-head CI and conversation
 resolution; independent review is an additional repository-process requirement,
-not an approving-review branch-protection rule. The complete review-provider,
+not an approving-review branch-protection rule. The merge-method, branch-deletion
+and release-tag settings the install contract requires await the owner's
+approval; see [Repository Settings](../development-v1.md#repository-settings). The complete review-provider,
 correction-cap, finalization-lock, and merge procedure is defined by
 `.agents/skills/pr-lifecycle/SKILL.md`.
 

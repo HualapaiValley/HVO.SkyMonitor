@@ -2,13 +2,19 @@
 # Deployment platforms: linux/amd64 and linux/arm64
 # Build from repo root with a source-revision tag; deployment rejects mutable tags.
 
-# Stage 1: Build
-ARG DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:10.0.401@sha256:2fa828c68761b1b8c23d7662dc134421b9d3b59fe1425fdbc80804e390cdb24d
-ARG DOTNET_ASPNET_IMAGE=mcr.microsoft.com/dotnet/aspnet:10.0.12@sha256:6a94333d37514e385650a3c81a55e5350b67253dbe136e9cf17e499c35606a8c
+# Base images. The digests are pinned on the dotnet-sdk and dotnet-aspnet FROM lines because Dependabot updates
+# only FROM lines (#1321). The stages below select those aliases by default; the ARM64 advisory build passes its
+# resolved native image references through these arguments instead.
+ARG DOTNET_SDK_IMAGE=dotnet-sdk
+ARG DOTNET_ASPNET_IMAGE=dotnet-aspnet
 # Build identity. Development builds keep the declared 0.0.0-dev version; the release script passes the release
 # version. A build without a source revision stays marked "unknown", which the installer rejects.
 ARG HVO_VERSION=0.0.0-dev
 ARG HVO_SOURCE_REVISION=unknown
+FROM mcr.microsoft.com/dotnet/sdk:10.0.401@sha256:2fa828c68761b1b8c23d7662dc134421b9d3b59fe1425fdbc80804e390cdb24d AS dotnet-sdk
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.12@sha256:6a94333d37514e385650a3c81a55e5350b67253dbe136e9cf17e499c35606a8c AS dotnet-aspnet
+
+# Stage 1: Build
 FROM ${DOTNET_SDK_IMAGE} AS build
 WORKDIR /src
 
