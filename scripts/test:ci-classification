@@ -74,6 +74,17 @@ expect_secret_scan_contract() {
   ((secret_scan_contract_cases += 1))
 }
 
+release_scripts_cases=0
+expect_release_scripts() {
+  local expected="$1" event_name="$2" base_sha="$3" head_sha="$4" output
+  output="$(cd "$work_root" && "$classifier" "$event_name" "$base_sha" "$head_sha")"
+  grep -Fxq "release_scripts=$expected" <<< "$output" || {
+    printf 'Expected release_scripts=%s, received %s\n' "$expected" "$output" >&2
+    exit 1
+  }
+  ((release_scripts_cases += 1))
+}
+
 expect_components() {
   local expected_complete="$1" expected_shared="$2" expected_cameraagent="$3"
   local expected_logichost="$4" expected_combined="$5" expected_delivery="$6"
@@ -171,6 +182,7 @@ grep -Fq 'Mode: **reduced**' "$summary_file"
 grep -Fq 'Deployment contracts: **false**' "$summary_file"
 grep -Fq 'Complete matrix: **false**' "$summary_file"
 grep -Fq 'Secret scan contract: **false**' "$summary_file"
+grep -Fq 'Release scripts: **false**' "$summary_file"
 grep -Fq 'Deployment reason: pull request does not change deployment-contract inputs' "$summary_file"
 
 # The version pin lives in ci:secret-scan. Both workflows wire in the scanner;
@@ -210,6 +222,49 @@ git -C "$work_root" rm --quiet .gitleaks.toml
 git -C "$work_root" commit --quiet -m "Delete scanner configuration"
 contract_head="$(git -C "$work_root" rev-parse HEAD)"
 expect_secret_scan_contract true pull_request "$contract_base" "$contract_head"
+
+# The pre-release scripts' tests run for their scripts, the pre-release workflow, the release tool and the Preflight
+# wiring that runs them (#1309). Any other PR path, including other release scripts and the scanner's own inputs,
+# skips them; non-PR events keep the full-mode convention.
+expect_release_scripts false pull_request "$base_sha" "$head_sha"
+expect_release_scripts true push "$base_sha" "$head_sha"
+expect_release_scripts true workflow_dispatch "$base_sha" "$head_sha"
+release_scripts_paths=(
+  "scripts/release:assets"
+  "scripts/release:push-image"
+  "scripts/release:prerelease-gate"
+  "scripts/test:release-install"
+  "scripts/test:release-scripts"
+  ".github/workflows/prerelease.yml"
+  "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"
+  "tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj"
+  ".github/workflows/development-v1.yml"
+  "scripts/ci:classify"
+)
+for path in "${release_scripts_paths[@]}"; do
+  for change in add modify; do
+    release_base="$(git -C "$work_root" rev-parse HEAD)"
+    if [[ "$change" == add ]]; then commit_file "$path"; else update_file "$path"; fi
+    release_head="$(git -C "$work_root" rev-parse HEAD)"
+    expect_release_scripts true pull_request "$release_base" "$release_head"
+  done
+done
+for path in "scripts/release:cameraagent-image" "scripts/test:release-installer" ".github/workflows/release.yml" \
+  "tools/HVO.SkyMonitor.Deployment.ReleaseToolkit/Program.cs" "src/HVO.SkyMonitor.Deployment.Cli/ReleaseManifest.cs" \
+  ".gitleaks.toml" ".github/workflows/ci.yml"; do
+  # A modification is what is checked, so a later case that adds one of these paths still commits a change.
+  [[ -f "$work_root/$path" ]] || commit_file "$path"
+  release_base="$(git -C "$work_root" rev-parse HEAD)"
+  update_file "$path"
+  release_head="$(git -C "$work_root" rev-parse HEAD)"
+  expect_release_scripts false pull_request "$release_base" "$release_head"
+done
+# Deleting a gated path must retain the tests, even though its tree entry is gone.
+release_base="$(git -C "$work_root" rev-parse HEAD)"
+git -C "$work_root" rm --quiet scripts/release:push-image
+git -C "$work_root" commit --quiet -m "Delete a release script"
+release_head="$(git -C "$work_root" rev-parse HEAD)"
+expect_release_scripts true pull_request "$release_base" "$release_head"
 
 # Only the top-level skill manifest is reduced. Supporting files, including a
 # nested file also named SKILL.md, fail closed to the complete matrix.
@@ -661,10 +716,13 @@ verify_targeted_suites "scripts/test:filesystem-object-store-qualification" fals
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
 head_sha="$(git -C "$work_root" rev-parse HEAD)"
 expect_secret_scan_contract true pull_request "$head_sha" "$head_sha"
+expect_release_scripts true pull_request "$head_sha" "$head_sha"
 expect_plan full true pull_request "$head_sha" "$head_sha"
 expect_components true true true true true true pull_request "$head_sha" "$head_sha"
 expect_secret_scan_contract true pull_request "$head_sha" missing-commit
 expect_secret_scan_contract true pull_request missing-commit "$head_sha"
+expect_release_scripts true pull_request "$head_sha" missing-commit
+expect_release_scripts true pull_request missing-commit "$head_sha"
 expect_plan full true pull_request "$head_sha" missing-commit
 expect_components true true true true true true pull_request "$head_sha" missing-commit
 
@@ -701,6 +759,7 @@ git -C "$work_root" add --all
 git -C "$work_root" commit --quiet -m "Add documentation symlink"
 head_sha="$(git -C "$work_root" rev-parse HEAD)"
 expect_secret_scan_contract true pull_request "$base_sha" "$head_sha"
+expect_release_scripts true pull_request "$base_sha" "$head_sha"
 expect_plan full true pull_request "$base_sha" "$head_sha"
 expect_components true true true true true true pull_request "$base_sha" "$head_sha"
 
@@ -732,11 +791,13 @@ esac
 EOF
 chmod +x "$work_root/fake-bin/git"
 
-expected_fail_closed=$'mode=full\ndeployment=true\ndeployment_catalog=true\ndeployment_shards=true\ndeployment_installer=true\ncomplete=true\nshared=true\ncameraagent=true\nlogichost=true\ncombined=true\ndelivery=true\nsecret_scan_contract=true'
+expected_fail_closed=$'mode=full\ndeployment=true\ndeployment_catalog=true\ndeployment_shards=true\ndeployment_installer=true\ncomplete=true\nshared=true\ncameraagent=true\nlogichost=true\ncombined=true\ndelivery=true\nsecret_scan_contract=true\nrelease_scripts=true'
 for fake_case in malformed unterminated empty-path failure; do
   if [[ "$fake_case" == failure ]]; then fake_failure=true; else fake_failure=false; fi
   PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" FAKE_GIT_DIFF_SHAPE="$fake_case" \
     expect_secret_scan_contract true pull_request fake-base fake-head
+  PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" FAKE_GIT_DIFF_SHAPE="$fake_case" \
+    expect_release_scripts true pull_request fake-base fake-head
   output="$(cd "$work_root" && PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" FAKE_GIT_DIFF_SHAPE="$fake_case" \
     "$classifier" pull_request fake-base fake-head)"
   if [[ "$output" != "$expected_fail_closed" ]]; then
@@ -769,6 +830,8 @@ EOF
 chmod +x "$work_root/trailing-bin/git"
 PATH="$work_root/trailing-bin:$PATH" REAL_GIT="$real_git" \
   expect_secret_scan_contract true pull_request "$trailing_base" "$trailing_head"
+PATH="$work_root/trailing-bin:$PATH" REAL_GIT="$real_git" \
+  expect_release_scripts true pull_request "$trailing_base" "$trailing_head"
 
 # Required CI aggregation.
 plan() {
@@ -1318,4 +1381,5 @@ if grep -Fq 'select(.conclusion == "success")' "$release_workflow"; then
 fi
 
 printf 'Secret scan contract classification passed: %d cases.\n' "$secret_scan_contract_cases"
+printf 'Release script classification passed: %d cases.\n' "$release_scripts_cases"
 printf 'CI classification and Required CI contract tests passed.\n'

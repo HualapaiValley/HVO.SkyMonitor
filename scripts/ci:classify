@@ -21,6 +21,7 @@ logichost="true"
 combined="true"
 delivery="true"
 secret_scan_contract="true"
+release_scripts="true"
 path_count=0
 
 write_summary_header() {
@@ -35,18 +36,21 @@ write_summary_path() {
 
 finish() {
   if [[ -n "$summary_file" ]]; then
-    printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nExhaustive catalog: **%s**  \nExhaustive shards: **%s**  \nExhaustive installer: **%s**  \nComplete matrix: **%s**  \nComplete reason: %s  \nShared libraries: **%s**  \nCameraAgent: **%s**  \nLogicHost: **%s**  \nCombined: **%s**  \nDelivery: **%s**  \nSecret scan contract: **%s**  \nPath count: %s\n' \
+    printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nExhaustive catalog: **%s**  \nExhaustive shards: **%s**  \nExhaustive installer: **%s**  \nComplete matrix: **%s**  \nComplete reason: %s  \nShared libraries: **%s**  \nCameraAgent: **%s**  \nLogicHost: **%s**  \nCombined: **%s**  \nDelivery: **%s**  \nSecret scan contract: **%s**  \nRelease scripts: **%s**  \nPath count: %s\n' \
       "$mode" "$reason" "$deployment" "$deployment_reason" "$deployment_catalog" \
       "$deployment_shards" "$deployment_installer" "$complete" "$complete_reason" \
-      "$shared" "$cameraagent" "$logichost" "$combined" "$delivery" "$secret_scan_contract" "$path_count" >> "$summary_file"
+      "$shared" "$cameraagent" "$logichost" "$combined" "$delivery" "$secret_scan_contract" "$release_scripts" \
+      "$path_count" >> "$summary_file"
   fi
 
-  printf 'CI classification: mode=%s deployment=%s complete=%s shared=%s cameraagent=%s logichost=%s combined=%s delivery=%s secret_scan_contract=%s reason=%s deployment-reason=%s complete-reason=%s paths=%s\n' \
+  printf 'CI classification: mode=%s deployment=%s complete=%s shared=%s cameraagent=%s logichost=%s combined=%s delivery=%s secret_scan_contract=%s release_scripts=%s reason=%s deployment-reason=%s complete-reason=%s paths=%s\n' \
     "$mode" "$deployment" "$complete" "$shared" "$cameraagent" "$logichost" "$combined" \
-    "$delivery" "$secret_scan_contract" "$reason" "$deployment_reason" "$complete_reason" "$path_count" >&2
-  printf 'mode=%s\ndeployment=%s\ndeployment_catalog=%s\ndeployment_shards=%s\ndeployment_installer=%s\ncomplete=%s\nshared=%s\ncameraagent=%s\nlogichost=%s\ncombined=%s\ndelivery=%s\nsecret_scan_contract=%s\n' \
+    "$delivery" "$secret_scan_contract" "$release_scripts" "$reason" "$deployment_reason" "$complete_reason" \
+    "$path_count" >&2
+  printf 'mode=%s\ndeployment=%s\ndeployment_catalog=%s\ndeployment_shards=%s\ndeployment_installer=%s\ncomplete=%s\nshared=%s\ncameraagent=%s\nlogichost=%s\ncombined=%s\ndelivery=%s\nsecret_scan_contract=%s\nrelease_scripts=%s\n' \
     "$mode" "$deployment" "$deployment_catalog" "$deployment_shards" "$deployment_installer" \
-    "$complete" "$shared" "$cameraagent" "$logichost" "$combined" "$delivery" "$secret_scan_contract"
+    "$complete" "$shared" "$cameraagent" "$logichost" "$combined" "$delivery" "$secret_scan_contract" \
+    "$release_scripts"
 }
 
 is_secret_scan_contract_path() {
@@ -54,6 +58,19 @@ is_secret_scan_contract_path() {
   case "$1" in
     scripts/ci:secret-scan | scripts/test:ci-secret-scan | .gitleaks.toml | *.gitleaksignore | *.gitattributes | \
       .github/workflows/development-v1.yml | .github/workflows/ci.yml | scripts/ci:classify)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+is_release_scripts_path() {
+  # scripts/test:release-scripts proves the pre-release scripts with fake gh, skopeo and docker commands. It runs when
+  # those scripts, the pre-release workflow or the release tool change, or the Preflight wiring that runs it.
+  case "$1" in
+    scripts/release:assets | scripts/release:push-image | scripts/release:prerelease-gate | \
+      scripts/test:release-install | scripts/test:release-scripts | .github/workflows/prerelease.yml | \
+      tools/HVO.SkyMonitor.Deployment.ReleaseTool/* | .github/workflows/development-v1.yml | scripts/ci:classify)
       return 0
       ;;
   esac
@@ -504,12 +521,14 @@ fi
 # Only a successfully read PR diff may opt out. Non-PR events keep full-mode
 # coverage; missing commits, failed/malformed diffs and empty ranges keep it too.
 secret_scan_contract="false"
+release_scripts="false"
 mode="reduced"
 write_summary_header
 
 while IFS= read -r -d '' status || [[ -n "$status" ]]; do
   if ! IFS= read -r -d '' path || [[ -z "$path" ]]; then
     secret_scan_contract="true"
+    release_scripts="true"
     mode="full"
     deployment="true"
     select_all_deployment_suites
@@ -525,6 +544,9 @@ while IFS= read -r -d '' status || [[ -n "$status" ]]; do
   if is_secret_scan_contract_path "$path"; then
     secret_scan_contract="true"
   fi
+  if is_release_scripts_path "$path"; then
+    release_scripts="true"
+  fi
   select_deployment_suites "$path"
 
   if [[ "$status" != "A" && "$status" != "M" ]]; then
@@ -537,6 +559,7 @@ while IFS= read -r -d '' status || [[ -n "$status" ]]; do
   elif ! tree_entry="$(git ls-tree "$head_sha" -- ":(literal)$path")" \
     || [[ "${tree_entry%% *}" != "100644" && "${tree_entry%% *}" != "100755" ]]; then
     secret_scan_contract="true"
+    release_scripts="true"
     mode="full"
     deployment="true"
     select_complete_matrix
@@ -565,6 +588,7 @@ done < "$diff_file"
 
 if [[ "$path_count" -eq 0 ]]; then
   secret_scan_contract="true"
+  release_scripts="true"
   mode="full"
   deployment="true"
   select_all_deployment_suites
