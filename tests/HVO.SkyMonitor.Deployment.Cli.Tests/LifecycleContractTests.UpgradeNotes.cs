@@ -290,19 +290,12 @@ public sealed partial class LifecycleContractTests
         => SafeFileSystem.WriteJsonAtomicAsync(
             Path.Combine(fixture.Paths.DeploymentStateRoot, AcquiredImage.EvidenceFileName),
             new CameraAgentImageReleaseEvidence(
-                DeploymentSchemaVersions.ImageReleaseEvidence,
-                new DistributionVerificationEvidence(
-                    "ImageRelease", "image", version, $"cameraagent-image-v{version}", new string('1', 64), 1024,
-                    "p256-sha256:" + new string('2', 64), "cameraagent-image.tar", new string('3', 64), 2048,
-                    new Uri("https://example.test/releases/"), new Uri("https://example.test/releases/cameraagent-image.tar"),
-                    "verified", DateTimeOffset.UnixEpoch, null, null),
-                "CameraAgent", "ghcr.io/hualapaivalley/skymonitor-cameraagent", $"sha256:{new string('4', 64)}", "linux",
-                fixture.Manifest.Image.Architecture, $"sha256:{new string('5', 64)}", imageId ?? fixture.Manifest.Image.ImageId,
-                new string('6', 40), new string('7', 40),
-                new DistributionImageCompatibility(
-                    "cameraagent-state-v2", new string('8', 40), "20260827053715_InitialIdentity", 13, 2,
-                    "cameraagent-install-v1", "hyg-v42-production-p3-s2", null),
-                "sbom.json", "provenance.json", "scan.json", null, DateTimeOffset.UnixEpoch),
+                DeploymentSchemaVersions.ImageReleaseEvidence, version, $"v{version}", new string('6', 40),
+                new string('1', 64), new string('2', 64),
+                $"ghcr.io/hualapaivalley/skymonitor-cameraagent@sha256:{new string('4', 64)}",
+                $"linux/{fixture.Manifest.Image.Architecture}", "archive",
+                OfflineArchive.NameFor(version, $"linux/{fixture.Manifest.Image.Architecture}"), new string('3', 64),
+                imageId ?? fixture.Manifest.Image.ImageId, DateTimeOffset.UnixEpoch),
             DeploymentJsonContext.Default.CameraAgentImageReleaseEvidence,
             CancellationToken.None);
 

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.Deployment;
@@ -498,109 +499,116 @@ public sealed partial class InstallerFlowTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task InstallAsync_AirGappedSignedImageRelease_InstallsTheSignedImageAndRetainsItsReleaseEvidence()
+    public async Task InstallAsync_ReleaseFolder_LoadsItsOfflineArchiveAndRecordsTheRelease()
     {
-        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
-        if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
-        {
-            Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the signed image release contract.");
-        }
-
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-signed-image-{Guid.NewGuid():N}");
+        var bundle = RequireCatalogBundle();
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-release-install-{Guid.NewGuid():N}");
         var imageId = $"sha256:{new string('b', 64)}";
-        using var release = SignedImageReleaseFixture.Create(root, imageId, SignedImageReleaseFixture.ContractLabels);
+        var platform = $"linux/{ReleaseAcquirer.HostImageArchitecture()}";
+        using var release = ReleaseFixture.Create(root, configDigests: new Dictionary<string, string> { [platform] = imageId });
         var instanceId = Guid.Parse("2b7f6a3c-1d54-4e0a-9c31-6f2b0a5d4e18");
-        var request = new InstallRequest
-        {
-            AllowTestProductRoot = true,
-            InstanceId = instanceId,
-            FriendlyName = "Signed Camera",
-            OwnerEmail = "owner@example.test",
-            ProductRoot = root,
-            CatalogBundle = bundle,
-            ImageManifest = release.ManifestPath,
-            NoDownload = true,
-            Port = SelectFreePort()
-        };
-        var runner = new InstallerProcessRunner(imageId, root, instanceId);
-        var probe = new RecordingPortProbe();
-        var owner = new InstallerOwnerClient();
+        var request = ReleaseRequest(root, bundle, instanceId, release.Folder);
+        var runner = new InstallerProcessRunner(imageId, root, instanceId) { Labels = release.Labels() };
         try
         {
             var result = await CameraAgentInstaller.InstallAsync(
-                request, runner, _ => owner, RuntimeUid, RuntimeGid, CancellationToken.None, release.CreateAcquirer, probe.Probe);
+                request, runner, _ => new InstallerOwnerClient(), RuntimeUid, RuntimeGid, CancellationToken.None,
+                portAvailabilityProbe: new RecordingPortProbe().Probe);
 
             Assert.AreEqual(InstallationOutcome.Installed, result.Outcome);
             Assert.AreEqual(imageId, result.Image.ImageId);
             Assert.AreEqual("archive", result.Image.Source);
-            Assert.AreEqual("cameraagent-state-v2", result.Image.UpgradeCompatibility);
-            var evidencePath = Path.Combine(result.InstanceRoot, "state", "deployment", "image-distribution.json");
-            Assert.IsTrue(File.Exists(evidencePath), "The signed image release evidence was not retained.");
-            using var evidence = JsonDocument.Parse(await File.ReadAllBytesAsync(evidencePath));
-            var evidenceRoot = evidence.RootElement;
-            Assert.AreEqual(imageId, evidenceRoot.GetProperty("imageId").GetString());
-            Assert.AreEqual("image", evidenceRoot.GetProperty("distribution").GetProperty("releaseTrain").GetString());
-            Assert.AreEqual("image-v1.2.3", evidenceRoot.GetProperty("distribution").GetProperty("releaseTag").GetString());
-            Assert.AreEqual("verified", evidenceRoot.GetProperty("distribution").GetProperty("verificationResult").GetString());
+            Assert.AreEqual((string)release.Archive(platform)["sha256"]!, result.Image.ArchiveSha256);
+            Assert.AreEqual(1, runner.LoadCount);
+            Assert.AreEqual(0, runner.PullCount, "an archive install pulls nothing");
+            using var evidence = JsonDocument.Parse(await File.ReadAllBytesAsync(
+                Path.Combine(result.InstanceRoot, "state", "deployment", "image-distribution.json")));
+            var record = evidence.RootElement;
+            Assert.AreEqual(3, record.GetProperty("schemaVersion").GetInt32());
+            Assert.AreEqual(release.Version, record.GetProperty("releaseVersion").GetString());
+            Assert.AreEqual($"v{release.Version}", record.GetProperty("releaseTag").GetString());
+            Assert.AreEqual(ReleaseFixture.Commit, record.GetProperty("releaseCommit").GetString());
             Assert.AreEqual(
-                release.TrustRoot.KeyId,
-                evidenceRoot.GetProperty("distribution").GetProperty("signingKeyId").GetString());
-            Assert.AreEqual(
-                DistributionAcquirer.HostImageArchitecture(),
-                evidenceRoot.GetProperty("platformArchitecture").GetString());
-            Assert.AreEqual(
-                "cameraagent-state-v2",
-                evidenceRoot.GetProperty("compatibility").GetProperty("stateContract").GetString());
+                Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(Path.Combine(release.Folder, "release.json")))),
+                record.GetProperty("releaseJsonSha256").GetString());
+            Assert.AreEqual(release.DigestReference, record.GetProperty("digestReference").GetString());
+            Assert.AreEqual(platform, record.GetProperty("platform").GetString());
+            Assert.AreEqual("archive", record.GetProperty("source").GetString());
+            Assert.AreEqual((string)release.Archive(platform)["name"]!, record.GetProperty("archiveName").GetString());
+            Assert.AreEqual(imageId, record.GetProperty("imageId").GetString());
         }
         finally
         {
-            if (Directory.Exists(root))
-            {
-                SafeFileSystem.MakeTreeOwnerWritable(root);
-                Directory.Delete(root, recursive: true);
-            }
+            DeleteRoot(root);
         }
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task InstallAsync_SignedReleaseThatContradictsTheImageLabels_FailsBeforeComposeStarts()
+    public async Task InstallAsync_ReleaseFromTheRegistry_PullsItsDigestAndRecordsTheRelease()
     {
-        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
-        if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
+        var bundle = RequireCatalogBundle();
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-release-registry-{Guid.NewGuid():N}");
+        var platform = $"linux/{ReleaseAcquirer.HostImageArchitecture()}";
+        using var release = ReleaseFixture.Create(root);
+        // Docker's classic store names a pulled image by its configuration digest, which release.json gives.
+        var imageId = release.ConfigDigest(platform);
+        var instanceId = Guid.Parse("5d0e7a4b-62c1-4f93-8a17-3b9e0c4d2f61");
+        var request = ReleaseRequest(root, bundle, instanceId, release.Folder) with { ImageSource = ReleaseImageSource.Registry };
+        var runner = new InstallerProcessRunner(imageId, root, instanceId)
         {
-            Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the signed image release contract.");
-        }
+            Labels = release.Labels(),
+            RepoDigests = [release.DigestReference]
+        };
+        try
+        {
+            var result = await CameraAgentInstaller.InstallAsync(
+                request, runner, _ => new InstallerOwnerClient(), RuntimeUid, RuntimeGid, CancellationToken.None,
+                portAvailabilityProbe: new RecordingPortProbe().Probe);
 
-        var root = Path.Combine(Path.GetTempPath(), $"hvo-signed-image-drift-{Guid.NewGuid():N}");
+            Assert.AreEqual(imageId, result.Image.ImageId);
+            Assert.AreEqual("registry", result.Image.Source);
+            Assert.AreEqual(release.DigestReference, result.Image.ImmutableReference);
+            Assert.IsNull(result.Image.ArchiveSha256);
+            Assert.AreEqual(1, runner.PullCount);
+            Assert.AreEqual(0, runner.LoadCount);
+            using var evidence = JsonDocument.Parse(await File.ReadAllBytesAsync(
+                Path.Combine(result.InstanceRoot, "state", "deployment", "image-distribution.json")));
+            Assert.AreEqual("registry", evidence.RootElement.GetProperty("source").GetString());
+            Assert.AreEqual(JsonValueKind.Null, evidence.RootElement.GetProperty("archiveName").ValueKind);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("org.opencontainers.image.version", "9.9.9")]
+    [DataRow("org.opencontainers.image.revision", "ffffffffffffffffffffffffffffffffffffffff")]
+    [DataRow("io.hvo.skymonitor.component", "LogicHost")]
+    public async Task InstallAsync_ImageNotLabelledAsTheRelease_FailsBeforeComposeStartsAndRecordsNothing(string label, string value)
+    {
+        var bundle = RequireCatalogBundle();
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-release-labels-{Guid.NewGuid():N}");
         var imageId = $"sha256:{new string('b', 64)}";
-        var drifted = new Dictionary<string, string>(SignedImageReleaseFixture.ContractLabels, StringComparer.Ordinal)
-        {
-            ["io.hvo.skymonitor.raw-ingress-schema"] = "12"
-        };
-        using var release = SignedImageReleaseFixture.Create(root, imageId, drifted);
+        var platform = $"linux/{ReleaseAcquirer.HostImageArchitecture()}";
+        using var release = ReleaseFixture.Create(root, configDigests: new Dictionary<string, string> { [platform] = imageId });
         var instanceId = Guid.Parse("6c1de0b2-3a48-4f7d-8e5b-91c0f2a7d640");
-        var request = new InstallRequest
-        {
-            AllowTestProductRoot = true,
-            InstanceId = instanceId,
-            FriendlyName = "Signed Camera",
-            OwnerEmail = "owner@example.test",
-            ProductRoot = root,
-            CatalogBundle = bundle,
-            ImageManifest = release.ManifestPath,
-            NoDownload = true,
-            Port = SelectFreePort()
-        };
-        var runner = new InstallerProcessRunner(imageId, root, instanceId);
-        var probe = new RecordingPortProbe();
-        var owner = new InstallerOwnerClient();
+        var labels = release.Labels();
+        labels[label] = value;
+        var runner = new InstallerProcessRunner(imageId, root, instanceId) { Labels = labels };
         try
         {
             var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
-                request, runner, _ => owner, RuntimeUid, RuntimeGid, CancellationToken.None, release.CreateAcquirer, probe.Probe));
+                ReleaseRequest(root, bundle, instanceId, release.Folder), runner, _ => new InstallerOwnerClient(),
+                RuntimeUid, RuntimeGid, CancellationToken.None, portAvailabilityProbe: new RecordingPortProbe().Probe));
 
-            StringAssert.Contains(exception.Message, "raw ingress schema", StringComparison.Ordinal);
+            Assert.AreEqual(
+                $"The CameraAgent image Docker resolved is not labelled as CameraAgent {release.Version} from commit " +
+                $"{ReleaseFixture.Commit}, as release v{release.Version} requires.",
+                exception.Message);
             Assert.AreEqual(0, runner.ComposeUpCount);
             // A refused release must leave no evidence claiming the instance runs it.
             Assert.IsFalse(File.Exists(Path.Combine(
@@ -608,11 +616,104 @@ public sealed partial class InstallerFlowTests
         }
         finally
         {
-            if (Directory.Exists(root))
-            {
-                SafeFileSystem.MakeTreeOwnerWritable(root);
-                Directory.Delete(root, recursive: true);
-            }
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task InstallAsync_ImageThatIsNotTheReleaseImage_FailsBeforeComposeStarts(bool registry)
+    {
+        var bundle = RequireCatalogBundle();
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-release-identity-{Guid.NewGuid():N}");
+        var platform = $"linux/{ReleaseAcquirer.HostImageArchitecture()}";
+        using var release = ReleaseFixture.Create(root);
+        var instanceId = Guid.Parse("8e2f4c6a-0b1d-4e3f-9a5c-7d6e8f0a1b2c");
+        // Docker resolves an image none of the release's identities name: one the archive loaded, or one pulled under
+        // the release's digest reference.
+        var runner = new InstallerProcessRunner($"sha256:{new string('d', 64)}", root, instanceId)
+        {
+            Labels = release.Labels(),
+            RepoDigests = [release.DigestReference]
+        };
+        var request = ReleaseRequest(root, bundle, instanceId, release.Folder) with
+        {
+            ImageSource = registry ? ReleaseImageSource.Registry : ReleaseImageSource.Archive
+        };
+        try
+        {
+            var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
+                request, runner, _ => new InstallerOwnerClient(),
+                RuntimeUid, RuntimeGid, CancellationToken.None, portAvailabilityProbe: new RecordingPortProbe().Probe));
+
+            Assert.AreEqual(
+                $"The CameraAgent image Docker resolved is not the {platform} image release v{release.Version} names.",
+                exception.Message);
+            Assert.AreEqual(0, runner.ComposeUpCount);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstallAsync_TamperedOfflineArchive_IsRefusedBeforeDockerOrTheProductRootIsTouched()
+    {
+        var bundle = RequireCatalogBundle();
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-release-tampered-{Guid.NewGuid():N}");
+        var platform = $"linux/{ReleaseAcquirer.HostImageArchitecture()}";
+        using var release = ReleaseFixture.Create(root);
+        await File.AppendAllTextAsync(release.ArchivePath(platform), "!");
+        var instanceId = Guid.Parse("9f3a5d7b-1c2e-4f40-8b6d-0e7f9a1b2c3d");
+        var runner = new InstallerProcessRunner($"sha256:{new string('b', 64)}", root, instanceId);
+        try
+        {
+            var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
+                ReleaseRequest(root, bundle, instanceId, release.Folder), runner, _ => new InstallerOwnerClient(),
+                RuntimeUid, RuntimeGid, CancellationToken.None, portAvailabilityProbe: new RecordingPortProbe().Probe));
+
+            StringAssert.Contains(exception.Message, "it is not the file the release published", StringComparison.Ordinal);
+            Assert.AreEqual(0, runner.Invocations, "a tampered release must fail before Docker is contacted");
+            Assert.IsFalse(Directory.Exists(Path.Combine(root, "cameraagents")));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    private static string RequireCatalogBundle()
+    {
+        var bundle = Environment.GetEnvironmentVariable("HVO_PRODUCTION_CATALOG_BUNDLE");
+        if (string.IsNullOrWhiteSpace(bundle) || !Directory.Exists(bundle))
+        {
+            Assert.Inconclusive("HVO_PRODUCTION_CATALOG_BUNDLE is required for the release install contract.");
+        }
+        return bundle;
+    }
+
+    private static InstallRequest ReleaseRequest(string root, string bundle, Guid instanceId, string release) => new()
+    {
+        AllowTestProductRoot = true,
+        InstanceId = instanceId,
+        FriendlyName = "Release Camera",
+        OwnerEmail = "owner@example.test",
+        ProductRoot = root,
+        CatalogBundle = bundle,
+        Release = release,
+        Port = SelectFreePort()
+    };
+
+    private static void DeleteRoot(string root)
+    {
+        if (Directory.Exists(root))
+        {
+            SafeFileSystem.MakeTreeOwnerWritable(root);
+            Directory.Delete(root, recursive: true);
         }
     }
 
@@ -923,7 +1024,21 @@ public sealed partial class InstallerFlowTests
     {
         public int ComposeUpCount { get; private set; }
 
+        public int Invocations { get; private set; }
+
+        public int LoadCount { get; private set; }
+
+        public int PullCount { get; private set; }
+
         public string DockerInfo { get; init; } = SupportedDockerInfo;
+
+        /// <summary>The labels the image carries; by default the contract labels of an unreleased build.</summary>
+        public IReadOnlyDictionary<string, string> Labels { get; init; } = new Dictionary<string, string>(ReleaseFixture.ContractLabels)
+        {
+            ["org.opencontainers.image.revision"] = new string('a', 40)
+        };
+
+        public IReadOnlyList<string> RepoDigests { get; init; } = [];
 
         public Task<ProcessResult> RunAsync(
             string fileName,
@@ -931,6 +1046,7 @@ public sealed partial class InstallerFlowTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            Invocations++;
             Assert.AreEqual("docker", fileName);
             if (arguments is ["context", "inspect", ..])
             {
@@ -947,7 +1063,13 @@ public sealed partial class InstallerFlowTests
             }
             if (arguments is ["image", "load", "--input", ..])
             {
+                LoadCount++;
                 return Success($"Loaded image ID: {imageId}\n");
+            }
+            if (arguments is ["image", "pull", _])
+            {
+                PullCount++;
+                return Success(string.Empty);
             }
             if (arguments.Count == 3 && arguments[0] == "image" && arguments[1] == "inspect")
             {
@@ -958,22 +1080,10 @@ public sealed partial class InstallerFlowTests
                         Id = imageId,
                         Architecture = "amd64",
                         Os = "linux",
-                        RepoDigests = Array.Empty<string>(),
+                        RepoDigests,
                         Config = new
                         {
-                            Labels = new Dictionary<string, string>
-                            {
-                                ["org.opencontainers.image.revision"] = new string('a', 40),
-                                ["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v2",
-                                ["io.hvo.skymonitor.minimum-compatible-revision"] = new string('7', 40),
-                                ["io.hvo.skymonitor.identity-migration"] = "20260827053715_InitialIdentity",
-                                ["io.hvo.skymonitor.raw-ingress-schema"] = SignedImageReleaseFixture.ContractLabels["io.hvo.skymonitor.raw-ingress-schema"],
-                                ["io.hvo.skymonitor.catalog-manifest-version"] = "2",
-                                ["io.hvo.skymonitor.component"] = "CameraAgent",
-                                ["io.hvo.skymonitor.configuration-contract"] = "cameraagent-install-v1",
-                                ["io.hvo.skymonitor.catalog-contract"] = "hyg-v42-production-p3-s2",
-                                ["io.hvo.skymonitor.replay-runner-contract"] = "local-replay-runner-v1"
-                            }
+                            Labels
                         }
                     }
                 }));

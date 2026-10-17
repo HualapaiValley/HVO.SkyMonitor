@@ -15,10 +15,10 @@ internal static class UpgradeNotes
 {
     /// <summary>
     /// The release version of the image the instance runs, which an upgrade compares its target with, or
-    /// <see langword="null"/> when nothing records one. Today the record is the release record an install or upgrade
-    /// from a signed image release keeps beside the deployment state, withdrawn when the instance rolls back or moves to
-    /// an image no release named; #1309 replaces it with a record of the release.json version it installs. Only a
-    /// record of the running image, naming a SemVer version, counts.
+    /// <see langword="null"/> when nothing records one. The record is the one an install or upgrade from a release keeps
+    /// beside the deployment state, naming the release.json version it installed; it is withdrawn when the instance
+    /// rolls back or moves to an image no release named. Only a current record of the running image, naming a SemVer
+    /// version, counts.
     /// </summary>
     public static async Task<string?> InstalledVersionAsync(
         InstallationPaths paths,
@@ -44,7 +44,8 @@ internal static class UpgradeNotes
         {
             throw new InstallerException("The retained image release record is invalid JSON.", exception);
         }
-        return record?.ImageId == installedImage.ImageId && record.Distribution?.ReleaseVersion is { } version &&
+        return record?.SchemaVersion == DeploymentSchemaVersions.ImageReleaseEvidence &&
+               record.ImageId == installedImage.ImageId && record.ReleaseVersion is { } version &&
                ProductVersion.IsValid(version)
             ? version
             : null;

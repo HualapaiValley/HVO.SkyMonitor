@@ -4,7 +4,6 @@ using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Deployment.Contracts;
-using HVO.SkyMonitor.Deployment.Distribution;
 using Microsoft.Win32.SafeHandles;
 
 namespace HVO.SkyMonitor.Deployment;
@@ -22,18 +21,12 @@ internal sealed class CameraAgentLifecycleManager
         uint uid,
         uint gid,
         CancellationToken cancellationToken,
-        Func<DistributionAcquirer>? distributionFactory = null,
         TextWriter? output = null,
         TextWriter? error = null)
     {
         request.Validate();
-        distributionFactory ??= CreateDistributionAcquirer;
         output ??= Console.Out;
         error ??= Console.Error;
-        if (request.Operation == LifecycleOperationKind.CatalogCheck)
-        {
-            return await CatalogLifecycleManager.CheckAsync(request, distributionFactory, cancellationToken).ConfigureAwait(false);
-        }
         if (request.Operation is LifecycleOperationKind.CatalogInstall or LifecycleOperationKind.CatalogGarbageCollect)
         {
             return await CatalogLifecycleManager.ExecuteAsync(request, processRunner, uid, gid, cancellationToken)
@@ -47,29 +40,29 @@ internal sealed class CameraAgentLifecycleManager
         // Instance paths start from the default catalog and are re-bound to the instance's selected catalog once its
         // retained manifest has been read; only the catalog root and reference root depend on the selection.
         var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.DefaultCatalogId);
-        // A signed image upgrade resolves and verifies its release before the instance is touched, so an unsupported
-        // architecture, a missing platform, or a tampered archive fails while the running instance is untouched.
-        // The platform is selected for the architecture of the Docker daemon the instance was installed against,
-        // which the manifest records and which the candidate is later required to match, not for the architecture
-        // of the process running this CLI: a remote or cross-architecture daemon is served the archive it can run,
-        // and a release that does not publish that architecture is refused before anything is downloaded.
-        using var imageAcquirer = request.Operation == LifecycleOperationKind.Upgrade &&
-                                  (request.ImageManifest is not null || request.ImageIndex is not null)
-            ? distributionFactory()
-            : null;
+        // A release upgrade reads and verifies its release before the instance is touched, so an unsupported
+        // architecture, a missing platform, or a tampered file fails while the running instance is untouched. The
+        // platform is selected for the architecture of the Docker daemon the instance was installed against, which the
+        // manifest records and which the candidate is later required to match, not for the architecture of the process
+        // running this CLI: a remote or cross-architecture daemon is given the image it can run, and a release that
+        // does not publish that architecture is refused before anything is loaded or pulled. The same verified
+        // release.json supplies the upgrade notes and the older-target refusal, so they always describe the candidate.
+        // The candidate keeps the name the upgrade orchestration gives it.
         AcquiredImage? signedImage = null;
-        if (imageAcquirer is not null)
+        if (request.Operation == LifecycleOperationKind.Upgrade && request.Release is not null)
         {
             var daemonArchitecture = (await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false))
                 .DockerDaemon.Architecture;
-            signedImage = await imageAcquirer.AcquireImageAsync(ImageSelectionRequest(request), daemonArchitecture, cancellationToken)
+            signedImage = await ReleaseAcquirer.AcquireImageAsync(
+                    request.Release, request.ImageSource, daemonArchitecture, cancellationToken)
                 .ConfigureAwait(false)
-                ?? throw new InstallerException("The signed CameraAgent image release did not resolve a candidate image.");
+                ?? throw new InstallerException("The release did not select a CameraAgent image.");
             request = request with
             {
-                ImageReference = signedImage.Platform.OfflineArchiveImageId,
+                ImageReference = signedImage.ImageReference,
                 ImageArchive = signedImage.ArchivePath,
-                ImageArchiveSha256 = signedImage.ArchiveSha256
+                ImageArchiveSha256 = signedImage.ArchiveSha256,
+                TargetRelease = signedImage.Release
             };
         }
         if (request.Operation is not null && uid == 0)
@@ -545,7 +538,7 @@ internal sealed class CameraAgentLifecycleManager
             // The commit is durable, so the retained release record is settled again here: a run that lost its final
             // resume acknowledgement, or failed between the commit and the record write, must not leave the record
             // naming a release the instance no longer runs.
-            await SettleReleaseRecordAsync(paths, signedImage, cancellationToken).ConfigureAwait(false);
+            await SettleReleaseRecordAsync(paths, signedImage, manifest.Image, cancellationToken).ConfigureAwait(false);
             var committedLifecycle = CreateLifecycleClient(installationResult.Url, lifecycleClientFactory);
             await committedLifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
             operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
@@ -556,7 +549,7 @@ internal sealed class CameraAgentLifecycleManager
         {
             var target = manifest.PreviousImage!;
             var synthetic = ImageRequest(manifest, target.ImmutableReference, null, null, noDownload: true);
-            var prepared = await docker.PrepareImageAsync(synthetic, false, signedImage: null, cancellationToken)
+            var prepared = await docker.PrepareImageAsync(synthetic, false, release: null, cancellationToken)
                 .ConfigureAwait(false);
             EnsureDaemon(manifest.DockerDaemon, prepared.Daemon);
             if (prepared.Image.ImageId != target.ImageId || prepared.Image.Architecture != target.Architecture)
@@ -904,7 +897,7 @@ internal sealed class CameraAgentLifecycleManager
             // The retained release record follows the image the instance actually runs. It is settled as soon as the
             // commit is durable and before the final resume, so a lost resume acknowledgement cannot separate the
             // two; the committed-resume branch above settles it again on --resume.
-            await SettleReleaseRecordAsync(paths, signedImage, cancellationToken).ConfigureAwait(false);
+            await SettleReleaseRecordAsync(paths, signedImage, candidate, cancellationToken).ConfigureAwait(false);
             await candidateLifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
             operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
             return Result(operation.Kind, "completed", operation.OperationId, paths, committed, manifest.DockerDaemon, true, true);
@@ -1304,44 +1297,25 @@ internal sealed class CameraAgentLifecycleManager
     }
 
     /// <summary>
-    /// Makes the retained release record follow the image the instance now runs. A signed release writes its record;
-    /// any other image the instance was moved to, whether a rollback target or an operator-supplied reference,
-    /// withdraws the record because no signed release named the image now running. The step is idempotent and runs
-    /// both when a commit first becomes durable and on the committed-resume branch, so an interruption between the
-    /// commit and the record is repaired by <c>--resume</c> instead of leaving evidence that contradicts the container.
+    /// Makes the retained release record follow the image the instance now runs. An upgrade from a release writes the
+    /// release's record for <paramref name="running"/>; any other image the instance was moved to, whether a rollback
+    /// target or an operator-supplied reference, withdraws the record because no release named the image now running.
+    /// The step is idempotent and runs both when a commit first becomes durable and on the committed-resume branch, so
+    /// an interruption between the commit and the record is repaired by <c>--resume</c> instead of leaving evidence
+    /// that contradicts the container.
     /// </summary>
-    private static Task SettleReleaseRecordAsync(InstallationPaths paths, AcquiredImage? signedImage, CancellationToken cancellationToken)
+    private static Task SettleReleaseRecordAsync(
+        InstallationPaths paths,
+        AcquiredImage? releaseImage,
+        ImageInstallationIdentity running,
+        CancellationToken cancellationToken)
     {
-        if (signedImage is not null)
+        if (releaseImage is not null)
         {
-            return signedImage.WriteEvidenceAsync(paths, cancellationToken);
+            return releaseImage.WriteEvidenceAsync(paths, running, cancellationToken);
         }
         AcquiredImage.RemoveEvidence(paths);
         return Task.CompletedTask;
-    }
-
-    private static DistributionAcquirer CreateDistributionAcquirer() => new();
-
-    /// <summary>
-    /// The image-train selectors an upgrade uses to resolve its signed release, with no instance state. It is
-    /// validated like any install request so the locator scheme and channel rules produce the same usage errors on
-    /// an upgrade that they produce on an install.
-    /// </summary>
-    private static InstallRequest ImageSelectionRequest(LifecycleRequest request)
-    {
-        var selection = new InstallRequest
-        {
-            FriendlyName = "lifecycle",
-            OwnerEmail = "lifecycle@localhost.invalid",
-            ImageManifest = request.ImageManifest,
-            ImageIndex = request.ImageIndex,
-            ImageVersion = request.ImageVersion,
-            AssetBaseUrl = request.AssetBaseUrl,
-            Channel = request.Channel,
-            NoDownload = request.NoDownload
-        };
-        selection.ValidateImageSelection();
-        return selection;
     }
 
     private static InstallRequest ImageRequest(
@@ -2136,46 +2110,17 @@ internal sealed class CameraAgentLifecycleManager
            (image.ArchiveSha256 is null || IsSha256(image.ArchiveSha256)) &&
            image.Component == CameraAgentImageContract.Component && image.ConfigurationContract == configurationContract &&
             CameraAgentImageContract.IsKnownCatalogContract(image.CatalogContract) && IsSourceRevision(image.SourceRevision) &&
-            (!requireReplayRunner || image.ReplayRunnerContract == CameraAgentImageContract.ReplayRunnerContract) &&
-           (image.Distribution is null || IsValidDistribution(image.Distribution) &&
-            image.Distribution.ManifestKind == DistributionManifestKind.InstallerRelease.ToString() &&
-            image.Distribution.ReleaseTrain == "installer" &&
-            image.Distribution.ReleaseTag == $"installer-v{image.Distribution.ReleaseVersion}" &&
-            image.Distribution.AssetName.EndsWith(
-                $"linux-{DistributionArchitecture(image.Architecture)}.tar.gz", StringComparison.Ordinal) &&
-            image.ArchiveSha256 is not null && image.Distribution.AssetSha256 == image.ArchiveSha256);
+            (!requireReplayRunner || image.ReplayRunnerContract == CameraAgentImageContract.ReplayRunnerContract);
 
     private static bool IsValidCatalog(CatalogInstallationIdentity? value)
         => ProductionCatalog.IsPinned(value) &&
-           HasValue(value.InstallRoot) && IsSha256(value.ManifestSha256) && value.Source == "local-offline" &&
-           (value.Distribution is null || IsValidDistribution(value.Distribution) &&
-            value.Distribution.ManifestKind == DistributionManifestKind.CatalogRelease.ToString() &&
-             value.Distribution.ReleaseTrain == "catalog" && value.Distribution.ReleaseVersion == value.PackageVersion &&
-             value.Distribution.ReleaseTag == $"catalog-{value.PackageVersion}");
+           HasValue(value.InstallRoot) && IsSha256(value.ManifestSha256) && value.Source == "local-offline";
 
     internal static void ValidateCanonicalCatalog(InstallationPaths paths, CatalogInstallationIdentity value)
     {
         if (!IsValidCatalog(value) || value.InstallRoot != paths.CatalogRoot)
             throw new InstallerException("The retained catalog identity is invalid or unsupported.");
     }
-
-    private static bool IsValidDistribution(DistributionVerificationEvidence value)
-        => HasValue(value.ManifestKind) && HasValue(value.ReleaseTrain) && HasValue(value.ReleaseVersion) &&
-           HasValue(value.ReleaseTag) && IsSha256(value.ManifestSha256) &&
-           value.ManifestLength is > 0 and <= DistributionVerifier.MaximumManifestBytes &&
-           DistributionTrustRoot.IsCanonicalKeyId(value.SigningKeyId) && HasValue(value.AssetName) &&
-           IsSha256(value.AssetSha256) && value.AssetLength is > 0 and <= DistributionVerifier.MaximumImageArchiveBytes &&
-           IsSafeEvidenceUri(value.SourceBaseUri) && IsSafeEvidenceUri(value.ResolvedPublicUri) &&
-           value.VerificationResult == "verified" && value.VerifiedUtc != default && value.VerifiedUtc.Offset == TimeSpan.Zero &&
-           (value.ProvenanceAssetName is null && value.ProvenanceSha256 is null ||
-            HasValue(value.ProvenanceAssetName) && IsSha256(value.ProvenanceSha256));
-
-    private static bool IsSafeEvidenceUri(Uri? value)
-        => value is { IsAbsoluteUri: true } && value.Scheme is "https" or "file" &&
-           string.IsNullOrEmpty(value.UserInfo) && string.IsNullOrEmpty(value.Fragment);
-
-    internal static string DistributionArchitecture(string dockerArchitecture)
-        => dockerArchitecture == "amd64" ? "x64" : dockerArchitecture;
 
     internal static async Task<T> DeserializeRetainedAsync<T>(
         Stream stream,

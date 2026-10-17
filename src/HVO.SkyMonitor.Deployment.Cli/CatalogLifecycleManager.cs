@@ -19,15 +19,14 @@ internal static class CatalogLifecycleManager
         var paths = InstallationPaths.Create(request.ProductRoot, Guid.Empty, ProductionCatalog.DefaultCatalogId);
         if (request.DryRun && request.Operation == LifecycleOperationKind.CatalogInstall)
         {
-            using var acquired = await AcquireAsync(request, cancellationToken).ConfigureAwait(false);
+            var bundle = request.CatalogBundle!;
             var temporary = Path.Combine(Path.GetTempPath(), $"hvo-catalog-plan-{Guid.NewGuid():N}");
             try
             {
-                var plannedPaths = paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(acquired.BundlePath).CatalogId);
-                var plannedIdentity = CatalogInstaller.Install(acquired.BundlePath, temporary, Guid.NewGuid()) with
+                var plannedPaths = paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(bundle).CatalogId);
+                var plannedIdentity = CatalogInstaller.Install(bundle, temporary, Guid.NewGuid()) with
                 {
-                    InstallRoot = plannedPaths.CatalogRoot,
-                    Distribution = acquired.Evidence
+                    InstallRoot = plannedPaths.CatalogRoot
                 };
                 return Result(request.Operation, "planned", null, plannedPaths, plannedIdentity, null);
             }
@@ -89,8 +88,8 @@ internal static class CatalogLifecycleManager
                     await WriteCatalogInstallOperationAsync(statePath, operation, cancellationToken).ConfigureAwait(false);
                     return Result(request.Operation, "completed", operation.OperationId, paths, operation.InstalledCatalog, null);
                 }
-                using var acquired = await AcquireAsync(request, cancellationToken).ConfigureAwait(false);
-                var acquiredBundleSha256 = await ComputeBundleSha256Async(acquired.BundlePath, cancellationToken).ConfigureAwait(false);
+                var bundle = request.CatalogBundle!;
+                var acquiredBundleSha256 = await ComputeBundleSha256Async(bundle, cancellationToken).ConfigureAwait(false);
                 if (operation.AcquiredBundleSha256 is not null && operation.AcquiredBundleSha256 != acquiredBundleSha256)
                     throw new InstallerException("The reacquired catalog bundle differs from the retained operation.");
                 operation = operation with
@@ -101,12 +100,8 @@ internal static class CatalogLifecycleManager
                     UpdatedUtc = DateTimeOffset.UtcNow
                 };
                 await WriteCatalogInstallOperationAsync(statePath, operation, cancellationToken).ConfigureAwait(false);
-                paths = paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(acquired.BundlePath).CatalogId);
-                var installedIdentity = CatalogInstaller.Install(acquired.BundlePath, paths.CatalogRoot, operation.OperationId) with
-                {
-                    Distribution = acquired.Evidence
-                };
-                ValidateSignedIdentity(installedIdentity, acquired.SignedIdentity);
+                paths = paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(bundle).CatalogId);
+                var installedIdentity = CatalogInstaller.Install(bundle, paths.CatalogRoot, operation.OperationId);
                 operation = operation with
                 {
                     Phase = "installed",
@@ -136,52 +131,6 @@ internal static class CatalogLifecycleManager
             }
         }
         return await GarbageCollectAsync(request, paths, new DockerClient(processRunner), cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Reports whether a signed, approved catalog package is available or already installed side by side. The check
-    /// takes no lock, downloads no bundle, and writes nothing: installed bytes, every instance selection, the
-    /// distribution cache, and index rollback state are left exactly as they were. An installed package of the same
-    /// version whose bytes differ from the signed identity is refused rather than reported.
-    /// </summary>
-    public static async Task<LifecycleResult> CheckAsync(
-        LifecycleRequest request,
-        Func<DistributionAcquirer> distributionFactory,
-        CancellationToken cancellationToken)
-    {
-        var synthetic = SyntheticAcquisitionRequest(request);
-        ResolvedCatalogRelease release;
-        using (var acquirer = distributionFactory())
-        {
-            release = await acquirer.ResolveCatalogAsync(synthetic, cancellationToken).ConfigureAwait(false)
-                ?? throw new InstallerException("catalog check requires a signed catalog manifest or index.");
-        }
-        var specification = ProductionCatalog.ForPackageVersion(release.Catalog.PackageVersion);
-        if (specification.CatalogId != release.Catalog.CatalogId)
-            throw new InstallerException("The signed catalog release names a catalog other than its package lineage.");
-        var paths = InstallationPaths.Create(request.ProductRoot, Guid.Empty, specification.CatalogId);
-        var available = new CatalogInstallationIdentity(
-            release.Catalog.CatalogId, release.Catalog.PackageVersion, release.Catalog.SchemaVersion,
-            release.Catalog.PreprocessingVersion, release.Catalog.DatabaseSha256, release.Catalog.DatabaseLength,
-            release.Catalog.RowCount, paths.CatalogRoot, release.Catalog.BundleManifestSha256, "signed-release");
-        // Presence is read, never created: an availability check leaves installed bytes and selection untouched.
-        if (!Directory.Exists(Path.Combine(paths.CatalogRoot, "versions", release.Catalog.PackageVersion)))
-            return Result(request.Operation, "available", null, paths, available, null);
-        var installed = await ReadInstalledIdentityAsync(paths, release.Catalog.PackageVersion, cancellationToken)
-            .ConfigureAwait(false);
-        // The retained record alone proves nothing about the bytes it names: resolve the installed payload (read-only,
-        // in memory) so a missing, corrupt or substituted package is refused rather than reported as installed.
-        try
-        {
-            ValidateInstalled(paths, installed);
-        }
-        catch (Exception exception) when (exception is not (InstallerException or OperationCanceledException))
-        {
-            throw new InstallerException(
-                "The installed catalog version is missing, corrupt, or not the approved package.", exception);
-        }
-        ValidateSignedIdentity(installed, release.Catalog);
-        return Result(request.Operation, "installed", null, paths, installed, null);
     }
 
     public static async Task<LifecycleResult> SelectAsync(
@@ -927,38 +876,6 @@ internal static class CatalogLifecycleManager
         }
     }
 
-    private static async Task<AcquiredCatalog> AcquireAsync(LifecycleRequest request, CancellationToken cancellationToken)
-    {
-        var synthetic = SyntheticAcquisitionRequest(request);
-        using var acquirer = new DistributionAcquirer();
-        return await acquirer.AcquireAsync(synthetic, cancellationToken).ConfigureAwait(false);
-    }
-
-    private static InstallRequest SyntheticAcquisitionRequest(LifecycleRequest request)
-    {
-        var synthetic = new InstallRequest
-        {
-            // The synthetic request revalidates the same product root the operator's request already carried,
-            // so it inherits that request's admission rather than defaulting to deny and refusing a root the
-            // caller was admitted for.
-            AllowTestProductRoot = request.AllowTestProductRoot,
-            ProductionProductRoot = request.ProductionProductRoot,
-            FriendlyName = "catalog-lifecycle",
-            OwnerEmail = "lifecycle@localhost.invalid",
-            ProductRoot = request.ProductRoot,
-            CatalogBundle = request.CatalogBundle,
-            CatalogManifest = request.CatalogManifest,
-            CatalogIndex = request.CatalogIndex,
-            CatalogVersion = request.CatalogVersion,
-            AssetBaseUrl = request.AssetBaseUrl,
-            Channel = request.Channel,
-            ImageReference = $"sha256:{new string('0', 64)}",
-            NoDownload = request.NoDownload
-        };
-        synthetic.Validate();
-        return synthetic;
-    }
-
     private static async Task WriteInstalledIdentityAsync(
         InstallationPaths paths,
         CatalogInstallationIdentity identity,
@@ -1050,18 +967,6 @@ internal static class CatalogLifecycleManager
         CancellationToken cancellationToken)
         => SafeFileSystem.WriteJsonAtomicAsync(
             path, evidence, DeploymentJsonContext.Default.CatalogGarbageCollectionEvidence, cancellationToken);
-
-    private static void ValidateSignedIdentity(CatalogInstallationIdentity actual, DistributionCatalogIdentity? signed)
-    {
-        if (signed is not null &&
-            (actual.CatalogId != signed.CatalogId || actual.PackageVersion != signed.PackageVersion ||
-             actual.SchemaVersion != signed.SchemaVersion || actual.PreprocessingVersion != signed.PreprocessingVersion ||
-             actual.DatabaseSha256 != signed.DatabaseSha256 || actual.DatabaseLength != signed.DatabaseLength ||
-             actual.RowCount != signed.RowCount || actual.ManifestSha256 != signed.BundleManifestSha256))
-        {
-            throw new InstallerException("The installed catalog differs from its signed release identity.");
-        }
-    }
 
     private static LifecycleResult Result(
         LifecycleOperationKind? operation,
