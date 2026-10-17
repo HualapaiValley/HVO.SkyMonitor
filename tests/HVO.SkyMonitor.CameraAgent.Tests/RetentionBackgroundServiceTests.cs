@@ -660,9 +660,15 @@ public sealed class RetentionBackgroundServiceTests
                 Assert.IsTrue(File.Exists(stored.PayloadPath), "A pending upload holds its expired artifact.");
             }
 
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            foreach (var suffix in new[] { string.Empty, "-wal", "-shm", "-journal" }) File.Delete(database + suffix);
-            File.Copy(snapshot, database);
+            // The rollback puts the snapshot's content back. Restoring it through SQLite rather than swapping the file
+            // keeps every pooled connection to this store valid, so no pool has to be cleared.
+            using (var copy = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={snapshot};Pooling=False"))
+            using (var live = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={database};Pooling=False"))
+            {
+                await copy.OpenAsync().ConfigureAwait(false);
+                await live.OpenAsync().ConfigureAwait(false);
+                copy.BackupDatabase(live);
+            }
 
             using (var outbox = new SqliteArtifactOutbox())
             {
@@ -676,7 +682,6 @@ public sealed class RetentionBackgroundServiceTests
         }
         finally
         {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             DeleteRoot(root);
             File.Delete(snapshot);
         }

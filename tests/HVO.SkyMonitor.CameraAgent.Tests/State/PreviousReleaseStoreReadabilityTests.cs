@@ -226,10 +226,6 @@ public sealed class PreviousReleaseStoreReadabilityTests
 
         public string Path { get; }
 
-        public void Dispose()
-        {
-            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-            File.Delete(Path);
-        }
+        public void Dispose() => File.Delete(Path);
     }
 }

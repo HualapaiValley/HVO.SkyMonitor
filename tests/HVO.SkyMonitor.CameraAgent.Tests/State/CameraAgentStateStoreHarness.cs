@@ -104,7 +104,6 @@ internal sealed class CameraAgentStateStoreHarness : IDisposable
         {
             await context.Database.MigrateAsync().ConfigureAwait(false);
         }
-        SqliteConnection.ClearAllPools();
     }
 
     /// <summary>Every SQLite store under the state tree, relative to the state root with <c>/</c> separators.</summary>
@@ -248,7 +247,7 @@ internal sealed class CameraAgentStateStoreHarness : IDisposable
 
     public void Dispose()
     {
-        SqliteConnection.ClearAllPools();
+        // Each harness has its own root, so an idle pooled connection to a deleted store is never reused.
         if (Directory.Exists(Root)) Directory.Delete(Root, recursive: true);
     }
 
