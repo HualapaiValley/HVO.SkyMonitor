@@ -38,8 +38,11 @@ onward; earlier development is recorded in its pull requests. A release renames 
   time no longer grows with retained frames. It is a swap: the previous image is kept and restored if the candidate
   fails. Only a candidate that declares a state migration has the small SQLite databases snapshotted and verified
   first; a failed candidate is restored onto them, and a later `rollback` puts them back with a warning that database
-  changes since the upgrade are lost. `--migration-backward-compatible` is no longer needed and changes nothing.
-  CameraAgent holds retention and cleanup while capture is paused. (#1314)
+  changes since the upgrade are lost. The snapshot covers the outbox of every configured storage root, and a restore
+  never rewinds the capture-sequence, capture-control-version or fleet-report counters. An interrupted upgrade
+  recovers onto its snapshot with `--resume` or `--restore-only`. `--migration-backward-compatible` is no longer
+  needed and changes nothing. CameraAgent holds retention and cleanup while capture is paused, and acknowledges a
+  pause only after every deletion pass already running has finished. (#1314)
 - Successful raw ingress SQLite commits and checkpoints are logged at Debug instead of Warning. A manual location
   override superseded by configuration is logged at Information. Warnings now mean something did not work. (#1303)
 

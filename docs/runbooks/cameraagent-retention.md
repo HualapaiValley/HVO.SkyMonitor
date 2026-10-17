@@ -33,7 +33,14 @@ holds them too; nothing new is captured while paused. Only the deletions wait:
 retention still measures capacity and publishes disk pressure, and derived-product
 reconciliation still refreshes its evidence inventory. Each skipped pass logs
 `<maintenance> held while capture admission is <state>; nothing was deleted` at
-Information, and the next pass after capture resumes runs normally. See
+Information, and the next pass after capture resumes runs normally.
+
+The pause is a barrier, not a flag each pass happens to read. A pass enters capture
+admission before it deletes anything, and the pause is acknowledged only after every
+admitted pass has finished, including one still waiting for its storage lock; no new
+pass is admitted until capture resumes. The projected-scene stage cleanup that runs
+when the raw-ingress journal opens at startup reads the durable admission state from
+the journal instead, and skips unless it records capture running. See
 [Swap upgrade and database snapshots](deployment-installer.md#swap-upgrade-and-database-snapshots).
 
 The completion log records the storage root, deleted file count, and number of

@@ -700,7 +700,62 @@ if [[ -z "$baseline_revision" ]]; then
   test "$(sqlite3 "file:$snapshot_root/$identity_snapshot?immutable=1" 'SELECT group_concat(MigrationId) FROM __EFMigrationsHistory;')" = \
     "$(sqlite3 "file:$instance_root/state/identity/cameraagent_identity.db?immutable=1" 'SELECT group_concat(MigrationId) FROM __EFMigrationsHistory;')"
 
-  printf 'Swap upgrade contract passed for instance %s: routine upgrade snapshots nothing, migrating upgrade snapshots and verifies the real stores, rollback restores them.\n' \
+  # A state reset discards the retained snapshot: the documented uninstall, reset-state and install rebuild the manifest
+  # without previousStateSnapshot, so a later rollback is a pure swap onto the reinstalled stores and never brings back
+  # the databases from before the reset.
+  retained_snapshot="$(jq -cS '.previousStateSnapshot' "$instance_root/instance-manifest.json")"
+  test "$retained_snapshot" != null
+  retained_root="$root/product/operations/lifecycle/$(jq -er '.operationId' <<<"$retained_snapshot")/state-snapshots/$(jq -er '.snapshotId' <<<"$retained_snapshot")"
+  retained_identity="$(jq -er '.databases[] | select(.relativePath == "identity/cameraagent_identity.db") | .snapshotFile' "$retained_root/manifest.json")"
+  pre_reset_users="$(sqlite3 "file:$retained_root/$retained_identity?immutable=1" 'SELECT group_concat(Id) FROM (SELECT Id FROM AspNetUsers ORDER BY Id);')"
+  test -n "$pre_reset_users"
+  rollback_target_image_id="$(jq -er '.previousImage.imageId' "$instance_root/instance-manifest.json")"
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
+    --instance-id "$instance_id" \
+    --product-root "$root/product" \
+    --json >"$root/swap-reset-uninstall.json"
+  test "$(jq -er '.outcome' "$root/swap-reset-uninstall.json")" = completed
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reset-state \
+    --instance-id "$instance_id" \
+    --confirm-instance-id "$instance_id" \
+    --product-root "$root/product" \
+    --json >"$root/swap-reset.json"
+  test "$(jq -er '.outcome' "$root/swap-reset.json")" = completed
+  # The reset preserves the manifest, retained snapshot reference included; the install is what clears it. Until
+  # then the instance has no installation result, so no lifecycle operation, rollback included, can run on it.
+  test "$(jq -cS '.previousStateSnapshot' "$instance_root/instance-manifest.json")" = "$retained_snapshot"
+  if "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent rollback \
+    --instance-id "$instance_id" \
+    --product-root "$root/product" \
+    --json >"$root/reset-rollback-refused.json" 2>"$root/reset-rollback-refused-error.json"; then
+    printf 'CameraAgent rollback ran on a reset instance before its reinstall.\n' >&2
+    exit 1
+  fi
+  test ! -e "$identity_root/cameraagent_identity.db"
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" >"$root/swap-post-reset.json"
+  test "$(jq -er '.healthy' "$root/swap-post-reset.json")" = true
+  test "$(jq -er '.previousStateSnapshot' "$instance_root/instance-manifest.json")" = null
+  test "$(jq -er '.previousImage.imageId' "$instance_root/instance-manifest.json")" = "$rollback_target_image_id"
+  post_reset_users="$(sqlite3 "file:$identity_root/cameraagent_identity.db?immutable=1" 'SELECT group_concat(Id) FROM (SELECT Id FROM AspNetUsers ORDER BY Id);')"
+  test -n "$post_reset_users"
+  test "$post_reset_users" != "$pre_reset_users"
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent rollback \
+    --instance-id "$instance_id" \
+    --product-root "$root/product" \
+    --json >"$root/post-reset-rollback.json" 2>"$root/post-reset-rollback-error.json"
+  test "$(jq -er '.outcome' "$root/post-reset-rollback.json")" = completed
+  test "$(jq -er '.image.imageId' "$root/post-reset-rollback.json")" = "$rollback_target_image_id"
+  # No restore warning and no snapshot: the rollback swapped images over the reinstalled databases.
+  test ! -s "$root/post-reset-rollback-error.json"
+  assert_running_image "$rollback_target_image_id" post-reset-rollback-status
+  test "$(jq -er '.stateSnapshotRequired' "$lifecycle_state")" = false
+  test "$(jq -er '.stateSnapshot' "$lifecycle_state")" = null
+  test "$(jq -er '.retainedStateSnapshot' "$lifecycle_state")" = null
+  test "$(jq -er '.previousStateSnapshot' "$instance_root/instance-manifest.json")" = null
+  test "$(sqlite3 "file:$identity_root/cameraagent_identity.db?immutable=1" 'SELECT group_concat(Id) FROM (SELECT Id FROM AspNetUsers ORDER BY Id);')" = \
+    "$post_reset_users"
+
+  printf 'Swap upgrade contract passed for instance %s: routine upgrade snapshots nothing, migrating upgrade snapshots and verifies the real stores, rollback restores them, and a rollback after a state reset and reinstall is a pure swap.\n' \
     "$instance_id"
 fi
 
