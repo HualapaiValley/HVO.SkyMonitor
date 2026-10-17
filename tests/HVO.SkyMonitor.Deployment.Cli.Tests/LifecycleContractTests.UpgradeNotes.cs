@@ -41,7 +41,14 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(string.Empty, error.ToString());
         Assert.AreEqual(Unmutated(fixture), output.StateAtFirstWrite);
         // The upgrade then journaled, backed up, paused and changed the image, each of which the probe would have seen.
-        Assert.AreEqual(new MutationState(true, 1, NotesCandidateImageId, 1), Mutations(fixture, lifecycle));
+        var completed = Mutations(fixture, lifecycle);
+        Assert.IsTrue(completed.Journaled);
+        Assert.AreEqual(1, completed.Backups);
+        Assert.AreEqual(NotesCandidateImageId, completed.ActiveImageId);
+        Assert.AreEqual(1, completed.Pauses);
+        Assert.AreEqual(CameraAgentContainerResources.Default, completed.Resources);
+        Assert.AreNotEqual(fixture.Manifest.ComposeModelSha256, completed.ComposeSha256);
+        Assert.AreEqual(1, completed.StagedModels);
     }
 
     [TestMethod]
@@ -126,6 +133,7 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual("completed", result.Outcome);
         Assert.AreEqual(string.Empty, output.ToString());
         Assert.AreEqual(Unmutated(fixture), error.StateAtFirstWrite);
+        Assert.AreEqual(CameraAgentContainerResources.Default, Mutations(fixture, lifecycle).Resources);
         using var notesEvent = JsonDocument.Parse(SingleLine(error.ToString()));
         Assert.AreEqual(
             "schemaVersion event upgradeNotes",
@@ -298,14 +306,20 @@ public sealed partial class LifecycleContractTests
             DeploymentJsonContext.Default.CameraAgentImageReleaseEvidence,
             CancellationToken.None);
 
-    /// <summary>What an upgrade has changed: its journal, its backups, the running image and the pauses it asked for.</summary>
-    private readonly record struct MutationState(bool Journaled, int Backups, string? ActiveImageId, int Pauses);
+    /// <summary>What an upgrade has changed, including its recorded, applied and staged container limits.</summary>
+    private readonly record struct MutationState(
+        bool Journaled, int Backups, string? ActiveImageId, int Pauses,
+        ContainerResourceLimits? Resources, string ComposeSha256, int StagedModels);
 
     private static MutationState Mutations(LifecycleFixture fixture, FakeLifecycleClient lifecycle)
         => new(File.Exists(fixture.Paths.LifecycleStatePath), fixture.Runner.BackupCount, fixture.Runner.ActiveImageId,
-            lifecycle.PauseCount);
+            lifecycle.PauseCount,
+            JsonSerializer.Deserialize(File.ReadAllText(fixture.Paths.ManifestPath), DeploymentJsonContext.Default.InstanceManifest)!.Resources,
+            ComposeDeployment.ComputeSha256(File.ReadAllText(Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml"))),
+            Directory.EnumerateFiles(fixture.Paths.OperationsRoot, "candidate-compose.yml", SearchOption.AllDirectories).Count());
 
-    private static MutationState Unmutated(LifecycleFixture fixture) => new(false, 0, fixture.Manifest.Image.ImageId, 0);
+    private static MutationState Unmutated(LifecycleFixture fixture)
+        => new(false, 0, fixture.Manifest.Image.ImageId, 0, fixture.Manifest.Resources, fixture.Manifest.ComposeModelSha256, 0);
 
     /// <summary>The one line <paramref name="written"/> holds, without its line ending.</summary>
     private static string SingleLine(string written)

@@ -28,7 +28,7 @@ runbook describes the installer as it behaves today.
 | Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | One `hvo-skymonitor` CLI, configured by flags or `--config`; no runtime client or wizard | [#1313](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1313), [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
 | `install.sh` entry point with `--check` and `--from DIR` | No `install.sh`; the self-contained CLI is run directly | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
 | Install and upgrade from a published release, by GHCR digest or offline archive | Nothing is published, so hosts install a locally built image by its loaded image ID | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309) |
-| `--version`, and upgrade notes printed before an upgrade | Neither | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312) |
+| `--version`, and upgrade notes printed before an upgrade | `--version` reports the installer build identity. The release.json reader and pre-upgrade notes are implemented; the release acquisition path that supplies them is pending #1309 (see [Upgrade notes and older targets](#upgrade-notes-and-older-targets)) | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312) |
 | `--plan`, `--answers FILE`, `backup` and `restore FILE`, exit codes 0/1/2/3/130 | `--dry-run` and `--config`; no `backup` or `restore`; a refusal such as failed host prerequisites exits `1` | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
 | Swap upgrade that never copies bulk data, snapshotting only the small databases for a declared migration | Upgrade and rollback take a `tar` backup of the instance's configuration and state | [#1314](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1314); [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044) narrows to the `backup` command |
 | Container limits kept in the install record and changed with a re-run | Limits are set at install and recorded in the instance's `instance-manifest.json`. A re-run with different `--cpus` or `--memory` is refused, and an installed instance's limits change only when an upgrade moves limits the operator did not set to the new default (see [Container Resources](#container-resources)) | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
@@ -159,7 +159,7 @@ reports that Docker's host has less memory (`MemTotal`) than the CameraAgent
 memory limit. The limit is still applied, but it cannot stop CameraAgent from
 exhausting that host's memory. The installation proceeds either way. The human
 form renders the finding on standard error with the rest of the report. With
-`--json`, standard error is reserved for an error object, so the result on
+`--json` install, standard error is reserved for an error object, so the result on
 standard output reports it in `warnings` instead, for the install and the dry run
 alike.
 
