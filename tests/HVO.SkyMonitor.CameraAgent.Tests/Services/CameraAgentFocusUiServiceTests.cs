@@ -36,24 +36,24 @@ public sealed class CameraAgentFocusUiServiceTests
         var service = Service(coordinator, store, User("alice"), Operator);
         var started = await service.StartAsync(Request, CancellationToken.None).ConfigureAwait(false);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        var reads = 0;
         long observed = 0;
-        while (observed < 8)
+        for (var reads = 0; reads < 16; reads++)
         {
+            // Check distinct publications even when the reader skips frames between status reads.
+            await FocusWait.UntilAsync(coordinator, snapshot => snapshot.Latest?.Sequence > observed,
+                "a newer publication", TimeSpan.FromSeconds(15)).ConfigureAwait(false);
             var result = await service.GetStatusAsync(deadline.Token).ConfigureAwait(false);
             var status = result.Value!;
-            if (status.Session.Latest is { } latest)
-            {
-                Assert.IsNotNull(status.Images);
-                Assert.AreEqual(latest.Sequence, status.Images.Sequence,
-                    "The same publication must provide metrics, centroid and crop even when another frame arrives.");
-                observed = latest.Sequence;
-                reads++;
-            }
+            var latest = status.Session.Latest;
+            Assert.AreEqual(ManualFocusSessionState.Running, status.Session.State);
+            Assert.IsNotNull(latest);
+            Assert.IsNotNull(status.Images);
+            Assert.AreEqual(latest.Sequence, status.Images.Sequence,
+                "The same publication must provide metrics, centroid and crop even when another frame arrives.");
+            observed = latest.Sequence;
             await Task.Delay(2, deadline.Token).ConfigureAwait(false);
         }
         await service.StopAsync(started.Value!.SessionId, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsGreaterThan(8, reads, "The reader sampled between successive camera publications.");
     }
 
     [TestMethod]
