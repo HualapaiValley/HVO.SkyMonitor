@@ -113,7 +113,7 @@ public sealed class UpgradeNotesTests
     }
 
     [TestMethod]
-    public void Render_CarriageReturnInANote_StartsANewLineRatherThanOverwritingTheLine()
+    public void Render_CarriageReturnInANote_IsEscapedRatherThanOverwritingTheLine()
     {
         var plan = new LifecycleUpgradeNotes("1.0.0", "1.1.0", [new UpgradeNote("1.1.0", "DO NOT UPGRADE\rSafe to proceed.")]);
 
@@ -123,8 +123,7 @@ public sealed class UpgradeNotesTests
                 "Upgrading from 1.0.0 to 1.1.0.",
                 string.Empty,
                 "Upgrade notes for 1.1.0:",
-                "  DO NOT UPGRADE",
-                "  Safe to proceed.",
+                "  DO NOT UPGRADE<U+000D>Safe to proceed.",
                 string.Empty),
             UpgradeNotes.Render(plan));
     }

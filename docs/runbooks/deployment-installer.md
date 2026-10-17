@@ -1379,6 +1379,17 @@ anything, including before the lifecycle journal, it does two things:
 - It refuses a target older than the installed version, says that an upgrade never goes back, and names
   `hvo-skymonitor cameraagent rollback --instance-id <uuid>`.
 
+Upgrade-note text follows one terminal-safety rule. CRLF becomes LF; LF and TAB are retained, so tabs keep their
+existing terminal spacing behavior. All other Unicode controls (Cc), all format characters (Cf), line and paragraph
+separators (Zl/Zp), private-use characters (Co), and Unicode noncharacters are refused. This includes bidi controls,
+LRM/RLM/ALM, zero-width formatting, BOM (U+FEFF), and soft hyphen. A refusal names the note's version and the first
+unsafe code point as `U+XXXX` (at least four hexadecimal digits), without echoing its text. Ordinary letters,
+punctuation, symbols, combining marks and spaces in any script remain valid.
+
+Human rendering applies the same rule as defense in depth for directly constructed notes: unsafe code points appear
+visibly as `<U+XXXX>`, including lone CRs and U+2028/U+2029. Only CRLF is normalized to LF; unsafe Unicode separators
+are escaped rather than turned into extra lines.
+
 With `--json`, standard output carries only the one result, which is written when the upgrade ends, so the notes are
 written to standard error first as one `upgrade-notes` event on a single line:
 

@@ -65,10 +65,10 @@ public sealed class ReleaseManifestTests
     [DataRow("""{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0.0","text":"  "}]}""", "upgrade note 1 is not a release's version and its text")]
     [DataRow("""{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0","text":"x"}]}""", "upgrade note 1 is not a release's version and its text")]
     [DataRow("""{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0.0\n","text":"x"}]}""", "upgrade note 1 is not a release's version and its text")]
-    [DataRow("""{"schemaVersion":1,"version":"1.1.0","upgradeNotes":[{"version":"1.0.0","text":"x"},{"version":"1.1.0","text":"\u001b[2J"}]}""", "upgrade note 2 (1.1.0) contains control characters")]
-    [DataRow("""{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0.0","text":"DO NOT UPGRADE\rSafe to proceed."}]}""", "upgrade note 1 (1.0.0) contains control characters")]
-    [DataRow("""{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0.0","text":"One.\n\rTwo."}]}""", "upgrade note 1 (1.0.0) contains control characters")]
-    [DataRow("""{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0.0","text":"One.\r"}]}""", "upgrade note 1 (1.0.0) contains control characters")]
+    [DataRow("""{"schemaVersion":1,"version":"1.1.0","upgradeNotes":[{"version":"1.0.0","text":"x"},{"version":"1.1.0","text":"\u001b[2J"}]}""", "upgrade note 2 (1.1.0) contains unsafe terminal character U+001B")]
+    [DataRow("""{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0.0","text":"DO NOT UPGRADE\rSafe to proceed."}]}""", "upgrade note 1 (1.0.0) contains unsafe terminal character U+000D")]
+    [DataRow("""{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0.0","text":"One.\n\rTwo."}]}""", "upgrade note 1 (1.0.0) contains unsafe terminal character U+000D")]
+    [DataRow("""{"schemaVersion":1,"version":"1.0.0","upgradeNotes":[{"version":"1.0.0","text":"One.\r"}]}""", "upgrade note 1 (1.0.0) contains unsafe terminal character U+000D")]
     [DataRow("""{"schemaVersion":1,"version":"1.1.0","upgradeNotes":[{"version":"1.1.0","text":"x"},{"version":"1.1.0+build","text":"y"}]}""", "it has more than one upgrade note for 1.1.0+build")]
     public void Parse_MalformedRelease_IsRefusedWithTheReason(string json, string reason)
     {

@@ -31,6 +31,8 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 ### Fixed
 
+- Upgrade notes reject unsafe Unicode and visibly escape it in human output, preventing invisible formatting from
+  disguising warnings or command names. (#1312)
 - The Archive calendar (`/archive/calendar`) loads its video summaries again. Before this fix, every summary query
   failed with a SQLite syntax error. (#1301)
 

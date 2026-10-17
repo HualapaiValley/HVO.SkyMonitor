@@ -33,7 +33,7 @@ internal sealed record ReleaseManifest(string Version, IReadOnlyList<UpgradeNote
     /// <summary>
     /// Reads a release.json. Throws <see cref="InstallerException"/> naming what is wrong when it is not schema 1 of a
     /// release version, or when its upgrade notes are not each a release's version and its text. A note's lines end in
-    /// LF, and its text holds no other control character but a tab.
+    /// LF, with TAB retained; <see cref="UpgradeNoteText"/> defines which other scalars are unsafe for a terminal.
     /// </summary>
     public static ReleaseManifest Parse(ReadOnlyMemory<byte> utf8Json)
     {
@@ -119,17 +119,20 @@ internal sealed record ReleaseManifest(string Version, IReadOnlyList<UpgradeNote
         {
             index++;
             if (note.ValueKind != JsonValueKind.Object || Text(note, "version") is not { } version ||
-                !ProductVersion.TryGetPrecedence(version, out var precedence) || Text(note, "text") is not { } text)
+                !ProductVersion.TryGetPrecedence(version, out var precedence) || StringValue(note, "text") is not { } text)
             {
                 throw Invalid($"upgrade note {index} is not a release's version and its text");
             }
-            // The notes are printed to the operator's terminal, so text that could drive it is refused rather than shown.
-            // A CRLF line ending is read as LF. A carriage return anywhere else would return to the start of the line and
-            // let what follows overwrite a warning, so it is refused like every other control character.
-            var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal);
-            if (lines.Any(static character => char.IsControl(character) && character is not ('\n' or '\t')))
+            // Admission and rendering share one scalar-based terminal-safety policy. Check it before refusing blank
+            // text, so even a note made only of an unsafe whitespace character names its version and code point.
+            var lines = UpgradeNoteText.NormalizeLineEndings(text);
+            if (UpgradeNoteText.FindUnsafeCodePoint(lines) is { } codePoint)
             {
-                throw Invalid($"upgrade note {index} ({version}) contains control characters");
+                throw Invalid($"upgrade note {index} ({version}) contains unsafe terminal character {codePoint}");
+            }
+            if (string.IsNullOrWhiteSpace(lines))
+            {
+                throw Invalid($"upgrade note {index} is not a release's version and its text");
             }
             if (!releases.Add(precedence))
             {
@@ -141,10 +144,10 @@ internal sealed record ReleaseManifest(string Version, IReadOnlyList<UpgradeNote
     }
 
     private static string? Text(JsonElement element, string name)
-        => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String &&
-           value.GetString() is { } text && !string.IsNullOrWhiteSpace(text)
-            ? text
-            : null;
+        => StringValue(element, name) is { } text && !string.IsNullOrWhiteSpace(text) ? text : null;
+
+    private static string? StringValue(JsonElement element, string name)
+        => element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
     private static InstallerException Invalid(string reason) => new($"The installer will not use {FileName}: {reason}.");
 }
