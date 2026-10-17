@@ -1,12 +1,17 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using HVO.SkyMonitor.LogicHost.Data;
 using HVO.SkyMonitor.TestSupport;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Extensions.DependencyInjection;
+using OpenIddict.Abstractions;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -58,6 +63,76 @@ public sealed class TokenEndpointTests
             scope).ConfigureAwait(false);
 
         Assert.IsFalse(string.IsNullOrEmpty(token.AccessToken), "Access token should not be empty.");
+
+        // A separate subject keeps token revocation isolated from the shared seeded users.
+        await using var services = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+        var users = services.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+        var tokens = services.ServiceProvider.GetRequiredService<IOpenIddictTokenManager>();
+        var email = $"refresh-{Guid.NewGuid():N}@example.test";
+        var user = new ApplicationUser { UserName = email, Email = email, EmailConfirmed = true };
+        var created = await users.CreateAsync(user, TestUsers.Admin.Password).ConfigureAwait(false);
+        Assert.IsTrue(created.Succeeded);
+
+        try
+        {
+            var initial = await HttpHelpers.GetPasswordTokenAsync(
+                _client!,
+                "/connect/token",
+                email,
+                TestUsers.Admin.Password,
+                TestClients.WebUI.ClientId,
+                "openid profile email api.viewer offline_access").ConfigureAwait(false);
+            Assert.IsFalse(string.IsNullOrWhiteSpace(initial.RefreshToken));
+
+            using var refreshForm = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["grant_type"] = "refresh_token",
+                ["client_id"] = TestClients.WebUI.ClientId,
+                ["refresh_token"] = initial.RefreshToken!
+            });
+            using var refreshed = await _client!.PostAsync(
+                new Uri("/connect/token", UriKind.Relative), refreshForm).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.OK, refreshed.StatusCode);
+            var renewed = await refreshed.Content.ReadFromJsonAsync<HttpHelpers.TokenResponse>().ConfigureAwait(false);
+            Assert.IsNotNull(renewed);
+            Assert.IsFalse(string.IsNullOrWhiteSpace(renewed.AccessToken));
+            Assert.IsFalse(string.IsNullOrWhiteSpace(renewed.RefreshToken));
+
+            using var protectedRequest = new HttpRequestMessage(
+                HttpMethod.Get, new Uri("/api/v1.0/status/protected", UriKind.Relative));
+            protectedRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+                "Bearer", renewed.AccessToken);
+            using var protectedResponse = await _client.SendAsync(protectedRequest).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.OK, protectedResponse.StatusCode);
+
+            var revoked = 0;
+            await foreach (var stored in tokens.FindBySubjectAsync(user.Id).ConfigureAwait(false))
+            {
+                if (await tokens.GetTypeAsync(stored).ConfigureAwait(false) == OpenIddictConstants.TokenTypeIdentifiers.RefreshToken &&
+                    await tokens.TryRevokeAsync(stored).ConfigureAwait(false))
+                {
+                    revoked++;
+                }
+            }
+            Assert.IsGreaterThan(0, revoked);
+
+            using var revokedForm = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["grant_type"] = "refresh_token",
+                ["client_id"] = TestClients.WebUI.ClientId,
+                ["refresh_token"] = renewed.RefreshToken!
+            });
+            using var rejected = await _client.PostAsync(
+                new Uri("/connect/token", UriKind.Relative), revokedForm).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.BadRequest, rejected.StatusCode);
+            using var error = JsonDocument.Parse(await rejected.Content.ReadAsStringAsync().ConfigureAwait(false));
+            Assert.AreEqual("invalid_grant", error.RootElement.GetProperty("error").GetString());
+        }
+        finally
+        {
+            var deleted = await users.DeleteAsync(user).ConfigureAwait(false);
+            Assert.IsTrue(deleted.Succeeded);
+        }
     }
 
     [TestMethod]
