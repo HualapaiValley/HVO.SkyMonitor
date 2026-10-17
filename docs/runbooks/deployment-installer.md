@@ -30,7 +30,6 @@ runbook describes the installer as it behaves today.
 | Install and upgrade from a published release, by GHCR digest or offline archive | Nothing is published, so hosts install a locally built image by its loaded image ID | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309) |
 | `--version`, and upgrade notes printed before an upgrade | `--version` reports the installer build identity. The release.json reader and pre-upgrade notes are implemented; the release acquisition path that supplies them is pending #1309 (see [Upgrade notes and older targets](#upgrade-notes-and-older-targets)) | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312) |
 | `--plan`, `--answers FILE`, `backup` and `restore FILE`, exit codes 0/1/2/3/130 | `--dry-run` and `--config`; no `backup` or `restore`; a refusal such as failed host prerequisites exits `1` | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
-| Swap upgrade that never copies bulk data, snapshotting only the small databases for a declared migration | Upgrade and rollback take a `tar` backup of the instance's configuration and state | [#1314](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1314); [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044) narrows to the `backup` command |
 | Container limits kept in the install record and changed with a re-run | Limits are set at install and recorded in the instance's `instance-manifest.json`. A re-run with different `--cpus` or `--memory` is refused, and an installed instance's limits change only when an upgrade moves limits the operator did not set to the new default (see [Container Resources](#container-resources)) | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
 | Settings catalogue served by the API | CameraAgent serves the [operator settings catalogue and group writes](../contracts/cameraagent-operator-settings-v1.md) through its operations API; the owner creates API keys for non-browser clients | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
 | Machine install record `/etc/hvo-sky/install.json` | Records live beneath each instance root (`instance-manifest.json`, `state/deployment/`); `/etc/hvo-sky/` holds only the host policy | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
@@ -149,7 +148,7 @@ and report every finding together so the host can be fixed in one pass:
 | `docker-cpu-quota-unsupported` | `docker info` reports `CpuCfsQuota: true`, so the Compose `cpus` quota is enforced |
 | `docker-pids-limit-unsupported` | `docker info` reports `PidsLimit: true`, so the Compose `pids_limit` is enforced |
 | `docker-host-cpus-insufficient` | `docker info` reports at least as many CPUs (`NCPU`) as the CameraAgent [CPU limit](#container-resources); Docker refuses to create a container with a larger quota |
-| `tar-missing` | an executable `tar` on `PATH`; upgrade and rollback run it for the consistent instance backup |
+| `tar-missing` | an executable `tar` on `PATH`, for an archive of the whole instance (the explicit `backup` command, [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315)); upgrade and rollback no longer run it |
 | `product-root-storage-insufficient` | room on the filesystem that holds the product root: twice the catalog bundle and image archive together, plus 1 GiB |
 | `docker-root-storage-insufficient` | room on the filesystem that holds Docker's `DockerRootDir`: twice the image archive and 1 GiB |
 | `docker-root-unreported` | `docker info` reports an absolute `DockerRootDir` |
@@ -167,8 +166,9 @@ A capability `docker info` does not report counts as unsupported. Free space is
 measured on the filesystem that actually stores each root, at its nearest
 existing ancestor, not on `/`; when the product root and Docker's data root
 share one filesystem their requirements are added together. An upgrade likewise
-measures the instance backup and staged archive against the product root's own
-filesystem.
+measures the staged archive and room for two copies of the small databases (the
+snapshot and a restore's temporary copy) against the product root's own
+filesystem. Bulk capture data is never copied, so it is never counted.
 
 A host that cannot enforce the limits would otherwise run CameraAgent unbounded,
 so it is refused. Raspberry Pi OS boots with `cgroup_disable=memory`. The remedy
@@ -409,10 +409,10 @@ detection.
 can be evaluated against persisted state first without acquiring, loading, or starting anything; see
 [State Compatibility Boundary](#state-compatibility-boundary).
 
-`--migration-backward-compatible` remains a separate operator assertion about the
-candidate's state migration and is required only when the candidate declares one;
-[CameraAgent Lifecycle](#cameraagent-lifecycle) defines exactly when that is.
-Do not add it to a routine upgrade; doing so defeats the gate it exists for.
+`--migration-backward-compatible` is no longer needed. A candidate that declares a
+state migration has its small databases snapshotted before it starts instead; see
+[Swap upgrade and database snapshots](#swap-upgrade-and-database-snapshots). The flag
+is still accepted and changes nothing.
 
 ### Edge work persisted across an upgrade
 
@@ -749,7 +749,7 @@ CLI reports the assertions read.
 Every trust or integrity refusal in the scenario happens before the upgrade
 mutates anything. The separate post-mutation failure runs only after the signed
 candidate has passed acquisition, image-label agreement, state compatibility,
-capture drain, Compose stop, backup, Compose-up, application health, and installation-identity
+capture drain, Compose stop, Compose-up, application health, and installation-identity
 verification. A campaign-local Docker shim then records the real healthy,
 unprivileged candidate inspection and reports an impossible privileged runtime
 to the candidate-container verifier exactly once. The existing lifecycle catch
@@ -1317,7 +1317,7 @@ raw-ingress schema 11. The current image requires the catalog manifest version, 
 raw-ingress schema its labels declare, and migrates an earlier canonical raw journal only through the transition
 its `io.hvo.skymonitor.raw-ingress-migration` label names, as described in
 [Edge work persisted across an upgrade](#edge-work-persisted-across-an-upgrade). There is no supported automatic
-migration from schema 12 or earlier: a populated schema-12 journal is rejected by preflight before drain, backup,
+migration from schema 12 or earlier: a populated schema-12 journal is rejected by preflight before drain, snapshot,
 stop, or Compose mutation, and runtime startup also refuses it without changing its contents.
 Upgrading such an instance requires the CameraAgent-only reset below or an equivalent explicit
 state-disposition procedure. The superseded `backward-compatible` label value remains readable only so an
@@ -1325,7 +1325,7 @@ already installed image stays inspectable; it is never accepted as an upgrade ca
 
 Deployment preflight compares the declared boundaries against the persisted state before Compose starts the
 container, so an incompatible instance fails once with the complete boundary list instead of through container
-restart loops. Install, upgrade, and rollback all run it before any backup, drain, stop, or `docker compose`
+restart loops. Install, upgrade, and rollback all run it before any snapshot, drain, stop, or `docker compose`
 invocation and before the container starts. The candidate image is inspected first because its
 labels are the expected values being compared, and on install the catalog bundle and Compose files
 are written first because the preflight reads the selected catalog and the bind sources they
@@ -1388,7 +1388,7 @@ LocalRunner instance needs, therefore no longer preflights clean only to be refu
 **A compatible signed-release preflight is still not a promise that the upgrade will proceed.** It compares
 persisted state and the declared contract identities against this instance. Gates that need the image itself run
 only during the upgrade: the labels the loaded image actually carries are compared against the signed record, and
-a candidate declaring a state migration still requires `--migration-backward-compatible` (see
+whether the candidate declares a state migration, which decides whether its small databases are snapshotted (see
 [CameraAgent Lifecycle](#cameraagent-lifecycle)). When either signed
 identity for the selected platform (`offlineArchiveImageId` or `manifestDigest`) equals the installed
 `manifest.image.imageId`, preflight remains compatible but includes the non-blocking
@@ -1496,9 +1496,8 @@ hvo-sky-install cameraagent uninstall --instance-id <uuid>
 hvo-sky-install cameraagent reinstall --instance-id <uuid>
 ```
 
-An upgrade whose candidate declares the installed state contract needs no further assertion. The candidate
-declares a state migration, and the upgrade then also requires `--migration-backward-compatible`, when any of
-these holds:
+An upgrade whose candidate declares the installed state contract is a pure swap. The candidate declares a state
+migration, and the upgrade then snapshots the small databases before the candidate starts, when any of these holds:
 
 - A persisted-state boundary label differs between the installed image and the candidate, compared exactly:
   `io.hvo.skymonitor.state-compatibility` (on the installed side, the contract the instance manifest records),
@@ -1512,30 +1511,81 @@ these holds:
   objects is one the runtime has not initialized yet, which is a fresh start rather than a migration.
 
 The check runs after the state preflight, so an incompatible persisted state is reported first, and before the
-backup, the drain, and any Compose change. Its refusal names every difference, for example
-`io.hvo.skymonitor.raw-ingress-schema installed 14, candidate 15`, and is journalled as a terminal refusal that
-blocks no later operation. The contract-identity labels (`component`, `configuration-contract`,
-`catalog-contract`, `replay-runner-contract`) are not state: a mismatch there is refused whether or not the
-assertion is given.
-
-`--migration-backward-compatible` asserts that the prior image can read the state a migrating candidate leaves
-behind. A candidate that fails after it starts is restored by starting the prior image again on that state; the
-pre-mutation backup is not restored, so no transactional restore path is reserved. The assertion is necessary but
-not sufficient: the candidate must also declare the current `cameraagent-state-v2` contract, and the persisted
-state must satisfy every declared boundary described in [State Compatibility Boundary](#state-compatibility-boundary).
-Supplying it for a candidate that declares no migration is accepted and changes nothing, but passing it habitually
-would admit the next real migration unexamined. A rollback never requires it, and a rollback target installed
-before that label correction is accepted as a known contract because no state migration occurs on the way back.
+drain and any Compose change. The journal's `stateMigration` names every difference, for example
+`io.hvo.skymonitor.raw-ingress-schema installed 14, candidate 15`. The contract-identity labels (`component`,
+`configuration-contract`, `catalog-contract`, `replay-runner-contract`) are not state: a mismatch there is refused.
+The candidate must also declare the current `cameraagent-state-v2` contract, and the persisted state must satisfy
+every declared boundary described in [State Compatibility Boundary](#state-compatibility-boundary). A rollback
+target installed before that label correction is accepted as a known contract.
 
 Each transition pins the Docker endpoint and daemon identity, validates the
-rendered Compose model, records pre-mutation continuity, creates and validates a
-consistent backup, and journals mutation intent before pause or stop. Candidate
-Compose, manifest, and result identities commit while capture remains paused;
-resume is the final idempotent action. If final acknowledgement is lost, rerun
-the exact command with `--resume`. A failed candidate restores the exact prior
-Compose, image, and identity records before capture resumes. Noncurrent manifests
-and results are rejected before lifecycle state mutation; invalid candidate images
-or rollback models are rejected before runtime mutation.
+rendered Compose model, records pre-mutation continuity, and journals mutation
+intent before pause or stop. Candidate Compose, manifest, and result identities
+commit while capture remains paused; resume is the final idempotent action. If
+final acknowledgement is lost, rerun the exact command with `--resume`. A failed
+candidate restores the exact prior Compose, image, identity records and, for a
+declared migration, databases before capture resumes. Noncurrent manifests and
+results are rejected before lifecycle state mutation; invalid candidate images or
+rollback models are rejected before runtime mutation.
+
+### Swap upgrade and database snapshots
+
+An upgrade or rollback never copies bulk capture data. Frames, `state/raw`, `state/archive` and derived products
+stay where they are (install contract section 6):
+
+1. The previous image is kept. Capture is paused and drained, and the instance is stopped.
+2. Only when a migration is declared (above), or when a rollback undoes a migrating upgrade, the small SQLite
+   databases are snapshotted: the Identity database, the raw-ingress journal, and the outbox, fleet, environment,
+   evidence, time-lapse, nightly-product and automation stores. Each is copied with the SQLite online backup API
+   into `<product-root>/operations/lifecycle/<operation>/state-snapshots/<snapshot>/`, and each copy must pass
+   `PRAGMA integrity_check` and match its source's user version, schema and per-table row counts. A manifest binds
+   the files by SHA-256, and the journal records the manifest's hash before the candidate may start.
+3. The candidate starts and must pass the same health and installation-identity checks as before.
+4. If it fails, the candidate is stopped, the snapshot (if any) is put back, and the previous image starts on the
+   restored databases. A write-ahead log or journal the candidate left beside a store is removed first, so it can
+   never be replayed over the restored bytes.
+
+**Retention and cleanup are held for the whole swap.** CameraAgent deletes frames, archived and derived products,
+and unowned projected-scene stages only while capture admission is running. The installer pauses admission durably
+before it stops the previous image and resumes it only after the candidate commits or the previous image is restored,
+so a candidate starts with the hold in force. An operator pause holds them too; a paused instance captures nothing
+new, so the hold never grows the data it protects. While held, the log says
+`<maintenance> held while capture admission is Paused; nothing was deleted`.
+
+**A restore loses later database changes.** Restoring a snapshot writes this warning to standard error before it
+changes anything (with `--json`, a one-line `state-snapshot-restore` event):
+
+```text
+Warning: restoring the CameraAgent databases from the snapshot taken at <time> (snapshot <uuid>). Every database
+change made after that point is lost, including captures, settings and accounts recorded since then. Frames and
+other files written since then stay on disk but are no longer indexed.
+```
+
+A failed candidate is restored while capture is still paused, so only what the candidate itself wrote is lost. A
+committed migrating upgrade records its snapshot in `instance-manifest.json` as `previousStateSnapshot`. A later
+`rollback` verifies that snapshot, runs the state preflight against its copies rather than the migrated stores,
+shows the warning before it pauses anything, snapshots the current databases, and then puts the retained snapshot
+back before the previous image starts. A rollback whose image fails restores the databases it replaced. The rollback
+records its own snapshot as `previousStateSnapshot`, so rolling back again returns to the upgraded release with the
+state it had. A tampered or missing retained snapshot refuses the rollback before anything changes. A pure swap
+records no snapshot, and its rollback is a pure swap too.
+
+**Every step resumes after a crash or power loss.** The journal records `stateSnapshotRequired` and the reason
+(`stateMigration`) before the drain, the snapshot reference (`stateSnapshot`) once every copy and the manifest are
+synced, and `stateSnapshotRestoredUtc` once a restore is synced and before the previous image starts. Each snapshot
+file, the manifest and each restored store is written under a temporary name, synced, renamed and its directory
+synced. `--resume` of an interrupted upgrade stops whatever is running, restores a recorded snapshot that is not yet
+restored, starts the previous image, and retries. It never restores again after the previous image has started on
+restored stores, so it cannot overwrite what that image has captured since. `--restore-only` never stops a container,
+so it refuses while a recorded snapshot is unrestored and points to `--resume`. A retry takes a new snapshot.
+Snapshots are kept with their operation and are not deleted automatically.
+
+**Migration rule.** A CameraAgent schema change must stay readable by the previous release for one release: add
+first, remove in a later release. The unit test `PreviousReleaseStateReadabilityTests` applies the previous release's
+raw-ingress expectations (`tests/fixtures/state-compatibility/cameraagent-previous-release.json`) to the journal the
+current code creates, and fails when that release would refuse it. The fixture changes only in the release pull
+request that cuts a version. A change that cannot meet the rule is declared as a migration and relies on the
+snapshot restore above.
 
 ### Upgrade notes and older targets
 
@@ -1565,7 +1615,7 @@ written to standard error first as one `upgrade-notes` event on a single line:
 {"schemaVersion":1,"event":"upgrade-notes","upgradeNotes":{"installedVersion":"1.0.0","targetVersion":"1.2.0","notes":[{"version":"1.1.0","text":"Nothing to do by hand."},{"version":"1.2.0","text":"Read the Camera \u0026 rig page after upgrading."}]}}
 ```
 
-- The event comes before the journal, the backup, the pause and the image change, so a caller sees the notes before
+- The event comes before the journal, the pause and the image change, so a caller sees the notes before
   anything changes. A failed upgrade has already written it, and its error object follows it.
 - `installedVersion` is `null` when it is not recorded. `text` keeps its line breaks as `\n`.
 - The result repeats the notes in its `upgradeNotes` member. A result with no `release.json` behind it has no such
@@ -1584,10 +1634,10 @@ version, comes with #1309. Until then, image-reference and signed-manifest upgra
 
 ### Restore Only After an Interrupted Upgrade
 
-Ordinary `upgrade --resume` retries the upgrade, including backup and candidate
-startup. **Do not use it merely to restore service after a failed backup.** For
-an operator-image upgrade whose exact original runtime is already healthy, the
-bounded recovery-only form is:
+Ordinary `upgrade --resume` retries the upgrade, including the database snapshot
+and candidate startup. **Do not use it merely to restore service after a failed
+upgrade.** For an operator-image upgrade whose exact original runtime is already
+healthy, the bounded recovery-only form is:
 
 ```bash
 hvo-sky-install cameraagent upgrade \
@@ -1612,7 +1662,9 @@ protected installation identity/owner verification, and both retained tokens rem
 required. Admission must match the recorded paused version and capture sequence.
 Changed state, candidate-running, absent/unhealthy original runtime, foreign admission,
 expired/rejected credentials, and committed or partially committed candidates fail
-closed. No backup archive, including a leftover partial archive, authorizes recovery.
+closed. So does a recorded database snapshot that has not been restored: restoring it
+needs the instance stopped, which this form never does, so use `--resume`. No backup
+archive, including a leftover partial archive, authorizes recovery.
 
 This form never pauses capture, stops/recreates/restarts a container, writes Compose,
 changes identity, or resets state. An approved Docker runtime memory override remains
@@ -1642,8 +1694,10 @@ verifies the current result without another resume command. It never reports the
 upgrade completed, and ordinary `--resume` cannot restart a settled recovery.
 
 Issue [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044) remains
-open for size-aware backup deadlines, capacity, progress, cancellation/partial cleanup,
-and resource-qualified cold startup. Do not manually edit the lifecycle journal or
+open for size-aware backup deadlines, capacity, progress, and cancellation/partial
+cleanup, which now apply to the explicit `backup` command
+([#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315)) rather than to
+every upgrade. Do not manually edit the lifecycle journal or
 reduce an approved memory override to work around those remaining limits.
 
 The protected installation-verification GET used by both the pre-mutation owner
@@ -1654,7 +1708,7 @@ or drain limits. An elapsed request deadline reports
 `CameraAgent installation verification request timed out.` without transport
 details or credentials. Caller cancellation remains cancellation, not a timeout.
 Before mutation, a timeout follows the existing refusal policy without pause,
-stop, backup, or image replacement; caller cancellation leaves an unmutated
+stop, snapshot, or image replacement; caller cancellation leaves an unmutated
 operation resumable. Do not manually repair the journal or reset the instance.
 Issue [#1041](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041) records
 an old-image response of about 35 seconds, beyond the former 15-second client

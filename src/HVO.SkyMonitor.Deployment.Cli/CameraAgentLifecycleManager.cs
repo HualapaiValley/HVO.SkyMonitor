@@ -176,11 +176,11 @@ internal sealed class CameraAgentLifecycleManager
         return request.Operation switch
         {
             LifecycleOperationKind.Upgrade => await ChangeImageAsync(
-                request, paths, manifest, result, compose, docker, processRunner, lifecycleClientFactory, uid, gid,
+                request, paths, manifest, result, compose, docker, lifecycleClientFactory, uid, gid,
                 ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage,
                 rollback: false, output, error, cancellationToken).ConfigureAwait(false),
             LifecycleOperationKind.Rollback => await ChangeImageAsync(
-                request, paths, manifest, result, compose, docker, processRunner, lifecycleClientFactory, uid, gid,
+                request, paths, manifest, result, compose, docker, lifecycleClientFactory, uid, gid,
                 ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage: null,
                 rollback: true, output, error, cancellationToken).ConfigureAwait(false),
             LifecycleOperationKind.Reinstall => await ReinstallAsync(
@@ -240,6 +240,9 @@ internal sealed class CameraAgentLifecycleManager
             throw new InstallerException("Restore-only candidate identity does not match the original request and instance platform.");
         if (!IsValidRecoveryBoundary(boundary) || boundary.CaptureVersion == long.MaxValue)
             throw new InstallerException("Restore-only requires a valid retained pause boundary.");
+        // Restore-only never stops a container, so it cannot put a database snapshot back under the running original.
+        if (operation.StateSnapshot is not null && operation.StateSnapshotRestoredUtc is null)
+            throw new InstallerException("Restore-only cannot continue: the upgrade's database snapshot has not been restored, so the original image must not run on these stores. Rerun the same upgrade with --resume, which stops the instance and restores the snapshot first.");
 
         var operationRoot = Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"));
         var roots = new[] { paths.InstanceRoot, paths.ConfigRoot, paths.StateRoot, paths.DeploymentStateRoot, operationRoot };
@@ -430,7 +433,6 @@ internal sealed class CameraAgentLifecycleManager
         InstallationResult installationResult,
         ComposeFiles compose,
         DockerClient docker,
-        IProcessRunner processRunner,
         Func<Uri, ICameraAgentLifecycleClient>? lifecycleClientFactory,
         uint uid,
         uint gid,
@@ -464,9 +466,9 @@ internal sealed class CameraAgentLifecycleManager
         try
         {
             var changed = await ChangeImageAsync(
-                    request, paths, manifest, installationResult, compose, docker, processRunner, lifecycleClientFactory,
+                    request, paths, manifest, installationResult, compose, docker, lifecycleClientFactory,
                     uid, gid, ownerClientFactory, lifecycleControlToken, verificationToken, signedImage, rollback, operation,
-                    cancellationToken)
+                    error, cancellationToken)
                 .ConfigureAwait(false);
             return upgradeNotes is null ? changed : changed with { UpgradeNotes = upgradeNotes };
         }
@@ -491,7 +493,6 @@ internal sealed class CameraAgentLifecycleManager
         InstallationResult installationResult,
         ComposeFiles compose,
         DockerClient docker,
-        IProcessRunner processRunner,
         Func<Uri, ICameraAgentLifecycleClient>? lifecycleClientFactory,
         uint uid,
         uint gid,
@@ -501,6 +502,7 @@ internal sealed class CameraAgentLifecycleManager
         AcquiredImage? signedImage,
         bool rollback,
         LifecycleOperationState operation,
+        TextWriter error,
         CancellationToken cancellationToken)
     {
         var owner = ownerClientFactory?.Invoke(installationResult.Url) ?? new OwnerBootstrapClient(installationResult.Url);
@@ -602,7 +604,14 @@ internal sealed class CameraAgentLifecycleManager
         {
             throw new InstallerException("Automatic rollback is forbidden because the active image did not declare a supported state contract.");
         }
-        // Every boundary is proved before the backup, drain, stop, and Compose mutation begin, so an incompatible
+        // A rollback that undoes a migrating upgrade puts back the database snapshot that upgrade took, because the
+        // rollback image is not assumed to read the migrated stores. The snapshot must still be intact and must have
+        // been taken under the image the rollback returns to.
+        var (retainedSnapshot, preflightDatabases) = rollback && manifest.PreviousStateSnapshot is { } previousState
+            ? await ResolveRetainedSnapshotAsync(paths, manifest, operation, previousState, candidate, cancellationToken)
+                .ConfigureAwait(false)
+            : (null, null);
+        // Every boundary is proved before the snapshot, drain, stop, and Compose mutation begin, so an incompatible
         // upgrade or rollback never reaches a container restart loop.
         // This creates a missing bind source and normalizes an existing one to 0700, exactly as the committed
         // mutation does, so a dry run evaluates the same sources. A linked or foreign-owned source still fails
@@ -623,29 +632,36 @@ internal sealed class CameraAgentLifecycleManager
             renderToStandardError: !request.Json,
             cancellationToken,
             rollback ? CameraAgentStateContractPolicy.AllowLegacy : CameraAgentStateContractPolicy.RequireCurrent,
-            signedImage?.Release.Tag)
+            signedImage?.Release.Tag,
+            preflightDatabases)
             .ConfigureAwait(false);
         // The preflight has proved the persisted state readable and within the candidate's boundaries, so what remains
-        // is whether the candidate changes that state. A failed candidate is restored by starting the prior image on
-        // the state it leaves behind, so a migration needs the operator's assertion; an unchanged contract does not.
-        if (!rollback && !request.MigrationBackwardCompatible)
-        {
-            var migration = CameraAgentStateMigration.DeclaredChanges(
+        // is whether the candidate changes that state. An unchanged contract is a pure swap. A declared migration has
+        // its small databases snapshotted before the candidate starts, and a failed candidate is restored onto that
+        // snapshot. The decision is sticky across --resume: a candidate that already migrated the stores before an
+        // interruption no longer looks like a migration, but its snapshot must still be retaken on a retry.
+        var declaredChanges = rollback
+            ? []
+            : CameraAgentStateMigration.DeclaredChanges(
                 paths, manifest.Image, manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility, candidate);
-            if (migration.Count > 0)
-            {
-                throw new InstallerException(
-                    $"The candidate declares a CameraAgent state migration ({string.Join("; ", migration)}). A failed candidate is restored onto the state it leaves behind, so an explicit transactional restore path is required; pass --migration-backward-compatible only when the prior image can read the migrated state.");
-            }
-        }
+        var stateSnapshotRequired = operation.StateSnapshotRequired || retainedSnapshot is not null || declaredChanges.Count > 0;
         if (operation.CandidateImage is not null && operation.CandidateImage != candidate)
             throw new InstallerException("The retained image operation has a different candidate identity.");
         operation = operation with
         {
             CandidateImage = candidate,
             Phase = LifecycleOperationPhase.CandidateValidated,
-            Status = InstallationStatus.Running
+            Status = InstallationStatus.Running,
+            StateSnapshotRequired = stateSnapshotRequired,
+            // What the candidate changes, kept for the operator; a retry that no longer sees it keeps the first answer.
+            StateMigration = declaredChanges.Count > 0 ? string.Join("; ", declaredChanges) : operation.StateMigration,
+            RetainedStateSnapshot = retainedSnapshot
         };
+        if (retainedSnapshot is not null)
+        {
+            // Said before anything changes, so a dry run says it too.
+            await CameraAgentStateSnapshot.ShowWarningAsync(retainedSnapshot, request.Json, error).ConfigureAwait(false);
+        }
         if (request.DryRun)
         {
             return Result(operation.Kind, "planned", operation.OperationId, paths, manifest with { Image = candidate }, manifest.DockerDaemon, null, null);
@@ -766,6 +782,16 @@ internal sealed class CameraAgentLifecycleManager
             SafeFileSystem.WriteTextAtomic(compose.ComposeFile, originalCompose);
             SafeFileSystem.WriteTextAtomic(compose.EnvironmentFile, originalEnvironment);
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
+            if (operation.StateSnapshot is { } interrupted && operation.StateSnapshotRestoredUtc is null)
+            {
+                // The interruption came after the snapshot, so the candidate may have changed the stores. Whatever
+                // runs is stopped before they are put back, and the original image starts only on restored state.
+                await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
+                    ["stop"], cancellationToken).ConfigureAwait(false);
+                OwnerRecoverySocket.RemoveStoppedSocket(paths, uid, gid);
+                operation = await RestoreStateSnapshotAsync(
+                    paths, manifest, operation, interrupted, request.Json, error, cancellationToken).ConfigureAwait(false);
+            }
             await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
                 ["up", "--detach", "--remove-orphans"], cancellationToken).ConfigureAwait(false);
             var restoredOwnerState = await VerifyCandidateAsync(
@@ -783,10 +809,13 @@ internal sealed class CameraAgentLifecycleManager
                     cancellationToken).ConfigureAwait(false);
             }
             await lifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
+            // Capture has resumed on the original image, so the restored snapshot is history: the retry takes its own.
             operation = await RecordAsync(paths, operation with
             {
                 Phase = LifecycleOperationPhase.Prepared,
-                MutationStarted = false
+                MutationStarted = false,
+                StateSnapshot = null,
+                StateSnapshotRestoredUtc = null
             }, cancellationToken).ConfigureAwait(false);
         }
         SafeFileSystem.WriteTextAtomic(previousEnvironmentPath, originalEnvironment);
@@ -818,13 +847,30 @@ internal sealed class CameraAgentLifecycleManager
             await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName, ["stop"], cancellationToken)
                 .ConfigureAwait(false);
             OwnerRecoverySocket.RemoveStoppedSocket(paths, uid, gid);
-            var backup = await InstanceBackupManager.CreateAsync(paths, manifest, operation.OperationId, processRunner, cancellationToken)
-                .ConfigureAwait(false);
-            operation = await RecordAsync(paths, operation with
+            // Nothing bulk is copied: frames, archives and derived products stay where they are, and the candidate
+            // holds their retention and cleanup while capture admission is paused. Only a declared migration (or a
+            // rollback that puts a retained snapshot back) snapshots the small databases, while the instance is
+            // stopped, and the record that the candidate may now start is written only after that snapshot is durable.
+            if (operation.StateSnapshotRequired)
             {
-                Phase = LifecycleOperationPhase.BackupRecorded,
-                BackupManifestSha256 = backup.ManifestSha256
-            }, cancellationToken).ConfigureAwait(false);
+                var snapshot = await CameraAgentStateSnapshot.CreateAsync(
+                    paths, manifest.InstanceId, operation.OperationId, manifest.Image, cancellationToken).ConfigureAwait(false);
+                operation = await RecordAsync(paths, operation with
+                {
+                    Phase = LifecycleOperationPhase.StateSnapshotRecorded,
+                    StateSnapshot = snapshot,
+                    StateSnapshotRestoredUtc = null
+                }, cancellationToken).ConfigureAwait(false);
+                if (operation.RetainedStateSnapshot is { } retainedState)
+                {
+                    await CameraAgentStateSnapshot.RestoreAsync(
+                        paths, manifest.InstanceId, retainedState, manifest.RuntimeUid, manifest.RuntimeGid, cancellationToken)
+                        .ConfigureAwait(false);
+                    operation = await RecordAsync(
+                        paths, operation with { Phase = LifecycleOperationPhase.RetainedStateApplied }, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
             operation = await RecordAsync(paths, operation with
             {
                 Phase = LifecycleOperationPhase.Mutating,
@@ -886,7 +932,10 @@ internal sealed class CameraAgentLifecycleManager
                 PreviousComposeModelSha256 = manifest.ComposeModelSha256,
                 Resources = candidateResources,
                 LastLifecycleOperationId = operation.OperationId,
-                UpdatedUtc = DateTimeOffset.UtcNow
+                UpdatedUtc = DateTimeOffset.UtcNow,
+                // The databases as the now-previous image left them, which a rollback to that image puts back. A pure
+                // swap has none, and its rollback is a swap too.
+                PreviousStateSnapshot = operation.StateSnapshot
             };
             await SafeFileSystem.WriteJsonAtomicAsync(paths.ManifestPath, committed, DeploymentJsonContext.Default.InstanceManifest, cancellationToken)
                 .ConfigureAwait(false);
@@ -967,6 +1016,13 @@ internal sealed class CameraAgentLifecycleManager
                             ["stop"], recovery.Token).ConfigureAwait(false);
                         OwnerRecoverySocket.RemoveStoppedSocket(paths, uid, gid);
                     }
+                    // Every phase that recorded a snapshot ran with the original stopped, and the candidate, if it ran,
+                    // was stopped above, so the stores are put back before the original image starts on them.
+                    if (operation.StateSnapshot is { } taken && operation.StateSnapshotRestoredUtc is null)
+                    {
+                        operation = await RestoreStateSnapshotAsync(
+                            paths, manifest, operation, taken, request.Json, error, recovery.Token).ConfigureAwait(false);
+                    }
                     await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
                         ["up", "--detach", "--remove-orphans"], recovery.Token).ConfigureAwait(false);
                     var restoredOwnerState = await VerifyCandidateAsync(
@@ -1000,6 +1056,45 @@ internal sealed class CameraAgentLifecycleManager
             if (exception is OperationCanceledException) throw;
             throw new InstallerException("The image lifecycle operation failed; the retained journal and diagnostics identify the recovery boundary.", exception);
         }
+    }
+
+    private static async Task<(LifecycleStateSnapshot? Snapshot, CameraAgentStateDatabaseView? Databases)> ResolveRetainedSnapshotAsync(
+        InstallationPaths paths,
+        InstanceManifest manifest,
+        LifecycleOperationState operation,
+        LifecycleStateSnapshot previousState,
+        ImageInstallationIdentity rollbackImage,
+        CancellationToken cancellationToken)
+    {
+        var retained = await CameraAgentStateSnapshot.VerifyAsync(paths, manifest.InstanceId, previousState, cancellationToken)
+            .ConfigureAwait(false);
+        if (retained.Image != rollbackImage)
+            throw new InstallerException("The retained database snapshot was not taken under the rollback image.");
+        if (operation.RetainedStateSnapshot is not null && operation.RetainedStateSnapshot != previousState)
+            throw new InstallerException("The retained image operation names a different database snapshot.");
+        return (previousState, CameraAgentStateSnapshot.PreflightView(paths, previousState, retained));
+    }
+
+    /// <summary>
+    /// Puts an operation's own database snapshot back, after saying so, and records that it did before anything
+    /// starts on the restored stores. A repeat after a crash before the record restores the same bytes again; a
+    /// repeat after it never restores over state the original image has since written.
+    /// </summary>
+    private static async Task<LifecycleOperationState> RestoreStateSnapshotAsync(
+        InstallationPaths paths,
+        InstanceManifest manifest,
+        LifecycleOperationState operation,
+        LifecycleStateSnapshot snapshot,
+        bool json,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        await CameraAgentStateSnapshot.ShowWarningAsync(snapshot, json, error).ConfigureAwait(false);
+        await CameraAgentStateSnapshot.RestoreAsync(
+                paths, manifest.InstanceId, snapshot, manifest.RuntimeUid, manifest.RuntimeGid, cancellationToken)
+            .ConfigureAwait(false);
+        return await RecordAsync(paths, operation with { StateSnapshotRestoredUtc = DateTimeOffset.UtcNow }, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private static async Task<LifecycleResult> UninstallAsync(
@@ -1502,6 +1597,12 @@ internal sealed class CameraAgentLifecycleManager
         }
     }
 
+    /// <summary>
+    /// Runs after every lifecycle journal record is durable. Crash-injection tests capture what a power loss at that
+    /// moment would leave behind; production leaves it empty.
+    /// </summary>
+    internal static Action<LifecycleOperationState> JournalRecorded { get; set; } = static _ => { };
+
     internal static async Task<LifecycleOperationState> RecordAsync(
         InstallationPaths paths,
         LifecycleOperationState state,
@@ -1513,6 +1614,7 @@ internal sealed class CameraAgentLifecycleManager
         await SafeFileSystem.WriteJsonAtomicAsync(
             paths.LifecycleStatePath, state, DeploymentJsonContext.Default.LifecycleOperationState, cancellationToken)
             .ConfigureAwait(false);
+        JournalRecorded(state);
         return state;
     }
 
@@ -2250,20 +2352,21 @@ internal sealed class CameraAgentLifecycleManager
         }
     }
 
+    /// <summary>
+    /// Room for the staged image archive and for two copies of the small databases: the operation's snapshot, and the
+    /// temporary copy a restore writes beside each store. Bulk data is never copied, so it is never counted, and the
+    /// check reads only the stores' sizes rather than walking the instance tree.
+    /// </summary>
     private static void EnsureUpgradeStorage(InstallationPaths paths, string? imageArchive)
     {
-        long instanceBytes = 0;
-        foreach (var file in Directory.EnumerateFiles(paths.InstanceRoot, "*", SearchOption.AllDirectories))
-        {
-            instanceBytes = checked(instanceBytes + new FileInfo(file).Length);
-        }
+        var databaseBytes = CameraAgentStateSnapshot.StoreBytes(paths.StateRoot);
         var archiveBytes = imageArchive is null ? 0 : new FileInfo(imageArchive).Length;
-        var required = checked(instanceBytes + archiveBytes + 256L * 1024 * 1024);
-        // The backup and staged archive land on the filesystem that holds the product root, which need not be '/'.
+        var required = checked(2 * databaseBytes + archiveBytes + 256L * 1024 * 1024);
+        // The snapshot and staged archive land on the filesystem that holds the product root, which need not be '/'.
         var available = LinuxHostEnvironment.AvailableBytes(paths.ProductRoot);
         if (available < required)
         {
-            throw new InstallerException("Insufficient free space for the candidate image and consistent rollback backup.");
+            throw new InstallerException("Insufficient free space for the candidate image and the database snapshot.");
         }
     }
 

@@ -34,6 +34,12 @@ onward; earlier development is recorded in its pull requests. A release renames 
   `/run/hvo-sky-host-policy.lock`, per-user distribution state and cache are under `~/.local/state/hvo-sky` and
   `~/.cache/hvo-sky`, and the replay runner's default socket is `/run/hvo-sky/replay-runner.sock`. Nothing had been
   released, so there is no alias or migration: reinstall development hosts. (#1313)
+- A CameraAgent upgrade or rollback no longer archives the instance's configuration and state with `tar`, so its
+  time no longer grows with retained frames. It is a swap: the previous image is kept and restored if the candidate
+  fails. Only a candidate that declares a state migration has the small SQLite databases snapshotted and verified
+  first; a failed candidate is restored onto them, and a later `rollback` puts them back with a warning that database
+  changes since the upgrade are lost. `--migration-backward-compatible` is no longer needed and changes nothing.
+  CameraAgent holds retention and cleanup while capture is paused. (#1314)
 - Successful raw ingress SQLite commits and checkpoints are logged at Debug instead of Warning. A manual location
   override superseded by configuration is logged at Information. Warnings now mean something did not work. (#1303)
 

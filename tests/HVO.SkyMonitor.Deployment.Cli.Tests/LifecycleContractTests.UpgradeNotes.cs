@@ -40,10 +40,13 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(UpgradeNotes.Render(notes) + Environment.NewLine, output.ToString());
         Assert.AreEqual(string.Empty, error.ToString());
         Assert.AreEqual(Unmutated(fixture), output.StateAtFirstWrite);
-        // The upgrade then journaled, backed up, paused and changed the image, each of which the probe would have seen.
+        // The upgrade then journaled, paused, snapshotted the small databases (the fixture's image declares no state
+        // boundaries, so the candidate is a declared migration) and changed the image, each of which the probe would
+        // have seen. Nothing was archived with tar.
         var completed = Mutations(fixture, lifecycle);
         Assert.IsTrue(completed.Journaled);
-        Assert.AreEqual(1, completed.Backups);
+        Assert.AreEqual(1, completed.Snapshots);
+        Assert.AreEqual(0, fixture.Runner.BackupCount);
         Assert.AreEqual(NotesCandidateImageId, completed.ActiveImageId);
         Assert.AreEqual(1, completed.Pauses);
         Assert.AreEqual(CameraAgentContainerResources.Default, completed.Resources);
@@ -198,7 +201,7 @@ public sealed partial class LifecycleContractTests
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
         ConfigureNotesCandidate(fixture);
-        fixture.Runner.RejectNextBackup = true;
+        fixture.Runner.RejectNextStop = true;
         var lifecycle = new FakeLifecycleClient();
         using var output = new ObservingWriter<MutationState>(() => Mutations(fixture, lifecycle));
         using var error = new ObservingWriter<MutationState>(() => Mutations(fixture, lifecycle));
@@ -212,7 +215,7 @@ public sealed partial class LifecycleContractTests
             fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None, output: output, error: error));
 
-        // The upgrade journaled and paused before its backup failed; the notes were out before any of it, so the
+        // The upgrade journaled and paused before its stop failed; the notes were out before any of it, so the
         // caller has them although no result follows (with --json, the error object follows the event line).
         Assert.IsTrue(File.Exists(fixture.Paths.LifecycleStatePath));
         Assert.AreEqual(1, lifecycle.PauseCount);
@@ -308,11 +311,15 @@ public sealed partial class LifecycleContractTests
 
     /// <summary>What an upgrade has changed, including its recorded, applied and staged container limits.</summary>
     private readonly record struct MutationState(
-        bool Journaled, int Backups, string? ActiveImageId, int Pauses,
+        bool Journaled, int Snapshots, string? ActiveImageId, int Pauses,
         ContainerResourceLimits? Resources, string ComposeSha256, int StagedModels);
 
     private static MutationState Mutations(LifecycleFixture fixture, FakeLifecycleClient lifecycle)
-        => new(File.Exists(fixture.Paths.LifecycleStatePath), fixture.Runner.BackupCount, fixture.Runner.ActiveImageId,
+        => new(File.Exists(fixture.Paths.LifecycleStatePath),
+            Directory.Exists(Path.Combine(fixture.Paths.OperationsRoot, "lifecycle"))
+                ? Directory.EnumerateFiles(Path.Combine(fixture.Paths.OperationsRoot, "lifecycle"), "manifest.json", SearchOption.AllDirectories).Count()
+                : 0,
+            fixture.Runner.ActiveImageId,
             lifecycle.PauseCount,
             JsonSerializer.Deserialize(File.ReadAllText(fixture.Paths.ManifestPath), DeploymentJsonContext.Default.InstanceManifest)!.Resources,
             ComposeDeployment.ComputeSha256(File.ReadAllText(Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml"))),
