@@ -14,7 +14,7 @@ internal static class ProductVersion
     private const string Identifier = "(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)";
 
     private static readonly Regex Pattern = new(
-        $@"^(?<major>0|[1-9][0-9]*)\.(?<minor>0|[1-9][0-9]*)\.(?<patch>0|[1-9][0-9]*)(?:-(?<pre>{Identifier}(?:\.{Identifier})*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$",
+        $@"\A(?<major>0|[1-9][0-9]*)\.(?<minor>0|[1-9][0-9]*)\.(?<patch>0|[1-9][0-9]*)(?:-(?<pre>{Identifier}(?:\.{Identifier})*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\z",
         RegexOptions.CultureInvariant);
 
     /// <summary>True when <paramref name="version"/> is a SemVer 2.0 version.</summary>

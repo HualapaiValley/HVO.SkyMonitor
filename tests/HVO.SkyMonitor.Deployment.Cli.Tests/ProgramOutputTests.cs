@@ -130,7 +130,7 @@ public sealed class ProgramOutputTests
         // checkout and was given no commit.
         var match = Regex.Match(
             stamped,
-            "^(?<version>[A-Za-z0-9](?:[A-Za-z0-9.-]{0,126}[A-Za-z0-9])?)\\+(?<commit>[0-9a-f]{40}|unknown)$",
+            "\\A(?<version>[A-Za-z0-9](?:[A-Za-z0-9.-]{0,126}[A-Za-z0-9])?)\\+(?<commit>[0-9a-f]{40}|unknown)\\z",
             RegexOptions.CultureInvariant);
         Assert.IsTrue(match.Success, stamped);
         // This test assembly comes from the same checkout and build, so the SDK stamped it with the same commit and

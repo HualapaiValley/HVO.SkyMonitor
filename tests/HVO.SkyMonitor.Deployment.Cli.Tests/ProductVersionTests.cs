@@ -78,6 +78,9 @@ public sealed class ProductVersionTests
     [DataRow("1.2.3+")]
     [DataRow("1.2.3-rc..1")]
     [DataRow(" 1.2.3")]
+    [DataRow("1.2.3\n")]
+    [DataRow("1.2.3-rc.1\n")]
+    [DataRow("1.2.3+0123456\n")]
     public void IsValid_RefusesAnythingElse(string? version)
     {
         Assert.IsFalse(ProductVersion.IsValid(version), version);

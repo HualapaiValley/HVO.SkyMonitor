@@ -29,12 +29,15 @@
     <PropertyGroup Condition="'$(SourceRevisionId)' == ''">
       <SourceRevisionId>unknown</SourceRevisionId>
     </PropertyGroup>
-    <!-- The release tool's safe identifier, so the stamp is always exactly <version>+<commit>. -->
+    <!--
+      The release tool's safe identifier, so the stamp is always exactly <version>+<commit>. \A and \z anchor the whole
+      value: $ would also match before a final line feed.
+    -->
     <Error Code="HVO1312"
-           Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(InformationalVersion)', '^[A-Za-z0-9]([A-Za-z0-9.-]{0,126}[A-Za-z0-9])?$')) or $(InformationalVersion.Contains('..'))"
+           Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(InformationalVersion)', '\A[A-Za-z0-9]([A-Za-z0-9.-]{0,126}[A-Za-z0-9])?\z')) or $(InformationalVersion.Contains('..'))"
            Text="The installer version '$(InformationalVersion)' must be 1-128 ASCII letters, digits, periods and hyphens, start and end with a letter or digit, and contain no '..'." />
     <Error Code="HVO1312"
-           Condition="'$(SourceRevisionId)' != 'unknown' and !$([System.Text.RegularExpressions.Regex]::IsMatch('$(SourceRevisionId)', '^[0-9a-f]{40}$'))"
+           Condition="'$(SourceRevisionId)' != 'unknown' and !$([System.Text.RegularExpressions.Regex]::IsMatch('$(SourceRevisionId)', '\A[0-9a-f]{40}\z'))"
            Text="The installer source revision '$(SourceRevisionId)' must be a 40-character lowercase commit ID or 'unknown'." />
   </Target>
   <ItemGroup>
