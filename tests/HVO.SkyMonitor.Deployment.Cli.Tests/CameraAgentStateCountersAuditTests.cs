@@ -58,6 +58,39 @@ public sealed partial class CameraAgentStateCountersAuditTests
     }
 
     /// <summary>
+    /// #1314 R15: a restore reads a counter's key only in the storage class the registry names for it, so that class must
+    /// be the one the previous release declares; a key a candidate stores in any other class makes its store unreadable.
+    /// </summary>
+    [TestMethod]
+    public void EveryCarriedCounterKey_IsTheTypeThePreviousReleaseDeclaresForIt()
+    {
+        var directory = Path.Combine(AppContext.BaseDirectory, "Fixtures", "previous-release");
+        using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(directory, "manifest.json")));
+        var mismatched = new List<string>();
+        foreach (var counter in CameraAgentStateCounters.All)
+        {
+            if (counter.Kind == CameraAgentStateCounters.CounterKind.AutoIncrement)
+            {
+                // sqlite_sequence names each table as text.
+                if (counter.IntegerKey) mismatched.Add($"{counter.Store} {counter.Name}");
+                continue;
+            }
+            var dump = manifest.RootElement.GetProperty("stores").EnumerateArray()
+                .Single(store => store.GetProperty("location").GetString() == counter.Store).GetProperty("dump").GetString()!;
+            var table = CreateTablePattern().Matches(File.ReadAllText(Path.Combine(directory, dump)))
+                .Single(match => match.Groups["table"].Value == counter.Table);
+            var key = SplitTopLevel(table.Groups["body"].Value).Single(definition => Regex.IsMatch(
+                definition, $"^\"?{Regex.Escape(counter.KeyColumn)}\"?\\s", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1)));
+            var integer = Regex.IsMatch(
+                key, $"^\"?{Regex.Escape(counter.KeyColumn)}\"?\\s+INT(EGER)?\\b", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase,
+                TimeSpan.FromSeconds(1));
+            if (integer != counter.IntegerKey) mismatched.Add($"{counter.Store} {counter.Name}");
+        }
+
+        Assert.IsEmpty(mismatched, "The registry names a key type the previous release does not declare: " + string.Join("; ", mismatched));
+    }
+
+    /// <summary>
     /// Every INTEGER column named for a sequence, version, revision, generation, epoch, serial, next or last value
     /// (timestamps excluded), and every integer row-ID primary key that is not a singleton key, in every store image.
     /// </summary>

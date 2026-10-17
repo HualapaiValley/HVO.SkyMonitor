@@ -46,8 +46,14 @@ internal static class CameraAgentImageLabels
             CatalogManifestVersion: Label(labels, "io.hvo.skymonitor.catalog-manifest-version"),
             RawIngressMigration: Label(labels, "io.hvo.skymonitor.raw-ingress-migration"));
 
+    /// <summary>
+    /// The label's value, or null when it is absent. The Docker API types labels as strings; a value of any other JSON
+    /// kind reads as absent, which leaves the image undeclared (and so refused, or treated as declaring a migration)
+    /// rather than throwing on a recovery path.
+    /// </summary>
     private static string? Label(JsonElement labels, string name)
-        => labels.ValueKind == JsonValueKind.Object && labels.TryGetProperty(name, out var value)
+        => labels.ValueKind == JsonValueKind.Object && labels.TryGetProperty(name, out var value) &&
+           value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
 }

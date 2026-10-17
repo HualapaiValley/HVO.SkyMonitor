@@ -55,6 +55,7 @@ internal static class CameraAgentStateCounters
     /// <param name="Upsert">Whether a missing row is inserted with the floor.</param>
     /// <param name="FixedKey">The one key the counter covers, when the table holds other rows too.</param>
     /// <param name="MissingRowAllowance">The highest floor a snapshot without the row may carry by doing nothing.</param>
+    /// <param name="IntegerKey">Whether the key column holds integers (a singleton's state key) rather than text.</param>
     internal sealed record Counter(
         string Store,
         string Name,
@@ -64,7 +65,8 @@ internal static class CameraAgentStateCounters
         CounterKind Kind,
         bool Upsert = false,
         string? FixedKey = null,
-        long MissingRowAllowance = 0);
+        long MissingRowAllowance = 0,
+        bool IntegerKey = false);
 
     private const string RawIngress = "raw/journal/raw-ingress.db";
     private const string Fleet = "raw/.fleet/fleet-status.db";
@@ -72,16 +74,17 @@ internal static class CameraAgentStateCounters
     private const string Evidence = "raw/evidence/execution-evidence-outbox.db";
     private const string Automation = "raw/.automation/local-automations.db";
     internal const string AutomationDefinitionVersion = "automation-definition-version";
+    private const int MaximumCarryBytes = 4 * 1024 * 1024;
 
     public static IReadOnlyList<Counter> All { get; } =
     [
         new(RawIngress, "capture-sequence", "raw_capture_sequences", "agent_id", "last_sequence", CounterKind.HighWater, Upsert: true),
-        new(RawIngress, "capture-control-version", "capture_control_state", "state_key", "version", CounterKind.HighWater),
-        new(Fleet, "fleet-report-sequence", "fleet_status_metadata", "metadata_key", "next_sequence", CounterKind.HighWater),
-        new(RawIngress, "capture-schedule-version", "capture_schedule_state", "state_key", "version", CounterKind.StateToken, MissingRowAllowance: 1),
-        new(RawIngress, "named-rig-selection-version", "named_rig_selection", "state_key", "version", CounterKind.StateToken),
-        new(RawIngress, "calibration-library-version", "calibration_library_state", "state_key", "version", CounterKind.StateToken),
-        new(RawIngress, "processing-graph-registry-version", "processing_graph_registry_state", "state_key", "state_version", CounterKind.StateToken, MissingRowAllowance: 1),
+        new(RawIngress, "capture-control-version", "capture_control_state", "state_key", "version", CounterKind.HighWater, IntegerKey: true),
+        new(Fleet, "fleet-report-sequence", "fleet_status_metadata", "metadata_key", "next_sequence", CounterKind.HighWater, IntegerKey: true),
+        new(RawIngress, "capture-schedule-version", "capture_schedule_state", "state_key", "version", CounterKind.StateToken, MissingRowAllowance: 1, IntegerKey: true),
+        new(RawIngress, "named-rig-selection-version", "named_rig_selection", "state_key", "version", CounterKind.StateToken, IntegerKey: true),
+        new(RawIngress, "calibration-library-version", "calibration_library_state", "state_key", "version", CounterKind.StateToken, IntegerKey: true),
+        new(RawIngress, "processing-graph-registry-version", "processing_graph_registry_state", "state_key", "state_version", CounterKind.StateToken, MissingRowAllowance: 1, IntegerKey: true),
         new(Automation, AutomationDefinitionVersion, "automation_definitions", "definition_id", "version", CounterKind.StateToken),
         new(Environment, "environmental-outbox-record-id", "sqlite_sequence", "name", "seq", CounterKind.AutoIncrement, FixedKey: "environmental_observation_outbox"),
         new(Environment, "environmental-journal-record-id", "sqlite_sequence", "name", "seq", CounterKind.AutoIncrement, FixedKey: "environmental_observation_journal"),
@@ -181,23 +184,24 @@ internal static class CameraAgentStateCounters
     {
         var (floors, unreadable) = ReadReadable(stateRoot);
         if (unreadable.Count > 0)
-            throw new InstallerException($"The CameraAgent store '{unreadable[0]}' could not be read for its counters.");
+            throw new InstallerException($"The CameraAgent store '{unreadable[0].Store}' could not be read for its counters.");
         return floors;
     }
 
     /// <summary>
-    /// Every counter's current value in the stores that can be read, and the stores that cannot. A restore uses this so
-    /// that a store a failed candidate damaged beyond reading never blocks its own recovery; that store's counters are
-    /// carried only as far as the journal already recorded them.
+    /// Every counter's current value in the stores that can be read, and the stores that cannot with why. A restore uses this so
+    /// that a store a failed candidate damaged beyond reading, or left holding a counter in a shape the installer does not
+    /// carry, never blocks its own recovery; that store's counters are carried only as far as the journal already
+    /// recorded them.
     /// </summary>
-    public static (IReadOnlyList<StateCounterFloor> Floors, IReadOnlyList<string> Unreadable) ReadReadable(string stateRoot)
+    public static (IReadOnlyList<StateCounterFloor> Floors, IReadOnlyList<(string Store, string Reason)> Unreadable) ReadReadable(string stateRoot)
     {
         var floors = new List<StateCounterFloor>();
-        var unreadable = new List<string>();
+        var unreadable = new List<(string Store, string Reason)>();
         foreach (var counter in All)
         {
             var path = CameraAgentStateSnapshot.StorePath(stateRoot, counter.Store);
-            if (!File.Exists(path) || unreadable.Contains(counter.Store)) continue;
+            if (!File.Exists(path) || unreadable.Any(entry => entry.Store == counter.Store)) continue;
             try
             {
                 using var database = CameraAgentStatePreflight.ReadOnlyDatabase.Open(path);
@@ -205,9 +209,9 @@ internal static class CameraAgentStateCounters
                     ? ReadAutomationHighWater(database.Connection, counter)
                     : Read(database.Connection, counter));
             }
-            catch (Exception exception) when (exception is SqliteException or IOException or InstallerException)
+            catch (Exception exception) when (CameraAgentStateInventory.IsUnreadable(exception))
             {
-                unreadable.Add(counter.Store);
+                unreadable.Add((counter.Store, exception.Message));
                 floors.RemoveAll(floor => floor.Store == counter.Store);
             }
         }
@@ -276,6 +280,8 @@ internal static class CameraAgentStateCounters
         {
             var counter = Find(floor);
             if (!HasColumns(connection, null, counter.Table, counter.KeyColumn, counter.ValueColumn))
+                throw Uncarriable(relative, counter);
+            if (counter.Upsert && KeyValue(connection, null, counter, floor.Key) is null)
                 throw Uncarriable(relative, counter);
             if (counter.Kind == CounterKind.AutoIncrement || counter.Upsert) continue;
             if (counter.Name == AutomationDefinitionVersion)
@@ -346,7 +352,7 @@ internal static class CameraAgentStateCounters
                 : Read(verify, counter).SingleOrDefault(value => value.Key == floor.Key);
             if (carried is null)
             {
-                if (counter.Kind == CounterKind.StateToken && floor.Value <= counter.MissingRowAllowance) continue;
+                if (!counter.Upsert && floor.Value <= counter.MissingRowAllowance) continue;
                 throw new InstallerException($"The restored '{relative}' lost its {counter.Name} counter.");
             }
             if (carried.Value < floor.Value)
@@ -364,9 +370,12 @@ internal static class CameraAgentStateCounters
               $"ON CONFLICT({counter.KeyColumn}) DO UPDATE SET {counter.ValueColumn} = MAX({counter.ValueColumn}, excluded.{counter.ValueColumn});"
             : $"UPDATE {counter.Table} SET {counter.ValueColumn} = MAX({counter.ValueColumn}, $value) WHERE {counter.KeyColumn} = $key;";
 #pragma warning restore CA2100
-        command.Parameters.AddWithValue("$key", KeyValue(connection, transaction, counter, floor.Key));
+        var key = KeyValue(connection, transaction, counter, floor.Key);
+        command.Parameters.AddWithValue("$key", key ?? DBNull.Value);
         command.Parameters.AddWithValue("$value", floor.Value);
-        if (command.ExecuteNonQuery() != 1)
+        var updated = key is null ? 0 : command.ExecuteNonQuery();
+        // A row the snapshot lacks whose floor needs no carrying was let through by EnsureApplicable for the same reason.
+        if (updated != 1 && !(updated == 0 && !counter.Upsert && floor.Value <= counter.MissingRowAllowance))
             throw new InstallerException($"The restored '{relative}' did not accept its {counter.Name} counter floor.");
     }
 
@@ -399,9 +408,10 @@ internal static class CameraAgentStateCounters
             $"UPDATE {counter.Table} SET {counter.ValueColumn} = CASE WHEN {counter.ValueColumn} >= $value THEN {counter.ValueColumn} ELSE $value + 1 END " +
             $"WHERE {counter.KeyColumn} = $key;";
 #pragma warning restore CA2100
-        command.Parameters.AddWithValue("$key", KeyValue(connection, transaction, counter, floor.Key));
+        var key = KeyValue(connection, transaction, counter, floor.Key);
+        command.Parameters.AddWithValue("$key", key ?? DBNull.Value);
         command.Parameters.AddWithValue("$value", floor.Value);
-        var updated = command.ExecuteNonQuery();
+        var updated = key is null ? 0 : command.ExecuteNonQuery();
         if (updated == 0 && floor.Value > counter.MissingRowAllowance)
             throw new InstallerException($"The restored '{relative}' did not accept its {counter.Name} counter floor.");
     }
@@ -449,6 +459,12 @@ internal static class CameraAgentStateCounters
     private static InstallerException Uncarriable(string relative, Counter counter)
         => new($"The snapshot of '{relative}' cannot carry the {counter.Name} counter forward, so restoring it could hand out a sequence or version twice.");
 
+    /// <summary>
+    /// Each row's counter, read only once SQLite says its key has the counter's key type and its value is an integer the
+    /// floor arithmetic can carry. A store written by a candidate may hold anything, so any other shape (a null, a real,
+    /// text, a blob, a key of the other type or not UTF-8, or a value outside 0 to <see cref="long.MaxValue"/> - 1) is
+    /// reported as an <see cref="InstallerException"/> naming the store and column, never cast.
+    /// </summary>
     private static List<StateCounterFloor> Read(SqliteConnection connection, Counter counter, SqliteTransaction? transaction = null)
     {
         if (!HasColumns(connection, transaction, counter.Table, counter.KeyColumn, counter.ValueColumn)) return [];
@@ -456,15 +472,18 @@ internal static class CameraAgentStateCounters
         command.Transaction = transaction;
 #pragma warning disable CA2100 // Table and column names come from the fixed counter list above, never from input.
         command.CommandText = counter.FixedKey is null
-            ? $"SELECT CAST({counter.KeyColumn} AS TEXT), {counter.ValueColumn} FROM {counter.Table};"
-            : $"SELECT CAST({counter.KeyColumn} AS TEXT), {counter.ValueColumn} FROM {counter.Table} WHERE {counter.KeyColumn} = $key;";
+            ? $"SELECT typeof({counter.KeyColumn}), CAST({counter.KeyColumn} AS BLOB), typeof({counter.ValueColumn}), {counter.ValueColumn} FROM {counter.Table};"
+            : $"SELECT typeof({counter.KeyColumn}), CAST({counter.KeyColumn} AS BLOB), typeof({counter.ValueColumn}), {counter.ValueColumn} FROM {counter.Table} WHERE {counter.KeyColumn} = $key;";
 #pragma warning restore CA2100
         if (counter.FixedKey is not null) command.Parameters.AddWithValue("$key", counter.FixedKey);
         using var reader = command.ExecuteReader();
         var values = new List<StateCounterFloor>();
         while (reader.Read())
         {
-            values.Add(new StateCounterFloor(counter.Store, counter.Name, reader.GetString(0), reader.GetInt64(1)));
+            values.Add(new StateCounterFloor(
+                counter.Store, counter.Name,
+                ReadKey(reader, 0, counter, counter.KeyColumn),
+                ReadValue(reader, 2, counter, counter.ValueColumn)));
         }
         return values;
     }
@@ -472,7 +491,8 @@ internal static class CameraAgentStateCounters
     /// <summary>
     /// The highest version each automation definition has reached: its row's, or a higher one its revision line holds
     /// (a removed definition keeps only its line), with the latest revision a restore needs to continue a line the
-    /// snapshot lacks.
+    /// snapshot lacks. Every value is checked as <see cref="Read"/> checks it, and the carried revision against what the
+    /// store's revision table accepts, so a carry can always be written back.
     /// </summary>
     private static List<StateCounterFloor> ReadAutomationHighWater(SqliteConnection connection, Counter counter, SqliteTransaction? transaction = null)
     {
@@ -480,28 +500,104 @@ internal static class CameraAgentStateCounters
             return Read(connection, counter, transaction);
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
+        // MAX() orders text above every integer, so a version that is not an integer is reported rather than compared.
         command.CommandText = """
             WITH marks(definition_id, version) AS (
                 SELECT definition_id, version FROM automation_definitions
                 UNION ALL
-                SELECT definition_id, version FROM automation_definition_revisions)
-            SELECT m.definition_id, MAX(m.version),
-                   (SELECT r.revision_sha256 FROM automation_definition_revisions r
-                    WHERE r.definition_id = m.definition_id ORDER BY r.version DESC, r.sequence DESC LIMIT 1),
-                   (SELECT r.definition_json FROM automation_definition_revisions r
-                    WHERE r.definition_id = m.definition_id ORDER BY r.version DESC, r.sequence DESC LIMIT 1)
-            FROM marks m GROUP BY m.definition_id;
+                SELECT definition_id, version FROM automation_definition_revisions),
+            highest AS (
+                SELECT m.definition_id AS definition_id, MAX(m.version) AS version,
+                       MAX(CASE WHEN typeof(m.version) <> 'integer' THEN typeof(m.version) END) AS malformed
+                FROM marks m GROUP BY m.definition_id)
+            SELECT typeof(h.definition_id), CAST(h.definition_id AS BLOB),
+                   COALESCE(h.malformed, 'integer'), CASE WHEN h.malformed IS NULL THEN h.version END,
+                   typeof(l.revision_sha256), CAST(l.revision_sha256 AS BLOB),
+                   typeof(l.definition_json), CAST(l.definition_json AS BLOB)
+            FROM highest h
+            LEFT JOIN automation_definition_revisions l ON l.rowid = (
+                SELECT r.rowid FROM automation_definition_revisions r
+                WHERE r.definition_id = h.definition_id ORDER BY r.version DESC, r.rowid DESC LIMIT 1);
             """;
         using var reader = command.ExecuteReader();
         var values = new List<StateCounterFloor>();
         while (reader.Read())
         {
+            var key = ReadKey(reader, 0, counter, "definition_id");
+            // The revision table's own CHECK, which counts characters as SQLite does.
+            if (key.EnumerateRunes().Count() is < 1 or > 64)
+                throw Malformed(counter, "definition_id", "a definition ID outside 1 to 64 characters");
             values.Add(new StateCounterFloor(
-                counter.Store, counter.Name, reader.GetString(0), reader.GetInt64(1),
-                reader.IsDBNull(2) || reader.IsDBNull(3) ? null : new StateCounterCarry(reader.GetString(2), reader.GetString(3))));
+                counter.Store, counter.Name, key, ReadValue(reader, 2, counter, "version"), ReadCarry(reader, 4, counter)));
         }
         return values;
     }
+
+    /// <summary>
+    /// The latest revision of a definition, or null when it has none. A revision is carried only as the revision table
+    /// stores one: a 64-character hexadecimal hash and well-formed JSON text, both valid UTF-8.
+    /// </summary>
+    private static StateCounterCarry? ReadCarry(SqliteDataReader reader, int ordinal, Counter counter)
+    {
+        var shaType = reader.GetString(ordinal);
+        var jsonType = reader.GetString(ordinal + 2);
+        if (shaType == "null" && jsonType == "null") return null;
+        if (shaType != "text" || jsonType != "text")
+            throw Malformed(counter, "automation_definition_revisions", $"a latest revision stored as {shaType} and {jsonType}");
+        var sha = Utf8Text(reader.GetFieldValue<byte[]>(ordinal + 1), counter, "revision_sha256");
+        if (sha.Length != 64 || !sha.All(char.IsAsciiHexDigit))
+            throw Malformed(counter, "revision_sha256", "a revision hash that is not 64 hexadecimal characters");
+        var bytes = reader.GetFieldValue<byte[]>(ordinal + 3);
+        if (bytes.Length > MaximumCarryBytes)
+            throw Malformed(counter, "definition_json", "a revision larger than the bound");
+        var json = Utf8Text(bytes, counter, "definition_json");
+        try
+        {
+            using (System.Text.Json.JsonDocument.Parse(bytes))
+            {
+            }
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            throw Malformed(counter, "definition_json", "a revision that is not well-formed JSON");
+        }
+        return new StateCounterCarry(sha, json);
+    }
+
+    /// <summary>
+    /// A key SQLite stores as the counter's key type, an integer or valid UTF-8 text; an integer key reads as its decimal
+    /// text. A key of another type is a store the restore cannot match to the snapshot's rows.
+    /// </summary>
+    private static string ReadKey(SqliteDataReader reader, int typeOrdinal, Counter counter, string column)
+    {
+        var type = reader.GetString(typeOrdinal);
+        if (type != (counter.IntegerKey ? "integer" : "text"))
+            throw Malformed(counter, column, $"a key stored as {type}");
+        return Utf8Text(reader.GetFieldValue<byte[]>(typeOrdinal + 1), counter, column);
+    }
+
+    /// <summary>
+    /// A counter SQLite stores as an integer from 0 to <see cref="long.MaxValue"/> - 1, so that a state token one above
+    /// it is still an integer.
+    /// </summary>
+    private static long ReadValue(SqliteDataReader reader, int typeOrdinal, Counter counter, string column)
+    {
+        var type = reader.GetString(typeOrdinal);
+        if (type != "integer")
+            throw Malformed(counter, column, $"a value stored as {type}");
+        var value = reader.GetInt64(typeOrdinal + 1);
+        if (value is < 0 or long.MaxValue)
+            throw Malformed(counter, column, "a value outside the range a restore can carry");
+        return value;
+    }
+
+    private static string Utf8Text(byte[] bytes, Counter counter, string column)
+        => System.Text.Unicode.Utf8.IsValid(bytes)
+            ? System.Text.Encoding.UTF8.GetString(bytes)
+            : throw Malformed(counter, column, "text that is not valid UTF-8");
+
+    private static InstallerException Malformed(Counter counter, string column, string found)
+        => new($"The CameraAgent store '{counter.Store}' holds {found} in {column} for its {counter.Name} counter, so the counter cannot be read.");
 
     private static bool HasColumns(SqliteConnection connection, SqliteTransaction? transaction, string table, params string[] columns)
     {
@@ -515,8 +611,13 @@ internal static class CameraAgentStateCounters
         return columns.All(present.Contains);
     }
 
-    /// <summary>Binds the key with the column's own type, so an integer key matches its row.</summary>
-    private static object KeyValue(SqliteConnection connection, SqliteTransaction transaction, Counter counter, string key)
+    /// <summary>
+    /// Binds the key with the column's own type, so an integer key matches its row. A key that is not the decimal text of
+    /// an integer cannot name a row of an integer column, so it binds to nothing (null) rather than being converted, and
+    /// the statement that would carry it is not run, exactly as the string comparison in <see cref="EnsureApplicable"/>
+    /// found no row for it.
+    /// </summary>
+    private static object? KeyValue(SqliteConnection connection, SqliteTransaction? transaction, Counter counter, string key)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
@@ -524,9 +625,11 @@ internal static class CameraAgentStateCounters
         command.Parameters.AddWithValue("$table", counter.Table);
         command.Parameters.AddWithValue("$column", counter.KeyColumn);
         var type = Convert.ToString(command.ExecuteScalar(), CultureInfo.InvariantCulture) ?? string.Empty;
-        return type.Contains("INT", StringComparison.OrdinalIgnoreCase)
-            ? long.Parse(key, NumberStyles.Integer, CultureInfo.InvariantCulture)
-            : key;
+        if (!type.Contains("INT", StringComparison.OrdinalIgnoreCase)) return key;
+        return long.TryParse(key, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var integer) &&
+               integer.ToString(CultureInfo.InvariantCulture) == key
+            ? integer
+            : null;
     }
 
     private static SqliteConnection OpenImmutable(string path)
