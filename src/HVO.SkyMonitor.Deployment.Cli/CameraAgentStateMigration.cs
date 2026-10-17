@@ -27,7 +27,8 @@ internal static class CameraAgentStateMigration
         InstallationPaths paths,
         ImageInstallationIdentity installed,
         string? installedStateContract,
-        ImageInstallationIdentity candidate)
+        ImageInstallationIdentity candidate,
+        string? rawIngressDatabasePath = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(installed);
@@ -43,7 +44,8 @@ internal static class CameraAgentStateMigration
         {
             changes.Add(Change("raw-ingress-migration", installed.RawIngressMigration, candidate.RawIngressMigration));
         }
-        ComparePersistedRawIngress(changes, paths, candidate);
+        ComparePersistedRawIngress(
+            changes, rawIngressDatabasePath ?? CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot), candidate);
         return changes;
     }
 
@@ -62,9 +64,8 @@ internal static class CameraAgentStateMigration
     /// the candidate on startup even when both images declare the same schema.
     /// </summary>
     private static void ComparePersistedRawIngress(
-        List<string> changes, InstallationPaths paths, ImageInstallationIdentity candidate)
+        List<string> changes, string databasePath, ImageInstallationIdentity candidate)
     {
-        var databasePath = CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot);
         if (!File.Exists(databasePath))
         {
             return;

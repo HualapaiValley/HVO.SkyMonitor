@@ -241,7 +241,15 @@ public sealed record LifecycleOperationState(
     string? StateMigration = null,
     LifecycleStateSnapshot? StateSnapshot = null,
     DateTimeOffset? StateSnapshotRestoredUtc = null,
-    LifecycleStateSnapshot? RetainedStateSnapshot = null);
+    LifecycleStateSnapshot? RetainedStateSnapshot = null,
+    IReadOnlyList<StateCounterFloor>? StateCounterFloors = null);
+
+/// <summary>
+/// The highest value a monotonic CameraAgent counter had reached when a snapshot restore began. Each counter hands out
+/// identities that leave the instance (capture sequences, the fleet report sequence, the capture-control version), so
+/// a restore raises the restored counter to at least this value and never lets an identity be handed out twice.
+/// </summary>
+public sealed record StateCounterFloor(string Store, string Counter, string Key, long Value);
 
 /// <summary>
 /// A verified snapshot of an instance's small SQLite databases, taken by one image lifecycle operation while the

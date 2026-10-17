@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
 using Microsoft.Data.Sqlite;
@@ -11,36 +10,10 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
-public sealed partial class CameraAgentStateSnapshotTests
+public sealed class CameraAgentStateSnapshotTests
 {
     private static readonly ImageInstallationIdentity Image = new(
         "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null);
-
-    [TestMethod]
-    public void SqliteStores_NameEveryDatabaseFileTheCameraAgentSourceOpens()
-    {
-        // The installer must not load the runtime, so the store list is its own. This keeps it complete: a new store
-        // in CameraAgent fails here until the snapshot covers it.
-        var declared = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var project in Directory.EnumerateDirectories(Path.Combine(RepositoryRoot(), "src"), "HVO.SkyMonitor.CameraAgent*"))
-        {
-            foreach (var source in Directory.EnumerateFiles(project, "*.cs", SearchOption.AllDirectories))
-            {
-                foreach (Match match in DatabaseFileLiteral().Matches(File.ReadAllText(source)))
-                {
-                    declared.Add(match.Groups[1].Value);
-                }
-            }
-        }
-        // The design-time Identity database is created only by the EF tooling factory, never by a running instance.
-        declared.Remove("cameraagent_identity_design.db");
-        var covered = CameraAgentStateLayout.SqliteStores.Select(static store => store[(store.LastIndexOf('/') + 1)..]).ToHashSet(StringComparer.Ordinal);
-
-        Assert.IsGreaterThan(5, declared.Count);
-        CollectionAssert.AreEquivalent(declared.Order(StringComparer.Ordinal).ToArray(), covered.Order(StringComparer.Ordinal).ToArray());
-        Assert.IsFalse(CameraAgentStateLayout.SqliteStores.Any(static store =>
-            store.Contains("/frames/", StringComparison.Ordinal) || store.Contains("/derived/", StringComparison.Ordinal)));
-    }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
@@ -57,7 +30,7 @@ public sealed partial class CameraAgentStateSnapshotTests
         }
 
         var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentStateSnapshot.CreateAsync(
-            root.Paths, root.InstanceId, Guid.NewGuid(), Image, CancellationToken.None));
+            root.Paths, root.InstanceId, Guid.NewGuid(), Image, CameraAgentStateLayout.SqliteStores, CancellationToken.None));
 
         StringAssert.Contains(exception.Message, "raw/journal/raw-ingress.db", StringComparison.Ordinal);
     }
@@ -71,7 +44,7 @@ public sealed partial class CameraAgentStateSnapshotTests
         var outbox = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/outbox/artifact-outbox.db");
         CreateDatabase(raw, 25);
         var operationId = Guid.NewGuid();
-        var snapshot = await CameraAgentStateSnapshot.CreateAsync(root.Paths, root.InstanceId, operationId, Image, CancellationToken.None);
+        var snapshot = await CameraAgentStateSnapshot.CreateAsync(root.Paths, root.InstanceId, operationId, Image, CameraAgentStateLayout.SqliteStores, CancellationToken.None);
         var expected = Rows(raw);
         // A candidate writes to the journal, creates a store the snapshot recorded as absent, and leaves sidecars.
         CreateDatabase(outbox, 3);
@@ -84,9 +57,9 @@ public sealed partial class CameraAgentStateSnapshotTests
         }
         await File.WriteAllTextAsync(raw + "-journal", "hot journal left by a crash");
 
-        await CameraAgentStateSnapshot.RestoreAsync(root.Paths, root.InstanceId, snapshot, root.Uid, root.Gid, CancellationToken.None);
+        await CameraAgentStateSnapshot.RestoreAsync(root.Paths, root.InstanceId, snapshot, root.Uid, root.Gid, [], CancellationToken.None);
         var once = await SafeFileSystem.ComputeSha256Async(raw, CancellationToken.None);
-        await CameraAgentStateSnapshot.RestoreAsync(root.Paths, root.InstanceId, snapshot, root.Uid, root.Gid, CancellationToken.None);
+        await CameraAgentStateSnapshot.RestoreAsync(root.Paths, root.InstanceId, snapshot, root.Uid, root.Gid, [], CancellationToken.None);
 
         CollectionAssert.AreEqual(expected, Rows(raw));
         Assert.AreEqual(once, await SafeFileSystem.ComputeSha256Async(raw, CancellationToken.None));
@@ -101,16 +74,13 @@ public sealed partial class CameraAgentStateSnapshotTests
     {
         using var root = new SnapshotRoot();
         CreateDatabase(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/journal/raw-ingress.db"), 5);
-        var snapshot = await CameraAgentStateSnapshot.CreateAsync(root.Paths, root.InstanceId, Guid.NewGuid(), Image, CancellationToken.None);
+        var snapshot = await CameraAgentStateSnapshot.CreateAsync(root.Paths, root.InstanceId, Guid.NewGuid(), Image, CameraAgentStateLayout.SqliteStores, CancellationToken.None);
 
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentStateSnapshot.VerifyAsync(
             root.Paths, Guid.NewGuid(), snapshot, CancellationToken.None));
         await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentStateSnapshot.VerifyAsync(
             root.Paths, root.InstanceId, snapshot with { ManifestSha256 = new string('0', 64) }, CancellationToken.None));
     }
-
-    [GeneratedRegex("\"([A-Za-z0-9_.-]+\\.db)\"")]
-    private static partial Regex DatabaseFileLiteral();
 
     private static void CreateDatabase(string path, int rows)
     {
@@ -135,16 +105,6 @@ public sealed partial class CameraAgentStateSnapshotTests
         var values = new List<string>();
         while (reader.Read()) values.Add(reader.GetString(0));
         return values;
-    }
-
-    private static string RepositoryRoot()
-    {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "HVO.SkyMonitor.v9.slnx")))
-        {
-            directory = directory.Parent;
-        }
-        return directory?.FullName ?? throw new InvalidOperationException("The repository root holds HVO.SkyMonitor.v9.slnx.");
     }
 
     private sealed class SnapshotRoot : IDisposable

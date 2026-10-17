@@ -254,7 +254,7 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task RestoreOnly_RefusesWhileTheUpgradeSnapshotIsUnrestored()
+    public async Task RestoreOnly_RefusesASnapshotItCannotAuthenticateBeforeAnythingChanges()
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, recoveryState: true);
         var request = await fixture.PrepareRestoreAsync();
@@ -270,8 +270,11 @@ public sealed partial class LifecycleContractTests
             request, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None));
 
-        StringAssert.Contains(exception.Message, "database snapshot has not been restored", StringComparison.Ordinal);
+        // Restore-only recovers onto a recorded snapshot only after authenticating it; one it cannot authenticate stops
+        // it before it stops, restores or resumes anything.
+        StringAssert.Contains(exception.Message, "snapshot is missing its manifest", StringComparison.Ordinal);
         Assert.AreEqual(0, lifecycle.RecoveryResumeCalls);
+        Assert.AreEqual(0, fixture.Runner.ComposeStopCount);
     }
 
     [TestMethod]

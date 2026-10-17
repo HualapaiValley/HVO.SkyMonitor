@@ -34,10 +34,11 @@ internal static class CameraAgentStateSnapshot
         => Path.Combine(paths.OperationsRoot, "lifecycle", operationId.ToString("D"), "state-snapshots", snapshotId.ToString("D"));
 
     /// <summary>The bytes the stores and their sidecars occupy now, which bounds what one snapshot writes.</summary>
-    public static long StoreBytes(string stateRoot)
+    public static long StoreBytes(string stateRoot, IReadOnlyList<string> stores)
     {
+        ArgumentNullException.ThrowIfNull(stores);
         long total = 0;
-        foreach (var relative in CameraAgentStateLayout.SqliteStores)
+        foreach (var relative in stores)
         {
             var path = StorePath(stateRoot, relative);
             foreach (var file in CameraAgentStateLayout.SqliteSidecarSuffixes.Select(suffix => path + suffix).Prepend(path))
@@ -57,10 +58,12 @@ internal static class CameraAgentStateSnapshot
         Guid instanceId,
         Guid operationId,
         ImageInstallationIdentity activeImage,
+        IReadOnlyList<string> stores,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(activeImage);
+        ArgumentNullException.ThrowIfNull(stores);
         var snapshotId = Guid.NewGuid();
         var root = SnapshotRoot(paths, operationId, snapshotId);
         var lifecycleRoot = Path.Combine(paths.OperationsRoot, "lifecycle");
@@ -69,13 +72,13 @@ internal static class CameraAgentStateSnapshot
                      lifecycleRoot, Path.Combine(lifecycleRoot, operationId.ToString("D")), Path.GetDirectoryName(root)!, root
                  })
         {
-            CreateDurableOwnerDirectory(directory);
+            SafeFileSystem.CreateOwnerDirectory(directory);
         }
         var databases = new List<StateSnapshotDatabase>();
-        for (var index = 0; index < CameraAgentStateLayout.SqliteStores.Count; index++)
+        for (var index = 0; index < stores.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var relative = CameraAgentStateLayout.SqliteStores[index];
+            var relative = stores[index];
             var source = StorePath(paths.StateRoot, relative);
             SafeFileSystem.EnsureSafeExistingAncestors(Path.GetDirectoryName(source)!);
             if (!File.Exists(source))
@@ -103,6 +106,9 @@ internal static class CameraAgentStateSnapshot
         var manifestPath = Path.Combine(root, ManifestFileName);
         await SafeFileSystem.WriteJsonAtomicAsync(
             manifestPath, manifest, DeploymentJsonContext.Default.StateSnapshotManifest, cancellationToken).ConfigureAwait(false);
+        // The reference is published only once every directory from the snapshot to the product root is durable, so a
+        // power loss cannot keep the journal's reference while losing the entry of a directory created earlier.
+        SafeFileSystem.FlushDirectoryChain(root, paths.ProductRoot);
         return new LifecycleStateSnapshot(
             snapshotId,
             operationId,
@@ -185,10 +191,12 @@ internal static class CameraAgentStateSnapshot
                 stream, DeploymentJsonContext.Default.StateSnapshotManifest, "database snapshot manifest", cancellationToken)
                 .ConfigureAwait(false);
         }
+        var locations = manifest.Databases.Select(static database => database.RelativePath).ToArray();
         if (manifest.SchemaVersion != SchemaVersion || manifest.SnapshotId != snapshot.SnapshotId ||
             manifest.OperationId != snapshot.OperationId || manifest.InstanceId != instanceId ||
-            !manifest.Databases.Select(static database => database.RelativePath)
-                .SequenceEqual(CameraAgentStateLayout.SqliteStores, StringComparer.Ordinal))
+            !locations.All(CameraAgentStateInventory.IsValidStoreLocation) ||
+            locations.Distinct(StringComparer.Ordinal).Count() != locations.Length ||
+            !CameraAgentStateLayout.SqliteStores.All(store => locations.Contains(store, StringComparer.Ordinal)))
             throw new InstallerException("The recorded CameraAgent database snapshot does not belong to this instance and operation.");
         foreach (var database in manifest.Databases.Where(static database => database.Present))
         {
@@ -215,10 +223,17 @@ internal static class CameraAgentStateSnapshot
         LifecycleStateSnapshot snapshot,
         uint uid,
         uint gid,
+        IReadOnlyList<StateCounterFloor> floors,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(floors);
         var manifest = await VerifyAsync(paths, instanceId, snapshot, cancellationToken).ConfigureAwait(false);
         var root = SnapshotRoot(paths, snapshot.OperationId, snapshot.SnapshotId);
+        // Every floor must be carriable before any store is replaced, so a refusal leaves the live stores untouched.
+        foreach (var database in manifest.Databases.Where(static database => database.Present))
+        {
+            CameraAgentStateCounters.EnsureApplicable(SnapshotFile(root, database), database.RelativePath, floors);
+        }
         foreach (var database in manifest.Databases)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -228,6 +243,9 @@ internal static class CameraAgentStateSnapshot
             if (!database.Present)
             {
                 if (!Directory.Exists(directory)) continue;
+                // A store the snapshot did not have but whose counters have since handed out identities is kept, so
+                // those identities are never handed out again; the previous release reads it under the migration rule.
+                if (floors.Any(floor => floor.Store == database.RelativePath) && File.Exists(target)) continue;
                 var removed = false;
                 foreach (var file in CameraAgentStateLayout.SqliteSidecarSuffixes.Select(suffix => target + suffix).Prepend(target))
                 {
@@ -265,6 +283,10 @@ internal static class CameraAgentStateSnapshot
             NativeLinux.FlushDirectory(directory);
             if (await SafeFileSystem.ComputeSha256Async(target, cancellationToken).ConfigureAwait(false) != database.Sha256)
                 throw new InstallerException($"The restored '{database.RelativePath}' differs from its snapshot.");
+            // The restored counters are raised to the marks the instance had already handed out; SQLite syncs the
+            // database on commit, and the directory sync makes its rollback journal's removal durable.
+            CameraAgentStateCounters.Apply(target, database.RelativePath, floors);
+            NativeLinux.FlushDirectory(directory);
             StepCompleted($"restore:{database.RelativePath}");
         }
     }
@@ -437,14 +459,6 @@ internal static class CameraAgentStateSnapshot
     {
         using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
         stream.Flush(flushToDisk: true);
-    }
-
-    /// <summary>Creates an owner-only directory and makes its entry in the parent durable when it is new.</summary>
-    private static void CreateDurableOwnerDirectory(string path)
-    {
-        var existed = Directory.Exists(path);
-        SafeFileSystem.CreateOwnerDirectory(path);
-        if (!existed) NativeLinux.FlushDirectory(Path.GetDirectoryName(path)!);
     }
 
     /// <summary>What a snapshot is checked against: the user version, a hash of the schema, and every table's row count.</summary>
