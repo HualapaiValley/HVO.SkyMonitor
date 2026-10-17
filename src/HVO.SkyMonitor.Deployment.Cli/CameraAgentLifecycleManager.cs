@@ -452,6 +452,10 @@ internal sealed class CameraAgentLifecycleManager
         {
             await UpgradeNotes.ShowAsync(upgradeNotes, request.Json, output, error).ConfigureAwait(false);
         }
+        if (!rollback && signedImage is not null)
+        {
+            await EnsureReleaseCandidateAsync(request, manifest, docker, signedImage, cancellationToken).ConfigureAwait(false);
+        }
         var operation = await BeginAsync(request, paths, rollback ? LifecycleOperationKind.Rollback : LifecycleOperationKind.Upgrade,
             manifest, cancellationToken).ConfigureAwait(false);
         try
@@ -1316,6 +1320,52 @@ internal sealed class CameraAgentLifecycleManager
         }
         AcquiredImage.RemoveEvidence(paths);
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Requires a release's image to be the release's and one this instance can run before the upgrade's journal entry,
+    /// so a refused release leaves the instance, its journal and Docker as they were. An offline archive's image was read
+    /// from the archive at acquisition. A pulled image can only be read once Docker holds it, because the installer has no
+    /// registry client of its own and Docker holds the registry credentials: it is pulled by the digest release.json names,
+    /// checked, and removed again if it is refused. A dry run pulls nothing, as before. The same checks run again on the
+    /// image Docker resolves once the upgrade has begun.
+    /// </summary>
+    private static async Task EnsureReleaseCandidateAsync(
+        LifecycleRequest request,
+        InstanceManifest manifest,
+        DockerClient docker,
+        AcquiredImage release,
+        CancellationToken cancellationToken)
+    {
+        void Validate(ImageInstallationIdentity candidate)
+        {
+            if (!IsCanonicalImage(
+                    candidate,
+                    manifest.ComponentSchemaVersion,
+                    manifest.DockerDaemon.Architecture,
+                    manifest.ReplayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner))
+            {
+                throw new InstallerException("The candidate image does not declare the required CameraAgent configuration and catalog contracts.");
+            }
+            CameraAgentInstaller.EnsureImageSupportsCatalog(candidate, manifest.Catalog.CatalogId);
+            if (!CameraAgentStateContract.IsCurrent(candidate.UpgradeCompatibility))
+            {
+                throw new InstallerException(
+                    $"The candidate image declares state compatibility '{CameraAgentStateContract.Describe(candidate.UpgradeCompatibility)}' instead of the supported '{CameraAgentStateContract.Current}' contract; an explicit state-disposition procedure is required.");
+            }
+        }
+        if (release.ArchivedImage is { } archived)
+        {
+            Validate(archived);
+            return;
+        }
+        if (!request.DryRun)
+        {
+            _ = await docker.PullReleaseImageAsync(
+                    ImageRequest(manifest, release.ImageReference, null, null, request.NoDownload), release.Image, Validate,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
     }
 
     private static InstallRequest ImageRequest(

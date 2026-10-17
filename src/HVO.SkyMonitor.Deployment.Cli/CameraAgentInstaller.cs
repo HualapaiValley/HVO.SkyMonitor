@@ -86,7 +86,17 @@ internal sealed class CameraAgentInstaller
             .ConfigureAwait(false);
         ValidateCatalogInput(request.CatalogBundle!);
         // The bundle's approved specification selects the side-by-side catalog root this instance installs into.
-        paths = paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(request.CatalogBundle!).CatalogId);
+        var catalogId = ProductionCatalog.ReadBundleSpecification(request.CatalogBundle!).CatalogId;
+        paths = paths.WithCatalog(catalogId);
+        // A release's image is proved to be the release's, and an image this instance can run, before anything is claimed
+        // for it: no product root, state, catalog, staged archive or Docker import exists yet when it is refused.
+        if (acquiredImage is not null &&
+            await EnsureReleaseImageAsync(request, acquiredImage, docker, catalogId, File.Exists(paths.StatePath), cancellationToken)
+                .ConfigureAwait(false))
+        {
+            // The image this check pulled is the one the install uses; its image step finds it rather than pulling again.
+            request = request with { NoDownload = true };
+        }
 
         await PrivilegedPreparation.PrepareAsync(paths, uid, gid, processRunner, cancellationToken).ConfigureAwait(false);
         using var productLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
@@ -504,6 +514,41 @@ internal sealed class CameraAgentInstaller
     /// archive, loaded by the image ID it names, or its digest reference, pulled from the registry. A request that names
     /// an operator-supplied image is returned unchanged.
     /// </summary>
+    /// <summary>
+    /// Requires a release's image to be the release's and one this instance can run, before the install claims anything.
+    /// An offline archive's image was read from the archive at acquisition, so nothing is loaded to check it. A pulled
+    /// image can only be read once Docker holds it, because the installer has no registry client of its own and Docker
+    /// holds the registry credentials: it is pulled by the digest release.json names, checked, and removed again if it is
+    /// refused. An installation that already has state (a resumed or repeated one) pulls nothing here; its own image step
+    /// does, as before. Returns whether it pulled the image.
+    /// </summary>
+    private static async Task<bool> EnsureReleaseImageAsync(
+        InstallRequest request,
+        AcquiredImage release,
+        DockerClient docker,
+        string catalogId,
+        bool stateExists,
+        CancellationToken cancellationToken)
+    {
+        void Validate(ImageInstallationIdentity image)
+        {
+            if (!IsValid(image, request.ReplayProfile))
+                throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
+            EnsureImageSupportsCatalog(image, catalogId);
+        }
+        if (release.ArchivedImage is { } archived)
+        {
+            Validate(archived);
+            return false;
+        }
+        if (stateExists)
+        {
+            return false;
+        }
+        _ = await docker.PullReleaseImageAsync(request, release.Image, Validate, cancellationToken).ConfigureAwait(false);
+        return !request.NoDownload;
+    }
+
     private static InstallRequest ApplyReleaseImage(InstallRequest request, AcquiredImage? image)
         => image is null
             ? request

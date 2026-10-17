@@ -269,6 +269,41 @@ public sealed class ReleaseManifestTests
         Assert.AreEqual("One.\n\nTwo.\n\tThree.", manifest.UpgradeNotes.Single().Text);
     }
 
+    /// <summary>
+    /// A property named twice in one object is refused wherever it is, compared after its escapes are decoded: a reader
+    /// that took the last copy (as <c>TryGetProperty</c> does) and one that took the first would otherwise read different
+    /// releases from bytes SHA256SUMS vouches for, and an unsafe note could hide behind a later, empty, list.
+    /// </summary>
+    [TestMethod]
+    [DataRow("\"schemaVersion\":1", "\"schemaVersion\":999,\"schemaVersion\":1", DisplayName = "root member")]
+    [DataRow("\"schemaVersion\":1", "\"schema\\u0056ersion\":999,\"schemaVersion\":1", DisplayName = "escaped first copy")]
+    [DataRow("\"schemaVersion\":1", "\"schemaVersion\":1,\"\\u0073chemaVersion\":1", DisplayName = "escaped equal copy")]
+    [DataRow("\"digest\":\"", "\"digest\":\"sha256:" + "c" + "\",\"digest\":\"", DisplayName = "nested image member")]
+    [DataRow("\"sha256\":\"", "\"sha256\":\"0\",\"sha256\":\"", DisplayName = "member of an array entry")]
+    [DataRow("\"upgradeNotes\":[", "\"upgradeNotes\":[{\"version\":\"1.2.0\",\"text\":\"\\u001b[2J\"}],\"upgradeNotes\":[", DisplayName = "unsafe notes hidden behind a later list")]
+    [DataRow("\"text\":\"", "\"text\":\"\\u202e\",\"text\":\"", DisplayName = "member of a note")]
+    public void Parse_PropertyNamedTwiceInOneObject_IsRefused(string original, string duplicated)
+    {
+        ArgumentNullException.ThrowIfNull(original);
+        ArgumentNullException.ThrowIfNull(duplicated);
+        var json = Encoding.UTF8.GetString(Document(static _ => { }));
+        var index = json.IndexOf(original, StringComparison.Ordinal);
+        Assert.IsGreaterThanOrEqualTo(0, index, original);
+
+        AssertRefused(
+            Encoding.UTF8.GetBytes(json[..index] + duplicated + json[(index + original.Length)..]),
+            "an object in it names the same property twice");
+    }
+
+    [TestMethod]
+    public void Parse_SameNameInSeparateObjects_IsNotADuplicate()
+    {
+        // Every asset and offline archive names "name" and "sha256"; a property is a duplicate only within one object.
+        var manifest = ReleaseManifest.Parse(Document(static _ => { }));
+
+        Assert.IsGreaterThan(1, manifest.Assets.Count);
+    }
+
     [TestMethod]
     public void Parse_InvalidJson_IsRefused()
     {

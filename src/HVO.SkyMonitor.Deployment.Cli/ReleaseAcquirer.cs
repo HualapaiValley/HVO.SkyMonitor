@@ -20,9 +20,12 @@ internal enum ReleaseImageSource
 /// Reads a release from the folder holding its files (install contract section 4) and selects its CameraAgent image for
 /// the platform that will run it. The trust model is the contract's: release.json must be the file SHA256SUMS names, and
 /// the two must list the same files with the same SHA-256; the image is pinned to the digest release.json names; and an
-/// offline archive must be the size and SHA-256 both give it. SHA256SUMS itself is checked against its build-provenance
-/// attestation by <c>install.sh</c> or the operator (<c>gh attestation verify</c>) before the installer runs. Every
-/// refusal happens here, before Docker is asked to load, pull or start anything.
+/// offline archive must be the size and SHA-256 both give it, and must hold the release's image for the platform,
+/// labelled with the release's version and commit (<see cref="ReleaseImageArchive"/>). SHA256SUMS itself is checked
+/// against its build-provenance attestation by <c>install.sh</c> or the operator (<c>gh attestation verify</c>) before
+/// the installer runs. Every refusal here happens before Docker is asked to load, pull or start anything; a pulled
+/// image, which can only be read once Docker holds it, is checked before the install or upgrade claims anything
+/// (<see cref="DockerClient.PullReleaseImageAsync"/>).
 /// </summary>
 internal static class ReleaseAcquirer
 {
@@ -93,14 +96,25 @@ internal static class ReleaseAcquirer
                 $"{image.DigestReference} instead.");
         }
         var path = Path.Combine(folder, archive.Name);
-        await VerifyFileAsync(
-            path, archive.Size, archive.Sha256,
-            $"The offline archive {archive.Name} is not in {folder}. Copy it there from the release, or pass " +
-            $"--image-source registry to pull {image.DigestReference} instead.",
-            cancellationToken).ConfigureAwait(false);
+        ImageInstallationIdentity archivedImage;
+        await using (var stream = OpenReleaseFile(
+                         path,
+                         $"The offline archive {archive.Name} is not in {folder}. Copy it there from the release, or pass " +
+                         $"--image-source registry to pull {image.DigestReference} instead."))
+        {
+            await VerifyOpenFileAsync(stream, archive.Name, archive.Size, archive.Sha256, cancellationToken).ConfigureAwait(false);
+            // The image it holds is read from the same open file, before Docker is asked to load anything, so an archive
+            // that is the release's file but not the release's image is refused while nothing has been claimed.
+            stream.Position = 0;
+            archivedImage = await ReleaseImageArchive.ReadAsync(stream, manifest, image, archive, cancellationToken)
+                .ConfigureAwait(false);
+        }
         // The archive is loaded by its classic-store ID, the config digest; Docker's containerd store names the loaded
         // image by its index digest instead, which the selection's other identities cover.
-        return new AcquiredImage(release, selection, source, archive.ConfigDigest, path, archive.Sha256);
+        return new AcquiredImage(release, selection, source, archive.ConfigDigest, path, archive.Sha256)
+        {
+            ArchivedImage = archivedImage
+        };
     }
 
     /// <summary>
@@ -175,15 +189,13 @@ internal static class ReleaseAcquirer
         return buffer[..length];
     }
 
-    private static async Task VerifyFileAsync(
-        string path,
+    private static async Task VerifyOpenFileAsync(
+        FileStream stream,
+        string name,
         long expectedLength,
         string expectedSha256,
-        string missing,
         CancellationToken cancellationToken)
     {
-        await using var stream = OpenReleaseFile(path, missing);
-        var name = Path.GetFileName(path);
         if (stream.Length != expectedLength)
         {
             throw new InstallerException(
@@ -271,6 +283,12 @@ internal sealed record AcquiredImage(
 {
     public const string EvidenceFileName = "image-distribution.json";
 
+    /// <summary>
+    /// The image an offline archive holds, read from the archive before anything is loaded; <see langword="null"/> for a
+    /// pulled image, which can only be read once Docker holds it.
+    /// </summary>
+    public ImageInstallationIdentity? ArchivedImage { get; init; }
+
     /// <summary>The release the image belongs to.</summary>
     public ReleaseManifest Release => VerifiedRelease.Manifest;
 
@@ -326,6 +344,7 @@ internal sealed record AcquiredImage(
             File.Delete(path);
         }
     }
+
 }
 
 /// <summary>

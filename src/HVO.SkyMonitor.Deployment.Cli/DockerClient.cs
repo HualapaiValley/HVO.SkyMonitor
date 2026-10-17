@@ -83,9 +83,88 @@ internal sealed class DockerClient(IProcessRunner processRunner)
     /// <summary>
     /// Loads, pulls or finds the CameraAgent image a request names and reads its identity and contract labels. A
     /// <paramref name="release"/> selection additionally requires the image Docker resolved to be the release's: one of
-    /// the identities its offline archive names, and labelled with the release's version and commit.
+    /// the identities its offline archive names, and labelled with the release's version and commit. A release image
+    /// this call imports and then refuses is removed again, so a refused release leaves Docker holding what it held.
     /// </summary>
     public async Task<(DockerDaemonIdentity Daemon, ImageInstallationIdentity Image)> PrepareImageAsync(
+        InstallRequest request,
+        bool allowMutation,
+        ReleaseImageSelection? release,
+        CancellationToken cancellationToken)
+    {
+        var added = allowMutation && release is not null
+            ? await AbsentAsync(ReleaseIdentities(release), cancellationToken).ConfigureAwait(false)
+            : [];
+        try
+        {
+            return await PrepareImageCoreAsync(request, allowMutation, release, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (added.Count > 0 && exception is not OperationCanceledException)
+        {
+            await RemoveImagesAsync(added).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Pulls a release's image by the digest release.json names and checks it with <paramref name="validate"/> as well as
+    /// against the release, before anything else is changed for it. The installer has no registry client of its own and
+    /// Docker holds the registry credentials, so a pulled image's identity and labels can only be read once Docker holds
+    /// it: an image this call pulled is removed again when it is refused.
+    /// </summary>
+    public async Task<ImageInstallationIdentity> PullReleaseImageAsync(
+        InstallRequest request,
+        ReleaseImageSelection release,
+        Action<ImageInstallationIdentity> validate,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(release);
+        ArgumentNullException.ThrowIfNull(validate);
+        var added = await AbsentAsync(ReleaseIdentities(release), cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var (_, image) = await PrepareImageCoreAsync(request, allowMutation: true, release, cancellationToken)
+                .ConfigureAwait(false);
+            validate(image);
+            return image;
+        }
+        catch (Exception exception) when (added.Count > 0 && exception is not OperationCanceledException)
+        {
+            await RemoveImagesAsync(added).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>The names Docker can give a release's image: its digest reference, then its archive's identities.</summary>
+    private static string[] ReleaseIdentities(ReleaseImageSelection release)
+        => [.. new[] { release.DigestReference }.Concat(release.ImageIds ?? []).Distinct(StringComparer.Ordinal)];
+
+    private async Task<List<string>> AbsentAsync(IEnumerable<string> references, CancellationToken cancellationToken)
+    {
+        var absent = new List<string>();
+        foreach (var reference in references)
+        {
+            if (await TryInspectImageAsync(reference, cancellationToken).ConfigureAwait(false) is null)
+            {
+                absent.Add(reference);
+            }
+        }
+        return absent;
+    }
+
+    /// <summary>
+    /// Removes what an import added, best effort and without force: a name another image or a container now uses is
+    /// left alone. Once begun it is not cancelled, so a refused image is not left half removed.
+    /// </summary>
+    private async Task RemoveImagesAsync(IEnumerable<string> references)
+    {
+        foreach (var reference in references)
+        {
+            _ = await RunDockerRawAsync(["image", "rm", reference], CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<(DockerDaemonIdentity Daemon, ImageInstallationIdentity Image)> PrepareImageCoreAsync(
         InstallRequest request,
         bool allowMutation,
         ReleaseImageSelection? release,
@@ -177,47 +256,50 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                      imageConfig.TryGetProperty("Labels", out var imageLabels)
             ? imageLabels
             : default;
-        var upgradeCompatibility = labels.ValueKind == JsonValueKind.Object &&
-                                   labels.TryGetProperty("io.hvo.skymonitor.state-compatibility", out var compatibility)
-            ? compatibility.GetString()
-            : null;
-        var sourceRevision = labels.ValueKind == JsonValueKind.Object &&
-                             labels.TryGetProperty("org.opencontainers.image.revision", out var revision)
-            ? revision.GetString()
-            : null;
-        var component = Label(labels, "io.hvo.skymonitor.component");
-        var configurationContract = Label(labels, "io.hvo.skymonitor.configuration-contract");
-        var catalogContract = Label(labels, "io.hvo.skymonitor.catalog-contract");
-        var replayRunnerContract = Label(labels, "io.hvo.skymonitor.replay-runner-contract");
-        var minimumCompatibleRevision = Label(labels, "io.hvo.skymonitor.minimum-compatible-revision");
-        var identityMigration = Label(labels, "io.hvo.skymonitor.identity-migration");
-        var rawIngressSchema = Label(labels, "io.hvo.skymonitor.raw-ingress-schema");
-        var rawIngressMigration = Label(labels, "io.hvo.skymonitor.raw-ingress-migration");
-        var catalogManifestVersion = Label(labels, "io.hvo.skymonitor.catalog-manifest-version");
-        if (release is not null)
-        {
-            EnsureReleaseImageAgreement(release, imageId, component, Label(labels, "org.opencontainers.image.version"), sourceRevision);
-        }
-
-        var installationIdentity = new ImageInstallationIdentity(
+        var installationIdentity = ImageIdentityFrom(
             request.ImageArchive is null ? "registry" : "archive",
             reference,
             imageId,
             imageArchitecture,
             request.ImageArchiveSha256,
-            UpgradeCompatibility: upgradeCompatibility,
-            SourceRevision: sourceRevision,
-            Component: component,
-            ConfigurationContract: configurationContract,
-            CatalogContract: catalogContract,
-            ReplayRunnerContract: replayRunnerContract,
-            MinimumCompatibleRevision: minimumCompatibleRevision,
-            IdentityMigration: identityMigration,
-            RawIngressSchema: rawIngressSchema,
-            CatalogManifestVersion: catalogManifestVersion,
-            RawIngressMigration: rawIngressMigration);
+            labels);
+        if (release is not null)
+        {
+            EnsureReleaseImageAgreement(
+                release, imageId, installationIdentity.Component, Label(labels, "org.opencontainers.image.version"),
+                installationIdentity.SourceRevision);
+        }
         return (identity, installationIdentity);
     }
+
+    /// <summary>
+    /// The identity and contract labels of an image, from the labels its configuration carries: as Docker reports them
+    /// for an image it holds, or as an offline archive's configuration declares them before it is loaded.
+    /// </summary>
+    internal static ImageInstallationIdentity ImageIdentityFrom(
+        string source,
+        string reference,
+        string imageId,
+        string architecture,
+        string? archiveSha256,
+        JsonElement labels)
+        => new(
+            source,
+            reference,
+            imageId,
+            architecture,
+            archiveSha256,
+            UpgradeCompatibility: Label(labels, "io.hvo.skymonitor.state-compatibility"),
+            SourceRevision: Label(labels, "org.opencontainers.image.revision"),
+            Component: Label(labels, "io.hvo.skymonitor.component"),
+            ConfigurationContract: Label(labels, "io.hvo.skymonitor.configuration-contract"),
+            CatalogContract: Label(labels, "io.hvo.skymonitor.catalog-contract"),
+            ReplayRunnerContract: Label(labels, "io.hvo.skymonitor.replay-runner-contract"),
+            MinimumCompatibleRevision: Label(labels, "io.hvo.skymonitor.minimum-compatible-revision"),
+            IdentityMigration: Label(labels, "io.hvo.skymonitor.identity-migration"),
+            RawIngressSchema: Label(labels, "io.hvo.skymonitor.raw-ingress-schema"),
+            CatalogManifestVersion: Label(labels, "io.hvo.skymonitor.catalog-manifest-version"),
+            RawIngressMigration: Label(labels, "io.hvo.skymonitor.raw-ingress-migration"));
 
     /// <summary>
     /// Requires the image Docker resolved to be the release's. Its digest pins its bytes, labels included, so the image
@@ -665,8 +747,9 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                                               option.Equals("size=67108864", StringComparison.OrdinalIgnoreCase)) == 1;
     }
 
-    private static string? Label(JsonElement labels, string name)
-        => labels.ValueKind == JsonValueKind.Object && labels.TryGetProperty(name, out var value)
+    internal static string? Label(JsonElement labels, string name)
+        => labels.ValueKind == JsonValueKind.Object && labels.TryGetProperty(name, out var value) &&
+           value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
 

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.Deployment;
@@ -503,9 +504,10 @@ public sealed partial class InstallerFlowTests
     {
         var bundle = RequireCatalogBundle();
         var root = Path.Combine(Path.GetTempPath(), $"hvo-release-install-{Guid.NewGuid():N}");
-        var imageId = $"sha256:{new string('b', 64)}";
         var platform = $"linux/{ReleaseAcquirer.HostImageArchitecture()}";
-        using var release = ReleaseFixture.Create(root, configDigests: new Dictionary<string, string> { [platform] = imageId });
+        using var release = ReleaseFixture.Create(root);
+        // Docker's classic store names the loaded image by its configuration digest, which release.json gives.
+        var imageId = release.ConfigDigest(platform);
         var instanceId = Guid.Parse("2b7f6a3c-1d54-4e0a-9c31-6f2b0a5d4e18");
         var request = ReleaseRequest(root, bundle, instanceId, release.Folder);
         var runner = new InstallerProcessRunner(imageId, root, instanceId) { Labels = release.Labels() };
@@ -588,17 +590,19 @@ public sealed partial class InstallerFlowTests
     [DataRow("org.opencontainers.image.version", "9.9.9")]
     [DataRow("org.opencontainers.image.revision", "ffffffffffffffffffffffffffffffffffffffff")]
     [DataRow("io.hvo.skymonitor.component", "LogicHost")]
-    public async Task InstallAsync_ImageNotLabelledAsTheRelease_FailsBeforeComposeStartsAndRecordsNothing(string label, string value)
+    public async Task InstallAsync_LoadedImageNotLabelledAsTheRelease_IsRemovedBeforeComposeStartsAndRecordsNothing(string label, string value)
     {
         var bundle = RequireCatalogBundle();
         var root = Path.Combine(Path.GetTempPath(), $"hvo-release-labels-{Guid.NewGuid():N}");
-        var imageId = $"sha256:{new string('b', 64)}";
         var platform = $"linux/{ReleaseAcquirer.HostImageArchitecture()}";
-        using var release = ReleaseFixture.Create(root, configDigests: new Dictionary<string, string> { [platform] = imageId });
+        using var release = ReleaseFixture.Create(root);
+        var imageId = release.ConfigDigest(platform);
         var instanceId = Guid.Parse("6c1de0b2-3a48-4f7d-8e5b-91c0f2a7d640");
         var labels = release.Labels();
         labels[label] = value;
-        var runner = new InstallerProcessRunner(imageId, root, instanceId) { Labels = labels };
+        // The archive is the release's, so the check before the install claims anything passes; the image Docker then
+        // reports from the load says otherwise, and the load is undone.
+        var runner = new InstallerProcessRunner(imageId, root, instanceId) { Labels = labels, Held = [] };
         try
         {
             var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
@@ -610,6 +614,9 @@ public sealed partial class InstallerFlowTests
                 $"{ReleaseFixture.Commit}, as release v{release.Version} requires.",
                 exception.Message);
             Assert.AreEqual(0, runner.ComposeUpCount);
+            Assert.AreEqual(1, runner.LoadCount);
+            CollectionAssert.Contains(runner.Removed, imageId);
+            Assert.IsEmpty(runner.Held!, "the image the refused install loaded is still in Docker");
             // A refused release must leave no evidence claiming the instance runs it.
             Assert.IsFalse(File.Exists(Path.Combine(
                 root, "cameraagents", instanceId.ToString("D"), "state", "deployment", "image-distribution.json")));
@@ -636,12 +643,16 @@ public sealed partial class InstallerFlowTests
         var runner = new InstallerProcessRunner($"sha256:{new string('d', 64)}", root, instanceId)
         {
             Labels = release.Labels(),
-            RepoDigests = [release.DigestReference]
+            RepoDigests = [release.DigestReference],
+            Held = [],
+            // The image the load reports answers to the configuration the archive names, so Docker resolves it there.
+            LoadedNames = [release.ConfigDigest(platform)]
         };
         var request = ReleaseRequest(root, bundle, instanceId, release.Folder) with
         {
             ImageSource = registry ? ReleaseImageSource.Registry : ReleaseImageSource.Archive
         };
+        var before = Tree(root);
         try
         {
             var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
@@ -652,6 +663,12 @@ public sealed partial class InstallerFlowTests
                 $"The CameraAgent image Docker resolved is not the {platform} image release v{release.Version} names.",
                 exception.Message);
             Assert.AreEqual(0, runner.ComposeUpCount);
+            Assert.IsEmpty(runner.Held!, "the image the refused install imported is still in Docker");
+            if (registry)
+            {
+                // A pulled image is checked before the install claims anything.
+                CollectionAssert.AreEqual(before, Tree(root), "a refused pull changed the file system");
+            }
         }
         finally
         {
@@ -685,6 +702,223 @@ public sealed partial class InstallerFlowTests
             DeleteRoot(root);
         }
     }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstallAsync_ReleaseJsonNamingAPropertyTwice_IsRefusedBeforeDockerOrTheFileSystem()
+    {
+        var bundle = RequireCatalogBundle();
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-release-duplicate-{Guid.NewGuid():N}");
+        using var release = ReleaseFixture.Create(root);
+        // The copy a last-wins reader would take is the real one; the first names another image.
+        release.RewriteText(json => json.Replace(
+            "\"digest\": \"", $"\"digest\": \"sha256:{new string('e', 64)}\", \"digest\": \"", StringComparison.Ordinal));
+        var instanceId = Guid.Parse("0a4b6c8d-2e3f-4a5b-9c7d-1e2f3a4b5c6d");
+        var runner = new InstallerProcessRunner(release.ConfigDigest($"linux/{ReleaseAcquirer.HostImageArchitecture()}"), root, instanceId)
+        {
+            Held = []
+        };
+        var before = Tree(root);
+        try
+        {
+            var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
+                ReleaseRequest(root, bundle, instanceId, release.Folder), runner, _ => new InstallerOwnerClient(),
+                RuntimeUid, RuntimeGid, CancellationToken.None, portAvailabilityProbe: new RecordingPortProbe().Probe));
+
+            Assert.AreEqual(
+                "The installer will not use release.json: an object in it names the same property twice.", exception.Message);
+            Assert.AreEqual(0, runner.Invocations, "a release.json naming a property twice must be refused before Docker is contacted");
+            CollectionAssert.AreEqual(before, Tree(root));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    /// <summary>
+    /// An offline archive that is the release's file but does not hold the release's image, or holds it in a way a loader
+    /// could read differently, is refused from the archive itself: before Docker is contacted, before the product root,
+    /// state, catalog or staged archive exist, and without loading anything.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("version-label", "holds an image that is not labelled as CameraAgent {version} from commit {commit}, as release v{version} requires.")]
+    [DataRow("revision-label", "holds an image that is not labelled as CameraAgent {version} from commit {commit}, as release v{version} requires.")]
+    [DataRow("component-label", "holds an image that is not labelled as CameraAgent {version} from commit {commit}, as release v{version} requires.")]
+    [DataRow("contract-label", "!The CameraAgent image does not declare the required current configuration and catalog contracts.")]
+    [DataRow("catalog-label", "!The CameraAgent image does not declare the required current configuration and catalog contracts.")]
+    [DataRow("other-image", "is not the image release v{version} names: its OCI layout names an image other than {digest}.")]
+    [DataRow("containerd-name", "is not the image release v{version} names: its OCI layout would name the loaded image something other than {reference}.")]
+    [DataRow("classic-tag", "is not the image release v{version} names: its manifest.json does not describe that image under {reference} alone.")]
+    [DataRow("classic-config", "is not the image release v{version} names: its manifest.json does not describe that image under {reference} alone.")]
+    [DataRow("manifest-of-another-platform", "is not the image release v{version} names: its image index does not list {platform} once, as {manifest}.")]
+    [DataRow("tampered-config", "is not the image release v{version} names: its {platform} configuration is not the blob {config} names.")]
+    [DataRow("missing-config", "is not the image release v{version} names: it holds no {platform} configuration.")]
+    [DataRow("layout-twice", "holds index.json twice.")]
+    [DataRow("layout-link", "holds index.json as something other than a file.")]
+    [DataRow("config-property-twice", "!The installer will not use the offline archive {name}'s {platform} configuration: an object in it names the same property twice.")]
+    public async Task InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded(string fault, string expected)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        var bundle = RequireCatalogBundle();
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-release-archive-{Guid.NewGuid():N}");
+        var platform = $"linux/{ReleaseAcquirer.HostImageArchitecture()}";
+        var version = "1.2.0-dev.3";
+        var labels = ReleaseFixture.ReleaseLabels(version);
+        switch (fault)
+        {
+            case "version-label": labels["org.opencontainers.image.version"] = "1.2.0-dev.4"; break;
+            case "revision-label": labels["org.opencontainers.image.revision"] = new string('f', 40); break;
+            case "component-label": labels["io.hvo.skymonitor.component"] = "LogicHost"; break;
+            case "contract-label": labels.Remove("io.hvo.skymonitor.configuration-contract"); break;
+            case "catalog-label": labels["io.hvo.skymonitor.catalog-contract"] = "no-such-catalog-contract"; break;
+        }
+        void Edit(string archivePlatform, List<ArchiveEntry> entries)
+        {
+            ArchiveEntry Named(string name) => entries.Single(entry => entry.Name == name);
+            void Replace(string name, ArchiveEntry replacement) => entries[entries.IndexOf(Named(name))] = replacement;
+            string Text(string name) => Encoding.UTF8.GetString(Named(name).Bytes);
+            var configName = entries.Single(entry => entry.Name.StartsWith("blobs/", StringComparison.Ordinal) &&
+                                                     Encoding.UTF8.GetString(entry.Bytes).Contains("\"Labels\"", StringComparison.Ordinal)).Name;
+            switch (fault)
+            {
+                case "other-image":
+                    Replace("index.json", new("index.json", Encoding.UTF8.GetBytes(System.Text.RegularExpressions.Regex.Replace(
+                        Text("index.json"), "sha256:[0-9a-f]{64}", $"sha256:{new string('c', 64)}"))));
+                    break;
+                case "containerd-name":
+                    Replace("index.json", new("index.json", Encoding.UTF8.GetBytes(Text("index.json").Replace(
+                        $"ghcr.io/hualapaivalley/skymonitor-cameraagent:{version}", "docker.io/library/nginx:latest", StringComparison.Ordinal))));
+                    break;
+                case "classic-tag":
+                    Replace("manifest.json", new("manifest.json", Encoding.UTF8.GetBytes(Text("manifest.json").Replace(
+                        $"ghcr.io/hualapaivalley/skymonitor-cameraagent:{version}", "docker.io/library/nginx:latest", StringComparison.Ordinal))));
+                    break;
+                case "classic-config":
+                    Replace("manifest.json", new("manifest.json", Encoding.UTF8.GetBytes(Text("manifest.json").Replace(
+                        configName, $"blobs/sha256/{new string('c', 64)}", StringComparison.Ordinal))));
+                    break;
+                case "tampered-config":
+                    Replace(configName, new(configName, Encoding.UTF8.GetBytes(Text(configName).Replace("linux", "LINUX", StringComparison.Ordinal))));
+                    break;
+                case "missing-config":
+                    entries.Remove(Named(configName));
+                    break;
+                case "layout-twice":
+                    entries.Add(new("./index.json", Named("index.json").Bytes));
+                    break;
+                case "layout-link":
+                    Replace("index.json", new("index.json", Encoding.UTF8.GetBytes("manifest.json"), System.Formats.Tar.TarEntryType.SymbolicLink));
+                    break;
+            }
+        }
+        using var release = ReleaseFixture.Create(
+            root,
+            version: version,
+            labels: labels,
+            editArchive: Edit,
+            config: fault == "config-property-twice"
+                ? static (_, json) => json.Replace("\"os\":\"linux\"", "\"os\":\"windows\",\"os\":\"linux\"", StringComparison.Ordinal)
+                : null);
+        if (fault == "manifest-of-another-platform")
+        {
+            // release.json names the other platform's manifest, which the index lists, for this platform's archive.
+            var other = platform == "linux/amd64" ? "linux/arm64" : "linux/amd64";
+            var otherManifest = release.ManifestDigest(other);
+            release.Rewrite(manifest => manifest["images"]![ReleaseManifest.CameraAgentImageName]!["offlineArchives"]!.AsArray()
+                .Single(archive => (string)archive!["platform"]! == platform)!["manifestDigest"] = otherManifest);
+        }
+        var instanceId = Guid.Parse("1b5c7d9e-3f4a-4b6c-8d0e-2f3a4b5c6d7e");
+        var runner = new InstallerProcessRunner(release.ConfigDigest(platform), root, instanceId) { Labels = labels, Held = [] };
+        var before = Tree(root);
+        try
+        {
+            var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
+                ReleaseRequest(root, bundle, instanceId, release.Folder), runner, _ => new InstallerOwnerClient(),
+                RuntimeUid, RuntimeGid, CancellationToken.None, portAvailabilityProbe: new RecordingPortProbe().Probe));
+
+            var name = (string)release.Archive(platform)["name"]!;
+            var message = expected
+                .Replace("{version}", version, StringComparison.Ordinal)
+                .Replace("{commit}", ReleaseFixture.Commit, StringComparison.Ordinal)
+                .Replace("{digest}", release.Digest, StringComparison.Ordinal)
+                .Replace("{reference}", $"{release.Repository}:{version}", StringComparison.Ordinal)
+                .Replace("{platform}", platform, StringComparison.Ordinal)
+                .Replace("{manifest}", release.ManifestDigest(platform), StringComparison.Ordinal)
+                .Replace("{config}", release.ConfigDigest(platform), StringComparison.Ordinal)
+                .Replace("{name}", name, StringComparison.Ordinal);
+            Assert.AreEqual(message.StartsWith('!') ? message[1..] : $"The offline archive {name} {message}", exception.Message);
+            Assert.AreEqual(0, runner.LoadCount, "a refused archive must never be loaded");
+            Assert.AreEqual(0, runner.PullCount);
+            Assert.IsEmpty(runner.Held!);
+            CollectionAssert.AreEqual(before, Tree(root), "a refused archive changed the file system");
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    /// <summary>
+    /// A pulled image can only be read once Docker holds it. It is pulled and checked before the install claims anything,
+    /// and removed again when it is refused, so Docker and the file system end as they began.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("version-label", "The CameraAgent image Docker resolved is not labelled as CameraAgent {version} from commit {commit}, as release v{version} requires.")]
+    [DataRow("contract-label", "The CameraAgent image does not declare the required current configuration and catalog contracts.")]
+    [DataRow("catalog-label", "The CameraAgent image does not declare the required current configuration and catalog contracts.")]
+    public async Task InstallAsync_PulledReleaseImageThatIsRefused_IsRemovedBeforeAnythingIsClaimed(string fault, string expected)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        var bundle = RequireCatalogBundle();
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-release-pull-{Guid.NewGuid():N}");
+        var platform = $"linux/{ReleaseAcquirer.HostImageArchitecture()}";
+        using var release = ReleaseFixture.Create(root);
+        var labels = release.Labels();
+        switch (fault)
+        {
+            case "version-label": labels["org.opencontainers.image.version"] = "1.2.0-dev.4"; break;
+            case "contract-label": labels.Remove("io.hvo.skymonitor.configuration-contract"); break;
+            case "catalog-label": labels["io.hvo.skymonitor.catalog-contract"] = "no-such-catalog-contract"; break;
+        }
+        var instanceId = Guid.Parse("2c6d8e0f-4a5b-4c7d-9e1f-3a4b5c6d7e8f");
+        var runner = new InstallerProcessRunner(release.ConfigDigest(platform), root, instanceId)
+        {
+            Labels = labels,
+            RepoDigests = [release.DigestReference],
+            Held = []
+        };
+        var request = ReleaseRequest(root, bundle, instanceId, release.Folder) with { ImageSource = ReleaseImageSource.Registry };
+        var before = Tree(root);
+        try
+        {
+            var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
+                request, runner, _ => new InstallerOwnerClient(),
+                RuntimeUid, RuntimeGid, CancellationToken.None, portAvailabilityProbe: new RecordingPortProbe().Probe));
+
+            Assert.AreEqual(
+                expected.Replace("{version}", release.Version, StringComparison.Ordinal).Replace("{commit}", ReleaseFixture.Commit, StringComparison.Ordinal),
+                exception.Message);
+            Assert.AreEqual(1, runner.PullCount);
+            CollectionAssert.Contains(runner.Removed, release.DigestReference);
+            Assert.IsEmpty(runner.Held!, "the refused pull is still in Docker");
+            Assert.AreEqual(0, runner.ComposeUpCount);
+            CollectionAssert.AreEqual(before, Tree(root), "a refused pull changed the file system");
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    /// <summary>Every path under <paramref name="root"/>, relative and sorted, for before-and-after comparison.</summary>
+    private static string[] Tree(string root)
+        => Directory.Exists(root)
+            ? [.. Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories)
+                .Select(path => Path.GetRelativePath(root, path)).Order(StringComparer.Ordinal)]
+            : [];
 
     private static string RequireCatalogBundle()
     {
@@ -1040,6 +1274,19 @@ public sealed partial class InstallerFlowTests
 
         public IReadOnlyList<string> RepoDigests { get; init; } = [];
 
+        /// <summary>
+        /// The names Docker holds the image by, when a test follows what Docker holds: a load or pull adds the image, an
+        /// inspect of a name it does not hold fails, and a removal takes the image away by any of its names.
+        /// <see langword="null"/> keeps the image always present, as the other flows assume.
+        /// </summary>
+        public HashSet<string>? Held { get; init; }
+
+        /// <summary>Every name an <c>image rm</c> was asked to remove, in order.</summary>
+        public List<string> Removed { get; } = [];
+
+        /// <summary>Further names a load makes the image reachable by, besides its ID.</summary>
+        public IReadOnlyList<string> LoadedNames { get; init; } = [];
+
         public Task<ProcessResult> RunAsync(
             string fileName,
             IReadOnlyList<string> arguments,
@@ -1064,15 +1311,32 @@ public sealed partial class InstallerFlowTests
             if (arguments is ["image", "load", "--input", ..])
             {
                 LoadCount++;
+                Held?.UnionWith([imageId, .. LoadedNames]);
                 return Success($"Loaded image ID: {imageId}\n");
             }
-            if (arguments is ["image", "pull", _])
+            if (arguments is ["image", "pull", var pulled])
             {
                 PullCount++;
+                Held?.UnionWith([imageId, pulled]);
                 return Success(string.Empty);
+            }
+            if (arguments is ["image", "rm", var removed])
+            {
+                Removed.Add(removed);
+                if (Held is null || !Held.Contains(removed))
+                {
+                    return Task.FromResult(new ProcessResult(1, string.Empty, $"Error: No such image: {removed}"));
+                }
+                // The fake holds one image: removing it by any name takes every name away.
+                Held.Clear();
+                return Success($"Deleted: {imageId}\n");
             }
             if (arguments.Count == 3 && arguments[0] == "image" && arguments[1] == "inspect")
             {
+                if (Held is not null && !Held.Contains(arguments[2]))
+                {
+                    return Task.FromResult(new ProcessResult(1, "[]", $"Error: No such image: {arguments[2]}"));
+                }
                 return Success(JsonSerializer.Serialize(new[]
                 {
                     new

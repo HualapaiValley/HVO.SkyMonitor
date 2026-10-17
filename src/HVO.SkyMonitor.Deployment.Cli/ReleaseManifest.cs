@@ -91,8 +91,9 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
         }
         try
         {
-            DecodeEscapedStrings(utf8Json.Span);
-            using var document = JsonDocument.Parse(utf8Json);
+            // Duplicate property names, compared decoded, are refused anywhere in the document, so no member read below
+            // can be shadowed by a second copy another reader would see instead.
+            using var document = ReleaseJson.Parse(utf8Json, FileName);
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
             {
@@ -167,20 +168,6 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
         {
             throw new InstallerException(
                 $"The installer will not use {FileName}: it contains a string that is not valid Unicode.", exception);
-        }
-    }
-
-    // Decodes every escaped member name and string once, which throws InvalidOperationException for one that is not
-    // Unicode text; one with no escapes is the UTF-8 already checked.
-    private static void DecodeEscapedStrings(ReadOnlySpan<byte> utf8Json)
-    {
-        var reader = new Utf8JsonReader(utf8Json);
-        while (reader.Read())
-        {
-            if (reader.TokenType is JsonTokenType.PropertyName or JsonTokenType.String && reader.ValueIsEscaped)
-            {
-                _ = reader.GetString();
-            }
         }
     }
 
