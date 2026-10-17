@@ -1723,9 +1723,19 @@ installer plans what each store of the target snapshot receives:
    counters. A store not encoded as UTF-8 is one such case. The snapshot's authentication proves its bytes, not that the
    installer can read its values.
 
-When the restore applies the planned carry, any failure rolls that store's transaction back. That leaves the store
-exactly as the snapshot recorded it, and the restore completes. Whatever was not carried is named, with why, on
-standard error, or with `--json` as a `state-snapshot-restore-incomplete` event:
+The restore never writes a counter into the live store. For each store it:
+1. copies the snapshot to a staged file and checks its SHA-256;
+2. carries the planned floors into that copy in one transaction, which commits only when every floor reads back;
+3. closes it, and refuses it if a rollback journal or write-ahead log is left beside it;
+4. runs `PRAGMA integrity_check`, reads every floor back again, and syncs the file;
+5. removes the live store's sidecars, renames the copy over the live store, syncs the directory, and checks that the
+   installed file has the staged copy's hash.
+
+If the carry fails on the staged copy in any way, the copy and its sidecars are discarded, the snapshot is copied again
+pure (and its SHA-256 checked), and that copy is installed instead, so the live store is only ever the snapshot's bytes
+or a verified carried copy. If that pure copy fails too, the restore stops without recording `stateSnapshotRestoredUtc`,
+and `--resume` restores again. Whatever was not carried is named, with why, on standard error, or with `--json` as a
+`state-snapshot-restore-incomplete` event:
 
 ```text
 Warning: the restore of the CameraAgent databases from snapshot <uuid> could not carry the <counter> counter of
@@ -1734,7 +1744,9 @@ snapshot may be handed out again; the restore itself completes.
 ```
 
 The journal keeps the marks themselves, and the plan is made again on every retry, so a mark a retry cannot carry never
-fails the retry. The audit of every read, validation and apply step is in the #1314 correction-round-4 ledger.
+fails the retry. The audit of every read, validation and apply step is in the #1314 correction-round-4 ledger, and the
+audit of every write to a store after it replaces the live one, of which there are none, in the cap-exception round-2
+ledger.
 
 A guard test classifies every counter-like column in every store image as carried or as never leaving the instance,
 with the reason (`CameraAgentStateCountersAuditTests`). A new one fails until it is classified. Revoked credentials are
