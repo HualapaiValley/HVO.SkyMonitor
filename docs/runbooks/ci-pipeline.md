@@ -145,12 +145,12 @@ too, because Preflight runs on drafts.
     - or anything gitleaks finds when it reads the rule IDs and paths as text.
       That covers a credential in a file name or a custom rule ID that is not
       itself a finding. It reads them with gitleaks' default rules, which the
-      scanned repository cannot change, and again with `.gitleaks.toml` when
-      that declares rules of its own, so the repository can only add to the
-      check. Inline `gitleaks:allow` comments are ignored, and gitleaks runs in
-      the private directory, so no `.gitleaksignore` file applies. If that
-      check cannot run, or gitleaks does not report reading every byte, every
-      rule ID and path is withheld.
+      scanned repository cannot change, and always again with
+      `.gitleaks.toml`, as gitleaks parses it, for its custom rules, so the
+      repository can only add to the check. Inline `gitleaks:allow` comments
+      are ignored, and gitleaks runs in the private directory, so no
+      `.gitleaksignore` file applies. If either read fails, or does not report
+      reading every byte, every rule ID and path is withheld.
     - The check weighs every finding gitleaks reported, before identical ones
       are counted once, so two credentials on one line are both weighed.
   - No tool's diagnostics are shown, because git and gitleaks can quote
@@ -195,7 +195,7 @@ commits. gitleaks scanned the 1,956 that added text (95 MB of patches), 79 of
 them merge resolutions, and the script took 5.6 s in total with a cached
 archive. Git shows 28 added or changed files in the history as binary diffs;
 each one's new blob is binary, so no file was scanned in full. The contract
-test's 59 cases took about 40 s.
+test's 62 cases took about 45 s.
 
 The contract test runs the real scan against fixture repositories with an
 obviously fake credential assembled at run time. It fails if any output shows
@@ -220,9 +220,9 @@ cover:
 - withheld metadata: files named after the credential, part of it, or another
   credential, also beside a `.gitleaksignore` and with `gitleaks:allow` in the
   name; rule IDs that hold a credential; a `.gitleaks.toml` that redefines a
-  default rule, and one with a custom credential format; two credentials on
-  one line; and the check of rule IDs and paths failing or reading part of the
-  names;
+  default rule, and custom credential formats under `[[rules]]`, `[["rules"]]`
+  and `[['rules']]`; two credentials on one line; and the check of rule IDs
+  and paths failing, or either of its reads getting part of the names;
 - readers that do not finish: the history's `git log` exiting or killed part
   way through a commit, and the files scanned in full cut off, killed, short of
   a file, or without this run's completion record;
