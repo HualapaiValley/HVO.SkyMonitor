@@ -12,7 +12,7 @@ ARG DOTNET_ASPNET_IMAGE=dotnet-aspnet
 ARG HVO_VERSION=0.0.0-dev
 ARG HVO_SOURCE_REVISION=unknown
 FROM mcr.microsoft.com/dotnet/sdk:10.0.401@sha256:e70cdb7f80b0348f5cb85f19a8f670fca061f033d57eed12fa003d58b0e06317 AS dotnet-sdk
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.12@sha256:6a94333d37514e385650a3c81a55e5350b67253dbe136e9cf17e499c35606a8c AS dotnet-aspnet
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.13@sha256:d5633778c754e89a386882eddf8dbee6942447a8a4b8267c19cf1e1158d0b0ac AS dotnet-aspnet
 
 # Stage 1: Build
 FROM ${DOTNET_SDK_IMAGE} AS build
