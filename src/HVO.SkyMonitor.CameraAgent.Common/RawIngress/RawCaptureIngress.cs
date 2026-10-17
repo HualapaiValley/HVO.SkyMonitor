@@ -292,19 +292,34 @@ internal sealed partial class RawCaptureIngress :
         }
     }
 
+    /// <summary>
+    /// The projected-scene stages a committed capture still needs. A stage its capture's projected-scene node has
+    /// durably consumed is the one that node's post-commit cleanup removes; while capture is paused that cleanup is
+    /// deferred in memory, and a restart forgets it, so the node's completion releases the stage here instead and stage
+    /// reconciliation, which runs only under the capture maintenance barrier, reclaims it once capture runs. A snapshot
+    /// restore rewinds the node with this journal, so a stage the restored node has not consumed stays owned.
+    /// </summary>
     public async ValueTask<IReadOnlySet<string>> GetOwnedStageKeysAsync(
         CancellationToken cancellationToken)
     {
+        var consumed = await _journal.ReadCompletedNodeCapturesAsync(
+            HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.ProjectedScene, cancellationToken).ConfigureAwait(false);
         var owned = new HashSet<string>(StringComparer.Ordinal);
         await foreach (var entry in _journal.EnumerateAsync(cancellationToken).ConfigureAwait(false))
         {
             if (!string.Equals(entry.State, "committed", StringComparison.Ordinal)) continue;
             var parsed = CaptureContractJson.ParseManifest(entry.ManifestJson);
-            if (parsed.IsValid && parsed.Document?.Manifest?.Scene is
+            if (parsed.IsValid && parsed.Document?.Manifest is
                 {
-                    ProjectedSceneStageKey: { Length: 64 } stageKey
-                } && stageKey.All(Uri.IsHexDigit))
+                    Scene: { ProjectedSceneStageKey: { Length: 64 } stageKey } scene
+                } manifest && stageKey.All(Uri.IsHexDigit))
+            {
+                // Released exactly as the post-commit cleanup removes: only a stage in the schema this release stages.
+                if (scene.ProjectedSceneStageSchemaVersion == StagedProjectedSceneDocument.CurrentSchemaVersion &&
+                    consumed.Contains(manifest.Descriptor.Capture.CaptureId.ToString("N")))
+                    continue;
                 owned.Add(stageKey);
+            }
         }
         return owned;
     }

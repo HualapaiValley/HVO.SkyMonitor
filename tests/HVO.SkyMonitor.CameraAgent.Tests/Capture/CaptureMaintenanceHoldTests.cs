@@ -128,8 +128,8 @@ internal sealed class MaintenanceHoldRoot : IDisposable
 
     public string Path { get; }
 
-    /// <summary>The maintenance gate every coordinator this root creates attaches to.</summary>
-    public CaptureMaintenanceGate Gate { get; } = new();
+    /// <summary>The maintenance gate every coordinator this root creates attaches to; a restart replaces it.</summary>
+    public CaptureMaintenanceGate Gate { get; private set; } = new();
 
     /// <summary>
     /// A coordinator initialized from the durable journal, as a freshly started image sees it. With
@@ -149,6 +149,20 @@ internal sealed class MaintenanceHoldRoot : IDisposable
         var admission = Create(telemetry);
         await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(paused ? CaptureAdmissionState.Paused : CaptureAdmissionState.Running, admission.Snapshot.State);
+        return admission;
+    }
+
+    /// <summary>
+    /// A restarted image: a new maintenance gate, whose deferred cleanup starts empty as a new process's does, and a
+    /// coordinator initialized from the durable journal as the previous image left it.
+    /// </summary>
+    public async Task<CaptureAdmissionCoordinator> RestartAsync()
+    {
+        Gate = new CaptureMaintenanceGate();
+        var telemetry = new CaptureControlTelemetry();
+        owned.Add(telemetry);
+        var admission = Create(telemetry);
+        await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         return admission;
     }
 

@@ -208,7 +208,8 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
                 ProjectedSceneStageKey: { Length: 64 } stageKey
             }) return;
         // A snapshot restore can rewind this node, and its re-run reads the stage again, so the stage is removed only
-        // under the capture maintenance barrier; a held removal runs once capture admission opens.
+        // under the capture maintenance barrier; a held removal runs once capture admission opens, and if a restart
+        // forgets it, the node's durable completion releases the stage to stage reconciliation instead.
         using var lease = maintenance?.TryEnterIfInitialized();
         if (maintenance is not null && lease is null)
         {

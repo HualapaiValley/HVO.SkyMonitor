@@ -533,6 +533,33 @@ internal sealed partial class SqliteRawCaptureJournal(
                !string.Equals(state, "running", StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The captures, as <c>N</c>-format IDs, whose processing node running <paramref name="recipeName"/> is durably
+    /// complete. The capture processing store keeps its nodes in this journal, and a snapshot restore rewinds them with
+    /// it; a journal the store has not initialized has none.
+    /// </summary>
+    internal async Task<IReadOnlySet<string>> ReadCompletedNodeCapturesAsync(string recipeName, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(recipeName);
+        var captures = new HashSet<string>(StringComparer.Ordinal);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using (var exists = connection.CreateCommand())
+        {
+            exists.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'processing_nodes';";
+            if (Convert.ToInt64(await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) == 0)
+                return captures;
+        }
+        using var command = connection.CreateCommand();
+        // Matches the recipe as ix_processing_nodes_recipe indexes it.
+        command.CommandText = "SELECT capture_id FROM processing_nodes WHERE upper(recipe_name) = $recipe AND status = $status;";
+        command.Parameters.AddWithValue("$recipe", recipeName.ToUpperInvariant());
+        command.Parameters.AddWithValue("$status", nameof(DurableProcessingNodeStatus.Completed));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            captures.Add(reader.GetString(0));
+        return captures;
+    }
+
     internal async Task<(long Count, long Bytes, DateTimeOffset? Oldest)> ReadHeldTotalsAsync(CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);

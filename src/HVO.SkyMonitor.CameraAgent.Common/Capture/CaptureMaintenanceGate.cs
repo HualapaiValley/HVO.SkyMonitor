@@ -53,7 +53,9 @@ public sealed class CaptureMaintenanceGate
 
     /// <summary>
     /// Keeps a best-effort cleanup that a held barrier deferred, to run under the barrier once capture admission opens.
-    /// It lives in memory: a restart while capture is paused forgets it.
+    /// It lives in memory, so a restart while capture is paused forgets it; every deferral is also reclaimed from
+    /// durable state, so this is only the prompt path (a projected-scene stage, for one, is released by its node's
+    /// durable completion and reclaimed by stage reconciliation).
     /// </summary>
     internal void DeferUntilRunning(Func<CancellationToken, ValueTask> cleanup)
     {
