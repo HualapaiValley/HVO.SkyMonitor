@@ -12,10 +12,16 @@ public static class DeploymentSchemaVersions
     public const int StateResetEvidence = 1;
     public const int LifecycleEvent = 1;
     /// <summary>
-    /// Version 1 recorded the SBOM, provenance, and vulnerability-scan asset names; version 2 (issue #645) adds the
-    /// optional per-platform component-inventory asset. Version-1 documents remain readable.
+    /// The record of the release an instance's image came from. Version 3 (#1309) names a release by its
+    /// <c>release.json</c> and <c>SHA256SUMS</c>. Versions 1 and 2 named a key-signed image release; signed releases are
+    /// retired and none was ever published, so a record of an earlier version is read as no record.
     /// </summary>
-    public const int ImageReleaseEvidence = 2;
+    public const int ImageReleaseEvidence = 3;
+    /// <summary>
+    /// The pair of release records an instance keeps: the record of its running image's release and that of the image it
+    /// ran before (#1309), so a rollback restores the installed version.
+    /// </summary>
+    public const int ImageReleaseRecords = 1;
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<DeploymentComponent>))]
@@ -81,8 +87,7 @@ public enum LifecycleOperationKind
     CatalogInstall,
     CatalogSelect,
     CatalogRollback,
-    CatalogGarbageCollect,
-    CatalogCheck
+    CatalogGarbageCollect
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<LifecycleOperationPhase>))]
@@ -118,8 +123,7 @@ public sealed record CatalogInstallationIdentity(
     long RowCount,
     string InstallRoot,
     string ManifestSha256,
-    string Source,
-    DistributionVerificationEvidence? Distribution = null);
+    string Source);
 
 public sealed record ImageInstallationIdentity(
     string Source,
@@ -127,7 +131,6 @@ public sealed record ImageInstallationIdentity(
     string ImageId,
     string Architecture,
     string? ArchiveSha256,
-    DistributionVerificationEvidence? Distribution = null,
     string? UpgradeCompatibility = null,
     string? SourceRevision = null,
     string? Component = null,

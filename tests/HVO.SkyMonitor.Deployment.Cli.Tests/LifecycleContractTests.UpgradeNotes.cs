@@ -286,23 +286,119 @@ public sealed partial class LifecycleContractTests
     /// Keeps the release record an install or upgrade from a release keeps, naming <paramref name="version"/> for
     /// <paramref name="imageId"/> (the running image by default).
     /// </summary>
+    /// <summary>
+    /// The installed version follows the image the instance runs across a rollback: install 1.2.0, upgrade to 1.3.0, roll
+    /// back, and the record of 1.2.0 kept beside the rolled-back image is current again, so an upgrade to 1.1.0 is still
+    /// refused as going back. <paramref name="interrupted"/> loses the rollback's settlement after its commit, as a crash
+    /// would, and <c>--resume</c> restores the record.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(false, DisplayName = "rollback")]
+    [DataRow(true, DisplayName = "rollback resumed after its settlement was lost")]
+    public async Task UpgradeAsync_OlderTargetAfterARollback_IsStillRefused(bool interrupted)
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        await RecordInstalledReleaseAsync(fixture, "1.2.0");
+        using var newer = CandidateRelease(fixture, out var newerImageId, version: "1.3.0");
+        fixture.Runner.CandidateRawIngressSchema = "13";
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity);
+
+        var upgraded = await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with { Release = newer.Folder, MigrationBackwardCompatible = true },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None);
+        Assert.AreEqual("completed", upgraded.Outcome);
+        Assert.AreEqual("1.3.0", await InstalledVersionAsync(fixture));
+        var deployment = fixture.Paths.DeploymentStateRoot;
+        var upgradedRecords = await Snapshot(deployment);
+
+        var rollback = fixture.Request(LifecycleOperationKind.Rollback);
+        if (interrupted)
+        {
+            await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+                rollback, fixture.Runner, _ => new FakeLifecycleClient { RejectNextResume = true }, _ => owner,
+                fixture.Uid, fixture.Gid, CancellationToken.None));
+            var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+            Assert.AreEqual(LifecycleOperationPhase.Committed, retained!.Phase);
+            // The commit is durable but the records are as the upgrade left them, as if the settlement never ran.
+            await Restore(deployment, upgradedRecords);
+            Assert.AreEqual("1.3.0", await RecordedVersionAsync(fixture));
+            rollback = rollback with { Resume = true };
+        }
+        var rolledBack = await CameraAgentLifecycleManager.ExecuteAsync(
+            rollback, fixture.Runner, _ => new FakeLifecycleClient(), _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None);
+        Assert.AreEqual("completed", rolledBack.Outcome);
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        Assert.AreEqual("1.2.0", await InstalledVersionAsync(fixture), "the rollback did not restore the installed release");
+
+        var platform = $"linux/{fixture.Manifest.DockerDaemon.Architecture}";
+        using var older = ReleaseFixture.Create(fixture.Root, version: "1.1.0", platforms: [platform]);
+        var journalBefore = await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath);
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with { Release = older.Folder, MigrationBackwardCompatible = true },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        Assert.AreEqual(
+            "1.2.0 is installed, which is newer than the upgrade target 1.1.0; an upgrade never goes back. " +
+            $"To return to the previous image, run 'hvo-sky-install cameraagent rollback --instance-id {fixture.InstanceId:D}'.",
+            exception.Message);
+        Assert.AreEqual(journalBefore, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        Assert.AreNotEqual(newerImageId, fixture.Runner.ActiveImageId);
+    }
+
+    /// <summary>The installed version an upgrade would read now: the current record's, for the image the manifest runs.</summary>
+    private static async Task<string?> InstalledVersionAsync(LifecycleFixture fixture)
+    {
+        var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
+        return await UpgradeNotes.InstalledVersionAsync(fixture.Paths, manifest.Image, CancellationToken.None);
+    }
+
+    /// <summary>The version the current record names, whichever image it describes.</summary>
+    private static async Task<string?> RecordedVersionAsync(LifecycleFixture fixture)
+    {
+        using var record = JsonDocument.Parse(await File.ReadAllBytesAsync(
+            Path.Combine(fixture.Paths.DeploymentStateRoot, AcquiredImage.EvidenceFileName)));
+        return record.RootElement.GetProperty("releaseVersion").GetString();
+    }
+
+    private static async Task<Dictionary<string, byte[]>> Snapshot(string folder)
+    {
+        var files = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        foreach (var path in Directory.EnumerateFiles(folder, "image-distribution*"))
+        {
+            files[Path.GetFileName(path)] = await File.ReadAllBytesAsync(path);
+        }
+        return files;
+    }
+
+    private static async Task Restore(string folder, Dictionary<string, byte[]> files)
+    {
+        foreach (var path in Directory.EnumerateFiles(folder, "image-distribution*"))
+        {
+            File.Delete(path);
+        }
+        foreach (var (name, bytes) in files)
+        {
+            var path = Path.Combine(folder, name);
+            await File.WriteAllBytesAsync(path, bytes);
+            // The installer reads its evidence only as owner-private files.
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
     private static Task RecordInstalledReleaseAsync(LifecycleFixture fixture, string version, string? imageId = null)
         => SafeFileSystem.WriteJsonAtomicAsync(
             Path.Combine(fixture.Paths.DeploymentStateRoot, AcquiredImage.EvidenceFileName),
             new CameraAgentImageReleaseEvidence(
-                DeploymentSchemaVersions.ImageReleaseEvidence,
-                new DistributionVerificationEvidence(
-                    "ImageRelease", "image", version, $"cameraagent-image-v{version}", new string('1', 64), 1024,
-                    "p256-sha256:" + new string('2', 64), "cameraagent-image.tar", new string('3', 64), 2048,
-                    new Uri("https://example.test/releases/"), new Uri("https://example.test/releases/cameraagent-image.tar"),
-                    "verified", DateTimeOffset.UnixEpoch, null, null),
-                "CameraAgent", "ghcr.io/hualapaivalley/skymonitor-cameraagent", $"sha256:{new string('4', 64)}", "linux",
-                fixture.Manifest.Image.Architecture, $"sha256:{new string('5', 64)}", imageId ?? fixture.Manifest.Image.ImageId,
-                new string('6', 40), new string('7', 40),
-                new DistributionImageCompatibility(
-                    "cameraagent-state-v2", new string('8', 40), "20260827053715_InitialIdentity", 13, 2,
-                    "cameraagent-install-v1", "hyg-v42-production-p3-s2", null),
-                "sbom.json", "provenance.json", "scan.json", null, DateTimeOffset.UnixEpoch),
+                DeploymentSchemaVersions.ImageReleaseEvidence, version, $"v{version}", new string('6', 40),
+                new string('1', 64), new string('2', 64),
+                $"ghcr.io/hualapaivalley/skymonitor-cameraagent@sha256:{new string('4', 64)}",
+                $"linux/{fixture.Manifest.Image.Architecture}", "archive",
+                OfflineArchive.NameFor(version, $"linux/{fixture.Manifest.Image.Architecture}"), new string('3', 64),
+                imageId ?? fixture.Manifest.Image.ImageId, DateTimeOffset.UnixEpoch),
             DeploymentJsonContext.Default.CameraAgentImageReleaseEvidence,
             CancellationToken.None);
 

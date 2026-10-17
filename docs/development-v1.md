@@ -38,7 +38,7 @@ Runtime images and Microsoft runtime packages use 10.0.13.
 
 The branch currently requires:
 
-- **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace validation, pinned workflow linting, shell syntax, the inexpensive CI-control regression checks, and the full-history [secret scan](runbooks/ci-pipeline.md#secret-scan).
+- **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace validation, pinned workflow linting, shell syntax, the inexpensive CI-control regression checks, the full-history [secret scan](runbooks/ci-pipeline.md#secret-scan), and, when the classifier selects them, the [release script tests](runbooks/ci-pipeline.md#release-script-tests).
 - **Development v1 / Build and Unit** on a self-hosted x64 runner: pinned SDK setup, solution restore, warning-clean Release build, and the complete Docker-disabled Unit selection.
 
 Draft pull requests run hosted Preflight only. Marking a reviewed pull request ready starts the self-hosted Build and Unit check. Pushes to `development/v1` run both checks.
@@ -79,14 +79,15 @@ qualification.
 
 Section 2 of the [install contract](hvo-install-contract.md) also needs repository
 settings. Agents do not change repository settings; the owner applies these after
-approving them (#1321). They are pending that approval. The current values were
-read on 2026-10-16.
+approving them (#1321). The tag ruleset is applied; the others are pending that
+approval. The current values were read on 2026-10-16, and the tag ruleset on
+2026-10-17.
 
 | Setting | Current | Recommended |
 | --- | --- | --- |
 | Merge methods | Merge commits, squash and rebase all allowed | Merge commits only, so every commit keeps its SHA; `.gitleaks.toml` exceptions name commits |
 | Delete branch on merge | Off | On |
-| `v*` release tags | No ruleset | Tag ruleset on `refs/tags/v*`: restrict creation, update and deletion and block force pushes, with repository administrators as the only bypass, as RoofController's `release tags` ruleset does |
+| `v*` release tags | Ruleset `release tags` (id 25302808), active on `refs/tags/v*`: creation, update, deletion and non-fast-forward rules, with repository administrators as the only bypass, as RoofController's `release tags` ruleset does | Unchanged |
 | Required checks | `development/v1`: Development v1 / Preflight and Build and Unit. `main`: Required CI | Unchanged. The secret scan runs inside Preflight and inside Quality, which Required CI aggregates |
 | GitHub secret scanning and push protection | Off | Optional: on. Both are free for public repositories, and push protection rejects a recognised provider token before it is pushed, which a CI history scan cannot do |
 
@@ -96,20 +97,15 @@ The owner can apply them with:
 gh api -X PATCH repos/HualapaiValley/HVO.SkyMonitor \
   -F allow_merge_commit=true -F allow_squash_merge=false -F allow_rebase_merge=false \
   -F delete_branch_on_merge=true
-gh api -X POST repos/HualapaiValley/HVO.SkyMonitor/rulesets --input - <<'JSON'
-{"name": "release tags", "target": "tag", "enforcement": "active",
- "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
- "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}, {"type": "non_fast_forward"}],
- "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]}
-JSON
 # Optional:
 gh api -X PATCH repos/HualapaiValley/HVO.SkyMonitor \
   -f 'security_and_analysis[secret_scanning][status]=enabled' \
   -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled'
 ```
 
-If a workflow later creates `v*` tags, for example for integration pre-releases
-(#1309), add its actor as a ruleset bypass at that time.
+The [integration pre-release workflow](runbooks/prereleases.md) creates no tags:
+the owner pushes them, so it needs no bypass. If a workflow later creates `v*`
+tags, add its actor as a ruleset bypass at that time.
 
 ## Review
 
@@ -139,3 +135,5 @@ It can be run on demand with `gh workflow run promote-main.yml`.
 ## Deployment
 
 Supported deployment operations use `HVO.SkyMonitor.Deployment.Cli`. Development v1 CI does not perform deployment, release packaging, complete integration qualification, coverage aggregation, or production mutation.
+
+An annotated `vX.Y.Z-dev.<n>` tag that the owner pushes on a green `development/v1` commit publishes an integration pre-release for smoke testing; see [Integration Pre-releases](runbooks/prereleases.md).

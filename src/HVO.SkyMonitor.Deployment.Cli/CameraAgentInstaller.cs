@@ -1,7 +1,6 @@
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.Deployment.Contracts;
 using ContractReplayProfile = HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile;
-using HVO.SkyMonitor.Deployment.Distribution;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -32,17 +31,15 @@ internal sealed class CameraAgentInstaller
         uint uid,
         uint gid,
         CancellationToken cancellationToken,
-        Func<DistributionAcquirer>? distributionFactory = null,
         Action<string, int>? portAvailabilityProbe = null,
         IHostEnvironment? hostEnvironment = null)
     {
         request.Validate();
-        distributionFactory ??= CreateDistributionAcquirer;
         // The public entry point never supplies a host environment, so a production install always measures the real
         // filesystems and PATH; unit flows substitute one so shared-host disk and tool state cannot decide them.
         hostEnvironment ??= LinuxHostEnvironment.Instance;
         // The public entry point never supplies a probe, so a production install always admits the port through the
-        // real socket bind below. Unit flows whose subject is identity, resume, or signed distribution can substitute
+        // real socket bind below. Unit flows whose subject is identity, resume, or release acquisition can substitute
         // an explicit probe so shared-host socket state cannot decide their outcome.
         portAvailabilityProbe ??= EnsurePortAvailable;
         var identityRequest = request;
@@ -51,18 +48,15 @@ internal sealed class CameraAgentInstaller
         var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.DefaultCatalogId);
         if (request.DryRun)
         {
-            using var dryRunAcquirer = distributionFactory();
-            using var dryRunCatalog = await dryRunAcquirer.AcquireAsync(request, cancellationToken).ConfigureAwait(false);
-            var dryRunImage = await dryRunAcquirer.AcquireImageAsync(request, cancellationToken).ConfigureAwait(false);
-            var plannedRequest = ApplySignedImage(request with { CatalogBundle = dryRunCatalog.BundlePath }, dryRunImage);
+            var dryRunImage = await ReleaseAcquirer.AcquireImageAsync(request, cancellationToken).ConfigureAwait(false);
+            var plannedRequest = ApplyReleaseImage(request, dryRunImage);
             // A dry run evaluates the same host prerequisites an install does, so a host that cannot run the instance
             // as deployed is refused by the plan rather than discovered after the product root exists.
             var (_, plannedWarnings) = await EnsureHostPrerequisitesAsync(plannedRequest, docker, hostEnvironment, cancellationToken)
                 .ConfigureAwait(false);
             var plan = await PlanAsync(
                     plannedRequest,
-                    dryRunCatalog.Evidence,
-                    paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(dryRunCatalog.BundlePath).CatalogId),
+                    paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(plannedRequest.CatalogBundle!).CatalogId),
                     instanceId,
                     docker,
                     dryRunImage?.Image,
@@ -81,12 +75,10 @@ internal sealed class CameraAgentInstaller
         if (File.Exists(paths.ResultPath))
             _ = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
 
-        using var catalogAcquirer = distributionFactory();
-        using var acquiredCatalog = await catalogAcquirer.AcquireAsync(request, cancellationToken).ConfigureAwait(false);
-        // The signed image release is resolved, its platform selected, and its archive verified before the Docker
-        // daemon is contacted, so an unsupported architecture or tampered archive fails with nothing yet mutated.
-        var acquiredImage = await catalogAcquirer.AcquireImageAsync(request, cancellationToken).ConfigureAwait(false);
-        request = ApplySignedImage(request with { CatalogBundle = acquiredCatalog.BundlePath }, acquiredImage);
+        // The release is read and checked against its SHA256SUMS, its platform selected, and its archive verified before
+        // the Docker daemon is contacted, so an unsupported architecture or tampered file fails with nothing yet mutated.
+        var acquiredImage = await ReleaseAcquirer.AcquireImageAsync(request, cancellationToken).ConfigureAwait(false);
+        request = ApplyReleaseImage(request, acquiredImage);
 
         // Every host prerequisite is evaluated, and every finding reported together, before the product root is
         // prepared or anything else is created.
@@ -94,7 +86,17 @@ internal sealed class CameraAgentInstaller
             .ConfigureAwait(false);
         ValidateCatalogInput(request.CatalogBundle!);
         // The bundle's approved specification selects the side-by-side catalog root this instance installs into.
-        paths = paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(request.CatalogBundle!).CatalogId);
+        var catalogId = ProductionCatalog.ReadBundleSpecification(request.CatalogBundle!).CatalogId;
+        paths = paths.WithCatalog(catalogId);
+        // A release's image is proved to be the release's, and an image this instance can run, before anything is claimed
+        // for it: no product root, state, catalog, staged archive or Docker import exists yet when it is refused.
+        if (acquiredImage is not null &&
+            await EnsureReleaseImageAsync(request, acquiredImage, docker, catalogId, File.Exists(paths.StatePath), cancellationToken)
+                .ConfigureAwait(false))
+        {
+            // The image this check pulled is the one the install uses; its image step finds it rather than pulling again.
+            request = request with { NoDownload = true };
+        }
 
         await PrivilegedPreparation.PrepareAsync(paths, uid, gid, processRunner, cancellationToken).ConfigureAwait(false);
         using var productLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
@@ -110,14 +112,14 @@ internal sealed class CameraAgentInstaller
             throw new InstallerException("The host clock is not synchronized.");
         }
 
-        var requestSha256 = ComputeRequestSha256(identityRequest, instanceId, acquiredCatalog.Evidence);
+        var requestSha256 = ComputeRequestSha256(identityRequest, instanceId, acquiredImage?.VerifiedRelease);
         var existingState = await ReadStateAsync(paths.StatePath, cancellationToken).ConfigureAwait(false);
         EnsureInstanceRootCanBeOwned(paths, existingState is not null);
         if (existingState is not null && !RequestIdentityMatches(
                 existingState.RequestSha256,
                 identityRequest,
                 instanceId,
-                acquiredCatalog.Evidence))
+                acquiredImage?.VerifiedRelease))
         {
             throw new InstallerException("The retained installation state belongs to different immutable inputs.");
         }
@@ -191,18 +193,6 @@ internal sealed class CameraAgentInstaller
             var catalog = retainedCompletedResult is null
                 ? CatalogInstaller.Install(request.CatalogBundle!, paths.CatalogRoot, installationId)
                 : CatalogInstaller.ValidateExisting(request.CatalogBundle!, paths.CatalogRoot);
-            if (acquiredCatalog.SignedIdentity is { } signedCatalog &&
-                (catalog.CatalogId != signedCatalog.CatalogId || catalog.PackageVersion != signedCatalog.PackageVersion ||
-                 catalog.SchemaVersion != signedCatalog.SchemaVersion || catalog.PreprocessingVersion != signedCatalog.PreprocessingVersion ||
-                 catalog.DatabaseSha256 != signedCatalog.DatabaseSha256 || catalog.DatabaseLength != signedCatalog.DatabaseLength ||
-                 catalog.RowCount != signedCatalog.RowCount || catalog.ManifestSha256 != signedCatalog.BundleManifestSha256))
-            {
-                throw new InstallerException("The installed catalog does not match its signed distribution identity.");
-            }
-            catalog = catalog with
-            {
-                Distribution = retainedCompletedResult?.Catalog.Distribution ?? acquiredCatalog.Evidence
-            };
 
             if (retainedCompletedResult is null)
             {
@@ -487,7 +477,7 @@ internal sealed class CameraAgentInstaller
             // stage never leaves evidence naming a release no container is running.
             if (acquiredImage is not null)
             {
-                await acquiredImage.WriteEvidenceAsync(paths, cancellationToken).ConfigureAwait(false);
+                await ReleaseRecords.SettleAsync(paths, acquiredImage, result.Image, cancellationToken).ConfigureAwait(false);
             }
             _ = await RecordPhaseAsync(
                 paths,
@@ -519,29 +509,62 @@ internal sealed class CameraAgentInstaller
         }
     }
 
-    private static DistributionAcquirer CreateDistributionAcquirer() => new();
-
     /// <summary>
-    /// Rewrites the request to install exactly the immutable image the signed release resolved for this host.
-    /// A request that already names an operator-supplied image is returned unchanged.
+    /// Rewrites the request to install exactly the immutable image the release selected for this host: its offline
+    /// archive, loaded by the image ID it names, or its digest reference, pulled from the registry. A request that names
+    /// an operator-supplied image is returned unchanged.
     /// </summary>
-    private static InstallRequest ApplySignedImage(InstallRequest request, AcquiredImage? image)
+    /// <summary>
+    /// Requires a release's image to be the release's and one this instance can run, before the install claims anything.
+    /// An offline archive's image was read from the archive at acquisition, so nothing is loaded to check it. A pulled
+    /// image can only be read once Docker holds it, because the installer has no registry client of its own and Docker
+    /// holds the registry credentials: it is pulled by the digest release.json names, checked, and removed again if it is
+    /// refused. An installation that already has state (a resumed or repeated one) pulls nothing here; its own image step
+    /// does, as before. Returns whether it pulled the image.
+    /// </summary>
+    private static async Task<bool> EnsureReleaseImageAsync(
+        InstallRequest request,
+        AcquiredImage release,
+        DockerClient docker,
+        string catalogId,
+        bool stateExists,
+        CancellationToken cancellationToken)
+    {
+        void Validate(ImageInstallationIdentity image)
+        {
+            if (!IsValid(image, request.ReplayProfile))
+                throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
+            EnsureImageSupportsCatalog(image, catalogId);
+        }
+        if (release.ArchivedImage is { } archived)
+        {
+            Validate(archived);
+            return false;
+        }
+        if (stateExists)
+        {
+            return false;
+        }
+        _ = await docker.PullReleaseImageAsync(request, release.Image, Validate, cancellationToken).ConfigureAwait(false);
+        return !request.NoDownload;
+    }
+
+    private static InstallRequest ApplyReleaseImage(InstallRequest request, AcquiredImage? image)
         => image is null
             ? request
             : request with
             {
-                ImageReference = image.Platform.OfflineArchiveImageId!,
+                ImageReference = image.ImageReference,
                 ImageArchive = image.ArchivePath,
                 ImageArchiveSha256 = image.ArchiveSha256
             };
 
     private static async Task<InstallationResult> PlanAsync(
         InstallRequest request,
-        DistributionVerificationEvidence? catalogDistribution,
         InstallationPaths finalPaths,
         Guid instanceId,
         DockerClient docker,
-        DistributionImageIdentity? signedImage,
+        ReleaseImageSelection? releaseImage,
         CancellationToken cancellationToken)
     {
         var temporaryRoot = Path.Combine(Path.GetTempPath(), $"hvo-installer-plan-{Guid.NewGuid():N}");
@@ -551,10 +574,9 @@ internal sealed class CameraAgentInstaller
             var temporaryPaths = InstallationPaths.Create(temporaryRoot, instanceId, Path.GetFileName(finalPaths.CatalogRoot));
             var catalog = CatalogInstaller.Install(request.CatalogBundle!, temporaryPaths.CatalogRoot, Guid.NewGuid()) with
             {
-                InstallRoot = finalPaths.CatalogRoot,
-                Distribution = catalogDistribution
+                InstallRoot = finalPaths.CatalogRoot
             };
-            var (daemon, image) = await docker.PrepareImageAsync(request, allowMutation: false, signedImage, cancellationToken)
+            var (daemon, image) = await docker.PrepareImageAsync(request, allowMutation: false, releaseImage, cancellationToken)
                 .ConfigureAwait(false);
             if (!IsValid(image, request.ReplayProfile))
                 throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
@@ -1017,11 +1039,7 @@ internal sealed class CameraAgentInstaller
 
     private static bool IsValid(CatalogInstallationIdentity? value)
         => ProductionCatalog.IsPinned(value) &&
-           HasValue(value.InstallRoot) && IsSha256(value.ManifestSha256) && value.Source == "local-offline" &&
-           (value.Distribution is null || IsValid(value.Distribution) &&
-            value.Distribution.ManifestKind == DistributionManifestKind.CatalogRelease.ToString() &&
-            value.Distribution.ReleaseTrain == "catalog" && value.Distribution.ReleaseVersion == value.PackageVersion &&
-             value.Distribution.ReleaseTag == $"catalog-{value.PackageVersion}");
+           HasValue(value.InstallRoot) && IsSha256(value.ManifestSha256) && value.Source == "local-offline";
 
     internal static bool IsValid(ImageInstallationIdentity? value, CameraAgentReplayProfile replayProfile)
         => value is not null && HasValue(value.Source) && HasValue(value.ImmutableReference) &&
@@ -1035,30 +1053,7 @@ internal sealed class CameraAgentInstaller
              CameraAgentImageContract.IsKnownCatalogContract(value.CatalogContract) && IsSourceRevision(value.SourceRevision) &&
              (replayProfile == CameraAgentReplayProfile.InProcess ||
               value.ReplayRunnerContract == "local-replay-runner-v1") &&
-            (value.ArchiveSha256 is null || IsSha256(value.ArchiveSha256)) &&
-            (value.Distribution is null || IsValid(value.Distribution) &&
-             value.Distribution.ManifestKind == DistributionManifestKind.InstallerRelease.ToString() &&
-             value.Distribution.ReleaseTrain == "installer" &&
-             value.Distribution.ReleaseTag == $"installer-v{value.Distribution.ReleaseVersion}" &&
-             value.Distribution.AssetName.EndsWith(
-                 $"linux-{CameraAgentLifecycleManager.DistributionArchitecture(value.Architecture)}.tar.gz",
-                 StringComparison.Ordinal) &&
-             value.ArchiveSha256 is not null && value.Distribution.AssetSha256 == value.ArchiveSha256);
-
-    private static bool IsValid(DistributionVerificationEvidence value)
-        => HasValue(value.ManifestKind) && HasValue(value.ReleaseTrain) && HasValue(value.ReleaseVersion) &&
-           HasValue(value.ReleaseTag) && IsSha256(value.ManifestSha256) &&
-           value.ManifestLength is > 0 and <= DistributionVerifier.MaximumManifestBytes &&
-           DistributionTrustRoot.IsCanonicalKeyId(value.SigningKeyId) && HasValue(value.AssetName) &&
-           IsSha256(value.AssetSha256) && value.AssetLength is > 0 and <= DistributionVerifier.MaximumImageArchiveBytes &&
-           IsSafeEvidenceUri(value.SourceBaseUri) && IsSafeEvidenceUri(value.ResolvedPublicUri) &&
-           value.VerificationResult == "verified" && value.VerifiedUtc != default && value.VerifiedUtc.Offset == TimeSpan.Zero &&
-           (value.ProvenanceAssetName is null && value.ProvenanceSha256 is null ||
-            HasValue(value.ProvenanceAssetName) && IsSha256(value.ProvenanceSha256));
-
-    private static bool IsSafeEvidenceUri(Uri? value)
-        => value is { IsAbsoluteUri: true } && value.Scheme is "https" or "file" &&
-           string.IsNullOrEmpty(value.UserInfo) && string.IsNullOrEmpty(value.Fragment);
+            (value.ArchiveSha256 is null || IsSha256(value.ArchiveSha256));
 
     private static bool IsValid(DockerDaemonIdentity? value)
         => value is not null && HasValue(value.Id) && HasValue(value.Name) && HasValue(value.Architecture) && HasValue(value.ServerVersion);
@@ -1212,10 +1207,16 @@ internal sealed class CameraAgentInstaller
         }
     }
 
+    /// <summary>
+    /// The identity of an install request, which a re-run or a resume must match. A release install binds the release
+    /// it read, by version and release.json SHA-256, and how its image reaches Docker, rather than the folder it was
+    /// read from, so the same release moved to another folder is the same install and a different release in the same
+    /// folder is not.
+    /// </summary>
     internal static string ComputeRequestSha256(
         InstallRequest request,
         Guid instanceId,
-        DistributionVerificationEvidence? catalogDistribution = null)
+        VerifiedRelease? release = null)
     {
         var identity = JsonSerializer.SerializeToUtf8Bytes(new
         {
@@ -1225,18 +1226,10 @@ internal sealed class CameraAgentInstaller
             request.BindAddress,
             request.Port,
             request.ProductRoot,
-            CatalogBundle = catalogDistribution is null ? request.CatalogBundle : null,
-            CatalogRelease = catalogDistribution is null ? null : new
-            {
-                catalogDistribution.ReleaseTrain,
-                catalogDistribution.ReleaseVersion,
-                catalogDistribution.ReleaseTag,
-                catalogDistribution.ManifestSha256,
-                catalogDistribution.AssetName,
-                catalogDistribution.AssetSha256,
-                catalogDistribution.AssetLength,
-                catalogDistribution.SigningKeyId
-            },
+            request.CatalogBundle,
+            // The retired signed catalog release keeps its null slot, so every install identity recorded before it was
+            // retired (#1309) is unchanged.
+            CatalogRelease = (object?)null,
             request.ImageReference,
             request.ImageArchive,
             request.ImageArchiveSha256,
@@ -1249,6 +1242,15 @@ internal sealed class CameraAgentInstaller
             request.ReplayProfile
         });
         var sha256 = Convert.ToHexStringLower(SHA256.HashData(identity));
+        if (release is not null)
+        {
+            sha256 = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                request = sha256,
+                release = new { release.Manifest.Version, release.ManifestSha256 },
+                imageSource = request.ImageSource ?? ReleaseImageSource.Archive
+            })));
+        }
         if (request.Cpus is null && request.Memory is null)
         {
             return sha256;
@@ -1269,21 +1271,23 @@ internal sealed class CameraAgentInstaller
         string retainedSha256,
         InstallRequest request,
         Guid instanceId,
-        DistributionVerificationEvidence? catalogDistribution = null)
+        VerifiedRelease? release = null)
         => string.Equals(
                retainedSha256,
-               ComputeRequestSha256(request, instanceId, catalogDistribution),
+               ComputeRequestSha256(request, instanceId, release),
                StringComparison.Ordinal) ||
-           request.ReplayProfile == CameraAgentReplayProfile.InProcess && request.Cpus is null && request.Memory is null &&
+           // The legacy identity predates replay profiles, container limits and releases, so a request using any of them
+           // never matches it.
+           release is null && request.ReplayProfile == CameraAgentReplayProfile.InProcess && request.Cpus is null &&
+           request.Memory is null &&
            string.Equals(
                retainedSha256,
-               ComputeLegacyRequestSha256(request, instanceId, catalogDistribution),
+               ComputeLegacyRequestSha256(request, instanceId),
                StringComparison.Ordinal);
 
     internal static string ComputeLegacyRequestSha256(
         InstallRequest request,
-        Guid instanceId,
-        DistributionVerificationEvidence? catalogDistribution = null)
+        Guid instanceId)
     {
         var identity = JsonSerializer.SerializeToUtf8Bytes(new
         {
@@ -1293,18 +1297,8 @@ internal sealed class CameraAgentInstaller
             request.BindAddress,
             request.Port,
             request.ProductRoot,
-            CatalogBundle = catalogDistribution is null ? request.CatalogBundle : null,
-            CatalogRelease = catalogDistribution is null ? null : new
-            {
-                catalogDistribution.ReleaseTrain,
-                catalogDistribution.ReleaseVersion,
-                catalogDistribution.ReleaseTag,
-                catalogDistribution.ManifestSha256,
-                catalogDistribution.AssetName,
-                catalogDistribution.AssetSha256,
-                catalogDistribution.AssetLength,
-                catalogDistribution.SigningKeyId
-            },
+            request.CatalogBundle,
+            CatalogRelease = (object?)null,
             request.ImageReference,
             request.ImageArchive,
             request.ImageArchiveSha256,

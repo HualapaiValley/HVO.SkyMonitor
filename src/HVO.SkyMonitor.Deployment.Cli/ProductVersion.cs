@@ -20,6 +20,10 @@ internal static class ProductVersion
     /// <summary>True when <paramref name="version"/> is a SemVer 2.0 version.</summary>
     public static bool IsValid([NotNullWhen(true)] string? version) => version is not null && Pattern.IsMatch(version);
 
+    /// <summary>True when <paramref name="version"/> is a pre-release, such as <c>1.2.0-dev.3</c> or <c>1.2.0-rc.1</c>.</summary>
+    /// <exception cref="FormatException"><paramref name="version"/> is not a SemVer 2.0 version.</exception>
+    public static bool IsPrerelease(string version) => Parts(version).Prerelease.Length > 0;
+
     /// <summary>
     /// True when <paramref name="version"/> is a SemVer 2.0 version, with <paramref name="precedence"/> the version
     /// without its build metadata. Two versions are the same release exactly when these are equal, since numbers carry

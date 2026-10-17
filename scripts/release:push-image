@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Pushes the release image in an OCI archive, as scripts/release:assets writes it, to <repository>:<tag>: every
+# platform's image and the index over them, each with the digest it has in the archive (skopeo copy --all
+# --preserve-digests). It refuses a tag the registry already has for another image, then reads the tag back and fails
+# unless the registry serves exactly the archive's index, and prints that digest, which is the one release.json names.
+#
+#   scripts/release:push-image [--insecure] <oci archive> <repository>:<tag>
+#
+# The tag must be a release version: a release never pushes latest, and a pre-release never moves it (install
+# contract section 3). --insecure is for a test's registry on this host, over HTTP. Needs skopeo, jq, tar and
+# sha256sum; skopeo uses the login docker login stored.
+set -euo pipefail
+
+fail() {
+    printf 'release:push-image: %s\n' "$*" >&2
+    exit 1
+}
+
+tls_verify=true
+if [[ "${1:-}" == "--insecure" ]]; then
+    tls_verify=false
+    shift
+fi
+[[ $# -eq 2 ]] || fail "usage: scripts/release:push-image [--insecure] <oci archive> <repository>:<tag>"
+archive="$1"
+destination="$2"
+repository="${destination%:*}"
+tag="${destination##*:}"
+[[ "$destination" == *:* && "$repository" =~ ^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[a-z0-9]+([._-][a-z0-9]+)*)+$ ]] ||
+    fail "'$destination' is not <repository>:<tag>."
+[[ "$tag" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]] ||
+    fail "'$tag' is not a release version; a release pushes its version tag alone, never latest."
+[[ "$tls_verify" == true || "$repository" == localhost:* || "$repository" == 127.0.0.1:* ]] ||
+    fail "--insecure is only for a registry on this host."
+[[ -f "$archive" ]] || fail "$archive is not a file."
+
+index="$(tar -xOf "$archive" index.json 2>/dev/null)" || fail "$archive is not an OCI archive."
+count="$(jq '.manifests | length' <<<"$index")" || fail "$archive's index.json cannot be read."
+[[ "$count" == 1 ]] || fail "$archive holds $count images, not one."
+digest="$(jq -r '.manifests[0].digest' <<<"$index")"
+[[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "$archive's image has no sha256 digest."
+
+manifest="$(mktemp)"
+errors="$(mktemp)"
+trap 'rm -f "$manifest" "$errors"' EXIT
+served() {
+    sha256sum "$manifest" | cut -d ' ' -f 1 | sed 's/^/sha256:/'
+}
+
+# A version tag is never moved: if the registry has the tag already, it must already be this image. A rerun pushes
+# the same bytes again; a rebuild with other bytes stops here.
+if skopeo inspect --tls-verify="$tls_verify" --retry-times 3 --raw "docker://$destination" >"$manifest" 2>"$errors"; then
+    existing="$(served)"
+    [[ "$existing" == "$digest" ]] ||
+        fail "$destination already names $existing in the registry, not $digest; a version tag is never moved. Cut a new version."
+elif ! grep -Eqi 'manifest unknown|name unknown' "$errors"; then
+    # Only the registry's own answer that it has no such tag or repository counts as absent; any other failure stops.
+    cat "$errors" >&2
+    fail "cannot tell whether $destination is in the registry already."
+fi
+
+skopeo copy --dest-tls-verify="$tls_verify" --retry-times 3 --all --preserve-digests \
+    "oci-archive:$archive" "docker://$destination" >&2 || fail "cannot push $destination."
+
+skopeo inspect --tls-verify="$tls_verify" --retry-times 3 --raw "docker://$destination" >"$manifest" ||
+    fail "cannot read $destination back from the registry."
+pushed="$(served)"
+[[ "$pushed" == "$digest" ]] || fail "$destination is $pushed in the registry, not $digest, the image the archive holds."
+printf '%s\n' "$digest"

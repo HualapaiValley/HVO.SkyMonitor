@@ -77,7 +77,8 @@ public sealed class ArchitectureBoundaryTests
             [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, ProcessingRunnerContracts, FleetContracts, Catalog, Common, StorageFileSystem),
             [DeploymentContracts] = Set(),
             [DeploymentDistribution] = Set(DeploymentContracts),
-            [DeploymentCli] = Set(AgentCore, Catalog, DeploymentContracts, DeploymentDistribution)
+            // The installer verifies releases by release.json and SHA256SUMS (#1309); it holds no signing trust root.
+            [DeploymentCli] = Set(AgentCore, Catalog, DeploymentContracts)
         };
 
     private static readonly IReadOnlySet<string> SharedTestProjects = Set(
