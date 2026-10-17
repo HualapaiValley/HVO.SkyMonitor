@@ -1581,9 +1581,10 @@ Every value a restore reads from a store the replaced release wrote is checked b
 - **Schedule revisions.** A profile must be a JSON blob of at most 4 MiB, valid UTF-8 and well-formed JSON. A profile
   stored as text or as null, a blob that is not UTF-8, malformed JSON, or a root whose outbox location a snapshot
   cannot record (over 511 characters, or containing a control character) makes the journal's roots unreadable.
-- **Counters.** A key must be the integer or text the registry names for it. A value must be an integer from 0 to
-  2^63 - 2. A carried automation revision must be a 64-character hexadecimal hash and well-formed JSON text. Any other
-  shape makes that store's counters unreadable.
+- **Counters.** The store must be encoded as UTF-8. A key must be the integer or text the registry names for it. A
+  value must be an integer from 0 to 2^63 - 2. A carried automation revision must be a 64-character hexadecimal hash
+  and well-formed JSON text. Any other shape, and any failure of any kind while reading, makes that store's counters
+  unreadable.
 
 A rollback reads the stores the release it undoes wrote in the same way: an unreadable journal narrows the rollback's
 own snapshot to the configured roots and the stores the retained snapshot records, and the restore that follows says
@@ -1699,13 +1700,41 @@ Two cases need more than a raise:
   its highest. The store's own rule, that a recreated definition continues its revision line, then keeps its old
   versions from being issued again.
 - **A lazily created singleton the snapshot lacks**, such as the schedule state or the graph registry. The previous
-  release creates it at version 1 from the same configuration. A floor of 1 needs nothing. A higher floor refuses the
-  restore before any store is replaced.
+  release creates it at version 1 from the same configuration. A floor of 1 needs nothing. A higher floor cannot be
+  carried into a row the snapshot lacks, so the restore says so and goes on (below).
 
 Before it replaces any store, the installer journals each counter's highest value (`stateCounterFloors`): the higher of
 the live stores and any floor already journaled, so a repeated or resumed restore never lowers it. Each restored store
-has its counters carried in one synced transaction, and the result is read back before the previous image starts. The
-rollback's continuity check compares against the journaled boundary and passes.
+has its counters carried, and read back, in one synced transaction before the previous image starts. The rollback's
+continuity check compares against the journaled boundary and passes.
+
+**Carrying counters is best effort and never blocks a restore.** On every attempt, before any store is replaced, the
+installer plans what each store of the target snapshot receives:
+1. Each floor is screened against the target. It is put back as the snapshot recorded it when:
+   - the counter is unknown;
+   - its value is outside what a carry can write and then read back (a state token writes one above its floor, so its
+     floor must be at most 2^63 - 3);
+   - its key is one the target column cannot hold, such as a NUL character, or a definition ID outside 1 to 64
+     characters;
+   - the target cannot carry it at all, such as a row the snapshot lacks beyond the lazy-row allowance.
+2. What remains for a store is carried and verified, in one transaction, on a scratch copy of the target store under
+   the operation directory. This proves the carry against that store's real CHECK constraints and column types.
+3. A store whose trial fails in any way, or whose own values the installer cannot interpret, is put back without its
+   counters. A store not encoded as UTF-8 is one such case. The snapshot's authentication proves its bytes, not that the
+   installer can read its values.
+
+When the restore applies the planned carry, any failure rolls that store's transaction back. That leaves the store
+exactly as the snapshot recorded it, and the restore completes. Whatever was not carried is named, with why, on
+standard error, or with `--json` as a `state-snapshot-restore-incomplete` event:
+
+```text
+Warning: the restore of the CameraAgent databases from snapshot <uuid> could not carry the <counter> counter of
+'<store>' (<why>). Each is restored as the snapshot recorded it, so a sequence or version handed out since the
+snapshot may be handed out again; the restore itself completes.
+```
+
+The journal keeps the marks themselves, and the plan is made again on every retry, so a mark a retry cannot carry never
+fails the retry. The audit of every read, validation and apply step is in the #1314 correction-round-4 ledger.
 
 A guard test classifies every counter-like column in every store image as carried or as never leaving the instance,
 with the reason (`CameraAgentStateCountersAuditTests`). A new one fails until it is classified. Revoked credentials are

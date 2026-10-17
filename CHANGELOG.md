@@ -49,7 +49,8 @@ onward; earlier development is recorded in its pull requests. A release renames 
   synced before the restore is recorded. `--migration-backward-compatible` is no longer needed and changes nothing.
   A candidate that left a store unreadable, or a value in it in a shape the installer does not read (a schedule
   profile stored as text, say), cannot block its own recovery or a rollback: the restore carries what it can and says
-  on standard error what it could not read. CameraAgent holds every deletion a restore could depend on while capture
+  on standard error what it could not read. Counter carrying is best effort: a counter that cannot be carried into the
+  restored snapshot is named on standard error, and the restore completes. CameraAgent holds every deletion a restore could depend on while capture
   is paused, including upload cleanup, raw evidence quarantine and post-commit stage removal. A stage removal that a
   restart forgets is reclaimed from the projected-scene node's durable completion once capture runs. CameraAgent
   acknowledges a pause only after every deletion already running has finished. (#1314)
