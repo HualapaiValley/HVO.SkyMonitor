@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Publishes an integration pre-release's tested draft without moving latest (install contract section 3), as the
+# pre-release workflow's publish job does. It needs gh, signed in or with GH_TOKEN (contents write), and jq.
+#
+#   scripts/release:publish-prerelease <tag>
+#
+# The latest release is read before and after the draft is published, and the two reads must agree. Only GitHub's own
+# 404 means there is no latest release. Any other answer, a failure to reach GitHub, or a 200 whose body names no tag is
+# not an answer: before publishing it stops with nothing changed, and after publishing it fails the job rather than
+# report that latest did not move.
+set -euo pipefail
+
+fail() {
+    printf '::error::%s\n' "$*" >&2
+    exit 1
+}
+
+[[ $# -eq 1 ]] || fail "usage: scripts/release:publish-prerelease <tag>"
+tag="$1"
+[[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-dev\.(0|[1-9][0-9]*)$ ]] ||
+    fail "$tag is not an integration pre-release tag, vX.Y.Z-dev.N."
+repository="${GITHUB_REPOSITORY:-HualapaiValley/HVO.SkyMonitor}"
+errors="$(mktemp)"
+trap 'rm -f "$errors"' EXIT
+
+# The latest release's tag, or "none" when GitHub answers 404. --include puts the HTTP status line first, so a 404 is
+# told apart from every other failure by GitHub's answer rather than by gh's messages.
+latest() {
+    local response status body tag_name
+    response="$(gh api --include "repos/$repository/releases/latest" 2>"$errors")" || true
+    status="$(sed -n '1s/^HTTP\/[0-9.]* \([0-9]\{3\}\)\( .*\)\{0,1\}\r\{0,1\}$/\1/p' <<<"$response")"
+    case "$status" in
+        404)
+            printf 'none\n'
+            ;;
+        200)
+            body="$(sed '1,/^\r\{0,1\}$/d' <<<"$response")"
+            tag_name="$(jq -er '.tag_name | select(type == "string" and length > 0)' <<<"$body" 2>/dev/null)" ||
+                fail "GitHub's latest release names no tag."
+            printf '%s\n' "$tag_name"
+            ;;
+        *)
+            fail "cannot read the latest release (${status:-no answer from GitHub}): $(tr '\n' ' ' <"$errors")"
+            ;;
+    esac
+}
+
+before="$(latest)"
+gh release edit "$tag" --repo "$repository" --draft=false --prerelease --latest=false >/dev/null 2>"$errors" ||
+    fail "cannot publish $tag: $(tr '\n' ' ' <"$errors")"
+after="$(latest)" ||
+    fail "$tag is published, but the latest release cannot be read back to show it did not move; check it by hand."
+[[ "$after" == "$before" ]] || fail "Publishing $tag moved the latest release from $before to $after."
+printf 'Published %s as a pre-release; the latest release is still %s.\n' "$tag" "$after"

@@ -167,8 +167,10 @@ jobs:
           ' release.json >/dev/null
           digest="$(jq -er '.images["skymonitor-cameraagent"].digest' release.json)"
           [[ "$(tar -xOf "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar" index.json | jq -r '.manifests[0].digest')" == "$digest" ]]
-          # A release is never replaced; this token also sees drafts, which the gate's could not.
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          # A release is never replaced; this token also lists drafts, which the gate's could not. A read that fails
+          # fails the job: it never counts as there being no release.
+          existing="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')"
+          if grep -Fxq -- "$TAG" <<<"$existing"; then
             printf '::error::A release or draft for %s already exists; a release is never replaced.\n' "$TAG"
             exit 1
           fi
@@ -319,18 +321,14 @@ jobs:
           done
           # The draft job verified the image's attestation from the registry; it is still on record for the digest.
           [[ "$(gh api "repos/$GITHUB_REPOSITORY/attestations/$DIGEST" --jq '.attestations | length')" -ge 1 ]]
+      - name: Checkout the publishing script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.commit }}
+          persist-credentials: false
       - name: Publish the pre-release without moving latest
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.gate.outputs.tag }}
-        run: |
-          # GitHub answers 404 while the repository has no latest release; that is recorded as none.
-          latest() { gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || printf 'none'; }
-          latest_before="$(latest)"
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
-          latest_after="$(latest)"
-          [[ "$latest_after" == "$latest_before" ]] || {
-            printf '::error::Publishing %s moved the latest release from %s to %s.\n' "$TAG" "$latest_before" "$latest_after"
-            exit 1
-          }
-          printf 'Published %s as a pre-release; the latest release is still %s.\n' "$TAG" "$latest_after"
+        # Only GitHub's 404 means there is no latest release; any other failed read stops or fails the job.
+        run: ./scripts/release:publish-prerelease "$TAG"

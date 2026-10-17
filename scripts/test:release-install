@@ -9,13 +9,16 @@
 # 1. SHA256SUMS checks the release's files, and the installer for this host reports the release's version and commit.
 # 2. Install from the release folder: the image is loaded from its offline archive (the default) or pulled by digest
 #    from the registry, and the instance records the release.
-# 3. Move the instance to a stand-in image (the release image with one label added), which withdraws the record.
+# 3. Move the instance to a stand-in image (the release image committed with one label added), which withdraws the
+#    record.
 # 4. Upgrade it from the release, by digest from the registry (the default) or from the offline archive: the upgrade
 #    shows the release's notes, runs the release image and records the release again.
 # 5. Upgrading again to the same release is refused and changes nothing.
 #
 # Everything is under its own instance, product root, containers and port, and is removed afterwards, along with the
-# images the run added to Docker. HVO_INSTALLER_ALLOW_TEST_ROOT admits the temporary product root.
+# images the run added to Docker, however far it got: the release's image identities are registered for removal before
+# the install loads anything, unless Docker held them when the run began. HVO_INSTALLER_ALLOW_TEST_ROOT admits the
+# temporary product root, which is created under TMPDIR (/tmp by default).
 set -euo pipefail
 
 usage() {
@@ -58,11 +61,13 @@ case "$(uname -m)" in
     *) fail "unsupported host architecture $(uname -m)." ;;
 esac
 
-root="$(mktemp -d "/tmp/hvo-ri.XXXXXX")"
+root="$(mktemp -d "${TMPDIR:-/tmp}/hvo-ri.XXXXXX")"
 chmod 700 "$root"
 instance_id="$(tr -d '\n' </proc/sys/kernel/random/uuid)"
 container="hvo-skymonitor-${instance_id//-/}"
+standin_container="hvo-release-test-standin-$$"
 baseline_tag="hvo-skymonitor-cameraagent:release-test-baseline-$$"
+baseline_image=""
 # shellcheck disable=SC2034 # Passed by name to the ownership-aware image helpers.
 declare -A startup_images=()
 # shellcheck disable=SC2034 # Filled by name through hvo_installer_register_owned_image_pair.
@@ -71,9 +76,11 @@ hvo_installer_snapshot_image_ids startup_images
 
 cleanup() {
     set +e
-    docker rm --force "$container" "$container-replay" >/dev/null 2>&1
+    set -u
+    docker rm --force "$container" "$container-replay" "$standin_container" >/dev/null 2>&1
     docker network rm "${container}_default" >/dev/null 2>&1
     docker image rm --force "$baseline_tag" >/dev/null 2>&1
+    [[ -z "$baseline_image" ]] || docker image rm --force "$baseline_image" >/dev/null 2>&1
     for image in "${!owned_images[@]}"; do
         docker image rm --force "$image" >/dev/null 2>&1
     done
@@ -93,6 +100,10 @@ digest_reference="$(jq -er '.images["skymonitor-cameraagent"] | .repository + "@
 mapfile -t release_ids < <(jq -er --arg platform "$platform" '.images["skymonitor-cameraagent"] as $image
     | $image.digest, ($image.offlineArchives[] | select(.platform == $platform) | .manifestDigest, .configDigest)' "$manifest")
 [[ ${#release_ids[@]} -eq 3 ]] || fail "release.json has no offline archive for $platform."
+# Whatever the install loads or pulls is one of these, so it is removed on exit even when the install fails part-way;
+# an identity Docker already held when the run began is left alone.
+hvo_installer_register_owned_image_pair startup_images owned_images "${release_ids[0]}" "${release_ids[2]}"
+hvo_installer_register_owned_image_pair startup_images owned_images "${release_ids[1]}" "$digest_reference"
 installer="$root/hvo-sky-install"
 cp "$release/hvo-sky-install-$rid" "$installer"
 chmod 700 "$installer"
@@ -138,7 +149,6 @@ step "Installing from the release ($install_source)"
     --generate-password \
     --json >"$root/install.json"
 release_image="$(jq -er '.image.imageId' "$root/install.json")"
-hvo_installer_register_owned_image_pair startup_images owned_images "$release_image" "${release_ids[2]}"
 is_release_image "$release_image" || fail "the install runs $release_image, which the release does not name."
 [[ "$(jq -er '.image.source' "$root/install.json")" == "$install_source" ]] || fail "the install did not use the $install_source."
 [[ "$(jq -er '.healthy' "$root/install.json")" == true ]] || fail "the installed instance is not healthy."
@@ -146,10 +156,10 @@ is_release_image "$release_image" || fail "the install runs $release_image, whic
 assert_running "$release_image" install-status
 
 step "Moving the instance to a stand-in image"
-docker image tag "$release_image" "$baseline_tag-base"
-printf 'FROM %s\nLABEL io.hvo.skymonitor.release-test=baseline\n' "$baseline_tag-base" |
-    docker build --quiet --tag "$baseline_tag" - >/dev/null
-docker image rm "$baseline_tag-base" >/dev/null
+# Committed from a container that never runs, so it needs no build and leaves no build cache behind.
+docker create --name "$standin_container" "$release_image" >/dev/null
+docker commit --change 'LABEL io.hvo.skymonitor.release-test=baseline' "$standin_container" "$baseline_tag" >/dev/null
+docker rm "$standin_container" >/dev/null
 baseline_image="$(docker image inspect --format '{{.Id}}' "$baseline_tag")"
 "$installer" cameraagent upgrade \
     --instance-id "$instance_id" --product-root "$root/product" \

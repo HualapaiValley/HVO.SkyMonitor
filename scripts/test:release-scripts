@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Tests the decisions the pre-release workflow's scripts make, with fake gh, skopeo and docker commands, so they are
-# proved without GitHub, a registry or a build:
-#   scripts/release:prerelease-gate  admits a green, annotated vX.Y.Z-dev.N tag on development/v1 and refuses the rest;
-#   scripts/release:push-image       pushes a release version only, and fails unless the registry serves the archive's
-#                                    digest;
-#   scripts/release:assets           refuses bad arguments before it builds anything.
+# Tests the decisions the pre-release workflow's scripts make, with fake gh, skopeo, docker and installer commands, so
+# they are proved without GitHub, a registry, a build or a Docker daemon:
+#   scripts/release:prerelease-gate      admits a green, annotated vX.Y.Z-dev.N tag on development/v1 and refuses the
+#                                        rest, telling a missing tag from a failed read;
+#   scripts/release:push-image           pushes a release version only, and fails unless the registry serves the
+#                                        archive's digest;
+#   scripts/release:publish-prerelease   publishes only when the latest release is read for certain before and after,
+#                                        and fails when it moved;
+#   scripts/release:assets               refuses bad arguments before it builds anything;
+#   scripts/test:release-install         leaves no container, image or temporary root behind, however far it gets.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,7 +24,8 @@ fail() {
 }
 
 # The workflow runs each script by its path, so each must be executable as committed.
-for script in release:assets release:push-image release:prerelease-gate test:release-install test:release-scripts; do
+for script in release:assets release:push-image release:prerelease-gate release:publish-prerelease test:release-install \
+    test:release-scripts; do
     [[ -x "$repo_root/scripts/$script" ]] || fail "scripts/$script is not executable."
 done
 
@@ -28,25 +33,54 @@ commit=0123456789abcdef0123456789abcdef01234567
 other=fedcba9876543210fedcba9876543210fedcba98
 tag_object=1111111111111111111111111111111111111111
 
-# A fake gh that answers the gate's API reads from files the cases write under $FAKE_GH.
+# A fake gh that answers API reads from files the cases write under $FAKE_GH, keyed by path: <key>.json is the body of
+# a 200, <key>.status a status GitHub fails with, and <key>.<n>.http the n-th answer as gh --include prints it (status
+# line, headers, blank line, body; empty when GitHub cannot be reached). A path with no file is a 404. "release edit"
+# is recorded in edits.log and exits FAKE_GH_EDIT_STATUS.
 cat >"$fake_bin/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "$1" == release && "${2:-}" == edit ]]; then
+    printf '%s\n' "$*" >>"$FAKE_GH/edits.log"
+    exit "${FAKE_GH_EDIT_STATUS:-0}"
+fi
 [[ "$1" == api ]] || { printf 'unexpected gh %s\n' "$*" >&2; exit 90; }
 shift
 jq_filter=""
 path=""
+include=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --jq) jq_filter="$2"; shift 2 ;;
         --method | -f) shift 2 ;;
         --paginate) shift ;;
+        --include) include=1; shift ;;
         *) path="$1"; shift ;;
     esac
 done
 key="$(printf '%s' "${path%%\?*}" | tr '/' '_')"
+if compgen -G "$FAKE_GH/$key.*.http" >/dev/null; then
+    calls=$(( $(cat "$FAKE_GH/$key.count" 2>/dev/null || printf 0) + 1 ))
+    printf '%s' "$calls" >"$FAKE_GH/$key.count"
+    answer="$FAKE_GH/$key.$calls.http"
+    [[ -f "$answer" ]] || { printf 'gh: no answer %s scripted for %s\n' "$calls" "$path" >&2; exit 91; }
+    status="$(sed -n '1s/^HTTP\/[0-9.]* \([0-9]*\).*/\1/p' "$answer")"
+    if [[ "$include" == 1 ]]; then
+        cat "$answer"
+    elif [[ "$status" == 200 ]]; then
+        # Without --include, gh prints the body of a 200 alone, through --jq when it is given.
+        if [[ -n "$jq_filter" ]]; then sed '1,/^\r\{0,1\}$/d' "$answer" | jq -r "$jq_filter"; else sed '1,/^\r\{0,1\}$/d' "$answer"; fi
+    fi
+    if [[ -z "$status" ]]; then printf 'gh: dial tcp: connection refused\n' >&2; exit 1; fi
+    [[ "$status" == 200 ]] || { printf 'gh: HTTP %s (HTTP %s)\n' "$status" "$status" >&2; exit 1; }
+    exit 0
+fi
+if [[ -f "$FAKE_GH/$key.status" ]]; then
+    printf 'gh: Service Unavailable (HTTP %s)\n' "$(cat "$FAKE_GH/$key.status")" >&2
+    exit 1
+fi
 file="$FAKE_GH/$key.json"
-[[ -f "$file" ]] || { printf 'gh: Not Found (%s)\n' "$path" >&2; exit 1; }
+[[ -f "$file" ]] || { printf 'gh: Not Found (HTTP 404)\n' >&2; exit 1; }
 if [[ -n "$jq_filter" ]]; then jq -r "$jq_filter" "$file"; else cat "$file"; fi
 FAKE_GH
 chmod +x "$fake_bin/gh"
@@ -103,6 +137,10 @@ gate_case missing-tag
 rm "$FAKE_GH/${repo}_git_ref_tags_v1.2.0-dev.3.json"
 expect_gate_refusal "a deleted tag" "The tag v1.2.0-dev.3 does not exist."
 
+gate_case unreadable-tag
+printf '503' >"$FAKE_GH/${repo}_git_ref_tags_v1.2.0-dev.3.status"
+expect_gate_refusal "a tag GitHub failed to read" "cannot read the tag v1.2.0-dev.3: gh: Service Unavailable (HTTP 503)"
+
 gate_case off-branch
 printf '{"status":"diverged"}\n' >"$FAKE_GH/${repo}_compare_development_v1...$commit.json"
 expect_gate_refusal "a commit off development/v1" "is not on development/v1 (compared with it, it is diverged)"
@@ -142,6 +180,67 @@ expect_gate_refusal "a run without its Preflight job" "has Development v1 / Pref
 gate_case released
 printf '[{"tag_name":"v1.2.0-dev.3"}]\n' >"$FAKE_GH/${repo}_releases.json"
 expect_gate_refusal "a tag already released" "A release for v1.2.0-dev.3 already exists"
+
+# The publish script: the latest release must be read for certain before and after publishing, and must not move. Each
+# argument after the case's name is one read of releases/latest, as status:body; "none" is GitHub not answering.
+publish_case() {
+    export FAKE_GH="$test_root/gh-publish-$1"
+    rm -rf "$FAKE_GH"
+    mkdir -p "$FAKE_GH"
+    shift
+    local calls=0 answer
+    for answer in "$@"; do
+        calls=$((calls + 1))
+        if [[ "$answer" == none ]]; then
+            : >"$FAKE_GH/${repo}_releases_latest.$calls.http"
+        else
+            printf 'HTTP/2.0 %s Answer\r\nContent-Type: application/json; charset=utf-8\r\n\r\n%s' \
+                "${answer%%:*}" "${answer#*:}" >"$FAKE_GH/${repo}_releases_latest.$calls.http"
+        fi
+    done
+}
+run_publish() {
+    GITHUB_REPOSITORY=HualapaiValley/HVO.SkyMonitor "$repo_root/scripts/release:publish-prerelease" "${1:-v1.2.0-dev.3}" \
+        >"$test_root/publish.out" 2>"$test_root/publish.err"
+}
+expect_published() {
+    local label="$1" latest="$2"
+    run_publish || { cat "$test_root/publish.err" >&2; fail "the publish failed for $label."; }
+    grep -Fq "the latest release is still $latest." "$test_root/publish.out" || fail "the publish did not report latest as $latest for $label."
+    [[ -s "$FAKE_GH/edits.log" ]] || fail "the publish did not publish the draft for $label."
+}
+expect_publish_refusal() {
+    local label="$1" message="$2" edited="$3"
+    if run_publish "${4:-}"; then
+        fail "the publish succeeded for $label."
+    fi
+    grep -Fq -- "$message" "$test_root/publish.err" || { cat "$test_root/publish.err" >&2; fail "the publish refused $label without saying: $message"; }
+    if [[ "$edited" == edited ]]; then
+        [[ -s "$FAKE_GH/edits.log" ]] || fail "the publish of $label did not reach the edit."
+    else
+        [[ ! -e "$FAKE_GH/edits.log" ]] || fail "the publish of $label edited the draft before it knew the latest release."
+    fi
+}
+not_found='404:{"message":"Not Found","status":"404"}'
+publish_case no-latest "$not_found" "$not_found"
+expect_published "a repository with no latest release" none
+publish_case kept '200:{"tag_name":"v1.0.0","name":"1.0.0"}' '200:{"tag_name":"v1.0.0","name":"1.0.0"}'
+expect_published "a latest release that stays" v1.0.0
+publish_case unavailable-before '503:{"message":"Service Unavailable"}'
+expect_publish_refusal "GitHub failing the first read" "cannot read the latest release (503)" unedited
+publish_case unreachable-before none
+expect_publish_refusal "GitHub not answering the first read" "cannot read the latest release (no answer from GitHub)" unedited
+publish_case malformed-before '200:{"name":"1.0.0"}'
+expect_publish_refusal "a first read naming no tag" "GitHub's latest release names no tag." unedited
+publish_case unavailable-after "$not_found" '503:{"message":"Service Unavailable"}'
+expect_publish_refusal "GitHub failing the read after publishing" \
+    "v1.2.0-dev.3 is published, but the latest release cannot be read back to show it did not move" edited
+publish_case moved "$not_found" '200:{"tag_name":"v1.2.0-dev.3"}'
+expect_publish_refusal "a publish that moved latest" "Publishing v1.2.0-dev.3 moved the latest release from none to v1.2.0-dev.3." edited
+publish_case edit-fails "$not_found"
+FAKE_GH_EDIT_STATUS=1 expect_publish_refusal "a failed edit" "cannot publish v1.2.0-dev.3" edited
+publish_case final-tag
+expect_publish_refusal "a final release's tag" "v1.2.0 is not an integration pre-release tag" unedited v1.2.0
 
 # The push script: a release version alone, through skopeo, and the digest read back must be the archive's.
 index_digest="sha256:$(printf 'index' | sha256sum | cut -d ' ' -f 1)"
@@ -213,6 +312,12 @@ reset_registry
 FAKE_SKOPEO_INSPECT_ERROR="unauthorized: authentication required" expect_push_refusal "a registry it cannot read" \
     "cannot tell whether" "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3
 ! grep -q '^copy' "$FAKE_SKOPEO_LOG" || fail "the push copied to a registry it could not read."
+# Only the registry's own "no such tag or repository" counts as absent; a failure that merely says "not found" does not.
+reset_registry
+FAKE_SKOPEO_INSPECT_ERROR="received unexpected HTTP status: 503 Service Unavailable (upstream not found)" \
+    expect_push_refusal "a registry failing with a message that says not found" \
+    "cannot tell whether" "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3
+! grep -q '^copy' "$FAKE_SKOPEO_LOG" || fail "the push copied after a failed read that said not found."
 # A rerun pushes the same image to the tag again.
 reset_registry
 rerun="$(FAKE_SKOPEO_EXISTING=index "$repo_root/scripts/release:push-image" "$test_root/image.oci.tar" \
@@ -252,5 +357,160 @@ expect_assets_refusal "--platforms must be" --version 1.2.0-dev.3 --output "$tes
 expect_assets_refusal "Usage:" --version 1.2.0-dev.3 --output "$test_root/out"
 expect_assets_refusal "is not this checkout's HEAD" --version 1.2.0-dev.3 --output "$test_root/out" --image-oci "$test_root/out.tar" \
     --commit "$other"
+
+# test:release-install leaves nothing behind, however far it gets: an install that fails after loading the release's
+# image, and a stand-in image that fails to be created or committed. A fake Docker keeps its images and containers as
+# files under $FAKE_DOCKER, and a fake installer loads the release's image the way the real one does before it can fail.
+cat >"$fake_bin/docker" <<'FAKE_DOCKER'
+#!/usr/bin/env bash
+set -euo pipefail
+state="$FAKE_DOCKER"
+printf '%s\n' "$*" >>"$state/calls.log"
+image_file() {
+    local name="$1" file
+    for file in "$state"/images/*; do
+        [[ -e "$file" ]] || continue
+        if grep -Fxq -- "$name" "$file"; then
+            printf '%s\n' "$file"
+            return 0
+        fi
+    done
+    return 1
+}
+case "$1 ${2:-}" in
+    "image ls")
+        for file in "$state"/images/*; do [[ -e "$file" ]] && head -n 1 "$file"; done
+        exit 0
+        ;;
+    "image inspect")
+        reference="${!#}"
+        file="$(image_file "$reference")" || { printf 'Error: No such image: %s\n' "$reference" >&2; exit 1; }
+        head -n 1 "$file"
+        exit 0
+        ;;
+    "image rm")
+        reference="${!#}"
+        file="$(image_file "$reference")" || { printf 'Error: No such image: %s\n' "$reference" >&2; exit 1; }
+        rm -f "$file"
+        exit 0
+        ;;
+    "network rm")
+        exit 1
+        ;;
+    "create --name")
+        [[ "${FAKE_DOCKER_FAIL:-}" != create ]] || exit 1
+        file="$(image_file "$4")" || exit 1
+        head -n 1 "$file" >"$state/containers/$3"
+        exit 0
+        ;;
+    "commit --change")
+        [[ "${FAKE_DOCKER_FAIL:-}" != commit ]] || exit 1
+        [[ -f "$state/containers/$4" ]] || exit 1
+        id="sha256:$(printf '%s' "$5" | sha256sum | cut -d ' ' -f 1)"
+        printf '%s\n%s\n' "$id" "$5" >"$state/images/${id#sha256:}"
+        exit 0
+        ;;
+esac
+if [[ "$1" == rm ]]; then
+    shift
+    [[ "${1:-}" != --force ]] || shift
+    for name in "$@"; do rm -f "$state/containers/$name"; done
+    exit 0
+fi
+printf 'fake docker: unexpected %s\n' "$*" >&2
+exit 90
+FAKE_DOCKER
+chmod +x "$fake_bin/docker"
+
+release_version=1.2.0-dev.3
+index_id="sha256:$(printf 'index' | sha256sum | cut -d ' ' -f 1)"
+manifest_id="sha256:$(printf 'manifest' | sha256sum | cut -d ' ' -f 1)"
+config_id="sha256:$(printf 'config' | sha256sum | cut -d ' ' -f 1)"
+unrelated_id="sha256:$(printf 'unrelated' | sha256sum | cut -d ' ' -f 1)"
+fake_release="$test_root/fake-release"
+mkdir -p "$fake_release" "$test_root/catalog/hyg-test.bundle"
+jq -n --arg version "$release_version" --arg commit "$commit" --arg index "$index_id" --arg manifest "$manifest_id" \
+    --arg config "$config_id" '{
+        version: $version, commit: $commit,
+        images: {"skymonitor-cameraagent": {repository: "ghcr.io/hualapaivalley/skymonitor-cameraagent", digest: $index,
+            offlineArchives: [
+                {platform: "linux/amd64", manifestDigest: $manifest, configDigest: $config},
+                {platform: "linux/arm64", manifestDigest: $manifest, configDigest: $config}]}},
+        assets: [{name: "hyg-test.bundle.tar.gz", kind: "catalog"}]}' >"$fake_release/release.json"
+tar -czf "$fake_release/hyg-test.bundle.tar.gz" -C "$test_root/catalog" hyg-test.bundle
+cat >"$fake_release/hvo-sky-install-linux-x64" <<'FAKE_INSTALLER'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == --version ]]; then
+    printf '%s\n' "$FAKE_RELEASE_IDENTITY"
+    exit 0
+fi
+command=("$1" "${2:-}")
+instance="" product=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --instance-id) instance="$2"; shift 2 ;;
+        --product-root) product="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+case "${command[0]} ${command[1]}" in
+    "cameraagent install")
+        # The real installer loads the release's image before anything can still fail.
+        printf '%s\n%s\n' "$FAKE_IMAGE_ID" "ghcr.io/hualapaivalley/skymonitor-cameraagent:$FAKE_VERSION" \
+            >"$FAKE_DOCKER/images/${FAKE_IMAGE_ID#sha256:}"
+        if [[ "${FAKE_INSTALL:-}" == fail ]]; then
+            printf '{"schemaVersion":1,"errorCode":"installation-failed","message":"injected"}\n' >&2
+            exit 1
+        fi
+        mkdir -p "$product/cameraagents/$instance/state/deployment"
+        printf '{"releaseVersion":"%s","source":"archive"}\n' "$FAKE_VERSION" \
+            >"$product/cameraagents/$instance/state/deployment/image-distribution.json"
+        printf '%s' "$FAKE_IMAGE_ID" >"$FAKE_DOCKER/active"
+        printf '{"image":{"imageId":"%s","source":"archive"},"healthy":true}\n' "$FAKE_IMAGE_ID"
+        ;;
+    "status --instance-id")
+        printf '{"outcome":"status","image":{"imageId":"%s"},"running":true,"healthy":true}\n' "$(cat "$FAKE_DOCKER/active")"
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+FAKE_INSTALLER
+chmod +x "$fake_release/hvo-sky-install-linux-x64"
+cp "$fake_release/hvo-sky-install-linux-x64" "$fake_release/hvo-sky-install-linux-arm64"
+(cd "$fake_release" && sha256sum release.json hyg-test.bundle.tar.gz hvo-sky-install-linux-x64 hvo-sky-install-linux-arm64 >SHA256SUMS)
+export FAKE_RELEASE_IDENTITY="$release_version+$commit" FAKE_VERSION="$release_version" FAKE_IMAGE_ID="$config_id"
+
+# Runs test:release-install against the fake release and requires it to fail with Docker and TMPDIR as they began.
+# Pass "held" to start with the release's image already in Docker, which the run must then leave there.
+expect_install_cleanup() {
+    local label="$1" held="${2:-}"
+    export FAKE_DOCKER="$test_root/docker-$label"
+    rm -rf "$FAKE_DOCKER" "$test_root/tmp-$label"
+    mkdir -p "$FAKE_DOCKER/images" "$FAKE_DOCKER/containers" "$test_root/tmp-$label"
+    printf '%s\n' "$unrelated_id" >"$FAKE_DOCKER/images/${unrelated_id#sha256:}"
+    if [[ "$held" == held ]]; then
+        printf '%s\n' "$config_id" >"$FAKE_DOCKER/images/${config_id#sha256:}"
+    fi
+    local before
+    before="$(ls "$FAKE_DOCKER/images")"
+    if TMPDIR="$test_root/tmp-$label" "$repo_root/scripts/test:release-install" --release "$fake_release" --upgrade-source archive \
+        >"$test_root/install-$label.out" 2>"$test_root/install-$label.err"; then
+        fail "test:release-install passed although $label."
+    fi
+    [[ "$(ls "$FAKE_DOCKER/images")" == "$before" ]] || {
+        cat "$FAKE_DOCKER/calls.log" >&2
+        fail "test:release-install left Docker's images changed after $label: $(ls "$FAKE_DOCKER/images" | tr '\n' ' ')"
+    }
+    [[ -z "$(ls "$FAKE_DOCKER/containers")" ]] || fail "test:release-install left a container after $label."
+    [[ -z "$(ls "$test_root/tmp-$label")" ]] || fail "test:release-install left its temporary root after $label."
+}
+FAKE_INSTALL=fail expect_install_cleanup "the install failed after loading the image"
+FAKE_DOCKER_FAIL=create expect_install_cleanup "the stand-in container could not be created"
+FAKE_DOCKER_FAIL=commit expect_install_cleanup "the stand-in image could not be committed"
+FAKE_INSTALL=fail expect_install_cleanup "the install failed with the image already held" held
+grep -Fq -- "${config_id}" "$test_root/docker-the install failed with the image already held/images/${config_id#sha256:}" ||
+    fail "test:release-install removed an image Docker held before it began."
 
 printf 'Release script tests passed.\n'

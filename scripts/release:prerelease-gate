@@ -23,6 +23,8 @@ tag="$1"
 commit="$2"
 repository="${GITHUB_REPOSITORY:-HualapaiValley/HVO.SkyMonitor}"
 branch=development/v1
+errors="$(mktemp)"
+trap 'rm -f "$errors"' EXIT
 workflow=development-v1.yml
 
 [[ "$tag" =~ ^v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-dev\.(0|[1-9][0-9]*))$ ]] ||
@@ -31,7 +33,11 @@ version="${BASH_REMATCH[1]}"
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail "$commit is not a 40-character commit ID."
 
 # The tag as the repository holds it: annotated (install contract section 3), and naming this commit.
-reference="$(gh api "repos/$repository/git/ref/tags/$tag")" || fail "The tag $tag does not exist."
+# Only GitHub's 404 means the tag does not exist; any other failed read is reported as one.
+if ! reference="$(gh api "repos/$repository/git/ref/tags/$tag" 2>"$errors")"; then
+    grep -Fq '(HTTP 404)' "$errors" && fail "The tag $tag does not exist."
+    fail "cannot read the tag $tag: $(tr '\n' ' ' <"$errors")"
+fi
 [[ "$(jq -r '.object.type' <<<"$reference")" == tag ]] ||
     fail "$tag is a lightweight tag; cut a pre-release with an annotated tag: git tag -a $tag -m 'SkyMonitor $version'."
 tagged="$(gh api "repos/$repository/git/tags/$(jq -r '.object.sha' <<<"$reference")" --jq '.object.sha + " " + .object.type')"

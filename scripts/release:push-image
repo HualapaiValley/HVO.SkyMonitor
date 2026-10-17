@@ -53,7 +53,8 @@ if skopeo inspect --tls-verify="$tls_verify" --retry-times 3 --raw "docker://$de
     existing="$(served)"
     [[ "$existing" == "$digest" ]] ||
         fail "$destination already names $existing in the registry, not $digest; a version tag is never moved. Cut a new version."
-elif ! grep -Eqi 'manifest unknown|name unknown|not found' "$errors"; then
+elif ! grep -Eqi 'manifest unknown|name unknown' "$errors"; then
+    # Only the registry's own answer that it has no such tag or repository counts as absent; any other failure stops.
     cat "$errors" >&2
     fail "cannot tell whether $destination is in the registry already."
 fi
