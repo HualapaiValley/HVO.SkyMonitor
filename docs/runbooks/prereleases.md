@@ -80,11 +80,12 @@ replaced.
 
 ### Owner settings this relies on
 
-These are repository settings the workflow cannot set. They are the owner's to apply:
+These settings are the owner's; the workflow cannot change them:
 
-- **A ruleset restricting `v*` tag creation to the owner** (contract section 2). Without it, anyone who can push can
-  start the workflow. The gate still requires a green `development/v1` commit, so they could publish only reviewed
-  code.
+- **The `release tags` ruleset** (id 25302808, contract section 2) is active on `refs/tags/v*`. Its creation, update,
+  deletion and non-fast-forward rules admit only repository administrators, so only the owner creates a
+  `vX.Y.Z-dev.<n>` tag, and once pushed a tag cannot be moved. The workflow relies on that: only the owner starts it,
+  and the gate then also requires a green `development/v1` commit.
 - **The arm64 runner's egress** must reach `ghcr.io` and `pkg-containers.githubusercontent.com`. The install test pulls
   the image from there, so a blocked runner fails every pre-release at that job, before anything is published.
 - **The `skymonitor-cameraagent` package's visibility.** A new GHCR package is private, so a host must sign in to
