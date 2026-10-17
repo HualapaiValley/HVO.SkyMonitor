@@ -50,6 +50,8 @@ public sealed class CameraAgentFocusUiServiceTests
             Assert.IsNotNull(status.Images);
             Assert.AreEqual(latest.Sequence, status.Images.Sequence,
                 "The same publication must provide metrics, centroid and crop even when another frame arrives.");
+            Assert.IsGreaterThan(observed, latest.Sequence,
+                "Every returned status must advance beyond the previously observed publication.");
             observed = latest.Sequence;
             await Task.Delay(2, deadline.Token).ConfigureAwait(false);
         }
