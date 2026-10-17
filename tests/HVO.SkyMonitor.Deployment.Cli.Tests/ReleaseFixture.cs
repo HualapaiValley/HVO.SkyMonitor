@@ -108,8 +108,11 @@ internal sealed class ReleaseFixture : IDisposable
             {
                 ["architecture"] = architecture,
                 ["os"] = "linux",
-                ["config"] = new JsonObject { ["Labels"] = new JsonObject([.. labels.Select(static label =>
-                    KeyValuePair.Create(label.Key, (JsonNode?)label.Value))]) }
+                ["config"] = new JsonObject
+                {
+                    ["Labels"] = new JsonObject([.. labels.Select(static label =>
+                    KeyValuePair.Create(label.Key, (JsonNode?)label.Value))])
+                }
             }.ToJsonString();
             var configBytes = Encoding.UTF8.GetBytes(config?.Invoke(platform, configuration) ?? configuration);
             var manifest = Bytes(new JsonObject
