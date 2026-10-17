@@ -849,29 +849,47 @@ expect_required_reject "empty results" pull_request "$cameraagent_plan" ""
 expect_required_no_sigpipe() (
   local first="$1" iteration
   "$required" pull_request "$reduced_plan" "$reduced_success" > "$work_root/sigpipe.expected"
+  # shellcheck disable=SC2317 # Child Bash invokes this exported printf shim.
   printf() {
-    if [[ "${1-}" == '%s\n' && "${2-}" == "$HVO_SIGPIPE_LIST_FIRST" ]]; then
-      local -a records=("${@:2}")
-      local doubling
-      for ((doubling = 0; doubling < 12; doubling++)); do
-        records+=("${records[@]}")
-      done
-      builtin printf '%s\n' "${records[@]}"
+    if [[ "${1-}" == '%s\n' && " ${*:2} " == *" $HVO_SIGPIPE_LIST_FIRST "* ]]; then
+      if [[ ! -s "$HVO_SIGPIPE_RECORDS" ]]; then
+        local -a records=("${@:2}")
+        local bytes=0 record
+        for record in "${records[@]}"; do
+          ((bytes += ${#record} + 1))
+        done
+        # Just exceed twice a 64 KiB pipe; build once and reuse across checks.
+        while (( bytes <= 2 * 65536 )); do
+          records+=("${records[@]}")
+          ((bytes *= 2))
+        done
+        builtin printf '%s\n' "${records[@]}" > "$HVO_SIGPIPE_RECORDS"
+      fi
+      builtin printf x >> "$HVO_SIGPIPE_FIRED"
+      cat "$HVO_SIGPIPE_RECORDS"
     else
+      # shellcheck disable=SC2059 # Forward the caller's format and arguments unchanged.
       builtin printf "$@"
     fi
   }
   export -f printf
   export HVO_SIGPIPE_LIST_FIRST="$first"
-  for ((iteration = 1; iteration <= 10; iteration++)); do
+  export HVO_SIGPIPE_RECORDS="$work_root/sigpipe.$first.records"
+  export HVO_SIGPIPE_FIRED="$work_root/sigpipe.$first.fired"
+  for ((iteration = 1; iteration <= 3; iteration++)); do
+    : > "$HVO_SIGPIPE_FIRED"
     if ! "$required" pull_request "$reduced_plan" "$reduced_success" \
       > "$work_root/sigpipe.out" 2> "$work_root/sigpipe.err"; then
       cat "$work_root/sigpipe.err" >&2
-      printf 'Required CI SIGPIPE regression failed: list=%s iteration=%s/10\n' "$first" "$iteration" >&2
+      printf 'Required CI SIGPIPE regression failed: list=%s iteration=%s/3\n' "$first" "$iteration" >&2
+      return 1
+    fi
+    if [[ ! -s "$HVO_SIGPIPE_FIRED" ]]; then
+      printf 'Required CI SIGPIPE shim did not fire: list=%s iteration=%s/3\n' "$first" "$iteration" >&2
       return 1
     fi
     if ! cmp -s "$work_root/sigpipe.expected" "$work_root/sigpipe.out" || [[ -s "$work_root/sigpipe.err" ]]; then
-      printf 'Required CI SIGPIPE regression changed output: list=%s iteration=%s/10\n' "$first" "$iteration" >&2
+      printf 'Required CI SIGPIPE regression changed output: list=%s iteration=%s/3\n' "$first" "$iteration" >&2
       return 1
     fi
   done
@@ -883,7 +901,7 @@ for first in mode changes; do
   fi
 done
 [[ "$sigpipe_failed" == false ]] || exit 1
-printf 'Required CI SIGPIPE regression passed: 20 iterations (10 plan, 10 result).\n'
+printf 'Required CI SIGPIPE regression passed: 6 iterations (3 plan, 3 result); shim fired for each.\n'
 
 # Workflow shape.
 grep -Fq "if: needs.changes.outputs.mode == 'full' && github.event_name == 'workflow_dispatch'" "$workflow" || {

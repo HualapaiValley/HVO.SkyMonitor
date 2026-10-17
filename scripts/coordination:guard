@@ -150,7 +150,7 @@ case "$mode" in
         grep -Fqx "OWNER $participant_id LEASE $lease_generation" "$current_body" ||
             fail "Slot owner or lease marker does not match the participant."
 
-        if sed '$d' "$current_body" | grep -Eq '^LIVE .* MST$'; then
+        if sed '$d' "$current_body" | grep -E '^LIVE .* MST$' >/dev/null; then
             fail "Only the trailing line may contain mutable liveness."
         fi
         if tail -n 1 "$current_body" | grep -Eq '^LIVE .* MST$'; then
