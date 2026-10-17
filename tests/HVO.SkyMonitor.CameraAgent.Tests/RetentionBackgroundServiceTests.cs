@@ -81,6 +81,50 @@ public sealed class RetentionBackgroundServiceTests
     }
 
     [TestMethod]
+    public async Task ApplyRetentionAsync_PassBlockedOnItsLockHoldsThePauseUntilItHasFinished()
+    {
+        // The sweep entered while capture was running and is waiting for the storage lifecycle lock when the installer
+        // pauses. The pause must not be acknowledged until the sweep is done, and no sweep may delete after it is.
+        using var hold = new Capture.MaintenanceHoldRoot();
+        var root = hold.Path;
+        var expired = Path.Combine(root, "frames", "2020", "01", "01", "Raw", "expired.bin");
+        Directory.CreateDirectory(Path.GetDirectoryName(expired)!);
+        await File.WriteAllTextAsync(expired, "expired").ConfigureAwait(false);
+        using var admission = await hold.AdmissionAsync(paused: false).ConfigureAwait(false);
+        var service = new RetentionBackgroundService(
+            new StubConfigurationAccessor(),
+            Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }),
+            new FixedTimeProvider(new DateTimeOffset(2026, 7, 11, 12, 0, 0, TimeSpan.Zero)), new SqliteArtifactOutbox(),
+            new FixedCapacityProvider(50), new StoragePressureState(),
+            NullLogger<RetentionBackgroundService>.Instance, admission: admission);
+        var gate = StorageLifecycleLock.ForRoot(root);
+        await gate.WaitAsync().ConfigureAwait(false);
+        Task sweep;
+        Task<HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureControlCommandResult> pause;
+        try
+        {
+            sweep = service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None);
+            await Task.Delay(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
+            Assert.IsFalse(sweep.IsCompleted);
+            pause = admission.PauseAsync("retention-barrier", null, "installer-lifecycle:test", null, CancellationToken.None);
+            await Task.Delay(TimeSpan.FromMilliseconds(400)).ConfigureAwait(false);
+            Assert.IsFalse(pause.IsCompleted, "The pause was acknowledged while an admitted retention sweep waited to delete.");
+        }
+        finally
+        {
+            gate.Release();
+        }
+        await sweep.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        await pause.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        // The admitted sweep deleted before the acknowledgement; nothing written after it is deleted.
+        Assert.IsFalse(File.Exists(expired));
+        Directory.CreateDirectory(Path.GetDirectoryName(expired)!);
+        await File.WriteAllTextAsync(expired, "after the pause").ConfigureAwait(false);
+        await service.ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual("after the pause", await File.ReadAllTextAsync(expired).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task ApplyRetentionAsync_UnderPressureShortensEligibleHistoryButPreservesCurrentDay()
     {
         var root = CreateRoot();

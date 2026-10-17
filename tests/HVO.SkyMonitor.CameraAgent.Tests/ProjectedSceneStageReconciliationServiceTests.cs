@@ -65,6 +65,36 @@ public sealed class ProjectedSceneStageReconciliationServiceTests
     }
 
     [TestMethod]
+    public async Task ReconcileOnceAsync_PauseIsNotAcknowledgedUntilAnAdmittedPassFinishesDeleting()
+    {
+        // A pass that entered while capture was running is inside its deletions when the installer pauses. The pause
+        // must not be acknowledged until the pass has finished, and no pass may delete after it is.
+        using var hold = new Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: false).ConfigureAwait(false);
+        var reconciler = new BarrierReconciler();
+        var state = new RawIngressState(TimeProvider.System);
+        using var telemetry = new RawIngressTelemetry(state);
+        var service = new ProjectedSceneStageReconciliationService(
+            new StubIngress(), new RecordingOwnerProvider(), reconciler, state, telemetry, TimeProvider.System,
+            new ProjectedSceneStageLifecycleCoordinator(),
+            NullLogger<ProjectedSceneStageReconciliationService>.Instance, admission);
+        var pass = service.ReconcileOnceAsync(CancellationToken.None).AsTask();
+        await reconciler.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
+        var pause = admission.PauseAsync("stage-barrier", null, "installer-lifecycle:test", null, CancellationToken.None);
+        await Task.Delay(TimeSpan.FromMilliseconds(400)).ConfigureAwait(false);
+        Assert.IsFalse(pause.IsCompleted, "The pause was acknowledged while an admitted stage pass was still deleting.");
+
+        reconciler.Release.SetResult();
+        await pass.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.AreEqual(CaptureAdmissionState.Paused, (await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false)).State);
+        reconciler.Reset();
+        var afterPause = await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(new ProjectedSceneStageReconciliationResult(0, 0, 0), afterPause);
+        Assert.IsFalse(reconciler.Entered.Task.IsCompleted);
+    }
+
+    [TestMethod]
     public async Task ReconcileLease_BlocksConcurrentStageRegistrationUntilSnapshotAndScanComplete()
     {
         using var lifecycle = new ProjectedSceneStageLifecycleCoordinator();

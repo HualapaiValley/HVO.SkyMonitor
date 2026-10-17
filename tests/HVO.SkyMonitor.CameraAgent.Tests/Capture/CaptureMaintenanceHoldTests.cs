@@ -15,40 +15,70 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 public sealed class CaptureMaintenanceHoldTests
 {
     [TestMethod]
-    public async Task HeldByAsync_RunningAdmission_HoldsNothing()
+    public async Task EnterAsync_RunningAdmission_AdmitsThePass()
     {
         using var root = new MaintenanceHoldRoot();
         using var admission = await root.AdmissionAsync(paused: false).ConfigureAwait(false);
 
-        Assert.IsNull(await CaptureMaintenanceHold.HeldByAsync(admission, CancellationToken.None).ConfigureAwait(false));
+        using var entry = await CaptureMaintenanceHold.EnterAsync(admission, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsFalse(entry.Held);
+        Assert.IsNotNull(entry.Lease);
     }
 
     [TestMethod]
-    public async Task HeldByAsync_DurablePauseSeenByARestartedImage_HoldsMaintenance()
+    public async Task EnterAsync_DurablePauseSeenByARestartedImage_HoldsTheDeletions()
     {
         // The candidate image starts on the journal the previous image paused, before anything resumes it.
         using var root = new MaintenanceHoldRoot();
         using var admission = await root.AdmissionAsync(paused: true).ConfigureAwait(false);
 
-        Assert.AreEqual(
-            CaptureAdmissionState.Paused,
-            await CaptureMaintenanceHold.HeldByAsync(admission, CancellationToken.None).ConfigureAwait(false));
+        using var entry = await CaptureMaintenanceHold.EnterAsync(admission, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(CaptureAdmissionState.Paused, entry.HeldBy);
+        Assert.IsNull(entry.Lease);
     }
 
     [TestMethod]
-    public async Task HeldByAsync_ResumedAdmission_ReleasesTheHold()
+    public async Task EnterAsync_ResumedAdmission_ReleasesTheHold()
     {
         using var root = new MaintenanceHoldRoot();
         using var admission = await root.AdmissionAsync(paused: true).ConfigureAwait(false);
 
         await admission.ResumeAsync("hold-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
 
-        Assert.IsNull(await CaptureMaintenanceHold.HeldByAsync(admission, CancellationToken.None).ConfigureAwait(false));
+        using var entry = await CaptureMaintenanceHold.EnterAsync(admission, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(entry.Held);
     }
 
     [TestMethod]
-    public async Task HeldByAsync_WithoutAdmission_HoldsNothing()
-        => Assert.IsNull(await CaptureMaintenanceHold.HeldByAsync(null, CancellationToken.None).ConfigureAwait(false));
+    public async Task EnterAsync_WithoutAdmission_HoldsNothing()
+    {
+        using var entry = await CaptureMaintenanceHold.EnterAsync(null, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(entry.Held);
+    }
+
+    [TestMethod]
+    public async Task PauseAsync_IsAcknowledgedOnlyAfterEveryAdmittedPassHasFinished()
+    {
+        // The deletion barrier itself: an admitted pass holds the pause until it releases its lease, and once the gate
+        // closes for the pause no new pass is admitted, so nothing can delete after the acknowledgement.
+        using var root = new MaintenanceHoldRoot();
+        using var admission = await root.AdmissionAsync(paused: false).ConfigureAwait(false);
+        var entry = await CaptureMaintenanceHold.EnterAsync(admission, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(entry.Held);
+
+        var pause = admission.PauseAsync("barrier", null, "installer-lifecycle:test", null, CancellationToken.None);
+        await Task.Delay(TimeSpan.FromMilliseconds(300)).ConfigureAwait(false);
+        Assert.IsFalse(pause.IsCompleted);
+        using (var late = await CaptureMaintenanceHold.EnterAsync(admission, CancellationToken.None).ConfigureAwait(false))
+        {
+            Assert.IsTrue(late.Held, "A pass was admitted after the pause closed the gate.");
+        }
+
+        entry.Dispose();
+        Assert.AreEqual(CaptureAdmissionState.Paused, (await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false)).State);
+    }
 }
 
 /// <summary>A raw-ingress root whose capture admission a test can leave running or durably paused.</summary>

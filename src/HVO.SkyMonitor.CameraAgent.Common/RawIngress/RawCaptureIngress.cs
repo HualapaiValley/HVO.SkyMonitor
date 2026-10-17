@@ -162,7 +162,14 @@ internal sealed partial class RawCaptureIngress :
                     _lanePolicy.Definitions)
                      .RunAsync(cancellationToken).ConfigureAwait(false);
                 var projectedSceneBacklog = 0;
-                if (_projectedSceneStaging is not null)
+                // Startup stage cleanup deletes unowned stages, so a durable pause holds it exactly as it holds the
+                // background reconciliation; the persisted state is read from the journal, not from capture admission.
+                if (_projectedSceneStaging is not null &&
+                    !await _journal.ReadCaptureAdmissionRunningAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    _logger.MaintenanceHeld("Startup projected-scene stage reconciliation", Capture.CaptureAdmissionState.Paused);
+                }
+                else if (_projectedSceneStaging is not null)
                 {
                     using var stageLease = _projectedSceneLifecycle is null
                         ? null

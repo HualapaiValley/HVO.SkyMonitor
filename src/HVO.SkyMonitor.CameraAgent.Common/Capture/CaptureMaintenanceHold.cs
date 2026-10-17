@@ -9,20 +9,42 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture;
 /// force and cannot delete frames, archives or derived products the previous image still needs while the swap is
 /// undecided; the hold survives a crash or power loss because the pause it reads is durable. An operator pause holds
 /// them too, and a paused instance captures nothing new, so the hold cannot grow the data it protects.
+/// <para>
+/// A pass that is admitted holds a maintenance lease for everything it might delete. The pause waits for every such
+/// lease before it is acknowledged and grants none after its gate closes, so no deletion follows an acknowledged pause.
+/// </para>
 /// </remarks>
 internal static class CaptureMaintenanceHold
 {
-    /// <summary>The admission state that holds maintenance deletions, or <see langword="null"/> when they may run.</summary>
-    public static async ValueTask<CaptureAdmissionState?> HeldByAsync(
+    /// <summary>
+    /// Enters one destructive maintenance pass. The result is held when admission is not running; otherwise it carries
+    /// the lease the pass keeps until its last deletion. Without an admission coordinator nothing is held.
+    /// </summary>
+    public static async ValueTask<CaptureMaintenanceEntry> EnterAsync(
         CaptureAdmissionCoordinator? admission,
         CancellationToken cancellationToken)
     {
         if (admission is null)
         {
-            return null;
+            return default;
         }
-        await admission.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var lease = await admission.TryEnterMaintenanceAsync(cancellationToken).ConfigureAwait(false);
+        if (lease is not null)
+        {
+            return new CaptureMaintenanceEntry(lease, null);
+        }
         var snapshot = admission.Snapshot;
-        return snapshot is { IsInitialized: true, State: CaptureAdmissionState.Running } ? null : snapshot.State;
+        return new CaptureMaintenanceEntry(
+            null, snapshot.IsInitialized ? snapshot.State : CaptureAdmissionState.Unavailable);
     }
+}
+
+/// <summary>Whether a maintenance pass may delete, and the lease it holds while it does.</summary>
+internal readonly record struct CaptureMaintenanceEntry(
+    CaptureAdmissionCoordinator.CaptureMaintenanceLease? Lease,
+    CaptureAdmissionState? HeldBy) : IDisposable
+{
+    public bool Held => HeldBy is not null;
+
+    public void Dispose() => Lease?.Dispose();
 }

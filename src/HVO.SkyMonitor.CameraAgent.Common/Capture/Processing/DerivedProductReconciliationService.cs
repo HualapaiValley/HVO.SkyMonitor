@@ -28,8 +28,10 @@ internal sealed class DerivedProductReconciliationService(
                 await rawIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
             }
             // Reconciliation moves and deletes derived products, so it is held with retention. The read-only evidence
-            // inventory is still refreshed, so the operations summary stays current while capture is paused.
-            if (await CaptureMaintenanceHold.HeldByAsync(admission, cancellationToken).ConfigureAwait(false) is { } heldBy)
+            // inventory is still refreshed, so the operations summary stays current while capture is paused. An admitted
+            // pass keeps its maintenance lease until reconciliation returns.
+            using var maintenance = await CaptureMaintenanceHold.EnterAsync(admission, cancellationToken).ConfigureAwait(false);
+            if (maintenance.HeldBy is { } heldBy)
             {
                 var heldInventory = await store.ReadAvailabilityInventoryAsync(cancellationToken).ConfigureAwait(false);
                 state.SetProcessingEvidence(heldInventory.MissingCount, heldInventory.QuarantinedCount);

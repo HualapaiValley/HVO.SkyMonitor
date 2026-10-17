@@ -519,6 +519,20 @@ internal sealed partial class SqliteRawCaptureJournal(
         return RawIngressOutcome.Committed;
     }
 
+    /// <summary>
+    /// Whether the persisted capture-control state is running. Raw-ingress initialization reads it directly, before
+    /// capture admission (which initializes raw ingress first) can report it, so startup cleanup honours a durable
+    /// pause without an initialization cycle between the two.
+    /// </summary>
+    internal async Task<bool> ReadCaptureAdmissionRunningAsync(CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT state FROM capture_control_state WHERE state_key = 1;";
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is string state &&
+               string.Equals(state, "running", StringComparison.Ordinal);
+    }
+
     internal async Task<(long Count, long Bytes, DateTimeOffset? Oldest)> ReadHeldTotalsAsync(CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);

@@ -48,8 +48,10 @@ internal sealed class ProjectedSceneStageReconciliationService(
     internal async ValueTask<ProjectedSceneStageReconciliationResult> ReconcileOnceAsync(
         CancellationToken cancellationToken)
     {
-        // Stage reconciliation deletes unowned stages, so it is held with retention.
-        if (await Capture.CaptureMaintenanceHold.HeldByAsync(admission, cancellationToken).ConfigureAwait(false) is { } heldBy)
+        // Stage reconciliation deletes unowned stages, so it is held with retention. An admitted pass keeps its
+        // maintenance lease until reconciliation returns.
+        using var maintenance = await Capture.CaptureMaintenanceHold.EnterAsync(admission, cancellationToken).ConfigureAwait(false);
+        if (maintenance.HeldBy is { } heldBy)
         {
             logger.MaintenanceHeld("Projected-scene stage reconciliation", heldBy);
             return new(0, 0, 0);

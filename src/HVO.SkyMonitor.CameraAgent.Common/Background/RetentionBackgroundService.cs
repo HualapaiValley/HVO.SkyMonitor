@@ -96,9 +96,10 @@ public sealed class RetentionBackgroundService(
             return;
         }
         // Capacity and disk pressure are still measured and published while the hold is in force; only the deletions
-        // wait, because the operations summary and capture back-pressure read the pressure state.
-        var heldBy = await CaptureMaintenanceHold.HeldByAsync(_admission, cancellationToken).ConfigureAwait(false);
-        if (heldBy is { } holdingState)
+        // wait, because the operations summary and capture back-pressure read the pressure state. An admitted pass keeps
+        // its maintenance lease through every lock wait and deletion below, so a pause cannot be acknowledged under it.
+        using var maintenance = await CaptureMaintenanceHold.EnterAsync(_admission, cancellationToken).ConfigureAwait(false);
+        if (maintenance.HeldBy is { } holdingState)
         {
             _logger.MaintenanceHeld("Retention", holdingState);
         }
@@ -171,7 +172,7 @@ public sealed class RetentionBackgroundService(
                     _logger.DiskPressureRecovered(plan.StorageRoot, capacity.AvailablePercent);
                 }
 
-                if (heldBy is not null)
+                if (maintenance.Held)
                 {
                     continue;
                 }

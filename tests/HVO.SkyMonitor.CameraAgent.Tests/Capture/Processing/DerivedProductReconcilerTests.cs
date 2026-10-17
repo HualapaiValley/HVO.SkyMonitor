@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
@@ -307,6 +309,41 @@ public sealed class DerivedProductReconcilerTests
         await admission.ResumeAsync("derived-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
         await service.RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.IsFalse(File.Exists(temporary));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task RunOnceAsync_PassBlockedOnItsLockHoldsThePauseUntilItHasFinished()
+    {
+        // The pass entered while capture was running and is waiting for the storage lifecycle lock when the installer
+        // pauses. The pause must wait for it, so it cannot delete after the pause is acknowledged.
+        using var hold = new HVO.SkyMonitor.CameraAgent.Tests.Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: false).ConfigureAwait(false);
+        var service = await CreateReconciliationServiceAsync(hold.Path, admission: admission).ConfigureAwait(false);
+        var gate = StorageLifecycleLock.ForRoot(hold.Path);
+        await gate.WaitAsync().ConfigureAwait(false);
+        Task pass;
+        Task<CaptureControlCommandResult> pause;
+        try
+        {
+            pass = service.RunOnceAsync(CancellationToken.None).AsTask();
+            await Task.Delay(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
+            Assert.IsFalse(pass.IsCompleted);
+            pause = admission.PauseAsync("derived-barrier", null, "installer-lifecycle:test", null, CancellationToken.None);
+            await Task.Delay(TimeSpan.FromMilliseconds(400)).ConfigureAwait(false);
+            Assert.IsFalse(pause.IsCompleted, "The pause was acknowledged while an admitted derived pass waited to delete.");
+        }
+        finally
+        {
+            gate.Release();
+        }
+        await pass.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        Assert.AreEqual(CaptureAdmissionState.Paused, (await pause.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false)).State);
+        var temporary = Path.Combine(hold.Path, "derived", "2026-10-16", "after-pause.tmp");
+        Directory.CreateDirectory(Path.GetDirectoryName(temporary)!);
+        await File.WriteAllTextAsync(temporary, "written after the pause").ConfigureAwait(false);
+        await service.RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(File.Exists(temporary));
     }
 
     private static string CreateRoot()
