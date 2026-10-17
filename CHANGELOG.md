@@ -28,9 +28,12 @@ onward; earlier development is recorded in its pull requests. A release renames 
 - `hvo-sky-install cameraagent install` and `cameraagent upgrade` take `--release <folder>`, a release's downloaded
   files. Before contacting Docker, the installer checks `release.json` against `SHA256SUMS` and every file it uses
   against both, and refuses a folder whose files disagree. `--image-source archive`, the default, loads the platform's
-  offline archive; `--image-source registry` pulls the image by the digest `release.json` names. The image must carry
-  the release's version and commit. The instance records the release it runs, which is how an upgrade knows the
-  installed version. (#1309)
+  offline archive; `--image-source registry` pulls the image by the digest `release.json` names. The image must be the
+  release's, carry its version and commit, and declare the contracts the instance needs. It is checked before the
+  install or upgrade claims anything: an archive's image is read from the archive before it is loaded, and a pulled
+  image that is refused is removed again. JSON in a release that names a property twice is refused. The instance
+  records the release it runs, and keeps the previous image's record so a rollback restores it, which is how an upgrade
+  knows the installed version and refuses an older one. (#1309)
 - Integration pre-releases. An annotated `vX.Y.Z-dev.<n>` tag that the owner pushes on a green `development/v1` commit
   publishes a GitHub pre-release. It carries both installers, the CameraAgent offline archives, the catalog bundle,
   `release.json` and `SHA256SUMS`, and pushes `ghcr.io/hualapaivalley/skymonitor-cameraagent:<version>`. Every file and

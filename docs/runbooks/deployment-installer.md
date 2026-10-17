@@ -161,6 +161,16 @@ so neither is required. Uninstall, purge, and the other lifecycle commands do no
 evaluate these prerequisites, so a host that loses limit support can still be
 cleaned up.
 
+**A private place to unpack the installer.** `hvo-sky-install` is one
+self-contained file. Each time it starts, the .NET host extracts the native SQLite
+library bundled into it under `$DOTNET_BUNDLE_EXTRACT_BASE_DIR`, or by default
+`~/.net` in the home directory of the user running it, and reuses what an earlier
+run extracted there without checking it again. Whoever can write that directory
+decides what the installer loads. Run the installer as a user whose home directory
+is writable by that user and nobody else, or set `DOTNET_BUNDLE_EXTRACT_BASE_DIR` to
+a directory only that user can write (mode `0700`). The `sudo`-run preparation
+step extracts under root's own home.
+
 ## Container Resources
 
 The installer limits the CameraAgent container to **2 CPUs, 4 GiB of memory and
@@ -295,14 +305,32 @@ Before it contacts Docker, the installer checks the folder. It refuses, naming t
 - the release does not publish the platform: this host's for an install, the one recorded for the instance's Docker
   daemon for an upgrade;
 - with `archive`, the release has no offline archive for the platform, the archive is not in the folder, or its size
-  or SHA-256 is not the one the release gives.
+  or SHA-256 is not the one the release gives;
+- with `archive`, the archive does not hold the release's image, which is read from the archive itself before anything
+  is loaded. Its OCI layout must name the release's digest, and only `<repository>:<version>` when it names the image.
+  The release's index must list the platform once, as the manifest `release.json` names, and that manifest must name the
+  configuration `release.json` names. The configuration must be for the platform and labelled CameraAgent at the
+  release's version and commit. Docker's own `manifest.json`, which its classic store loads instead, must describe the
+  same image and tag only `<repository>:<version>`, so a load cannot retag another image. The image must also declare the
+  contracts the instance needs, as below. Every blob is checked against its digest, and an entry the check reads that
+  appears twice, or is not a regular file, is refused;
+- `release.json`, or any JSON in the archive, names the same property twice in one object, compared after escapes are
+  decoded, so two readers could see different values.
 
 Each file is opened as a regular file with a single link, so a symbolic link, hard link, FIFO or folder under a
 release file's name is refused rather than followed. Copy the files into the folder; do not link them.
 
-After Docker resolves the image, the installer requires it to be one the release names: the image index, the
+A pulled image (`registry`) can only be read once Docker holds it, because the installer has no registry client of its
+own and Docker holds the registry credentials. It is pulled by the digest `release.json` names and checked before the
+install or upgrade claims anything: no product root, state, catalog, staged archive or journal entry exists yet. When it
+is refused, the image the pull added is removed again.
+
+Before it claims anything, the installer also requires the release's image, from the archive or the pull, to declare
+the configuration and catalog contracts this instance needs (an upgrade also requires the current state contract).
+After Docker resolves the image, the installer again requires it to be one the release names: the image index, the
 platform's manifest or its configuration digest. It must also be labelled CameraAgent at the release's version and
-commit. Otherwise the installer refuses, naming the release.
+commit. Otherwise the installer refuses, naming the release, and removes what that step loaded or pulled, unless Docker
+held it before.
 
 The installer checks that a release's files agree with each other; it does not check who built them. Verify that with
 `sha256sum --check SHA256SUMS` and `gh attestation verify` before installing, as
@@ -326,10 +354,13 @@ schema 1 or 2 record, written for a signed release by an earlier installer, is r
 
 The record follows the image the instance actually runs. It is written only once
 the image has been prepared and accepted, and a refused install or upgrade leaves
-none behind. An upgrade to an image no release names withdraws it, and a
-rollback withdraws whatever the superseded upgrade recorded. An upgrade reads its
-version to show the right upgrade notes and to refuse an older target (see
-[Upgrade notes and older targets](#upgrade-notes-and-older-targets)).
+none behind. An upgrade to an image no release names withdraws it. The record of
+the image the instance ran before is kept beside it, in
+`image-distribution.records.json`, which holds both records and is written
+atomically. A rollback restores the record of the image it returns to, including
+when the rollback is resumed, so an upgrade after it is still refused when it would
+go back. An upgrade reads the version to show the right upgrade notes and to refuse
+an older target (see [Upgrade notes and older targets](#upgrade-notes-and-older-targets)).
 
 An upgrade accepts the same options. It selects the platform from the architecture recorded for the instance's Docker
 daemon at installation, not from the machine running the CLI, so a remote or cross-architecture daemon is served the
@@ -1352,7 +1383,7 @@ recorded, and cannot apply the older-target refusal.
 An upgrade from `--release` reads the notes from the release's `release.json`, and records the installed release
 version once the upgrade completes (see [Release Install](#release-install)). An upgrade from `--image-ref` has no
 `release.json`, so it shows no notes, withdraws the release record, and leaves the next upgrade without an installed
-version.
+version. A rollback restores the record of the image it returns to, so the older-target refusal applies again.
 
 ### Restore Only After an Interrupted Upgrade
 

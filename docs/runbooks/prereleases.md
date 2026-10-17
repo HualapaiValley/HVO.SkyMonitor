@@ -57,8 +57,8 @@ The workflow defaults to `contents: read`. Each job asks only for what it needs:
 | Gate | GitHub-hosted | `contents: read`, `actions: read` | `scripts/release:prerelease-gate` checks several things. The tag is `vX.Y.Z-dev.<n>`, annotated, and names the commit. The commit is the `development/v1` head or behind it. The commit's newest Development v1 push run, and both its required jobs, succeeded. No release has the tag. Nothing is built if any check fails |
 | Build | GitHub-hosted | `contents: read` | `scripts/release:assets` builds every file from the tagged commit. The image is built once, for both platforms, into one OCI archive, and the offline archives are split from it |
 | Draft | GitHub-hosted | `contents`, `packages`, `id-token` and `attestations: write` | Refuses if a release or draft already has the tag. `scripts/release:push-image` pushes the archive under its version tag, refuses a tag the registry already has for another image, and checks the registry serves the archive's digest. The job then attests the image and every file, verifies the image's attestation, creates a **draft** pre-release with `--latest=false`, and reads its files back |
-| Install and Upgrade (arm64) | `[self-hosted, linux, ARM64, hvo-skymonitor-arm64]` (`github-runner-pi-01`) | `contents: read`, `packages: read` | Tag pushes only. `scripts/test:release-install` checks the draft's files and then works on a throwaway instance. It installs from the arm64 offline archive, moves the instance to a stand-in image, upgrades it from the release by digest from the registry, and checks that a second upgrade is refused. Then it uninstalls and removes everything it added. The registry login lives in a per-run Docker configuration that is deleted afterwards |
-| Publish | GitHub-hosted | `contents: write`, `attestations: read` | Checks the draft still holds exactly the files that were tested. Checks each file's attestation names this workflow, tag and commit, and that the image's attestation is on record. Then it publishes the draft as a pre-release with `--latest=false` and checks `releases/latest` did not move |
+| Install and Upgrade (arm64) | `[self-hosted, linux, ARM64, hvo-skymonitor-arm64]` (`github-runner-pi-01`) | `contents: read`, `packages: read` | Tag pushes only. `scripts/test:release-install` checks the draft's files and then works on a throwaway instance. It installs from the arm64 offline archive, moves the instance to a stand-in image, upgrades it from the release by digest from the registry, and checks that a second upgrade is refused. Then it uninstalls. However far it got, it removes the containers, the stand-in image, the release image it loaded or pulled (registered before the install, unless the runner held it already) and its temporary root. The registry login lives in a per-run Docker configuration that is deleted afterwards |
+| Publish | GitHub-hosted | `contents: write`, `attestations: read` | Checks the draft still holds exactly the files that were tested. Checks each file's attestation names this workflow, tag and commit, and that the image's attestation is on record. Then `scripts/release:publish-prerelease` publishes the draft as a pre-release with `--latest=false` and checks `releases/latest` did not move. Only GitHub's 404 counts as there being no latest release: a read that fails or names no tag stops before publishing, or fails the job after it |
 
 The self-hosted runner never holds a token that can write. It runs only after the gate has admitted a commit that is
 already on `development/v1`. The install test uses its own instance ID, container, network and port (55420), and a
@@ -123,6 +123,10 @@ operations manual's change-management rules for a live host. An upgrade pauses c
 
    If `gh` is not on the host, download and verify on an admin workstation and copy the folder over. Run the
    `sha256sum` check again on the host.
+
+   The installer unpacks its SQLite library under `~/.net`, or `$DOTNET_BUNDLE_EXTRACT_BASE_DIR` when set, each time it
+   starts, so run it as a user whose home only that user can write
+   ([host prerequisites](deployment-installer.md#host-prerequisites)).
 
 3. Extract the catalog bundle:
 
