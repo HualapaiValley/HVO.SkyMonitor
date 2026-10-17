@@ -20,6 +20,7 @@ cameraagent="true"
 logichost="true"
 combined="true"
 delivery="true"
+secret_scan_contract="true"
 path_count=0
 
 write_summary_header() {
@@ -34,18 +35,29 @@ write_summary_path() {
 
 finish() {
   if [[ -n "$summary_file" ]]; then
-    printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nExhaustive catalog: **%s**  \nExhaustive shards: **%s**  \nExhaustive installer: **%s**  \nComplete matrix: **%s**  \nComplete reason: %s  \nShared libraries: **%s**  \nCameraAgent: **%s**  \nLogicHost: **%s**  \nCombined: **%s**  \nDelivery: **%s**  \nPath count: %s\n' \
+    printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nExhaustive catalog: **%s**  \nExhaustive shards: **%s**  \nExhaustive installer: **%s**  \nComplete matrix: **%s**  \nComplete reason: %s  \nShared libraries: **%s**  \nCameraAgent: **%s**  \nLogicHost: **%s**  \nCombined: **%s**  \nDelivery: **%s**  \nSecret scan contract: **%s**  \nPath count: %s\n' \
       "$mode" "$reason" "$deployment" "$deployment_reason" "$deployment_catalog" \
       "$deployment_shards" "$deployment_installer" "$complete" "$complete_reason" \
-      "$shared" "$cameraagent" "$logichost" "$combined" "$delivery" "$path_count" >> "$summary_file"
+      "$shared" "$cameraagent" "$logichost" "$combined" "$delivery" "$secret_scan_contract" "$path_count" >> "$summary_file"
   fi
 
-  printf 'CI classification: mode=%s deployment=%s complete=%s shared=%s cameraagent=%s logichost=%s combined=%s delivery=%s reason=%s deployment-reason=%s complete-reason=%s paths=%s\n' \
+  printf 'CI classification: mode=%s deployment=%s complete=%s shared=%s cameraagent=%s logichost=%s combined=%s delivery=%s secret_scan_contract=%s reason=%s deployment-reason=%s complete-reason=%s paths=%s\n' \
     "$mode" "$deployment" "$complete" "$shared" "$cameraagent" "$logichost" "$combined" \
-    "$delivery" "$reason" "$deployment_reason" "$complete_reason" "$path_count" >&2
-  printf 'mode=%s\ndeployment=%s\ndeployment_catalog=%s\ndeployment_shards=%s\ndeployment_installer=%s\ncomplete=%s\nshared=%s\ncameraagent=%s\nlogichost=%s\ncombined=%s\ndelivery=%s\n' \
+    "$delivery" "$secret_scan_contract" "$reason" "$deployment_reason" "$complete_reason" "$path_count" >&2
+  printf 'mode=%s\ndeployment=%s\ndeployment_catalog=%s\ndeployment_shards=%s\ndeployment_installer=%s\ncomplete=%s\nshared=%s\ncameraagent=%s\nlogichost=%s\ncombined=%s\ndelivery=%s\nsecret_scan_contract=%s\n' \
     "$mode" "$deployment" "$deployment_catalog" "$deployment_shards" "$deployment_installer" \
-    "$complete" "$shared" "$cameraagent" "$logichost" "$combined" "$delivery"
+    "$complete" "$shared" "$cameraagent" "$logichost" "$combined" "$delivery" "$secret_scan_contract"
+}
+
+is_secret_scan_contract_path() {
+  # The gitleaks version and archive checksums are pinned in ci:secret-scan.
+  case "$1" in
+    scripts/ci:secret-scan | scripts/test:ci-secret-scan | .gitleaks.toml | *.gitleaksignore | *.gitattributes | \
+      .github/workflows/development-v1.yml | .github/workflows/ci.yml | scripts/ci:classify)
+      return 0
+      ;;
+  esac
+  return 1
 }
 
 is_reduced_path() {
@@ -489,11 +501,15 @@ if ! git diff --name-status --no-renames -z "${base_sha}...${head_sha}" -- > "$d
   exit 0
 fi
 
+# Only a successfully read PR diff may opt out. Non-PR events keep full-mode
+# coverage; missing commits, failed/malformed diffs and empty ranges keep it too.
+secret_scan_contract="false"
 mode="reduced"
 write_summary_header
 
-while IFS= read -r -d '' status; do
-  if ! IFS= read -r -d '' path; then
+while IFS= read -r -d '' status || [[ -n "$status" ]]; do
+  if ! IFS= read -r -d '' path || [[ -z "$path" ]]; then
+    secret_scan_contract="true"
     mode="full"
     deployment="true"
     select_all_deployment_suites
@@ -506,6 +522,9 @@ while IFS= read -r -d '' status; do
 
   ((path_count += 1))
   write_summary_path "$status" "$path"
+  if is_secret_scan_contract_path "$path"; then
+    secret_scan_contract="true"
+  fi
   select_deployment_suites "$path"
 
   if [[ "$status" != "A" && "$status" != "M" ]]; then
@@ -517,6 +536,7 @@ while IFS= read -r -d '' status; do
     complete_reason="deleted, renamed, or type-changed paths require the complete solution matrix"
   elif ! tree_entry="$(git ls-tree "$head_sha" -- ":(literal)$path")" \
     || [[ "${tree_entry%% *}" != "100644" && "${tree_entry%% *}" != "100755" ]]; then
+    secret_scan_contract="true"
     mode="full"
     deployment="true"
     select_complete_matrix
@@ -544,6 +564,7 @@ while IFS= read -r -d '' status; do
 done < "$diff_file"
 
 if [[ "$path_count" -eq 0 ]]; then
+  secret_scan_contract="true"
   mode="full"
   deployment="true"
   select_all_deployment_suites

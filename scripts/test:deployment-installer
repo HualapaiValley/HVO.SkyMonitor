@@ -131,7 +131,7 @@ dotnet publish "$source_root/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.De
   --no-restore --configuration Release --runtime "$host_cli_runtime" --output "$publish_root"
 if [[ "${release_archive:-0}" == 1 ]]; then
   cp "$HVO_INSTALLER_RELEASE_ARCHIVE" "$archive"
-  loaded_reference="$(docker image load --input "$archive" | sed -n 's/^Loaded image ID: //p;s/^Loaded image: //p' | head -n 1)"
+  loaded_reference="$(docker image load --input "$archive" | sed -n 's/^Loaded image ID: //p;s/^Loaded image: //p' | sed -n '1p')"
   test -n "$loaded_reference"
   image_id="$(docker image inspect --format '{{.Id}}' "$loaded_reference")"
   loaded_release_image="$image_id"
@@ -287,7 +287,7 @@ if [[ -n "$baseline_revision" ]]; then
     status_code="$(curl --silent --show-error --output /dev/null --dump-header "$headers" \
       --write-out '%{http_code}' --cookie "$cookie_jar" "http://127.0.0.1:$port/")"
     test "$status_code" = 302
-    tr -d '\r' <"$headers" | grep -Eqi '^location: /Account/ReplaceTemporaryPassword$'
+    tr -d '\r' <"$headers" | grep -Ei '^location: /Account/ReplaceTemporaryPassword$' >/dev/null
   }
 
   owner_session_status_code() {

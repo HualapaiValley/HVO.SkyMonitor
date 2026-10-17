@@ -64,8 +64,9 @@ parse_pairs result "$result_input" result
 for key in "${plan_keys[@]}"; do
   [[ -n "${plan[$key]+set}" ]] || reject "plan is missing '$key'"
 done
+# Drain membership input: a quiet reader can SIGPIPE printf under pipefail.
 for key in "${!plan[@]}"; do
-  printf '%s\n' "${plan_keys[@]}" | grep -Fxq -- "$key" || reject "plan contains unknown key '$key'"
+  printf '%s\n' "${plan_keys[@]}" | grep -Fx -- "$key" >/dev/null || reject "plan contains unknown key '$key'"
 done
 for key in "${result_keys[@]}"; do
   [[ -n "${result[$key]+set}" ]] || reject "results are missing '$key'"
@@ -75,7 +76,7 @@ for key in "${result_keys[@]}"; do
   esac
 done
 for key in "${!result[@]}"; do
-  printf '%s\n' "${result_keys[@]}" | grep -Fxq -- "$key" || reject "results contain unknown job '$key'"
+  printf '%s\n' "${result_keys[@]}" | grep -Fx -- "$key" >/dev/null || reject "results contain unknown job '$key'"
 done
 
 case "${plan[mode]}" in
