@@ -62,6 +62,14 @@ too, because Preflight runs on drafts.
     merge added is scanned.
   - A type change, such as a symlink replaced by a regular file, is read like
     any added file. gitleaks does not read deleted or binary files.
+  - A file that Git shows as a binary diff gives gitleaks no text, even when
+    its new content is text: a binary file replaced by text, a binary conflict
+    that a merge resolved as text, or a text file that `.gitattributes` marks
+    as binary (`-diff`). When the new blob is text by Git's own rule (no NUL
+    byte in its first 8000 bytes), the script reads that commit a second time
+    with `git log --text`. Its findings keep their commit and path, so the
+    exceptions apply to them unchanged, and a finding read twice is reported
+    once.
   - A merge of more than two parents is refused, because Git shows no diff for
     one.
   - Other branches in the clone are not scanned; their own pull requests scan
@@ -82,13 +90,26 @@ too, because Preflight runs on drafts.
     mode changes, empty or binary files, and merges whose resolution added
     nothing. The result line reports them separately.
   - The scan fails if gitleaks reports a different number of commits or logs any
-    error, so a partial, cut-short or empty scan cannot pass.
+    error, so a partial, cut-short or empty scan cannot pass. A problem git
+    reports while gitleaks reads the history, such as a malformed
+    `.gitattributes` line, fails it too.
+  - Configuration cannot hide content. `--root` shows the root commit under
+    `log.showRoot=false`. The other `git log` options pin textconv and external
+    diff drivers, the `a/` and `b/` prefixes, `diff.relative`, colour, rename
+    detection, the diff algorithm and the commit header format, and
+    `GIT_CONFIG_COUNT` pins `core.bigFileThreshold` and `core.quotePath`. Both
+    override every configuration file, the repository's `.git/config` included,
+    which `GIT_CONFIG_GLOBAL=/dev/null` would not. Replacement refs are ignored
+    (`GIT_NO_REPLACE_OBJECTS=1`).
 - **Output.** The script prints its own counts and, for a finding, the rule,
   path, line and commit.
   - gitleaks runs with `--redact`.
-  - Its log is never shown, because it can quote `.gitleaks.toml` or scanned
-    text: a malformed expression makes gitleaks panic and print it. A failure is
-    described in the script's own words.
+  - No tool's diagnostics are shown, because git and gitleaks can quote
+    `.gitleaks.toml`, `.gitattributes` or scanned text: a malformed expression
+    makes gitleaks panic and print it, and git quotes a malformed attribute
+    name. A failure is described in the script's own words.
+  - A finding's path is printed only when it is printable ASCII; any other
+    path is replaced by a placeholder.
   - Exit status 0 means no findings, 1 findings, and 2 that the scan could not
     run.
 - **Exceptions.** `.gitleaks.toml` is the only place to record one. Each entry
@@ -118,20 +139,32 @@ Run the scan and its contract test locally the way CI does:
 ./scripts/test:ci-secret-scan
 ```
 
-On home-dev-01 at `ab21a86e`, the script accounted for all 2,471 reachable
-commits. gitleaks scanned the 1,953 that added text (95 MB of patches), 79 of
+On home-dev-01 at `c97f5e54`, the script accounted for all 2,473 reachable
+commits. gitleaks scanned the 1,955 that added text (95 MB of patches), 79 of
 them merge resolutions, and the script took 5.6 s in total with a cached
-archive (6.1 s with the download). The contract test's 25 cases took 9.3 s.
+archive. Git shows 28 added or changed files in the history as binary diffs;
+each one's new blob is binary, so no commit was read again as text. The
+contract test's 35 cases took about 17 s.
 
 The contract test runs the real scan against fixture repositories with an
 obviously fake credential assembled at run time. It fails if any output shows
-that credential. Its cases cover:
+that credential or holds a character that is not printable ASCII. Its cases
+cover:
 
 - a credential a later commit deleted, an inline `gitleaks:allow` comment, and
   another branch;
 - credentials that only a conflict resolution, or a merge to a file neither
   side changed, added;
 - a symlink replaced by a file holding a credential;
+- text that Git shows as a binary diff: a binary conflict resolved as text, a
+  binary file replaced by text (with a file read in both passes reported once),
+  a file that `.gitattributes` marks as binary, and clean text that replaced a
+  binary file;
+- a credential only in the root commit under `log.showRoot=false`, and again
+  under hostile repository configuration and a replacement ref;
+- output: a malformed `.gitattributes` attribute name, git failing before the
+  scan, and a revision, each holding the credential, and a finding in a path
+  with a control character;
 - seven commit shapes that add no text;
 - refusals: an octopus merge, a malformed `.gitleaks.toml` expression, a scan
   cut short, git failing under gitleaks, a shallow clone, a `.gitleaksignore`
