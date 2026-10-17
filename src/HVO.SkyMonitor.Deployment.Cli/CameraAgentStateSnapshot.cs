@@ -320,7 +320,7 @@ internal static class CameraAgentStateSnapshot
         ArgumentNullException.ThrowIfNull(snapshot);
         return string.Create(
             CultureInfo.InvariantCulture,
-            $"Warning: restoring the CameraAgent databases from the snapshot taken at {snapshot.RecordedUtc:yyyy-MM-ddTHH:mm:ssZ} (snapshot {snapshot.SnapshotId:D}). Every database change made after that point is lost, including captures, settings and accounts recorded since then. Frames and other files written since then stay on disk but are no longer indexed.");
+            $"Warning: restoring the CameraAgent databases from the snapshot taken at {snapshot.RecordedUtc:yyyy-MM-ddTHH:mm:ssZ} (snapshot {snapshot.SnapshotId:D}). Every database change made after that point is lost, including captures, settings and accounts recorded since then. Files written since then stay on disk. When it starts, CameraAgent records again the raw frames it can verify and may process and upload them again; other products written since then are no longer indexed.");
     }
 
     /// <summary>The <c>--json</c> form of <see cref="Warning"/>, as the one line written to standard error.</summary>

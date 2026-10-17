@@ -630,6 +630,59 @@ public sealed class RetentionBackgroundServiceTests
     }
 
     [TestMethod]
+    public async Task ApplyRetentionAsync_AfterASnapshotRollback_AnArtifactWhoseOutboxRowWasRewoundExpiresOnItsAgeSchedule()
+    {
+        // An installer snapshot rollback (#1314) rewinds each storage root's artifact outbox while the stored files
+        // stay. The outbox never scans for files, so an artifact whose pending row was lost is not queued for upload
+        // again; it loses its upload hold and is removed on the root's ordinary age schedule.
+        var root = CreateRoot();
+        var snapshot = Path.Combine(Path.GetTempPath(), $"hvo-outbox-snapshot-{Guid.NewGuid():N}.db");
+        try
+        {
+            using (var outbox = new SqliteArtifactOutbox())
+            {
+                await outbox.InitializeAsync(root, CancellationToken.None).ConfigureAwait(false);
+            }
+            var database = Path.Combine(root, "outbox", "artifact-outbox.db");
+            using (var source = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={database};Pooling=False"))
+            using (var copy = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={snapshot};Pooling=False"))
+            {
+                await source.OpenAsync().ConfigureAwait(false);
+                await copy.OpenAsync().ConfigureAwait(false);
+                source.BackupDatabase(copy);
+            }
+            var stored = await CreateStoredArtifactAsync(root, "stored-since-snapshot", Guid.NewGuid()).ConfigureAwait(false);
+            using (var outbox = new SqliteArtifactOutbox())
+            {
+                await outbox.EnqueueAsync(root, CreateManifest(root, stored.ArtifactId, stored.RelativePath), CancellationToken.None)
+                    .ConfigureAwait(false);
+                await CreateService(outbox).ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(File.Exists(stored.PayloadPath), "A pending upload holds its expired artifact.");
+            }
+
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            foreach (var suffix in new[] { string.Empty, "-wal", "-shm", "-journal" }) File.Delete(database + suffix);
+            File.Copy(snapshot, database);
+
+            using (var outbox = new SqliteArtifactOutbox())
+            {
+                Assert.IsNull(await outbox.ClaimAsync(root, "worker", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false),
+                    "The rewound outbox queued the stored artifact again.");
+                await CreateService(outbox).ApplyRetentionAsync(CreateConfig(root), CancellationToken.None).ConfigureAwait(false);
+            }
+
+            Assert.IsFalse(File.Exists(stored.PayloadPath));
+            Assert.IsFalse(File.Exists(stored.MetadataPath));
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            DeleteRoot(root);
+            File.Delete(snapshot);
+        }
+    }
+
+    [TestMethod]
     public async Task ApplyRetentionAsync_MissingPendingPayloadFailsClosed()
     {
         var root = CreateRoot();

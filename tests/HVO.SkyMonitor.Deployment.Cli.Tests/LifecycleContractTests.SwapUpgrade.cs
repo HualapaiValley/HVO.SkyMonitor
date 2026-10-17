@@ -145,6 +145,9 @@ public sealed partial class LifecycleContractTests
         Assert.IsNotNull(journal.StateSnapshotRestoredUtc);
         var warning = error.ToString();
         StringAssert.Contains(warning, "Every database change made after that point is lost", StringComparison.Ordinal);
+        // CameraAgent records verifiable raw frames written since the snapshot again at startup, so the warning never
+        // promises that every later frame stays unindexed.
+        StringAssert.Contains(warning, "records again the raw frames it can verify", StringComparison.Ordinal);
         StringAssert.Contains(warning, journal.StateSnapshot.SnapshotId.ToString("D"), StringComparison.Ordinal);
         if (json)
         {

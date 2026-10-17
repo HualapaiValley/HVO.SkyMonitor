@@ -147,6 +147,62 @@ public sealed class DerivedProductReconcilerTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task RunAsync_AfterASnapshotRollback_KeepsAProductWrittenSinceTheSnapshotThroughTheWindowThenQuarantinesIt()
+    {
+        // An installer snapshot rollback (#1314) rewinds the processing store while the derived files written since
+        // stay on disk, unowned. They are kept through the orphan recovery window, in case reprocessing claims them
+        // again, and then moved to processing quarantine rather than deleted.
+        var root = CreateRoot();
+        try
+        {
+            byte[] payload = [7, 7, 7, 7];
+            var template = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono8, payload.Length, 1, payload.Length, payload);
+            var relativePayloadPath = $"derived/2026/08/25/Calibrated/{template.Descriptor.Artifact.ArtifactId:N}.bin";
+            var manifest = template with { RelativeArtifactPath = relativePayloadPath, ProducerStepId = "normalize" };
+            var payloadPath = Path.Combine(root, relativePayloadPath.Replace('/', Path.DirectorySeparatorChar));
+            var sidecarPath = Path.ChangeExtension(payloadPath, ".json");
+            Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
+            await File.WriteAllBytesAsync(payloadPath, payload).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(sidecarPath, CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
+            var clock = new OffsetTimeProvider();
+            var options = new DerivedProductLifecycleOptions();
+
+            using (var store = await CreateStoreAsync(root).ConfigureAwait(false))
+            {
+                var first = await new DerivedProductReconciler(root, store, options, clock)
+                    .RunAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(1, first.Recoverable);
+                Assert.AreEqual(0, first.Quarantined);
+                Assert.IsTrue(File.Exists(payloadPath));
+
+                clock.Offset = TimeSpan.FromMinutes(options.OrphanRecoveryWindowMinutes + 1);
+                var expired = await new DerivedProductReconciler(root, store, options, clock)
+                    .RunAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(1, expired.Quarantined);
+            }
+
+            Assert.IsFalse(File.Exists(payloadPath));
+            Assert.IsFalse(File.Exists(sidecarPath));
+            var quarantined = Directory.EnumerateFiles(Path.Combine(root, "processing-quarantine"), "*", SearchOption.AllDirectories)
+                .Select(Path.GetFileName).ToArray();
+            CollectionAssert.Contains(quarantined, Path.GetFileName(payloadPath), "The unowned product was deleted rather than quarantined.");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class OffsetTimeProvider : TimeProvider
+    {
+        public TimeSpan Offset { get; set; }
+
+        public override DateTimeOffset GetUtcNow() => System.GetUtcNow() + Offset;
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task RunAsync_ResumesPlannedQuarantineAfterFilesMoved()
     {
         var root = CreateRoot();
