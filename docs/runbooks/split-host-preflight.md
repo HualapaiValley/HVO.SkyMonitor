@@ -280,7 +280,7 @@ never skips or synthesizes preflight. Each target explicitly declares
 root helper, password, interactive privilege, or ownership-escalation path.
 The immediate parent of a missing runtime root must already be owned and writable
 by that SSH user while remaining non-writable to group and world.
-The example assumes packaging has provisioned `/var/lib/hvo/skymonitor`, plus
+The example assumes packaging has provisioned `/var/lib/hvo-sky`, plus
 its `cameraagents`, `logichosts`, and `catalogs` children, to user `hvo` without
 making them group/world writable. Application roots are UUID children beneath
 their component directory.

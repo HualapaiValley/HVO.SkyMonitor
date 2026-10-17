@@ -490,8 +490,8 @@ public sealed class ControlPageTests
             Assert.AreEqual("/operations/schedule?action=override", cut.Find("#control-override").GetAttribute("href"));
             Assert.AreEqual("/operations/environment?action=acquire", cut.Find("#control-acquire").GetAttribute("href"));
             StringAssert.StartsWith(cut.Find("#control-drain-unavailable").TextContent, "No drain command exists.", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Find("#control-upgrade-unavailable").TextContent, "hvo-skymonitor cameraagent upgrade", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Find("#control-purge-unavailable").TextContent, "hvo-skymonitor cameraagent purge", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find("#control-upgrade-unavailable").TextContent, "hvo-sky-install cameraagent upgrade", StringComparison.Ordinal);
+            StringAssert.Contains(cut.Find("#control-purge-unavailable").TextContent, "hvo-sky-install cameraagent purge", StringComparison.Ordinal);
             Assert.AreEqual(3, cut.FindAll("button[disabled][aria-describedby$='-unavailable']")
                 .Count(button => button.GetAttribute("aria-describedby") is "control-drain-unavailable" or "control-upgrade-unavailable" or "control-purge-unavailable"));
         });

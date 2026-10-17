@@ -537,7 +537,7 @@ deployment_paths=(
   ".env.template"
   "docker-compose.apps.yml"
   "scripts/deploy:environment"
-  "scripts/install-hvo-skymonitor.sh"
+  "scripts/install-hvo-sky-install.sh"
   "scripts/deploy/common.sh"
   "scripts/test:deploy-environment"
   "scripts/deploy-contracts/smoke.sh"

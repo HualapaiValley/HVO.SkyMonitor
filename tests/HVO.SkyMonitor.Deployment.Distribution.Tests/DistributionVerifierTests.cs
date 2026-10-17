@@ -645,8 +645,8 @@ public sealed partial class DistributionVerifierTests
                 DateTimeOffset.Parse("2026-08-24T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture)),
             new DistributionSigningIdentity(DistributionTrustRoot.Algorithm, TrustRoot.KeyId),
             [
-                Artifact(DistributionArtifactRole.Installer, "hvo-skymonitor-installer-v1.0.0-linux-x64.tar.gz"),
-                Artifact(DistributionArtifactRole.Installer, "hvo-skymonitor-installer-v1.0.0-linux-arm64.tar.gz") with
+                Artifact(DistributionArtifactRole.Installer, "hvo-sky-install-v1.0.0-linux-x64.tar.gz"),
+                Artifact(DistributionArtifactRole.Installer, "hvo-sky-install-v1.0.0-linux-arm64.tar.gz") with
                 {
                     OperatingSystem = "linux",
                     Architecture = "arm64"

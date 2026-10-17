@@ -2,13 +2,13 @@
   "schemaVersion": 8,
   "environment": "observatory-production",
   "installationId": "observatory-main",
-  "productRoot": "/var/lib/hvo/skymonitor",
+  "productRoot": "/var/lib/hvo-sky",
   "source": {
     "revision": "0000000000000000000000000000000000000000",
     "dirtyDisposition": "require-clean"
   },
   "secretSource": {
-    "path": "/home/operator/.config/hvo-skymonitor/deploy.env",
+    "path": "/home/operator/.config/hvo-sky/deploy.env",
     "requiredReferences": ["SQLSERVER_PASSWORD", "SQL_INIT_PASSWORD", "SQL_RUNTIME_PASSWORD", "SQL_INIT_CONNECTION", "SQL_RUNTIME_CONNECTION", "REDIS_ADMIN_PASSWORD", "REDIS_PASSWORD", "SMTP_USERNAME", "SMTP_PASSWORD", "OIDC_SIGNING_PASSWORD", "OIDC_ENCRYPTION_PASSWORD", "LOGICHOST_OWNER_API_KEY", "CAMERA_AGENT_OAUTH_CLIENT_SECRET", "CAMERA_EAST_OWNER_PASSWORD"]
   },
   "observatory": { "name": "Main Observatory", "latitudeDegrees": 19.5362, "longitudeDegrees": -155.5763, "elevationMeters": 3397, "timeZoneId": "Pacific/Honolulu" },
@@ -25,7 +25,7 @@
     "expectedHostName": "logic-01",
     "expectedHostIdentity": "11111111111111111111111111111111",
     "expectedDockerDaemonIdentity": "LOGICDAEMON0001",
-    "runtimeRoot": "/var/lib/hvo/skymonitor/logichosts/11111111-1111-4111-8111-111111111111",
+    "runtimeRoot": "/var/lib/hvo-sky/logichosts/11111111-1111-4111-8111-111111111111",
     "runtimeOwner": "hvo",
     "internalEndpoint": "http://127.0.0.1:5174",
     "publicEndpoint": "https://sky.example.net:5174",
@@ -46,7 +46,7 @@
     "expectedHostName": "camera-east",
     "expectedHostIdentity": "22222222222222222222222222222222",
     "expectedDockerDaemonIdentity": "CAMERADAEMON0001",
-    "runtimeRoot": "/var/lib/hvo/skymonitor/cameraagents/22222222-2222-4222-8222-222222222222",
+    "runtimeRoot": "/var/lib/hvo-sky/cameraagents/22222222-2222-4222-8222-222222222222",
     "runtimeOwner": "hvo",
     "internalEndpoint": "http://127.0.0.1:5130",
     "publicEndpoint": "https://camera-east.example.net:5130",
@@ -73,7 +73,7 @@
     "length": 9302016,
     "rowCount": 119625,
     "bundlePath": "/home/operator/catalogs/hyg-v4.2-p3-s2-r1",
-    "installRoot": "/var/lib/hvo/skymonitor/catalogs/hyg-v42-production",
+    "installRoot": "/var/lib/hvo-sky/catalogs/hyg-v42-production",
     "allowFixture": false
   }],
   "images": {

@@ -12,7 +12,7 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 public sealed partial class SoftwarePage : SiteTimeComponent, IDisposable
 {
     private const string AvailabilityUnavailableReason =
-        "This page never contacts a package source. hvo-skymonitor status reports what is installed, and hvo-skymonitor catalog install adds a package.";
+        "This page never contacts a package source. hvo-sky-install status reports what is installed, and hvo-sky-install catalog install adds a package.";
     private const string VerifyUnavailableReason =
         "The selected catalog's checksum is verified every time CameraAgent starts, and it refuses to start on a mismatch.";
     private readonly CancellationTokenSource _lifetime = new();

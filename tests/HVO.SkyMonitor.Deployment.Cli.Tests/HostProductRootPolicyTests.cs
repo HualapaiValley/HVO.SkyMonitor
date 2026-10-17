@@ -7,7 +7,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// The root-owned host product-root policy. Each case states its own policy location below a private directory the
 /// test user owns, carried exactly as production carries <see cref="HostPolicyLocation.Production"/>, so the
 /// ownership, mode, link, existence, and mount rules run against real files without root and without touching the
-/// host's <c>/etc/hvo</c>.
+/// host's <c>/etc/hvo-sky</c>.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
@@ -31,7 +31,7 @@ public sealed class HostProductRootPolicyTests
         Assert.AreEqual(new ProductionProductRoot(host.DefaultRoot, FromPolicy: false), HostProductRootPolicy.Resolve(host.Location));
 
         // A policy directory without the file is still no policy.
-        host.CreateDirectory("etc/hvo/skymonitor");
+        host.CreateDirectory("etc/hvo-sky");
         Assert.AreEqual(new ProductionProductRoot(host.DefaultRoot, FromPolicy: false), HostProductRootPolicy.Resolve(host.Location));
         Assert.AreEqual(ProductionProductRoot.Default, new ProductionProductRoot(InstallRequest.DefaultProductRoot, false));
     }
@@ -49,9 +49,9 @@ public sealed class HostProductRootPolicyTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("etc/hvo/skymonitor/host.json", 0b110_110_100, DisplayName = "policy-group-writable")]
-    [DataRow("etc/hvo/skymonitor/host.json", 0b110_100_110, DisplayName = "policy-other-writable")]
-    [DataRow("etc/hvo", 0b111_111_101, DisplayName = "policy-directory-group-writable")]
+    [DataRow("etc/hvo-sky/host.json", 0b110_110_100, DisplayName = "policy-group-writable")]
+    [DataRow("etc/hvo-sky/host.json", 0b110_100_110, DisplayName = "policy-other-writable")]
+    [DataRow("etc/hvo-sky", 0b111_111_101, DisplayName = "policy-directory-group-writable")]
     [DataRow("srv/data", 0b111_101_111, DisplayName = "root-component-other-writable")]
     [DataRow("srv/data/hvo-skymonitor", 0b111_111_101, DisplayName = "root-group-writable")]
     public void Resolve_PathWritableByGroupOrOthers_IsRefused(string relative, int mode)
@@ -109,9 +109,9 @@ public sealed class HostProductRootPolicyTests
         StringAssert.Contains(policyLink.Message, "must not be a symbolic link", StringComparison.Ordinal);
         File.Delete(policy);
 
-        var directory = Path.Combine(host.TrustRoot, "etc/hvo");
-        Directory.Move(directory, Path.Combine(host.TrustRoot, "etc/hvo-real"));
-        File.CreateSymbolicLink(directory, Path.Combine(host.TrustRoot, "etc/hvo-real"));
+        var directory = Path.Combine(host.TrustRoot, "etc/hvo-sky");
+        Directory.Move(directory, Path.Combine(host.TrustRoot, "etc/hvo-sky-real"));
+        File.CreateSymbolicLink(directory, Path.Combine(host.TrustRoot, "etc/hvo-sky-real"));
         var directoryLink = Assert.ThrowsExactly<InstallerException>(() => HostProductRootPolicy.Resolve(host.Location));
         StringAssert.Contains(directoryLink.Message, "must not be a symbolic link", StringComparison.Ordinal);
     }
@@ -422,7 +422,7 @@ public sealed class HostProductRootPolicyTests
         Assert.AreEqual(CommandLine.GeneralUsage(), ((HelpCommand)CommandLine.ParseCommand(["--help"], context)).Usage);
         StringAssert.StartsWith(
             ((HelpCommand)CommandLine.ParseCommand(["status", "--help"], context)).Usage,
-            "Usage: hvo-skymonitor status [options]",
+            "Usage: hvo-sky-install status [options]",
             StringComparison.Ordinal);
         Assert.ThrowsExactly<InstallerException>(() => CommandLine.ParseCommand(["status"], context));
     }
@@ -549,8 +549,8 @@ public sealed class HostProductRootPolicyTests
 
         string[] defaultNamespaces =
         [
-            "/var/lib/hvo", "/var/lib/hvo/skymonitor", "/var/lib/hvo/skymonitor/cameraagents",
-            "/var/lib/hvo/skymonitor/logichosts", "/var/lib/hvo/skymonitor/catalogs"
+            "/var/lib/hvo-sky", "/var/lib/hvo-sky/cameraagents",
+            "/var/lib/hvo-sky/logichosts", "/var/lib/hvo-sky/catalogs"
         ];
         string[] policyNamespaces =
         [
@@ -558,9 +558,9 @@ public sealed class HostProductRootPolicyTests
             "/srv/data/hvo-skymonitor/logichosts", "/srv/data/hvo-skymonitor/catalogs"
         ];
         CollectionAssert.AreEqual(
-            defaultNamespaces, PrivilegedPreparation.RootOwnedNamespaces(InstallRequest.DefaultProductRoot, fromPolicy: false).ToArray());
+            defaultNamespaces, PrivilegedPreparation.RootOwnedNamespaces(InstallRequest.DefaultProductRoot).ToArray());
         CollectionAssert.AreEqual(
-            policyNamespaces, PrivilegedPreparation.RootOwnedNamespaces(policy.Path, fromPolicy: true).ToArray());
+            policyNamespaces, PrivilegedPreparation.RootOwnedNamespaces(policy.Path).ToArray());
 
         Assert.AreSame(PrivilegedPurgeNamespace.DefaultNamespaceComponents, PrivilegedPurgeNamespace.NamespaceComponents(ProductionProductRoot.Default));
         CollectionAssert.AreEqual(
@@ -905,14 +905,14 @@ public sealed class HostProductRootPolicyTests
             TrustRoot = Path.Combine(Path.GetTempPath().TrimEnd('/'), $"hvo-host-policy-{Guid.NewGuid():N}");
             Directory.CreateDirectory(TrustRoot);
             File.SetUnixFileMode(TrustRoot, SharedDirectory);
-            DefaultRoot = Path.Combine(TrustRoot, "var/lib/hvo/skymonitor");
+            DefaultRoot = Path.Combine(TrustRoot, "var/lib/hvo-sky");
             Location = new HostPolicyLocation(
-                Path.Combine(TrustRoot, "etc/hvo/skymonitor/host.json"),
+                Path.Combine(TrustRoot, "etc/hvo-sky/host.json"),
                 TrustRoot,
                 NativeLinux.getuid(),
                 NativeLinux.getgid(),
                 DefaultRoot,
-                Path.Combine(TrustRoot, "run/hvo-skymonitor-host-policy.lock"));
+                Path.Combine(TrustRoot, "run/hvo-sky-host-policy.lock"));
             CreateDirectory("run");
         }
 
@@ -942,7 +942,7 @@ public sealed class HostProductRootPolicyTests
 
         public void WritePolicyText(string content)
         {
-            CreateDirectory("etc/hvo/skymonitor");
+            CreateDirectory("etc/hvo-sky");
             File.WriteAllText(Location.PolicyPath, content);
             File.SetUnixFileMode(Location.PolicyPath, SharedFile);
         }
