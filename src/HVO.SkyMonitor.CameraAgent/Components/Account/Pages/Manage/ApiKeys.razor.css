@@ -1,0 +1,25 @@
+/* The key list and the access choice; the account shell styles headings, panels, fields and buttons. */
+.api-keys {
+    display: grid;
+    gap: 1rem;
+}
+
+.api-keys ::deep select {
+    width: 100%;
+    min-height: 2.15rem;
+    padding: .4rem .5rem;
+    border: 1px solid var(--border);
+    border-radius: .35rem;
+    color: var(--text);
+    background: var(--surface);
+    font-size: .72rem;
+}
+
+.api-keys .ops-table-wrap { overflow-x: auto; }
+.api-keys .ops-table { width: 100%; border-collapse: collapse; font-size: .65rem; }
+.api-keys .ops-table th { padding: .5rem; border-bottom: 1px solid var(--border-strong); color: var(--muted); font-size: .6rem; letter-spacing: .05em; text-align: left; text-transform: uppercase; }
+.api-keys .ops-table td { padding: .58rem .5rem; border-bottom: 1px solid var(--border); color: var(--muted-strong); }
+.api-keys .ops-table tr:last-child td { border-bottom: 0; }
+.api-keys code { font-size: .68rem; overflow-wrap: anywhere; }
+.api-keys .button.small { min-height: 1.9rem; padding: .3rem .6rem; }
+.api-keys .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

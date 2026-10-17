@@ -406,6 +406,26 @@ remain possible. Deletion is irreversible and removes the SQL row. There is no
 cross-user administrator page, so a separate incident-approved implementation
 is required when the owner cannot authenticate.
 
+### CameraAgent API keys
+
+CameraAgent keys are local to one CameraAgent and separate from LogicHost keys.
+
+1. Sign in to CameraAgent as the site owner and open `/Account/Manage/ApiKeys`.
+2. Choose `Read` unless the client changes settings or runs operations, then
+   create the key. Copy it from that page straight into the client's credential
+   store; it is shown once and cannot be shown again.
+3. Send it only as `Authorization: Bearer <key>` to `/api/v1/operations/...`.
+   A key in a URL is refused, and so is a key on any other path.
+4. Rotate make-before-break: create a new key, move each client to it, then
+   revoke the old one on the same page. Revocation takes effect at the next
+   request.
+5. Review use by key identifier in the `API key ... authenticated` and
+   `Rejected an API key` events; the key itself is never logged.
+
+Owner password recovery through `owner.sock` revokes every CameraAgent key, so
+recreate keys after a recovery. Keys also stop working while the owner must
+replace a temporary password, and when the configured owner changes.
+
 ## OAuth Client Credentials
 
 Confidential clients are configuration-seeded with these exact sections:

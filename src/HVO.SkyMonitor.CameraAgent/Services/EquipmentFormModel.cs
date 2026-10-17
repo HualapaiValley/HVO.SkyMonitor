@@ -1,8 +1,8 @@
 using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Settings;
 
 namespace HVO.SkyMonitor.CameraAgent.Services;
 
@@ -12,16 +12,13 @@ internal sealed class EquipmentFormModel
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
-    /// <summary>The VirtualSky sky lighting choices, in display order; the first is the omitted default.</summary>
+    /// <summary>
+    /// The VirtualSky sky lighting choices from the settings catalogue, in display order; the first is the omitted
+    /// default.
+    /// </summary>
     public static IReadOnlyList<(string Value, string Label, string Help)> SkyLightingChoices { get; } =
-    [
-        (nameof(VirtualSkyIlluminationMode.LegacyScalarSolar), "Uniform daylight",
-            "The whole sky brightens evenly with the real Sun's altitude. This is the default."),
-        (nameof(VirtualSkyIlluminationMode.SolarDriven), "Realistic daylight",
-            "A clear-sky approximation: a bounded blue sky and a warm horizon on the side facing the real Sun."),
-        (nameof(VirtualSkyIlluminationMode.ControlledNight), "No daylight",
-            "A night sky at the real time, around the clock: stars keep moving, and capture control treats every frame as night.")
-    ];
+        [.. CameraAgentSettingsCatalogue.SkyLighting.AllowedValues!.Select(choice =>
+            (Value: choice.Value, Label: choice.Label, Help: choice.Description))];
 
     public string ModuleType { get; set; } = string.Empty;
     /// <summary>The VirtualSky sky lighting choice; empty for other modules or when the basis choice cannot be read.</summary>

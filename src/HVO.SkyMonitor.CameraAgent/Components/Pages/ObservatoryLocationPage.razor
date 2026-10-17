@@ -7,6 +7,7 @@
 @using HVO.SkyMonitor.CameraAgent.Common.SiteProfile
 @using HVO.SkyMonitor.CameraAgent.Common.SkyMap
 @using HVO.SkyMonitor.CameraAgent.Services
+@using HVO.SkyMonitor.CameraAgent.Settings
 @attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
 
@@ -388,8 +389,8 @@ else
                 @if (_site.ObjectLimit is { } objectLimit)
                 {
                     <fieldset class="site-settings-form" disabled="@(_busy || _loading || _site.Profile.Problem is not null)">
-                        <legend class="visually-hidden">Scene object limit</legend>
-                        <label class="ops-field">Scene object limit (brightest objects, 1 to @CameraAgentSkyMapProjection.MaximumConfigurableObjects.ToString("N0", System.Globalization.CultureInfo.InvariantCulture))<input id="site-object-limit" inputmode="numeric" autocomplete="off" placeholder="@CameraAgentSkyMapProjection.DefaultMaximumObjects.ToString(System.Globalization.CultureInfo.InvariantCulture)" @bind="_objectLimitInput" @bind:after="ObjectLimitFormChanged" /></label>
+                        <legend class="visually-hidden">@ObjectLimit.Title</legend>
+                        <label class="ops-field">@ObjectLimitLabel<input id="site-object-limit" inputmode="numeric" autocomplete="off" placeholder="@ObjectLimitPlaceholder" @bind="_objectLimitInput" @bind:after="ObjectLimitFormChanged" /></label>
                         <div class="site-settings-actions">
                             <button type="button" class="button secondary" @onclick="() => SaveObjectLimitAsync(useDefault: false)">Save limit</button>
                             <button type="button" class="text-button" disabled="@(objectLimit.SavedValue is null)" @onclick="() => SaveObjectLimitAsync(useDefault: true)">Use default</button>
@@ -438,10 +439,10 @@ else
             <fieldset disabled="@_busy">
                 <legend class="visually-hidden">Location draft</legend>
                 <div class="site-dialog-grid">
-                    <label class="ops-field">Latitude (degrees, north positive)<input id="site-latitude" inputmode="decimal" autocomplete="off" @bind="_latitudeInput" @bind:after="LocationFormChanged" /></label>
-                    <label class="ops-field">Longitude (degrees, east positive)<input id="site-longitude" inputmode="decimal" autocomplete="off" @bind="_longitudeInput" @bind:after="LocationFormChanged" /></label>
-                    <label class="ops-field">Elevation (metres)<input id="site-elevation" inputmode="decimal" autocomplete="off" @bind="_elevationInput" @bind:after="LocationFormChanged" /></label>
-                    <label class="ops-field">Time zone (IANA)<input id="site-time-zone" autocomplete="off" @bind="_timeZoneInput" @bind:after="LocationFormChanged" /></label>
+                    <label class="ops-field">@CameraAgentSettingsCatalogue.Latitude.Title (degrees, north positive)<input id="site-latitude" inputmode="decimal" autocomplete="off" @bind="_latitudeInput" @bind:after="LocationFormChanged" /></label>
+                    <label class="ops-field">@CameraAgentSettingsCatalogue.Longitude.Title (degrees, east positive)<input id="site-longitude" inputmode="decimal" autocomplete="off" @bind="_longitudeInput" @bind:after="LocationFormChanged" /></label>
+                    <label class="ops-field">@CameraAgentSettingsCatalogue.Elevation.Title (@CameraAgentSettingsCatalogue.Elevation.Unit)<input id="site-elevation" inputmode="decimal" autocomplete="off" @bind="_elevationInput" @bind:after="LocationFormChanged" /></label>
+                    <label class="ops-field">@CameraAgentSettingsCatalogue.TimeZone.Title (IANA)<input id="site-time-zone" autocomplete="off" maxlength="@CameraAgentSettingsCatalogue.TimeZone.MaximumLength" @bind="_timeZoneInput" @bind:after="LocationFormChanged" /></label>
                 </div>
                 <label class="ops-field">Reason (recorded with the version)<input id="site-location-reason" autocomplete="off" maxlength="512" @bind="_locationReasonInput" @bind:after="LocationFormChanged" /></label>
             </fieldset>
@@ -452,10 +453,10 @@ else
             <fieldset disabled="@_busy">
                 <legend class="visually-hidden">Site profile</legend>
                 <div class="site-dialog-grid">
-                    <label class="ops-field">Observatory name<input id="site-observatory-name" autocomplete="off" maxlength="@SiteProfileLimits.MaximumNameLength" @bind="_observatoryNameInput" @bind:after="ProfileFormChanged" /></label>
-                    <label class="ops-field">Camera name<input id="site-camera-name" autocomplete="off" maxlength="@SiteProfileLimits.MaximumNameLength" @bind="_cameraNameInput" @bind:after="ProfileFormChanged" /></label>
-                    <label class="ops-field">Owner name<input id="site-owner-name" autocomplete="off" maxlength="@SiteProfileLimits.MaximumNameLength" @bind="_ownerNameInput" @bind:after="ProfileFormChanged" /></label>
-                    <label class="ops-field">Owner contact<input id="site-owner-contact" autocomplete="off" maxlength="@SiteProfileLimits.MaximumContactLength" @bind="_ownerContactInput" @bind:after="ProfileFormChanged" /></label>
+                    <label class="ops-field">@CameraAgentSettingsCatalogue.ObservatoryName.Title<input id="site-observatory-name" autocomplete="off" maxlength="@CameraAgentSettingsCatalogue.ObservatoryName.MaximumLength" @bind="_observatoryNameInput" @bind:after="ProfileFormChanged" /></label>
+                    <label class="ops-field">@CameraAgentSettingsCatalogue.CameraName.Title<input id="site-camera-name" autocomplete="off" maxlength="@CameraAgentSettingsCatalogue.CameraName.MaximumLength" @bind="_cameraNameInput" @bind:after="ProfileFormChanged" /></label>
+                    <label class="ops-field">@CameraAgentSettingsCatalogue.OwnerName.Title<input id="site-owner-name" autocomplete="off" maxlength="@CameraAgentSettingsCatalogue.OwnerName.MaximumLength" @bind="_ownerNameInput" @bind:after="ProfileFormChanged" /></label>
+                    <label class="ops-field">@CameraAgentSettingsCatalogue.OwnerContact.Title<input id="site-owner-contact" autocomplete="off" maxlength="@CameraAgentSettingsCatalogue.OwnerContact.MaximumLength" @bind="_ownerContactInput" @bind:after="ProfileFormChanged" /></label>
                 </div>
                 @if (site.OwnerLoginEmail is { } email && string.IsNullOrWhiteSpace(_ownerContactInput))
                 {

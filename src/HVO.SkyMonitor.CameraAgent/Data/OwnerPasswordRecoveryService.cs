@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Configuration;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
@@ -134,6 +135,7 @@ internal sealed class OwnerPasswordRecoveryService(
             return Reject(operationId, "stale-challenge", OwnerPasswordRecoveryOutcome.Conflict).Outcome;
         }
 
+        var revokedApiKeys = 0;
         await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken)
             .ConfigureAwait(false);
         try
@@ -169,6 +171,9 @@ internal sealed class OwnerPasswordRecoveryService(
                 return Reject(operationId, "receipt-update", OwnerPasswordRecoveryOutcome.Conflict).Outcome;
             }
 
+            // Recovery answers a lost or exposed password, so no key issued under the old one keeps working.
+            revokedApiKeys = await CameraAgentApiKeyStore.RemoveAllAsync(dbContext, owner.Id, cancellationToken)
+                .ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (DbUpdateConcurrencyException)
@@ -183,6 +188,11 @@ internal sealed class OwnerPasswordRecoveryService(
                 RecoveryCompletedEvent,
                 "Completed local owner password recovery operation {OperationId}",
                 operationId);
+        }
+
+        if (revokedApiKeys > 0)
+        {
+            CameraAgentApiKeyStore.LogRevokedAll(logger, revokedApiKeys, owner.Id);
         }
 
         return OwnerPasswordRecoveryOutcome.Completed;

@@ -12,6 +12,8 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 ### Added
 
+- CameraAgent serves an operator settings catalogue and versioned group writes through its operations API. The
+  site owner can create and revoke Read or ReadWrite API keys for non-browser clients. (#1316)
 - `hvo-sky-install --version` prints the installer's version and the commit it was built from, as
   `<version>+<commit>`. A development build prints `0.0.0-dev+<commit>`, or `0.0.0-dev+unknown` if built without a
   checkout. (#1312)

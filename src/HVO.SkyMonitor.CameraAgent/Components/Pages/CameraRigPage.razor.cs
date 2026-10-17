@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Settings;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 
@@ -912,7 +913,7 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
         Add("Model", active is null ? null : CameraModel(_activeCamera), CameraModel(_selectedCamera));
         Add("Module", active is null ? null : Words(active.Module.Type), Words(selected.Module.Type));
         if (active?.Module.Type == "VirtualSky" || selected.Module.Type == "VirtualSky")
-            Add("Sky lighting", active is null ? null : SkyLightingSummary(active, _activeCamera),
+            Add(CameraAgentSettingsCatalogue.SkyLighting.Title, active is null ? null : SkyLightingSummary(active, _activeCamera),
                 SkyLightingSummary(selected, _selectedCamera));
         Add("Sensor", active is null ? null : SensorSummary(active.Rig), SensorSummary(selected.Rig));
         Add("Readout", active is null ? null : ReadoutSummary(active.Rig), ReadoutSummary(selected.Rig));
