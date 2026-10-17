@@ -59,7 +59,8 @@ scanner (including its pinned gitleaks version/checksums), its contract test,
 `.gitleaks.toml`, either scanner workflow (`development-v1.yml` or `ci.yml`),
 or the classifier itself. Pushes retain the classifier's non-PR full-mode
 convention and always run it. Missing commits, empty ranges, failed or malformed
-diffs, missing outputs, and classifier-step failures run the contract test too;
+diffs, missing/non-regular tree entries, missing outputs, and classifier-step
+failures run the contract test too;
 a classifier-step failure still fails Preflight. The history scan remains
 unconditional and precedes classification. Full Quality keeps both commands
 unconditional.

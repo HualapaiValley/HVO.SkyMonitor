@@ -536,6 +536,7 @@ while IFS= read -r -d '' status || [[ -n "$status" ]]; do
     complete_reason="deleted, renamed, or type-changed paths require the complete solution matrix"
   elif ! tree_entry="$(git ls-tree "$head_sha" -- ":(literal)$path")" \
     || [[ "${tree_entry%% *}" != "100644" && "${tree_entry%% *}" != "100755" ]]; then
+    secret_scan_contract="true"
     mode="full"
     deployment="true"
     select_complete_matrix

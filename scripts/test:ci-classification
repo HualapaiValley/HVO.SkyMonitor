@@ -687,6 +687,7 @@ ln -s ../README.md "$work_root/docs/added-link.md"
 git -C "$work_root" add --all
 git -C "$work_root" commit --quiet -m "Add documentation symlink"
 head_sha="$(git -C "$work_root" rev-parse HEAD)"
+expect_secret_scan_contract true pull_request "$base_sha" "$head_sha"
 expect_plan full true pull_request "$base_sha" "$head_sha"
 expect_components true true true true true true pull_request "$base_sha" "$head_sha"
 
