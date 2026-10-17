@@ -206,7 +206,7 @@ unsupported version-1 manifests remain rejected.
 The composed lineage has its own package root convention:
 
 ```text
-/var/lib/hvo/skymonitor/catalogs/hyg-v44-openngc-production/versions/hyg-v4.4-openngc-v20260501-p5-s4-r1
+/var/lib/hvo-sky/catalogs/hyg-v44-openngc-production/versions/hyg-v4.4-openngc-v20260501-p5-s4-r1
 ```
 
 This foundation supplies the approved package, resolver and read-only catalog

@@ -280,7 +280,7 @@ never skips or synthesizes preflight. Each target explicitly declares
 root helper, password, interactive privilege, or ownership-escalation path.
 The immediate parent of a missing runtime root must already be owned and writable
 by that SSH user while remaining non-writable to group and world.
-The example assumes packaging has provisioned `/var/lib/hvo/skymonitor`, plus
+The example assumes packaging has provisioned `/var/lib/hvo-sky`, plus
 its `cameraagents`, `logichosts`, and `catalogs` children, to user `hvo` without
 making them group/world writable. Application roots are UUID children beneath
 their component directory.
@@ -434,7 +434,9 @@ evidence. `images` rejects dirty source even when preflight declared
 `allow-dirty`. It records the committed Git tree ID and checks clean HEAD and
 that tree before and after every component build and again throughout resume and
 distribution. Builds label the revision, tree ID, commit timestamp, source
-repository/tag, component, and pinned .NET SDK version. The source tag must be
+repository/tag, component, and pinned .NET SDK version. CameraAgent builds also
+pass the revision as `HVO_SOURCE_REVISION`, so the Software page and telemetry
+name the same commit as the label. The source tag must be
 exactly `rev-<source.revision>`; `latest`, embedded tags or digests, URL schemes,
 credentials, and ports in repository values are rejected.
 
@@ -501,8 +503,10 @@ before progress publication. All artifacts are owner-only and atomic; bounded
 errors and evidence contain no raw Docker/registry output, secret-source path,
 credentials, or secret values.
 
-The Dockerfiles pin the build SDK to `10.0.401` and the ASP.NET runtime to
-`10.0.12`, both by reviewed multiarchitecture digest. Debian package inputs still
+The Dockerfiles pin the build SDK (the exact version `global.json` requires) and
+the ASP.NET runtime, both by reviewed multiarchitecture digest; Dependabot proposes
+digest refreshes and runtime patch releases for review
+([Base-Image Updates](ci-pipeline.md#base-image-updates)). Debian package inputs still
 come from the base image package indexes and can change between uncached builds.
 The produced application manifests, archives, config IDs, and deployed references
 are recorded and verified by digest; this runbook does not claim the apt layer is

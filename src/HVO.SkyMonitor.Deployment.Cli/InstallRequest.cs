@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
 
@@ -21,14 +22,22 @@ internal enum CameraAgentReplayProfile
 
 internal sealed record InstallRequest
 {
-    public const string DefaultProductRoot = "/var/lib/hvo/skymonitor";
+    public const string DefaultProductRoot = "/var/lib/hvo-sky";
 
     /// <summary>The longest camera name CameraAgent accepts as its operator-facing display name.</summary>
     public const int MaximumFriendlyNameLength = 80;
 
     public Guid? InstanceId { get; init; }
     public required string FriendlyName { get; init; }
-    public required string OwnerEmail { get; init; }
+    /// <summary>
+    /// The owner's durable email key. Optional: an omitted value, including one missing from an installer
+    /// configuration file, is the non-routable <see cref="OwnerCredentialDefaults.Email"/>.
+    /// </summary>
+    public string OwnerEmail
+    {
+        get => _ownerEmail;
+        init => _ownerEmail = value ?? OwnerCredentialDefaults.Email;
+    }
     public string BindAddress { get; init; } = "127.0.0.1";
     public int Port { get; init; } = 5130;
     public string ProductRoot { get; init; } = DefaultProductRoot;
@@ -58,7 +67,19 @@ internal sealed record InstallRequest
     public CameraAgentReplayProfile ReplayProfile { get; init; } = CameraAgentReplayProfile.InProcess;
 
     /// <summary>
-    /// Whether this invocation may install below a product root other than <see cref="DefaultProductRoot"/>.
+    /// The CameraAgent container's CPU limit the operator set with <c>--cpus</c>, or <see langword="null"/> to leave it
+    /// to the installer default.
+    /// </summary>
+    public decimal? Cpus { get; init; }
+
+    /// <summary>
+    /// The CameraAgent container's memory limit the operator set with <c>--memory</c>, such as <c>6g</c>, or
+    /// <see langword="null"/> to leave it to the installer default.
+    /// </summary>
+    public string? Memory { get; init; }
+
+    /// <summary>
+    /// Whether this invocation may install below a product root other than <see cref="ProductionProductRoot"/>.
     /// Deny by default, decided once where the process boundary is crossed, and carried on the request rather
     /// than reread from process state, so a request validated as admitted stays admitted and one validated as
     /// refused cannot become admitted by anything that runs afterwards. It is deliberately not serialized: an
@@ -66,6 +87,20 @@ internal sealed record InstallRequest
     /// </summary>
     [JsonIgnore]
     public bool AllowTestProductRoot { get; init; }
+
+    /// <summary>
+    /// The production product root this invocation resolved at the command-line boundary: the root a valid host policy
+    /// names, or <see cref="DefaultProductRoot"/> without one. Like <see cref="AllowTestProductRoot"/> it is decided
+    /// once, carried on the request, and never serialized, so an installer configuration file cannot redirect it.
+    /// </summary>
+    [JsonIgnore]
+    public string ProductionProductRoot { get; init; } = DefaultProductRoot;
+
+    /// <summary>Whether this request installs into the production product root rather than an admitted test root.</summary>
+    [JsonIgnore]
+    public bool IsProductionRoot => string.Equals(ProductRoot, ProductionProductRoot, StringComparison.Ordinal);
+
+    private readonly string _ownerEmail = OwnerCredentialDefaults.Email;
 
     public void Validate()
     {
@@ -108,10 +143,7 @@ internal sealed record InstallRequest
         }
 
         ValidateAbsolutePath(ProductRoot, "--product-root");
-        if (!string.Equals(ProductRoot, DefaultProductRoot, StringComparison.Ordinal) && !AllowTestProductRoot)
-        {
-            throw new InstallUsageException("--product-root must be /var/lib/hvo/skymonitor outside isolated tests.");
-        }
+        ProductRootAdmission.Validate(ProductRoot, ProductionProductRoot, AllowTestProductRoot);
         if (CatalogManifest is not null && CatalogIndex is not null)
         {
             throw new InstallUsageException("--catalog-manifest cannot be combined with --catalog-index.");
@@ -180,7 +212,9 @@ internal sealed record InstallRequest
             throw new InstallUsageException("--time-zone is invalid on this host.", exception);
         }
 
-        foreach (var value in new[] { FriendlyName, OwnerEmail, ProductRoot, CatalogBundle, CatalogManifest, CatalogIndex, CatalogVersion, AssetBaseUrl, ImageReference, ImageArchive, ImageManifest, ImageIndex, ImageVersion, PasswordFile, TimeZoneId })
+        _ = ContainerResources();
+
+        foreach (var value in new[] { FriendlyName, OwnerEmail, ProductRoot, CatalogBundle, CatalogManifest, CatalogIndex, CatalogVersion, AssetBaseUrl, ImageReference, ImageArchive, ImageManifest, ImageIndex, ImageVersion, PasswordFile, TimeZoneId, Memory })
         {
             if (value?.Any(char.IsControl) == true)
             {
@@ -193,6 +227,9 @@ internal sealed record InstallRequest
             throw new InstallUsageException("--resume requires --instance-id.");
         }
     }
+
+    /// <summary>The CameraAgent container limits this installation asks for, each one the operator set or the default.</summary>
+    internal ContainerResourceLimits ContainerResources() => CameraAgentContainerResources.Resolve(Cpus, Memory);
 
     /// <summary>
     /// Validates only how the image was selected. A signed image release and an operator-supplied image are
@@ -285,6 +322,28 @@ internal sealed record InstallRequest
 
 }
 
+/// <summary>
+/// The one rule every command applies to its product root: an absolute normalized path other than <c>/</c> that is the
+/// production product root resolved at the command-line boundary, unless the invocation was admitted for a test root.
+/// </summary>
+internal static class ProductRootAdmission
+{
+    public static void Validate(string productRoot, string productionProductRoot, bool allowTestProductRoot)
+    {
+        ArgumentNullException.ThrowIfNull(productRoot);
+        if (!Path.IsPathFullyQualified(productRoot) || productRoot.Contains("//", StringComparison.Ordinal) ||
+            Path.GetFullPath(productRoot) != productRoot.TrimEnd('/') || productRoot == "/")
+        {
+            throw new InstallUsageException("--product-root must be an absolute normalized path other than root.");
+        }
+        if (!string.Equals(productRoot, productionProductRoot, StringComparison.Ordinal) && !allowTestProductRoot)
+        {
+            throw new InstallUsageException(
+                $"--product-root must be the production product root '{productionProductRoot}' outside isolated tests.");
+        }
+    }
+}
+
 internal sealed class InstallUsageException : Exception
 {
     public InstallUsageException()
@@ -300,6 +359,12 @@ internal sealed class InstallUsageException : Exception
         : base(message, innerException)
     {
     }
+
+    /// <summary>
+    /// The usage the command line attached to a mistake made in it, printed after the reason. An exception raised
+    /// by an operation already under way has none.
+    /// </summary>
+    public string? Usage { get; set; }
 }
 
 [JsonSourceGenerationOptions(

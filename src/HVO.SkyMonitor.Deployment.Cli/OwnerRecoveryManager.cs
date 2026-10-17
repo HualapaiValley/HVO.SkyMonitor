@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text;
 using System.Text.Json.Serialization;
+using HVO.SkyMonitor.CameraAgent.Configuration;
 using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
@@ -159,7 +160,22 @@ internal static class OwnerRecoveryManager
                 request.GeneratePassword ? null : request.PasswordFile,
                 generatedPasswordPath,
                 cancellationToken).ConfigureAwait(false);
-            _ = await ReadPasswordAsync(passwordPath, cancellationToken).ConfigureAwait(false);
+            // Validate the staged credential before the operation is recorded. A password outside the recovery protocol's
+            // bounds would be refused on every attempt, so it fails here, retains no operation that a fresh recovery
+            // would then have to resume, and leaves no copy of itself behind.
+            try
+            {
+                _ = await ReadPasswordAsync(passwordPath, cancellationToken).ConfigureAwait(false);
+            }
+            catch (InstallerException)
+            {
+                File.Delete(passwordPath);
+                if (Directory.Exists(operationRoot) && !Directory.EnumerateFileSystemEntries(operationRoot).Any())
+                {
+                    Directory.Delete(operationRoot);
+                }
+                throw;
+            }
             state = new OwnerRecoveryOperationState(
                 SchemaVersion: 1,
                 OperationId: operationId,
@@ -268,23 +284,31 @@ internal static class OwnerRecoveryManager
     private static async Task<string> ReadPasswordAsync(string path, CancellationToken cancellationToken)
     {
         SafeFileSystem.ValidateOwnerFile(path);
-        if (new FileInfo(path).Length is < 16 or > 256)
+        if (new FileInfo(path).Length is < OwnerCredentialDefaults.MinimumPasswordLength or > OwnerCredentialDefaults.MaximumPasswordLength)
         {
             throw new InstallerException("The owner recovery password file length is invalid.");
         }
 
         await using var stream = SafeFileSystem.OpenOwnerFileRead(path);
-        using var reader = new StreamReader(stream, new UTF8Encoding(false, true));
+        var content = new byte[stream.Length];
         string password;
         try
         {
-            password = (await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false)).TrimEnd('\r', '\n');
+            await stream.ReadExactlyAsync(content, cancellationToken).ConfigureAwait(false);
+            // The same reading CameraAgent and the installer apply to every owner password file.
+            password = OwnerPasswordFileText.Decode(content);
         }
         catch (DecoderFallbackException exception)
         {
             throw new InstallerException("The owner recovery password file is not valid UTF-8.", exception);
         }
-        if (password.Length is < 16 or > 256 || password.Any(static character => character is < '!' or > '~'))
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(content);
+        }
+        if (password.Length < OwnerCredentialDefaults.MinimumPasswordLength ||
+            password.Length > OwnerCredentialDefaults.MaximumPasswordLength ||
+            password.Any(static character => character is < '!' or > '~'))
         {
             throw new InstallerException("The owner recovery password file content is invalid.");
         }

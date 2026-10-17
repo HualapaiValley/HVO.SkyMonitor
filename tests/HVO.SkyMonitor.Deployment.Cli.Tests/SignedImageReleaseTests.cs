@@ -505,7 +505,7 @@ public sealed class SignedImageReleaseTests
 
             fixture.Image = new DistributionImageIdentity(
                 "CameraAgent",
-                "ghcr.io/roysalisbury/hvo.skymonitor/cameraagent",
+                "ghcr.io/hualapaivalley/skymonitor-cameraagent",
                 $"sha256:{new string('c', 64)}",
                 Revision,
                 new string('b', 40),
@@ -522,7 +522,7 @@ public sealed class SignedImageReleaseTests
                     : DistributionSchemaVersions.ReleaseManifest,
                 DistributionManifestKind.ImageRelease,
                 new DistributionReleaseIdentity(
-                    "image", "1.2.3", "image-v1.2.3", "RoySalisbury/HVO.SkyMonitor", Revision, new string('b', 40),
+                    "image", "1.2.3", "image-v1.2.3", "HualapaiValley/HVO.SkyMonitor", Revision, new string('b', 40),
                     DateTimeOffset.Parse("2026-08-24T00:00:00Z", CultureInfo.InvariantCulture)),
                 new DistributionSigningIdentity(DistributionTrustRoot.Algorithm, fixture.TrustRoot.KeyId),
                 artifacts,
@@ -533,8 +533,8 @@ public sealed class SignedImageReleaseTests
             // the verifier refusing a malformed manifest before the check is reached.
             var installerArtifacts = new List<DistributionArtifact>
             {
-                Installer("hvo-skymonitor-installer-v1.2.3-linux-x64.tar.gz", "x64"),
-                Installer("hvo-skymonitor-installer-v1.2.3-linux-arm64.tar.gz", "arm64"),
+                Installer("hvo-sky-install-v1.2.3-linux-x64.tar.gz", "x64"),
+                Installer("hvo-sky-install-v1.2.3-linux-arm64.tar.gz", "arm64"),
                 Evidence(DistributionArtifactRole.Sbom, "installer-sbom.spdx.json"),
                 Evidence(DistributionArtifactRole.Provenance, "installer-provenance.json"),
                 Evidence(DistributionArtifactRole.License, "THIRD-PARTY-NOTICES.md"),

@@ -18,6 +18,8 @@ development/v1
 
 Create work from the current `development/v1` head. Ordinary issue branches and pull requests target `development/v1`, not `main`.
 
+A pull request that changes what operators or users notice adds a line under `## [Unreleased]` in [`CHANGELOG.md`](../CHANGELOG.md). The rule is in [`AGENTS.md`](../AGENTS.md#changelog).
+
 ## Issue And Pull Request Forms
 
 - [Development v1 issue form](../.github/ISSUE_TEMPLATE/development-v1.yml)
@@ -30,9 +32,13 @@ Issues merged into `development/v1` are closed explicitly with the pull request 
 
 ## Required CI
 
+The repository pins .NET SDK 10.0.402 in global.json with rollForward: disable;
+local builds, the devcontainer, CI, and SDK container images use that version.
+Runtime images and Microsoft runtime packages use 10.0.13.
+
 The branch currently requires:
 
-- **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace validation, pinned workflow linting, shell syntax and the inexpensive CI-control regression checks.
+- **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace validation, pinned workflow linting, shell syntax, the inexpensive CI-control regression checks, and the full-history [secret scan](runbooks/ci-pipeline.md#secret-scan).
 - **Development v1 / Build and Unit** on a self-hosted x64 runner: pinned SDK setup, solution restore, warning-clean Release build, and the complete Docker-disabled Unit selection.
 
 Draft pull requests run hosted Preflight only. Marking a reviewed pull request ready starts the self-hosted Build and Unit check. Pushes to `development/v1` run both checks.
@@ -68,6 +74,42 @@ Risk-tier local gates and explicit issue acceptance still apply. Run extra full
 qualification only when the issue or operator explicitly requires it, recording
 that reason separately. Passing v1 is not promotion to main or production
 qualification.
+
+## Repository Settings
+
+Section 2 of the [install contract](hvo-install-contract.md) also needs repository
+settings. Agents do not change repository settings; the owner applies these after
+approving them (#1321). They are pending that approval. The current values were
+read on 2026-10-16.
+
+| Setting | Current | Recommended |
+| --- | --- | --- |
+| Merge methods | Merge commits, squash and rebase all allowed | Merge commits only, so every commit keeps its SHA; `.gitleaks.toml` exceptions name commits |
+| Delete branch on merge | Off | On |
+| `v*` release tags | No ruleset | Tag ruleset on `refs/tags/v*`: restrict creation, update and deletion and block force pushes, with repository administrators as the only bypass, as RoofController's `release tags` ruleset does |
+| Required checks | `development/v1`: Development v1 / Preflight and Build and Unit. `main`: Required CI | Unchanged. The secret scan runs inside Preflight and inside Quality, which Required CI aggregates |
+| GitHub secret scanning and push protection | Off | Optional: on. Both are free for public repositories, and push protection rejects a recognised provider token before it is pushed, which a CI history scan cannot do |
+
+The owner can apply them with:
+
+```bash
+gh api -X PATCH repos/HualapaiValley/HVO.SkyMonitor \
+  -F allow_merge_commit=true -F allow_squash_merge=false -F allow_rebase_merge=false \
+  -F delete_branch_on_merge=true
+gh api -X POST repos/HualapaiValley/HVO.SkyMonitor/rulesets --input - <<'JSON'
+{"name": "release tags", "target": "tag", "enforcement": "active",
+ "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
+ "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}, {"type": "non_fast_forward"}],
+ "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]}
+JSON
+# Optional:
+gh api -X PATCH repos/HualapaiValley/HVO.SkyMonitor \
+  -f 'security_and_analysis[secret_scanning][status]=enabled' \
+  -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled'
+```
+
+If a workflow later creates `v*` tags, for example for integration pre-releases
+(#1309), add its actor as a ruleset bypass at that time.
 
 ## Review
 

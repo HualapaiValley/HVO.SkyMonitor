@@ -153,8 +153,19 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2047, Level = LogLevel.Critical, Message = "Raw ingress schema or integrity validation failed because {Reason}")]
     public static partial void RawIngressIntegrityFailed(this ILogger logger, string reason);
 
-    [LoggerMessage(EventId = 2048, Level = LogLevel.Warning, Message = "Raw ingress SQLite operation {Operation} completed with result {Result}")]
-    public static partial void RawIngressSqliteResult(this ILogger logger, string operation, string result);
+    // Success and failure are separate events with fixed levels. The failure keeps event 2048, its name, and the
+    // bounded Operation/Result fields that the sanitized telemetry export retains for that event ID.
+    public static void RawIngressSqliteSucceeded(this ILogger logger, string operation)
+        => RawIngressSqliteSuccess(logger, operation, "success");
+
+    public static void RawIngressSqliteFailed(this ILogger logger, string operation)
+        => RawIngressSqliteFailure(logger, operation, "failure");
+
+    [LoggerMessage(EventId = 2038, EventName = "RawIngressSqliteSucceeded", Level = LogLevel.Debug, Message = "Raw ingress SQLite operation {Operation} completed with result {Result}")]
+    private static partial void RawIngressSqliteSuccess(ILogger logger, string operation, string result);
+
+    [LoggerMessage(EventId = 2048, EventName = "RawIngressSqliteResult", Level = LogLevel.Warning, Message = "Raw ingress SQLite operation {Operation} completed with result {Result}")]
+    private static partial void RawIngressSqliteFailure(ILogger logger, string operation, string result);
 
     [LoggerMessage(EventId = 2049, Level = LogLevel.Warning, Message = "Raw ingress compatibility index projection failed and will be repaired at restart")]
     public static partial void RawIngressIndexProjectionFailed(this ILogger logger);

@@ -10,6 +10,7 @@ public static class DeploymentSchemaVersions
     public const int LifecycleOperation = 1;
     public const int StatePreflightReport = 1;
     public const int StateResetEvidence = 1;
+    public const int LifecycleEvent = 1;
     /// <summary>
     /// Version 1 recorded the SBOM, provenance, and vulnerability-scan asset names; version 2 (issue #645) adds the
     /// optional per-platform component-inventory asset. Version-1 documents remain readable.
@@ -145,6 +146,19 @@ public sealed record DockerDaemonIdentity(
     string Architecture,
     string ServerVersion);
 
+/// <summary>
+/// The CameraAgent container's Compose resource limits recorded with an instance. A limit the operator did not set
+/// follows the installer default, so an upgrade moves it to the upgrading installer's default; a limit the operator
+/// set is kept. A manifest written before this record existed carries none: that instance runs the original
+/// 1 CPU, 1 GiB and 256 PID limits, which no operator could set.
+/// </summary>
+public sealed record ContainerResourceLimits(
+    decimal Cpus,
+    long MemoryBytes,
+    int PidsLimit,
+    bool CpusSetByOperator,
+    bool MemorySetByOperator);
+
 public sealed record InstanceManifest(
     int SchemaVersion,
     string Product,
@@ -191,7 +205,8 @@ public sealed record InstanceManifest(
     DateTimeOffset? UpdatedUtc = null,
     string? LifecycleControlTokenSha256 = null,
     string? PreviousComposeModelSha256 = null,
-    CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess);
+    CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess,
+    ContainerResourceLimits? Resources = null);
 
 public sealed record LifecycleOperationState(
     int SchemaVersion,
@@ -274,7 +289,36 @@ public sealed record LifecycleResult(
     bool? Healthy,
     IReadOnlyList<string> PreservedPaths,
     string? ResumeCommand,
-    DateTimeOffset CompletedUtc);
+    DateTimeOffset CompletedUtc)
+{
+    /// <summary>
+    /// The upgrade notes an upgrade showed before it started, when its source provided a release.json. Omitted
+    /// otherwise, so every other lifecycle result is unchanged.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public LifecycleUpgradeNotes? UpgradeNotes { get; init; }
+}
+
+/// <summary>One release's upgrade notes, from its <c>docs/upgrade-notes/X.Y.Z.md</c> as release.json carries them.</summary>
+public sealed record UpgradeNote(string Version, string Text);
+
+/// <summary>
+/// The upgrade notes an upgrade from <see cref="InstalledVersion"/> to <see cref="TargetVersion"/> shows, oldest first.
+/// <see cref="InstalledVersion"/> is null when the instance records no release version.
+/// </summary>
+public sealed record LifecycleUpgradeNotes(string? InstalledVersion, string TargetVersion, IReadOnlyList<UpgradeNote> Notes);
+
+/// <summary>
+/// What a <c>--json</c> upgrade writes to standard error, as one line, when it shows upgrade notes: the notes, before
+/// the lifecycle journal, the backup, the pause or the image change. Standard output carries only the result, which
+/// repeats them, so this is how a caller sees them before anything changes; a failed upgrade's error object follows
+/// this line.
+/// </summary>
+public sealed record LifecycleUpgradeNotesEvent(int SchemaVersion, string Event, LifecycleUpgradeNotes UpgradeNotes)
+{
+    /// <summary>The <see cref="Event"/> this record carries.</summary>
+    public const string Name = "upgrade-notes";
+}
 
 public sealed record InstallationState(
     int SchemaVersion,
@@ -287,6 +331,19 @@ public sealed record InstallationState(
     string? FailureCode = null,
     string? FailureMessage = null);
 
+/// <summary>
+/// An advisory condition the installer found that does not refuse the installation, such as a Docker host with less
+/// memory than the CameraAgent memory limit.
+/// </summary>
+/// <param name="Code">The stable code of the finding, for example <c>docker-host-memory-below-limit</c>.</param>
+/// <param name="Message">What was observed, what was expected, and the remedy.</param>
+public sealed record InstallationWarning(string Code, string Message);
+
+/// <summary>
+/// The outcome of <c>cameraagent install</c> or its dry run. The installer retains it as
+/// <c>state/deployment/installation-result.json</c> without its warnings: they describe the host one invocation
+/// evaluated, so only the result that invocation reports carries them.
+/// </summary>
 public sealed record InstallationResult(
     int SchemaVersion,
     InstallationOutcome Outcome,
@@ -323,4 +380,7 @@ public sealed record InstallationResult(
     bool Healthy,
     string OwnerBootstrapState,
     DateTimeOffset CompletedUtc,
-    CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess);
+    CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess,
+    bool OwnerPasswordIsDefault = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<InstallationWarning>? Warnings = null);

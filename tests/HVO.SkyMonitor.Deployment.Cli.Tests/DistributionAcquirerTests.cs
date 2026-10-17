@@ -79,12 +79,45 @@ public sealed class DistributionAcquirerTests
         Assert.AreEqual(5, handler.RequestCount);
     }
 
+    /// <summary>
+    /// A signed index served from GitHub with no asset base resolves its release assets under the repository that
+    /// publishes them. GitHub answers the pre-transfer owner path with a github.com redirect, which the redirect
+    /// policy refuses, so a stale owner here fails the first real download rather than an extra hop.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task AcquireAsync_GitHubSignedIndexWithoutAssetBase_ResolvesThePublishingRepositoryReleases()
+    {
+        const string Releases = "https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download";
+        using var fixture = CatalogDistributionFixture.Create();
+        var assets = fixture.NetworkAssets.ToDictionary(
+            static pair => new Uri(pair.Key.AbsoluteUri
+                .Replace("https://mirror.example/releases/", $"{Releases}/", StringComparison.Ordinal)
+                .Replace("https://mirror.example/indexes/", $"{Releases}/catalog-index-1/", StringComparison.Ordinal)),
+            static pair => pair.Value);
+        using var handler = new FixtureHandler(assets);
+        using var acquirer = new DistributionAcquirer(handler, fixture.CacheRoot, fixture.TrustRoot, catalogSpecifications: fixture.CatalogSpecifications);
+
+        var request = fixture.IndexRequest() with
+        {
+            CatalogIndex = $"{Releases}/catalog-index-1/catalog-stable-index.json",
+            AssetBaseUrl = null
+        };
+        using var acquired = await acquirer.AcquireAsync(request, CancellationToken.None);
+
+        Assert.AreEqual(fixture.AssetSha256, acquired.Evidence?.AssetSha256);
+        Assert.AreEqual(
+            new Uri($"{Releases}/catalog-hyg-v4.2-p3-s2-r1/catalog-manifest.json"),
+            acquired.Evidence?.SourceBaseUri);
+        Assert.AreEqual(5, handler.RequestCount);
+    }
+
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task AcquireAsync_ApprovedGitHubCdnRedirect_RecordsTerminalUri()
     {
         using var fixture = CatalogDistributionFixture.Create();
-        var source = new Uri($"https://github.com/RoySalisbury/HVO.SkyMonitor/releases/download/catalog-fixture/{fixture.AssetName}");
+        var source = new Uri($"https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/catalog-fixture/{fixture.AssetName}");
         var terminal = new Uri("https://release-assets.githubusercontent.com/immutable/catalog-bundle.tar.gz");
         var assets = fixture.NetworkAssets.ToDictionary(static pair => pair.Key, static pair => pair.Value);
         assets[source] = assets[fixture.BundleUri];
@@ -93,7 +126,7 @@ public sealed class DistributionAcquirerTests
 
         var request = fixture.NetworkRequest(noDownload: false) with
         {
-            AssetBaseUrl = "https://github.com/RoySalisbury/HVO.SkyMonitor/releases/download/catalog-fixture"
+            AssetBaseUrl = "https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/catalog-fixture"
         };
         using var acquired = await acquirer.AcquireAsync(request, CancellationToken.None);
 
@@ -662,7 +695,7 @@ public sealed class DistributionAcquirerTests
                 DistributionSchemaVersions.ReleaseManifest,
                 DistributionManifestKind.CatalogRelease,
                 new DistributionReleaseIdentity(
-                    "catalog", catalog.PackageVersion, $"catalog-{catalog.PackageVersion}", "RoySalisbury/HVO.SkyMonitor",
+                    "catalog", catalog.PackageVersion, $"catalog-{catalog.PackageVersion}", "HualapaiValley/HVO.SkyMonitor",
                     new string('a', 40), new string('b', 40), DateTimeOffset.Parse("2026-08-24T00:00:00Z", CultureInfo.InvariantCulture)),
                 new DistributionSigningIdentity(DistributionTrustRoot.Algorithm, trustRoot.KeyId), artifacts, catalog, []);
             var releaseBytes = JsonSerializer.SerializeToUtf8Bytes(release, DistributionJsonContext.Default.DistributionReleaseManifest);

@@ -31,7 +31,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 [TestCategory("Unit")]
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
-public sealed class TransientWorkerRuntimeTests
+public sealed partial class TransientWorkerRuntimeTests
 {
     [TestMethod]
     public async Task ExposureSweptStarMask_UsesCaptureClockAndIgnoresPoisonedRendererObjects()

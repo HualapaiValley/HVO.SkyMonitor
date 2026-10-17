@@ -142,7 +142,7 @@ public sealed partial class LifecycleContractTests
         Assert.IsTrue(File.Exists(stateSentinel));
         Assert.IsTrue(File.Exists(fixture.Paths.ManifestPath));
         Assert.IsNotNull(result.ResumeCommand);
-        Assert.AreEqual($"hvo-skymonitor cameraagent reinstall --instance-id {fixture.InstanceId:D}", result.ResumeCommand);
+        Assert.AreEqual($"hvo-sky-install cameraagent reinstall --instance-id {fixture.InstanceId:D}", result.ResumeCommand);
     }
 
     [TestMethod]
@@ -500,7 +500,7 @@ public sealed partial class LifecycleContractTests
             resume: false,
             json: false);
 
-        Assert.AreEqual("9c011238407c7dee794989a757c89a4dc2ae6fceb8905f546293eb26e201478e", request.ComputeRequestSha256());
+        Assert.AreEqual("1333fe883fe6083f51c80f612b6ae0164741f300e7a4c72270c269578cc3d7f3", request.ComputeRequestSha256());
     }
 
     [TestMethod]
@@ -666,6 +666,30 @@ public sealed partial class LifecycleContractTests
         var rollback = Assert.ThrowsExactly<InstallerException>(() =>
             CatalogLifecycleManager.EnsureReplayCatalogIndependent(undeclared, LifecycleOperationKind.CatalogRollback));
         StringAssert.Contains(rollback.Message, "Catalog rollback refused", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RetainedResult_WithoutTheDefaultPasswordFlag_RemainsValidAndReadsAsNotDefault()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var json = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(fixture.Paths.ResultPath))!.AsObject();
+        Assert.IsTrue(json.Remove("ownerPasswordIsDefault"), "The result did not record whether the owner password is the default.");
+        SafeFileSystem.WriteTextAtomic(fixture.Paths.ResultPath, json.ToJsonString());
+
+        // A result written before issue #1278 omits the flag; it reads as a generated or supplied password.
+        var legacy = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
+        json["ownerPasswordIsDefault"] = true;
+        SafeFileSystem.WriteTextAtomic(fixture.Paths.ResultPath, json.ToJsonString());
+        var current = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
+
+        Assert.IsFalse(legacy.OwnerPasswordIsDefault);
+        Assert.IsTrue(current.OwnerPasswordIsDefault);
+        Assert.AreEqual(legacy with { OwnerPasswordIsDefault = true }, current);
+        Assert.AreEqual($"Temporary password file: {legacy.PasswordFile}", Program.OwnerSignInInstruction(legacy));
+        Assert.AreEqual(
+            "Sign in as admin / skymonitor; a password change is required at first sign-in.",
+            Program.OwnerSignInInstruction(current));
     }
 
     [TestMethod]
@@ -2030,6 +2054,7 @@ public sealed partial class LifecycleContractTests
         var upgraded = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
         Assert.AreEqual(ComposeDeployment.TemplateVersion, upgraded.ComposeTemplateVersion);
         Assert.AreEqual(fixture.Manifest.Image, upgraded.PreviousImage);
+        Assert.AreEqual(CameraAgentContainerResources.Default, upgraded.Resources);
         var retainedRollbackCompose = Path.Combine(fixture.Paths.DeploymentStateRoot, "rollback", "previous-compose.yml");
         await File.WriteAllTextAsync(retainedRollbackCompose, "services: {}\nnetworks:\n  foreign: {}\n");
 
@@ -2054,7 +2079,12 @@ public sealed partial class LifecycleContractTests
         var rolledBack = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
         Assert.AreEqual(ComposeDeployment.TemplateVersion, rolledBack.ComposeTemplateVersion);
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
-        Assert.AreEqual(originalCompose, await File.ReadAllTextAsync(Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml")));
+        // The previous image runs its exact retained Compose model with the limits the instance records: the upgrade
+        // moved this instance, recorded without limits, to the defaults, and rolling back keeps them.
+        Assert.AreEqual(CameraAgentContainerResources.Default, rolledBack.Resources);
+        Assert.AreEqual(
+            originalCompose.Replace("    cpus: \"1\"\n    mem_limit: 1G\n", "    cpus: \"2\"\n    mem_limit: 4G\n", StringComparison.Ordinal),
+            await File.ReadAllTextAsync(Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml")));
     }
 
     [TestMethod]
@@ -2603,7 +2633,8 @@ public sealed partial class LifecycleContractTests
             bool seedCatalogSelection = true,
             string? daemonArchitecture = null,
             bool recoveryState = false,
-            string catalogId = HygV42.CatalogId)
+            string catalogId = HygV42.CatalogId,
+            Func<ImageInstallationIdentity, ImageInstallationIdentity>? installedImage = null)
         {
             // Every approved catalog is a valid selection; the fixture records the pinned identity of the requested
             // one, and a non-default catalog needs an image declaring the multi-catalog contract.
@@ -2660,11 +2691,15 @@ public sealed partial class LifecycleContractTests
                 IdentityMigration: recoveryState ? "20260827053715_InitialIdentity" : null,
                 CatalogManifestVersion: recoveryState ? "2" : null,
                 MinimumCompatibleRevision: recoveryState ? new string('7', 40) : null);
+            if (installedImage is not null) image = installedImage(image);
             var installationId = Guid.NewGuid();
             // The bound application identity is deliberately distinct from the instance id so that
             // lifecycle verification cannot pass by comparing the wrong identity.
             var applicationIdentity = Guid.NewGuid();
-            const string composeModel = "services: {}\n";
+            // The CameraAgent service carries the limit lines every installer writes. The fixture records no limits, as an
+            // instance an earlier installer completed does, so it runs the original ones until its next upgrade.
+            const string composeModel =
+                "services:\n  cameraagent:\n    image: ${CAMERAAGENT_IMAGE}\n    cpus: \"1\"\n    mem_limit: 1G\n    pids_limit: 256\n";
             var manifest = new InstanceManifest(
                 1, "HVO.SkyMonitor", "cameraagent-install-v1", DeploymentComponent.CameraAgent,
                 instanceId, "Test Camera", applicationIdentity, $"installer-{instanceId:D}", 1,
@@ -2672,7 +2707,7 @@ public sealed partial class LifecycleContractTests
                 paths.ProductRoot, paths.ConfigRoot, paths.StateRoot, composeTemplateVersion,
                 new string('e', 64), new string('f', 64), new string('1', 64), "default", "1", "1", "active",
                 ComposeDeployment.ComputeSha256("verification-token"), ComposeDeployment.ComputeSha256(composeModel),
-                catalog, image, null, daemon, "backward-compatible",
+                catalog, image, null, daemon, image.UpgradeCompatibility ?? "requires-declared-compatible-migration",
                 DateTimeOffset.UtcNow, LifecycleCondition: condition, Port: 5130,
                 LifecycleControlTokenSha256: ComposeDeployment.ComputeSha256("lifecycle-token"),
                 ReplayProfile: replayProfile);
@@ -2847,6 +2882,8 @@ public sealed partial class LifecycleContractTests
         public bool RejectNextStop { get; set; }
         public bool RejectNextBackup { get; set; }
         public string CandidateRawIngressSchema { get; set; } = "12";
+        /// <summary>Candidate image labels to set, or with a null value to remove, over the defaults below.</summary>
+        public Dictionary<string, string?> CandidateLabels { get; } = new(StringComparer.Ordinal);
         public string CatalogContract { get; set; } = "hyg-v42-production-p3-s2";
         public Action? OnCandidateInspect { get; set; }
         public Func<IReadOnlyList<string>, CancellationToken, Task<ProcessResult>>? Sudo { get; set; }
@@ -2946,6 +2983,14 @@ public sealed partial class LifecycleContractTests
                 if (localRunner)
                 {
                     labels["io.hvo.skymonitor.replay-runner-contract"] = "local-replay-runner-v1";
+                }
+                if (isCandidate)
+                {
+                    foreach (var (name, value) in CandidateLabels)
+                    {
+                        if (value is null) labels.Remove(name);
+                        else labels[name] = value;
+                    }
                 }
                 return Task.FromResult(new ProcessResult(0, JsonSerializer.Serialize(new[]
                 {

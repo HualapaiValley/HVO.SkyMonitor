@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
 
@@ -92,15 +93,16 @@ services:
       timeout: 3s
       retries: 12
       start_period: 20s
-    cpus: "1"
-    mem_limit: 1G
-    pids_limit: 256
+    <cameraagent-resource-limits>
     logging:
       driver: json-file
       options:
         max-size: 10m
         max-file: "3"
 """;
+
+    /// <summary>The template line <see cref="Write"/> replaces with the instance's CameraAgent limit lines.</summary>
+    private const string ResourceLimitsPlaceholder = "    <cameraagent-resource-limits>\n";
 
     private const string ReplayRunnerTemplate = """
 
@@ -187,6 +189,7 @@ services:
         string installationVerificationToken,
         string lifecycleControlToken,
         bool passwordAuthorityEnabled,
+        ContainerResourceLimits? resources,
         InstallationPaths? outputPaths = null)
     {
         outputPaths ??= paths;
@@ -292,12 +295,18 @@ services:
         }
 
         var composeFile = Path.Combine(composeRoot, "compose.yml");
-        var template = passwordAuthorityEnabled
-            ? Template
-            : Template.Replace(
+        // An instance that records no limits keeps the limits every earlier installer wrote, byte for byte.
+        var template = Template.Replace(
+            ResourceLimitsPlaceholder,
+            CameraAgentContainerResources.RenderLimits(resources ?? CameraAgentContainerResources.Legacy),
+            StringComparison.Ordinal);
+        if (!passwordAuthorityEnabled)
+        {
+            template = template.Replace(
                 "      - ${HVO_PASSWORD_FILE:?password file required}:/run/hvo-private/owner-password:ro\n",
                 string.Empty,
                 StringComparison.Ordinal);
+        }
         if (request.ReplayProfile == CameraAgentReplayProfile.LocalRunner)
         {
             template = template.Replace(

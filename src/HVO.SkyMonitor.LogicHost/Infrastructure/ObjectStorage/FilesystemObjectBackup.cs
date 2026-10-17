@@ -276,28 +276,14 @@ internal static class FilesystemObjectBackup
 
     private static void CreateTopLevelDirectoryDurably(string path)
     {
-        if (Directory.Exists(path))
-        {
-            return;
-        }
         var fullPath = Path.GetFullPath(path);
-        var existingAncestor = Directory.GetParent(fullPath)
-            ?? throw new InvalidOperationException("A filesystem object-store path must have a parent directory.");
-        while (!existingAncestor.Exists)
-        {
-            existingAncestor = existingAncestor.Parent
-                ?? throw new InvalidOperationException("A filesystem object-store path must have an existing ancestor directory.");
-        }
         Directory.CreateDirectory(fullPath);
+        // A retry cannot recover the original pre-mkdir ancestor from visible names.
+        // This infrequent maintenance boundary therefore synchronizes the full chain.
         for (var current = new DirectoryInfo(fullPath); current is not null; current = current.Parent)
         {
             DurableSync.Directory(current.FullName);
-            if (string.Equals(current.FullName, existingAncestor.FullName, StringComparison.Ordinal))
-            {
-                return;
-            }
         }
-        throw new InvalidOperationException("The created filesystem object-store path is not below its original ancestor directory.");
     }
 
     private static FileStream AcquireLock(PhysicalRoot root, FileShare share, string message)
@@ -318,6 +304,8 @@ internal static class FilesystemObjectBackup
         var markerPath = root.Resolve(RestoreMarkerFileName);
         if (!HasUnresolvedRestore(root))
         {
+            // A previous marker unlink may have succeeded before its sync failed.
+            DurableSync.Directory(root.Path);
             return;
         }
         FilesystemObjectRestoreMarker marker;
@@ -337,6 +325,10 @@ internal static class FilesystemObjectBackup
         {
             throw new InvalidOperationException("The object-store restore marker does not match the configured buckets; runtime remains fenced.");
         }
+        // A visible marker may come from a failed publication barrier. Its decision
+        // must be durable before recovery can destroy any rollback bucket.
+        DurableSync.File(markerPath);
+        DurableSync.Directory(root.Path);
         if (marker.Phase == "committed")
         {
             if (marker.Buckets.Any(bucket => !InspectDirectoryEntry(root.Resolve(bucket.Name), bucket.Name)))
@@ -480,8 +472,8 @@ internal static class FilesystemObjectBackup
         if (File.Exists(markerPath))
         {
             File.Delete(markerPath);
-            DurableSync.Directory(root.Path);
         }
+        DurableSync.Directory(root.Path);
     }
 
     private static async Task PublishRestoreMarkerAsync(

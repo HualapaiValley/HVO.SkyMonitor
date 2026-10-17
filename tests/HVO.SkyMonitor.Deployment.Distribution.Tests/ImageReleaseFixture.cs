@@ -43,7 +43,7 @@ internal sealed class ImageReleaseFixture : IDisposable
     public const string Tree = "0a1b2c3d4e5f60718293a4b5c6d7e8f901234567";
     public const string MinimumRevision = "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f";
     public const string IndexDigest = "sha256:3c0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd";
-    public const string Repository = "ghcr.io/roysalisbury/hvo.skymonitor/cameraagent";
+    public const string Repository = "ghcr.io/hualapaivalley/skymonitor-cameraagent";
 
     /// <summary>The component count a real inventory clears easily and the release tool requires.</summary>
     public const int InventoryComponents = 40;

@@ -179,7 +179,7 @@ internal sealed partial class RawCaptureIngress :
                 reconciliationActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 _telemetry.RecordReconciliation(reconciliation);
                 _state.RecordReconciliation(reconciliation);
-                _logger.RawIngressSqliteResult("checkpoint", "success");
+                _logger.RawIngressSqliteSucceeded("checkpoint");
                 var held = await _journal.ReadHeldTotalsAsync(cancellationToken).ConfigureAwait(false);
                 var health = await _journal.ReadHealthTotalsAsync(cancellationToken).ConfigureAwait(false);
                 RevalidateCapacityAfterFailure();
@@ -249,7 +249,7 @@ internal sealed partial class RawCaptureIngress :
                 _logger.RawIngressIntegrityFailed(reason);
                 if (exception is Microsoft.Data.Sqlite.SqliteException)
                 {
-                    _logger.RawIngressSqliteResult("initialization", "failure");
+                    _logger.RawIngressSqliteFailed("initialization");
                 }
                 throw;
             }
@@ -529,7 +529,7 @@ internal sealed partial class RawCaptureIngress :
                 _faultInjector.Inject(RawIngressFaultPoint.AfterJournalCommit);
                 commitActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             }
-            _logger.RawIngressSqliteResult("commit", "success");
+            _logger.RawIngressSqliteSucceeded("commit");
             var held = await _journal.ReadHeldTotalsAsync(CancellationToken.None).ConfigureAwait(false);
             _state.UpdateBaseHeldData(held.Count, held.Bytes, held.Oldest);
             var prior = _state.GetBaseSnapshot();
@@ -633,7 +633,7 @@ internal sealed partial class RawCaptureIngress :
             _logger.RawIngressRefused("accept", reason);
             if (exception is Microsoft.Data.Sqlite.SqliteException)
             {
-                _logger.RawIngressSqliteResult("commit", "failure");
+                _logger.RawIngressSqliteFailed("commit");
             }
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, reason);
             Volatile.Write(ref _initialized, false);

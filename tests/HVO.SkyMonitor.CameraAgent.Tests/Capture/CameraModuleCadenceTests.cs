@@ -1,6 +1,9 @@
+using System.Globalization;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
@@ -10,6 +13,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture;
 public sealed class CameraModuleCadenceTests
 {
     private static readonly DateTimeOffset StartUtc = new(2000, 1, 1, 12, 0, 0, TimeSpan.Zero);
+    private const double VirtualSkyLatitude = 35.347;
+    private const double VirtualSkyLongitude = -113.878;
 
     [TestMethod]
     public async Task RunAsync_ContinuousStartsAfterReadoutAndSynchronousHandoffWithoutWaitingForBackgroundWork()
@@ -816,6 +821,172 @@ public sealed class CameraModuleCadenceTests
         AssertEvidenceOrder(night);
     }
 
+    [TestMethod]
+    [DataRow(VirtualSkyIlluminationMode.LegacyScalarSolar, CaptureSolarRegime.Day)]
+    [DataRow(VirtualSkyIlluminationMode.SolarDriven, CaptureSolarRegime.Day)]
+    [DataRow(VirtualSkyIlluminationMode.ControlledNight, CaptureSolarRegime.Night)]
+    public async Task RunAsync_VirtualSkyAtLocalNoon_UsesTheRegimeOfTheRenderedSky(
+        VirtualSkyIlluminationMode mode,
+        CaptureSolarRegime expected)
+    {
+        var noon = new DateTimeOffset(2026, 1, 15, 19, 0, 0, TimeSpan.Zero);
+        var ephemeris = new CountingPlanetEphemeris(new AstronomyEnginePlanetEphemeris());
+        Assert.AreEqual(SolarAltitudeRegime.Day, RealSunRegime(ephemeris.Inner, noon));
+        var timeProvider = new ManualTimeProvider(noon);
+        using var cancellation = new CancellationTokenSource();
+        var config = CreateVirtualSkyHostMeteredConfig(mode);
+        var module = CreateVirtualSkyModule(timeProvider, noon);
+        await using var moduleLifetime = module.ConfigureAwait(false);
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        var context = new RecordingHostContext(config, timeProvider, cancellation, publishTarget: 1);
+
+        await CreateRunner(module, context, timeProvider, ephemeris).RunAsync(cancellation.Token)
+            .WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+
+        var submission = context.Submissions.Single();
+        var envelope = config.Rig.Pipeline.Envelope!;
+        var defaults = expected == CaptureSolarRegime.Night ? envelope.NightDefaults : envelope.DayDefaults;
+        Assert.AreEqual(defaults.Exposure, submission.Request.RequestedSetpoint!.Exposure);
+        Assert.AreEqual(defaults.Gain, submission.Request.RequestedSetpoint.Gain);
+        Assert.AreEqual(expected, RequiredEvidence(submission).SolarRegime);
+        if (mode == VirtualSkyIlluminationMode.ControlledNight)
+        {
+            Assert.AreEqual(0, ephemeris.RequestCount);
+        }
+        else
+        {
+            Assert.IsGreaterThan(0, ephemeris.RequestCount);
+        }
+        // Provenance keeps the configured lighting and the real Sun even when control follows the rendered sky.
+        var extra = submission.Result.Frame!.Metadata.Extra!;
+        Assert.AreEqual(mode.ToString(), extra["skyIlluminationMode"]);
+        Assert.IsGreaterThan(0d, double.Parse(extra["stellarSolarAltitudeDegrees"], CultureInfo.InvariantCulture));
+        Assert.IsTrue(extra.ContainsKey("skySolarAzimuthDegrees"));
+    }
+
+    [TestMethod]
+    [DataRow(VirtualSkyIlluminationMode.LegacyScalarSolar)]
+    [DataRow(VirtualSkyIlluminationMode.ControlledNight)]
+    public async Task RunAsync_VirtualSkyAcrossRealSunrise_ResetsToDayDefaultsOnlyWhenTheRenderedSkyBrightens(
+        VirtualSkyIlluminationMode mode)
+    {
+        var beforeDawn = new DateTimeOffset(2026, 1, 15, 12, 0, 0, TimeSpan.Zero);
+        var morning = beforeDawn.AddHours(4);
+        var ephemeris = new CountingPlanetEphemeris(new AstronomyEnginePlanetEphemeris());
+        Assert.AreEqual(SolarAltitudeRegime.Night, RealSunRegime(ephemeris.Inner, beforeDawn));
+        Assert.AreEqual(SolarAltitudeRegime.Day, RealSunRegime(ephemeris.Inner, morning));
+        var timeProvider = new ManualTimeProvider(beforeDawn);
+        using var cancellation = new CancellationTokenSource();
+        var config = CreateVirtualSkyHostMeteredConfig(mode);
+        var module = CreateVirtualSkyModule(timeProvider, beforeDawn);
+        await using var moduleLifetime = module.ConfigureAwait(false);
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        var context = new RecordingHostContext(config, timeProvider, cancellation, publishTarget: 2,
+            onPublish: (publish, _) =>
+            {
+                if (publish == 1)
+                {
+                    timeProvider.Advance(morning - beforeDawn);
+                }
+            });
+
+        await CreateRunner(module, context, timeProvider, ephemeris).RunAsync(cancellation.Token)
+            .WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+
+        var envelope = config.Rig.Pipeline.Envelope!;
+        var night = RequiredEvidence(context.Submissions[0]);
+        Assert.AreEqual(CaptureSolarRegime.Night, night.SolarRegime);
+        Assert.AreEqual(envelope.NightDefaults.Exposure, context.Submissions[0].Request.RequestedSetpoint!.Exposure);
+        Assert.AreEqual(envelope.NightDefaults.Gain, context.Submissions[0].Request.RequestedSetpoint!.Gain);
+        Assert.AreEqual(night.Decision.DecidedExposure, context.Submissions[1].Request.RequestedSetpoint!.Exposure);
+        Assert.AreEqual(night.Decision.DecidedGain, context.Submissions[1].Request.RequestedSetpoint!.Gain);
+        var afterSunrise = RequiredEvidence(context.Submissions[1]);
+        if (mode == VirtualSkyIlluminationMode.ControlledNight)
+        {
+            // The metered setpoint carries through the real sunrise and stays inside the envelope.
+            Assert.AreEqual(CaptureSolarRegime.Night, afterSunrise.SolarRegime);
+            Assert.AreNotEqual(CaptureControlDecisionReason.SolarRegimeChanged, night.Decision.Reason);
+            Assert.AreNotEqual(CaptureControlDecisionReason.SolarRegimeChanged, afterSunrise.Decision.Reason);
+            Assert.IsTrue(afterSunrise.Decision.DecidedExposure >= envelope.MinExposure &&
+                afterSunrise.Decision.DecidedExposure <= envelope.MaxExposure);
+            Assert.IsTrue(afterSunrise.Decision.DecidedGain >= envelope.MinGain &&
+                afterSunrise.Decision.DecidedGain <= envelope.MaxGain);
+            Assert.AreEqual(0, ephemeris.RequestCount);
+        }
+        else
+        {
+            Assert.AreEqual(CaptureSolarRegime.Day, afterSunrise.SolarRegime);
+            Assert.AreEqual(CaptureControlDecisionReason.SolarRegimeChanged, afterSunrise.Decision.Reason);
+            Assert.AreEqual(envelope.DayDefaults.Exposure, afterSunrise.Decision.DecidedExposure);
+            Assert.AreEqual(envelope.DayDefaults.Gain, afterSunrise.Decision.DecidedGain);
+        }
+    }
+
+    private static SolarAltitudeRegime RealSunRegime(IPlanetEphemeris ephemeris, DateTimeOffset utc)
+        => SolarAltitudeClassifier.Classify(ephemeris, utc, VirtualSkyLatitude, VirtualSkyLongitude, 0, -12).Regime;
+
+    private static VirtualSkyCameraModule CreateVirtualSkyModule(TimeProvider timeProvider, DateTimeOffset utc)
+    {
+        var rightAscension = AstronomyTime.LocalMeanSiderealDegrees(utc, VirtualSkyLongitude) / 15d;
+        var catalog = new InMemoryCelestialCatalog([
+            new CelestialCatalogObject("fixture-star", "Fixture Star", rightAscension, VirtualSkyLatitude, 0, 0.65)
+        ]);
+        return new VirtualSkyCameraModule(timeProvider, catalog, new ProjectedSceneStore());
+    }
+
+    /// <summary>The installer profile's envelope with host-metered exposure and gain; the default mode is omitted.</summary>
+    private static CameraModuleConfig CreateVirtualSkyHostMeteredConfig(VirtualSkyIlluminationMode mode)
+    {
+        var envelope = new ExposureEnvelope(
+            TimeSpan.FromSeconds(0.05),
+            TimeSpan.FromSeconds(30),
+            0,
+            400,
+            new ExposureDefaults(TimeSpan.FromSeconds(0.25), 0),
+            new ExposureDefaults(TimeSpan.FromSeconds(20), 150),
+            0.5);
+        var options = mode == VirtualSkyIlluminationMode.LegacyScalarSolar
+            ? new Dictionary<string, string>()
+            : new Dictionary<string, string> { ["illuminationMode"] = mode.ToString() };
+        return new CameraModuleConfig(
+            new ObservatoryLocation(VirtualSkyLatitude, VirtualSkyLongitude, 0, "America/Phoenix"),
+            new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(options)),
+            new CameraRigConfig(
+                new SensorProfile(
+                    "VirtualAsi174Mm",
+                    64,
+                    64,
+                    5.86,
+                    SensorColorMode.Mono,
+                    CameraPixelFormat.Mono16,
+                    SensorResponseMode.Monochrome,
+                    SensorRecipeVersion: "mono16-v1"),
+                new OpticsProfile(
+                    "EquidistantFisheye", 0, 180, 0, LensKind.Fisheye, 32, 32, 0.98 * 32,
+                    CalibrationVersion: "virtual-fisheye-180-equidistant-v1"),
+                new RigOrientation(90, 0, 0),
+                new PipelineExposureProfile(
+                    TimeSpan.FromSeconds(30),
+                    envelope.DayDefaults.Exposure,
+                    envelope.NightDefaults.Exposure,
+                    envelope.DayDefaults.Gain,
+                    envelope.NightDefaults.Gain,
+                    envelope,
+                    CadenceMode: CaptureCadenceMode.Continuous),
+                new CameraControlPolicy
+                {
+                    ExposureControl = AutomaticControlOwnership.HostMetered,
+                    GainControl = AutomaticControlOwnership.HostMetered,
+                    Metering = new CaptureMeteringPolicy { UseImageCircle = false },
+                    SolarRegimes = new CaptureSolarRegimePolicy
+                    {
+                        DayAltitudeThresholdDegrees = 0,
+                        NightAltitudeThresholdDegrees = -12
+                    }
+                }),
+            CapturePipelineConfig.Empty);
+    }
+
     private static CameraModuleRunner CreateRunner(
         ICameraModule module,
         ICaptureHostContext context,
@@ -1175,6 +1346,19 @@ public sealed class CameraModuleCadenceTests
             Assert.AreEqual(SolarSystemBody.Sun, body);
             Assert.IsTrue(RequestCount < declinations.Length, "The runner requested an unexpected ephemeris sample.");
             return new SolarSystemPosition(new EquatorialPoint(0, declinations[RequestCount++]), -26.74);
+        }
+    }
+
+    private sealed class CountingPlanetEphemeris(IPlanetEphemeris inner) : IPlanetEphemeris
+    {
+        public IPlanetEphemeris Inner => inner;
+        public string ModelVersion => inner.ModelVersion;
+        public int RequestCount { get; private set; }
+
+        public SolarSystemPosition GetPosition(SolarSystemBody body, DateTimeOffset utc)
+        {
+            RequestCount++;
+            return inner.GetPosition(body, utc);
         }
     }
 

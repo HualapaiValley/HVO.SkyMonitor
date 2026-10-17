@@ -1,5 +1,24 @@
 # Signed Distribution Releases
 
+## HVO Install Contract
+
+The shared [HVO product installation and release contract](../hvo-install-contract.md)
+is the release flow SkyMonitor is being brought to under epic
+[#1318](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1318). This
+runbook describes the current release design; no release has been published yet.
+
+**Current differences:**
+
+| Contract | Today | Issue |
+| --- | --- | --- |
+| One product version, `VersionPrefix` in `Directory.Build.props`, tagged `vX.Y.Z` on `main`; catalogs keep their own train | Independent installer, catalog, and image trains, each with its own version, tags, and signed index sequence | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
+| Integration pre-releases `vX.Y.Z-dev.<n>` from `development/v1` | None | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309) |
+| A tag starts the workflow, which reuses CI as gates, drafts the release, installs from the draft on x64 and arm64, and waits for an approved publish | Dispatched from `main` with a `PUBLISH` confirmation; the `production-release` environment has no protection rules | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
+| `install.sh`, `release.json`, and `SHA256SUMS`; trust is `SHA256SUMS` plus GitHub build-provenance attestations only | ES256-signed manifests and indexes per train, verified against the embedded [trust root](#trust-root); the owner retired all three on 2026-10-16 (contract section 10) | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309), [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310), [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
+| Images at `ghcr.io/hualapaivalley/skymonitor-cameraagent`, always by digest, with `latest` moved for the newest final release | No image has been published yet, and this runbook forbids `latest` | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
+| `CHANGELOG.md` and `docs/upgrade-notes/X.Y.Z.md` | `CHANGELOG.md` exists with Unreleased entries; versioned upgrade-note files are added when cutting a release | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312), [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
+| Branch and check settings (contract section 2) | CI scans the history for secrets and Dependabot updates the Docker base-image digests. Squash and rebase merges are still allowed, merged branches are kept, and release tags have no ruleset; the recommended [repository settings](../development-v1.md#repository-settings) await the owner's approval | [#1321](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1321) |
+
 ## Boundary And Identity
 
 GitHub Releases are the initial source of truth for self-contained installer
@@ -64,7 +83,9 @@ The workflow:
 
 1. Builds and tests without signing or release-write permission.
 2. Produces deterministic x64/ARM64 installer archives or the exact production
-   catalog through the existing pinned catalog path.
+   catalog through the existing pinned catalog path. Both installers are stamped
+   with the release version and source commit, and the workflow requires
+   `--version` to print exactly `<version>+<commit>` (#1312).
 3. Uses the `production-release` environment and Azure OIDC to sign the
    manifest, checksum list, and next append-only index snapshot.
 4. Immediately verifies every Key Vault signature against the embedded key.
@@ -233,7 +254,7 @@ host can execute is smoke-tested; the other architecture's runtime evidence
 belongs to a host of that architecture.
 
 The `open(2)` flag defect that blocked `linux/arm64`
-([#603](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/603)) is fixed:
+([#603](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/603)) is fixed:
 the CameraAgent runtime and the deployment CLI select `O_DIRECTORY` and
 `O_NOFOLLOW` per processor architecture, and the SQLite catalog selects
 `O_NOFOLLOW` the same way (the arm and powerpc ABIs override the asm-generic
@@ -241,11 +262,11 @@ values that x86-64 uses). The advisory native arm64 workflow
 (`.github/workflows/cameraagent-arm64.yml`) runs the CameraAgent, acceptance,
 catalog, and deployment CLI Unit suites on aarch64 and smoke-tests a natively
 built image there. The signed-release installer campaign
-([#598](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/598)) proves the
+([#598](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/598)) proves the
 signed lifecycle on `linux/amd64`: both architectures of both candidates are
 built, identity-derived, scanned, and signed, and the amd64 archive is the one that an
 installation consumes and runs. The native `linux/arm64` qualification under
-[#651](https://github.com/RoySalisbury/HVO.SkyMonitor/issues/651) runs that same
+[#651](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/651) runs that same
 two-candidate signed install, upgrade, rollback, refusal, and uninstall campaign
 on aarch64. It verifies the complete published-format candidate packages before
 reuse and after the lifecycle, and proves that both native release archives run.

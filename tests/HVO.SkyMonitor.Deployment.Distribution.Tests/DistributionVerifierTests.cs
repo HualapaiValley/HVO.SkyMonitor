@@ -639,14 +639,14 @@ public sealed partial class DistributionVerifierTests
                 "installer",
                 "1.0.0",
                 "installer-v1.0.0",
-                "RoySalisbury/HVO.SkyMonitor",
+                "HualapaiValley/HVO.SkyMonitor",
                 new string('a', 40),
                 new string('b', 40),
                 DateTimeOffset.Parse("2026-08-24T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture)),
             new DistributionSigningIdentity(DistributionTrustRoot.Algorithm, TrustRoot.KeyId),
             [
-                Artifact(DistributionArtifactRole.Installer, "hvo-skymonitor-installer-v1.0.0-linux-x64.tar.gz"),
-                Artifact(DistributionArtifactRole.Installer, "hvo-skymonitor-installer-v1.0.0-linux-arm64.tar.gz") with
+                Artifact(DistributionArtifactRole.Installer, "hvo-sky-install-v1.0.0-linux-x64.tar.gz"),
+                Artifact(DistributionArtifactRole.Installer, "hvo-sky-install-v1.0.0-linux-arm64.tar.gz") with
                 {
                     OperatingSystem = "linux",
                     Architecture = "arm64"
@@ -668,7 +668,7 @@ public sealed partial class DistributionVerifierTests
                 "catalog",
                 version,
                 $"catalog-{version}",
-                "RoySalisbury/HVO.SkyMonitor",
+                "HualapaiValley/HVO.SkyMonitor",
                 new string('a', 40),
                 new string('b', 40),
                 DateTimeOffset.Parse("2026-08-24T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture)),
@@ -711,7 +711,7 @@ public sealed partial class DistributionVerifierTests
                 "image",
                 "1.0.0",
                 "image-v1.0.0",
-                "RoySalisbury/HVO.SkyMonitor",
+                "HualapaiValley/HVO.SkyMonitor",
                 new string('a', 40),
                 new string('b', 40),
                 DateTimeOffset.Parse("2026-08-24T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture)),
@@ -736,7 +736,7 @@ public sealed partial class DistributionVerifierTests
             [
                 new DistributionImageIdentity(
                     "CameraAgent",
-                    "ghcr.io/roysalisbury/hvo.skymonitor/cameraagent",
+                    "ghcr.io/hualapaivalley/skymonitor-cameraagent",
                     "sha256:" + new string('1', 64),
                     new string('a', 40),
                     new string('b', 40),

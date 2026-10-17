@@ -1,0 +1,99 @@
+@page "/Account/Manage/ApiKeys"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize(Policy = HVO.SkyMonitor.CameraAgent.Authorization.CameraAgentAuthorizationPolicyNames.ApiKeyManagementV1)]
+@using HVO.SkyMonitor.CameraAgent.Authentication
+@using HVO.SkyMonitor.Common.Security
+
+<PageTitle>API keys</PageTitle>
+
+<div class="api-keys">
+    <header class="ops-page-heading">
+        <div>
+            <p class="eyebrow">Local owner</p>
+            <h1 id="page-heading" tabindex="-1">API keys</h1>
+            <p>Keys let the command line and automation use this CameraAgent's operations API without a browser. A key acts for the owner account with the access it was given; it can never sign in here or manage keys.</p>
+        </div>
+    </header>
+    <StatusMessage Message="@message" />
+
+    @if (created is not null)
+    {
+        <section class="ops-panel" aria-labelledby="new-api-key-heading">
+            <header class="ops-panel-heading">
+                <div>
+                    <h2 id="new-api-key-heading">Copy the new key now</h2>
+                    <p>This is the only time it is shown. CameraAgent keeps only a hash of it, so if it is lost, revoke it and create another.</p>
+                </div>
+            </header>
+            <div class="ops-field">
+                <label for="new-api-key">Key for "@created.Value.Label"</label>
+                <input id="new-api-key" type="text" readonly value="@created.Value.Token" autocomplete="off" spellcheck="false" />
+            </div>
+            <p class="account-note">Send it only in an <code>Authorization: Bearer</code> header to <code>/api/v1/operations</code>. CameraAgent refuses a key anywhere else, including in a URL.</p>
+        </section>
+    }
+
+    <section class="ops-panel" aria-labelledby="create-api-key-heading">
+        <header class="ops-panel-heading">
+            <div>
+                <h2 id="create-api-key-heading">Create a key</h2>
+                <p>Name it after where it will be used. Give read access unless the client changes settings or runs operations.</p>
+            </div>
+        </header>
+        <EditForm Model="Input" FormName="@CreateFormName" OnValidSubmit="CreateAsync" method="post" class="account-form">
+            <DataAnnotationsValidator />
+            <ValidationSummary role="alert" />
+            <div class="ops-field">
+                <label for="Input.Label">Name</label>
+                <InputText @bind-Value="Input.Label" id="Input.Label" autocomplete="off" maxlength="@CameraAgentApiKeyStore.MaximumLabelLength" aria-required="true" />
+                <ValidationMessage For="() => Input.Label" />
+            </div>
+            <div class="ops-field">
+                <label for="Input.Access">Access</label>
+                <InputSelect @bind-Value="Input.Access" id="Input.Access">
+                    <option value="@ApiKeyAccessLevel.Read">Read: view operations, settings and captures</option>
+                    <option value="@ApiKeyAccessLevel.ReadWrite">Read and change: also change settings and run operations</option>
+                </InputSelect>
+            </div>
+            <div class="account-form-actions">
+                <button type="submit" class="button primary">Create key</button>
+            </div>
+        </EditForm>
+    </section>
+
+    <section class="ops-panel" aria-labelledby="api-keys-heading">
+        <header class="ops-panel-heading">
+            <div>
+                <h2 id="api-keys-heading">Keys</h2>
+                <p>Revoking a key stops it at the next request. Recovering the owner password revokes every key.</p>
+            </div>
+            <span>@keys.Count of @CameraAgentApiKeyStore.MaximumKeysPerOwner</span>
+        </header>
+        @if (keys.Count == 0)
+        {
+            <p class="account-note">This owner has no API keys.</p>
+        }
+        else
+        {
+            <form method="post" @formname="@RevokeFormName" @onsubmit="RevokeAsync">
+                <AntiforgeryToken />
+                <div class="ops-table-wrap">
+                    <table class="ops-table">
+                        <thead><tr><th scope="col">Name</th><th scope="col">Key starts</th><th scope="col">Access</th><th scope="col">Created</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+                        <tbody>
+                            @foreach (var key in keys)
+                            {
+                                <tr @key="key.Id">
+                                    <td>@key.Label</td>
+                                    <td><code>@(CameraAgentApiKeyToken.Prefix + key.Id)</code></td>
+                                    <td>@AccessLabel(key)</td>
+                                    <td>@Created(key)</td>
+                                    <td><button type="submit" class="button secondary small" name="Revoke.Id" value="@key.Id" aria-label="@($"Revoke {key.Label}")">Revoke</button></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </form>
+        }
+    </section>
+</div>

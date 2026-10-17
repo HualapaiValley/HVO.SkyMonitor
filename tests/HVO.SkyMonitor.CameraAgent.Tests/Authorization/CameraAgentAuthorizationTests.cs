@@ -96,6 +96,43 @@ public sealed class CameraAgentAuthorizationTests
     }
 
     [TestMethod]
+    [DataRow("admin", ConfiguredEmail, true)]
+    [DataRow(ConfiguredEmail, ConfiguredEmail, true)]
+    [DataRow("admin", "previous-owner@cameraagent.test", false)]
+    public async Task OwnerIsMatchedByItsEmailWhateverItsSignInUserName(
+        string userName,
+        string storedEmail,
+        bool expectedSuccess)
+    {
+        ArgumentNullException.ThrowIfNull(userName);
+        ArgumentNullException.ThrowIfNull(storedEmail);
+        var userManager = CreateUserManager();
+        userManager.Setup(manager => manager.FindByIdAsync(It.IsAny<string>()))
+            .ReturnsAsync(new ApplicationUser
+            {
+                UserName = userName,
+                NormalizedUserName = userName.ToUpperInvariant(),
+                IsSiteOwner = true,
+                NormalizedEmail = storedEmail.ToUpperInvariant(),
+                SecurityStamp = "durable-stamp"
+            });
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(userManager.Object);
+        services.AddSingleton<ILookupNormalizer, UpperInvariantLookupNormalizer>();
+        services.AddSingleton(Options.Create(new LocalIdentityOptions { AdminEmail = ConfiguredEmail }));
+        services.AddCameraAgentAuthorization();
+        using var provider = services.BuildServiceProvider();
+        var authorization = provider.GetRequiredService<IAuthorizationService>();
+
+        var result = await authorization.AuthorizeAsync(
+            new ClaimsPrincipal(CanonicalIdentity("owner")),
+            CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false);
+
+        Assert.AreEqual(expectedSuccess, result.Succeeded);
+    }
+
+    [TestMethod]
     public async Task OperationsPolicies_DenyOwnerUntilTemporaryPasswordIsReplaced()
     {
         var userManager = CreateUserManager();

@@ -15,6 +15,10 @@ internal static class Program
         {
             return PrivilegedPurgeNamespace.RunInternal(args);
         }
+        if (args.Length > 0 && args[0] == PrivilegedHostPolicy.CommandName)
+        {
+            return PrivilegedHostPolicy.RunInternal(args);
+        }
 
         using var cancellation = new CancellationTokenSource();
         Console.CancelKeyPress += (_, eventArgs) =>
@@ -34,7 +38,15 @@ internal static class Program
             // A --config install can select JSON output without a --json token, so the error stream mode follows
             // the parsed command once parsing succeeds; the argv guess only covers a parse failure.
             jsonErrors = command.Json;
-            if (command is InstallDeploymentCommand install)
+            if (command is HelpCommand help)
+            {
+                await Console.Out.WriteAsync(help.Usage).ConfigureAwait(false);
+            }
+            else if (command is VersionCommand version)
+            {
+                await Console.Out.WriteLineAsync(version.Identity).ConfigureAwait(false);
+            }
+            else if (command is InstallDeploymentCommand install)
             {
                 var result = await CameraAgentInstaller.InstallAsync(install.Request, cancellation.Token).ConfigureAwait(false);
                 if (install.Json)
@@ -77,6 +89,22 @@ internal static class Program
                 else
                 {
                     await WriteStateResetResultAsync(result).ConfigureAwait(false);
+                }
+            }
+            else if (command is HostProductRootRequest host)
+            {
+                var result = await PrivilegedHostPolicy.SetProductRootAsync(host, cancellation.Token).ConfigureAwait(false);
+                if (host.Json)
+                {
+                    await Console.Out.WriteLineAsync(
+                        JsonSerializer.Serialize(result, DeploymentJsonContext.Default.HostPolicyResult)).ConfigureAwait(false);
+                }
+                else
+                {
+                    await Console.Out.WriteLineAsync($"Outcome: {result.Outcome}").ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync($"Policy: {result.PolicyPath}").ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync($"Previous product root: {result.PreviousProductRoot}").ConfigureAwait(false);
+                    await Console.Out.WriteLineAsync($"Product root: {result.ProductRoot}").ConfigureAwait(false);
                 }
             }
             else if (command is OwnerRecoveryRequest recovery)
@@ -132,6 +160,13 @@ internal static class Program
             }
             return 0;
         }
+        catch (InstallUsageException exception) when (exception.Usage is not null && !jsonErrors)
+        {
+            // A command-line mistake is not an installation attempt: say what was wrong, then how to use the command.
+            await Console.Error.WriteLineAsync(Redaction.SafeDiagnostic(exception.Message)).ConfigureAwait(false);
+            await Console.Error.WriteAsync(exception.Usage).ConfigureAwait(false);
+            return 2;
+        }
         catch (InstallUsageException exception)
         {
             await WriteErrorAsync(jsonErrors, "usage", exception.Message).ConfigureAwait(false);
@@ -141,6 +176,26 @@ internal static class Program
         {
             await WriteErrorAsync(jsonErrors, "canceled", "Deployment operation canceled.").ConfigureAwait(false);
             return 130;
+        }
+        catch (HostPrerequisiteException exception)
+        {
+            // Every finding and its remedy is reported at once: as the structured report on standard output for
+            // --json, whose standard error carries only one-line JSON objects, and rendered on standard error
+            // otherwise.
+            if (exception.Report is { } report)
+            {
+                if (jsonErrors)
+                {
+                    await Console.Out.WriteLineAsync(
+                        JsonSerializer.Serialize(report, DeploymentJsonContext.Default.HostPrerequisiteReport)).ConfigureAwait(false);
+                }
+                else
+                {
+                    await Console.Error.WriteLineAsync(HostPrerequisites.Render(report)).ConfigureAwait(false);
+                }
+            }
+            await WriteErrorAsync(jsonErrors, "host-prerequisites", exception.Message).ConfigureAwait(false);
+            return 1;
         }
         catch (OwnerRecoveryProtocolException exception)
         {
@@ -177,7 +232,7 @@ internal static class Program
         await Console.Out.WriteLineAsync($"Instance: {result.InstanceId:D} ({result.FriendlyName})").ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"URL: {result.Url}").ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"Owner: {result.OwnerEmail}").ConfigureAwait(false);
-        await Console.Out.WriteLineAsync($"Temporary password file: {result.PasswordFile}").ConfigureAwait(false);
+        await Console.Out.WriteLineAsync(OwnerSignInInstruction(result)).ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"Instance root: {result.InstanceRoot}").ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"Configuration: {result.ConfigurationSha256}").ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"Rig profile: {result.RigProfileName} / {result.RigProfileVersion}").ConfigureAwait(false);
@@ -187,6 +242,15 @@ internal static class Program
         await Console.Out.WriteLineAsync($"Runtime: {result.RuntimeUid}:{result.RuntimeGid}; alive={result.Alive}; healthy={result.Healthy}").ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"State: {result.OwnerBootstrapState}").ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Tells the operator how to sign in for the first time. The documented default is named outright because it is
+    /// public by design; any other temporary password is only ever referred to by its owner-only file.
+    /// </summary>
+    internal static string OwnerSignInInstruction(HVO.SkyMonitor.Deployment.Contracts.InstallationResult result)
+        => result.OwnerPasswordIsDefault
+            ? $"Sign in as {OwnerCredentialDefaults.UserName} / {OwnerCredentialDefaults.Password}; a password change is required at first sign-in."
+            : $"Temporary password file: {result.PasswordFile}";
 
     private static async Task WriteLifecycleResultAsync(HVO.SkyMonitor.Deployment.Contracts.LifecycleResult result)
     {

@@ -12,9 +12,8 @@ namespace HVO.SkyMonitor.Storage.FileSystem;
 /// default row unless its <c>uapi/asm/fcntl.h</c> overrides these two flags.
 /// </summary>
 /// <remarks>
-/// This table also exists in <c>CameraAgent.Common.Storage.LinuxOpenFlags</c> and in the deployment
-/// CLI. #587 retires the CameraAgent copy in favour of this one; the CLI keeps its own because it
-/// may not reference this project (it is a delivery tool, not a host).
+/// CameraAgent forwards its existing public flag API to this table. The deployment CLI keeps its
+/// own because it may not reference this project (it is a delivery tool, not a host).
 /// </remarks>
 public static class LinuxOpenFlags
 {

@@ -28,6 +28,26 @@ def job(workflow, name):
     return match.group(1) if match else ""
 
 
+classifier_run_line = (
+    "        run: GITHUB_STEP_SUMMARY='' ./scripts/ci:classify "
+    '"$EVENT_NAME" "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"'
+)
+
+
+contract_condition = (
+    "if: ${{ !cancelled() && (steps.classify.outcome != 'success' || "
+    "steps.classify.outputs.secret_scan_contract != 'false') }}"
+)
+
+
+def step(section, name):
+    match = re.search(
+        rf"^      - name: {re.escape(name)}\n(.*?)(?=^      - |\Z)",
+        section, re.M | re.S,
+    )
+    return match.group(1) if match else ""
+
+
 def violations(short, full):
     errors = []
     preflight = job(short, "preflight")
@@ -54,6 +74,31 @@ def violations(short, full):
         "test:pr-review-tools", "test:development-v1-ci",
     ):
         require(f"          ./scripts/{command}\n" in preflight, f"preflight {command}")
+    # Issue #1321: both required profiles scan the complete history for secrets,
+    # inside a check that branch protection already requires.
+    for profile, section in (("preflight", preflight), ("full Quality", quality)):
+        for command in ("ci:secret-scan", "test:ci-secret-scan"):
+            require(f"          ./scripts/{command}\n" in section, f"{profile} {command}")
+        require("          fetch-depth: 0\n" in section, f"{profile} full-history checkout")
+    history = step(preflight, "Scan history for secrets")
+    classification = step(preflight, "Classify secret scanner contract inputs")
+    contract = step(preflight, "Test secret scanner contract")
+    require("./scripts/ci:secret-scan" in history and "        if:" not in history,
+            "history scan is unconditional")
+    require("        id: classify\n" in classification, "contract classifier identity")
+    for wiring in (
+        "EVENT_NAME: ${{ github.event_name }}",
+        "BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}",
+        "HEAD_SHA: ${{ github.sha }}",
+    ):
+        require(wiring in classification, f"contract classification wiring: {wiring}")
+    require(classification.splitlines().count(classifier_run_line) == 1,
+            "exact contract classification command with job summary disabled")
+    require(preflight.find("Scan history for secrets") <
+            preflight.find("Classify secret scanner contract inputs"),
+            "history scan precedes fallible classification")
+    require(contract_condition in contract and "./scripts/test:ci-secret-scan" in contract,
+            "contract skips only successful explicit false, including after classification failure")
     require(
         re.findall(r"^\s+dotnet (restore|build|test)\b", build, re.M)
         == ["restore", "build", "test"],
@@ -131,6 +176,25 @@ mutations = (
         "x64, hvo-skymonitor, hvo-qualification]", "x64, hvo-skymonitor, ubuntu-24.04]", 1)),
     ("v1 confined to qualification runners", short.replace(
         "x64, hvo-skymonitor]", "x64, hvo-skymonitor, hvo-qualification]"), full),
+    ("v1 secret scan removed", short.replace("./scripts/ci:secret-scan", ":"), full),
+    ("v1 contract removed", short.replace("./scripts/test:ci-secret-scan", ":"), full),
+    ("v1 history scan gated", short.replace(
+        "- name: Scan history for secrets", "- name: Scan history for secrets\n        if: false"), full),
+    ("v1 classifier removed", short.replace("./scripts/ci:classify ", ": "), full),
+    ("v1 classifier summary enabled", short.replace(
+        "run: GITHUB_STEP_SUMMARY='' ", "run: "), full),
+    ("v1 classifier masked by suffix", short.replace(
+        classifier_run_line, classifier_run_line + " || true"), full),
+    ("v1 classifier command suffix", short.replace(
+        classifier_run_line, classifier_run_line + "; true"), full),
+    ("v1 classifier failure skips contract", short.replace(
+        "steps.classify.outcome != 'success' || ", ""), full),
+    ("v1 missing output skips contract", short.replace(
+        "secret_scan_contract != 'false'", "secret_scan_contract == 'true'"), full),
+    ("v1 failed-step fallback suppressed", short.replace("!cancelled() && ", ""), full),
+    ("full secret scan removed", short, full.replace("./scripts/ci:secret-scan", ":")),
+    ("v1 shallow checkout", short.replace("fetch-depth: 0", "fetch-depth: 1"), full),
+    ("full shallow checkout", short, full.replace("fetch-depth: 0", "fetch-depth: 1")),
 )
 for name, candidate, qualification in mutations:
     if not violations(candidate, qualification):
@@ -196,5 +260,5 @@ else:
                 raise SystemExit("Refreshing a promotion changed its draft/ready state")
         elif request[:3] != ["api", "-X", "POST"] or "draft=true" not in request:
             raise SystemExit("New promotion was not created as draft")
-print("Development v1 CI contracts passed; 16 mutation controls and 8 offline promotion cases passed.")
+print(f"Development v1 CI contracts passed; {len(mutations)} mutation controls and 8 offline promotion cases passed.")
 PY

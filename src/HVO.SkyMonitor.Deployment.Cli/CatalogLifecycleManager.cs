@@ -45,9 +45,11 @@ internal static class CatalogLifecycleManager
         if (!request.DryRun)
         {
             if (uid == 0) throw new InstallerException("Run catalog lifecycle operations as the deployment runtime user, not root.");
-            SafeFileSystem.EnsureSafeExistingAncestors(paths.ProductRoot);
-            SafeFileSystem.CreateOwnerDirectory(paths.ProductRoot);
-            SafeFileSystem.CreateOwnerDirectory(paths.OperationsRoot);
+            // The shared product root is root-owned under both the default layout and a host-policy root, so it is never
+            // re-moded here; missing runtime directories are created, through the privileged helper when the root-owned
+            // namespace denies the runtime user.
+            await PrivilegedPreparation.PrepareProductAsync(paths, uid, gid, processRunner, cancellationToken)
+                .ConfigureAwait(false);
         }
         using var productLock = request.DryRun
             ? null
@@ -940,6 +942,7 @@ internal static class CatalogLifecycleManager
             // so it inherits that request's admission rather than defaulting to deny and refusing a root the
             // caller was admitted for.
             AllowTestProductRoot = request.AllowTestProductRoot,
+            ProductionProductRoot = request.ProductionProductRoot,
             FriendlyName = "catalog-lifecycle",
             OwnerEmail = "lifecycle@localhost.invalid",
             ProductRoot = request.ProductRoot,

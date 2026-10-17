@@ -52,6 +52,22 @@ jq -e --slurp '.[0].phaseStatus == "passed" and .[1].phaseStatus == "passed" and
 run_deploy_mode prepare prepare-happy isolated >/dev/null
 jq -e 'all(.targets[]; .disposition == "newly-created" and .newlyCreated.root == true)' "$prepare_ledger" >/dev/null
 
+# Every CameraAgent build passes the revision its label names, so the published assemblies carry it too (#1297).
+# The LogicHost Dockerfile declares no build argument and receives none.
+assert_image_build_revision_arguments() {
+    local builds camera_builds logic_builds build
+    builds="$(grep $'^docker\tbuildx\tbuild\t' "$LOG")" || fail 'No image build was recorded.'
+    camera_builds="$(grep -F $'\tio.hvoskymonitor.component=cameraAgent\t' <<< "$builds")" || fail 'No CameraAgent image build was recorded.'
+    logic_builds="$(grep -F $'\tio.hvoskymonitor.component=logicHost\t' <<< "$builds")" || fail 'No LogicHost image build was recorded.'
+    while IFS= read -r build; do
+        [[ "$build" == *$'\t--build-arg\tHVO_SOURCE_REVISION='"$REVISION"$'\t'* ]] ||
+          fail 'A CameraAgent image build did not pass its source revision as HVO_SOURCE_REVISION.'
+        [[ "$build" == *$'\t--label\torg.opencontainers.image.revision='"$REVISION"$'\t'* ]] ||
+          fail 'A CameraAgent image build lost its revision label.'
+    done <<< "$camera_builds"
+    [[ "$logic_builds" != *$'\t--build-arg\t'* ]] || fail 'A LogicHost image build received a build argument.'
+}
+
 # Images requires exact prepare state, builds only on the control host, and verifies every target through its declared context.
 : > "$LOG"
 if DEPLOY_TEST_FAILPOINT=abrupt-after-registry-push run_deploy_mode images prepare-happy isolated > "$TEMP_DIR/images-failure.log" 2>&1; then fail 'Abrupt post-push failpoint passed.'; fi
@@ -67,6 +83,7 @@ jq -e '(.targets[] | select(.target == "east") | .architecture) == "arm64" and
 jq -e '.phaseStatus == "passed" and (.targets | length) == 3' "$images_evidence" >/dev/null
 grep -Fq $'docker\tbuildx\tbuild\t--builder\tcontrol-builder\t--platform\tlinux/amd64' "$LOG"
 grep -Fq $'docker\tbuildx\tbuild\t--builder\tcontrol-builder\t--platform\tlinux/amd64,linux/arm64' "$LOG"
+assert_image_build_revision_arguments
 grep -Fq $'docker\t--context\teast-context\timage\tpull\tregistry.example/cameraagent@sha256:' "$LOG"
 grep -Fq $'docker\tbuildx\timagetools\tinspect\t--builder\tcontrol-builder' "$LOG"
 jq -e '.images[] | select(.component == "cameraAgent") | [.platforms[].architecture] == ["amd64","arm64"]' "$images_ledger" >/dev/null
@@ -176,6 +193,7 @@ while IFS= read -r archive_entry; do
 done < <(jq -c '.images[]' "$archive_ledger")
 grep -Fq $'docker\t--context\teast-context\timage\tload\t--input' "$LOG"
 if grep -Eq $'docker\tbuildx\tbuild.*--push' "$LOG"; then fail 'Archive mode pushed to a registry.'; fi
+assert_image_build_revision_arguments
 
 write_prepare_case images-source-drift isolated
 source_drift_root="$TEMP_DIR/artifacts/images-source-drift"

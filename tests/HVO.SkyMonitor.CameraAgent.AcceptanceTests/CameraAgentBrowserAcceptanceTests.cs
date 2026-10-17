@@ -26,7 +26,7 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Configured async disposal would hide the strongly typed browser and host fixtures used throughout each acceptance scope.")]
-public sealed class CameraAgentBrowserAcceptanceTests
+public sealed partial class CameraAgentBrowserAcceptanceTests
 {
     private const float DefaultTimeoutMilliseconds = 45_000;
     private const string OwnerRecoveryAttestationPurpose = "HVO.SkyMonitor.CameraAgent.OwnerRecovery.Attestation.v1";
@@ -532,7 +532,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         }).ConfigureAwait(false);
         var oldCredentialPage = await oldCredentialContext.NewPageAsync().ConfigureAwait(false);
         await oldCredentialPage.GotoAsync("/Account/Login").ConfigureAwait(false);
-        await oldCredentialPage.GetByLabel("Email").FillAsync(CameraAgentKestrelFixture.OwnerEmail)
+        await oldCredentialPage.GetByLabel("Username or email").FillAsync(CameraAgentKestrelFixture.OwnerEmail)
             .ConfigureAwait(false);
         await oldCredentialPage.GetByLabel("Password").FillAsync(CameraAgentKestrelFixture.OwnerPassword)
             .ConfigureAwait(false);
@@ -698,7 +698,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
         }).ConfigureAwait(false);
         var oldPasswordPage = await oldPasswordContext.NewPageAsync().ConfigureAwait(false);
         await oldPasswordPage.GotoAsync("/Account/Login").ConfigureAwait(false);
-        await oldPasswordPage.GetByLabel("Email").FillAsync(CameraAgentKestrelFixture.OwnerEmail).ConfigureAwait(false);
+        await oldPasswordPage.GetByLabel("Username or email").FillAsync(CameraAgentKestrelFixture.OwnerEmail).ConfigureAwait(false);
         await oldPasswordPage.GetByLabel("Password").FillAsync(CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
         await oldPasswordPage.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync()
             .ConfigureAwait(false);
@@ -2308,7 +2308,7 @@ public sealed class CameraAgentBrowserAcceptanceTests
     private static async Task LoginAsync(IPage page, string email, string password)
     {
         await page.GotoAsync("/Account/Login").ConfigureAwait(false);
-        await page.GetByLabel("Email").FillAsync(email).ConfigureAwait(false);
+        await page.GetByLabel("Username or email").FillAsync(email).ConfigureAwait(false);
         await page.GetByLabel("Password").FillAsync(password).ConfigureAwait(false);
         await page.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => !url.Contains("/Account/Login", StringComparison.OrdinalIgnoreCase))

@@ -35,9 +35,12 @@ recovery must be implemented and tested in that deployment.
 Release automation is a separate control plane and does not add Azure Key Vault
 as an application runtime provider. The `production-release` GitHub environment
 uses OIDC subject
-`repo:RoySalisbury/HVO.SkyMonitor:environment:production-release` and the
-least-privileged `Key Vault Crypto User` assignment scoped to the single
-non-exported P-256 release key. Workflow variables identify the Azure tenant,
+`repo:HualapaiValley@330983554/HVO.SkyMonitor@1095187036:environment:production-release`
+and the least-privileged `Key Vault Crypto User` assignment scoped to the single
+non-exported P-256 release key. The subject carries GitHub's immutable owner and
+repository IDs; `gh api repos/HualapaiValley/HVO.SkyMonitor/actions/oidc/customization/sub`
+reports its prefix, and the Azure federated credential must match it exactly.
+Workflow variables identify the Azure tenant,
 subscription, client, vault, key name, and pinned key version; there is no Azure
 client secret or GitHub-held private signing key. The public key and fingerprint
 are committed trust roots. Owner recovery material and the encrypted Key Vault
@@ -101,7 +104,7 @@ project for LogicHost keys.
 | `DeviceBootstrap:CentralIdentity:ClientCredentials:ClientSecret` | Fleet-scoped client included in bootstrap responses | User Secrets or environment variables |
 | `CentralIdentity:ClientCredentials:ClientSecret` | CameraAgent outbound client-credentials mode | Imported encrypted device state, User Secrets, or environment variables |
 | `CentralIdentity:ApiKey:Key` | CameraAgent outbound API-key mode | Imported encrypted device state, User Secrets, or environment variables |
-| `CAMERA_AGENT_ADMIN_PASSWORD` / `LocalIdentity:AdminPassword` or `AdminPasswordFile` | One-time temporary credential for initial local site-owner seeding and verification | Ignored `.env`, CameraAgent User Secrets, or an owner-only deployment file; remove runtime authority after durable seeding |
+| `CAMERA_AGENT_ADMIN_PASSWORD` / `LocalIdentity:AdminPassword` or `AdminPasswordFile` | One-time temporary credential for initial local site-owner seeding and verification. The installer's documented default, `skymonitor`, is public by design rather than a secret; CameraAgent forces its replacement at first sign-in and refuses it as a replacement | Ignored `.env`, CameraAgent User Secrets, or an owner-only deployment file; remove runtime authority after durable seeding |
 | Split-host owner API key and per-agent owner passwords | LogicHost owner automation and temporary local Identity login | Schema-v8 owner-only `secretSource`; automation removes runtime password authority and correlated bootstrap files after durable seeding and authentication, then the operator replaces the temporary password through the required first-login flow |
 | `CentralIdentity:LocalFallback:AccessCodeHash` | Reserved option; no runtime fallback handler is implemented | Do not configure as an active control |
 | OpenIddict signing/encryption PFX files and passwords | Token, code, and refresh-token cryptography | Development certificate store locally; split-host production mounts owner-supplied files and reads passwords through KeyPerFile |
@@ -232,6 +235,11 @@ Use the step-by-step procedures and rollback rules in the
   intervals when correlation is required.
 - Treat terminal scrollback, shell history, CI output, traces, crash dumps, and
   support archives as possible leakage channels.
+- CI scans the whole Git history for committed credentials with
+  `./scripts/ci:secret-scan`; run it before pushing. A credential that reached a
+  commit is exposed: revoke or rotate it rather than rewriting history. The
+  [secret scan](../runbooks/ci-pipeline.md#secret-scan) section describes how a
+  reviewed exception is recorded.
 
 ## Certificates and Data Protection
 

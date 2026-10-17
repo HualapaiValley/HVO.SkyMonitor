@@ -51,7 +51,7 @@ arcs are interpolated.
 
 ## Reproduce the revised sample set
 
-Use SDK 10.0.401. The full catalog must already be available and pass the normal
+Use SDK 10.0.402. The full catalog must already be available and pass the normal
 read-only snapshot resolver (119,625 rows, database SHA-256
 `b51d18b722199e89aa8fe4622ebe507346c75effb375e546881452a263f0b9e2`). No installer
 or installed-instance mutation is involved. Use a new output root for each run.

@@ -81,6 +81,56 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
+    public void Parse_WithoutOwnerEmail_UsesTheNonRoutableDefaultAndTheDefaultPassword()
+    {
+        var arguments = ValidArguments.Where((_, index) => index is not (4 or 5)).ToArray();
+        CollectionAssert.DoesNotContain(arguments, "--owner-email");
+
+        var request = CommandLine.Parse(arguments);
+
+        Assert.AreEqual("owner@cameraagent.local", request.OwnerEmail);
+        Assert.IsNull(request.PasswordFile);
+        Assert.IsFalse(request.GeneratePassword);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Parse_ConfigWithoutOwnerEmail_UsesTheNonRoutableDefault()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            var json = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(
+                CommandLine.Parse(ValidArguments),
+                InstallRequestJsonContext.Default.InstallRequest))!.AsObject();
+            Assert.IsTrue(json.Remove("ownerEmail"));
+            File.WriteAllText(path, json.ToJsonString());
+
+            var request = CommandLine.Parse(["cameraagent", "install", "--config", path]);
+
+            Assert.AreEqual("owner@cameraagent.local", request.OwnerEmail);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("owner")]
+    [DataRow("owner@localhost")]
+    [DataRow("")]
+    public void Parse_SuppliedOwnerEmail_MustStillBeAnEmailAddress(string ownerEmail)
+    {
+        var arguments = ValidArguments.ToArray();
+        arguments[5] = ownerEmail;
+
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse(arguments));
+
+        StringAssert.Contains(exception.Message, "--owner-email", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void Parse_UnknownOption_FailsClosed()
     {
         var arguments = ValidArguments.Concat(["--password", "secret"]).ToArray();
@@ -515,5 +565,54 @@ public sealed class CommandLineTests
                     () => CommandLine.Parse(arguments, allowTestProductRoot: false));
             }
         });
+    }
+
+    [TestMethod]
+    public void ParseCommand_EveryListedCommand_ReachesAParserThatReportsMistakesWithItsUsage()
+    {
+        foreach (var command in CommandLine.Commands)
+        {
+            string[] arguments = [.. command.Path, .. (command.Positional is null ? [] : new[] { "/srv/hvo" }), "--unlisted", "value"];
+
+            var mistake = Assert.ThrowsExactly<InstallUsageException>(
+                () => CommandLine.ParseCommand(arguments, allowTestProductRoot: false), command.Name);
+
+            Assert.AreEqual("Unknown option '--unlisted'.", mistake.Message, command.Name);
+            Assert.AreEqual(CommandLine.CommandUsage(command), mistake.Usage, command.Name);
+            var help = (HelpCommand)CommandLine.ParseCommand([.. command.Path, "--help"], allowTestProductRoot: false);
+            Assert.AreEqual(CommandLine.CommandUsage(command), help.Usage, command.Name);
+            Assert.IsFalse(help.Json, command.Name);
+        }
+    }
+
+    [TestMethod]
+    public void ParseCommand_HelpOption_IsRecognisedOnlyWhereAnOptionIsRead()
+    {
+        var status = CommandLine.CommandUsage(CommandLine.Commands.Single(command => command.Name == "status"));
+        var host = CommandLine.CommandUsage(CommandLine.Commands.Single(command => command.Name == "host set-product-root"));
+        var instance = Guid.NewGuid().ToString("D");
+
+        Assert.AreEqual(status, Help(["status", "-h"]));
+        Assert.AreEqual(status, Help(["status", "--json", "--help"]));
+        Assert.AreEqual(status, Help(["status", "--instance-id", instance, "-h"]));
+        Assert.AreEqual(host, Help(["host", "set-product-root", "--help"]));
+        Assert.AreEqual(host, Help(["host", "set-product-root", "/srv/hvo", "-h"]));
+        Assert.AreEqual(CommandLine.GeneralUsage(), Help(["cameraagent", "--help"]));
+        Assert.AreEqual(CommandLine.GeneralUsage(), Help(["catalog", "-h"]));
+
+        // A value that happens to be -h is still that option's value, and is validated as one.
+        var value = Assert.ThrowsExactly<InstallUsageException>(
+            () => CommandLine.ParseCommand(["status", "--product-root", "-h"], allowTestProductRoot: false));
+        StringAssert.Contains(value.Message, "--product-root", StringComparison.Ordinal);
+        Assert.AreEqual(status, value.Usage);
+
+        // Help does not make an unknown command known.
+        var unknown = Assert.ThrowsExactly<InstallUsageException>(
+            () => CommandLine.ParseCommand(["bogus", "--help"], allowTestProductRoot: false));
+        Assert.AreEqual("Unknown command 'bogus'.", unknown.Message);
+        Assert.AreEqual(CommandLine.GeneralUsage(), unknown.Usage);
+
+        static string Help(string[] arguments)
+            => ((HelpCommand)CommandLine.ParseCommand(arguments, allowTestProductRoot: false)).Usage;
     }
 }

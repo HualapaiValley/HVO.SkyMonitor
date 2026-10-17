@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.Deployment;
+using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
@@ -150,6 +151,50 @@ public sealed class DockerClientTests
         CatalogBundle = "/srv/catalog.bundle",
         ImageReference = imageReference
     };
+
+    [TestMethod]
+    public async Task ReadHostCapabilitiesAsync_ReadsLimitSupportCgroupsDataRootAndWarnings()
+    {
+        var runner = new FakeProcessRunner(
+            "{\"OSType\":\"linux\",\"Architecture\":\"aarch64\",\"ID\":\"daemon-1\",\"Name\":\"pi\",\"ServerVersion\":\"29.0\"," +
+            "\"MemoryLimit\":false,\"CpuCfsQuota\":true,\"PidsLimit\":true,\"CgroupVersion\":\"2\",\"DockerRootDir\":\"/srv/docker\"," +
+            "\"NCPU\":4,\"MemTotal\":8442572800,\"Warnings\":[\"WARNING: No memory limit support\"]}",
+            "2.40.0");
+
+        var capabilities = await new DockerClient(runner).ReadHostCapabilitiesAsync(CancellationToken.None);
+
+        Assert.AreEqual(new DockerDaemonIdentity("daemon-1", "pi", "arm64", "29.0"), capabilities.Daemon);
+        Assert.IsFalse(capabilities.MemoryLimit);
+        Assert.IsTrue(capabilities.CpuCfsQuota);
+        Assert.IsTrue(capabilities.PidsLimit);
+        Assert.AreEqual("2", capabilities.CgroupVersion);
+        Assert.AreEqual("/srv/docker", capabilities.DockerRootDir);
+        Assert.AreEqual(4, capabilities.CpuCount);
+        Assert.AreEqual(8442572800, capabilities.MemoryBytes);
+        string[] expectedWarnings = ["WARNING: No memory limit support"];
+        CollectionAssert.AreEqual(expectedWarnings, capabilities.Warnings.ToArray());
+        Assert.IsTrue(runner.Commands.Any(static command => command.EndsWith(" compose version --short", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task ReadHostCapabilitiesAsync_UnreportedCapabilities_AreUnknownRatherThanSupported()
+    {
+        var runner = new FakeProcessRunner(
+            "{\"OSType\":\"linux\",\"Architecture\":\"amd64\",\"ID\":\"daemon-1\",\"Name\":\"host\",\"ServerVersion\":\"29.0\",\"Warnings\":null}",
+            "2.40.0");
+
+        var capabilities = await new DockerClient(runner).ReadHostCapabilitiesAsync(CancellationToken.None);
+
+        Assert.IsNull(capabilities.MemoryLimit);
+        Assert.IsNull(capabilities.CpuCfsQuota);
+        Assert.IsNull(capabilities.PidsLimit);
+        Assert.IsNull(capabilities.DockerRootDir);
+        Assert.IsNull(capabilities.CpuCount);
+        Assert.IsNull(capabilities.MemoryBytes);
+        Assert.IsEmpty(capabilities.Warnings);
+        Assert.IsFalse(HostPrerequisites.Evaluate(capabilities, "/srv/data/hvo-skymonitor", 1, 1, new FakeHostEnvironment(),
+            CameraAgentContainerResources.Default).Satisfied);
+    }
 
     private sealed class FakeProcessRunner(params string[] outputs) : IProcessRunner
     {

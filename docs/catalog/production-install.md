@@ -80,7 +80,7 @@ One command can build, bundle, and install:
 ```bash
 ./scripts/catalog/build-hyg-v42.sh \
   --source /secure-cache/hyg_v42.csv.gz \
-  --install-root /var/lib/hvo/skymonitor/catalogs/hyg-v42-production \
+  --install-root /var/lib/hvo-sky/catalogs/hyg-v42-production \
   ./artifacts/hyg-v42
 ```
 
@@ -156,12 +156,12 @@ bundle and has no network or build code path:
 ```bash
 ./scripts/catalog:install install \
   /mnt/catalog-bundles/hyg-v4.2-p3-s2-r1.bundle \
-  /var/lib/hvo/skymonitor/catalogs/hyg-v42-production
+  /var/lib/hvo-sky/catalogs/hyg-v42-production
 ```
 
 The stable logical catalog ID for this specification is required as `catalog.id`
 in manifest version 2 and is `hyg-v42-production`. Install it at
-`/var/lib/hvo/skymonitor/catalogs/hyg-v42-production` and select that ID per
+`/var/lib/hvo-sky/catalogs/hyg-v42-production` and select that ID per
 application target as described in the
 [product-instance layout runbook](../runbooks/product-instance-layout.md).
 Inventory also pins package `version`, `schemaVersion`, and
@@ -210,11 +210,11 @@ completing either pointer move; reactivating the already-current version leaves
 Rollback validates the complete previous bundle before changing either pointer:
 
 ```bash
-./scripts/catalog:install rollback /var/lib/hvo/skymonitor/catalogs/hyg-v42-production
+./scripts/catalog:install rollback /var/lib/hvo-sky/catalogs/hyg-v42-production
 ```
 
 The equivalent catalog-scoped command is
-`./scripts/catalog/rollback-hyg-v42.sh /var/lib/hvo/skymonitor/catalogs/hyg-v42-production`.
+`./scripts/catalog/rollback-hyg-v42.sh /var/lib/hvo-sky/catalogs/hyg-v42-production`.
 
 On a normal rollback, `previous` becomes the displaced current version, allowing
 the operator to reverse the selection again. Do not modify a published version

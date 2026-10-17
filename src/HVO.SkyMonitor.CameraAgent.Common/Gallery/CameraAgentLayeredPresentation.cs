@@ -2,10 +2,15 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Xml;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Options;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
@@ -37,7 +42,11 @@ public sealed record CameraAgentLayeredPresentation(
     int WidthPixels,
     int HeightPixels,
     IReadOnlyList<CameraAgentPresentationLayer> Layers,
-    ReadOnlyMemory<byte> Svg);
+    ReadOnlyMemory<byte> Svg)
+{
+    public Guid ManifestArtifactId { get; init; }
+    public CameraAgentCaptureTrails? TrailEvidence { get; init; }
+}
 
 public sealed record CameraAgentLayeredPresentationResult(
     CameraAgentLayeredPresentationStatus Status,
@@ -49,11 +58,22 @@ public interface ICameraAgentLayeredPresentationService
     ValueTask<CameraAgentLayeredPresentationResult> GetAsync(
         Guid captureId,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Projects the presentation from evidence read after this call begins. Unlike <see cref="GetAsync"/>, it never
+    /// joins an in-flight read whose evidence snapshot may predate the caller.
+    /// </summary>
+    ValueTask<CameraAgentLayeredPresentationResult> GetCurrentAsync(
+        Guid captureId,
+        CancellationToken cancellationToken);
 }
 
 internal sealed class CameraAgentLayeredPresentationService(
     SqliteCaptureProcessingStore processingStore,
-    ICameraAgentArtifactService artifacts) : ICameraAgentLayeredPresentationService
+    ICameraAgentArtifactService artifacts,
+    ICameraAgentTransientOperatorProjection? trails = null,
+    CaptureProcessingPersistence? persistence = null,
+    IOptions<CameraAgentHostOptions>? options = null) : ICameraAgentLayeredPresentationService
 {
     internal const int MaximumSvgBytes = GroupedSvgPresentationRenderer.MaximumSvgBytes;
     internal const int MaximumSvgElements = GroupedSvgPresentationRenderer.MaximumSvgElements;
@@ -82,14 +102,28 @@ internal sealed class CameraAgentLayeredPresentationService(
             if (!_flights.TryGetValue(captureId, out flight!))
             {
                 flight = BuildAsync(captureId);
-                _flights.Add(captureId, flight);
+                // A synchronous completion has already executed BuildAsync's removal. Publishing that
+                // completed task afterwards would pin stale evidence forever for this capture.
+                if (!flight.IsCompleted) _flights.Add(captureId, flight);
             }
         }
         return await flight.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<CameraAgentLayeredPresentationResult> GetCurrentAsync(
+        Guid captureId,
+        CancellationToken cancellationToken)
+    {
+        if (captureId == Guid.Empty)
+        {
+            return Unavailable("Capture presentation is unavailable.");
+        }
+        // A private flight: joining a shared one could return evidence projected before this request.
+        return await BuildAsync(captureId, shared: false).WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The authenticated presentation boundary returns only fixed failure states for malformed retained evidence.")]
-    private async Task<CameraAgentLayeredPresentationResult> BuildAsync(Guid captureId)
+    private async Task<CameraAgentLayeredPresentationResult> BuildAsync(Guid captureId, bool shared = true)
     {
         try
         {
@@ -117,6 +151,43 @@ internal sealed class CameraAgentLayeredPresentationService(
                 !string.Equals(manifest.ManifestIdentitySha256, manifestProduct.ContentIdentitySha256, StringComparison.Ordinal))
             {
                 return Malformed("The retained layer manifest failed validation.");
+            }
+
+            var manifestArtifactId = manifestProduct.ArtifactId;
+            var originalManifest = manifest;
+            CameraAgentCaptureTrails? trailEvidence = null;
+            if (options?.Value.ArtifactRead.MeasuredTransientTrailsEnabled == false)
+            {
+                trailEvidence = new(captureId, "Disabled", [], false,
+                    "Measured transient trails are disabled by configuration.");
+            }
+            else if (trails is not null && persistence is not null)
+            {
+                try
+                {
+                    trailEvidence = await trails.GetCaptureTrailsAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+                    var composition = await persistence.PublishTrailCompositionAsync(
+                        captureId, manifestArtifactId, trailEvidence, CancellationToken.None).ConfigureAwait(false);
+                    trailEvidence = composition.Evidence;
+                    if (composition.ManifestArtifactId != manifestArtifactId)
+                    {
+                        manifestArtifactId = composition.ManifestArtifactId;
+                        var composedBytes = await ReadBytesAsync(manifestArtifactId,
+                            PresentationProcessingProducts.ManifestMediaType, CancellationToken.None).ConfigureAwait(false);
+                        if (composedBytes.Status != CameraAgentLayeredPresentationStatus.Found)
+                            throw new InvalidDataException("The measured trail composition is unavailable.");
+                        manifest = LayeredPresentationJson.ParseManifest(composedBytes.Content).Document
+                            ?? throw new InvalidDataException("The measured trail composition is invalid.");
+                    }
+                }
+                catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or
+                    ArgumentException or InvalidOperationException or OverflowException or SqliteException or JsonException or FormatException)
+                {
+                    manifest = originalManifest;
+                    manifestArtifactId = manifestProduct.ArtifactId;
+                    trailEvidence = new(captureId, "Unavailable", [], true,
+                        "Compatible measured trail evidence is temporarily unavailable.");
+                }
             }
 
             var baseRead = await artifacts.OpenContentAsync(manifest.BaseProduct.ArtifactId, CancellationToken.None)
@@ -180,14 +251,21 @@ internal sealed class CameraAgentLayeredPresentationService(
                 if (_cache.TryGetValue(identity, out var cached))
                 {
                     cached.Sequence = ++_sequence;
-                    return new(CameraAgentLayeredPresentationStatus.Found, cached.Presentation);
+                    return new(CameraAgentLayeredPresentationStatus.Found,
+                        trailEvidence is null && cached.Presentation.ManifestArtifactId == manifestArtifactId
+                            ? cached.Presentation
+                            : cached.Presentation with { ManifestArtifactId = manifestArtifactId, TrailEvidence = trailEvidence });
                 }
             }
 
             var rendered = Render(captureId, manifest, payloads, baseChecksum);
             if (rendered.Status == CameraAgentLayeredPresentationStatus.Found && rendered.Presentation is { } presentation)
             {
-                AddCache(identity, presentation);
+                presentation = presentation with { ManifestArtifactId = manifestArtifactId, TrailEvidence = trailEvidence };
+                rendered = rendered with { Presentation = presentation };
+                // Evidence is freshly projected for each read. Keep potentially large source manifests and
+                // geometry out of the SVG cache's byte budget and reattach only the current snapshot.
+                AddCache(identity, trailEvidence is null ? presentation : presentation with { TrailEvidence = null });
             }
             return rendered;
         }
@@ -198,9 +276,12 @@ internal sealed class CameraAgentLayeredPresentationService(
         }
         finally
         {
-            lock (_cacheGate)
+            if (shared)
             {
-                _flights.Remove(captureId);
+                lock (_cacheGate)
+                {
+                    _flights.Remove(captureId);
+                }
             }
         }
     }

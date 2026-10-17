@@ -8,14 +8,27 @@ namespace HVO.SkyMonitor.Deployment;
 internal abstract record DeploymentCommand(bool Json)
 {
     /// <summary>
-    /// Whether this invocation may address a product root other than <see cref="InstallRequest.DefaultProductRoot"/>.
+    /// Whether this invocation may address a product root other than <see cref="ProductionProductRoot"/>.
     /// Deny by default and decided once at the command-line boundary, so validation answers from the request it
     /// was given rather than from process state that anything else can change under it.
     /// </summary>
     public bool AllowTestProductRoot { get; init; }
+
+    /// <summary>
+    /// The production product root resolved once at the command-line boundary from the host policy, or
+    /// <see cref="InstallRequest.DefaultProductRoot"/> when the host has none. Every command defaults to it and
+    /// validates against it, so an instance is found under a relocated root with no extra option.
+    /// </summary>
+    public string ProductionProductRoot { get; init; } = InstallRequest.DefaultProductRoot;
 }
 
 internal sealed record InstallDeploymentCommand(InstallRequest Request) : DeploymentCommand(Request.Json);
+
+/// <summary>A request for usage text, which is printed and changes nothing.</summary>
+internal sealed record HelpCommand(string Usage) : DeploymentCommand(Json: false);
+
+/// <summary>A request for the installer's build identity, which is printed and changes nothing.</summary>
+internal sealed record VersionCommand(string Identity) : DeploymentCommand(Json: false);
 
 internal sealed record OwnerRecoveryRequest(
     Guid? InstanceId,
@@ -31,12 +44,7 @@ internal sealed record OwnerRecoveryRequest(
         {
             throw new InstallUsageException("--instance-id is required.");
         }
-        ValidateAbsolutePath(ProductRoot, "--product-root");
-        if (!string.Equals(ProductRoot, InstallRequest.DefaultProductRoot, StringComparison.Ordinal) &&
-            !AllowTestProductRoot)
-        {
-            throw new InstallUsageException("--product-root must be /var/lib/hvo/skymonitor outside isolated tests.");
-        }
+        ProductRootAdmission.Validate(ProductRoot, ProductionProductRoot, AllowTestProductRoot);
         if (PasswordFile is not null)
         {
             ValidateAbsolutePath(PasswordFile, "--password-file");
@@ -93,7 +101,7 @@ internal sealed record CameraAgentStatePreflightRequest(
         {
             throw new InstallUsageException("--instance-id is required.");
         }
-        ValidateProductRoot(ProductRoot, AllowTestProductRoot);
+        ProductRootAdmission.Validate(ProductRoot, ProductionProductRoot, AllowTestProductRoot);
         if (NamesSignedImageRelease)
         {
             // A preflight selects its candidate by exactly the rules an install and an upgrade use, so the mutual
@@ -124,6 +132,7 @@ internal sealed record CameraAgentStatePreflightRequest(
     internal InstallRequest ImageSelection() => new()
     {
         AllowTestProductRoot = AllowTestProductRoot,
+        ProductionProductRoot = ProductionProductRoot,
         FriendlyName = "preflight",
         OwnerEmail = "preflight@localhost.invalid",
         ImageReference = ImageReference ?? string.Empty,
@@ -134,20 +143,6 @@ internal sealed record CameraAgentStatePreflightRequest(
         Channel = Channel ?? DistributionChannel.Local,
         NoDownload = NoDownload
     };
-
-    internal static void ValidateProductRoot(string productRoot, bool allowTestProductRoot)
-    {
-        if (!Path.IsPathFullyQualified(productRoot) || productRoot.Contains("//", StringComparison.Ordinal) ||
-            Path.GetFullPath(productRoot) != productRoot.TrimEnd('/') || productRoot == "/")
-        {
-            throw new InstallUsageException("--product-root must be an absolute normalized path other than root.");
-        }
-        if (!string.Equals(productRoot, InstallRequest.DefaultProductRoot, StringComparison.Ordinal) &&
-            !allowTestProductRoot)
-        {
-            throw new InstallUsageException("--product-root must be /var/lib/hvo/skymonitor outside isolated tests.");
-        }
-    }
 }
 
 internal sealed record CameraAgentStateResetRequest(
@@ -163,7 +158,7 @@ internal sealed record CameraAgentStateResetRequest(
         {
             throw new InstallUsageException("--instance-id is required.");
         }
-        CameraAgentStatePreflightRequest.ValidateProductRoot(ProductRoot, AllowTestProductRoot);
+        ProductRootAdmission.Validate(ProductRoot, ProductionProductRoot, AllowTestProductRoot);
         if (ConfirmationInstanceId != InstanceId)
         {
             throw new InstallUsageException("reset-state requires --confirm-instance-id matching --instance-id.");
@@ -227,13 +222,20 @@ internal sealed record LifecycleRequest : DeploymentCommand
     public string? AssetBaseUrl { get; init; }
     public DistributionChannel Channel { get; init; }
 
+    /// <summary>
+    /// The release.json of the release an upgrade installs, when its source provides one. The upgrade shows its notes
+    /// and refuses an older target before anything changes. No command-line source sets it yet: the release.json
+    /// acquisition that also selects the candidate image from it is #1309's, so a document is never paired with an
+    /// image it does not describe. It is not part of the request hash, because it adds no input to the operation.
+    /// </summary>
+    public ReleaseManifest? TargetRelease { get; init; }
+
     public void Validate()
     {
-        ValidateAbsolutePath(ProductRoot, "--product-root");
-        if (!string.Equals(ProductRoot, InstallRequest.DefaultProductRoot, StringComparison.Ordinal) &&
-            !AllowTestProductRoot)
+        ProductRootAdmission.Validate(ProductRoot, ProductionProductRoot, AllowTestProductRoot);
+        if (TargetRelease is not null && Operation != LifecycleOperationKind.Upgrade)
         {
-            throw new InstallUsageException("--product-root must be /var/lib/hvo/skymonitor outside isolated tests.");
+            throw new InstallUsageException("A release's upgrade notes apply only to an upgrade.");
         }
         if (Operation is not null and not LifecycleOperationKind.CatalogInstall and not LifecycleOperationKind.CatalogGarbageCollect
                 and not LifecycleOperationKind.CatalogCheck &&
@@ -410,6 +412,27 @@ internal sealed record LifecycleRequest : DeploymentCommand
             Path.GetFullPath(path) != path.TrimEnd('/') || path == "/")
         {
             throw new InstallUsageException($"{option} must be an absolute normalized path other than root.");
+        }
+    }
+}
+
+/// <summary>
+/// <c>host set-product-root &lt;path&gt;</c>: names the production product root in the root-owned host policy. The
+/// write itself happens only in the narrow privileged helper, which re-reads and re-validates the policy.
+/// </summary>
+internal sealed record HostProductRootRequest(string ProductRoot, bool Json) : DeploymentCommand(Json)
+{
+    /// <summary>
+    /// The policy this command writes. Production always writes <see cref="HostPolicyLocation.Production"/> through
+    /// <c>sudo</c>; an isolated test carries its own location on the request instead of redirecting process state.
+    /// </summary>
+    public HostPolicyLocation PolicyLocation { get; init; } = HostPolicyLocation.Production;
+
+    public void Validate()
+    {
+        if (HostProductRootPolicy.ProductRootTextError(ProductRoot) is { } error)
+        {
+            throw new InstallUsageException($"host set-product-root: {error}");
         }
     }
 }

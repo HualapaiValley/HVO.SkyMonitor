@@ -2,9 +2,19 @@
 # Deployment platforms: linux/amd64 and linux/arm64
 # Build from repo root with a source-revision tag; deployment rejects mutable tags.
 
+# Base images. The digests are pinned on the dotnet-sdk and dotnet-aspnet FROM lines because Dependabot updates
+# only FROM lines (#1321). The stages below select those aliases by default; the ARM64 advisory build passes its
+# resolved native image references through these arguments instead.
+ARG DOTNET_SDK_IMAGE=dotnet-sdk
+ARG DOTNET_ASPNET_IMAGE=dotnet-aspnet
+# Build identity. Development builds keep the declared 0.0.0-dev version; the release script passes the release
+# version. A build without a source revision stays marked "unknown", which the installer rejects.
+ARG HVO_VERSION=0.0.0-dev
+ARG HVO_SOURCE_REVISION=unknown
+FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa AS dotnet-sdk
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.13@sha256:d5633778c754e89a386882eddf8dbee6942447a8a4b8267c19cf1e1158d0b0ac AS dotnet-aspnet
+
 # Stage 1: Build
-ARG DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:10.0.401@sha256:2fa828c68761b1b8c23d7662dc134421b9d3b59fe1425fdbc80804e390cdb24d
-ARG DOTNET_ASPNET_IMAGE=mcr.microsoft.com/dotnet/aspnet:10.0.12@sha256:6a94333d37514e385650a3c81a55e5350b67253dbe136e9cf17e499c35606a8c
 FROM ${DOTNET_SDK_IMAGE} AS build
 WORKDIR /src
 
@@ -39,15 +49,33 @@ COPY src/ src/
 RUN dotnet restore src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj
 RUN dotnet restore src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj
 
-# Build and publish
+# Build and publish. Every published assembly carries the informational version <version>+<revision>; .dockerignore
+# excludes .git, so the SDK cannot derive the revision itself. The identity is declared after restore and the source
+# copy, so a change of revision alone reuses those layers but republishes, because the stamped assemblies are the
+# payload.
 WORKDIR /src/src/HVO.SkyMonitor.CameraAgent
-RUN dotnet publish HVO.SkyMonitor.CameraAgent.csproj --no-restore -c Release -o /app/publish \
+ARG HVO_VERSION
+ARG HVO_SOURCE_REVISION
+RUN case "${HVO_SOURCE_REVISION}" in \
+        unknown) ;; \
+        *[!0-9a-f]*) false ;; \
+        *) [ "${#HVO_SOURCE_REVISION}" -eq 40 ] ;; \
+    esac \
+    || { echo "HVO_SOURCE_REVISION must be a 40-character lowercase object ID or unknown." >&2; exit 64; } \
+    && case "${HVO_VERSION}" in \
+        ""|[!0-9A-Za-z]*|*[!0-9A-Za-z]|*..*|*[!0-9A-Za-z.-]*) false ;; \
+        *) [ "${#HVO_VERSION}" -le 128 ] ;; \
+    esac \
+    || { echo "HVO_VERSION must be 1-128 ASCII letters, digits, periods, and hyphens." >&2; exit 64; } \
+    && dotnet publish HVO.SkyMonitor.CameraAgent.csproj --no-restore -c Release -o /app/publish \
+        "-p:InformationalVersion=${HVO_VERSION}" "-p:SourceRevisionId=${HVO_SOURCE_REVISION}" \
     && test "$(wc -c < /app/publish/wwwroot/_framework/blazor.web.js)" -gt 10000 \
     && grep -q 'window.Blazor' /app/publish/wwwroot/_framework/blazor.web.js
 ARG TARGETARCH
 RUN case "${TARGETARCH}" in amd64) rid=linux-x64 ;; arm64) rid=linux-arm64 ;; *) exit 64 ;; esac \
     && dotnet publish ../HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj \
-        --no-restore -c Release -r "${rid}" -o /app/replay-runner
+        --no-restore -c Release -r "${rid}" -o /app/replay-runner \
+        "-p:InformationalVersion=${HVO_VERSION}" "-p:SourceRevisionId=${HVO_SOURCE_REVISION}"
 
 # Apply the runtime permissions here so the runtime stage copies them in. A recursive chmod after the copy forces
 # an overlay copy-up of the entire payload, which rewrites every published file a second time.
@@ -64,8 +92,8 @@ RUN apt-get update && apt-get install -y curl libusb-1.0-0 && rm -rf /var/lib/ap
 COPY --from=build /app/publish .
 COPY --from=build /app/replay-runner /app/replay-runner
 
-# Declared after the payload so that changing only the source revision rebuilds one metadata layer instead of
-# invalidating the package install and the whole payload copy.
+# Declared after the payload so that the package install stays cached across revisions. The version label is set
+# explicitly so it never inherits the base image's operating-system version.
 #
 # The state-compatibility label names the durable CameraAgent state contract this image
 # reads and writes. It is not a generic backward-compatibility promise: revisions before
@@ -73,7 +101,8 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # 20251125021552_CreateLocalIdentity, and raw-ingress schema 11, which this image cannot
 # adopt in place. Deployment preflight compares the three declared boundaries below against
 # the persisted state before the container starts.
-ARG HVO_SOURCE_REVISION=unknown
+ARG HVO_VERSION
+ARG HVO_SOURCE_REVISION
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
       io.hvo.skymonitor.minimum-compatible-revision="70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f" \
@@ -84,6 +113,7 @@ LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.configuration-contract="cameraagent-install-v1" \
       io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v1" \
       io.hvo.skymonitor.replay-runner-contract="local-replay-runner-v1" \
+      org.opencontainers.image.version="${HVO_VERSION}" \
       org.opencontainers.image.revision="${HVO_SOURCE_REVISION}"
 
 # Set environment

@@ -78,7 +78,7 @@ else
                         <td>HYG @catalog.CatalogVersion / @catalog.SnapshotVersion</td>
                         <td><span class="state-chip success">Selected</span></td>
                         <td>@Number(catalog.RowCount)</td>
-                        <td>Listed and selected with <code>hvo-skymonitor catalog select</code></td>
+                        <td>Listed and selected with <code>hvo-sky-install catalog select</code></td>
                     </tr>
                 </tbody>
             </table>
@@ -116,11 +116,11 @@ else
             <table class="ops-table software-boundary">
                 <thead><tr><th scope="col">Operation</th><th scope="col">Current interface</th><th scope="col">UI state</th><th scope="col">Safety boundary</th></tr></thead>
                 <tbody>
-                    <tr><td><strong>Status &amp; verification</strong></td><td>This page / <code>hvo-skymonitor status</code></td><td><span class="state-chip success">Available</span></td><td>Read-only installed facts; checksums are verified at startup</td></tr>
-                    <tr><td><strong>Catalog install / select / rollback</strong></td><td><code>hvo-skymonitor catalog install|select|rollback</code></td><td>Informational</td><td>Atomic validation and explicit selection</td></tr>
-                    <tr><td><strong>Catalog cleanup</strong></td><td><code>hvo-skymonitor catalog gc</code></td><td>Informational</td><td>Removes only packages no selection references; <code>--dry-run</code> lists them first</td></tr>
-                    <tr><td><strong>Application upgrade / rollback</strong></td><td><code>hvo-skymonitor cameraagent upgrade|rollback</code></td><td>Informational</td><td>Candidate health before capture resumes</td></tr>
-                    <tr><td><strong>Uninstall / purge</strong></td><td><code>hvo-skymonitor cameraagent uninstall|purge</code></td><td>Not exposed</td><td>Separate confirmation and retained state</td></tr>
+                    <tr><td><strong>Status &amp; verification</strong></td><td>This page / <code>hvo-sky-install status</code></td><td><span class="state-chip success">Available</span></td><td>Read-only installed facts; checksums are verified at startup</td></tr>
+                    <tr><td><strong>Catalog install / select / rollback</strong></td><td><code>hvo-sky-install catalog install|select|rollback</code></td><td>Informational</td><td>Atomic validation and explicit selection</td></tr>
+                    <tr><td><strong>Catalog cleanup</strong></td><td><code>hvo-sky-install catalog gc</code></td><td>Informational</td><td>Removes only packages no selection references; <code>--dry-run</code> lists them first</td></tr>
+                    <tr><td><strong>Application upgrade / rollback</strong></td><td><code>hvo-sky-install cameraagent upgrade|rollback</code></td><td>Informational</td><td>Candidate health before capture resumes</td></tr>
+                    <tr><td><strong>Uninstall / purge</strong></td><td><code>hvo-sky-install cameraagent uninstall|purge</code></td><td>Not exposed</td><td>Separate confirmation and retained state</td></tr>
                 </tbody>
             </table>
         </div>

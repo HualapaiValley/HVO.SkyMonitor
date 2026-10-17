@@ -22,10 +22,14 @@ internal sealed class CameraAgentLifecycleManager
         uint uid,
         uint gid,
         CancellationToken cancellationToken,
-        Func<DistributionAcquirer>? distributionFactory = null)
+        Func<DistributionAcquirer>? distributionFactory = null,
+        TextWriter? output = null,
+        TextWriter? error = null)
     {
         request.Validate();
         distributionFactory ??= CreateDistributionAcquirer;
+        output ??= Console.Out;
+        error ??= Console.Error;
         if (request.Operation == LifecycleOperationKind.CatalogCheck)
         {
             return await CatalogLifecycleManager.CheckAsync(request, distributionFactory, cancellationToken).ConfigureAwait(false);
@@ -174,11 +178,11 @@ internal sealed class CameraAgentLifecycleManager
             LifecycleOperationKind.Upgrade => await ChangeImageAsync(
                 request, paths, manifest, result, compose, docker, processRunner, lifecycleClientFactory, uid, gid,
                 ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage,
-                rollback: false, cancellationToken).ConfigureAwait(false),
+                rollback: false, output, error, cancellationToken).ConfigureAwait(false),
             LifecycleOperationKind.Rollback => await ChangeImageAsync(
                 request, paths, manifest, result, compose, docker, processRunner, lifecycleClientFactory, uid, gid,
                 ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage: null,
-                rollback: true, cancellationToken).ConfigureAwait(false),
+                rollback: true, output, error, cancellationToken).ConfigureAwait(false),
             LifecycleOperationKind.Reinstall => await ReinstallAsync(
                 request, paths, manifest, result, compose, docker, lifecycleClientFactory, ownerClientFactory,
                 lifecycleControlToken!, installationVerificationToken!, daemon, cancellationToken)
@@ -435,29 +439,46 @@ internal sealed class CameraAgentLifecycleManager
         string verificationToken,
         AcquiredImage? signedImage,
         bool rollback,
+        TextWriter output,
+        TextWriter error,
         CancellationToken cancellationToken)
     {
         if (manifest.LifecycleCondition != InstanceLifecycleCondition.Installed)
             throw new InstallerException("An uninstalled instance must be reinstalled before image lifecycle operations.");
         if (rollback && manifest.PreviousImage is null) throw new InstallerException("No previous image is retained for rollback.");
+        // The target release's notes are shown, and an older target refused, against the manifest read under the
+        // instance lock and before the journal entry, so a refusal leaves nothing to settle, a dry run shows them too,
+        // and a failure anywhere after has already shown them. With --json they are an event on standard error.
+        var upgradeNotes = !rollback && request.TargetRelease is { } targetRelease
+            ? UpgradeNotes.Plan(
+                await UpgradeNotes.InstalledVersionAsync(paths, manifest.Image, cancellationToken).ConfigureAwait(false),
+                targetRelease,
+                manifest.InstanceId)
+            : null;
+        if (upgradeNotes is not null)
+        {
+            await UpgradeNotes.ShowAsync(upgradeNotes, request.Json, output, error).ConfigureAwait(false);
+        }
         var operation = await BeginAsync(request, paths, rollback ? LifecycleOperationKind.Rollback : LifecycleOperationKind.Upgrade,
             manifest, cancellationToken).ConfigureAwait(false);
         try
         {
-            return await ChangeImageAsync(
+            var changed = await ChangeImageAsync(
                     request, paths, manifest, installationResult, compose, docker, processRunner, lifecycleClientFactory,
                     uid, gid, ownerClientFactory, lifecycleControlToken, verificationToken, signedImage, rollback, operation,
                     cancellationToken)
                 .ConfigureAwait(false);
+            return upgradeNotes is null ? changed : changed with { UpgradeNotes = upgradeNotes };
         }
         catch (Exception exception) when (!request.DryRun && exception is not OperationCanceledException)
         {
             // Every gate between the journal entry above and the mutation record (release label agreement, the
-            // already-active and contract checks, the state preflight, the owner-state read, Compose staging) runs
-            // before the instance is touched. A refusal there is settled as terminal so the journal never reports a
-            // running operation that never started, which would otherwise block rollback, uninstall, and any other
-            // upgrade behind a --resume the same gate would refuse again. A cancellation is not a refusal: its
-            // unmutated journal stays resumable and, like any unmutated record, never blocks another operation.
+            // already-active and contract checks, the state preflight, the migration assertion, the owner-state read,
+            // Compose staging) runs before the instance is touched. A refusal there is settled as terminal so the
+            // journal never reports a running operation that never started, which would otherwise block rollback,
+            // uninstall, and any other upgrade behind a --resume the same gate would refuse again. A cancellation is
+            // not a refusal: its unmutated journal stays resumable and, like any unmutated record, never blocks
+            // another operation.
             await SettleRefusedOperationAsync(paths, operation, exception).ConfigureAwait(false);
             throw;
         }
@@ -571,10 +592,6 @@ internal sealed class CameraAgentLifecycleManager
             throw new InstallerException("The candidate image does not declare the required CameraAgent configuration and catalog contracts.");
         }
         CameraAgentInstaller.EnsureImageSupportsCatalog(candidate, manifest.Catalog.CatalogId);
-        if (!rollback && !request.MigrationBackwardCompatible)
-        {
-            throw new InstallerException("The candidate does not declare backward-compatible state migration; an explicit transactional restore path is required.");
-        }
         if (!rollback && !CameraAgentStateContract.IsCurrent(candidate.UpgradeCompatibility))
         {
             throw new InstallerException(
@@ -608,6 +625,19 @@ internal sealed class CameraAgentLifecycleManager
             rollback ? CameraAgentStateContractPolicy.AllowLegacy : CameraAgentStateContractPolicy.RequireCurrent,
             signedImage?.Release.Tag)
             .ConfigureAwait(false);
+        // The preflight has proved the persisted state readable and within the candidate's boundaries, so what remains
+        // is whether the candidate changes that state. A failed candidate is restored by starting the prior image on
+        // the state it leaves behind, so a migration needs the operator's assertion; an unchanged contract does not.
+        if (!rollback && !request.MigrationBackwardCompatible)
+        {
+            var migration = CameraAgentStateMigration.DeclaredChanges(
+                paths, manifest.Image, manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility, candidate);
+            if (migration.Count > 0)
+            {
+                throw new InstallerException(
+                    $"The candidate declares a CameraAgent state migration ({string.Join("; ", migration)}). A failed candidate is restored onto the state it leaves behind, so an explicit transactional restore path is required; pass --migration-backward-compatible only when the prior image can read the migrated state.");
+            }
+        }
         if (operation.CandidateImage is not null && operation.CandidateImage != candidate)
             throw new InstallerException("The retained image operation has a different candidate identity.");
         operation = operation with
@@ -699,12 +729,11 @@ internal sealed class CameraAgentLifecycleManager
             : ReplaceEnvironmentValue(originalEnvironment, "CAMERAAGENT_IMAGE", candidate.ImageId);
         var stagedEnvironment = Path.Combine(operationRoot, "candidate.env");
         var stagedCompose = Path.Combine(operationRoot, "candidate-compose.yml");
+        var sourceCompose = rollback
+            ? await File.ReadAllTextAsync(retainedRollbackCompose, cancellationToken).ConfigureAwait(false)
+            : originalCompose;
         SafeFileSystem.WriteTextAtomic(stagedEnvironment, candidateEnvironment);
-        SafeFileSystem.WriteTextAtomic(
-            stagedCompose,
-            rollback
-                ? await File.ReadAllTextAsync(retainedRollbackCompose, cancellationToken).ConfigureAwait(false)
-                : originalCompose);
+        SafeFileSystem.WriteTextAtomic(stagedCompose, sourceCompose);
         var candidateCompose = compose with { ComposeFile = stagedCompose, EnvironmentFile = stagedEnvironment };
         var renderedCandidate = await docker.ComposeAsync(
             candidateCompose.ComposeFile, candidateCompose.EnvironmentFile, candidateCompose.ProjectName, ["config"], cancellationToken)
@@ -712,6 +741,23 @@ internal sealed class CameraAgentLifecycleManager
         var candidateComposeSha256 = ComposeDeployment.ComputeSha256(renderedCandidate.StandardOutput);
         if (rollback && candidateComposeSha256 != manifest.PreviousComposeModelSha256)
             throw new InstallerException("The retained rollback Compose model differs from its authenticated identity.");
+        // An upgrade moves each CameraAgent limit the operator did not set to this installer's default, which is how an
+        // instance that records no limits leaves the original 1 CPU and 1 GiB. A rollback keeps the limits the instance
+        // records, so the previous image never returns to limits the instance has left. The retained rollback file was
+        // authenticated above, before its limits are replaced.
+        var candidateResources = rollback ? manifest.Resources : CameraAgentContainerResources.UpgradeTarget(manifest.Resources);
+        var limitedCompose = CameraAgentContainerResources.WithLimits(
+            sourceCompose,
+            candidateResources ?? CameraAgentContainerResources.Legacy,
+            rollback ? null : manifest.Resources ?? CameraAgentContainerResources.Legacy);
+        if (!string.Equals(limitedCompose, sourceCompose, StringComparison.Ordinal))
+        {
+            SafeFileSystem.WriteTextAtomic(stagedCompose, limitedCompose);
+            renderedCandidate = await docker.ComposeAsync(
+                candidateCompose.ComposeFile, candidateCompose.EnvironmentFile, candidateCompose.ProjectName, ["config"], cancellationToken)
+                .ConfigureAwait(false);
+            candidateComposeSha256 = ComposeDeployment.ComputeSha256(renderedCandidate.StandardOutput);
+        }
         var baseAddress = installationResult.Url;
         var lifecycle = CreateLifecycleClient(baseAddress, lifecycleClientFactory);
         var candidateLifecycle = lifecycle;
@@ -838,6 +884,7 @@ internal sealed class CameraAgentLifecycleManager
                 UpgradeCompatibility = candidate.UpgradeCompatibility ?? "requires-declared-compatible-migration",
                 LifecycleControlTokenSha256 = ComposeDeployment.ComputeSha256(lifecycleControlToken),
                 PreviousComposeModelSha256 = manifest.ComposeModelSha256,
+                Resources = candidateResources,
                 LastLifecycleOperationId = operation.OperationId,
                 UpdatedUtc = DateTimeOffset.UtcNow
             };
@@ -1941,6 +1988,7 @@ internal sealed class CameraAgentLifecycleManager
             !HasValue(manifest.RigProfileVersion) || !HasValue(manifest.ScheduleSchemaVersion) ||
             !HasValue(manifest.ScheduleState) || !IsSha256(manifest.InstallationVerificationTokenSha256) ||
             !IsSha256(manifest.ComposeModelSha256) || !IsValidCatalog(manifest.Catalog) ||
+            manifest.Resources is not null && !CameraAgentContainerResources.IsValid(manifest.Resources) ||
             !CameraAgentImageContract.SupportsCatalog(manifest.Image?.CatalogContract, manifest.Catalog.CatalogId) ||
             manifest.Catalog.InstallRoot != Path.Combine(manifest.ProductRoot, "catalogs", manifest.Catalog.CatalogId) ||
             !IsSha256(manifest.LifecycleControlTokenSha256) ||
@@ -2211,7 +2259,8 @@ internal sealed class CameraAgentLifecycleManager
         }
         var archiveBytes = imageArchive is null ? 0 : new FileInfo(imageArchive).Length;
         var required = checked(instanceBytes + archiveBytes + 256L * 1024 * 1024);
-        var available = new DriveInfo(Path.GetPathRoot(paths.ProductRoot)!).AvailableFreeSpace;
+        // The backup and staged archive land on the filesystem that holds the product root, which need not be '/'.
+        var available = LinuxHostEnvironment.AvailableBytes(paths.ProductRoot);
         if (available < required)
         {
             throw new InstallerException("Insufficient free space for the candidate image and consistent rollback backup.");
@@ -2274,7 +2323,7 @@ internal sealed class CameraAgentLifecycleManager
             healthy,
             [paths.ConfigRoot, paths.StateRoot, paths.CatalogRoot],
             manifest.LifecycleCondition == InstanceLifecycleCondition.Uninstalled
-                ? $"hvo-skymonitor cameraagent reinstall --instance-id {manifest.InstanceId:D}"
+                ? $"hvo-sky-install cameraagent reinstall --instance-id {manifest.InstanceId:D}"
                 : null,
             DateTimeOffset.UtcNow);
 

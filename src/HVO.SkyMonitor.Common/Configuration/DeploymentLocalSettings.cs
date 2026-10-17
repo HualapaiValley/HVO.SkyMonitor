@@ -117,6 +117,10 @@ public sealed class DeploymentLocalSettings
         }
     }
 
+    /// <summary>Whether <paramref name="provider"/> is the one that loads this file.</summary>
+    public bool IsSettingsFileProvider(IConfigurationProvider provider)
+        => provider is JsonConfigurationProvider jsonProvider && ReferenceEquals(jsonProvider.Source, _source);
+
     /// <summary>The keys a source with higher precedence than this file supplies.</summary>
     public IReadOnlyList<string> FindOverriddenKeys(IEnumerable<string> keys)
     {
