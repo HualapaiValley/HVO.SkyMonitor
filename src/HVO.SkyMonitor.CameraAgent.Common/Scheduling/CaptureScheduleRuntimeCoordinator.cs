@@ -489,9 +489,20 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         string actor,
         string? reason,
         CancellationToken cancellationToken)
-        => await ApplyRevisionAsync(
-            revisionId, idempotencyKey, expectedVersion, actor, reason, rollback: false, cancellationToken)
-            .ConfigureAwait(false);
+        => (await ActivateWithDispositionAsync(
+            revisionId, idempotencyKey, expectedVersion, actor, reason, cancellationToken)
+            .ConfigureAwait(false)).Receipt;
+
+    /// <summary>Activates a revision and preserves the store's atomic replay disposition.</summary>
+    public Task<CaptureScheduleMutationResult> ActivateWithDispositionAsync(
+        string revisionId,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+        => ApplyRevisionAsync(
+            revisionId, idempotencyKey, expectedVersion, actor, reason, rollback: false, cancellationToken);
 
     public async Task<CaptureScheduleStoreSnapshot> RollbackAsync(
         string revisionId,
@@ -500,11 +511,22 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         string actor,
         string? reason,
         CancellationToken cancellationToken)
-        => await ApplyRevisionAsync(
-            revisionId, idempotencyKey, expectedVersion, actor, reason, rollback: true, cancellationToken)
-            .ConfigureAwait(false);
+        => (await RollbackWithDispositionAsync(
+            revisionId, idempotencyKey, expectedVersion, actor, reason, cancellationToken)
+            .ConfigureAwait(false)).Receipt;
 
-    private async Task<CaptureScheduleStoreSnapshot> ApplyRevisionAsync(
+    /// <summary>Rolls back a revision and preserves the store's atomic replay disposition.</summary>
+    public Task<CaptureScheduleMutationResult> RollbackWithDispositionAsync(
+        string revisionId,
+        string idempotencyKey,
+        long? expectedVersion,
+        string actor,
+        string? reason,
+        CancellationToken cancellationToken)
+        => ApplyRevisionAsync(
+            revisionId, idempotencyKey, expectedVersion, actor, reason, rollback: true, cancellationToken);
+
+    private async Task<CaptureScheduleMutationResult> ApplyRevisionAsync(
         string revisionId,
         string idempotencyKey,
         long? expectedVersion,
@@ -563,7 +585,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
                             priorSignal.Dispose();
                         }
                     }
-                    return result.Receipt;
+                    return result;
                 }
                 finally
                 {

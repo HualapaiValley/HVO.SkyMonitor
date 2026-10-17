@@ -71,6 +71,9 @@ internal sealed partial class CameraAgentSettingsService(
         "This host loads no operator settings file, so settings are changed in its own configuration instead.";
     private const string UnavailableVersion = "unavailable";
 
+    /// <summary>Test seam after advisory checks, before the store decides a concurrent write atomically.</summary>
+    internal Func<string, CancellationToken, Task>? BeforeStoreWriteAsync { get; init; }
+
     public async Task<CameraAgentSettingsResponse> GetAsync(CancellationToken cancellationToken)
     {
         var groups = new List<CameraAgentSettingsGroupState>(CameraAgentSettingsCatalogue.Groups.Count);
@@ -481,6 +484,10 @@ internal sealed partial class CameraAgentSettingsService(
         var replay = await deploymentLocationStore.FindManualCommandAsync(idempotencyKey, cancellationToken)
             .ConfigureAwait(false);
         var basis = manual.Override;
+        if (BeforeStoreWriteAsync is { } beforeWrite)
+        {
+            await beforeWrite(group.Name, cancellationToken).ConfigureAwait(false);
+        }
         var result = await deploymentLocationStore.ApplyManualAsync(
             new ManualDeploymentLocationRequest(
                 Number(CameraAgentSettingsCatalogue.Latitude, replay?.LatitudeDegrees ?? basis?.LatitudeDegrees ?? active.LatitudeDegrees),
@@ -744,13 +751,17 @@ internal sealed partial class CameraAgentSettingsService(
         CameraAgentSettingsWriteResult result;
         try
         {
-            _ = rollback
-                ? await scheduleRuntime.RollbackAsync(target, idempotencyKey, version, actor, reason, cancellationToken)
+            if (BeforeStoreWriteAsync is { } beforeWrite)
+            {
+                await beforeWrite(group.Name, cancellationToken).ConfigureAwait(false);
+            }
+            var mutation = rollback
+                ? await scheduleRuntime.RollbackWithDispositionAsync(target, idempotencyKey, version, actor, reason, cancellationToken)
                     .ConfigureAwait(false)
-                : await scheduleRuntime.ActivateAsync(target, idempotencyKey, version, actor, reason, cancellationToken)
+                : await scheduleRuntime.ActivateWithDispositionAsync(target, idempotencyKey, version, actor, reason, cancellationToken)
                     .ConfigureAwait(false);
             result = new(CameraAgentSettingsWriteOutcome.Applied,
-                await ReadGroupAsync(group, cancellationToken).ConfigureAwait(false));
+                await ReadGroupAsync(group, cancellationToken).ConfigureAwait(false), Replayed: mutation.Replayed);
         }
         catch (CaptureScheduleStoreConflictException)
         {

@@ -36,9 +36,14 @@ internal sealed record CaptureScheduleOperatorStoreState(
     IReadOnlyList<CaptureScheduleRevisionSnapshot> History,
     string FileConfigurationProfileSha256);
 
-internal sealed record CaptureScheduleMutationResult(
+/// <summary>The original command receipt, current durable state and atomic transaction disposition.</summary>
+/// <param name="Receipt">The original command result, including when a later state is current.</param>
+/// <param name="Current">The current durable state; replay must not restore an older receipt.</param>
+/// <param name="Replayed">True only when the transaction found and verified an existing command.</param>
+public sealed record CaptureScheduleMutationResult(
     CaptureScheduleStoreSnapshot Receipt,
-    CaptureScheduleStoreSnapshot Current);
+    CaptureScheduleStoreSnapshot Current,
+    bool Replayed);
 
 public sealed class CaptureScheduleStoreConflictException : InvalidOperationException
 {
@@ -1295,7 +1300,7 @@ public sealed class SqliteCaptureScheduleStore(
                     .ConfigureAwait(false)
                     ?? throw new InvalidDataException("The current capture schedule state is missing.");
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return new CaptureScheduleMutationResult(replaySnapshot, currentSnapshot);
+                return new CaptureScheduleMutationResult(replaySnapshot, currentSnapshot, Replayed: true);
             }
 
             var snapshot = await ReadSnapshotAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
@@ -1333,7 +1338,7 @@ public sealed class SqliteCaptureScheduleStore(
                     : DBNull.Value),
                 ("$now", now.ToUnixTimeMilliseconds())).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return new CaptureScheduleMutationResult(result, result);
+            return new CaptureScheduleMutationResult(result, result, Replayed: false);
         }
         finally
         {

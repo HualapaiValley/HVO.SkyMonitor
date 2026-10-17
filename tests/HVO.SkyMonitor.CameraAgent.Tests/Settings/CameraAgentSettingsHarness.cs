@@ -14,6 +14,7 @@ using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Settings;
 using HVO.SkyMonitor.Common.Configuration;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -57,8 +58,11 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
         IReadOnlyDictionary<string, string?>? overrides = null,
         bool configured = true,
         bool realLocation = false,
-        ILogger<CameraAgentSettingsService>? logger = null)
+        ILogger<CameraAgentSettingsService>? logger = null,
+        Func<string, CancellationToken, Task>? beforeStoreWrite = null,
+        TimeProvider? timeProvider = null)
     {
+        var clock = timeProvider ?? TimeProvider.System;
         var root = Path.Combine(Path.GetTempPath(), "hvo-settings-harness", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var harness = new CameraAgentSettingsHarness(root);
@@ -86,19 +90,19 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
 
             var camera = Camera(moduleType);
             var ingress = new JournalInitializer(root);
-            var schedule = harness.Own(new SqliteCaptureScheduleStore(ingress, hostOptions, TimeProvider.System));
+            var schedule = harness.Own(new SqliteCaptureScheduleStore(ingress, hostOptions, clock));
             var active = await schedule.InitializeAsync(camera, CancellationToken.None).ConfigureAwait(false);
             var telemetry = harness.Own(new CaptureControlTelemetry());
-            var admission = harness.Own(new CaptureAdmissionCoordinator(ingress, hostOptions, TimeProvider.System, telemetry));
+            var admission = harness.Own(new CaptureAdmissionCoordinator(ingress, hostOptions, clock, telemetry));
             var runtime = harness.Own(new CaptureScheduleRuntimeCoordinator(schedule, admission,
-                new RawIngressState(TimeProvider.System), new CaptureLaneState(TimeProvider.System, hostOptions),
-                new EmptyPipelineFactory(), TimeProvider.System));
+                new RawIngressState(clock), new CaptureLaneState(clock, hostOptions),
+                new EmptyPipelineFactory(), clock));
             if (configured)
             {
                 // A running host starts the schedule runtime before any operator request.
                 _ = await runtime.InitializeAsync(camera, CancellationToken.None).ConfigureAwait(false);
             }
-            var named = new SqliteNamedRigProfileStore(ingress, hostOptions, TimeProvider.System, schedule, runtime);
+            var named = new SqliteNamedRigProfileStore(ingress, hostOptions, clock, schedule, runtime);
             _ = await named.ImportActiveAsync(active.ActiveRevision, CancellationToken.None).ConfigureAwait(false);
 
             harness.LocationStore = harness.Location;
@@ -107,7 +111,7 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
                 var protector = new DataProtectionDeploymentLocationProtector(
                     DataProtectionProvider.Create(new DirectoryInfo(Path.Combine(root, "keys"))));
                 var location = harness.Own(new ProtectedDeploymentLocationStore(hostOptions, protector,
-                    TimeProvider.System, NullLogger<ProtectedDeploymentLocationStore>.Instance));
+                    clock, NullLogger<ProtectedDeploymentLocationStore>.Instance));
                 _ = await location.InitializeAsync(new DeploymentLocationSeed("site", "installer", null, null, null,
                     new ObservatoryLocation(35, -114, 1000, "UTC")), CancellationToken.None).ConfigureAwait(false);
                 harness.LocationStore = location;
@@ -129,7 +133,10 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
                 new FixedConfigurationAccessor(configured ? camera : null),
                 harness.Own(new CameraAgentOperatorTelemetry()),
                 logger ?? NullLogger<CameraAgentSettingsService>.Instance,
-                settingsFile);
+                settingsFile)
+            {
+                BeforeStoreWriteAsync = beforeStoreWrite
+            };
             return harness;
         }
         catch
@@ -170,6 +177,25 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
         return await Runtime.StageAsync(
             LocalCaptureProfileDefinition.CreateV2(CameraConfiguration, Definition(profileId, gain)),
             $"stage-{profileId}", current.Version, Actor, null, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    public async Task<(long Commands, long Activations)> ScheduleMutationCountsAsync()
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.Combine(_root, "journal", "raw-ingress.db"),
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString());
+        await connection.OpenAsync(CancellationToken.None).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT (SELECT COUNT(*) FROM capture_schedule_commands),
+                   (SELECT COUNT(*) FROM capture_schedule_activations);
+            """;
+        using var reader = await command.ExecuteReaderAsync(CancellationToken.None).ConfigureAwait(false);
+        _ = await reader.ReadAsync(CancellationToken.None).ConfigureAwait(false);
+        return (reader.GetInt64(0), reader.GetInt64(1));
     }
 
     private T Own<T>(T value) where T : IDisposable

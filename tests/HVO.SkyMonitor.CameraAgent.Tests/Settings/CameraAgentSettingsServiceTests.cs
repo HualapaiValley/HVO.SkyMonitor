@@ -431,6 +431,98 @@ public sealed class CameraAgentSettingsServiceTests
     }
 
     [TestMethod]
+    [DataRow("schedule", false)]
+    [DataRow("schedule", true)]
+    [DataRow("location", false)]
+    [DoNotParallelize] // Keep this deliberate interleaving away from unrelated global telemetry listeners.
+    public async Task ConcurrentDuplicate_AfterChecks_UsesAtomicReplayDispositionAsync(string group, bool rollback)
+    {
+        var paused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var writes = 0;
+        var logger = new RecordingSettingsLogger();
+        using var harness = await CameraAgentSettingsHarness.CreateAsync(realLocation: true, logger: logger,
+            beforeStoreWrite: async (writingGroup, cancellationToken) =>
+            {
+                Assert.AreEqual(group, writingGroup);
+                if (Interlocked.Increment(ref writes) == 1)
+                {
+                    paused.SetResult();
+                    await resume.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+            }, timeProvider: new FixedTimeProvider()).ConfigureAwait(false);
+        var values = new Dictionary<string, object?> { ["location.latitudeDegrees"] = 31.5 };
+        var expected = CameraAgentSettingsWriteOutcome.PendingRestart;
+        if (group == "schedule")
+        {
+            var initial = (await harness.Schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).ActiveRevision;
+            var staged = await harness.StageScheduleDraftAsync("concurrent-replay", 2).ConfigureAwait(false);
+            var target = staged.PendingRevision!.RevisionId;
+            if (rollback)
+            {
+                _ = await harness.Runtime.ActivateAsync(target, "test-setup-activate", staged.Version,
+                    CameraAgentSettingsHarness.Actor, null, CancellationToken.None).ConfigureAwait(false);
+                target = initial.RevisionId;
+            }
+            values = new Dictionary<string, object?> { ["schedule.activeRevision"] = target };
+            expected = CameraAgentSettingsWriteOutcome.Applied;
+        }
+        var before = await harness.GroupAsync(group).ConfigureAwait(false);
+        const string command = "test-concurrent-settings-replay";
+        // Schedule B passes its replay lookup and version check; location B has captured its original inputs.
+        var duplicate = harness.WriteAsync(group, before.Version, values, idempotencyKey: command);
+        try
+        {
+            await paused.Task.WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+            var applied = await harness.WriteAsync(group, before.Version, values, idempotencyKey: command)
+                .ConfigureAwait(false);
+            Assert.AreEqual(expected, applied.Outcome, applied.Message);
+            Assert.IsFalse(applied.Replayed);
+            Assert.HasCount(1, logger.Entries);
+            Assert.AreEqual(7620, logger.Entries.Single().EventId);
+            var durable = await DurableStateAsync().ConfigureAwait(false);
+            var counts = await harness.ScheduleMutationCountsAsync().ConfigureAwait(false);
+            var runtime = harness.Runtime.Snapshot!;
+            var runtimeState = JsonSerializer.Serialize(runtime);
+            var changed = harness.Runtime.RevisionChanged;
+            logger.Entries.Clear();
+
+            // A is complete. B now enters the runtime/store, whose atomic decision must report replay.
+            resume.SetResult();
+            var replay = await duplicate.WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+
+            Assert.AreEqual(expected, replay.Outcome, replay.Message);
+            Assert.AreEqual(durable, await DurableStateAsync().ConfigureAwait(false));
+            Assert.AreEqual(counts, await harness.ScheduleMutationCountsAsync().ConfigureAwait(false));
+            Assert.AreEqual(runtimeState, JsonSerializer.Serialize(harness.Runtime.Snapshot));
+            Assert.AreSame(runtime.Configuration, harness.Runtime.Snapshot!.Configuration);
+            Assert.AreSame(runtime.Revision, harness.Runtime.Snapshot.Revision);
+            Assert.AreSame(runtime.Preview, harness.Runtime.Snapshot.Preview);
+            Assert.AreEqual(changed, harness.Runtime.RevisionChanged);
+            Assert.IsFalse(changed.IsCancellationRequested);
+            Assert.IsTrue(replay.Replayed,
+                $"The atomic disposition must be replay; events: {string.Join(", ", logger.Entries.Select(entry => entry.EventId))}.");
+            Assert.IsFalse(logger.Entries.Any(entry => entry.EventId == 7620));
+            Assert.HasCount(1, logger.Entries);
+            var entry = logger.Entries.Single();
+            Assert.AreEqual(7623, entry.EventId);
+            Assert.AreEqual(LogLevel.Information, entry.Level);
+            Assert.AreEqual($"Settings group {group} write replayed for {CameraAgentSettingsHarness.Actor}; no change",
+                entry.Message);
+        }
+        finally
+        {
+            _ = resume.TrySetResult();
+            _ = await duplicate.WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+        }
+
+        async Task<string> DurableStateAsync()
+            => group == "location"
+                ? JsonSerializer.Serialize(harness.LocationStore.Manual)
+                : JsonSerializer.Serialize(await harness.Schedule.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
     public async Task SkyLighting_StagesARigRevisionForTheNextStartAsync()
     {
         using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
@@ -648,6 +740,11 @@ public sealed class CameraAgentSettingsServiceTests
 
         Assert.IsFalse(schedule.CanWrite);
         Assert.AreEqual(CameraAgentSettingSource.Unavailable, schedule.Settings.Single().Source);
+    }
+
+    private sealed class FixedTimeProvider : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => new(2026, 1, 5, 19, 0, 0, TimeSpan.Zero);
     }
 
     private sealed class RecordingSettingsLogger : ILogger<CameraAgentSettingsService>
