@@ -170,7 +170,7 @@ public sealed class PurgeNamespaceRootTests
         await AssertHelperRefusedAsync(staging, quarantine, "Product namespace component 'cameraagents'");
         await staging.AsRootAsync("chmod", "0755", "--", staging.Namespace);
         await staging.AsRootAsync("chown", $"{staging.Fixture.Uid}:{staging.Fixture.Gid}", "--", staging.Fixture.Root);
-        await AssertHelperRefusedAsync(staging, quarantine, "Product namespace component 'skymonitor'");
+        await AssertHelperRefusedAsync(staging, quarantine, "Product namespace component 'hvo-sky'");
         await staging.AsRootAsync("chown", "0:0", "--", staging.Fixture.Root);
         var linked = Guid.NewGuid();
         await staging.AsRootAsync("ln", "-s", "--", staging.InstanceRoot, Path.Combine(staging.Namespace, linked.ToString("D")));

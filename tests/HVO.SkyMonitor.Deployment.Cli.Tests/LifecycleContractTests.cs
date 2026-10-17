@@ -500,7 +500,7 @@ public sealed partial class LifecycleContractTests
             resume: false,
             json: false);
 
-        Assert.AreEqual("9c011238407c7dee794989a757c89a4dc2ae6fceb8905f546293eb26e201478e", request.ComputeRequestSha256());
+        Assert.AreEqual("1333fe883fe6083f51c80f612b6ae0164741f300e7a4c72270c269578cc3d7f3", request.ComputeRequestSha256());
     }
 
     [TestMethod]
