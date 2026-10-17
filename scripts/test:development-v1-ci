@@ -29,7 +29,7 @@ def job(workflow, name):
 
 
 classifier_run_line = (
-    '        run: GITHUB_STEP_SUMMARY= ./scripts/ci:classify '
+    "        run: GITHUB_STEP_SUMMARY='' ./scripts/ci:classify "
     '"$EVENT_NAME" "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"'
 )
 
@@ -182,7 +182,7 @@ mutations = (
         "- name: Scan history for secrets", "- name: Scan history for secrets\n        if: false"), full),
     ("v1 classifier removed", short.replace("./scripts/ci:classify ", ": "), full),
     ("v1 classifier summary enabled", short.replace(
-        "run: GITHUB_STEP_SUMMARY= ", "run: "), full),
+        "run: GITHUB_STEP_SUMMARY='' ", "run: "), full),
     ("v1 classifier masked by suffix", short.replace(
         classifier_run_line, classifier_run_line + " || true"), full),
     ("v1 classifier command suffix", short.replace(

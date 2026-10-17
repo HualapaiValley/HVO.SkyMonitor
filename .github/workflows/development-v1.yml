@@ -71,7 +71,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.sha }}
-        run: GITHUB_STEP_SUMMARY= ./scripts/ci:classify "$EVENT_NAME" "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+        run: GITHUB_STEP_SUMMARY='' ./scripts/ci:classify "$EVENT_NAME" "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
       # Only a successful, explicit false may skip the contract. Missing outputs
       # or classifier failures still run it, and a failed classifier stays red.
