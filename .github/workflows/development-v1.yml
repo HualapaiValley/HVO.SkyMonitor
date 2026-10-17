@@ -58,6 +58,14 @@ jobs:
           ./scripts/test:pr-review-tools
           ./scripts/test:development-v1-ci
 
+      # The full-history checkout above is what the scan reads (#1321).
+      - name: Scan history for secrets
+        env:
+          HVO_GITLEAKS_CACHE_DIR: ${{ runner.temp }}/gitleaks
+        run: |
+          ./scripts/ci:secret-scan
+          ./scripts/test:ci-secret-scan
+
   build-unit:
     name: Development v1 / Build and Unit
     needs: preflight
