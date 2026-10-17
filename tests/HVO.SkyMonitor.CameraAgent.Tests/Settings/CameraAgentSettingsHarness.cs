@@ -15,6 +15,7 @@ using HVO.SkyMonitor.CameraAgent.Settings;
 using HVO.SkyMonitor.Common.Configuration;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -55,7 +56,8 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
         string moduleType = "VirtualSky",
         IReadOnlyDictionary<string, string?>? overrides = null,
         bool configured = true,
-        bool realLocation = false)
+        bool realLocation = false,
+        ILogger<CameraAgentSettingsService>? logger = null)
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-settings-harness", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -126,7 +128,7 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
                 runtime,
                 new FixedConfigurationAccessor(configured ? camera : null),
                 harness.Own(new CameraAgentOperatorTelemetry()),
-                NullLogger<CameraAgentSettingsService>.Instance,
+                logger ?? NullLogger<CameraAgentSettingsService>.Instance,
                 settingsFile);
             return harness;
         }

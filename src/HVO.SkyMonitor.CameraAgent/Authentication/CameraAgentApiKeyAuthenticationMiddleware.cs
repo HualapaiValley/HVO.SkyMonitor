@@ -76,9 +76,10 @@ internal sealed partial class CameraAgentApiKeyAuthenticationMiddleware(
     }
 
     /// <summary>
-    /// A token beginning with the literal key prefix at the start of an Authorization value or after whitespace or
-    /// a comma presents a key, under any scheme. Detect the attempt before validating syntax, including coalesced
-    /// or duplicate values. Credentials with no such token belong to the rest of the pipeline.
+    /// The literal key prefix at the start of an Authorization value or after a non-token character presents a key,
+    /// under any scheme. Token characters are ASCII letters, digits, '-', '.', '_', '~', '+' and '/'. Detect the
+    /// attempt before validating syntax, including coalesced or duplicate values; an embedded prefix in an unrelated
+    /// token belongs to the rest of the pipeline.
     /// </summary>
     private static bool PresentsApiKey(HttpRequest request)
     {
@@ -87,7 +88,7 @@ internal sealed partial class CameraAgentApiKeyAuthenticationMiddleware(
             if (value is null) continue;
             for (var index = 0; index < value.Length; index++)
             {
-                if ((index == 0 || char.IsWhiteSpace(value[index - 1]) || value[index - 1] == ',') &&
+                if ((index == 0 || !IsTokenCharacter(value[index - 1])) &&
                     value.AsSpan(index).StartsWith(CameraAgentApiKeyToken.Prefix, StringComparison.Ordinal))
                 {
                     return true;
@@ -97,6 +98,10 @@ internal sealed partial class CameraAgentApiKeyAuthenticationMiddleware(
 
         return false;
     }
+
+    private static bool IsTokenCharacter(char value)
+        => value is >= 'A' and <= 'Z' or >= 'a' and <= 'z' or >= '0' and <= '9' or
+            '-' or '.' or '_' or '~' or '+' or '/';
 
     /// <summary>The bearer token when the request carries exactly one <c>Authorization</c> value; otherwise null.</summary>
     private static string? ReadSingleBearerToken(HttpRequest request)

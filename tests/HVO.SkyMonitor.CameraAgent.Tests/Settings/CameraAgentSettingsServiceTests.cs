@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 using HVO.SkyMonitor.CameraAgent.Settings;
+using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Settings;
 
@@ -393,6 +394,43 @@ public sealed class CameraAgentSettingsServiceTests
     }
 
     [TestMethod]
+    [DataRow("location")]
+    [DataRow("schedule")]
+    public async Task RealStore_ReplayIsLoggedWithoutAChangeEventAsync(string group)
+    {
+        var logger = new RecordingSettingsLogger();
+        using var harness = await CameraAgentSettingsHarness.CreateAsync(realLocation: true, logger: logger)
+            .ConfigureAwait(false);
+        var values = new Dictionary<string, object?> { ["location.latitudeDegrees"] = 31.5 };
+        var expectedOutcome = CameraAgentSettingsWriteOutcome.PendingRestart;
+        if (group == "schedule")
+        {
+            var draft = await harness.StageScheduleDraftAsync("logging-draft", 2).ConfigureAwait(false);
+            values = new Dictionary<string, object?> { ["schedule.activeRevision"] = draft.PendingRevision!.RevisionId };
+            expectedOutcome = CameraAgentSettingsWriteOutcome.Applied;
+        }
+        var before = await harness.GroupAsync(group).ConfigureAwait(false);
+        var saved = await harness.WriteAsync(group, before.Version, values, idempotencyKey: "test-replay-log")
+            .ConfigureAwait(false);
+        Assert.AreEqual(expectedOutcome, saved.Outcome, saved.Message);
+        Assert.HasCount(1, logger.Entries);
+        Assert.AreEqual(7620, logger.Entries.Single().EventId);
+        logger.Entries.Clear();
+
+        var replay = await harness.WriteAsync(group, before.Version, values, idempotencyKey: "test-replay-log")
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(expectedOutcome, replay.Outcome, replay.Message);
+        Assert.IsFalse(logger.Entries.Any(entry => entry.EventId == 7620), "A replay must not log a change.");
+        Assert.HasCount(1, logger.Entries);
+        var entry = logger.Entries.Single();
+        Assert.AreEqual(7623, entry.EventId);
+        Assert.AreEqual(LogLevel.Information, entry.Level);
+        Assert.AreEqual($"Settings group {group} write replayed for {CameraAgentSettingsHarness.Actor}; no change",
+            entry.Message);
+    }
+
+    [TestMethod]
     public async Task SkyLighting_StagesARigRevisionForTheNextStartAsync()
     {
         using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
@@ -610,6 +648,19 @@ public sealed class CameraAgentSettingsServiceTests
 
         Assert.IsFalse(schedule.CanWrite);
         Assert.AreEqual(CameraAgentSettingSource.Unavailable, schedule.Settings.Single().Source);
+    }
+
+    private sealed class RecordingSettingsLogger : ILogger<CameraAgentSettingsService>
+    {
+        internal List<(LogLevel Level, int EventId, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => Entries.Add((logLevel, eventId.Id, formatter(state, exception)));
     }
 
     private static CameraAgentSettingState Setting(CameraAgentSettingsResponse response, string key)

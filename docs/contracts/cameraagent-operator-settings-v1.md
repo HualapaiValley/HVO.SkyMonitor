@@ -93,13 +93,15 @@ A key never satisfies owner bootstrap, key management, the account pages, the we
   The identifier is safe to show and log; the prefix lets secret scanners recognise a leaked key.
 - **Transport.** Only `Authorization: Bearer <key>`, and only under `/api/v1/operations`. A key in a query string,
   another header or another scheme is never accepted. Elsewhere the header is ignored and the session decides.
-  Under the operations path, an `Authorization` token starting with the literal, case-sensitive `hvo_sky_` prefix
-  at the start of a header value or after whitespace or a comma counts as presenting a key, under any scheme.
+  Under the operations path, the literal, case-sensitive `hvo_sky_` prefix at the start of an `Authorization`
+  value or after any character outside the token alphabet counts as presenting a key, under any scheme. Token
+  characters are ASCII letters, digits, `-`, `.`, `_`, `~`, `+` and `/`; a prefix embedded in an unrelated token,
+  such as `abc.hvo_sky_x.def`, does not count. Quoting, `=`, `:` and `;` do count as boundaries.
   A presented key decides the request alone: a session cookie on the same request is ignored. Exactly one
   `Authorization` value containing a valid `Bearer <key>` credential is required; embedded whitespace, trailing
-  junk, comma-coalesced values, duplicate values and a key under another scheme or raw in the header receive the
-  same generic 401 as a bad key. Basic credentials and unrelated bearer tokens without a key-prefixed token are
-  left to the session as before.
+  junk, quoted keys, malformed separators, comma-coalesced values, duplicate values and a key under another scheme
+  or raw in the header receive the same generic 401 as a bad key. Basic credentials and unrelated bearer tokens
+  without a key-prefixed token are left to the session as before.
 - **Storage.** The local identity database keeps each key as an authentication token of the owner account: the
   identifier, the SHA-256 of the whole key, the access level, the label and the creation time. The key itself is shown
   once, in the response that creates it (`Cache-Control: no-store`), and is never stored or logged. The identity

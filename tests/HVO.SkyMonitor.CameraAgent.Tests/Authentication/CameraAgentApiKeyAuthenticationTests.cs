@@ -237,6 +237,16 @@ public sealed class CameraAgentApiKeyAuthenticationTests
     [DataRow("other-scheme", true)]
     [DataRow("raw", false)]
     [DataRow("raw", true)]
+    [DataRow("double-quoted", false)]
+    [DataRow("double-quoted", true)]
+    [DataRow("single-quoted", false)]
+    [DataRow("single-quoted", true)]
+    [DataRow("token-equals", false)]
+    [DataRow("token-equals", true)]
+    [DataRow("bearer-colon", false)]
+    [DataRow("bearer-colon", true)]
+    [DataRow("bearer-semicolon", false)]
+    [DataRow("bearer-semicolon", true)]
     public async Task MalformedKeyWithASession_NeverReachesReadOrMutationAsync(string kind, bool mutation)
     {
         var fixture = await PipelineFixture.CreateAsync().ConfigureAwait(false);
@@ -258,6 +268,11 @@ public sealed class CameraAgentApiKeyAuthenticationTests
             "comma-key-last" => [$"Bearer unrelated-test-token, Bearer {key}"],
             "duplicated" => ["Bearer unrelated-test-token", $"Bearer {key}"],
             "other-scheme" => [$"ApiKey {key}"],
+            "double-quoted" => [$"Bearer \"{key}\""],
+            "single-quoted" => [$"Bearer '{key}'"],
+            "token-equals" => [$"Bearer token={key}"],
+            "bearer-colon" => [$"Bearer:{key}"],
+            "bearer-semicolon" => [$"Bearer;{key}"],
             _ => [key]
         };
         var method = mutation ? HttpMethod.Post : HttpMethod.Get;
@@ -287,6 +302,7 @@ public sealed class CameraAgentApiKeyAuthenticationTests
     [TestMethod]
     [DataRow("Basic", "cHJveHk6cHJveHk=")]
     [DataRow("Bearer", "unrelated-test-token")]
+    [DataRow("Bearer", "abc.hvo_sky_x.def")]
     public async Task OtherAuthorizationSchemes_AreLeftToTheSessionAsBeforeAsync(string scheme, string credential)
     {
         var fixture = await PipelineFixture.CreateAsync().ConfigureAwait(false);

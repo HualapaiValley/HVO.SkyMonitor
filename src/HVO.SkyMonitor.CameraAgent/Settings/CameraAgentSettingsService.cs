@@ -39,13 +39,15 @@ internal enum CameraAgentSettingsWriteOutcome
 /// <param name="Problems">The rule each rejected setting breaks, keyed by setting key.</param>
 /// <param name="Recorded">Durable records a multi-step write made, in order.</param>
 /// <param name="NotDone">Steps a multi-step write did not reach.</param>
+/// <param name="Replayed">The durable store confirmed an existing command; this write changed nothing.</param>
 internal sealed record CameraAgentSettingsWriteResult(
     CameraAgentSettingsWriteOutcome Outcome,
     CameraAgentSettingsGroupState? Group,
     string? Message = null,
     IReadOnlyDictionary<string, string>? Problems = null,
     IReadOnlyList<string>? Recorded = null,
-    IReadOnlyList<string>? NotDone = null);
+    IReadOnlyList<string>? NotDone = null,
+    bool Replayed = false);
 
 /// <summary>
 /// Reads every catalogue setting with where its value comes from, and writes one group at a time to the store that
@@ -131,6 +133,7 @@ internal sealed partial class CameraAgentSettingsService(
             await TryReplayScheduleAsync(found, current, request, actor, idempotencyKey, reason, cancellationToken)
                 .ConfigureAwait(false) is { } replay)
         {
+            if (replay.Replayed) LogReplayed(logger, found.Name, actor);
             return replay;
         }
 
@@ -192,7 +195,11 @@ internal sealed partial class CameraAgentSettingsService(
                 "The settings change could not be completed.");
         }
 
-        if (result.Outcome is CameraAgentSettingsWriteOutcome.Applied or CameraAgentSettingsWriteOutcome.PendingRestart)
+        if (result.Replayed)
+        {
+            LogReplayed(logger, found.Name, actor);
+        }
+        else if (result.Outcome is CameraAgentSettingsWriteOutcome.Applied or CameraAgentSettingsWriteOutcome.PendingRestart)
         {
             LogWritten(logger, found.Name, string.Join(", ", values.Keys), result.Outcome, actor);
         }
@@ -492,7 +499,8 @@ internal sealed partial class CameraAgentSettingsService(
         return result.Status switch
         {
             ManualDeploymentLocationStatus.Applied or ManualDeploymentLocationStatus.Replayed =>
-                new(CameraAgentSettingsWriteOutcome.PendingRestart, after),
+                new(CameraAgentSettingsWriteOutcome.PendingRestart, after,
+                    Replayed: result.Status == ManualDeploymentLocationStatus.Replayed),
             ManualDeploymentLocationStatus.Unchanged => new(CameraAgentSettingsWriteOutcome.Unchanged, after),
             ManualDeploymentLocationStatus.Conflict => Conflict(after),
             _ when result.FieldPath is { } field &&
@@ -685,7 +693,7 @@ internal sealed partial class CameraAgentSettingsService(
                     cancellationToken).ConfigureAwait(false) is null
                 ? null
                 : new(CameraAgentSettingsWriteOutcome.Applied,
-                    await ReadGroupAsync(group, cancellationToken).ConfigureAwait(false));
+                    await ReadGroupAsync(group, cancellationToken).ConfigureAwait(false), Replayed: true);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -798,6 +806,9 @@ internal sealed partial class CameraAgentSettingsService(
     [LoggerMessage(7620, LogLevel.Information, "Settings group {Group} changed by {Actor}: {Keys} ({Outcome})")]
     private static partial void LogWritten(ILogger logger, string group, string keys,
         CameraAgentSettingsWriteOutcome outcome, string actor);
+
+    [LoggerMessage(7623, LogLevel.Information, "Settings group {Group} write replayed for {Actor}; no change")]
+    private static partial void LogReplayed(ILogger logger, string group, string actor);
 
     [LoggerMessage(7621, LogLevel.Warning, "Settings group {Group} could not be read")]
     private static partial void LogReadFailed(ILogger logger, Exception exception, string group);
