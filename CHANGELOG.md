@@ -74,5 +74,9 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 - The Archive calendar (`/archive/calendar`) loads its video summaries again. Before this fix, every summary query
   failed with a SQLite syntax error. (#1301)
+- The installer's remedy for a Docker daemon that cannot enforce the CameraAgent limits
+  (`docker-memory-limit-unsupported` and its CPU and PIDs companions) now says that on a Raspberry Pi the firmware, not
+  `/boot/firmware/cmdline.txt`, adds `cgroup_disable=memory`. There is nothing in that file to change: append
+  `cgroup_enable=memory` to its single line and reboot. (#1309)
 
 [Unreleased]: https://github.com/HualapaiValley/HVO.SkyMonitor/commits/development/v1

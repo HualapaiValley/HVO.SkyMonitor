@@ -160,10 +160,10 @@ internal static class HostPrerequisites
     public const long StorageHeadroomBytes = 1024L * 1024 * 1024;
 
     internal const string ResourceLimitRemediation =
-        "Docker must enforce the CameraAgent Compose memory, CPU and PIDs limits. Raspberry Pi OS boots with " +
-        "cgroup_disable=memory: add cgroup_enable=memory to the single line in /boot/firmware/cmdline.txt, reboot, and " +
-        "confirm that docker info reports MemoryLimit, CpuCfsQuota and PidsLimit as true. On other hosts enable the " +
-        "memory, cpu and pids cgroup controllers for the Docker daemon.";
+        "Docker must enforce the CameraAgent Compose memory, CPU and PIDs limits. On a Raspberry Pi the firmware, not " +
+        "/boot/firmware/cmdline.txt, adds cgroup_disable=memory to the kernel command line: append cgroup_enable=memory " +
+        "to the single line in that file, reboot, and confirm that docker info reports MemoryLimit, CpuCfsQuota and " +
+        "PidsLimit as true. On other hosts enable the memory, cpu and pids cgroup controllers for the Docker daemon.";
 
     internal const string CpuCapacityRemediation =
         "Docker refuses a CPU limit larger than the CPUs its host has. Use a host whose Docker daemon reports at least " +

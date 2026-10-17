@@ -146,12 +146,14 @@ measures the instance backup and staged archive against the product root's own
 filesystem.
 
 A host that cannot enforce the limits would otherwise run CameraAgent unbounded,
-so it is refused. Raspberry Pi OS boots with `cgroup_disable=memory`. The remedy
-is to add `cgroup_enable=memory` to the single line in
-`/boot/firmware/cmdline.txt`, reboot, and confirm that `docker info` reports
-`MemoryLimit`, `CpuCfsQuota`, and `PidsLimit` as `true`. Each limit finding
-quotes the cgroup version, `/sys/fs/cgroup/cgroup.controllers` when it is
-readable, and Docker's own limit warnings.
+so it is refused. On a Raspberry Pi the firmware adds `cgroup_disable=memory` to
+the kernel command line, so it is not in `/boot/firmware/cmdline.txt` and there
+is nothing there to change. The remedy is to append a space and
+`cgroup_enable=memory` to the end of the single line in that file, reboot, and
+confirm that `docker info` reports `MemoryLimit`, `CpuCfsQuota`, and `PidsLimit`
+as `true`. Each limit finding quotes the cgroup version,
+`/sys/fs/cgroup/cgroup.controllers` when it is readable, and Docker's own limit
+warnings.
 
 The human form renders every finding and its remedy on standard error. With
 `--json` the structured report is written to standard output and standard error
