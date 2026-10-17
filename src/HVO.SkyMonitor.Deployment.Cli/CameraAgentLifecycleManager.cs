@@ -923,10 +923,7 @@ internal sealed class CameraAgentLifecycleManager
                 }, cancellationToken).ConfigureAwait(false);
                 if (operation.RetainedStateSnapshot is { } retainedState)
                 {
-                    operation = await RecordRestorePlanAsync(paths, manifest, operation, retainedState, request.Json, error, cancellationToken).ConfigureAwait(false);
-                    await CameraAgentStateSnapshot.RestoreAsync(
-                        paths, manifest.InstanceId, retainedState, manifest.RuntimeUid, manifest.RuntimeGid,
-                        operation.StateCounterFloors!, operation.StateRestorePlan!, cancellationToken)
+                    operation = await RestoreStoresAsync(paths, manifest, operation, retainedState, request.Json, error, cancellationToken)
                         .ConfigureAwait(false);
                     operation = await RecordAsync(
                         paths, operation with { Phase = LifecycleOperationPhase.RetainedStateApplied }, cancellationToken)
@@ -1163,13 +1160,34 @@ internal sealed class CameraAgentLifecycleManager
         CancellationToken cancellationToken)
     {
         await CameraAgentStateSnapshot.ShowWarningAsync(snapshot, json, error).ConfigureAwait(false);
-        operation = await RecordRestorePlanAsync(paths, manifest, operation, snapshot, json, error, cancellationToken).ConfigureAwait(false);
-        await CameraAgentStateSnapshot.RestoreAsync(
-                paths, manifest.InstanceId, snapshot, manifest.RuntimeUid, manifest.RuntimeGid,
-                operation.StateCounterFloors!, operation.StateRestorePlan!, cancellationToken)
-            .ConfigureAwait(false);
+        operation = await RestoreStoresAsync(paths, manifest, operation, snapshot, json, error, cancellationToken).ConfigureAwait(false);
         return await RecordAsync(paths, operation with { StateSnapshotRestoredUtc = DateTimeOffset.UtcNow }, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Records the restore plan, carries what can be carried, and puts every store of <paramref name="snapshot"/> back.
+    /// Each carry is planned and proved before any store is replaced, and one that still fails leaves its store as the
+    /// snapshot recorded it; either way standard error names what was not carried and why, and the restore completes.
+    /// </summary>
+    private static async Task<LifecycleOperationState> RestoreStoresAsync(
+        InstallationPaths paths,
+        InstanceManifest manifest,
+        LifecycleOperationState operation,
+        LifecycleStateSnapshot snapshot,
+        bool json,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        (operation, var carry) = await RecordRestorePlanAsync(paths, manifest, operation, snapshot, json, error, cancellationToken)
+            .ConfigureAwait(false);
+        var uncarried = await CameraAgentStateSnapshot.RestoreAsync(
+                paths, manifest.InstanceId, snapshot, manifest.RuntimeUid, manifest.RuntimeGid,
+                carry.Floors, operation.StateRestorePlan!, cancellationToken)
+            .ConfigureAwait(false);
+        if (uncarried.Count > 0)
+            await CameraAgentStateSnapshot.ShowRestoreUncarriedAsync(snapshot, uncarried, json, error).ConfigureAwait(false);
+        return operation;
     }
 
     /// <summary>
@@ -1184,9 +1202,10 @@ internal sealed class CameraAgentLifecycleManager
     /// </list>
     /// A candidate that damaged a store beyond reading must not block its own recovery, so the inventory then falls back
     /// to the configured roots, the damaged store's counters are carried only as far as the journal recorded them, and
-    /// the restore says so on standard error.
+    /// the restore says so on standard error. The journal keeps the marks themselves; what is carried is planned from
+    /// them against the target snapshot on every attempt, so a mark a retry can no longer carry never fails the retry.
     /// </summary>
-    private static async Task<LifecycleOperationState> RecordRestorePlanAsync(
+    private static async Task<(LifecycleOperationState Operation, CameraAgentStateCounters.CarryPlan Carry)> RecordRestorePlanAsync(
         InstallationPaths paths,
         InstanceManifest manifest,
         LifecycleOperationState operation,
@@ -1219,11 +1238,18 @@ internal sealed class CameraAgentLifecycleManager
         var floors = CameraAgentStateCounters.TrimCarries(
             CameraAgentStateCounters.Merge(operation.StateCounterFloors, observed),
             CameraAgentStateSnapshot.StoreFile(paths, snapshot, target, CameraAgentStateLayout.AutomationStore));
-        return await RecordAsync(paths, operation with
+        operation = await RecordAsync(paths, operation with
         {
             StateCounterFloors = floors,
             StateRestorePlan = plan
         }, cancellationToken).ConfigureAwait(false);
+        var carry = CameraAgentStateCounters.PlanCarry(
+            floors,
+            relative => CameraAgentStateSnapshot.StoreFile(paths, snapshot, target, relative),
+            Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"), "carry-trial"));
+        if (carry.Uncarried.Count > 0)
+            await CameraAgentStateSnapshot.ShowRestoreUncarriedAsync(snapshot, carry.Uncarried, json, error).ConfigureAwait(false);
+        return (operation, carry);
     }
 
     private static async Task<LifecycleResult> UninstallAsync(

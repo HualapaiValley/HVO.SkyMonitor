@@ -244,18 +244,20 @@ internal static class CameraAgentStateSnapshot
     /// the restored bytes. Before it returns, the directory of every store it restored or removed is synced together
     /// with each directory above it to the product root, whether or not this attempt created it, so the caller's
     /// completion record never outlives a directory entry an interrupted attempt created and never synced.
+    /// <paramref name="carry"/> is the planned carry (<see cref="CameraAgentStateCounters.PlanCarry"/>). A store whose
+    /// carry still fails is left exactly as the snapshot recorded it and returned with why, and the restore goes on.
     /// </summary>
-    public static async Task RestoreAsync(
+    public static async Task<IReadOnlyList<(string What, string Reason)>> RestoreAsync(
         InstallationPaths paths,
         Guid instanceId,
         LifecycleStateSnapshot snapshot,
         uint uid,
         uint gid,
-        IReadOnlyList<StateCounterFloor> floors,
+        IReadOnlyList<StateCounterFloor> carry,
         StateRestorePlan plan,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(floors);
+        ArgumentNullException.ThrowIfNull(carry);
         ArgumentNullException.ThrowIfNull(plan);
         var manifest = await VerifyAsync(paths, instanceId, snapshot, cancellationToken).ConfigureAwait(false);
         var targetLocations = manifest.Databases.Select(static database => database.RelativePath).Order(StringComparer.Ordinal).ToArray();
@@ -264,11 +266,7 @@ internal static class CameraAgentStateSnapshot
             throw new InstallerException("The journaled restore plan does not match the CameraAgent database snapshot it restores.");
         var root = SnapshotRoot(paths, snapshot.OperationId, snapshot.SnapshotId);
         var touchedDirectories = new SortedSet<string>(StringComparer.Ordinal);
-        // Every floor must be carriable before any store is replaced, so a refusal leaves the live stores untouched.
-        foreach (var database in manifest.Databases.Where(static database => database.Present))
-        {
-            CameraAgentStateCounters.EnsureApplicable(SnapshotFile(root, database), database.RelativePath, floors);
-        }
+        var uncarried = new List<(string What, string Reason)>();
         foreach (var database in manifest.Databases)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -280,7 +278,7 @@ internal static class CameraAgentStateSnapshot
                 if (!Directory.Exists(directory)) continue;
                 // A store the snapshot did not have but whose counters have since handed out identities is kept, so
                 // those identities are never handed out again; the previous release reads it under the migration rule.
-                if (floors.Any(floor => floor.Store == database.RelativePath) && File.Exists(target)) continue;
+                if (carry.Any(floor => floor.Store == database.RelativePath) && File.Exists(target)) continue;
                 RemoveStore(target, database.RelativePath);
                 touchedDirectories.Add(directory);
                 continue;
@@ -312,8 +310,10 @@ internal static class CameraAgentStateSnapshot
             if (await SafeFileSystem.ComputeSha256Async(target, cancellationToken).ConfigureAwait(false) != database.Sha256)
                 throw new InstallerException($"The restored '{database.RelativePath}' differs from its snapshot.");
             // The restored counters are raised to the marks the instance had already handed out; SQLite syncs the
-            // database on commit, and the directory sync makes its rollback journal's removal durable.
-            CameraAgentStateCounters.Apply(target, database.RelativePath, floors);
+            // database on commit, and the directory sync makes its rollback journal's removal durable. A carry that
+            // still fails rolls back, leaving the store as the snapshot recorded it.
+            if (CameraAgentStateCounters.Apply(target, database.RelativePath, carry) is { } failure)
+                uncarried.Add(($"the counters of '{database.RelativePath}'", failure));
             NativeLinux.FlushDirectory(directory);
             touchedDirectories.Add(directory);
             StepCompleted($"restore:{database.RelativePath}");
@@ -337,6 +337,7 @@ internal static class CameraAgentStateSnapshot
             SafeFileSystem.FlushDirectoryChain(directory, paths.ProductRoot);
         }
         StepCompleted("restore-directories-synced");
+        return uncarried;
     }
 
     /// <summary>Unlinks a store and its SQLite sidecars, each proved a regular file first, and syncs its directory.</summary>
@@ -434,6 +435,33 @@ internal static class CameraAgentStateSnapshot
         var warning = string.Create(
             CultureInfo.InvariantCulture,
             $"Warning: the restore of the CameraAgent databases from snapshot {snapshot.SnapshotId:D} could not read {unread}. Counters in a store it could not read are carried only as far as the lifecycle journal recorded them, and a database under a storage root named only in an unreadable journal may be left in place; no file is touched.");
+        if (!json) return error.WriteLineAsync(warning);
+        var line = new System.Buffers.ArrayBufferWriter<byte>();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(line))
+        {
+            System.Text.Json.JsonSerializer.Serialize(
+                writer,
+                new LifecycleStateSnapshotRestoreEvent(
+                    DeploymentSchemaVersions.LifecycleEvent, LifecycleStateSnapshotRestoreEvent.IncompleteName, warning, snapshot),
+                DeploymentJsonContext.Default.LifecycleStateSnapshotRestoreEvent);
+        }
+        return error.WriteLineAsync(Encoding.UTF8.GetString(line.WrittenSpan));
+    }
+
+    /// <summary>
+    /// Says that a restore of <paramref name="snapshot"/> puts back what <paramref name="uncarried"/> names without carrying
+    /// its counters forward, and why; the databases themselves are restored.
+    /// </summary>
+    public static Task ShowRestoreUncarriedAsync(
+        LifecycleStateSnapshot snapshot, IReadOnlyList<(string What, string Reason)> uncarried, bool json, TextWriter error)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(uncarried);
+        ArgumentNullException.ThrowIfNull(error);
+        var list = string.Join("; ", uncarried.Select(static entry => $"{entry.What} ({Redaction.SafeDiagnostic(entry.Reason)})"));
+        var warning = string.Create(
+            CultureInfo.InvariantCulture,
+            $"Warning: the restore of the CameraAgent databases from snapshot {snapshot.SnapshotId:D} could not carry {list}. Each is restored as the snapshot recorded it, so a sequence or version handed out since the snapshot may be handed out again; the restore itself completes.");
         if (!json) return error.WriteLineAsync(warning);
         var line = new System.Buffers.ArrayBufferWriter<byte>();
         using (var writer = new System.Text.Json.Utf8JsonWriter(line))

@@ -100,7 +100,7 @@ public sealed partial class LifecycleContractTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(1, true, DisplayName = "created at version 1, as the previous release would recreate it")]
     [DataRow(3, false, DisplayName = "advanced to version 3")]
-    public async Task RollbackAsync_ScheduleStateTheSnapshotLacks_IsCarriedOnlyWhenTheLazyRowWouldMatch(int liveVersion, bool restores)
+    public async Task RollbackAsync_ScheduleStateTheSnapshotLacks_IsCarriedOnlyWhenTheLazyRowWouldMatch(int liveVersion, bool matches)
     {
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
@@ -110,17 +110,23 @@ public sealed partial class LifecycleContractTests
         ExecuteSql(RawIngressPath(fixture.Paths), string.Create(CultureInfo.InvariantCulture,
             $"INSERT INTO capture_schedule_state(state_key, active_revision_id, version, updated_unix_ms) VALUES(1, 'profile-00000001-abcdefabcdef', {liveVersion}, 0);"));
 
-        if (restores)
-        {
-            await RollBackAsync(fixture);
-            Assert.AreEqual(0, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db", "SELECT COUNT(*) FROM capture_schedule_state;"));
-            return;
-        }
-        var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => RollBackAsync(fixture));
-        StringAssert.Contains(refused.InnerException?.Message ?? refused.Message, "capture-schedule-version", StringComparison.Ordinal);
-        // Nothing was replaced: the instance runs the upgraded release on its own stores.
-        Assert.AreEqual(CandidateImageId, fixture.Runner.ActiveImageId);
-        Assert.AreEqual(3, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db", "SELECT version FROM capture_schedule_state;"));
+        using var error = new StringWriter();
+        Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner, _ => new FakeLifecycleClient(),
+            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None,
+            error: error)).Outcome);
+
+        // The previous release recreates the row it lacks. A version of 1 is the state that row describes, so nothing is
+        // lost; a higher version cannot be carried into a row the snapshot lacks, and since carrying is best effort the
+        // rollback completes and says so (#1314 R17–R20) rather than refusing.
+        Assert.AreEqual(0, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db", "SELECT COUNT(*) FROM capture_schedule_state;"));
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        if (matches)
+            Assert.IsFalse(error.ToString().Contains("could not carry", StringComparison.Ordinal), error.ToString());
+        else
+            StringAssert.Contains(error.ToString(),
+                "could not carry the capture-schedule-version counter of 'raw/journal/raw-ingress.db' (the snapshot has no row to carry it into)",
+                StringComparison.Ordinal);
     }
 
     private const string ScheduleRevision =

@@ -34,8 +34,10 @@ internal static class CameraAgentStateInventory
     /// The inventory a restore, or a rollback that restores, reads from stores the release it replaces wrote: the full
     /// inventory, or, when that release left its journal unreadable or its schedule revisions in a shape this installer
     /// does not read, the inventory from configuration alone and what could not be read. The configuration is the
-    /// installer's own, mounted read-only, so the fallback never fails on what a candidate wrote.
+    /// installer's own, mounted read-only, so the fallback never fails on what a candidate wrote. Any failure of the
+    /// journal read, of whatever kind, takes the fallback.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A journal a candidate wrote must never block its own recovery, whatever the failure; the configured roots are used instead.")]
     public static (IReadOnlyList<string> Stores, string? Unread) StoresForRestore(
         InstallationPaths paths, ContractReplayProfile replayProfile)
     {
@@ -43,20 +45,12 @@ internal static class CameraAgentStateInventory
         {
             return (Stores(paths, replayProfile), null);
         }
-        catch (Exception exception) when (IsUnreadable(exception))
+        catch (Exception exception) when (exception is not OperationCanceledException)
         {
             return (ConfiguredStores(paths, replayProfile),
                 $"the storage roots in the journal ({Redaction.SafeDiagnostic(exception.Message)})");
         }
     }
-
-    /// <summary>
-    /// Whether <paramref name="exception"/> is how reading a store a candidate may have written fails: the store cannot
-    /// be opened or read, or a value in it is not in the shape the installer reads, which the installer reports as an
-    /// <see cref="InstallerException"/> rather than casting.
-    /// </summary>
-    public static bool IsUnreadable(Exception exception)
-        => exception is InstallerException or SqliteException or IOException or UnauthorizedAccessException;
 
     private static List<string> Stores(InstallationPaths paths, ContractReplayProfile replayProfile, bool includeJournalRevisions)
     {

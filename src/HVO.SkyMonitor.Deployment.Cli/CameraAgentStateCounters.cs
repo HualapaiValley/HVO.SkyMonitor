@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using HVO.SkyMonitor.Deployment.Contracts;
 using Microsoft.Data.Sqlite;
@@ -27,10 +28,16 @@ namespace HVO.SkyMonitor.Deployment;
 /// <para>
 /// A state token whose singleton row a store creates lazily on first start may be missing from a snapshot. The previous
 /// release then creates it at version 1 from the same configuration, which is the state a token of 1 describes, so a
-/// floor of at most 1 needs no carrying; a higher one refuses the restore before any store is replaced. Automation
-/// definitions are versioned per definition: a definition the snapshot lacks is recorded in the restored store as
-/// removed at a version above its highest, so the store's own rule that a recreated definition continues its revision
-/// line keeps every version it handed out from being issued again.
+/// floor of at most 1 needs no carrying. Automation definitions are versioned per definition: a definition the snapshot
+/// lacks is recorded in the restored store as removed at a version above its highest, so the store's own rule that a
+/// recreated definition continues its revision line keeps every version it handed out from being issued again.
+/// </para>
+/// <para>
+/// Carrying is best effort and total (#1314 R17–R20). Every carry is planned before any store is replaced
+/// (<see cref="PlanCarry"/>): each floor is screened against the target snapshot, and what remains for a store is
+/// carried and verified on a scratch copy of it, which proves it against the store's real constraints. A floor that
+/// cannot be carried, or a store whose trial or final carry fails in any way, is put back as the snapshot recorded it and
+/// named on standard error, so a value a candidate or a snapshot holds can never stop a restore.
 /// </para>
 /// <para>
 /// <see cref="Local"/> lists every other counter-like column the stores have, with why it never leaves the instance or
@@ -179,21 +186,26 @@ internal static class CameraAgentStateCounters
         ["__EFMigrationsLock.Id"] = "EF Core's migration lock row",
     };
 
-    /// <summary>Every counter's current value in the stores under <paramref name="stateRoot"/>; the instance is stopped.</summary>
-    public static IReadOnlyList<StateCounterFloor> Read(string stateRoot)
-    {
-        var (floors, unreadable) = ReadReadable(stateRoot);
-        if (unreadable.Count > 0)
-            throw new InstallerException($"The CameraAgent store '{unreadable[0].Store}' could not be read for its counters.");
-        return floors;
-    }
+    /// <summary>
+    /// Runs at each step of reading, planning and applying a carry, named <c>read:&lt;store&gt;</c>, <c>trim</c>,
+    /// <c>screen:&lt;store&gt;</c>, <c>trial:&lt;store&gt;</c>, <c>trial-verify:&lt;store&gt;</c>, <c>apply:&lt;store&gt;</c>
+    /// or <c>apply-verify:&lt;store&gt;</c>. Fault-injection tests throw from it to prove every step degrades rather than
+    /// blocks a restore; production leaves it empty.
+    /// </summary>
+    internal static Action<string> CarryStep { get; set; } = static _ => { };
+
+    /// <summary>What a restore carries into the snapshot it puts back, and what it puts back without carrying, with why.</summary>
+    /// <param name="Floors">The floors that were screened against the target snapshot and carried in a trial.</param>
+    /// <param name="Uncarried">Each counter or store put back as the snapshot recorded it, and why.</param>
+    internal sealed record CarryPlan(IReadOnlyList<StateCounterFloor> Floors, IReadOnlyList<(string What, string Reason)> Uncarried);
 
     /// <summary>
-    /// Every counter's current value in the stores that can be read, and the stores that cannot with why. A restore uses this so
-    /// that a store a failed candidate damaged beyond reading, or left holding a counter in a shape the installer does not
-    /// carry, never blocks its own recovery; that store's counters are carried only as far as the journal already
-    /// recorded them.
+    /// Every counter's current value in the stores that can be read, and the stores that cannot with why. A restore
+    /// uses this so that a store a failed candidate left damaged, in another encoding, or holding a counter in a shape
+    /// the installer does not carry never blocks its own recovery: any failure of any kind makes that store unreadable,
+    /// and its counters are carried only as far as the journal already recorded them.
     /// </summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A store a candidate wrote must never block its own recovery, whatever the failure; it is reported unreadable instead.")]
     public static (IReadOnlyList<StateCounterFloor> Floors, IReadOnlyList<(string Store, string Reason)> Unreadable) ReadReadable(string stateRoot)
     {
         var floors = new List<StateCounterFloor>();
@@ -201,15 +213,17 @@ internal static class CameraAgentStateCounters
         foreach (var counter in All)
         {
             var path = CameraAgentStateSnapshot.StorePath(stateRoot, counter.Store);
-            if (!File.Exists(path) || unreadable.Any(entry => entry.Store == counter.Store)) continue;
+            if (unreadable.Any(entry => entry.Store == counter.Store)) continue;
             try
             {
+                if (!File.Exists(path)) continue;
+                CarryStep($"read:{counter.Store}");
                 using var database = CameraAgentStatePreflight.ReadOnlyDatabase.Open(path);
                 floors.AddRange(counter.Name == AutomationDefinitionVersion
-                    ? ReadAutomationHighWater(database.Connection, counter)
+                    ? ReadAutomationHighWater(database.Connection, counter, includeCarry: true)
                     : Read(database.Connection, counter));
             }
-            catch (Exception exception) when (CameraAgentStateInventory.IsUnreadable(exception))
+            catch (Exception exception) when (exception is not OperationCanceledException)
             {
                 unreadable.Add((counter.Store, exception.Message));
                 floors.RemoveAll(floor => floor.Store == counter.Store);
@@ -241,115 +255,278 @@ internal static class CameraAgentStateCounters
     /// <summary>
     /// Drops each automation definition's carried revision unless the target snapshot needs it: only a definition the
     /// snapshot neither has nor already versions past the floor is recorded as removed, so only its latest revision is
-    /// kept in the journal.
+    /// kept in the journal. Trimming only keeps the journal small, so a target it cannot read keeps every carry, and the
+    /// carry plan decides what is applied.
     /// </summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Trimming only shrinks the journal; any failure keeps the carries and leaves the decision to the carry plan.")]
     public static IReadOnlyList<StateCounterFloor> TrimCarries(IReadOnlyList<StateCounterFloor> floors, string? automationSnapshotFile)
     {
         ArgumentNullException.ThrowIfNull(floors);
-        var counter = All.Single(static counter => counter.Name == AutomationDefinitionVersion);
-        Dictionary<string, long> snapshotMarks = [];
-        HashSet<string> snapshotRows = [];
-        if (automationSnapshotFile is not null && File.Exists(automationSnapshotFile))
+        try
         {
-            using var connection = OpenImmutable(automationSnapshotFile);
-            snapshotMarks = ReadAutomationHighWater(connection, counter).ToDictionary(static mark => mark.Key, static mark => mark.Value, StringComparer.Ordinal);
-            snapshotRows = Read(connection, counter).Select(static row => row.Key).ToHashSet(StringComparer.Ordinal);
-        }
-        return floors.Select(floor =>
+            CarryStep("trim");
+            var counter = All.Single(static counter => counter.Name == AutomationDefinitionVersion);
+            Dictionary<string, long> snapshotMarks = [];
+            HashSet<string> snapshotRows = [];
+            if (automationSnapshotFile is not null && File.Exists(automationSnapshotFile))
             {
-                if (floor.Counter != AutomationDefinitionVersion || floor.Carry is null) return floor;
-                var needed = !snapshotRows.Contains(floor.Key) &&
-                             !(snapshotMarks.TryGetValue(floor.Key, out var reached) && reached >= floor.Value);
-                return needed ? floor : floor with { Carry = null };
-            })
-            .ToArray();
+                using var connection = OpenImmutable(automationSnapshotFile);
+                snapshotMarks = ReadAutomationHighWater(connection, counter, includeCarry: false)
+                    .ToDictionary(static mark => mark.Key, static mark => mark.Value, StringComparer.Ordinal);
+                snapshotRows = Read(connection, counter).Select(static row => row.Key).ToHashSet(StringComparer.Ordinal);
+            }
+            return floors.Select(floor =>
+                {
+                    if (floor.Counter != AutomationDefinitionVersion || floor.Carry is null) return floor;
+                    var needed = !snapshotRows.Contains(floor.Key) &&
+                                 !(snapshotMarks.TryGetValue(floor.Key, out var reached) && reached >= floor.Value);
+                    return needed ? floor : floor with { Carry = null };
+                })
+                .ToArray();
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return floors;
+        }
     }
 
     /// <summary>
-    /// Whether every floor recorded for <paramref name="relative"/> can be carried into the store at
-    /// <paramref name="path"/>: its table and columns exist, and a counter without an upsert has its row, or a floor the
-    /// missing row's lazy creation already respects, or (for an automation definition) a carried latest revision and a
-    /// revision table it can be written to.
+    /// Plans, before any store is replaced, what a restore carries into each store of the target snapshot. Each floor is
+    /// first screened against the target store's own rows, schema and the range its carry writes and verifies; a floor
+    /// that cannot be carried is put back as the snapshot recorded it. The floors that remain for a store are then
+    /// carried, and verified, in one transaction on a scratch copy of the target store under
+    /// <paramref name="trialDirectory"/>, which proves them against the store's real constraints; a store whose trial
+    /// fails in any way is put back without carrying any of its counters. Authentication proves the snapshot's bytes,
+    /// not that its values can be read, so a target store the installer cannot interpret is put back the same way. The
+    /// plan never throws: carrying is best effort and never blocks a restore.
     /// </summary>
-    public static void EnsureApplicable(string path, string relative, IReadOnlyList<StateCounterFloor> floors)
+    /// <param name="floors">The highest marks recorded and observed.</param>
+    /// <param name="snapshotStore">The target snapshot's copy of a store, or null when it records the store as absent.</param>
+    /// <param name="trialDirectory">A directory the plan may create, fill and remove.</param>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Carrying a counter is best effort; any failure puts that store back without its counters rather than blocking the restore.")]
+    public static CarryPlan PlanCarry(IReadOnlyList<StateCounterFloor> floors, Func<string, string?> snapshotStore, string trialDirectory)
     {
-        var pending = floors.Where(floor => floor.Store == relative).ToArray();
-        if (pending.Length == 0) return;
-        using var connection = OpenImmutable(path);
-        foreach (var floor in pending)
+        ArgumentNullException.ThrowIfNull(floors);
+        ArgumentNullException.ThrowIfNull(snapshotStore);
+        var carried = new List<StateCounterFloor>();
+        var uncarried = new List<(string What, string Reason)>();
+        try
         {
-            var counter = Find(floor);
-            if (!HasColumns(connection, null, counter.Table, counter.KeyColumn, counter.ValueColumn))
-                throw Uncarriable(relative, counter);
-            if (counter.Upsert && KeyValue(connection, null, counter, floor.Key) is null)
-                throw Uncarriable(relative, counter);
-            if (counter.Kind == CounterKind.AutoIncrement || counter.Upsert) continue;
-            if (counter.Name == AutomationDefinitionVersion)
+            foreach (var store in floors.GroupBy(static floor => floor.Store, StringComparer.Ordinal))
             {
-                var restored = ReadAutomationHighWater(connection, counter).SingleOrDefault(value => value.Key == floor.Key);
-                var rowExists = Read(connection, counter).Any(value => value.Key == floor.Key);
-                if (!rowExists && (restored is null || restored.Value < floor.Value) &&
-                    (floor.Carry is null || !HasColumns(connection, null, "automation_definition_revisions",
-                        "definition_id", "version", "revision_sha256", "definition_json", "removed", "recorded_unix_ms", "actor", "reason")))
-                    throw Uncarriable(relative, counter);
+                try
+                {
+                    // A store the snapshot records as absent receives nothing; its floors only keep the live store.
+                    if (snapshotStore(store.Key) is not { } target)
+                    {
+                        carried.AddRange(store);
+                        continue;
+                    }
+                    CarryStep($"screen:{store.Key}");
+                    var (safe, refused) = Screen(target, store.Key, [.. store]);
+                    uncarried.AddRange(refused);
+                    if (safe.Count == 0) continue;
+                    Trial(target, store.Key, safe, trialDirectory);
+                    carried.AddRange(safe);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    uncarried.Add(($"the counters of '{store.Key}'", exception.Message));
+                }
+            }
+        }
+        finally
+        {
+            RemoveTrialDirectory(trialDirectory);
+        }
+        return new CarryPlan(carried, uncarried);
+    }
+
+    /// <summary>
+    /// Carries each floor into the restored store at <paramref name="path"/> and verifies it, in one transaction. Any
+    /// failure rolls the transaction back, so the store stays exactly as the snapshot recorded it, and is returned as
+    /// why its counters were not carried; it never throws. SQLite syncs the database on commit; the caller syncs the
+    /// directory.
+    /// </summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Applying a carry never blocks a restore; a failure rolls back and is reported.")]
+    public static string? Apply(string path, string relative, IReadOnlyList<StateCounterFloor> floors)
+    {
+        ArgumentNullException.ThrowIfNull(floors);
+        var pending = floors.Where(floor => floor.Store == relative).ToArray();
+        if (pending.Length == 0) return null;
+        try
+        {
+            ApplyAndVerify(path, relative, pending, "apply");
+            return null;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return exception.Message;
+        }
+    }
+
+    /// <summary>
+    /// The floors the target store can be given, and each it cannot with why: an unknown counter; a value whose carry
+    /// would write a value the reader then rejects (a state token writes one above its floor, so its floor must leave
+    /// room); a key the target column cannot hold (a NUL, which SQLite's own string functions stop at, or a definition ID
+    /// outside the 1 to 64 characters the revision table checks); or a floor the target cannot carry at all (its table or
+    /// columns are missing, its row is missing beyond the lazy-row allowance, or a definition the target lacks has no
+    /// carried revision or no revision table to record it in). A floor the target already meets needs no carrying.
+    /// </summary>
+    private static (List<StateCounterFloor> Safe, List<(string What, string Reason)> Refused) Screen(
+        string target, string relative, IReadOnlyList<StateCounterFloor> floors)
+    {
+        var safe = new List<StateCounterFloor>();
+        var refused = new List<(string What, string Reason)>();
+        using var connection = OpenImmutable(target);
+        foreach (var floor in floors)
+        {
+            var counter = All.SingleOrDefault(counter => counter.Store == floor.Store && counter.Name == floor.Counter);
+            string? reason;
+            if (counter is null)
+            {
+                refused.Add(($"the '{floor.Counter}' counter of '{relative}'", "the installer does not know this counter"));
                 continue;
             }
-            if (Read(connection, counter).All(value => value.Key != floor.Key) && floor.Value > counter.MissingRowAllowance)
-                throw Uncarriable(relative, counter);
+            reason = floor.Value < 0 || floor.Value > MaximumFloor(counter)
+                ? "its value is outside the range a carry can write and verify"
+                : KeyProblem(counter, floor.Key) ?? Uncarriable(connection, counter, floor);
+            if (reason is null) safe.Add(floor);
+            else refused.Add(($"the {counter.Name} counter of '{relative}'", reason));
+        }
+        return (safe, refused);
+    }
+
+    /// <summary>
+    /// The highest floor a counter's carry can write and the reader then accept: a state token writes one above its
+    /// floor, everything else writes the floor itself, and the reader accepts up to <see cref="long.MaxValue"/> - 1.
+    /// </summary>
+    private static long MaximumFloor(Counter counter)
+        => counter.Kind == CounterKind.StateToken ? long.MaxValue - 2 : long.MaxValue - 1;
+
+    private static string? KeyProblem(Counter counter, string key)
+    {
+        if (counter.IntegerKey)
+            return long.TryParse(key, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var integer) &&
+                   integer.ToString(CultureInfo.InvariantCulture) == key
+                ? null
+                : "its key is not an integer";
+        if (key.Contains('\0', StringComparison.Ordinal)) return "its key contains a NUL character";
+        if (counter.Name == AutomationDefinitionVersion && key.EnumerateRunes().Count() is < 1 or > 64)
+            return "its definition ID is outside the 1 to 64 characters the store accepts";
+        return null;
+    }
+
+    /// <summary>Why the target cannot carry <paramref name="floor"/> at all, or null when it can or needs nothing.</summary>
+    private static string? Uncarriable(SqliteConnection connection, Counter counter, StateCounterFloor floor)
+    {
+        if (!HasColumns(connection, null, counter.Table, counter.KeyColumn, counter.ValueColumn))
+            return "the snapshot's store has no such counter column";
+        if (counter.Kind == CounterKind.AutoIncrement || counter.Upsert) return null;
+        if (counter.Name == AutomationDefinitionVersion)
+        {
+            var restored = ReadAutomationHighWater(connection, counter, includeCarry: false).FirstOrDefault(value => value.Key == floor.Key);
+            if (restored is not null && restored.Value >= floor.Value) return null;
+            if (Read(connection, counter).Any(value => value.Key == floor.Key)) return null;
+            return floor.Carry is not null && HasColumns(connection, null, "automation_definition_revisions",
+                       "definition_id", "version", "revision_sha256", "definition_json", "removed", "recorded_unix_ms", "actor", "reason")
+                ? null
+                : "the snapshot lacks the definition and the restore has no revision to record it as removed";
+        }
+        if (Read(connection, counter).Any(value => value.Key == floor.Key) || floor.Value <= counter.MissingRowAllowance) return null;
+        return "the snapshot has no row to carry it into";
+    }
+
+    /// <summary>
+    /// Carries and verifies <paramref name="floors"/> on a scratch copy of the target store, which is then removed. It
+    /// throws on any failure; nothing it does touches the snapshot or the live stores.
+    /// </summary>
+    private static void Trial(string target, string relative, IReadOnlyList<StateCounterFloor> floors, string trialDirectory)
+    {
+        SafeFileSystem.CreateOwnerDirectory(trialDirectory);
+        var scratch = Path.Combine(trialDirectory, "store.db");
+        RemoveScratch(scratch);
+        try
+        {
+            File.Copy(target, scratch);
+            File.SetUnixFileMode(scratch, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            ApplyAndVerify(scratch, relative, floors, "trial");
+        }
+        finally
+        {
+            RemoveScratch(scratch);
+        }
+    }
+
+    private static void RemoveScratch(string scratch)
+    {
+        foreach (var file in CameraAgentStateLayout.SqliteSidecarSuffixes.Select(suffix => scratch + suffix).Prepend(scratch))
+        {
+            if (File.Exists(file)) File.Delete(file);
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Removing the scratch directory is housekeeping; a leftover is removed by the next plan.")]
+    private static void RemoveTrialDirectory(string trialDirectory)
+    {
+        try
+        {
+            if (!Directory.Exists(trialDirectory)) return;
+            RemoveScratch(Path.Combine(trialDirectory, "store.db"));
+            Directory.Delete(trialDirectory);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
         }
     }
 
     /// <summary>
-    /// Carries each floor into the restored store at <paramref name="path"/>, in one transaction, and proves the result.
-    /// SQLite syncs the database on commit; the caller syncs the directory.
+    /// Carries each floor into the store at <paramref name="path"/> and reads every one back through the same reader,
+    /// inside one transaction that commits only when all of them verify. Throws on any failure, which rolls back.
     /// </summary>
-    public static void Apply(string path, string relative, IReadOnlyList<StateCounterFloor> floors)
+    private static void ApplyAndVerify(string path, string relative, IReadOnlyList<StateCounterFloor> pending, string phase)
     {
-        var pending = floors.Where(floor => floor.Store == relative).ToArray();
-        if (pending.Length == 0) return;
-        using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = path,
             Mode = SqliteOpenMode.ReadWrite,
             Cache = SqliteCacheMode.Private,
             Pooling = false
-        }.ToString()))
+        }.ToString());
+        connection.Open();
+        using (var synchronous = connection.CreateCommand())
         {
-            connection.Open();
-            using (var synchronous = connection.CreateCommand())
-            {
-                synchronous.CommandText = "PRAGMA synchronous = FULL;";
-                synchronous.ExecuteNonQuery();
-            }
-            using var transaction = connection.BeginTransaction();
-            foreach (var floor in pending)
-            {
-                var counter = Find(floor);
-                switch (counter.Kind)
-                {
-                    case CounterKind.HighWater:
-                        ApplyHighWater(connection, transaction, counter, floor, relative);
-                        break;
-                    case CounterKind.AutoIncrement:
-                        ApplyAutoIncrement(connection, transaction, counter, floor);
-                        break;
-                    case CounterKind.StateToken when counter.Name == AutomationDefinitionVersion:
-                        ApplyAutomationDefinition(connection, transaction, counter, floor, relative);
-                        break;
-                    case CounterKind.StateToken:
-                        ApplyStateToken(connection, transaction, counter, floor, relative);
-                        break;
-                }
-            }
-            transaction.Commit();
+            synchronous.CommandText = "PRAGMA synchronous = FULL;";
+            synchronous.ExecuteNonQuery();
         }
-        using var verify = OpenImmutable(path);
+        using var transaction = connection.BeginTransaction();
+        CarryStep($"{phase}:{relative}");
+        foreach (var floor in pending)
+        {
+            var counter = Find(floor);
+            switch (counter.Kind)
+            {
+                case CounterKind.HighWater:
+                    ApplyHighWater(connection, transaction, counter, floor, relative);
+                    break;
+                case CounterKind.AutoIncrement:
+                    ApplyAutoIncrement(connection, transaction, counter, floor);
+                    break;
+                case CounterKind.StateToken when counter.Name == AutomationDefinitionVersion:
+                    ApplyAutomationDefinition(connection, transaction, counter, floor, relative);
+                    break;
+                case CounterKind.StateToken:
+                    ApplyStateToken(connection, transaction, counter, floor, relative);
+                    break;
+            }
+        }
+        CarryStep($"{phase}-verify:{relative}");
         foreach (var floor in pending)
         {
             var counter = Find(floor);
             var carried = counter.Name == AutomationDefinitionVersion
-                ? ReadAutomationHighWater(verify, counter).SingleOrDefault(value => value.Key == floor.Key)
-                : Read(verify, counter).SingleOrDefault(value => value.Key == floor.Key);
+                ? ReadAutomationHighWater(connection, counter, includeCarry: false, transaction).FirstOrDefault(value => value.Key == floor.Key)
+                : Read(connection, counter, transaction).FirstOrDefault(value => value.Key == floor.Key);
             if (carried is null)
             {
                 if (!counter.Upsert && floor.Value <= counter.MissingRowAllowance) continue;
@@ -358,6 +535,7 @@ internal static class CameraAgentStateCounters
             if (carried.Value < floor.Value)
                 throw new InstallerException($"The restored '{relative}' rewound its {counter.Name} counter.");
         }
+        transaction.Commit();
     }
 
     private static void ApplyHighWater(SqliteConnection connection, SqliteTransaction transaction, Counter counter, StateCounterFloor floor, string relative)
@@ -423,7 +601,7 @@ internal static class CameraAgentStateCounters
     /// </summary>
     private static void ApplyAutomationDefinition(SqliteConnection connection, SqliteTransaction transaction, Counter counter, StateCounterFloor floor, string relative)
     {
-        var restored = ReadAutomationHighWater(connection, counter, transaction).SingleOrDefault(value => value.Key == floor.Key);
+        var restored = ReadAutomationHighWater(connection, counter, includeCarry: false, transaction).FirstOrDefault(value => value.Key == floor.Key);
         if (restored is not null && restored.Value >= floor.Value) return;
         using (var update = connection.CreateCommand())
         {
@@ -456,24 +634,23 @@ internal static class CameraAgentStateCounters
         => All.SingleOrDefault(counter => counter.Store == floor.Store && counter.Name == floor.Counter)
            ?? throw new InstallerException($"The journal records an unknown CameraAgent counter '{floor.Counter}'.");
 
-    private static InstallerException Uncarriable(string relative, Counter counter)
-        => new($"The snapshot of '{relative}' cannot carry the {counter.Name} counter forward, so restoring it could hand out a sequence or version twice.");
-
     /// <summary>
-    /// Each row's counter, read only once SQLite says its key has the counter's key type and its value is an integer the
-    /// floor arithmetic can carry. A store written by a candidate may hold anything, so any other shape (a null, a real,
-    /// text, a blob, a key of the other type or not UTF-8, or a value outside 0 to <see cref="long.MaxValue"/> - 1) is
-    /// reported as an <see cref="InstallerException"/> naming the store and column, never cast.
+    /// Each row's counter, read only once SQLite says the store is UTF-8, its key has the counter's key type and its
+    /// value is an integer. A store written by a candidate may hold anything, so any other shape (another text encoding,
+    /// a null, a real, text, a blob, a key of the other type or not UTF-8, or a value outside 0 to
+    /// <see cref="long.MaxValue"/> - 1) is reported as an <see cref="InstallerException"/> naming the store and column,
+    /// never cast. An integer key is read as an integer, so its text never depends on the store's encoding.
     /// </summary>
     private static List<StateCounterFloor> Read(SqliteConnection connection, Counter counter, SqliteTransaction? transaction = null)
     {
+        EnsureUtf8(connection, transaction, counter);
         if (!HasColumns(connection, transaction, counter.Table, counter.KeyColumn, counter.ValueColumn)) return [];
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
 #pragma warning disable CA2100 // Table and column names come from the fixed counter list above, never from input.
         command.CommandText = counter.FixedKey is null
-            ? $"SELECT typeof({counter.KeyColumn}), CAST({counter.KeyColumn} AS BLOB), typeof({counter.ValueColumn}), {counter.ValueColumn} FROM {counter.Table};"
-            : $"SELECT typeof({counter.KeyColumn}), CAST({counter.KeyColumn} AS BLOB), typeof({counter.ValueColumn}), {counter.ValueColumn} FROM {counter.Table} WHERE {counter.KeyColumn} = $key;";
+            ? $"SELECT typeof({counter.KeyColumn}), {counter.KeyColumn}, CAST({counter.KeyColumn} AS BLOB), typeof({counter.ValueColumn}), {counter.ValueColumn} FROM {counter.Table};"
+            : $"SELECT typeof({counter.KeyColumn}), {counter.KeyColumn}, CAST({counter.KeyColumn} AS BLOB), typeof({counter.ValueColumn}), {counter.ValueColumn} FROM {counter.Table} WHERE {counter.KeyColumn} = $key;";
 #pragma warning restore CA2100
         if (counter.FixedKey is not null) command.Parameters.AddWithValue("$key", counter.FixedKey);
         using var reader = command.ExecuteReader();
@@ -483,19 +660,21 @@ internal static class CameraAgentStateCounters
             values.Add(new StateCounterFloor(
                 counter.Store, counter.Name,
                 ReadKey(reader, 0, counter, counter.KeyColumn),
-                ReadValue(reader, 2, counter, counter.ValueColumn)));
+                ReadValue(reader, 3, counter, counter.ValueColumn)));
         }
         return values;
     }
 
     /// <summary>
     /// The highest version each automation definition has reached: its row's, or a higher one its revision line holds
-    /// (a removed definition keeps only its line), with the latest revision a restore needs to continue a line the
-    /// snapshot lacks. Every value is checked as <see cref="Read"/> checks it, and the carried revision against what the
-    /// store's revision table accepts, so a carry can always be written back.
+    /// (a removed definition keeps only its line). With <paramref name="includeCarry"/>, each comes with the latest
+    /// revision a restore needs to continue a line the snapshot lacks, checked against what the revision table stores; a
+    /// read of the target only needs the versions, so a revision in another shape there never stops the restore.
     /// </summary>
-    private static List<StateCounterFloor> ReadAutomationHighWater(SqliteConnection connection, Counter counter, SqliteTransaction? transaction = null)
+    private static List<StateCounterFloor> ReadAutomationHighWater(
+        SqliteConnection connection, Counter counter, bool includeCarry, SqliteTransaction? transaction = null)
     {
+        EnsureUtf8(connection, transaction, counter);
         if (!HasColumns(connection, transaction, "automation_definition_revisions", "definition_id", "version", "revision_sha256", "definition_json"))
             return Read(connection, counter, transaction);
         using var command = connection.CreateCommand();
@@ -510,7 +689,7 @@ internal static class CameraAgentStateCounters
                 SELECT m.definition_id AS definition_id, MAX(m.version) AS version,
                        MAX(CASE WHEN typeof(m.version) <> 'integer' THEN typeof(m.version) END) AS malformed
                 FROM marks m GROUP BY m.definition_id)
-            SELECT typeof(h.definition_id), CAST(h.definition_id AS BLOB),
+            SELECT typeof(h.definition_id), h.definition_id, CAST(h.definition_id AS BLOB),
                    COALESCE(h.malformed, 'integer'), CASE WHEN h.malformed IS NULL THEN h.version END,
                    typeof(l.revision_sha256), CAST(l.revision_sha256 AS BLOB),
                    typeof(l.definition_json), CAST(l.definition_json AS BLOB)
@@ -524,13 +703,25 @@ internal static class CameraAgentStateCounters
         while (reader.Read())
         {
             var key = ReadKey(reader, 0, counter, "definition_id");
-            // The revision table's own CHECK, which counts characters as SQLite does.
-            if (key.EnumerateRunes().Count() is < 1 or > 64)
-                throw Malformed(counter, "definition_id", "a definition ID outside 1 to 64 characters");
             values.Add(new StateCounterFloor(
-                counter.Store, counter.Name, key, ReadValue(reader, 2, counter, "version"), ReadCarry(reader, 4, counter)));
+                counter.Store, counter.Name, key, ReadValue(reader, 3, counter, "version"),
+                includeCarry ? ReadCarry(reader, 5, counter) : null));
         }
         return values;
+    }
+
+    /// <summary>
+    /// SQLite casts text to a blob in the store's own encoding, so the installer reads counters only from a UTF-8
+    /// store, the encoding every CameraAgent store is created in; another encoding makes the store unreadable.
+    /// </summary>
+    private static void EnsureUtf8(SqliteConnection connection, SqliteTransaction? transaction, Counter counter)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "PRAGMA encoding;";
+        var encoding = Convert.ToString(command.ExecuteScalar(), CultureInfo.InvariantCulture);
+        if (!string.Equals(encoding, "UTF-8", StringComparison.Ordinal))
+            throw new InstallerException($"The CameraAgent store '{counter.Store}' is encoded as {encoding}, not UTF-8, so its counters cannot be read.");
     }
 
     /// <summary>
@@ -573,7 +764,9 @@ internal static class CameraAgentStateCounters
         var type = reader.GetString(typeOrdinal);
         if (type != (counter.IntegerKey ? "integer" : "text"))
             throw Malformed(counter, column, $"a key stored as {type}");
-        return Utf8Text(reader.GetFieldValue<byte[]>(typeOrdinal + 1), counter, column);
+        if (counter.IntegerKey) return reader.GetInt64(typeOrdinal + 1).ToString(CultureInfo.InvariantCulture);
+        // The store is UTF-8, so the key's blob cast is its UTF-8 bytes, checked rather than decoded with replacement.
+        return Utf8Text(reader.GetFieldValue<byte[]>(typeOrdinal + 2), counter, column);
     }
 
     /// <summary>
