@@ -1570,10 +1570,26 @@ The inventory reads schedule revisions from the journal the restore is about to 
 knows a root whose revision the first attempt already rewound. A store at a current location that the target snapshot
 does not record is removed with its SQLite sidecars. The directory, and every bulk file under that root, stays.
 
-If a candidate damaged a store beyond reading, its recovery is not blocked:
+If a candidate damaged a store beyond reading, or left a value in a shape the installer does not read, its recovery
+is not blocked:
 - the inventory falls back to `camera-module.json`;
 - that store's counters are carried only as far as the journal recorded them;
-- the restore says so on standard error, or with `--json` as a `state-snapshot-restore-incomplete` event.
+- the restore says so on standard error, naming what it could not read and why, or with `--json` as a
+  `state-snapshot-restore-incomplete` event.
+
+Every value a restore reads from a store the replaced release wrote is checked before it is used, never cast:
+- **Schedule revisions.** A profile must be a JSON blob of at most 4 MiB, valid UTF-8 and well-formed JSON. A profile
+  stored as text or as null, a blob that is not UTF-8, malformed JSON, or a root whose outbox location a snapshot
+  cannot record (over 511 characters, or containing a control character) makes the journal's roots unreadable.
+- **Counters.** A key must be the integer or text the registry names for it. A value must be an integer from 0 to
+  2^63 - 2. A carried automation revision must be a 64-character hexadecimal hash and well-formed JSON text. Any other
+  shape makes that store's counters unreadable.
+
+A rollback reads the stores the release it undoes wrote in the same way: an unreadable journal narrows the rollback's
+own snapshot to the configured roots and the stores the retained snapshot records, and the restore that follows says
+so. Every store a rollback replaces is in its own snapshot, so rolling forward again brings each back. An upgrade still refuses an unreadable
+journal before anything changes, because the installed release wrote it. The audit of every value read on a recovery
+or restore path is in the #1314 correction-round-3 ledger.
 
 **Retention and cleanup are held for the whole swap.** CameraAgent deletes frames, archived and derived products,
 and unowned projected-scene stages only while capture admission is running. The installer pauses admission durably
@@ -1596,7 +1612,7 @@ The paths, and what each does while the barrier is held:
 | derived-product reconciliation | deletes nothing |
 | projected-scene stage reconciliation | deletes nothing |
 | removal of a payload after its upload is acknowledged | records the acknowledgement and keeps the payload; it is no longer pending, so retention removes it later |
-| removal of a projected-scene stage after its processing node commits | deferred until capture opens |
+| removal of a projected-scene stage after its processing node commits | deferred until capture opens; if the image restarts first, the node's durable completion releases the stage and stage reconciliation removes it once capture runs |
 | in-place upgrade of a frame sidecar to name its producer | fails retryably, and the node runs again once capture opens |
 | raw-ingress evidence quarantine when the journal opens | finds mismatched or orphan evidence but moves none, reports Degraded (`reconciliation-held`), and quarantines it once capture opens |
 | stage cleanup when the journal opens | deletes nothing |

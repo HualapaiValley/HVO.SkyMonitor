@@ -42,7 +42,10 @@ pass is admitted until capture resumes.
 
 The same barrier covers every other deletion a restored database row could depend on:
 - An uploaded payload is not removed after its acknowledgement; retention removes it later, on its root's schedule.
-- A projected-scene stage is removed after its processing node commits only once capture opens.
+- A projected-scene stage is removed after its processing node commits only once capture opens. That removal waits in
+  memory, so a restart forgets it, and stage ownership does not depend on it: a stage whose projected-scene node is
+  durably complete belongs to no capture, and stage reconciliation removes it once capture runs. A snapshot restore
+  rewinds the node with the journal, so a stage the restored node still needs stays owned.
 - A frame sidecar is upgraded in place only once capture opens; until then the node retries.
 - Raw-ingress evidence is quarantined when the journal opens only once capture opens. Until then raw ingress reports
   Degraded (`reconciliation-held`), and the quarantine runs as soon as capture resumes.

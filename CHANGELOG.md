@@ -45,9 +45,12 @@ onward; earlier development is recorded in its pull requests. A release renames 
   action tokens. A store under a storage root named after the snapshot is removed by the restore, keeping its
   files. Every recovery authenticates its snapshot before it changes a container, and every restored directory is
   synced before the restore is recorded. `--migration-backward-compatible` is no longer needed and changes nothing.
-  CameraAgent holds every deletion a restore could depend on while capture is paused, including upload cleanup, raw
-  evidence quarantine and post-commit stage removal. It acknowledges a pause only after every deletion already
-  running has finished. (#1314)
+  A candidate that left a store unreadable, or a value in it in a shape the installer does not read (a schedule
+  profile stored as text, say), cannot block its own recovery or a rollback: the restore carries what it can and says
+  on standard error what it could not read. CameraAgent holds every deletion a restore could depend on while capture
+  is paused, including upload cleanup, raw evidence quarantine and post-commit stage removal. A stage removal that a
+  restart forgets is reclaimed from the projected-scene node's durable completion once capture runs. CameraAgent
+  acknowledges a pause only after every deletion already running has finished. (#1314)
 - Successful raw ingress SQLite commits and checkpoints are logged at Debug instead of Warning. A manual location
   override superseded by configuration is logged at Information. Warnings now mean something did not work. (#1303)
 
