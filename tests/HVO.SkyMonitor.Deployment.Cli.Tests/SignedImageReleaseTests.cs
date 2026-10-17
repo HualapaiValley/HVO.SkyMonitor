@@ -533,8 +533,8 @@ public sealed class SignedImageReleaseTests
             // the verifier refusing a malformed manifest before the check is reached.
             var installerArtifacts = new List<DistributionArtifact>
             {
-                Installer("hvo-skymonitor-installer-v1.2.3-linux-x64.tar.gz", "x64"),
-                Installer("hvo-skymonitor-installer-v1.2.3-linux-arm64.tar.gz", "arm64"),
+                Installer("hvo-sky-install-v1.2.3-linux-x64.tar.gz", "x64"),
+                Installer("hvo-sky-install-v1.2.3-linux-arm64.tar.gz", "arm64"),
                 Evidence(DistributionArtifactRole.Sbom, "installer-sbom.spdx.json"),
                 Evidence(DistributionArtifactRole.Provenance, "installer-provenance.json"),
                 Evidence(DistributionArtifactRole.License, "THIRD-PARTY-NOTICES.md"),

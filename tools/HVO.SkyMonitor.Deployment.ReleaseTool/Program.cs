@@ -100,8 +100,8 @@ internal static partial class Program
         ValidateElf(x64, expectedMachine: 0x3e, "linux-x64");
         ValidateElf(arm64, expectedMachine: 0xb7, "linux-arm64");
 
-        var x64Name = $"hvo-skymonitor-installer-v{version}-linux-x64.tar.gz";
-        var arm64Name = $"hvo-skymonitor-installer-v{version}-linux-arm64.tar.gz";
+        var x64Name = $"hvo-sky-install-v{version}-linux-x64.tar.gz";
+        var arm64Name = $"hvo-sky-install-v{version}-linux-arm64.tar.gz";
         await WriteInstallerArchiveAsync(x64, notices, Path.Combine(output, x64Name), createdUtc, cancellationToken)
             .ConfigureAwait(false);
         await WriteInstallerArchiveAsync(arm64, notices, Path.Combine(output, arm64Name), createdUtc, cancellationToken)
@@ -112,7 +112,7 @@ internal static partial class Program
         await WriteJsonAsync(Path.Combine(output, provenanceName), new
         {
             schemaVersion = 1,
-            subject = "hvo-skymonitor-installer",
+            subject = "hvo-sky-install",
             sourceRepository = Repository,
             sourceRevision = revision,
             sourceTree = tree,
@@ -123,7 +123,7 @@ internal static partial class Program
         var sbomName = "installer-sbom.spdx.json";
         await WriteSpdxAsync(
             Path.Combine(output, sbomName),
-            $"hvo-skymonitor-installer-{version}",
+            $"hvo-sky-install-{version}",
             version,
             [Path.Combine(output, x64Name), Path.Combine(output, arm64Name)],
             createdUtc,
@@ -1347,7 +1347,7 @@ internal static partial class Program
         using var file = File.OpenRead(archivePath);
         using var gzip = new GZipStream(file, CompressionMode.Decompress);
         using var reader = new TarReader(gzip);
-        var expected = new HashSet<string>(StringComparer.Ordinal) { "hvo-skymonitor", "THIRD-PARTY-NOTICES.md" };
+        var expected = new HashSet<string>(StringComparer.Ordinal) { "hvo-sky-install", "THIRD-PARTY-NOTICES.md" };
         TarEntry? entry;
         while ((entry = reader.GetNextEntry(copyData: false)) is not null)
         {
@@ -1355,7 +1355,7 @@ internal static partial class Program
             {
                 throw new ReleaseToolException("The installer archive contains an unexpected, duplicate, or non-regular entry.");
             }
-            if (entry.Name == "hvo-skymonitor")
+            if (entry.Name == "hvo-sky-install")
             {
                 if (entry.Length is < 20 or > DistributionVerifier.MaximumInstallerBytes ||
                     (entry.Mode & UnixFileMode.UserExecute) == 0 ||
@@ -1536,7 +1536,7 @@ internal static partial class Program
         await using var file = new FileStream(output, FileMode.CreateNew, FileAccess.Write, FileShare.None, 128 * 1024, true);
         await using var gzip = new GZipStream(file, CompressionLevel.SmallestSize, leaveOpen: false);
         using var tar = new TarWriter(gzip, TarEntryFormat.Ustar, leaveOpen: true);
-        await WriteTarFileAsync(tar, executable, "hvo-skymonitor", 0x1ED, timestamp, cancellationToken).ConfigureAwait(false);
+        await WriteTarFileAsync(tar, executable, "hvo-sky-install", 0x1ED, timestamp, cancellationToken).ConfigureAwait(false);
         await WriteTarFileAsync(tar, notices, "THIRD-PARTY-NOTICES.md", 0x1A4, timestamp, cancellationToken)
             .ConfigureAwait(false);
     }

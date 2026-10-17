@@ -85,7 +85,7 @@ public sealed class UpgradeNotesTests
 
         Assert.AreEqual(
             $"{installed} is installed, which is newer than the upgrade target {target}; an upgrade never goes back. " +
-            $"To return to the previous image, run 'hvo-skymonitor cameraagent rollback --instance-id {InstanceId:D}'.",
+            $"To return to the previous image, run 'hvo-sky-install cameraagent rollback --instance-id {InstanceId:D}'.",
             exception.Message);
     }
 

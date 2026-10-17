@@ -61,7 +61,7 @@ public sealed class ObservatoryLocationPageTests
         Assert.AreEqual("hvo-hyg-v3", catalog["Catalog"]);
         Assert.AreEqual("3.7.0", catalog["Version"]);
         Assert.AreEqual("200 brightest", catalog["Scene object limit"]);
-        Assert.Contains("hvo-skymonitor catalog select", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("hvo-sky-install catalog select", cut.Markup, StringComparison.Ordinal);
         var rig = cut.Find("section[aria-labelledby='site-rig-heading']");
         Assert.Contains("Installed rig / r1", rig.TextContent, StringComparison.Ordinal);
         Assert.AreEqual("/operations/camera", rig.QuerySelector("a")!.GetAttribute("href"));

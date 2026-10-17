@@ -510,7 +510,8 @@ printf 'catalog-install,%s\n' "$((SECONDS - phase_started))" >> "$RESULTS/phase-
 
 git -C "$REPO_ROOT" rev-parse HEAD > "$RESULTS/source-revision.txt"
 phase_started=$SECONDS
-mapfile -t base_images < <(awk -F= '/^ARG DOTNET_.*_IMAGE=/ { print $2 }' "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" | sort -u)
+# The pinned base images are the dotnet-sdk and dotnet-aspnet alias stages, kept on FROM lines for Dependabot (#1321).
+mapfile -t base_images < <(awk '$1 == "FROM" && $3 == "AS" && ($4 == "dotnet-sdk" || $4 == "dotnet-aspnet") { print $2 }' "$REPO_ROOT/src/HVO.SkyMonitor.CameraAgent/Dockerfile" | sort -u)
 printf '[]\n' > "$RESULTS/base-images.json"
 SDK_IMAGE_DIGEST=""
 ASPNET_IMAGE_DIGEST=""

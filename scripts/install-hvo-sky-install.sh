@@ -57,7 +57,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cache_root="${HVO_INSTALLER_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/hvo/skymonitor/bootstrap}"
+cache_root="${HVO_INSTALLER_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/hvo-sky/bootstrap}"
 [[ ! -L "$cache_root" ]] || { printf 'Bootstrap cache root must not be a symbolic link.\n' >&2; exit 1; }
 # shellcheck disable=SC2174 # Only the leaf is owner-private by design; the XDG cache parents keep their own modes, and the stat below asserts the leaf.
 mkdir -p -m 700 "$cache_root"
@@ -286,20 +286,20 @@ fi
 
 mapfile -t entries < <(tar -tzf "$temporary/$asset_name")
 mapfile -t entry_types < <(tar -tvzf "$temporary/$asset_name" | cut -c1)
-[[ ${#entries[@]} -eq 2 && ${#entry_types[@]} -eq 2 && "${entries[0]}" == hvo-skymonitor && \
+[[ ${#entries[@]} -eq 2 && ${#entry_types[@]} -eq 2 && "${entries[0]}" == hvo-sky-install && \
    "${entries[1]}" == THIRD-PARTY-NOTICES.md && "${entry_types[0]}" == - && "${entry_types[1]}" == - ]] || {
     printf 'Installer archive has an unexpected file set.\n' >&2; exit 1;
 }
 [[ ! -e "$output_directory" ]]
 mkdir -m 700 "$output_directory"
 created_output=true
-tar -xOzf "$temporary/$asset_name" hvo-skymonitor > "$output_directory/hvo-skymonitor"
+tar -xOzf "$temporary/$asset_name" hvo-sky-install > "$output_directory/hvo-sky-install"
 tar -xOzf "$temporary/$asset_name" THIRD-PARTY-NOTICES.md > "$output_directory/THIRD-PARTY-NOTICES.md"
-elf_magic="$(od -An -N4 -tx1 "$output_directory/hvo-skymonitor" | tr -d ' \n')"
-elf_machine="$(od -An -j18 -N2 -tu2 "$output_directory/hvo-skymonitor" | tr -d ' ')"
+elf_magic="$(od -An -N4 -tx1 "$output_directory/hvo-sky-install" | tr -d ' \n')"
+elf_machine="$(od -An -j18 -N2 -tu2 "$output_directory/hvo-sky-install" | tr -d ' ')"
 if [[ "$architecture" == x64 ]]; then expected_machine=62; else expected_machine=183; fi
 [[ "$elf_magic" == 7f454c46 && "$elf_machine" == "$expected_machine" ]] || { printf 'Installer executable architecture does not match this host.\n' >&2; exit 1; }
-chmod 0755 "$output_directory/hvo-skymonitor"
+chmod 0755 "$output_directory/hvo-sky-install"
 chmod 0644 "$output_directory/THIRD-PARTY-NOTICES.md"
 cp "$temporary/release-manifest.json" "$temporary/release-manifest.json.sig" "$output_directory/"
 cat > "$output_directory/installer-distribution.txt" <<EVIDENCE
@@ -315,4 +315,4 @@ resolvedAsset=$resolved_asset_locator
 verificationResult=verified
 EVIDENCE
 chmod 0600 "$output_directory/installer-distribution.txt"
-printf 'Verified installer %s at %s/hvo-skymonitor\n' "$tag" "$output_directory"
+printf 'Verified installer %s at %s/hvo-sky-install\n' "$tag" "$output_directory"
