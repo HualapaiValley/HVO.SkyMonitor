@@ -9,5 +9,8 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Deployment.Contracts\HVO.SkyMonitor.Deployment.Contracts.csproj" />
     <EmbeddedResource Include="FrozenRawIngressV14.sql" />
     <EmbeddedResource Include="ReleaseManifestSchema1.json" />
+    <!-- What the release tool writes for its own test inputs (ReleaseAssetsToolTests), which the installer must read. -->
+    <EmbeddedResource Include="..\HVO.SkyMonitor.Deployment.Distribution.Tests\Fixtures\ReleaseTool\release.json"
+                      LogicalName="HVO.SkyMonitor.Deployment.Cli.Tests.ReleaseToolOutput.json" />
   </ItemGroup>
 </Project>

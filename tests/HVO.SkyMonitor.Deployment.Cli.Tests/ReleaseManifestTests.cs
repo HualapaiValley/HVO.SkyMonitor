@@ -50,6 +50,26 @@ public sealed class ReleaseManifestTests
     }
 
     [TestMethod]
+    public void Parse_TheReleaseToolsOutput_IsReadWhole()
+    {
+        // The release tool's test writes exactly this document for its inputs, so the writer and this reader are held
+        // to one shape.
+        using var stream = typeof(ReleaseManifestTests).Assembly.GetManifestResourceStream(
+            "HVO.SkyMonitor.Deployment.Cli.Tests.ReleaseToolOutput.json")!;
+        using var buffer = new MemoryStream();
+        stream.CopyTo(buffer);
+
+        var manifest = ReleaseManifest.Parse(buffer.ToArray());
+
+        Assert.AreEqual("1.2.0-dev.3", manifest.Version);
+        Assert.IsTrue(manifest.Prerelease);
+        Assert.AreEqual("1.1.0 1.2.0", UpgradeNotesTests.Versions(manifest.UpgradeNotes));
+        CollectionAssert.AreEqual(ReleaseManifest.ImagePlatforms.ToArray(), manifest.CameraAgent!.Platforms.ToArray());
+        Assert.HasCount(2, manifest.CameraAgent.OfflineArchives);
+        Assert.HasCount(4, manifest.Assets);
+    }
+
+    [TestMethod]
     [DataRow("absent")]
     [DataRow("null")]
     [DataRow("empty")]

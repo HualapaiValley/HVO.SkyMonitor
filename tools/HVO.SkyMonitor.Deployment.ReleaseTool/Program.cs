@@ -29,6 +29,9 @@ internal static partial class Program
             var options = ParseOptions(args[1..]);
             switch (args[0])
             {
+                case "create-release":
+                    await CreateReleaseAsync(options, CancellationToken.None).ConfigureAwait(false);
+                    break;
                 case "create-installer":
                     await CreateInstallerAsync(options, CancellationToken.None).ConfigureAwait(false);
                     break;
