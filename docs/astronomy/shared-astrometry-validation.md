@@ -18,7 +18,7 @@ Issue: #1088. Base: development/v1 at9f5dbb837f8bf7180bd0f33d757d8f26b7e8bdd6. T
 - Every pipeline fit comes from measured pixels. Truth enters only generation/evaluation. Three-frame spherical registration uses accepted shared solver mappings and shows narrower ideal moment PSFs than unregistered averaging; zero-contributor/ground samples stay invalid
 - Imaging tests cover isolated/hot/blended/rectangular/masked/noisy centroids, limits/cancellation/nonfinite inputs, four CFA phases, affine/constant-channel reconstruction and scientific precision
 
-Reproduce focused tests with SDK10.0.401:
+Reproduce focused tests with SDK10.0.402:
 
 ```
 dotnet build tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj -c Release -m:1 /p:UseSharedCompilation=false -warnaserror

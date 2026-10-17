@@ -160,7 +160,7 @@ the dense-input cost. Neither retimed fixture claims new sky observations.
 
 ## Reproduction
 
-Build using SDK 10.0.401 and the repository's central packages:
+Build using SDK 10.0.402 and the repository's central packages:
 
 ```bash
 dotnet publish tools/HVO.SkyMonitor.TimeLapseBenchmark -c Release \
@@ -169,8 +169,8 @@ docker build -t hvo/timelapse-benchmark:1130-f6f3f27f \
   tools/HVO.SkyMonitor.TimeLapseBenchmark
 ```
 
-The recorded run used the pinned SDK Docker image because the host did not have
-10.0.401 installed. Build both RIDs and generate inputs before timed encoding.
+The recorded run used an SDK 10.0.401 Docker image because the host did not have
+that SDK installed. Build both RIDs and generate inputs before timed encoding.
 Run data and binaries inside an isolated task-owned mount at `/data`. On the Pi,
 the named volume is on NVMe under `/var/lib/docker`; home and root are microSD.
 Leave installed applications and unrelated BuildKit containers intact.
