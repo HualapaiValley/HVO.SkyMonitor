@@ -42,6 +42,8 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 ### Changed
 
+- Container builds and local development use .NET SDK 10.0.402, and .NET runtime base images use 10.0.13. (#1336, #1337)
+- OpenTelemetry 1.20.0 corrects HTTP 5xx error tags and reduces routine OTLP exporter HTTP log noise. (#1339)
 - A CameraAgent image names its version and commit, `<version>+<commit>`, in four places: the System > Software page,
   the startup log line, telemetry `service.version`, and the `org.opencontainers.image.version` image label. That label
   is no longer inherited from the Ubuntu base image. (#1305)

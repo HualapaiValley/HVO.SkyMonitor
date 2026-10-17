@@ -8,7 +8,7 @@ prerequisites. No installed instance, schedule, physical camera, or retained
 
 ## Reproduction and fixture
 
-Run the pinned SDK 10.0.401 in Release:
+Run the pinned SDK 10.0.402 in Release:
 
 ```bash
 dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj \

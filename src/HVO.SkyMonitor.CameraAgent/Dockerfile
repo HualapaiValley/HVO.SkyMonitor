@@ -11,8 +11,8 @@ ARG DOTNET_ASPNET_IMAGE=dotnet-aspnet
 # version. A build without a source revision stays marked "unknown", which the installer rejects.
 ARG HVO_VERSION=0.0.0-dev
 ARG HVO_SOURCE_REVISION=unknown
-FROM mcr.microsoft.com/dotnet/sdk:10.0.401@sha256:2fa828c68761b1b8c23d7662dc134421b9d3b59fe1425fdbc80804e390cdb24d AS dotnet-sdk
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.12@sha256:6a94333d37514e385650a3c81a55e5350b67253dbe136e9cf17e499c35606a8c AS dotnet-aspnet
+FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa AS dotnet-sdk
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.13@sha256:d5633778c754e89a386882eddf8dbee6942447a8a4b8267c19cf1e1158d0b0ac AS dotnet-aspnet
 
 # Stage 1: Build
 FROM ${DOTNET_SDK_IMAGE} AS build

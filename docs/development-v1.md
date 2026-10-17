@@ -32,6 +32,10 @@ Issues merged into `development/v1` are closed explicitly with the pull request 
 
 ## Required CI
 
+The repository pins .NET SDK 10.0.402 in global.json with rollForward: disable;
+local builds, the devcontainer, CI, and SDK container images use that version.
+Runtime images and Microsoft runtime packages use 10.0.13.
+
 The branch currently requires:
 
 - **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace validation, pinned workflow linting, shell syntax, the inexpensive CI-control regression checks, the full-history [secret scan](runbooks/ci-pipeline.md#secret-scan), and, when the classifier selects them, the [release script tests](runbooks/ci-pipeline.md#release-script-tests).

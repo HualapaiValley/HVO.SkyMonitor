@@ -40,7 +40,7 @@ and cover repeated/concurrent callers, cancellation and healthy
 retry, audited restoration, invalid journals, and failed root revalidation.
 The existing registered-host paused recovery cases remain unchanged.
 
-Focused reproduction and regression commands (Release, SDK 10.0.401):
+Focused reproduction and regression commands (Release, SDK 10.0.402):
 
 ```bash
 dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
