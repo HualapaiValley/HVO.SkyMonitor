@@ -1606,8 +1606,12 @@ it is, and the previous image handles each kind of file differently:
   capture references is deleted. Stages of re-recorded frames count as referenced and are kept.
 - **Time-lapse and nightly products** (`state/raw/.time-lapses/products`, `state/raw/nightly-products`). These are never
   rediscovered and no retention removes them, and a regenerated product with the same identity replaces the file.
-  One exception: a time-lapse publication the snapshot caught in progress is rolled back when the time-lapse worker
-  starts, which deletes that product's files even if it was finished after the snapshot.
+- **A time-lapse publication the snapshot caught in progress is rolled back at startup, deleting that product's files.**
+  The snapshot can record a publication that had begun but not finished. When the previous image's time-lapse worker
+  starts, it rolls that publication back and deletes `state/raw/.time-lapses/products/<product>.*`. It does so even if
+  the video was finished after the snapshot was taken, so a time-lapse that existed before the rollback can be gone
+  after it. The job the snapshot recorded as working is queued again, so it can publish the video again. The restore
+  warning does not name this case; this is accepted behaviour.
 
 The unit tests prove these behaviours against a snapshot restore:
 `InitializeAsync_AfterASnapshotRollback_RecordsFramesWrittenSinceTheSnapshotAgainWithTheirOwnSequences`,
