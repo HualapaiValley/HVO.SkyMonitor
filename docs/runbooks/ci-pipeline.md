@@ -63,13 +63,23 @@ too, because Preflight runs on drafts.
   - A type change, such as a symlink replaced by a regular file, is read like
     any added file. gitleaks does not read deleted or binary files.
   - A file that Git shows as a binary diff gives gitleaks no text, even when
-    its new content is text: a binary file replaced by text, a binary conflict
-    that a merge resolved as text, or a text file that `.gitattributes` marks
-    as binary (`-diff`). When the new blob is text by Git's own rule (no NUL
-    byte in its first 8000 bytes), the script reads that commit a second time
-    with `git log --text`. Its findings keep their commit and path, so the
-    exceptions apply to them unchanged, and a finding read twice is reported
-    once.
+    its new content is text: a binary file turned into text, even by deleting
+    the NUL bytes around a line it already held, a binary conflict that a merge
+    resolved as text, or a text file that `.gitattributes` marks as binary
+    (`-diff`). When the new blob is text by Git's own rule (no NUL byte in its
+    first 8000 bytes), the script scans its whole content, not only the lines
+    its diff adds.
+    - The script writes each such file as a creation diff, from a temporary
+      index, under its own commit's header, and gitleaks reads that synthetic
+      history in git mode through a stand-in `git`.
+    - So each finding carries the real commit and the file's path, and the
+      exceptions apply to it exactly as to any other finding. A finding read
+      twice is reported once.
+    - A file that `.gitattributes` marks as binary is therefore read in full at
+      every commit that changes it.
+  - Every text line in a scanned tree is therefore either a line some commit's
+    text diff added or part of a file scanned in full. Only content that is
+    binary by Git's rule is not read.
   - A merge of more than two parents is refused, because Git shows no diff for
     one.
   - Other branches in the clone are not scanned; their own pull requests scan
@@ -97,19 +107,43 @@ too, because Preflight runs on drafts.
     `log.showRoot=false`. The other `git log` options pin textconv and external
     diff drivers, the `a/` and `b/` prefixes, `diff.relative`, colour, rename
     detection, the diff algorithm and the commit header format, and
-    `GIT_CONFIG_COUNT` pins `core.bigFileThreshold` and `core.quotePath`. Both
-    override every configuration file, the repository's `.git/config` included,
-    which `GIT_CONFIG_GLOBAL=/dev/null` would not. Replacement refs are ignored
-    (`GIT_NO_REPLACE_OBJECTS=1`).
+    `GIT_CONFIG_COUNT` pins `core.bigFileThreshold`, `core.quotePath` and
+    `core.commitGraph=false`. Both override every configuration file, the
+    repository's `.git/config` included, which `GIT_CONFIG_GLOBAL=/dev/null`
+    would not.
+  - The history cannot be cut short or swapped.
+    - Every inherited `GIT_*` and `GITLEAKS_*` variable is removed, so
+      `GIT_DIR`, `GIT_OBJECT_DIRECTORY`, `GIT_GRAFT_FILE`, `GIT_SHALLOW_FILE`
+      or `GIT_CONFIG_PARAMETERS` cannot redirect Git.
+    - Grafts are off (`GIT_GRAFT_FILE=/dev/null`), and a grafts file in the
+      repository is refused outright.
+    - Replacement refs are ignored (`GIT_NO_REPLACE_OBJECTS=1`), and commit
+      parents are read from the commits, not from the local commit-graph
+      cache.
+    - Alternates need nothing: objects are named by their content, so an
+      alternate can only supply an object, never change one, and a missing
+      object fails the scan.
 - **Output.** The script prints its own counts and, for a finding, the rule,
   path, line and commit.
-  - gitleaks runs with `--redact`.
+  - The matched text is never printed. gitleaks' report holds it, unredacted,
+    so the script can check what it prints. The report stays in the script's
+    private temporary directory and is removed on exit.
+  - A rule ID or path that holds part of a credential is withheld:
+    - the finding's whole match, or any run of 8 characters of any finding's
+      credential. That is about 48 bits, enough to narrow a search; shorter
+      runs are mostly the fixed prefixes that rules match on, such as `ghp_`,
+      and ordinary words;
+    - or anything gitleaks finds when it reads the rule IDs and paths as text
+      with the same rules. That covers a credential in a file name or a
+      custom rule ID that is not itself a finding. If that check cannot run,
+      every rule ID and path is withheld.
   - No tool's diagnostics are shown, because git and gitleaks can quote
     `.gitleaks.toml`, `.gitattributes` or scanned text: a malformed expression
     makes gitleaks panic and print it, and git quotes a malformed attribute
     name. A failure is described in the script's own words.
   - A finding's path is printed only when it is printable ASCII; any other
-    path is replaced by a placeholder.
+    path is replaced by a placeholder. The commit is always printed, so a
+    withheld finding can still be traced.
   - Exit status 0 means no findings, 1 findings, and 2 that the scan could not
     run.
 - **Exceptions.** `.gitleaks.toml` is the only place to record one. Each entry
@@ -121,7 +155,8 @@ too, because Preflight runs on drafts.
   names commits, so it holds only for merge-commit merges; a squash or rebase
   merge lands different commits. gitleaks matches a file in a merge's conflict
   resolution as `b/<path>`, so an entry for one must match that form; the scan
-  prints the plain path.
+  prints the plain path. A file scanned in full is matched by its plain path,
+  and an entry for it names each commit that changes it.
 
 The first full scan, on 2026-10-16 at `43ef6d4a`, reported 28 findings in 1,871
 commits. Five reviewed entries cover them. One holds true positives that are
@@ -139,12 +174,12 @@ Run the scan and its contract test locally the way CI does:
 ./scripts/test:ci-secret-scan
 ```
 
-On home-dev-01 at `c97f5e54`, the script accounted for all 2,473 reachable
-commits. gitleaks scanned the 1,955 that added text (95 MB of patches), 79 of
+On home-dev-01 at `06cf385b`, the script accounted for all 2,474 reachable
+commits. gitleaks scanned the 1,956 that added text (95 MB of patches), 79 of
 them merge resolutions, and the script took 5.6 s in total with a cached
 archive. Git shows 28 added or changed files in the history as binary diffs;
-each one's new blob is binary, so no commit was read again as text. The
-contract test's 35 cases took about 17 s.
+each one's new blob is binary, so no file was scanned in full. The contract
+test's 47 cases took about 28 s.
 
 The contract test runs the real scan against fixture repositories with an
 obviously fake credential assembled at run time. It fails if any output shows
@@ -160,6 +195,15 @@ cover:
   binary file replaced by text (with a file read in both passes reported once),
   a file that `.gitattributes` marks as binary, and clean text that replaced a
   binary file;
+- files scanned in full: a credential line a binary file already held, kept as
+  it turns to text, before and after a later deletion; a merge resolution that
+  keeps a line of the binary side; a binary file renamed as it turns to text;
+  and a commit-scoped exception that covers exactly its commit and path;
+- a grafts file with Git's warning off, a caller's `GIT_GRAFT_FILE` and
+  `GIT_DIR`, and a commit-graph file edited to drop a parent;
+- withheld metadata: files named after the credential, part of it, or another
+  credential; rule IDs that hold a credential; and the check of rule IDs and
+  paths failing;
 - a credential only in the root commit under `log.showRoot=false`, and again
   under hostile repository configuration and a replacement ref;
 - output: a malformed `.gitattributes` attribute name, git failing before the

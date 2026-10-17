@@ -8,8 +8,9 @@
 # and refuses a .gitleaksignore file, so this file is the only place an exception can be recorded.
 # scripts/test:ci-secret-scan enforces this shape. gitleaks matches the path of a file in a merge's
 # conflict resolution as b/<path>; the scan prints it without the prefix, but an entry for one must
-# match b/<path>. A commit that added text Git shows as a binary diff is read a second time with
-# git log --text; its findings carry the same commit and path, so the same entry applies to them.
+# match b/<path>. A file whose change Git shows as a binary diff but whose new content is text is
+# scanned in full at each commit that changes it; its findings carry that commit and the file's plain
+# path, so an entry for one names each such commit.
 
 [extend]
 useDefault = true
