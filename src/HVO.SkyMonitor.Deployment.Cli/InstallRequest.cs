@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
 
@@ -64,6 +65,18 @@ internal sealed record InstallRequest
     public bool GeneratePassword { get; init; }
     public bool NoDownload { get; init; }
     public CameraAgentReplayProfile ReplayProfile { get; init; } = CameraAgentReplayProfile.InProcess;
+
+    /// <summary>
+    /// The CameraAgent container's CPU limit the operator set with <c>--cpus</c>, or <see langword="null"/> to leave it
+    /// to the installer default.
+    /// </summary>
+    public decimal? Cpus { get; init; }
+
+    /// <summary>
+    /// The CameraAgent container's memory limit the operator set with <c>--memory</c>, such as <c>6g</c>, or
+    /// <see langword="null"/> to leave it to the installer default.
+    /// </summary>
+    public string? Memory { get; init; }
 
     /// <summary>
     /// Whether this invocation may install below a product root other than <see cref="ProductionProductRoot"/>.
@@ -199,7 +212,9 @@ internal sealed record InstallRequest
             throw new InstallUsageException("--time-zone is invalid on this host.", exception);
         }
 
-        foreach (var value in new[] { FriendlyName, OwnerEmail, ProductRoot, CatalogBundle, CatalogManifest, CatalogIndex, CatalogVersion, AssetBaseUrl, ImageReference, ImageArchive, ImageManifest, ImageIndex, ImageVersion, PasswordFile, TimeZoneId })
+        _ = ContainerResources();
+
+        foreach (var value in new[] { FriendlyName, OwnerEmail, ProductRoot, CatalogBundle, CatalogManifest, CatalogIndex, CatalogVersion, AssetBaseUrl, ImageReference, ImageArchive, ImageManifest, ImageIndex, ImageVersion, PasswordFile, TimeZoneId, Memory })
         {
             if (value?.Any(char.IsControl) == true)
             {
@@ -212,6 +227,9 @@ internal sealed record InstallRequest
             throw new InstallUsageException("--resume requires --instance-id.");
         }
     }
+
+    /// <summary>The CameraAgent container limits this installation asks for, each one the operator set or the default.</summary>
+    internal ContainerResourceLimits ContainerResources() => CameraAgentContainerResources.Resolve(Cpus, Memory);
 
     /// <summary>
     /// Validates only how the image was selected. A signed image release and an operator-supplied image are

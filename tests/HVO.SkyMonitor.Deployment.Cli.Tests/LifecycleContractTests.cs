@@ -2054,6 +2054,7 @@ public sealed partial class LifecycleContractTests
         var upgraded = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
         Assert.AreEqual(ComposeDeployment.TemplateVersion, upgraded.ComposeTemplateVersion);
         Assert.AreEqual(fixture.Manifest.Image, upgraded.PreviousImage);
+        Assert.AreEqual(CameraAgentContainerResources.Default, upgraded.Resources);
         var retainedRollbackCompose = Path.Combine(fixture.Paths.DeploymentStateRoot, "rollback", "previous-compose.yml");
         await File.WriteAllTextAsync(retainedRollbackCompose, "services: {}\nnetworks:\n  foreign: {}\n");
 
@@ -2078,7 +2079,12 @@ public sealed partial class LifecycleContractTests
         var rolledBack = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
         Assert.AreEqual(ComposeDeployment.TemplateVersion, rolledBack.ComposeTemplateVersion);
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
-        Assert.AreEqual(originalCompose, await File.ReadAllTextAsync(Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml")));
+        // The previous image runs its exact retained Compose model with the limits the instance records: the upgrade
+        // moved this instance, recorded without limits, to the defaults, and rolling back keeps them.
+        Assert.AreEqual(CameraAgentContainerResources.Default, rolledBack.Resources);
+        Assert.AreEqual(
+            originalCompose.Replace("    cpus: \"1\"\n    mem_limit: 1G\n", "    cpus: \"2\"\n    mem_limit: 4G\n", StringComparison.Ordinal),
+            await File.ReadAllTextAsync(Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml")));
     }
 
     [TestMethod]
@@ -2690,7 +2696,10 @@ public sealed partial class LifecycleContractTests
             // The bound application identity is deliberately distinct from the instance id so that
             // lifecycle verification cannot pass by comparing the wrong identity.
             var applicationIdentity = Guid.NewGuid();
-            const string composeModel = "services: {}\n";
+            // The CameraAgent service carries the limit lines every installer writes. The fixture records no limits, as an
+            // instance an earlier installer completed does, so it runs the original ones until its next upgrade.
+            const string composeModel =
+                "services:\n  cameraagent:\n    image: ${CAMERAAGENT_IMAGE}\n    cpus: \"1\"\n    mem_limit: 1G\n    pids_limit: 256\n";
             var manifest = new InstanceManifest(
                 1, "HVO.SkyMonitor", "cameraagent-install-v1", DeploymentComponent.CameraAgent,
                 instanceId, "Test Camera", applicationIdentity, $"installer-{instanceId:D}", 1,

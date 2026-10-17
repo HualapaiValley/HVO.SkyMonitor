@@ -863,7 +863,8 @@ public sealed class HostProductRootPolicyTests
             Path.Combine(paths.ConfigRoot, "owner-password"),
             "verification-token",
             "lifecycle-token",
-            passwordAuthorityEnabled: false);
+            passwordAuthorityEnabled: false,
+            CameraAgentContainerResources.Default);
     }
 
     private sealed class RecordingRunner(ProcessResult result) : IProcessRunner

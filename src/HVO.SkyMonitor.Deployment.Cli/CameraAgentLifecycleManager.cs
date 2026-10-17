@@ -709,12 +709,11 @@ internal sealed class CameraAgentLifecycleManager
             : ReplaceEnvironmentValue(originalEnvironment, "CAMERAAGENT_IMAGE", candidate.ImageId);
         var stagedEnvironment = Path.Combine(operationRoot, "candidate.env");
         var stagedCompose = Path.Combine(operationRoot, "candidate-compose.yml");
+        var sourceCompose = rollback
+            ? await File.ReadAllTextAsync(retainedRollbackCompose, cancellationToken).ConfigureAwait(false)
+            : originalCompose;
         SafeFileSystem.WriteTextAtomic(stagedEnvironment, candidateEnvironment);
-        SafeFileSystem.WriteTextAtomic(
-            stagedCompose,
-            rollback
-                ? await File.ReadAllTextAsync(retainedRollbackCompose, cancellationToken).ConfigureAwait(false)
-                : originalCompose);
+        SafeFileSystem.WriteTextAtomic(stagedCompose, sourceCompose);
         var candidateCompose = compose with { ComposeFile = stagedCompose, EnvironmentFile = stagedEnvironment };
         var renderedCandidate = await docker.ComposeAsync(
             candidateCompose.ComposeFile, candidateCompose.EnvironmentFile, candidateCompose.ProjectName, ["config"], cancellationToken)
@@ -722,6 +721,23 @@ internal sealed class CameraAgentLifecycleManager
         var candidateComposeSha256 = ComposeDeployment.ComputeSha256(renderedCandidate.StandardOutput);
         if (rollback && candidateComposeSha256 != manifest.PreviousComposeModelSha256)
             throw new InstallerException("The retained rollback Compose model differs from its authenticated identity.");
+        // An upgrade moves each CameraAgent limit the operator did not set to this installer's default, which is how an
+        // instance that records no limits leaves the original 1 CPU and 1 GiB. A rollback keeps the limits the instance
+        // records, so the previous image never returns to limits the instance has left. The retained rollback file was
+        // authenticated above, before its limits are replaced.
+        var candidateResources = rollback ? manifest.Resources : CameraAgentContainerResources.UpgradeTarget(manifest.Resources);
+        var limitedCompose = CameraAgentContainerResources.WithLimits(
+            sourceCompose,
+            candidateResources ?? CameraAgentContainerResources.Legacy,
+            rollback ? null : manifest.Resources ?? CameraAgentContainerResources.Legacy);
+        if (!string.Equals(limitedCompose, sourceCompose, StringComparison.Ordinal))
+        {
+            SafeFileSystem.WriteTextAtomic(stagedCompose, limitedCompose);
+            renderedCandidate = await docker.ComposeAsync(
+                candidateCompose.ComposeFile, candidateCompose.EnvironmentFile, candidateCompose.ProjectName, ["config"], cancellationToken)
+                .ConfigureAwait(false);
+            candidateComposeSha256 = ComposeDeployment.ComputeSha256(renderedCandidate.StandardOutput);
+        }
         var baseAddress = installationResult.Url;
         var lifecycle = CreateLifecycleClient(baseAddress, lifecycleClientFactory);
         var candidateLifecycle = lifecycle;
@@ -848,6 +864,7 @@ internal sealed class CameraAgentLifecycleManager
                 UpgradeCompatibility = candidate.UpgradeCompatibility ?? "requires-declared-compatible-migration",
                 LifecycleControlTokenSha256 = ComposeDeployment.ComputeSha256(lifecycleControlToken),
                 PreviousComposeModelSha256 = manifest.ComposeModelSha256,
+                Resources = candidateResources,
                 LastLifecycleOperationId = operation.OperationId,
                 UpdatedUtc = DateTimeOffset.UtcNow
             };
@@ -1951,6 +1968,7 @@ internal sealed class CameraAgentLifecycleManager
             !HasValue(manifest.RigProfileVersion) || !HasValue(manifest.ScheduleSchemaVersion) ||
             !HasValue(manifest.ScheduleState) || !IsSha256(manifest.InstallationVerificationTokenSha256) ||
             !IsSha256(manifest.ComposeModelSha256) || !IsValidCatalog(manifest.Catalog) ||
+            manifest.Resources is not null && !CameraAgentContainerResources.IsValid(manifest.Resources) ||
             !CameraAgentImageContract.SupportsCatalog(manifest.Image?.CatalogContract, manifest.Catalog.CatalogId) ||
             manifest.Catalog.InstallRoot != Path.Combine(manifest.ProductRoot, "catalogs", manifest.Catalog.CatalogId) ||
             !IsSha256(manifest.LifecycleControlTokenSha256) ||

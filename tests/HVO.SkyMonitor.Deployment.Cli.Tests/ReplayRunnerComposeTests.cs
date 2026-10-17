@@ -314,7 +314,8 @@ public sealed class ReplayRunnerComposeTests
         Path.Combine(paths.ConfigRoot, "owner-password"),
         "verification-token",
         "lifecycle-token",
-        passwordAuthorityEnabled: false);
+        passwordAuthorityEnabled: false,
+        CameraAgentContainerResources.Default);
 
     private static (InstallRequest Request, InstallationPaths Paths) CreateRequest(
         string root,
