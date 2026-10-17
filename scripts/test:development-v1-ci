@@ -28,6 +28,12 @@ def job(workflow, name):
     return match.group(1) if match else ""
 
 
+classifier_run_line = (
+    '        run: GITHUB_STEP_SUMMARY= ./scripts/ci:classify '
+    '"$EVENT_NAME" "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"'
+)
+
+
 contract_condition = (
     "if: ${{ !cancelled() && (steps.classify.outcome != 'success' || "
     "steps.classify.outputs.secret_scan_contract != 'false') }}"
@@ -84,9 +90,10 @@ def violations(short, full):
         "EVENT_NAME: ${{ github.event_name }}",
         "BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}",
         "HEAD_SHA: ${{ github.sha }}",
-        './scripts/ci:classify "$EVENT_NAME" "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"',
     ):
         require(wiring in classification, f"contract classification wiring: {wiring}")
+    require(classification.splitlines().count(classifier_run_line) == 1,
+            "exact contract classification command with job summary disabled")
     require(preflight.find("Scan history for secrets") <
             preflight.find("Classify secret scanner contract inputs"),
             "history scan precedes fallible classification")
@@ -174,6 +181,12 @@ mutations = (
     ("v1 history scan gated", short.replace(
         "- name: Scan history for secrets", "- name: Scan history for secrets\n        if: false"), full),
     ("v1 classifier removed", short.replace("./scripts/ci:classify ", ": "), full),
+    ("v1 classifier summary enabled", short.replace(
+        "run: GITHUB_STEP_SUMMARY= ", "run: "), full),
+    ("v1 classifier masked by suffix", short.replace(
+        classifier_run_line, classifier_run_line + " || true"), full),
+    ("v1 classifier command suffix", short.replace(
+        classifier_run_line, classifier_run_line + "; true"), full),
     ("v1 classifier failure skips contract", short.replace(
         "steps.classify.outcome != 'success' || ", ""), full),
     ("v1 missing output skips contract", short.replace(

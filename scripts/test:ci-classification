@@ -182,6 +182,10 @@ secret_scan_contract_paths=(
   "scripts/ci:secret-scan"
   "scripts/test:ci-secret-scan"
   ".gitleaks.toml"
+  ".gitleaksignore"
+  "docs/.gitleaksignore"
+  "docs/nested/fixture.gitleaksignore"
+  ".gitattributes"
   ".github/workflows/development-v1.yml"
   ".github/workflows/ci.yml"
   "scripts/ci:classify"
@@ -731,6 +735,31 @@ for fake_case in malformed unterminated empty-path failure; do
     exit 1
   fi
 done
+
+# A valid unrelated regular entry must precede the malformed tail, otherwise
+# the empty-range or missing-tree fallback can hide loss of the malformed flag.
+trailing_base="$(git -C "$work_root" rev-parse HEAD^)"
+trailing_head="$(git -C "$work_root" rev-parse HEAD)"
+"$real_git" -C "$work_root" cat-file -e "${trailing_base}^{commit}"
+"$real_git" -C "$work_root" cat-file -e "${trailing_head}^{commit}"
+trailing_entry="$("$real_git" -C "$work_root" ls-tree "$trailing_head" -- docs/runbooks/example.md)"
+[[ "$trailing_entry" == '100644 '* ]] || {
+  printf 'Malformed-tail fixture requires an unrelated regular tree entry.\n' >&2
+  exit 1
+}
+mkdir -p "$work_root/trailing-bin"
+cat > "$work_root/trailing-bin/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == diff ]]; then
+  printf 'M\0docs/runbooks/example.md\0M\0'
+  exit 0
+fi
+exec "${REAL_GIT:?}" "$@"
+EOF
+chmod +x "$work_root/trailing-bin/git"
+PATH="$work_root/trailing-bin:$PATH" REAL_GIT="$real_git" \
+  expect_secret_scan_contract true pull_request "$trailing_base" "$trailing_head"
 
 # Required CI aggregation.
 plan() {

@@ -53,17 +53,20 @@ formatting, and package audit only for full-mode changes.
 branch protection already requires. Draft `development/v1` pull requests run it
 too, because Preflight runs on drafts.
 
-Preflight runs `scripts/test:ci-secret-scan` only when the classifier's
-`secret_scan_contract` output selects it. PRs select it for changes to the
-scanner (including its pinned gitleaks version/checksums), its contract test,
-`.gitleaks.toml`, either scanner workflow (`development-v1.yml` or `ci.yml`),
-or the classifier itself. Pushes retain the classifier's non-PR full-mode
-convention and always run it. Missing commits, empty ranges, failed or malformed
-diffs, missing/non-regular tree entries, missing outputs, and classifier-step
-failures run the contract test too;
-a classifier-step failure still fails Preflight. The history scan remains
-unconditional and precedes classification. Full Quality keeps both commands
-unconditional.
+Run the contract locally at any time with `./scripts/test:ci-secret-scan`.
+It always runs on `development/v1` pushes and in Full Quality. On a PR,
+Preflight runs it when the classifier's `secret_scan_contract` output selects
+it for changes to any of these inputs: the scanner (including its pinned
+gitleaks version/checksums), its contract test, `.gitleaks.toml`,
+`.gitattributes`, any path matching `*.gitleaksignore` at the root or any
+depth, either scanner workflow (`development-v1.yml` or `ci.yml`), or the
+classifier itself. Pushes retain the classifier's non-PR full-mode convention.
+Missing commits, empty ranges, failed or malformed diffs, missing/non-regular
+tree entries, missing outputs, and classifier-step failures run the contract
+test too; a classifier-step failure still fails Preflight. The history scan
+remains unconditional and precedes classification. Preflight keeps the
+classifier's key=value diagnostic line in its log and suppresses its full
+job-summary block.
 
 - **Scope.** Every commit reachable from the checked-out commit, which is the
   pull request's merge commit or the pushed head. It reads the lines each commit
@@ -177,8 +180,11 @@ unconditional.
 - **Exceptions.** `.gitleaks.toml` is the only place to record one. Each entry
   gives its reason and names its rules, its paths, and the historical commits it
   covers, so it cannot hide a finding in a later commit. Inline `gitleaks:allow`
-  comments are ignored and a `.gitleaksignore` file is refused.
-  `scripts/test:ci-secret-scan` enforces this shape. History is never rewritten:
+  comments are ignored. The history scan refuses a root `.gitleaksignore`;
+  the contract also refuses every tracked `*.gitleaksignore` file at any depth.
+  Changes to those paths select the contract on PRs, so nested files cannot
+  bypass that check. `scripts/test:ci-secret-scan` enforces this refusal and
+  exception shape whenever it runs as described above. History is never rewritten:
   revoke or rotate a real credential, then record its historical commit. An entry
   names commits, so it holds only for merge-commit merges; a squash or rebase
   merge lands different commits. gitleaks matches a file in a merge's conflict
@@ -195,7 +201,7 @@ removed from the tree on 2026-07-12 and now only in history), test-only values,
 PEM header literals and synthetic AWS-shaped vectors in the processing-graph
 secret filter, and generic-rule matches on ordinary words.
 
-Run the scan and its contract test locally the way CI does:
+Run both checks directly for local validation, including to force the contract test:
 
 ```bash
 ./scripts/ci:secret-scan
