@@ -1548,8 +1548,9 @@ stay where they are (install contract section 6):
 **Retention and cleanup are held for the whole swap.** CameraAgent deletes frames, archived and derived products,
 and unowned projected-scene stages only while capture admission is running. The installer pauses admission durably
 before it stops the previous image and resumes it only after the candidate commits or the previous image is restored,
-so a candidate starts with the hold in force. An operator pause holds them too; a paused instance captures nothing
-new, so the hold never grows the data it protects. While held, the log says
+so a candidate starts with the hold in force. Only the deletions wait: capacity and disk pressure are still measured
+and reported. An operator pause holds them too; a paused instance captures nothing new, so the hold never grows the
+data it protects. While held, the log says
 `<maintenance> held while capture admission is Paused; nothing was deleted`.
 
 **A restore loses later database changes.** Restoring a snapshot writes this warning to standard error before it
