@@ -10,6 +10,7 @@ using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -241,7 +242,8 @@ public sealed class CameraAgentApiKeyAuthenticationTests
         var fixture = await PipelineFixture.CreateAsync().ConfigureAwait(false);
         await using var fixtureLease = fixture.ConfigureAwait(false);
         var key = await fixture.CreateKeyAsync(ApiKeyAccessLevel.Read).ConfigureAwait(false);
-        using var client = await fixture.SignedInClientAsync().ConfigureAwait(false);
+        var sessionCookies = new CookieContainer();
+        using var client = await fixture.SignedInClientAsync(cookies: sessionCookies).ConfigureAwait(false);
         var antiforgery = await client.GetStringAsync(new Uri("/test/antiforgery", UriKind.Relative)).ConfigureAwait(false);
         client.DefaultRequestHeaders.Add("X-Test-Antiforgery", antiforgery);
         using var sessionChange = await client.PostAsync(new Uri(MutatePath, UriKind.Relative), null).ConfigureAwait(false);
@@ -268,6 +270,12 @@ public sealed class CameraAgentApiKeyAuthenticationTests
         Assert.AreEqual("{\"status\":401,\"title\":\"The API key is not valid.\"}",
             await response.Content.ReadAsStringAsync().ConfigureAwait(false));
         Assert.AreEqual(callsBefore, fixture.EndpointCalls.Count);
+        if (kind == "duplicated")
+        {
+            // HttpClient can coalesce the wire values; also exercise the middleware with two distinct values.
+            await fixture.AssertDistinctAuthorizationValuesRefusedAsync(method, headers, sessionCookies, antiforgery)
+                .ConfigureAwait(false);
+        }
         var secret = key[(CameraAgentApiKeyToken.Prefix.Length + CameraAgentApiKeyToken.IdLength + 1)..];
         foreach (var credential in headers.Append(secret))
         {
@@ -475,11 +483,11 @@ public sealed class CameraAgentApiKeyAuthenticationTests
             => Configure(new HttpClient { BaseAddress = new Uri(_app.Urls.Single()) }, bearer);
 
         /// <summary>A client holding the owner's session cookie, and optionally a key as well.</summary>
-        internal async Task<HttpClient> SignedInClientAsync(string? bearer = null)
+        internal async Task<HttpClient> SignedInClientAsync(string? bearer = null, CookieContainer? cookies = null)
         {
             var client = new HttpClient(new HttpClientHandler
             {
-                CookieContainer = new CookieContainer(),
+                CookieContainer = cookies ?? new CookieContainer(),
                 CheckCertificateRevocationList = true
             })
             {
@@ -488,6 +496,52 @@ public sealed class CameraAgentApiKeyAuthenticationTests
             using var signIn = await client.PostAsync(new Uri("/test/sign-in", UriKind.Relative), null).ConfigureAwait(false);
             Assert.AreEqual(HttpStatusCode.OK, signIn.StatusCode);
             return Configure(client, bearer);
+        }
+
+        internal async Task AssertDistinctAuthorizationValuesRefusedAsync(
+            HttpMethod method,
+            string[] authorization,
+            CookieContainer cookies,
+            string antiforgeryToken)
+        {
+            var scope = _app.Services.CreateAsyncScope();
+            await using var scopeLease = scope.ConfigureAwait(false);
+            var address = new Uri(_app.Urls.Single());
+            var context = new DefaultHttpContext { RequestServices = scope.ServiceProvider };
+            context.Request.Scheme = address.Scheme;
+            context.Request.Host = HostString.FromUriComponent(address);
+            context.Request.Path = method == HttpMethod.Get ? ReadPath : MutatePath;
+            context.Request.Method = method.Method;
+            context.Request.Headers.Cookie = cookies.GetCookieHeader(address);
+            context.Request.Headers.Authorization = authorization;
+            context.Request.Headers["X-Test-Antiforgery"] = antiforgeryToken;
+            Assert.HasCount(2, context.Request.Headers.Authorization);
+            var session = await context.AuthenticateAsync(IdentityConstants.ApplicationScheme).ConfigureAwait(false);
+            Assert.IsTrue(session.Succeeded);
+            context.User = session.Principal!;
+            Assert.AreEqual(OwnerId, CameraAgentCredentialAccess.GetOwnerId(context.User));
+            Assert.IsFalse(CameraAgentCredentialAccess.IsApiKey(context.User));
+            await scope.ServiceProvider.GetRequiredService<IAntiforgery>().ValidateRequestAsync(context).ConfigureAwait(false);
+            context.Features.Set<IAntiforgeryValidationFeature>(new ValidatedAntiforgeryFeature());
+            Assert.IsTrue(CameraAgentCredentialAccess.IsForgeryProtected(context));
+            using var body = new MemoryStream();
+            context.Response.Body = body;
+            var endpointReached = false;
+            var middleware = new CameraAgentApiKeyAuthenticationMiddleware(_ =>
+            {
+                endpointReached = true;
+                return Task.CompletedTask;
+            }, scope.ServiceProvider.GetRequiredService<ILogger<CameraAgentApiKeyAuthenticationMiddleware>>());
+
+            await middleware.InvokeAsync(context,
+                scope.ServiceProvider.GetRequiredService<CameraAgentApiKeyStore>(),
+                scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>(),
+                scope.ServiceProvider.GetRequiredService<IUserClaimsPrincipalFactory<ApplicationUser>>(),
+                scope.ServiceProvider.GetRequiredService<CameraAgentOperatorTelemetry>()).ConfigureAwait(false);
+
+            Assert.AreEqual(StatusCodes.Status401Unauthorized, context.Response.StatusCode);
+            Assert.AreEqual("Bearer error=\"invalid_token\"", context.Response.Headers.WWWAuthenticate.ToString());
+            Assert.IsFalse(endpointReached);
         }
 
         private static HttpClient Configure(HttpClient client, string? bearer)
@@ -544,6 +598,12 @@ public sealed class CameraAgentApiKeyAuthenticationTests
             await _app.DisposeAsync().ConfigureAwait(false);
             Directory.Delete(_root, recursive: true);
         }
+    }
+
+    private sealed class ValidatedAntiforgeryFeature : IAntiforgeryValidationFeature
+    {
+        public bool IsValid => true;
+        public Exception? Error => null;
     }
 
     private sealed class CapturingLoggerProvider(ConcurrentQueue<LogEntry> entries) : ILoggerProvider
