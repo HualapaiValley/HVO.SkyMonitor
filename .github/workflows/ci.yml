@@ -456,15 +456,15 @@ jobs:
           dotnet publish src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj --no-restore --configuration Release --runtime linux-arm64 --output TestResults/publish/replay-runner/linux-arm64
           dotnet publish src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj --no-restore --configuration Release --runtime linux-x64 --output TestResults/publish/processing-runner/linux-x64
           dotnet publish src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj --no-restore --configuration Release --runtime linux-arm64 --output TestResults/publish/processing-runner/linux-arm64
-          mv TestResults/publish/installer/linux-x64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-x64/hvo-skymonitor
-          mv TestResults/publish/installer/linux-arm64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-arm64/hvo-skymonitor
-          test -x TestResults/publish/installer/linux-x64/hvo-skymonitor
-          test -x TestResults/publish/installer/linux-arm64/hvo-skymonitor
-          file TestResults/publish/installer/linux-arm64/hvo-skymonitor | grep -q 'ARM aarch64'
+          mv TestResults/publish/installer/linux-x64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-x64/hvo-sky-install
+          mv TestResults/publish/installer/linux-arm64/HVO.SkyMonitor.Deployment.Cli TestResults/publish/installer/linux-arm64/hvo-sky-install
+          test -x TestResults/publish/installer/linux-x64/hvo-sky-install
+          test -x TestResults/publish/installer/linux-arm64/hvo-sky-install
+          file TestResults/publish/installer/linux-arm64/hvo-sky-install | grep -q 'ARM aarch64'
           # Both installers name the version and commit they were built from (install contract section 1, #1312).
           installer_version="0.0.0-dev+$(git rev-parse HEAD)"
-          test "$(TestResults/publish/installer/linux-x64/hvo-skymonitor --version)" = "$installer_version"
-          grep -aqF "$installer_version" TestResults/publish/installer/linux-arm64/hvo-skymonitor
+          test "$(TestResults/publish/installer/linux-x64/hvo-sky-install --version)" = "$installer_version"
+          grep -aqF "$installer_version" TestResults/publish/installer/linux-arm64/hvo-sky-install
           test -x TestResults/publish/replay-runner/linux-x64/HVO.SkyMonitor.CameraAgent.ReplayRunner
           test -x TestResults/publish/replay-runner/linux-arm64/HVO.SkyMonitor.CameraAgent.ReplayRunner
           TestResults/publish/replay-runner/linux-x64/HVO.SkyMonitor.CameraAgent.ReplayRunner --capabilities > TestResults/publish/replay-runner-linux-x64-capabilities.json
@@ -493,8 +493,8 @@ jobs:
           logichost_files=$(find TestResults/publish/logichost -type f | wc -l)
           logichost_bytes=$(find TestResults/publish/logichost -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           logichost_dependencies=$(find TestResults/publish/logichost -maxdepth 1 -type f -name '*.dll' | wc -l)
-          installer_x64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-x64/hvo-skymonitor)
-          installer_arm64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-arm64/hvo-skymonitor)
+          installer_x64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-x64/hvo-sky-install)
+          installer_arm64_bytes=$(stat -c '%s' TestResults/publish/installer/linux-arm64/hvo-sky-install)
           replay_runner_x64_bytes=$(find TestResults/publish/replay-runner/linux-x64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           replay_runner_arm64_bytes=$(find TestResults/publish/replay-runner/linux-arm64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')
           processing_runner_x64_bytes=$(find TestResults/publish/processing-runner/linux-x64 -type f -printf '%s\n' | awk '{total += $1} END {print total}')

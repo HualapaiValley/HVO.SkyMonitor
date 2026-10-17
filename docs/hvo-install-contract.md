@@ -215,11 +215,11 @@ does with `hvo-roof`. It sits beside the installer: the installer owns lifecycle
 
 | | RoofController | SkyMonitor |
 | --- | --- | --- |
-| Installer | `hvo-roof-install` | `hvo-sky-install` (today `hvo-skymonitor`; rename before the first release) |
+| Installer | `hvo-roof-install` | `hvo-sky-install` |
 | Runtime client | `hvo-roof` | `hvo-sky` |
 | Images | `roof-controller`, `roof-hat-emulator` | `skymonitor-cameraagent`, `skymonitor-logichost` |
-| Config root | `/etc/hvo-roof` | `/etc/hvo-sky` (today `/etc/hvo/skymonitor`; renamed by #1313) |
-| Data root | `/var/lib/hvo-roof` | `/var/lib/hvo-sky` (today `/var/lib/hvo/skymonitor`; renamed by #1313) |
+| Config root | `/etc/hvo-roof` | `/etc/hvo-sky` |
+| Data root | `/var/lib/hvo-roof` | `/var/lib/hvo-sky` |
 
 ## 10. Decisions
 
@@ -230,7 +230,7 @@ Owner decisions of 2026-10-16:
 2. **Bulk data in upgrades:** upgrades **never copy bulk files** (section 6). Full backups are the explicit `backup`
    command. SkyMonitor #1044's scope narrows to that command.
 3. **Container resources:** at least 2 vCPUs and 4 GiB, adjustable by the operator (section 7).
-4. **Naming:** `hvo-sky-install` and `hvo-sky`, as proposed (section 9).
+4. **Naming:** `hvo-sky-install` and `hvo-sky`, confirmed (section 9).
 5. **File locations:** RoofController's flat style, named after the binary, is the pattern: `/etc/hvo-roof` and
-   `/etc/hvo-sky`. RoofController does not migrate (HVO.RoofController#132, closed). SkyMonitor renames its paths before its
+   `/etc/hvo-sky`. RoofController does not migrate (HVO.RoofController#132, closed). SkyMonitor renamed its paths before its
    first release (#1313).

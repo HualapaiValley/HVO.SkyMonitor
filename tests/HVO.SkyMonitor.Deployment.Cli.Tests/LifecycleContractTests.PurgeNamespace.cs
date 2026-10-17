@@ -901,7 +901,7 @@ public sealed partial class LifecycleContractTests
 
         foreach (var (index, value) in new (int, string)[]
                  {
-                     (0, "internal-prepare"), (2, "delete"), (4, "/tmp/hvo/skymonitor"), (4, InstallRequest.DefaultProductRoot + "/"),
+                     (0, "internal-prepare"), (2, "delete"), (4, "/tmp/hvo-sky"), (4, InstallRequest.DefaultProductRoot + "/"),
                      (6, instanceId.ToString("N")), (6, Guid.Empty.ToString("D")), (8, "../../etc"), (10, "0"), (10, "+1000"),
                      (10, " 1000"), (10, "-1"), (12, "1001 "), (14, "0x1092"), (16, "8.0"), (18, "4294967296"), (1, "--action=remove"),
                      (5, "--operation-id")

@@ -7,7 +7,7 @@ namespace HVO.SkyMonitor.Deployment;
 
 internal static class CommandLine
 {
-    private const string Executable = "hvo-skymonitor";
+    private const string Executable = "hvo-sky-install";
 
     /// <summary>The option that prints the installer's build identity; it is accepted only on its own.</summary>
     internal const string VersionOption = "--version";
@@ -280,7 +280,7 @@ internal static class CommandLine
     {
         if (args.Length < 2 || args[0] != "cameraagent" || args[1] != "install")
         {
-            throw new InstallUsageException("Usage: hvo-skymonitor cameraagent install [options]");
+            throw new InstallUsageException("Usage: hvo-sky-install cameraagent install [options]");
         }
 
         string? configPath = null;

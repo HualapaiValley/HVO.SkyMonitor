@@ -1,13 +1,13 @@
 # Product and Instance Persistent Layout
 
-SkyMonitor owns one production product root: `/var/lib/hvo/skymonitor` by
+SkyMonitor owns one production product root: `/var/lib/hvo-sky` by
 default, or the root named by the root-owned host policy
-`/etc/hvo/skymonitor/host.json` (`{"productRoot": "/srv/data/hvo-skymonitor", "mountPoint": "/srv"}`),
+`/etc/hvo-sky/host.json` (`{"productRoot": "/srv/data/hvo-skymonitor", "mountPoint": "/srv"}`),
 which places it on another filesystem without a bind mount. Application
 instances and catalogs are separate identity domains beneath that root:
 
 ```text
-<product-root>/                       # /var/lib/hvo/skymonitor unless the host policy names another
+<product-root>/                       # /var/lib/hvo-sky unless the host policy names another
 |-- operations/                       # product-wide runtime operation lock
 |-- catalogs/<catalog-id>/{current,previous,versions/}
 |-- cameraagents/<instance-uuid>/{config,state}   # config/compose holds the instance's Compose files
@@ -15,7 +15,7 @@ instances and catalogs are separate identity domains beneath that root:
 ```
 
 Persistent deployment rejects any product root other than the production one.
-The host policy, its validation, and `hvo-skymonitor host set-product-root` are
+The host policy, its validation, and `hvo-sky-install host set-product-root` are
 described in
 [deployment-installer.md](deployment-installer.md#production-product-root-on-another-filesystem):
 the file and every component of the root must be `root:root` and not writable by
@@ -28,7 +28,7 @@ that path, not which filesystem it is, so verify the backing filesystem with
 keeps its Compose files inside its own `config/compose`, so configuration and
 state stay one backup unit wherever the root lives. Isolated contract tests may
 use a disposable root beneath their private `/tmp/hvo-deploy-test.*` directory.
-The deployment never treats `/var/lib/hvo`, a hostname, target name, friendly
+The deployment never treats `/var/lib/hvo-sky`, a hostname, target name, friendly
 name, container name, port, or application identity as an instance ID. The
 self-contained local installer enforces this root and records its exact
 manifest, phase, and result contracts as described in

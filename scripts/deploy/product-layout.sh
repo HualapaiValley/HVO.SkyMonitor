@@ -64,7 +64,7 @@ deploy_validate_product_layout() {
     product_root="$(jq -r '.productRoot' "$inventory")"
     deploy_is_safe_absolute_path "$product_root" || deploy_fail validate product-layout unsafe-product-root || return 1
     [[ "$(realpath -m -- "$product_root" 2>/dev/null)" == "$product_root" ]] || deploy_fail validate product-layout noncanonical-product-root || return 1
-    [[ "$mode" != persistent || "$product_root" == /var/lib/hvo/skymonitor || "$product_root" == /tmp/hvo-deploy-test.* ]] ||
+    [[ "$mode" != persistent || "$product_root" == /var/lib/hvo-sky || "$product_root" == /tmp/hvo-deploy-test.* ]] ||
       deploy_fail validate product-layout persistent-product-root-mismatch || return 1
 
     while IFS= read -r target; do
