@@ -593,12 +593,12 @@ test "$(jq -er '.CameraAgent.SkyMap.MaximumObjects' "$operator_settings_path")" 
 
 printf 'CameraAgent state preflight and operator-confirmed reset contract passed for instance %s.\n' "$instance_id"
 
-# --migration-backward-compatible asserts that the prior image can read the state a migrating candidate leaves
-# behind, so a routine upgrade must not need it (#1307). Both candidates are the installed image with labels added.
-# The routine one declares exactly the installed state boundaries and must upgrade without the assertion. The
-# migrating one declares a different minimum compatible revision, a state boundary the persisted-state preflight
-# never compares with the instance, so only the assertion gate can refuse it. A baseline-revision run may install an
-# image that predates the boundary labels, from which no upgrade is routine, so it keeps its own asserted upgrade.
+# An upgrade is a swap that never archives state (#1314). Both candidates are the installed image with labels added.
+# The routine one declares exactly the installed state boundaries: it upgrades as a pure swap and snapshots nothing.
+# The migrating one declares a different minimum compatible revision, a state boundary the persisted-state preflight
+# never compares with the instance: it upgrades without --migration-backward-compatible, after the installer has
+# snapshotted and verified the real SQLite stores, and a rollback puts that snapshot back under the real container. A
+# baseline-revision run may install an image that predates the boundary labels, from which no upgrade is routine.
 if [[ -z "$baseline_revision" ]]; then
   lifecycle_state="$root/product/operations/cameraagent-$instance_id.lifecycle.json"
   state_boundary_labels() {
@@ -651,42 +651,56 @@ if [[ -z "$baseline_revision" ]]; then
   test "$(jq -er '.image.imageId' "$root/routine-upgrade.json")" = "$routine_image_id"
   assert_running_image "$routine_image_id" routine-upgrade-status
 
-  # Refused after the operation is journalled and before any mutation, so the refusal is terminal and the instance,
-  # its manifest, and its running image are unchanged.
-  manifest_before_migration="$(sha256sum "$instance_root/instance-manifest.json" | cut -d ' ' -f 1)"
-  if "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent upgrade \
-    --instance-id "$instance_id" \
-    --product-root "$root/product" \
-    --image-ref "$migrating_image_id" \
-    --no-download \
-    --json >"$root/migrating-refused.json" 2>"$root/migrating-refused-error.json"; then
-    printf 'An upgrade declaring a state migration was admitted without --migration-backward-compatible.\n' >&2
-    exit 1
-  fi
-  test ! -s "$root/migrating-refused.json"
-  test "$(jq -er '.errorCode' "$root/migrating-refused-error.json")" = installation-failed
-  jq -e '.message | contains("declares a CameraAgent state migration") and
-    contains("io.hvo.skymonitor.minimum-compatible-revision installed ")' \
-    "$root/migrating-refused-error.json" >/dev/null
-  test "$(jq -er '.kind' "$lifecycle_state")" = Upgrade
-  test "$(jq -er '.status' "$lifecycle_state")" = Failed
-  test "$(jq -er '.failureCode' "$lifecycle_state")" = lifecycle-refused
-  test "$(jq -er '.mutationStarted' "$lifecycle_state")" = false
-  test "$(sha256sum "$instance_root/instance-manifest.json" | cut -d ' ' -f 1)" = "$manifest_before_migration"
-  assert_running_image "$routine_image_id" migrating-refused-status
+  test "$(jq -er '.stateSnapshotRequired' "$lifecycle_state")" = false
+  test "$(jq -er '.stateSnapshot' "$lifecycle_state")" = null
+  test "$(jq -er '.previousStateSnapshot' "$instance_root/instance-manifest.json")" = null
+  # No lifecycle operation archives the instance any more.
+  test -z "$(find "$root/product/operations" -name '*.tar.gz' -print -quit)"
 
   "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent upgrade \
     --instance-id "$instance_id" \
     --product-root "$root/product" \
     --image-ref "$migrating_image_id" \
     --no-download \
-    --migration-backward-compatible \
-    --json >"$root/migrating-upgrade.json"
+    --json >"$root/migrating-upgrade.json" 2>"$root/migrating-upgrade-error.json"
   test "$(jq -er '.outcome' "$root/migrating-upgrade.json")" = completed
   test "$(jq -er '.image.imageId' "$root/migrating-upgrade.json")" = "$migrating_image_id"
+  test ! -s "$root/migrating-upgrade-error.json"
   assert_running_image "$migrating_image_id" migrating-upgrade-status
+  test "$(jq -er '.stateSnapshotRequired' "$lifecycle_state")" = true
+  jq -e '.stateMigration | contains("io.hvo.skymonitor.minimum-compatible-revision installed ")' "$lifecycle_state" >/dev/null
+  migration_snapshot="$(jq -cS '.stateSnapshot' "$lifecycle_state")"
+  test "$(jq -cS '.previousStateSnapshot' "$instance_root/instance-manifest.json")" = "$migration_snapshot"
+  snapshot_root="$root/product/operations/lifecycle/$(jq -er '.operationId' <<<"$migration_snapshot")/state-snapshots/$(jq -er '.snapshotId' <<<"$migration_snapshot")"
+  test "$(sha256sum "$snapshot_root/manifest.json" | cut -d ' ' -f 1)" = "$(jq -er '.manifestSha256' <<<"$migration_snapshot")"
+  # The real instance had created its Identity database and raw-ingress journal, and each is in the snapshot.
+  jq -e '[.databases[] | select(.present) | .relativePath] |
+    index("identity/cameraagent_identity.db") != null and index("raw/journal/raw-ingress.db") != null' \
+    "$snapshot_root/manifest.json" >/dev/null
+  while IFS=$'\t' read -r snapshot_file snapshot_sha256; do
+    test "$(sha256sum "$snapshot_root/$snapshot_file" | cut -d ' ' -f 1)" = "$snapshot_sha256"
+    test "$(sqlite3 "file:$snapshot_root/$snapshot_file?immutable=1" 'PRAGMA integrity_check;')" = ok
+  done < <(jq -er '.databases[] | select(.present) | [.snapshotFile, .sha256] | @tsv' "$snapshot_root/manifest.json")
 
-  printf 'State-migration assertion contract passed for instance %s: routine upgrade without the assertion, migrating candidate refused without it and admitted with it.\n' \
+  # Rollback undoes the migrating upgrade by putting its snapshot back under the real container, and says so first.
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent rollback \
+    --instance-id "$instance_id" \
+    --product-root "$root/product" \
+    --json >"$root/migrating-rollback.json" 2>"$root/migrating-rollback-error.json"
+  test "$(jq -er '.outcome' "$root/migrating-rollback.json")" = completed
+  test "$(jq -er '.image.imageId' "$root/migrating-rollback.json")" = "$routine_image_id"
+  test "$(jq -er '.event' "$root/migrating-rollback-error.json")" = state-snapshot-restore
+  test "$(jq -cS '.snapshot' "$root/migrating-rollback-error.json")" = "$migration_snapshot"
+  assert_running_image "$routine_image_id" migrating-rollback-status
+  test "$(jq -cS '.retainedStateSnapshot' "$lifecycle_state")" = "$migration_snapshot"
+  test "$(jq -cS '.previousStateSnapshot' "$instance_root/instance-manifest.json")" = "$(jq -cS '.stateSnapshot' "$lifecycle_state")"
+  # The restored Identity database carries the snapshot's migration lineage. The restarted image has opened the stores
+  # since, so they are compared by content rather than byte for byte.
+  identity_snapshot="$(jq -er '.databases[] | select(.relativePath == "identity/cameraagent_identity.db") | .snapshotFile' "$snapshot_root/manifest.json")"
+  test "$(sqlite3 "file:$snapshot_root/$identity_snapshot?immutable=1" 'SELECT group_concat(MigrationId) FROM __EFMigrationsHistory;')" = \
+    "$(sqlite3 "file:$instance_root/state/identity/cameraagent_identity.db?immutable=1" 'SELECT group_concat(MigrationId) FROM __EFMigrationsHistory;')"
+
+  printf 'Swap upgrade contract passed for instance %s: routine upgrade snapshots nothing, migrating upgrade snapshots and verifies the real stores, rollback restores them.\n' \
     "$instance_id"
 fi
 
