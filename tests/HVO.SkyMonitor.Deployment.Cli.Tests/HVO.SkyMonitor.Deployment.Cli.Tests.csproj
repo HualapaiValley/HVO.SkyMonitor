@@ -11,4 +11,9 @@
     <EmbeddedResource Include="FrozenRawIngressV14.sql" />
     <EmbeddedResource Include="ReleaseManifestSchema1.json" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="..\fixtures\state-compatibility\previous-release\manifest.json" Link="Fixtures\previous-release\manifest.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 </Project>
