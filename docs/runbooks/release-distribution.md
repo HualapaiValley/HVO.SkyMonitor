@@ -16,7 +16,7 @@ runbook describes the current release design; no release has been published yet.
 | A tag starts the workflow, which reuses CI as gates, drafts the release, installs from the draft on x64 and arm64, and waits for an approved publish | Dispatched from `main` with a `PUBLISH` confirmation; the `production-release` environment has no protection rules | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
 | `install.sh`, `release.json`, and `SHA256SUMS`; trust is `SHA256SUMS` plus GitHub build-provenance attestations only | ES256-signed manifests and indexes per train, verified against the embedded [trust root](#trust-root); the owner retired all three on 2026-10-16 (contract section 10) | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309), [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310), [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
 | Images at `ghcr.io/hualapaivalley/skymonitor-cameraagent`, always by digest, with `latest` moved for the newest final release | No image has been published yet, and this runbook forbids `latest` | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
-| `CHANGELOG.md` and `docs/upgrade-notes/X.Y.Z.md` | Neither exists | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312), [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
+| `CHANGELOG.md` and `docs/upgrade-notes/X.Y.Z.md` | `CHANGELOG.md` exists with Unreleased entries; versioned upgrade-note files are added when cutting a release | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312), [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
 | Branch and check settings (contract section 2) | Squash and rebase merges are allowed, merged branches are kept, release tags have no ruleset, CI has no secret scan, and Dependabot does not update Docker base images | No issue yet |
 
 ## Boundary And Identity
@@ -83,7 +83,9 @@ The workflow:
 
 1. Builds and tests without signing or release-write permission.
 2. Produces deterministic x64/ARM64 installer archives or the exact production
-   catalog through the existing pinned catalog path.
+   catalog through the existing pinned catalog path. Both installers are stamped
+   with the release version and source commit, and the workflow requires
+   `--version` to print exactly `<version>+<commit>` (#1312).
 3. Uses the `production-release` environment and Azure OIDC to sign the
    manifest, checksum list, and next append-only index snapshot.
 4. Immediately verifies every Key Vault signature against the embedded key.

@@ -429,6 +429,22 @@ public sealed class HostProductRootPolicyTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void ParseCommand_Version_IsAnsweredWithoutReadingARefusedHostPolicy()
+    {
+        using var host = new PolicyHost();
+        host.WritePolicyText("{\"productRoot\":\"relative\"}");
+        var context = new CommandLineContext(false, host.Location);
+
+        var version = (VersionCommand)CommandLine.ParseCommand(["--version"], context);
+
+        Assert.AreEqual(InstallerBuildIdentity.Current, version.Identity);
+        Assert.IsFalse(version.Json);
+        // Anything after it is not a version request, so it reaches the policy that is refused here.
+        Assert.ThrowsExactly<InstallerException>(() => CommandLine.ParseCommand(["--version", "--json"], context));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void ParseCommand_HostSetProductRoot_CarriesThePolicyLocationAndRejectsMalformedUse()
     {
         using var host = new PolicyHost();
@@ -863,7 +879,8 @@ public sealed class HostProductRootPolicyTests
             Path.Combine(paths.ConfigRoot, "owner-password"),
             "verification-token",
             "lifecycle-token",
-            passwordAuthorityEnabled: false);
+            passwordAuthorityEnabled: false,
+            CameraAgentContainerResources.Default);
     }
 
     private sealed class RecordingRunner(ProcessResult result) : IProcessRunner

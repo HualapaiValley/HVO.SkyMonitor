@@ -18,6 +18,8 @@ development/v1
 
 Create work from the current `development/v1` head. Ordinary issue branches and pull requests target `development/v1`, not `main`.
 
+A pull request that changes what operators or users notice adds a line under `## [Unreleased]` in [`CHANGELOG.md`](../CHANGELOG.md). The rule is in [`AGENTS.md`](../AGENTS.md#changelog).
+
 ## Issue And Pull Request Forms
 
 - [Development v1 issue form](../.github/ISSUE_TEMPLATE/development-v1.yml)
