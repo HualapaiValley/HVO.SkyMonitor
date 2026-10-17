@@ -17,7 +17,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed class ProgramOutputTests
 {
     private const string GeneralUsage = """
-        Usage: hvo-skymonitor <command> [options]
+        Usage: hvo-sky-install <command> [options]
 
         Commands:
           status
@@ -37,12 +37,12 @@ public sealed class ProgramOutputTests
           catalog check
           host set-product-root <absolute-path>
 
-        Run 'hvo-skymonitor <command> --help' to list the options of one command.
-        Run 'hvo-skymonitor --version' to print this installer's version and commit.
+        Run 'hvo-sky-install <command> --help' to list the options of one command.
+        Run 'hvo-sky-install --version' to print this installer's version and commit.
         """;
 
     private const string InstallUsage = """
-        Usage: hvo-skymonitor cameraagent install [options]
+        Usage: hvo-sky-install cameraagent install [options]
 
         Options:
           --config <value>
@@ -84,7 +84,7 @@ public sealed class ProgramOutputTests
         """;
 
     private const string HostSetProductRootUsage = """
-        Usage: hvo-skymonitor host set-product-root <absolute-path> [options]
+        Usage: hvo-sky-install host set-product-root <absolute-path> [options]
 
         Options:
           --json

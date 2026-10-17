@@ -353,7 +353,7 @@ closed deployment path map is:
 - `tests/fixtures/catalog/hyg-v42-bright-stars.sqlite`
 - `src/HVO.SkyMonitor.CameraAgent/Dockerfile` and `src/HVO.SkyMonitor.LogicHost/Dockerfile`
 - `src/HVO.SkyMonitor.Deployment.Cli/**`, `src/HVO.SkyMonitor.Deployment.Contracts/**`, `src/HVO.SkyMonitor.Deployment.Distribution/**`, `tests/HVO.SkyMonitor.Deployment.*.Tests/**`, and `tools/HVO.SkyMonitor.Deployment.ReleaseTool/**`
-- `.github/workflows/release.yml` and `scripts/install-hvo-skymonitor.sh`
+- `.github/workflows/release.yml` and `scripts/install-hvo-sky-install.sh`
 - `src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json`
 - `src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json` and `src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json`
 
@@ -408,7 +408,7 @@ sibling names such as `HVO.SkyMonitor.CameraAgent.Tests` and
 
 Deployment inputs that are not project directories — `deploy/**`,
 `docker-compose.apps.yml`, `.env.template`, `scripts/deploy*`,
-`scripts/catalog*`, `scripts/install-hvo-skymonitor.sh`,
+`scripts/catalog*`, `scripts/install-hvo-sky-install.sh`,
 `scripts/infra:operation-lock`, `scripts/test:deploy*`,
 `scripts/test:deployment-*`, the HYG v42 attribution and license inputs, and
 `tests/fixtures/catalog/hyg-v42-bright-stars.sqlite` — are deliberately **not**

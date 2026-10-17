@@ -23,9 +23,9 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
     private const string DrainUnavailableReason =
         "No drain command exists. Pausing acquisition stops new captures while accepted processing and delivery continue.";
     private const string UpgradeUnavailableReason =
-        "Upgrade, rollback and reinstall run through the installer: hvo-skymonitor cameraagent upgrade, rollback or reinstall.";
+        "Upgrade, rollback and reinstall run through the installer: hvo-sky-install cameraagent upgrade, rollback or reinstall.";
     private const string PurgeUnavailableReason =
-        "Retention removes local evidence. Purge runs only through the installer (hvo-skymonitor cameraagent purge) with its own confirmation.";
+        "Retention removes local evidence. Purge runs only through the installer (hvo-sky-install cameraagent purge) with its own confirmation.";
     private readonly CancellationTokenSource _lifetime = new();
     private CameraAgentOperationsView? _view;
     private IReadOnlyList<SystemControlReceipt>? _receipts;

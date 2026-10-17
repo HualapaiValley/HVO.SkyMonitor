@@ -301,9 +301,9 @@ jobs:
             mkdir -m 700 "$mirror/$package_tag"
             cp "$candidate"/* "$mirror/$package_tag/"
             HVO_INSTALLER_CACHE="$RUNNER_TEMP/bootstrap-cache-exact" \
-              scripts/install-hvo-skymonitor.sh "$VERSION" "$RUNNER_TEMP/bootstrap-exact" "$candidate"
+              scripts/install-hvo-sky-install.sh "$VERSION" "$RUNNER_TEMP/bootstrap-exact" "$candidate"
             HVO_INSTALLER_CACHE="$RUNNER_TEMP/bootstrap-cache-index" \
-              scripts/install-hvo-skymonitor.sh --index "$index_path" --asset-base "$mirror" "$RUNNER_TEMP/bootstrap-index"
+              scripts/install-hvo-sky-install.sh --index "$index_path" --asset-base "$mirror" "$RUNNER_TEMP/bootstrap-index"
           fi
           tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/signed-candidate.tar.gz" candidate index
       - name: Upload signed candidate

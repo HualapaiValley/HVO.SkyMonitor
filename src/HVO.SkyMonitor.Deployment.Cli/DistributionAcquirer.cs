@@ -1081,7 +1081,7 @@ internal sealed class DistributionAcquirer : IDisposable
         var root = string.IsNullOrWhiteSpace(configured)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache")
             : configured;
-        return Path.Combine(root, "hvo", "skymonitor", "distribution");
+        return Path.Combine(root, "hvo-sky", "distribution");
     }
 
     private static string DefaultStateRoot()
@@ -1090,7 +1090,7 @@ internal sealed class DistributionAcquirer : IDisposable
         var root = string.IsNullOrWhiteSpace(configured)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state")
             : configured;
-        return Path.Combine(root, "hvo", "skymonitor", "distribution");
+        return Path.Combine(root, "hvo-sky", "distribution");
     }
 
     private static void DeleteCachedMetadata(MetadataBytes metadata)

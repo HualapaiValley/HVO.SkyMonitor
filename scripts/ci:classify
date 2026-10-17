@@ -95,7 +95,7 @@ is_deployment_path() {
     scripts/ci:* | scripts/test:ci-classification | scripts/release:cameraagent-image | scripts/lib/*)
       return 0
       ;;
-    scripts/deploy:environment | scripts/deploy/* | scripts/install-hvo-skymonitor.sh)
+    scripts/deploy:environment | scripts/deploy/* | scripts/install-hvo-sky-install.sh)
       return 0
       ;;
     scripts/qualify:filesystem-object-store | scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/test:deployment-logichost-outage-contract | scripts/test:deployment-normal-flow-contract | scripts/test:filesystem-object-store-qualification)
@@ -166,7 +166,7 @@ select_deployment_suites() {
       deployment_catalog="true"
       deployment_installer="true"
       ;;
-    scripts/install-hvo-skymonitor.sh | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/release:cameraagent-image | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.Deployment.Distribution/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
+    scripts/install-hvo-sky-install.sh | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/release:cameraagent-image | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.Deployment.Distribution/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
       deployment_installer="true"
       ;;
     scripts/qualify:filesystem-object-store | scripts/test:filesystem-object-store-qualification)

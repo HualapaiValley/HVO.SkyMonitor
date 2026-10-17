@@ -136,7 +136,7 @@ done < <(jq -r '.profiles[] | [.sourcePath,.sourceSha256,.configurationIdentityS
   jq '.catalogs[1].catalogId="Alternate"' "$layout_inventory" > "$TEMP_DIR/layout-invalid.json"; reject_layout "$TEMP_DIR/layout-invalid.json" invalid-catalog-id
   jq '.catalogs[1].catalogId=("a" * 33) | .cameraAgents[1].catalogId=("a" * 33) | .productRoot as $root | .catalogs[1].installRoot=($root+"/catalogs/"+.catalogs[1].catalogId)' "$layout_inventory" > "$TEMP_DIR/layout-invalid.json"; reject_layout "$TEMP_DIR/layout-invalid.json" overlong-catalog-id
   jq '.catalogs[1].installRoot=.cameraAgents[0].runtimeRoot+"/catalog"' "$layout_inventory" > "$TEMP_DIR/layout-invalid.json"; reject_layout "$TEMP_DIR/layout-invalid.json" unsafe-ancestry
-  jq '.productRoot="/var/lib/hvo/skymonitor" | .productRoot as $root |
+  jq '.productRoot="/var/lib/hvo-sky" | .productRoot as $root |
     .logicHost.runtimeRoot=($root+"/logichosts/"+.logicHost.instanceId) |
     .cameraAgents |= map(.runtimeRoot=($root+"/cameraagents/"+.instanceId)) |
     .catalogs |= map(.installRoot=($root+"/catalogs/"+.catalogId))' "$layout_inventory" > "$TEMP_DIR/layout-persistent.json"

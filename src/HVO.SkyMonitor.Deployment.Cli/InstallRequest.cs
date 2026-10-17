@@ -22,7 +22,7 @@ internal enum CameraAgentReplayProfile
 
 internal sealed record InstallRequest
 {
-    public const string DefaultProductRoot = "/var/lib/hvo/skymonitor";
+    public const string DefaultProductRoot = "/var/lib/hvo-sky";
 
     /// <summary>The longest camera name CameraAgent accepts as its operator-facing display name.</summary>
     public const int MaximumFriendlyNameLength = 80;

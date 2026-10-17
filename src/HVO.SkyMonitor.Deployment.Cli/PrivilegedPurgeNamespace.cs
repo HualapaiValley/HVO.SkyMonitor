@@ -25,8 +25,7 @@ internal static class PrivilegedPurgeNamespace
     [
         ("var", false),
         ("lib", false),
-        ("hvo", true),
-        ("skymonitor", true),
+        ("hvo-sky", true),
         ("cameraagents", true)
     ];
 

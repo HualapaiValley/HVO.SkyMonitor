@@ -175,7 +175,7 @@ internal static class HostPrerequisites
 
     internal const string StorageRemediation =
         "Free space on that filesystem, or provide a larger one: place the product root there with " +
-        "'hvo-skymonitor host set-product-root' before any instance exists, or move Docker's data-root.";
+        "'hvo-sky-install host set-product-root' before any instance exists, or move Docker's data-root.";
 
     /// <summary>The <c>docker info</c> capability fields, the finding code for each, and the limit it enforces.</summary>
     private static readonly (string Field, string Code, string Limit)[] ResourceLimits =

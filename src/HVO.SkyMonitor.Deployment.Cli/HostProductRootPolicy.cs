@@ -31,9 +31,9 @@ internal sealed record HostPolicyLocation(
     string DefaultProductRoot = InstallRequest.DefaultProductRoot,
     string LockPath = HostPolicyLocation.ProductionLockPath)
 {
-    public const string ProductionPolicyPath = "/etc/hvo/skymonitor/host.json";
+    public const string ProductionPolicyPath = "/etc/hvo-sky/host.json";
 
-    public const string ProductionLockPath = "/run/hvo-skymonitor-host-policy.lock";
+    public const string ProductionLockPath = "/run/hvo-sky-host-policy.lock";
 
     public static HostPolicyLocation Production { get; } = new(ProductionPolicyPath, "/", 0, 0);
 
@@ -78,9 +78,9 @@ internal sealed record HostPolicyDocument(string? ProductRoot, string? MountPoin
 internal sealed partial class HostPolicyJsonContext : JsonSerializerContext;
 
 /// <summary>
-/// The root-owned host policy <c>/etc/hvo/skymonitor/host.json</c> (<c>{"productRoot": "/srv/data/hvo-skymonitor"}</c>)
+/// The root-owned host policy <c>/etc/hvo-sky/host.json</c> (<c>{"productRoot": "/srv/data/hvo-skymonitor"}</c>)
 /// that relocates the production product root to another filesystem without a bind mount. Its absence leaves the
-/// default <c>/var/lib/hvo/skymonitor</c> in force. When present it is validated strictly and fails closed: the file
+/// default <c>/var/lib/hvo-sky</c> in force. When present it is validated strictly and fails closed: the file
 /// and every directory from <c>/</c> to it, and every component of the product root it names, must be
 /// <c>root:root</c> and not writable by group or other users; no component may be a symbolic link; the root must be an
 /// absolute normalized path of portable segments that already exists; nothing may be mounted beneath it, so the whole
