@@ -22,6 +22,15 @@ internal static class CameraAgentStateInventory
     private const int MaximumProfileBytes = 4 * 1024 * 1024;
 
     public static IReadOnlyList<string> Stores(InstallationPaths paths, ContractReplayProfile replayProfile)
+        => Stores(paths, replayProfile, includeJournalRevisions: true);
+
+    /// <summary>
+    /// The inventory from configuration alone, for a restore that cannot read the journal it is about to replace.
+    /// </summary>
+    public static IReadOnlyList<string> ConfiguredStores(InstallationPaths paths, ContractReplayProfile replayProfile)
+        => Stores(paths, replayProfile, includeJournalRevisions: false);
+
+    private static List<string> Stores(InstallationPaths paths, ContractReplayProfile replayProfile, bool includeJournalRevisions)
     {
         ArgumentNullException.ThrowIfNull(paths);
         var stores = new List<string>(CameraAgentStateLayout.SqliteStores);
@@ -30,7 +39,7 @@ internal static class CameraAgentStateInventory
             .Select(source => (Container: source.ContainerPath, Relative: Path.GetRelativePath(paths.StateRoot, source.HostPath).Replace('\\', '/')))
             .ToArray();
         var discovered = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var root in ConfiguredStorageRoots(paths))
+        foreach (var root in ConfiguredStorageRoots(paths, includeJournalRevisions))
         {
             if (!IsNormalizedAbsolute(root))
                 throw new InstallerException($"The CameraAgent storage root '{root}' is not an absolute, normalized path, so its outbox cannot be found for a snapshot; correct the configuration before upgrading.");
@@ -52,7 +61,7 @@ internal static class CameraAgentStateInventory
            !relative.StartsWith('/') && !relative.Contains('\\', StringComparison.Ordinal) &&
            relative.Split('/').All(static segment => segment.Length > 0 && segment is not "." and not "..");
 
-    private static SortedSet<string> ConfiguredStorageRoots(InstallationPaths paths)
+    private static SortedSet<string> ConfiguredStorageRoots(InstallationPaths paths, bool includeJournalRevisions)
     {
         var roots = new SortedSet<string>(StringComparer.Ordinal);
         var configuration = Path.Combine(paths.ConfigRoot, "camera-module.json");
@@ -65,7 +74,7 @@ internal static class CameraAgentStateInventory
             CollectStorageRoots(document.RootElement, roots);
         }
         var journal = CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot);
-        if (File.Exists(journal))
+        if (includeJournalRevisions && File.Exists(journal))
         {
             using var database = CameraAgentStatePreflight.ReadOnlyDatabase.Open(journal);
             using var exists = database.Connection.CreateCommand();

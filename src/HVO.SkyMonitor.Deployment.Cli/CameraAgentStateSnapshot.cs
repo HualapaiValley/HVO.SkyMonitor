@@ -213,9 +213,37 @@ internal static class CameraAgentStateSnapshot
     }
 
     /// <summary>
-    /// Puts every store back exactly as the snapshot recorded it. A store recorded as absent is removed. Stale
-    /// sidecars are removed before the snapshot replaces a store, because a write-ahead log or hot journal left by a
-    /// candidate would otherwise be replayed over the restored bytes.
+    /// The plan a restore of <paramref name="snapshot"/> follows: the authenticated snapshot's store locations, and
+    /// <paramref name="currentLocations"/>, the instance's configured inventory now together with any an earlier attempt
+    /// of the same restore recorded. Every location is validated.
+    /// </summary>
+    public static async Task<StateRestorePlan> PlanRestoreAsync(
+        InstallationPaths paths,
+        Guid instanceId,
+        LifecycleStateSnapshot snapshot,
+        IEnumerable<string> currentLocations,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(currentLocations);
+        var manifest = await VerifyAsync(paths, instanceId, snapshot, cancellationToken).ConfigureAwait(false);
+        var current = currentLocations.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+        if (!current.All(CameraAgentStateInventory.IsValidStoreLocation))
+            throw new InstallerException("The CameraAgent store inventory names a location a restore cannot use.");
+        return new StateRestorePlan(
+            snapshot.SnapshotId,
+            current,
+            [.. manifest.Databases.Select(static database => database.RelativePath).Order(StringComparer.Ordinal)]);
+    }
+
+    /// <summary>
+    /// Puts every store back exactly as the snapshot recorded it. A store recorded as absent is removed, and so is a
+    /// store at a location <paramref name="plan"/> lists as current that the snapshot does not record at all, because
+    /// it was created after the snapshot (bulk files are never touched). Stale sidecars are removed before the snapshot
+    /// replaces a store, because a write-ahead log or hot journal left by a candidate would otherwise be replayed over
+    /// the restored bytes. Before it returns, the directory of every store it restored or removed is synced together
+    /// with each directory above it to the product root, whether or not this attempt created it, so the caller's
+    /// completion record never outlives a directory entry an interrupted attempt created and never synced.
     /// </summary>
     public static async Task RestoreAsync(
         InstallationPaths paths,
@@ -224,11 +252,18 @@ internal static class CameraAgentStateSnapshot
         uint uid,
         uint gid,
         IReadOnlyList<StateCounterFloor> floors,
+        StateRestorePlan plan,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(floors);
+        ArgumentNullException.ThrowIfNull(plan);
         var manifest = await VerifyAsync(paths, instanceId, snapshot, cancellationToken).ConfigureAwait(false);
+        var targetLocations = manifest.Databases.Select(static database => database.RelativePath).Order(StringComparer.Ordinal).ToArray();
+        if (plan.SnapshotId != snapshot.SnapshotId || !plan.TargetLocations.SequenceEqual(targetLocations, StringComparer.Ordinal) ||
+            !plan.CurrentLocations.All(CameraAgentStateInventory.IsValidStoreLocation))
+            throw new InstallerException("The journaled restore plan does not match the CameraAgent database snapshot it restores.");
         var root = SnapshotRoot(paths, snapshot.OperationId, snapshot.SnapshotId);
+        var touchedDirectories = new SortedSet<string>(StringComparer.Ordinal);
         // Every floor must be carriable before any store is replaced, so a refusal leaves the live stores untouched.
         foreach (var database in manifest.Databases.Where(static database => database.Present))
         {
@@ -246,15 +281,8 @@ internal static class CameraAgentStateSnapshot
                 // A store the snapshot did not have but whose counters have since handed out identities is kept, so
                 // those identities are never handed out again; the previous release reads it under the migration rule.
                 if (floors.Any(floor => floor.Store == database.RelativePath) && File.Exists(target)) continue;
-                var removed = false;
-                foreach (var file in CameraAgentStateLayout.SqliteSidecarSuffixes.Select(suffix => target + suffix).Prepend(target))
-                {
-                    if (!File.Exists(file)) continue;
-                    EnsureRegularStore(file, database.RelativePath);
-                    File.Delete(file);
-                    removed = true;
-                }
-                if (removed) NativeLinux.FlushDirectory(directory);
+                RemoveStore(target, database.RelativePath);
+                touchedDirectories.Add(directory);
                 continue;
             }
             if (!Directory.Exists(directory))
@@ -287,8 +315,59 @@ internal static class CameraAgentStateSnapshot
             // database on commit, and the directory sync makes its rollback journal's removal durable.
             CameraAgentStateCounters.Apply(target, database.RelativePath, floors);
             NativeLinux.FlushDirectory(directory);
+            touchedDirectories.Add(directory);
             StepCompleted($"restore:{database.RelativePath}");
         }
+        // A store under a root the instance named after the snapshot was taken (a capture schedule created through the
+        // API, say) belongs to no state the snapshot records. Its database changes are lost like every other's, so it is
+        // removed and the previous release never meets it; the files under that root stay.
+        foreach (var location in plan.CurrentLocations.Except(targetLocations, StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var target = StorePath(paths.StateRoot, location);
+            var directory = Path.GetDirectoryName(target)!;
+            SafeFileSystem.EnsureSafeExistingAncestors(directory);
+            if (!Directory.Exists(directory)) continue;
+            RemoveStore(target, location);
+            touchedDirectories.Add(directory);
+            StepCompleted($"restore-removed:{location}");
+        }
+        foreach (var directory in touchedDirectories)
+        {
+            SafeFileSystem.FlushDirectoryChain(directory, paths.ProductRoot);
+        }
+        StepCompleted("restore-directories-synced");
+    }
+
+    /// <summary>Unlinks a store and its SQLite sidecars, each proved a regular file first, and syncs its directory.</summary>
+    private static void RemoveStore(string target, string relative)
+    {
+        var directory = Path.GetDirectoryName(target)!;
+        var removed = false;
+        foreach (var file in CameraAgentStateLayout.SqliteSidecarSuffixes.Select(suffix => target + suffix).Prepend(target))
+        {
+            if (!File.Exists(file)) continue;
+            EnsureRegularStore(file, relative);
+            File.Delete(file);
+            removed = true;
+        }
+        if (removed) NativeLinux.FlushDirectory(directory);
+    }
+
+    /// <summary>The snapshot's copy of the store at <paramref name="relative"/>, or null when it recorded the store as absent.</summary>
+    public static string? StoreFile(
+        InstallationPaths paths,
+        LifecycleStateSnapshot snapshot,
+        StateSnapshotManifest manifest,
+        string relative)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(manifest);
+        var database = manifest.Databases.SingleOrDefault(database => database.RelativePath == relative);
+        return database is { Present: true }
+            ? SnapshotFile(SnapshotRoot(paths, snapshot.OperationId, snapshot.SnapshotId), database)
+            : null;
     }
 
     /// <summary>
@@ -342,6 +421,30 @@ internal static class CameraAgentStateSnapshot
     {
         ArgumentNullException.ThrowIfNull(error);
         return error.WriteLineAsync(json ? Event(snapshot) : Warning(snapshot));
+    }
+
+    /// <summary>
+    /// Says that a restore of <paramref name="snapshot"/> could not read part of the state it replaces: what is named in
+    /// <paramref name="unread"/> is carried only as far as configuration and the journal already recorded it.
+    /// </summary>
+    public static Task ShowRestoreIncompleteAsync(LifecycleStateSnapshot snapshot, string unread, bool json, TextWriter error)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(error);
+        var warning = string.Create(
+            CultureInfo.InvariantCulture,
+            $"Warning: the restore of the CameraAgent databases from snapshot {snapshot.SnapshotId:D} could not read {unread}. Counters in a store it could not read are carried only as far as the lifecycle journal recorded them, and a database under a storage root named only in an unreadable journal may be left in place; no file is touched.");
+        if (!json) return error.WriteLineAsync(warning);
+        var line = new System.Buffers.ArrayBufferWriter<byte>();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(line))
+        {
+            System.Text.Json.JsonSerializer.Serialize(
+                writer,
+                new LifecycleStateSnapshotRestoreEvent(
+                    DeploymentSchemaVersions.LifecycleEvent, LifecycleStateSnapshotRestoreEvent.IncompleteName, warning, snapshot),
+                DeploymentJsonContext.Default.LifecycleStateSnapshotRestoreEvent);
+        }
+        return error.WriteLineAsync(Encoding.UTF8.GetString(line.WrittenSpan));
     }
 
     internal static string StorePath(string stateRoot, string relative)

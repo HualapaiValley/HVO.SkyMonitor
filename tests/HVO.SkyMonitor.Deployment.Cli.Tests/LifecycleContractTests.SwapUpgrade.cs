@@ -378,8 +378,8 @@ public sealed partial class LifecycleContractTests
     public async Task UpgradeAsync_PowerLossDuringTheRestore_ResumeFinishesItBeforeTheOriginalStarts()
     {
         // A power loss after the candidate migrated the stores is resumed by restoring the snapshot. A second power
-        // loss at any durable step of that restore (a stale sidecar removed, a store replaced, the restore recorded)
-        // is resumed again, and the original still starts only on fully restored stores.
+        // loss at any durable step of that restore (a stale sidecar removed, a store replaced, the directories synced,
+        // the restore recorded) is resumed again, and the original still starts only on fully restored stores.
         using var fixture = await MigratingFixtureAsync();
         SeedStores(fixture.Paths);
         var before = ReadStoreFacts(fixture.Paths);
@@ -417,7 +417,8 @@ public sealed partial class LifecycleContractTests
             ResetCrashHooks();
         }
         var restoreSteps = second.Where(static image => image.Step.StartsWith("restore", StringComparison.Ordinal)).ToArray();
-        Assert.AreEqual(2 * 3, restoreSteps.Length, string.Join(", ", second.Select(static image => image.Step)));
+        // Two steps for each of the three present stores, and the sync of every restored directory's chain.
+        Assert.AreEqual(2 * 3 + 1, restoreSteps.Length, string.Join(", ", second.Select(static image => image.Step)));
 
         foreach (var image in second.TakeWhile(static image => image.Step != "journal:Completed"))
         {

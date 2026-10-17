@@ -646,14 +646,15 @@ internal sealed class CameraAgentLifecycleManager
                 .ConfigureAwait(false)
             : (null, null);
         // An interrupted operation whose own snapshot is not yet restored runs on that snapshot once --resume restores
-        // it, so the preflight and the migration check read the authenticated snapshot rather than whatever the
-        // interruption left in the live stores; a damaged candidate state can then never block its own recovery.
-        if (preflightDatabases is null &&
-            operation is { MutationStarted: true, StateSnapshot: { } pendingSnapshot, StateSnapshotRestoredUtc: null })
+        // it, so the snapshot is authenticated here, before any container or file changes, whichever snapshot supplies
+        // the preflight view: a rollback previews its retained snapshot but still restores this one first. An upgrade's
+        // preflight and migration check then read it rather than whatever the interruption left in the live stores, so a
+        // damaged candidate state can never block its own recovery.
+        if (operation is { MutationStarted: true, StateSnapshot: { } pendingSnapshot, StateSnapshotRestoredUtc: null })
         {
             var pendingManifest = await CameraAgentStateSnapshot.VerifyAsync(paths, manifest.InstanceId, pendingSnapshot, cancellationToken)
                 .ConfigureAwait(false);
-            preflightDatabases = CameraAgentStateSnapshot.PreflightView(paths, pendingSnapshot, pendingManifest);
+            preflightDatabases ??= CameraAgentStateSnapshot.PreflightView(paths, pendingSnapshot, pendingManifest);
         }
         // Every boundary is proved before the snapshot, drain, stop, and Compose mutation begin, so an incompatible
         // upgrade or rollback never reaches a container restart loop.
@@ -826,6 +827,7 @@ internal sealed class CameraAgentLifecycleManager
         {
             SafeFileSystem.WriteTextAtomic(compose.ComposeFile, originalCompose);
             SafeFileSystem.WriteTextAtomic(compose.EnvironmentFile, originalEnvironment);
+            SafeFileSystem.FlushDirectoryChain(Path.GetDirectoryName(compose.ComposeFile)!, paths.ProductRoot);
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             if (operation.StateSnapshot is { } interrupted && operation.StateSnapshotRestoredUtc is null)
             {
@@ -914,10 +916,10 @@ internal sealed class CameraAgentLifecycleManager
                 }, cancellationToken).ConfigureAwait(false);
                 if (operation.RetainedStateSnapshot is { } retainedState)
                 {
-                    operation = await RecordCounterFloorsAsync(paths, operation, cancellationToken).ConfigureAwait(false);
+                    operation = await RecordRestorePlanAsync(paths, manifest, operation, retainedState, request.Json, error, cancellationToken).ConfigureAwait(false);
                     await CameraAgentStateSnapshot.RestoreAsync(
                         paths, manifest.InstanceId, retainedState, manifest.RuntimeUid, manifest.RuntimeGid,
-                        operation.StateCounterFloors!, cancellationToken)
+                        operation.StateCounterFloors!, operation.StateRestorePlan!, cancellationToken)
                         .ConfigureAwait(false);
                     operation = await RecordAsync(
                         paths, operation with { Phase = LifecycleOperationPhase.RetainedStateApplied }, cancellationToken)
@@ -976,6 +978,7 @@ internal sealed class CameraAgentLifecycleManager
             SafeFileSystem.FlushDirectoryChain(rollbackRoot, paths.ProductRoot);
             SafeFileSystem.WriteTextAtomic(compose.ComposeFile, await File.ReadAllTextAsync(stagedCompose, cancellationToken).ConfigureAwait(false));
             SafeFileSystem.WriteTextAtomic(compose.EnvironmentFile, candidateEnvironment);
+            SafeFileSystem.FlushDirectoryChain(Path.GetDirectoryName(compose.ComposeFile)!, paths.ProductRoot);
             var committed = manifest with
             {
                 Image = candidate,
@@ -1051,6 +1054,7 @@ internal sealed class CameraAgentLifecycleManager
                     {
                         SafeFileSystem.WriteTextAtomic(compose.ComposeFile, originalCompose);
                         SafeFileSystem.WriteTextAtomic(compose.EnvironmentFile, originalEnvironment);
+                        SafeFileSystem.FlushDirectoryChain(Path.GetDirectoryName(compose.ComposeFile)!, paths.ProductRoot);
                         var snapshot = await ReadRecoverySnapshotAsync(
                             paths, operation, previousManifestPath, previousResultPath, recovery.Token).ConfigureAwait(false);
                         await WriteRecoverySnapshotAsync(paths, snapshot.Manifest, snapshot.Result, recovery.Token).ConfigureAwait(false);
@@ -1062,6 +1066,14 @@ internal sealed class CameraAgentLifecycleManager
                             SafeFileSystem.WriteTextAtomic(retainedRollbackEnvironment, await File.ReadAllTextAsync(priorRollbackEnvironment, recovery.Token).ConfigureAwait(false));
                         else if (File.Exists(retainedRollbackEnvironment))
                             File.Delete(retainedRollbackEnvironment);
+                        // The restored rollback records, deletions included, are durable before the journal settles.
+                        if (Directory.Exists(rollbackRoot)) SafeFileSystem.FlushDirectoryChain(rollbackRoot, paths.ProductRoot);
+                    }
+                    // The snapshot this recovery restores is authenticated before any container is stopped, so a
+                    // damaged snapshot leaves whatever runs in place rather than an instance with nothing running.
+                    if (operation.StateSnapshot is { } pending && operation.StateSnapshotRestoredUtc is null)
+                    {
+                        await CameraAgentStateSnapshot.VerifyAsync(paths, manifest.InstanceId, pending, recovery.Token).ConfigureAwait(false);
                     }
                     EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(recovery.Token).ConfigureAwait(false));
                     if (failedPhase is LifecycleOperationPhase.Mutating or LifecycleOperationPhase.CandidateVerified)
@@ -1144,29 +1156,76 @@ internal sealed class CameraAgentLifecycleManager
         CancellationToken cancellationToken)
     {
         await CameraAgentStateSnapshot.ShowWarningAsync(snapshot, json, error).ConfigureAwait(false);
-        operation = await RecordCounterFloorsAsync(paths, operation, cancellationToken).ConfigureAwait(false);
+        operation = await RecordRestorePlanAsync(paths, manifest, operation, snapshot, json, error, cancellationToken).ConfigureAwait(false);
         await CameraAgentStateSnapshot.RestoreAsync(
                 paths, manifest.InstanceId, snapshot, manifest.RuntimeUid, manifest.RuntimeGid,
-                operation.StateCounterFloors!, cancellationToken)
+                operation.StateCounterFloors!, operation.StateRestorePlan!, cancellationToken)
             .ConfigureAwait(false);
         return await RecordAsync(paths, operation with { StateSnapshotRestoredUtc = DateTimeOffset.UtcNow }, cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Records, before any store is replaced, the highest value each monotonic counter has reached: the higher of what
-    /// the journal already holds and what the live stores hold now. A restore repeated after a crash, when the live
-    /// stores may already be the rewound snapshot, therefore still raises the counters to the true marks.
+    /// Records, before any store is replaced, what the restore of <paramref name="snapshot"/> must preserve and cover:
+    /// <list type="bullet">
+    /// <item>the highest value each monotonic counter has reached, the higher of what the journal already holds and what
+    /// the live stores hold now, so a restore repeated after a crash, when the live stores may already be the rewound
+    /// snapshot, still raises the counters to the true marks;</item>
+    /// <item>the plan: every store location the configured inventory lists now, together with those any earlier attempt
+    /// recorded (the inventory reads schedule revisions from the journal the restore replaces) and, when the target is
+    /// another snapshot, those the operation's own snapshot recorded; and the target snapshot's own locations.</item>
+    /// </list>
+    /// A candidate that damaged a store beyond reading must not block its own recovery, so the inventory then falls back
+    /// to the configured roots, the damaged store's counters are carried only as far as the journal recorded them, and
+    /// the restore says so on standard error.
     /// </summary>
-    private static Task<LifecycleOperationState> RecordCounterFloorsAsync(
+    private static async Task<LifecycleOperationState> RecordRestorePlanAsync(
         InstallationPaths paths,
+        InstanceManifest manifest,
         LifecycleOperationState operation,
+        LifecycleStateSnapshot snapshot,
+        bool json,
+        TextWriter error,
         CancellationToken cancellationToken)
-        => RecordAsync(paths, operation with
+    {
+        var incomplete = new List<string>();
+        IReadOnlyList<string> inventory;
+        try
         {
-            StateCounterFloors = CameraAgentStateCounters.Merge(
-                operation.StateCounterFloors, CameraAgentStateCounters.Read(paths.StateRoot))
-        }, cancellationToken);
+            inventory = CameraAgentStateInventory.Stores(paths, manifest.ReplayProfile);
+        }
+        catch (Exception exception) when (exception is InstallerException or Microsoft.Data.Sqlite.SqliteException or IOException)
+        {
+            inventory = CameraAgentStateInventory.ConfiguredStores(paths, manifest.ReplayProfile);
+            incomplete.Add($"the storage roots in the journal ({Redaction.SafeDiagnostic(exception.Message)})");
+        }
+        IEnumerable<string> current = (operation.StateRestorePlan?.CurrentLocations ?? []).Concat(inventory);
+        if (operation.StateSnapshot is { } own && own != snapshot)
+        {
+            var ownManifest = await CameraAgentStateSnapshot.VerifyAsync(paths, manifest.InstanceId, own, cancellationToken)
+                .ConfigureAwait(false);
+            current = current.Concat(ownManifest.Databases.Select(static database => database.RelativePath));
+        }
+        var plan = await CameraAgentStateSnapshot.PlanRestoreAsync(paths, manifest.InstanceId, snapshot, current, cancellationToken)
+            .ConfigureAwait(false);
+        var target = await CameraAgentStateSnapshot.VerifyAsync(paths, manifest.InstanceId, snapshot, cancellationToken)
+            .ConfigureAwait(false);
+        var (observed, unreadable) = CameraAgentStateCounters.ReadReadable(paths.StateRoot);
+        incomplete.AddRange(unreadable.Select(static store => $"the counters of '{store}'"));
+        if (incomplete.Count > 0)
+        {
+            await CameraAgentStateSnapshot.ShowRestoreIncompleteAsync(snapshot, string.Join("; ", incomplete), json, error)
+                .ConfigureAwait(false);
+        }
+        var floors = CameraAgentStateCounters.TrimCarries(
+            CameraAgentStateCounters.Merge(operation.StateCounterFloors, observed),
+            CameraAgentStateSnapshot.StoreFile(paths, snapshot, target, CameraAgentStateLayout.AutomationStore));
+        return await RecordAsync(paths, operation with
+        {
+            StateCounterFloors = floors,
+            StateRestorePlan = plan
+        }, cancellationToken).ConfigureAwait(false);
+    }
 
     private static async Task<LifecycleResult> UninstallAsync(
         LifecycleRequest request,

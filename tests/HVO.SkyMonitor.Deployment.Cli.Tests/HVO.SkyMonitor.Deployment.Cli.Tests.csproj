@@ -12,7 +12,7 @@
     <EmbeddedResource Include="ReleaseManifestSchema1.json" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="..\fixtures\state-compatibility\previous-release\manifest.json" Link="Fixtures\previous-release\manifest.json">
+    <None Include="..\fixtures\state-compatibility\previous-release\*" Link="Fixtures\previous-release\%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

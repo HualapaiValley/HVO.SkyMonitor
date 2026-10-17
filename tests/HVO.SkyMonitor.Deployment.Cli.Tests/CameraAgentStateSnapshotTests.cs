@@ -57,9 +57,9 @@ public sealed class CameraAgentStateSnapshotTests
         }
         await File.WriteAllTextAsync(raw + "-journal", "hot journal left by a crash");
 
-        await CameraAgentStateSnapshot.RestoreAsync(root.Paths, root.InstanceId, snapshot, root.Uid, root.Gid, [], CancellationToken.None);
+        await CameraAgentStateSnapshot.RestoreAsync(root.Paths, root.InstanceId, snapshot, root.Uid, root.Gid, [], await CameraAgentStateSnapshot.PlanRestoreAsync(root.Paths, root.InstanceId, snapshot, [], CancellationToken.None), CancellationToken.None);
         var once = await SafeFileSystem.ComputeSha256Async(raw, CancellationToken.None);
-        await CameraAgentStateSnapshot.RestoreAsync(root.Paths, root.InstanceId, snapshot, root.Uid, root.Gid, [], CancellationToken.None);
+        await CameraAgentStateSnapshot.RestoreAsync(root.Paths, root.InstanceId, snapshot, root.Uid, root.Gid, [], await CameraAgentStateSnapshot.PlanRestoreAsync(root.Paths, root.InstanceId, snapshot, [], CancellationToken.None), CancellationToken.None);
 
         CollectionAssert.AreEqual(expected, Rows(raw));
         Assert.AreEqual(once, await SafeFileSystem.ComputeSha256Async(raw, CancellationToken.None));

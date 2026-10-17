@@ -110,6 +110,9 @@ internal static class CameraAgentStateLayout
     /// databases a migrating upgrade snapshots. None lies inside a bulk frame, archive or derived tree, so the snapshot
     /// never reads bulk data. The artifact outbox lives in each storage root the generated pipeline writes to.
     /// </summary>
+    /// <summary>The local automation store's location under the state root.</summary>
+    public const string AutomationStore = RawDirectoryName + "/.automation/local-automations.db";
+
     public static IReadOnlyList<string> SqliteStores { get; } =
     [
         $"{IdentityDirectoryName}/{IdentityDatabaseFileName}",

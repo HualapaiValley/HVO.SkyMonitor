@@ -242,14 +242,33 @@ public sealed record LifecycleOperationState(
     LifecycleStateSnapshot? StateSnapshot = null,
     DateTimeOffset? StateSnapshotRestoredUtc = null,
     LifecycleStateSnapshot? RetainedStateSnapshot = null,
-    IReadOnlyList<StateCounterFloor>? StateCounterFloors = null);
+    IReadOnlyList<StateCounterFloor>? StateCounterFloors = null,
+    StateRestorePlan? StateRestorePlan = null);
 
 /// <summary>
-/// The highest value a monotonic CameraAgent counter had reached when a snapshot restore began. Each counter hands out
-/// identities that leave the instance (capture sequences, the fleet report sequence, the capture-control version), so
-/// a restore raises the restored counter to at least this value and never lets an identity be handed out twice.
+/// What a snapshot restore covers, journaled before it replaces any store so that an interrupted retry still knows it:
+/// every store location the instance's configured inventory listed when the restore began (and at any earlier attempt
+/// of the same operation), and every location the target snapshot records. A store at a current location the snapshot
+/// does not record was created after the snapshot, so the restore removes it, keeping every bulk file.
 /// </summary>
-public sealed record StateCounterFloor(string Store, string Counter, string Key, long Value);
+public sealed record StateRestorePlan(
+    Guid SnapshotId,
+    IReadOnlyList<string> CurrentLocations,
+    IReadOnlyList<string> TargetLocations);
+
+/// <summary>
+/// The highest value a CameraAgent counter or version token had reached when a snapshot restore began. Each one hands
+/// out a sequence or version that leaves the instance or that a client sends back, so a restore never lets one be
+/// handed out again for different state. <see cref="Carry"/> holds what the restore needs to continue a version line
+/// whose row the snapshot does not have.
+/// </summary>
+public sealed record StateCounterFloor(string Store, string Counter, string Key, long Value, StateCounterCarry? Carry = null);
+
+/// <summary>
+/// The latest revision of an automation definition the restored snapshot does not have, recorded so the restore can
+/// record that definition as removed at a version above every one it handed out.
+/// </summary>
+public sealed record StateCounterCarry(string RevisionSha256, string DefinitionJson);
 
 /// <summary>
 /// A verified snapshot of an instance's small SQLite databases, taken by one image lifecycle operation while the
@@ -385,6 +404,12 @@ public sealed record LifecycleStateSnapshotRestoreEvent(int SchemaVersion, strin
 {
     /// <summary>The <see cref="Event"/> this record carries.</summary>
     public const string Name = "state-snapshot-restore";
+
+    /// <summary>
+    /// The <see cref="Event"/> a restore also writes when it could not read part of the state it replaces (a store a
+    /// failed candidate damaged), so that part is carried only as far as configuration and the journal recorded it.
+    /// </summary>
+    public const string IncompleteName = "state-snapshot-restore-incomplete";
 }
 
 public sealed record InstallationState(
