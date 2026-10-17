@@ -38,9 +38,18 @@ Information, and the next pass after capture resumes runs normally.
 The pause is a barrier, not a flag each pass happens to read. A pass enters capture
 admission before it deletes anything, and the pause is acknowledged only after every
 admitted pass has finished, including one still waiting for its storage lock; no new
-pass is admitted until capture resumes. The projected-scene stage cleanup that runs
-when the raw-ingress journal opens at startup reads the durable admission state from
-the journal instead, and skips unless it records capture running. See
+pass is admitted until capture resumes.
+
+The same barrier covers every other deletion a restored database row could depend on:
+- An uploaded payload is not removed after its acknowledgement; retention removes it later, on its root's schedule.
+- A projected-scene stage is removed after its processing node commits only once capture opens.
+- A frame sidecar is upgraded in place only once capture opens; until then the node retries.
+- Raw-ingress evidence is quarantined when the journal opens only once capture opens. Until then raw ingress reports
+  Degraded (`reconciliation-held`), and the quarantine runs as soon as capture resumes.
+- Stage cleanup when the journal opens, and the calibration bundle quarantine at host start, wait the same way.
+
+A first initialization reads the durable admission state from the journal, because admission initialization waits for
+it; a later one takes a lease without initializing admission. See
 [Swap upgrade and database snapshots](deployment-installer.md#swap-upgrade-and-database-snapshots).
 
 The completion log records the storage root, deleted file count, and number of

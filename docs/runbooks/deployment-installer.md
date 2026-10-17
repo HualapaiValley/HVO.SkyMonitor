@@ -1556,6 +1556,25 @@ survives the container, so there is nothing to snapshot. A root that is not an a
 refuses the upgrade before anything changes. The unit tests compare this inventory by location with the stores the
 CameraAgent actually creates (`CameraAgentStateInventoryTests` and `PreviousReleaseStoreReadabilityTests`).
 
+**A store under a root named after the snapshot is removed by the restore.** A capture schedule created through the API
+after the snapshot can name a new storage root, and its outbox there has nothing in the snapshot to go back to.
+Removing it is what the restore warning promises: the database changes since the snapshot are lost. The previous
+release then never meets it, even if the root is used again.
+
+Before it replaces any store, the restore journals two lists (`stateRestorePlan`):
+- every location the configured inventory lists now, together with any an earlier attempt recorded and, for a rollback,
+  every location the rollback's own snapshot holds;
+- every location the target snapshot records.
+
+The inventory reads schedule revisions from the journal the restore is about to replace, so an interrupted retry still
+knows a root whose revision the first attempt already rewound. A store at a current location that the target snapshot
+does not record is removed with its SQLite sidecars. The directory, and every bulk file under that root, stays.
+
+If a candidate damaged a store beyond reading, its recovery is not blocked:
+- the inventory falls back to `camera-module.json`;
+- that store's counters are carried only as far as the journal recorded them;
+- the restore says so on standard error, or with `--json` as a `state-snapshot-restore-incomplete` event.
+
 **Retention and cleanup are held for the whole swap.** CameraAgent deletes frames, archived and derived products,
 and unowned projected-scene stages only while capture admission is running. The installer pauses admission durably
 before it stops the previous image and resumes it only after the candidate commits or the previous image is restored,
@@ -1564,14 +1583,32 @@ and reported. An operator pause holds them too; a paused instance captures nothi
 data it protects. While held, the log says
 `<maintenance> held while capture admission is Paused; nothing was deleted`.
 
-The pause is a deletion barrier. Each retention, derived-product and stage-reconciliation pass enters capture admission
-before it deletes anything, and a pass already admitted holds the pause back until it has finished, including one still
-waiting for its storage lock. The installer sees `Paused` only after every such pass is done, and no new pass is
-admitted until capture resumes. The hold also covers startup: CameraAgent's own projected-scene stage cleanup when the
-raw-ingress journal opens reads the durable admission state from that journal and skips unless it records capture
-running, so a candidate started under the pause deletes no stage. `--resume` keeps the pause from its recovery through its retry.
-The previous image restarts with capture still paused, and the retry's candidate starts under the same pause. Capture
-resumes only once the retry has decided the swap.
+The pause is a deletion barrier. Every CameraAgent path that can delete, move or rewrite in place a file a restored
+database row may name holds a capture maintenance lease. It takes the lease before it decides to delete, and keeps it
+through its lock waits and the deletion. A lease is granted only while admission is running. A pass already admitted
+holds the pause back until it has finished, so the installer sees `Paused` only when nothing more will be deleted.
+
+The paths, and what each does while the barrier is held:
+
+| Path | While capture is paused |
+| --- | --- |
+| retention | deletes nothing |
+| derived-product reconciliation | deletes nothing |
+| projected-scene stage reconciliation | deletes nothing |
+| removal of a payload after its upload is acknowledged | records the acknowledgement and keeps the payload; it is no longer pending, so retention removes it later |
+| removal of a projected-scene stage after its processing node commits | deferred until capture opens |
+| in-place upgrade of a frame sidecar to name its producer | fails retryably, and the node runs again once capture opens |
+| raw-ingress evidence quarantine when the journal opens | finds mismatched or orphan evidence but moves none, reports Degraded (`reconciliation-held`), and quarantines it once capture opens |
+| stage cleanup when the journal opens | deletes nothing |
+| calibration bundle quarantine at host start | leaves the move planned for a later start |
+
+A first initialization reads the durable state the journal records, because admission initialization waits for it, so no
+pause can be acknowledged before it ends. A later re-initialization takes a lease without initializing admission.
+
+The sweep of every deletion path, with why each remaining one cannot touch data a restore depends on, is in the #1314 correction-round-2
+ledger. `--resume` keeps the pause from its recovery through its retry: the previous image restarts with capture
+still paused, and the retry's candidate starts under the same pause. Capture resumes only once the retry has decided
+the swap.
 
 **A restore loses later database changes.** Restoring a snapshot writes this warning to standard error before it
 changes anything (with `--json`, a one-line `state-snapshot-restore` event):
@@ -1618,17 +1655,46 @@ The unit tests prove these behaviours against a snapshot restore:
 `RunAsync_AfterASnapshotRollback_KeepsAProductWrittenSinceTheSnapshotThroughTheWindowThenQuarantinesIt` and
 `ApplyRetentionAsync_AfterASnapshotRollback_AnArtifactWhoseOutboxRowWasRewoundExpiresOnItsAgeSchedule`.
 
-**A restore never rewinds an identity counter.** Three counters hand out identities that leave the instance or
-that clients hold: the per-agent capture sequence (`raw_capture_sequences.last_sequence`, reserved before a capture's
-files exist), the capture-control version (`capture_control_state.version`), and the fleet-report sequence
-(`fleet_status_metadata.next_sequence`, which keeps advancing while capture is idle or paused). Before it replaces any
-store, the installer journals each counter's highest value (`stateCounterFloors`). It takes the highest of what the
-live stores hold and any floor already journaled, so a repeated or resumed restore never lowers it. Each restored
-store has its counters raised to at least those floors in one synced transaction, and the result is read back before
-the previous image starts. A capture sequence reserved without files is never handed out again, and fleet reports keep
-numbering forward. The rollback's continuity check compares against the journaled boundary and passes. A snapshot that
-cannot carry a counter, because its table or row is missing, refuses the restore before any store is replaced. Every
-other store identifies what leaves the instance by a random or content-derived identity, so a rewind cannot reuse one.
+**A restore never lets a client-held sequence or version be issued again.** Every counter in the CameraAgent stores
+that hands out a sequence or version that leaves the instance, or that a client sends back, is carried forward
+(`CameraAgentStateCounters`). Each one is carried in one of three ways:
+
+- **High-water.** These are raised to at least their highest value:
+  - the per-agent capture sequence (`raw_capture_sequences.last_sequence`), reserved before a capture's files exist;
+  - the fleet-report sequence (`fleet_status_metadata.next_sequence`), which keeps advancing while capture is idle or
+    paused;
+  - the capture-control version (`capture_control_state.version`). The installer pauses before every snapshot and
+    every restore, so the restored admission state and the live one are the same paused state.
+- **AUTOINCREMENT row IDs that client action and reference tokens name.** These are the environmental outbox and journal
+  records and the execution-evidence units. Their `sqlite_sequence` is raised the same way, so a rewound table never
+  reissues an ID a token names.
+- **Optimistic-concurrency versions a client sends back and the store compares equal.** These are:
+  - the capture schedule;
+  - the named-rig selection;
+  - the calibration library;
+  - the processing-graph registry;
+  - each automation definition.
+
+  A restored value below the highest one handed out moves above it, so every token issued after the snapshot is stale
+  and the next change issues a version no client has seen.
+
+Two cases need more than a raise:
+- **An automation definition the snapshot lacks.** It is recorded in the restored store as removed, at a version above
+  its highest. The store's own rule, that a recreated definition continues its revision line, then keeps its old
+  versions from being issued again.
+- **A lazily created singleton the snapshot lacks**, such as the schedule state or the graph registry. The previous
+  release creates it at version 1 from the same configuration. A floor of 1 needs nothing. A higher floor refuses the
+  restore before any store is replaced.
+
+Before it replaces any store, the installer journals each counter's highest value (`stateCounterFloors`): the higher of
+the live stores and any floor already journaled, so a repeated or resumed restore never lowers it. Each restored store
+has its counters carried in one synced transaction, and the result is read back before the previous image starts. The
+rollback's continuity check compares against the journaled boundary and passes.
+
+A guard test classifies every counter-like column in every store image as carried or as never leaving the instance,
+with the reason (`CameraAgentStateCountersAuditTests`). A new one fails until it is classified. Revoked credentials are
+another matter: an API key or session revoked after the snapshot comes back with the Identity database. This is
+covered by the restore warning ("accounts recorded since then"); revoke them again after a rollback.
 
 A failed candidate is restored while capture is still paused, so only what the candidate itself wrote is lost. A
 committed migrating upgrade records its snapshot in `instance-manifest.json` as `previousStateSnapshot`. A later
@@ -1648,15 +1714,26 @@ sequence against a real container.
 (`stateMigration`) before the drain, the snapshot reference (`stateSnapshot`) once every copy and the manifest are
 synced, and `stateSnapshotRestoredUtc` once a restore is synced and before the previous image starts. Each snapshot
 file, the manifest and each restored store is written under a temporary name, synced, renamed and its directory
-synced. Every directory a published reference depends on is durable first. The operation directory and each
-directory above it, up to the product root, are synced before the journal first records that mutation started, and
-again after the snapshot manifest and the rollback recovery files are written and before the journal or manifest
-names them. A power loss can therefore never leave a reference to a file whose directory entry was lost.
+synced. Every directory a published reference depends on is durable first, and each is synced along with every
+directory above it, up to the product root:
+
+- the operation directory, before the journal first records that mutation started;
+- the snapshot directory, after the snapshot manifest and before the journal names it;
+- the rollback recovery files' directory, before the manifest commit, and again after a recovery puts them back;
+- the Compose directory, after every rewrite of the live Compose files;
+- the directory of every store a restore puts back or removes, at the end of each restore and before
+  `stateSnapshotRestoredUtc` or any other completion record. This holds even when the directory already existed, since
+  an interrupted attempt may have created it without syncing its parent.
+
+A power loss can therefore never leave a reference, or a completion record, to a file whose directory entry was lost.
 
 An interrupted operation whose snapshot is recorded but not yet restored recovers onto that snapshot, whatever the
-candidate left behind. `--resume` and `--restore-only` both authenticate the snapshot first. They check the original
-image's state boundaries against the snapshot copies, not the live stores, so a candidate that left a newer or
-unreadable journal cannot block its own recovery. `--resume` stops whatever is running, restores the snapshot, starts the
+candidate left behind. Every recovery authenticates that snapshot before it changes any container: `--resume` of an
+upgrade or a rollback (a rollback previews its retained snapshot for the preflight but still restores its own first),
+`--restore-only`, and the automatic recovery of a failed candidate, which leaves the candidate running rather than
+stopping it to find the snapshot damaged. `--restore-only` serves upgrades only and refuses a rollback before anything
+changes. `--resume` and `--restore-only` then check the original image's state boundaries against the snapshot
+copies, not the live stores, so a candidate that left a newer or unreadable journal cannot block its own recovery. `--resume` stops whatever is running, restores the snapshot, starts the
 previous image with capture still paused, and retries. It never restores again after the previous image has started on
 restored stores, so it cannot overwrite what that image has captured since. `--restore-only` restores the same way
 (below) and then resumes capture instead of retrying. A retry takes a new snapshot. Snapshots are kept with their
@@ -1675,16 +1752,22 @@ migration history. It fails in either of two cases:
 - the previous release's stores, once the current code has opened and migrated them, differ from the images.
 
 A processing table gaining a column while `capture_processing_schema` stays at 8 fails it. So does a new table, index
-or column in any other store, a changed user version, a fleet `schema_version` bump, or an added EF migration. The fixture changes only in the release pull request
-that cuts a version (`HVO_WRITE_PREVIOUS_RELEASE_FIXTURES` regenerates it). A change that cannot meet the rule is
-declared in the fixture's `snapshotRollbackExceptions`, naming:
+or column in any other store, a changed user version, a fleet `schema_version` bump, or an added EF migration. The
+fixture changes only in the release pull request that cuts a version (`HVO_WRITE_PREVIOUS_RELEASE_FIXTURES`
+regenerates it). The fixture also freezes the previous release's image labels (`imageLabels`).
+
+A change that cannot meet the rule is declared in the fixture's `snapshotRollbackExceptions`, naming:
 
 - the store;
 - its changed objects;
-- the image state-boundary label whose change makes the installer treat the upgrade as a migration, snapshot the
-  stores and roll back by restoring them.
+- an image state-boundary label;
+- that label's value on the previous release (`previousValue`, which must equal the frozen one);
+- its value on this release (`candidateValue`, which must equal this release's Dockerfile).
 
-The test refuses an exception whose label the installer does not compare.
+`CameraAgentSnapshotRollbackExceptionTests` then reads both label sets through the installer's own label reading and
+boundary comparison (`CameraAgentStateMigration.DeclaredChanges`). It accepts the exception only when that comparison
+reports a change for the label, which is what makes the upgrade snapshot the stores and the rollback restore them. An
+unchanged label, a label the installer does not compare, and values that do not match either release are all refused.
 
 ### Upgrade notes and older targets
 

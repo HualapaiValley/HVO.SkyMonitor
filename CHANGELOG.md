@@ -40,9 +40,14 @@ onward; earlier development is recorded in its pull requests. A release renames 
   first; a failed candidate is restored onto them, and a later `rollback` puts them back with a warning that database
   changes since the upgrade are lost. The snapshot covers the outbox of every configured storage root, and a restore
   never rewinds the capture-sequence, capture-control-version or fleet-report counters. An interrupted upgrade
-  recovers onto its snapshot with `--resume` or `--restore-only`. `--migration-backward-compatible` is no longer
-  needed and changes nothing. CameraAgent holds retention and cleanup while capture is paused, and acknowledges a
-  pause only after every deletion pass already running has finished. (#1314)
+  recovers onto its snapshot with `--resume` or `--restore-only`. Every client-held version token is carried too:
+  the schedule, rig-selection, calibration, processing-graph and automation versions, and the row IDs in outbox
+  action tokens. A store under a storage root named after the snapshot is removed by the restore, keeping its
+  files. Every recovery authenticates its snapshot before it changes a container, and every restored directory is
+  synced before the restore is recorded. `--migration-backward-compatible` is no longer needed and changes nothing.
+  CameraAgent holds every deletion a restore could depend on while capture is paused, including upload cleanup, raw
+  evidence quarantine and post-commit stage removal. It acknowledges a pause only after every deletion already
+  running has finished. (#1314)
 - Successful raw ingress SQLite commits and checkpoints are logged at Debug instead of Warning. A manual location
   override superseded by configuration is logged at Information. Warnings now mean something did not work. (#1303)
 
