@@ -198,6 +198,7 @@ then run `scripts/test:release-install --install-source registry --upgrade-sourc
 
 `scripts/test:release-scripts` proves the gate's and the push script's decisions with fake `gh` and `skopeo` commands.
 CI's Quality job always runs it. **Development v1 / Preflight** runs it when the classifier's `release_scripts` output
-selects it: on a pull request that changes the release scripts, `.github/workflows/prerelease.yml`, the release tool,
+selects it: on a pull request that changes the release scripts or the library `scripts/test:release-install` sources,
+`.github/workflows/prerelease.yml`, the release tool,
 or the Preflight wiring that runs it (`development-v1.yml`, `scripts/ci:classify`), on every push, and whenever the
 classification failed or is incomplete ([ci-pipeline.md](ci-pipeline.md#release-script-tests)).

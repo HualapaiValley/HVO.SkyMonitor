@@ -52,7 +52,8 @@ Preflight** runs it after the secret scanner contract, reading the same classifi
 output selects it. On a PR that output is `true` when the change touches `scripts/release:assets`,
 `scripts/release:push-image`, `scripts/release:prerelease-gate`, `scripts/release:publish-prerelease`,
 `scripts/test:release-install`,
-`scripts/test:release-scripts`, `.github/workflows/prerelease.yml`, anything under
+`scripts/test:release-scripts`, the `scripts/lib/deployment-installer-qualification.sh` library that
+`scripts/test:release-install` sources, `.github/workflows/prerelease.yml`, anything under
 `tools/HVO.SkyMonitor.Deployment.ReleaseTool/`, or the wiring that runs it (`.github/workflows/development-v1.yml`,
 `scripts/ci:classify`). Deleting one of those paths selects it too. Pushes, missing commits, empty ranges, failed or
 malformed diffs, missing or non-regular tree entries, missing outputs and classifier-step failures all run it: only a

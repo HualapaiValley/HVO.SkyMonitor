@@ -236,6 +236,7 @@ release_scripts_paths=(
   "scripts/release:publish-prerelease"
   "scripts/test:release-install"
   "scripts/test:release-scripts"
+  "scripts/lib/deployment-installer-qualification.sh"
   ".github/workflows/prerelease.yml"
   "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"
   "tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj"
