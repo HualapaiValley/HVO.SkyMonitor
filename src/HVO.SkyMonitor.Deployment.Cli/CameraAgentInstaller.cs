@@ -477,7 +477,7 @@ internal sealed class CameraAgentInstaller
             // stage never leaves evidence naming a release no container is running.
             if (acquiredImage is not null)
             {
-                await acquiredImage.WriteEvidenceAsync(paths, result.Image, cancellationToken).ConfigureAwait(false);
+                await ReleaseRecords.SettleAsync(paths, acquiredImage, result.Image, cancellationToken).ConfigureAwait(false);
             }
             _ = await RecordPhaseAsync(
                 paths,

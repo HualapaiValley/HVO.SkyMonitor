@@ -17,8 +17,8 @@ internal static class UpgradeNotes
     /// The release version of the image the instance runs, which an upgrade compares its target with, or
     /// <see langword="null"/> when nothing records one. The record is the one an install or upgrade from a release keeps
     /// beside the deployment state, naming the release.json version it installed; it is withdrawn when the instance
-    /// rolls back or moves to an image no release named. Only a current record of the running image, naming a SemVer
-    /// version, counts.
+    /// moves to an image no release named, and a rollback restores the record of the image it returns to
+    /// (<see cref="ReleaseRecords"/>). Only a current record of the running image, naming a SemVer version, counts.
     /// </summary>
     public static async Task<string?> InstalledVersionAsync(
         InstallationPaths paths,

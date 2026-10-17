@@ -1302,8 +1302,9 @@ internal sealed class CameraAgentLifecycleManager
 
     /// <summary>
     /// Makes the retained release record follow the image the instance now runs. An upgrade from a release writes the
-    /// release's record for <paramref name="running"/>; any other image the instance was moved to, whether a rollback
-    /// target or an operator-supplied reference, withdraws the record because no release named the image now running.
+    /// release's record for <paramref name="running"/>; any other image the instance was moved to gets the record kept
+    /// for it (a rollback target restores its release's record), or none, and the outgoing image's record is kept beside
+    /// it (<see cref="ReleaseRecords"/>).
     /// The step is idempotent and runs both when a commit first becomes durable and on the committed-resume branch, so
     /// an interruption between the commit and the record is repaired by <c>--resume</c> instead of leaving evidence
     /// that contradicts the container.
@@ -1313,14 +1314,7 @@ internal sealed class CameraAgentLifecycleManager
         AcquiredImage? releaseImage,
         ImageInstallationIdentity running,
         CancellationToken cancellationToken)
-    {
-        if (releaseImage is not null)
-        {
-            return releaseImage.WriteEvidenceAsync(paths, running, cancellationToken);
-        }
-        AcquiredImage.RemoveEvidence(paths);
-        return Task.CompletedTask;
-    }
+        => ReleaseRecords.SettleAsync(paths, releaseImage, running, cancellationToken);
 
     /// <summary>
     /// Requires a release's image to be the release's and one this instance can run before the upgrade's journal entry,

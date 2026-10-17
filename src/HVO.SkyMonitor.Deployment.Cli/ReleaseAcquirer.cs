@@ -316,35 +316,6 @@ internal sealed record AcquiredImage(
             DateTimeOffset.UtcNow);
     }
 
-    /// <summary>
-    /// Retains the release record beside the other deployment evidence once the image it describes is the one the
-    /// instance runs. Writing it earlier would leave a refused or reverted operation asserting a release the running
-    /// container does not carry.
-    /// </summary>
-    public Task WriteEvidenceAsync(InstallationPaths paths, ImageInstallationIdentity running, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(paths);
-        return SafeFileSystem.WriteJsonAtomicAsync(
-            Path.Combine(paths.DeploymentStateRoot, EvidenceFileName),
-            ToEvidence(running),
-            DeploymentJsonContext.Default.CameraAgentImageReleaseEvidence,
-            cancellationToken);
-    }
-
-    /// <summary>
-    /// Withdraws the retained record when the instance no longer runs the image it describes, so a rollback or a reverted
-    /// upgrade never leaves evidence contradicting the running container.
-    /// </summary>
-    public static void RemoveEvidence(InstallationPaths paths)
-    {
-        ArgumentNullException.ThrowIfNull(paths);
-        var path = Path.Combine(paths.DeploymentStateRoot, EvidenceFileName);
-        if (File.Exists(path))
-        {
-            File.Delete(path);
-        }
-    }
-
 }
 
 /// <summary>

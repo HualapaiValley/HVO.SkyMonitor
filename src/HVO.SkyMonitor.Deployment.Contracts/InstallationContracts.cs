@@ -17,6 +17,11 @@ public static class DeploymentSchemaVersions
     /// retired and none was ever published, so a record of an earlier version is read as no record.
     /// </summary>
     public const int ImageReleaseEvidence = 3;
+    /// <summary>
+    /// The pair of release records an instance keeps: the record of its running image's release and that of the image it
+    /// ran before (#1309), so a rollback restores the installed version.
+    /// </summary>
+    public const int ImageReleaseRecords = 1;
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<DeploymentComponent>))]
