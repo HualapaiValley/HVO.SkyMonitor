@@ -420,7 +420,7 @@ mapfile -t link_including_projects < <(printf '%s\n' "${link_records[@]}" | cut 
 mapfile -t src_project_names < <(cd "$repo_root" && git ls-files 'src/*/*.csproj' \
   | while IFS= read -r candidate; do basename "$(dirname "$candidate")"; done | sort -u)
 comm -12 <(printf '%s\n' "${link_including_projects[@]}") <(printf '%s\n' "${src_project_names[@]}") \
-  | grep -q . || {
+  | grep . >/dev/null || {
   printf 'No src/ project file contributed a link record; the enumerator narrowed to tests/.\n' >&2
   exit 1
 }
@@ -444,7 +444,7 @@ complete_matrix_projects=(
 project_directory_count=0
 while IFS= read -r project_directory; do
   ((project_directory_count += 1))
-  if printf '%s\n' "${complete_matrix_projects[@]}" | grep -Fxq -- "$project_directory"; then
+  if printf '%s\n' "${complete_matrix_projects[@]}" | grep -Fx -- "$project_directory" >/dev/null; then
     continue
   fi
   probe_base="$(git -C "$work_root" rev-parse HEAD)"
@@ -842,6 +842,66 @@ expect_required_reject "unusable job result" pull_request "$cameraagent_plan" \
   "${cameraagent_success/cameraagent-component=success/cameraagent-component=neutral}"
 expect_required_reject "empty plan" pull_request "" "$cameraagent_success"
 expect_required_reject "empty results" pull_request "$cameraagent_plan" ""
+
+# Force the membership producer past pipe capacity. A quiet reader that exits on
+# its first match must SIGPIPE this writer; duplicating valid records preserves
+# the membership answer and makes the old race deterministic without host load.
+expect_required_no_sigpipe() (
+  local first="$1" iteration
+  "$required" pull_request "$reduced_plan" "$reduced_success" > "$work_root/sigpipe.expected"
+  # shellcheck disable=SC2317 # Child Bash invokes this exported printf shim.
+  printf() {
+    if [[ "${1-}" == '%s\n' && " ${*:2} " == *" $HVO_SIGPIPE_LIST_FIRST "* ]]; then
+      if [[ ! -s "$HVO_SIGPIPE_RECORDS" ]]; then
+        local -a records=("${@:2}")
+        local bytes=0 record
+        for record in "${records[@]}"; do
+          ((bytes += ${#record} + 1))
+        done
+        # Just exceed twice a 64 KiB pipe; build once and reuse across checks.
+        while (( bytes <= 2 * 65536 )); do
+          records+=("${records[@]}")
+          ((bytes *= 2))
+        done
+        builtin printf '%s\n' "${records[@]}" > "$HVO_SIGPIPE_RECORDS"
+      fi
+      builtin printf x >> "$HVO_SIGPIPE_FIRED"
+      cat "$HVO_SIGPIPE_RECORDS"
+    else
+      # shellcheck disable=SC2059 # Forward the caller's format and arguments unchanged.
+      builtin printf "$@"
+    fi
+  }
+  export -f printf
+  export HVO_SIGPIPE_LIST_FIRST="$first"
+  export HVO_SIGPIPE_RECORDS="$work_root/sigpipe.$first.records"
+  export HVO_SIGPIPE_FIRED="$work_root/sigpipe.$first.fired"
+  for ((iteration = 1; iteration <= 3; iteration++)); do
+    : > "$HVO_SIGPIPE_FIRED"
+    if ! "$required" pull_request "$reduced_plan" "$reduced_success" \
+      > "$work_root/sigpipe.out" 2> "$work_root/sigpipe.err"; then
+      cat "$work_root/sigpipe.err" >&2
+      printf 'Required CI SIGPIPE regression failed: list=%s iteration=%s/3\n' "$first" "$iteration" >&2
+      return 1
+    fi
+    if [[ ! -s "$HVO_SIGPIPE_FIRED" ]]; then
+      printf 'Required CI SIGPIPE shim did not fire: list=%s iteration=%s/3\n' "$first" "$iteration" >&2
+      return 1
+    fi
+    if ! cmp -s "$work_root/sigpipe.expected" "$work_root/sigpipe.out" || [[ -s "$work_root/sigpipe.err" ]]; then
+      printf 'Required CI SIGPIPE regression changed output: list=%s iteration=%s/3\n' "$first" "$iteration" >&2
+      return 1
+    fi
+  done
+)
+sigpipe_failed=false
+for first in mode changes; do
+  if ! expect_required_no_sigpipe "$first"; then
+    sigpipe_failed=true
+  fi
+done
+[[ "$sigpipe_failed" == false ]] || exit 1
+printf 'Required CI SIGPIPE regression passed: 6 iterations (3 plan, 3 result); shim fired for each.\n'
 
 # Workflow shape.
 grep -Fq "if: needs.changes.outputs.mode == 'full' && github.event_name == 'workflow_dispatch'" "$workflow" || {
