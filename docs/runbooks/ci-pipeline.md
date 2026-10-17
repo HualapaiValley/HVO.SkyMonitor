@@ -53,6 +53,17 @@ formatting, and package audit only for full-mode changes.
 branch protection already requires. Draft `development/v1` pull requests run it
 too, because Preflight runs on drafts.
 
+Preflight runs `scripts/test:ci-secret-scan` only when the classifier's
+`secret_scan_contract` output selects it. PRs select it for changes to the
+scanner (including its pinned gitleaks version/checksums), its contract test,
+`.gitleaks.toml`, either scanner workflow (`development-v1.yml` or `ci.yml`),
+or the classifier itself. Pushes retain the classifier's non-PR full-mode
+convention and always run it. Missing commits, empty ranges, failed or malformed
+diffs, missing outputs, and classifier-step failures run the contract test too;
+a classifier-step failure still fails Preflight. The history scan remains
+unconditional and precedes classification. Full Quality keeps both commands
+unconditional.
+
 - **Scope.** Every commit reachable from the checked-out commit, which is the
   pull request's merge commit or the pushed head. It reads the lines each commit
   added, so a credential that a later commit deleted is still found.
