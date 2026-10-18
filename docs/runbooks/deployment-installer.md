@@ -91,7 +91,8 @@ a folder that only you and root can change. Then:
 3. its `--version` must be `<version>+<40-character commit>`.
 
 It then runs as you, with your umask, reading the terminal when there is one (never the download), and the folder is
-removed afterwards.
+removed afterwards. `install.sh` prints its own messages on standard error, so standard output is the installer's alone:
+`--json` output can be redirected to a file. Only `--help` prints on standard output.
 
 **Exit codes.** The installer's when it ran; otherwise `0` when `--check` passed, `1` when a check, the download or its
 verification failed, and `2` for an invalid command line.
