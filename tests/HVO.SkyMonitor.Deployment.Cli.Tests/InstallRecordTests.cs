@@ -30,7 +30,7 @@ public sealed class InstallRecordTests
     private static readonly string[] EntryMembers =
     [
         "component", "instanceId", "friendlyName", "condition", "version", "previousVersion", "rolledBackFrom",
-        "imageId", "previousImageId", "url", "resources", "updatedUtc"
+        "imageId", "previousImageId", "url", "resources", "updatedUtc", "lastImageChange"
     ];
 
     private static readonly JsonSerializerOptions Compact = new(InstallRecordJsonContext.Default.Options) { WriteIndented = false };
@@ -128,49 +128,59 @@ public sealed class InstallRecordTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task ProjectAsync_AFreshInstallHasNoHistoryAndAReRunKeepsIt()
+    public async Task ProjectAsync_ImageNoReleaseNames_HasNoVersionsAndAReRunChangesNothing()
     {
         using var root = new ProductRoot();
         var manifest = root.Manifest(ImageA, previousImage: null);
 
         var fresh = await InstallRecordStore.ProjectAsync(root.Paths, manifest, InstallRecordEvent.Install, null, CancellationToken.None);
-        var history = fresh with { PreviousVersion = "1.0.0", RolledBackFrom = "1.1.0" };
-        var reRun = await InstallRecordStore.ProjectAsync(root.Paths, manifest, InstallRecordEvent.Install, history, CancellationToken.None);
+        var reRun = await InstallRecordStore.ProjectAsync(root.Paths, manifest, InstallRecordEvent.Install, fresh, CancellationToken.None);
 
         Assert.IsNull(fresh.Version);
         Assert.IsNull(fresh.PreviousVersion);
         Assert.IsNull(fresh.RolledBackFrom);
+        Assert.IsNull(fresh.LastImageChange);
         Assert.AreEqual(ImageA, fresh.ImageId);
         Assert.AreEqual(new Uri("http://127.0.0.1:5130/"), fresh.Url);
-        Assert.IsTrue(history.SameAs(reRun));
+        Assert.IsTrue(fresh.SameAs(reRun));
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task ProjectAsync_AnUpgradeMakesTheOldVersionPreviousAndARollbackRecordsWhatItLeft()
+    public async Task ProjectAsync_VersionsComeOnlyFromTheReleaseRecordsAndTheEventDecidesWhichIsWhich()
     {
         using var root = new ProductRoot();
-        var installed = (await InstallRecordStore.ProjectAsync(
-            root.Paths, root.Manifest(ImageA, null), InstallRecordEvent.Install, null, CancellationToken.None)) with
-        { Version = "1.0.0" };
+        // #1343's records for both images: the release records own the installed version.
+        await root.WriteReleaseRecordsAsync((ImageA, "1.0.0"), (ImageB, "1.1.0"));
+        // An entry carrying a version of its own is not a source: the projection replaces it from the records.
+        var projected = await InstallRecordStore.ProjectAsync(
+            root.Paths, root.Manifest(ImageA, null), InstallRecordEvent.Install, null, CancellationToken.None);
+        var stale = projected with { Version = "9.9.9" };
 
+        var installed = await InstallRecordStore.ProjectAsync(
+            root.Paths, root.Manifest(ImageA, null), InstallRecordEvent.Install, stale, CancellationToken.None);
         var upgraded = await InstallRecordStore.ProjectAsync(
             root.Paths, root.Manifest(ImageB, ImageA), InstallRecordEvent.Upgrade, installed, CancellationToken.None);
-        upgraded = upgraded with { Version = "1.1.0" };
         var rolledBack = await InstallRecordStore.ProjectAsync(
             root.Paths, root.Manifest(ImageA, ImageB), InstallRecordEvent.Rollback, upgraded, CancellationToken.None);
         var resumed = await InstallRecordStore.ProjectAsync(
             root.Paths, root.Manifest(ImageA, ImageB), InstallRecordEvent.Rollback, rolledBack, CancellationToken.None);
+        var uninstalled = await InstallRecordStore.ProjectAsync(
+            root.Paths, root.Manifest(ImageA, ImageB) with { LifecycleCondition = InstanceLifecycleCondition.Uninstalled },
+            InstallRecordEvent.Settle, rolledBack, CancellationToken.None);
 
+        Assert.AreEqual("1.0.0", installed.Version);
+        Assert.AreEqual("1.1.0", upgraded.Version);
         Assert.AreEqual("1.0.0", upgraded.PreviousVersion);
         Assert.IsNull(upgraded.RolledBackFrom);
-        Assert.AreEqual(ImageA, upgraded.PreviousImageId);
-        // The rollback returns to the image the record knew as previous, so its version comes back with it.
+        Assert.AreEqual(InstallRecordImageChange.Upgrade, upgraded.LastImageChange);
         Assert.AreEqual("1.0.0", rolledBack.Version);
         Assert.IsNull(rolledBack.PreviousVersion);
         Assert.AreEqual("1.1.0", rolledBack.RolledBackFrom);
-        // A resumed settlement of the same rollback gives the same entry.
+        Assert.AreEqual(InstallRecordImageChange.Rollback, rolledBack.LastImageChange);
+        // A resumed settlement of the same rollback, and a later uninstall, keep the rollback's meaning.
         Assert.IsTrue(rolledBack.SameAs(resumed));
+        Assert.AreEqual("1.1.0", uninstalled.RolledBackFrom);
     }
 
     [TestMethod]
@@ -373,6 +383,19 @@ public sealed class InstallRecordTests
         }
 
         public InstallationPaths Paths { get; }
+
+        /// <summary>Writes #1343's kept release records (<c>image-distribution.records.json</c>) for the given images.</summary>
+        public Task WriteReleaseRecordsAsync(params (string ImageId, string Version)[] images)
+            => SafeFileSystem.WriteJsonAtomicAsync(
+                Path.Combine(Paths.DeploymentStateRoot, ReleaseRecords.RecordsFileName),
+                new CameraAgentImageReleaseRecords(
+                    DeploymentSchemaVersions.ImageReleaseRecords,
+                    [.. images.Select(static (image, index) => new CameraAgentImageReleaseEvidence(
+                        DeploymentSchemaVersions.ImageReleaseEvidence, image.Version, $"v{image.Version}", new string('c', 40),
+                        new string('d', 64), new string('e', 64), $"ghcr.io/hualapaivalley/skymonitor-cameraagent@sha256:{new string('f', 64)}",
+                        "linux/amd64", "archive", null, null, image.ImageId, Now.AddMinutes(index)))]),
+                DeploymentJsonContext.Default.CameraAgentImageReleaseRecords,
+                CancellationToken.None);
 
         public InstanceManifest Manifest(string image, string? previousImage)
         {

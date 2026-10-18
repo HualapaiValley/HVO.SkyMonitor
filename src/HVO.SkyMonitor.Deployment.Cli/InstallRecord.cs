@@ -37,10 +37,13 @@ internal sealed record InstallRecord(
 }
 
 /// <summary>
-/// One instance in the install record. <see cref="Version"/> is the release the instance runs, from its own release
-/// record; <see cref="PreviousVersion"/> is the release it ran before its last upgrade, which a rollback returns to, and
-/// is cleared by a rollback; <see cref="RolledBackFrom"/> is the release a rollback left, cleared by the next upgrade.
-/// Each is <see langword="null"/> when no release names the image (an image given by <c>--image-ref</c>).
+/// One instance in the install record. Every version in it is read from the instance's own release records
+/// (<see cref="ReleaseRecords.VersionOfAsync"/>), which own the installed version; the entry only says which of them it
+/// is. <see cref="Version"/> is the release the instance runs; <see cref="PreviousVersion"/> is the release of the image
+/// it ran before its last upgrade, which a rollback returns to, and is <see langword="null"/> after a rollback;
+/// <see cref="RolledBackFrom"/> is the release a rollback left, <see langword="null"/> after an upgrade. Each is
+/// <see langword="null"/> when no release names the image (an image given by <c>--image-ref</c>).
+/// <see cref="LastImageChange"/> says whether the image last changed by upgrade or rollback, which decides those two.
 /// </summary>
 internal sealed record InstallRecordInstance(
     string Component,
@@ -54,12 +57,20 @@ internal sealed record InstallRecordInstance(
     string? PreviousImageId,
     Uri Url,
     ContainerResourceLimits? Resources,
-    DateTimeOffset UpdatedUtc)
+    DateTimeOffset UpdatedUtc,
+    InstallRecordImageChange? LastImageChange = null)
 {
     public const string CameraAgent = "CameraAgent";
 
     /// <summary>Whether the two say the same, whenever each was written.</summary>
     public bool SameAs(InstallRecordInstance? other) => other is not null && this with { UpdatedUtc = other.UpdatedUtc } == other;
+}
+
+/// <summary>How an instance's image last changed.</summary>
+internal enum InstallRecordImageChange
+{
+    Upgrade,
+    Rollback
 }
 
 /// <summary>Which operation completed, which decides how an entry's version history moves.</summary>
@@ -175,9 +186,9 @@ internal static partial class InstallRecordStore
 
     /// <summary>
     /// What the entry <paramref name="manifest"/> describes after <paramref name="kind"/> completed, given the entry the
-    /// record held before. The version of the image the instance runs comes from its release record; when that has none
-    /// for it but the record named that image's version before (it was the previous image), that version is kept.
-    /// Running it again after the same operation gives the same entry, so a resumed settlement is idempotent.
+    /// record held before. Every version comes from the instance's release records, never from the entry before: the
+    /// entry before decides only whether the image last changed by upgrade or rollback. Running it again after the same
+    /// operation gives the same entry, so a resumed settlement is idempotent.
     /// </summary>
     internal static async Task<InstallRecordInstance> ProjectAsync(
         InstallationPaths paths,
@@ -190,29 +201,23 @@ internal static partial class InstallRecordStore
         ArgumentNullException.ThrowIfNull(manifest);
         var imageId = manifest.Image.ImageId;
         var previousImageId = manifest.PreviousImage?.ImageId;
-        var version = await UpgradeNotes.InstalledVersionAsync(paths, manifest.Image, cancellationToken).ConfigureAwait(false)
-                      ?? (existing?.ImageId == imageId ? existing.Version
-                          : existing?.PreviousImageId == imageId ? existing.PreviousVersion
-                          : null);
-        string? previousVersion;
-        string? rolledBackFrom;
-        if (existing?.ImageId == imageId || existing is null)
-        {
-            // The image did not change since the entry was written (a re-run, a resumed settlement, an uninstall), or
-            // there was no entry: an instance installed before the record existed starts with no history.
-            previousVersion = existing?.PreviousVersion;
-            rolledBackFrom = existing?.RolledBackFrom;
-        }
-        else if (kind == InstallRecordEvent.Rollback)
-        {
-            previousVersion = null;
-            rolledBackFrom = existing.ImageId == previousImageId ? existing.Version : null;
-        }
-        else
-        {
-            previousVersion = existing.ImageId == previousImageId ? existing.Version : null;
-            rolledBackFrom = null;
-        }
+        var version = await ReleaseRecords.VersionOfAsync(paths, imageId, cancellationToken).ConfigureAwait(false);
+        var previousImageVersion = previousImageId is null
+            ? null
+            : await ReleaseRecords.VersionOfAsync(paths, previousImageId, cancellationToken).ConfigureAwait(false);
+        // Only an upgrade or a rollback that moved the image changes how it last changed; anything else (a re-run, a
+        // resumed settlement, an uninstall) keeps what the entry said.
+        var lastImageChange = existing?.ImageId == imageId
+            ? existing.LastImageChange
+            : kind switch
+            {
+                InstallRecordEvent.Upgrade => InstallRecordImageChange.Upgrade,
+                InstallRecordEvent.Rollback => InstallRecordImageChange.Rollback,
+                _ => existing?.LastImageChange
+            };
+        var rolledBack = lastImageChange == InstallRecordImageChange.Rollback;
+        var previousVersion = rolledBack ? null : previousImageVersion;
+        var rolledBackFrom = rolledBack ? previousImageVersion : null;
         return new InstallRecordInstance(
             InstallRecordInstance.CameraAgent,
             manifest.InstanceId,
@@ -225,7 +230,8 @@ internal static partial class InstallRecordStore
             previousImageId,
             PublicUri(manifest.BindAddress, manifest.Port),
             manifest.Resources,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            lastImageChange);
     }
 
     /// <summary>
@@ -340,9 +346,9 @@ internal static partial class InstallRecordStore
         {
             return $"instance {entry.InstanceId:D} has an invalid friendlyName";
         }
-        if (!Enum.IsDefined(entry.Condition))
+        if (!Enum.IsDefined(entry.Condition) || entry.LastImageChange is { } change && !Enum.IsDefined(change))
         {
-            return $"instance {entry.InstanceId:D} has an invalid condition";
+            return $"instance {entry.InstanceId:D} has an invalid condition or image change";
         }
         foreach (var version in new[] { entry.Version, entry.PreviousVersion, entry.RolledBackFrom })
         {

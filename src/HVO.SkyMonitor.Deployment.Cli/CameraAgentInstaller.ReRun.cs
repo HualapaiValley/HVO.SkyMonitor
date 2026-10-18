@@ -1,6 +1,5 @@
 using System.Globalization;
 using HVO.SkyMonitor.Deployment.Contracts;
-using HVO.SkyMonitor.Deployment.Distribution;
 using ContractReplayProfile = HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile;
 
 namespace HVO.SkyMonitor.Deployment;
@@ -199,7 +198,7 @@ internal sealed partial class CameraAgentInstaller
         InstallationPaths paths,
         Guid instanceId,
         DockerClient docker,
-        DistributionImageIdentity? signedImage,
+        ReleaseImageSelection? releaseImage,
         uint uid,
         uint gid,
         CancellationToken cancellationToken)
@@ -215,17 +214,14 @@ internal sealed partial class CameraAgentInstaller
             throw InstallerException.Refused(difference);
         }
         paths = paths.WithCatalog(manifest.Catalog.CatalogId);
-        var catalog = CatalogInstaller.ValidateExisting(request.CatalogBundle!, paths.CatalogRoot) with
-        {
-            Distribution = result.Catalog.Distribution
-        };
+        var catalog = CatalogInstaller.ValidateExisting(request.CatalogBundle!, paths.CatalogRoot);
         if (catalog.CatalogId != manifest.Catalog.CatalogId || catalog.PackageVersion != manifest.Catalog.PackageVersion)
         {
             throw InstallerException.Refused(
                 $"The instance uses catalog {manifest.Catalog.CatalogId} {manifest.Catalog.PackageVersion}, not the requested {catalog.CatalogId} {catalog.PackageVersion}; change it with catalog select.");
         }
         var effectiveRequest = await StageImageArchiveAsync(request, paths, allowMutation: false, cancellationToken).ConfigureAwait(false);
-        var (daemon, image) = await docker.PrepareImageAsync(effectiveRequest, allowMutation: false, signedImage, cancellationToken)
+        var (daemon, image) = await docker.PrepareImageAsync(effectiveRequest, allowMutation: false, releaseImage, cancellationToken)
             .ConfigureAwait(false);
         if (image.ImageId != manifest.Image.ImageId)
         {

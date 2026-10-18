@@ -17,13 +17,13 @@ onward; earlier development is recorded in its pull requests. A release renames 
   change, leave unchanged or remove, and changes nothing. `cameraagent install --answers FILE` installs from a strict,
   versioned JSON answers file in which an unknown member is an error. Running an install again with the same answers
   prints `Nothing to change`. (#1315)
-- The installer keeps a machine install record, `/etc/hvo-sky/install.json`: each instance's release version, previous
-  version, the version a rollback left, its images, condition, URL and container limits, and no secret. Every completed
-  operation updates it, through a narrow `sudo` helper because the file is root-owned. (#1315)
+- The installer keeps a machine install record, `/etc/hvo-sky/install.json`: each instance's condition, images, URL
+  and container limits, the release version it runs, the one before, and the one a rollback left, and no secret. The
+  versions are read from the instance's own release records, which stay their only source. Every completed operation
+  updates it, through a narrow `sudo` helper because the file is root-owned. (#1315)
 - Re-running an install with new `--cpus` or `--memory` changes an installed instance's container limits: the
   container is recreated with them and must come back healthy, or the recorded limits are restored. The host check
   and the 2 CPU and 4 GiB floor still apply. (#1315)
-
 - CameraAgent serves an operator settings catalogue and versioned group writes through its operations API. The
   site owner can create and revoke Read or ReadWrite API keys for non-browser clients. (#1316)
 - `hvo-sky-install --version` prints the installer's version and the commit it was built from, as
@@ -31,14 +31,41 @@ onward; earlier development is recorded in its pull requests. A release renames 
   checkout. (#1312)
 - **Operations > Camera & rig** offers **Sky lighting** for a VirtualSky camera: uniform daylight (the default),
   realistic daylight, or no daylight. With no daylight, capture control treats every frame as night. (#1304)
+- Before an upgrade from a release, `hvo-sky-install cameraagent upgrade` prints the upgrade notes of every release
+  after the installed version, up to the target, and refuses a target older than the installed version. With `--json`
+  the notes are one `upgrade-notes` event on standard error. Note text follows one terminal-safety rule: CRLF becomes
+  LF, and a note holding any other control character except LF and TAB, a format character, a line or paragraph
+  separator, a private-use character or a noncharacter is refused, naming its `U+XXXX`. Such a character in a note
+  built another way is shown as `<U+XXXX>`. (#1312)
+- `hvo-sky-install cameraagent install` and `cameraagent upgrade` take `--release <folder>`, a release's downloaded
+  files. Before contacting Docker, the installer checks `release.json` against `SHA256SUMS` and every file it uses
+  against both, and refuses a folder whose files disagree. `--image-source archive`, the default, loads the platform's
+  offline archive; `--image-source registry` pulls the image by the digest `release.json` names, and needs `docker
+  buildx` 0.8 or later. The image must be the release's, carry its version and commit, and declare the contracts the
+  instance needs. It is checked before anything is imported or claimed. An archive's image is read from the archive,
+  every layer included, and an archive whose entries a loader could read differently (an alias such as
+  `metadata/../index.json`, a duplicate, a link, or an entry no OCI layout has) is refused, and so is a JSON field
+  Docker would read differently from the installer: a field the release tool does not write, or one spelled two ways
+  that Docker's decoder reads as one (`RepoTags` and `repotags`, or a Unicode fold such as `RepoTagſ`). A registry
+  image is read from the registry with `docker buildx imagetools inspect` before anything is pulled. A new
+  installation then loads or pulls the image before it creates any state, and an import that is refused, fails or is
+  cancelled is removed again. JSON in a release that names a property twice is refused. The instance records the
+  release it runs, and keeps the previous image's record so a rollback restores it, which is how an upgrade knows the
+  installed version and refuses an older one. (#1309)
+- Integration pre-releases. An annotated `vX.Y.Z-dev.<n>` tag that the owner pushes on a green `development/v1` commit
+  publishes a GitHub pre-release. It carries both installers, the CameraAgent offline archives, the catalog bundle,
+  `release.json` and `SHA256SUMS`, and pushes `ghcr.io/hualapaivalley/skymonitor-cameraagent:<version>`. Every file and
+  the image have a build-provenance attestation. A dedicated arm64 runner installs and upgrades from the draft before it
+  is published, and a pre-release never moves `latest`. (#1309)
 
 ### Changed
 
 - Installer exit codes follow the install contract on every command: `0` done, `1` a step failed, `2` invalid command
   line or answers, `3` refused with nothing changed, `130` interrupted. Refusals that used to exit `1` now exit `3`,
   among them unmet host prerequisites, an incompatible `cameraagent preflight`, running as root, an upgrade to the image
-  already active and an untrusted host policy; an unreadable `--config` file now exits `2`. A refusal says `Installation
-  refused: ... Nothing was changed.`, or with `--json` reports `errorCode` `refused`. (#1315)
+  already active, an untrusted host policy, and every refusal of a `--release` folder or of an image that is not the
+  release's, a registry that cannot be read included; an unreadable `--config` file now exits `2`. A refusal says
+  `Installation refused: ... Nothing was changed.`, or with `--json` reports `errorCode` `refused`. (#1315)
 - A re-run of a completed install is checked against the instance its records describe rather than against the first
   request's exact inputs: anything but the container limits that differs is refused and named. (#1315)
 
@@ -76,6 +103,17 @@ onward; earlier development is recorded in its pull requests. A release renames 
   acknowledges a pause only after every deletion already running has finished. (#1314)
 - Successful raw ingress SQLite commits and checkpoints are logged at Debug instead of Warning. A manual location
   override superseded by configuration is logged at Information. Warnings now mean something did not work. (#1303)
+- `hvo-sky-install` is one self-contained file. Its native SQLite library is bundled in, rather than published beside
+  it, and is extracted when it starts, under `~/.net` or `$DOTNET_BUNDLE_EXTRACT_BASE_DIR`. (#1309)
+
+### Removed
+
+- The signed-release options, which the owner retired on 2026-10-16: `--channel`, `--image-manifest`, `--image-index`,
+  `--image-version`, `--catalog-manifest`, `--catalog-index` and `--asset-base-url`, and `--catalog-version` on
+  `cameraagent install`. With them go `catalog check`, the installer's download cache and index rollback state, and
+  its use of `HVO_GITHUB_TOKEN`. Install from a release folder with `--release` instead. `cameraagent install` and
+  `catalog install` require `--catalog-bundle`, and `cameraagent preflight` takes the candidate only as
+  `--image-ref`. (#1309)
 
 ### Deprecated
 
@@ -85,9 +123,11 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 ### Fixed
 
-- Upgrade notes reject unsafe Unicode and visibly escape it in human output, preventing invisible formatting from
-  disguising warnings or command names. (#1312)
 - The Archive calendar (`/archive/calendar`) loads its video summaries again. Before this fix, every summary query
   failed with a SQLite syntax error. (#1301)
+- The installer's remedy for a Docker daemon that cannot enforce the CameraAgent limits
+  (`docker-memory-limit-unsupported` and its CPU and PIDs companions) now says that on a Raspberry Pi the firmware, not
+  `/boot/firmware/cmdline.txt`, adds `cgroup_disable=memory`. There is nothing in that file to change: append
+  `cgroup_enable=memory` to its single line and reboot. (#1309)
 
 [Unreleased]: https://github.com/HualapaiValley/HVO.SkyMonitor/commits/development/v1

@@ -5,6 +5,12 @@
     <AssemblyName>HVO.SkyMonitor.Deployment.Cli</AssemblyName>
     <RootNamespace>HVO.SkyMonitor.Deployment</RootNamespace>
     <PublishSingleFile>true</PublishSingleFile>
+    <!--
+      A release ships the installer as one file, hvo-sky-install-<rid> (install contract section 4), so the native SQLite
+      library that catalog validation opens is bundled into it, and the .NET host extracts it when the installer starts,
+      instead of the publish leaving it beside the executable.
+    -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <SelfContained>true</SelfContained>
     <PublishTrimmed>false</PublishTrimmed>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -44,7 +50,6 @@
     <ProjectReference Include="..\HVO.SkyMonitor.AgentCore\HVO.SkyMonitor.AgentCore.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Catalog.Sqlite\HVO.SkyMonitor.Catalog.Sqlite.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Deployment.Contracts\HVO.SkyMonitor.Deployment.Contracts.csproj" />
-    <ProjectReference Include="..\HVO.SkyMonitor.Deployment.Distribution\HVO.SkyMonitor.Deployment.Distribution.csproj" />
   </ItemGroup>
   <ItemGroup>
     <!-- CameraAgent owns how an owner password file is read; the installer compiles the same reader so it validates,

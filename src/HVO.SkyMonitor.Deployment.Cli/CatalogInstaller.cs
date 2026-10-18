@@ -226,6 +226,8 @@ internal static class CatalogInstaller
         {
             document = JsonDocument.Parse(stream, new JsonDocumentOptions
             {
+                // The snapshot resolver refuses duplicate properties too; this read decides a path before it runs.
+                AllowDuplicateProperties = false,
                 AllowTrailingCommas = false,
                 CommentHandling = JsonCommentHandling.Disallow,
                 MaxDepth = 32

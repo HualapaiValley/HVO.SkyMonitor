@@ -34,7 +34,6 @@ public sealed class ProgramOutputTests
           catalog select
           catalog rollback
           catalog gc
-          catalog check
           host set-product-root <absolute-path>
 
         Run 'hvo-sky-install <command> --help' to list the options of one command.
@@ -54,17 +53,11 @@ public sealed class ProgramOutputTests
           --port <value>
           --product-root <value>
           --catalog-bundle <value>
-          --catalog-manifest <value>
-          --catalog-index <value>
-          --catalog-version <value>
-          --asset-base-url <value>
-          --channel <value>
+          --release <value>
+          --image-source <value>
           --image-ref <value>
           --image-archive <value>
           --image-archive-sha256 <value>
-          --image-manifest <value>
-          --image-index <value>
-          --image-version <value>
           --password-file <value>
           --latitude <value>
           --longitude <value>

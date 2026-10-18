@@ -53,8 +53,9 @@ public sealed class HostPrerequisitesTests
             StringAssert.Contains(finding.Observed, "/sys/fs/cgroup/cgroup.controllers: \"cpuset cpu io pids\"", StringComparison.Ordinal);
             StringAssert.Contains(finding.Observed, "\"WARNING: No memory limit support\"", StringComparison.Ordinal);
             Assert.DoesNotContain("bridge-nf-call", finding.Observed!, "An unrelated daemon warning was quoted.");
-            StringAssert.Contains(finding.Remediation, "cgroup_disable=memory", StringComparison.Ordinal);
-            StringAssert.Contains(finding.Remediation, "cgroup_enable=memory", StringComparison.Ordinal);
+            // The disable comes from the Pi firmware, so the remedy must not send the operator to change it in the file.
+            StringAssert.Contains(finding.Remediation, "the firmware, not /boot/firmware/cmdline.txt, adds cgroup_disable=memory", StringComparison.Ordinal);
+            StringAssert.Contains(finding.Remediation, "append cgroup_enable=memory", StringComparison.Ordinal);
             StringAssert.Contains(finding.Remediation, "/boot/firmware/cmdline.txt", StringComparison.Ordinal);
             StringAssert.Contains(finding.Remediation, "reboot", StringComparison.Ordinal);
         }

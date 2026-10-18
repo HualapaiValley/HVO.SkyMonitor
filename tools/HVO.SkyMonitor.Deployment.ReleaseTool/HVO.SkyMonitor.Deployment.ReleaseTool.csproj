@@ -9,6 +9,13 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Catalog.Sqlite\HVO.SkyMonitor.Catalog.Sqlite.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <!-- release.json's upgrade notes pass the installer's own terminal-safety rule and version order (#1309): the
+         release tool compiles the installer's sources rather than a copy, so a note a release publishes is exactly a
+         note the installer prints. -->
+    <Compile Include="..\..\src\HVO.SkyMonitor.Deployment.Cli\UpgradeNoteText.cs" Link="Shared/UpgradeNoteText.cs" />
+    <Compile Include="..\..\src\HVO.SkyMonitor.Deployment.Cli\ProductVersion.cs" Link="Shared/ProductVersion.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <InternalsVisibleTo Include="HVO.SkyMonitor.Deployment.Distribution.Tests" />
   </ItemGroup>
 </Project>

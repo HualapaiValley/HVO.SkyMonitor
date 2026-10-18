@@ -7,8 +7,9 @@ namespace HVO.SkyMonitor.Deployment;
 /// An answers file for <c>cameraagent install --answers FILE</c> (install contract section 5): everything an install
 /// asks, as strict JSON with a schema version. A member it does not know is a usage error, so a misspelt answer is never
 /// silently ignored. The members are those <c>--config</c> reads, under the same names, without the run flags
-/// (<c>dryRun</c>, <c>resume</c>, <c>json</c>), which stay on the command line, and without the key-signed release
-/// selectors, which are retired (#1309). It never holds a secret: a password is given in its own file
+/// (<c>dryRun</c>, <c>resume</c>, <c>json</c>), which stay on the command line. A release install names the release folder
+/// (<see cref="Release"/>) and where its image comes from (<see cref="ImageSource"/>), as <c>--release</c> and
+/// <c>--image-source</c> do (#1309). It never holds a secret: a password is given in its own file
 /// (<see cref="PasswordFile"/>) or generated. It must name its instance, so running it again addresses the same instance
 /// and, with nothing different, changes nothing.
 /// </summary>
@@ -27,6 +28,8 @@ internal sealed record InstallAnswers
     public int? Port { get; init; }
     public string? ProductRoot { get; init; }
     public string? CatalogBundle { get; init; }
+    public string? Release { get; init; }
+    public ReleaseImageSource? ImageSource { get; init; }
     public string? ImageReference { get; init; }
     public string? ImageArchive { get; init; }
     public string? ImageArchiveSha256 { get; init; }
@@ -118,6 +121,8 @@ internal sealed record InstallAnswers
         Port = Port ?? 5130,
         ProductRoot = ProductRoot ?? productionProductRoot,
         CatalogBundle = CatalogBundle,
+        Release = Release,
+        ImageSource = ImageSource,
         ImageReference = ImageReference ?? string.Empty,
         ImageArchive = ImageArchive,
         ImageArchiveSha256 = ImageArchiveSha256,

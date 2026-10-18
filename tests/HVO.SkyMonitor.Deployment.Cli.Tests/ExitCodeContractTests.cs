@@ -42,7 +42,6 @@ public sealed class ExitCodeContractTests
         ("catalog select", ["catalog", "select", "--instance-id", Id, "--catalog-version", "hyg-v4.2-p3-s2-r1"]),
         ("catalog rollback", ["catalog", "rollback", "--instance-id", Id]),
         ("catalog gc", ["catalog", "gc", "--dry-run"]),
-        ("catalog check", ["catalog", "check", "--catalog-manifest", "/srv/hvo/catalog-manifest.json"]),
         ("host set-product-root", ["host", "set-product-root", "/srv/data/hvo-skymonitor"])
     ];
 
@@ -115,10 +114,6 @@ public sealed class ExitCodeContractTests
     [DataRow("catalog gc", "failed", 1)]
     [DataRow("catalog gc", "refused", 3)]
     [DataRow("catalog gc", "interrupted", 130)]
-    [DataRow("catalog check", "done", 0)]
-    [DataRow("catalog check", "failed", 1)]
-    [DataRow("catalog check", "refused", 3)]
-    [DataRow("catalog check", "interrupted", 130)]
     [DataRow("host set-product-root", "done", 0)]
     [DataRow("host set-product-root", "failed", 1)]
     [DataRow("host set-product-root", "refused", 3)]
@@ -149,7 +144,6 @@ public sealed class ExitCodeContractTests
     [DataRow("catalog select")]
     [DataRow("catalog rollback")]
     [DataRow("catalog gc")]
-    [DataRow("catalog check")]
     [DataRow("host set-product-root")]
     public async Task RunAsync_EveryCommandWithAnOptionItDoesNotAccept_ExitsTwoBeforeAnythingRuns(string command)
     {
@@ -178,7 +172,6 @@ public sealed class ExitCodeContractTests
     [DataRow("catalog select")]
     [DataRow("catalog rollback")]
     [DataRow("catalog gc")]
-    [DataRow("catalog check")]
     [DataRow("host set-product-root")]
     public async Task RunAsync_EveryCommandInterruptedBeforeItBegins_ExitsOneHundredThirty(string command)
     {
@@ -208,7 +201,6 @@ public sealed class ExitCodeContractTests
     [DataRow("catalog select")]
     [DataRow("catalog rollback")]
     [DataRow("catalog gc")]
-    [DataRow("catalog check")]
     [DataRow("host set-product-root")]
     public async Task RunAsync_EveryCommandUnderAHostPolicyThatCannotBeTrusted_IsRefusedWithExitThree(string command)
     {
@@ -221,6 +213,33 @@ public sealed class ExitCodeContractTests
         Assert.AreEqual(string.Empty, output);
         using var document = JsonDocument.Parse(error.Trim());
         Assert.AreEqual("refused", document.RootElement.GetProperty("errorCode").GetString());
+    }
+
+    /// <summary>
+    /// A release the installer will not use (#1309) is refused like any other gate: it is read and checked before the
+    /// Docker daemon is contacted, so nothing has changed, and it exits 3, with a plan or without.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RunAsync_InstallFromAFolderThatIsNotARelease_IsRefusedWithExitThree(bool plan)
+    {
+        using var host = new PolicyHost();
+        var folder = Path.Combine(Path.GetTempPath(), $"hvo-exit-codes-no-release-{Guid.NewGuid():N}");
+        string[] arguments =
+        [
+            "cameraagent", "install", "--friendly-name", "North Camera", "--catalog-bundle", "/srv/hvo/catalog.bundle",
+            "--release", folder, "--json", .. plan ? ["--plan"] : Array.Empty<string>()
+        ];
+
+        var (exitCode, output, error) = await RunAsync(arguments, Real(host), CancellationToken.None);
+
+        Assert.AreEqual(3, exitCode, error);
+        Assert.AreEqual(string.Empty, output);
+        using var document = JsonDocument.Parse(error.Trim());
+        Assert.AreEqual("refused", document.RootElement.GetProperty("errorCode").GetString());
+        Assert.AreEqual($"The release folder {folder} does not exist.", document.RootElement.GetProperty("message").GetString());
     }
 
     [TestMethod]

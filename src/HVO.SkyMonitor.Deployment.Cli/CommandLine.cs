@@ -15,9 +15,8 @@ internal static class CommandLine
     private static readonly string[] InstallValueOptions =
     [
         "--config", "--instance-id", "--friendly-name", "--owner-email", "--bind-address", "--port",
-        "--product-root", "--catalog-bundle", "--catalog-manifest", "--catalog-index", "--catalog-version", "--asset-base-url", "--channel", "--image-ref", "--image-archive",
-        "--image-archive-sha256", "--image-manifest", "--image-index", "--image-version",
-        "--password-file", "--latitude", "--longitude",
+        "--product-root", "--catalog-bundle", "--release", "--image-source", "--image-ref", "--image-archive",
+        "--image-archive-sha256", "--password-file", "--latitude", "--longitude",
         "--elevation", "--time-zone", "--replay-profile", "--cpus", "--memory"
     ];
 
@@ -41,13 +40,9 @@ internal static class CommandLine
 
     private static readonly string[] OwnerRecoveryFlags = ["--generate-password", "--resume", "--json"];
 
-    private static readonly string[] StatePreflightValueOptions =
-    [
-        "--instance-id", "--product-root", "--image-ref",
-        "--image-manifest", "--image-index", "--image-version", "--asset-base-url", "--channel"
-    ];
+    private static readonly string[] StatePreflightValueOptions = ["--instance-id", "--product-root", "--image-ref"];
 
-    private static readonly string[] StatePreflightFlags = ["--json", "--no-download"];
+    private static readonly string[] StatePreflightFlags = ["--json"];
 
     private static readonly string[] StateResetValueOptions = ["--instance-id", "--confirm-instance-id", "--product-root"];
 
@@ -56,9 +51,8 @@ internal static class CommandLine
     private static readonly string[] LifecycleValueOptions =
     [
         "--instance-id", "--confirm-instance-id", "--confirm-removed-operation-id", "--operation-id", "--product-root",
-        "--image-ref", "--image-archive", "--image-archive-sha256", "--image-manifest", "--image-index", "--image-version",
-        "--catalog-bundle", "--catalog-manifest", "--catalog-index",
-        "--catalog-version", "--asset-base-url", "--channel"
+        "--release", "--image-source", "--image-ref", "--image-archive", "--image-archive-sha256",
+        "--catalog-bundle", "--catalog-version"
     ];
 
     private static readonly string[] LifecycleFlags =
@@ -89,7 +83,6 @@ internal static class CommandLine
         Lifecycle("catalog", "select"),
         Lifecycle("catalog", "rollback"),
         Lifecycle("catalog", "gc"),
-        Lifecycle("catalog", "check"),
         HostSetProductRoot
     ];
 
@@ -423,19 +416,13 @@ internal static class CommandLine
                 Port = ParseInt(Get(values, "--port"), 5130, "--port"),
                 ProductRoot = Get(values, "--product-root") ?? productionProductRoot,
                 CatalogBundle = Get(values, "--catalog-bundle"),
-                CatalogManifest = Get(values, "--catalog-manifest"),
-                CatalogIndex = Get(values, "--catalog-index"),
-                CatalogVersion = Get(values, "--catalog-version"),
-                AssetBaseUrl = Get(values, "--asset-base-url"),
-                Channel = ParseChannel(Get(values, "--channel")),
-                ImageReference = Get(values, "--image-manifest") is null && Get(values, "--image-index") is null
+                Release = Get(values, "--release"),
+                ImageSource = ParseImageSource(Get(values, "--image-source")),
+                ImageReference = Get(values, "--release") is null
                     ? RequireOrPrompt(values, "--image-ref", "Immutable CameraAgent image digest or ID: ")
                     : Get(values, "--image-ref") ?? string.Empty,
                 ImageArchive = Get(values, "--image-archive"),
                 ImageArchiveSha256 = Get(values, "--image-archive-sha256"),
-                ImageManifest = Get(values, "--image-manifest"),
-                ImageIndex = Get(values, "--image-index"),
-                ImageVersion = Get(values, "--image-version"),
                 PasswordFile = Get(values, "--password-file"),
                 LatitudeDegrees = ParseDouble(Get(values, "--latitude"), 0, "--latitude"),
                 LongitudeDegrees = ParseDouble(Get(values, "--longitude"), 0, "--longitude"),
@@ -530,14 +517,13 @@ internal static class CommandLine
             ? parsed
             : throw new InstallUsageException("--cpus must be a number.");
 
-    private static DistributionChannel ParseChannel(string? value)
+    private static ReleaseImageSource? ParseImageSource(string? value)
         => value switch
         {
-            null or "local" => DistributionChannel.Local,
-            "stable" => DistributionChannel.Stable,
-            "nightly" => DistributionChannel.Nightly,
-            "prerelease" => DistributionChannel.Prerelease,
-            _ => throw new InstallUsageException("--channel must be stable, nightly, prerelease, or local.")
+            null => null,
+            "archive" => ReleaseImageSource.Archive,
+            "registry" => ReleaseImageSource.Registry,
+            _ => throw new InstallUsageException("--image-source must be archive or registry.")
         };
 
     private static CameraAgentReplayProfile ParseReplayProfile(string? value)
@@ -584,7 +570,6 @@ internal static class CommandLine
             ["catalog", "select", ..] => (LifecycleOperationKind.CatalogSelect, 2),
             ["catalog", "rollback", ..] => (LifecycleOperationKind.CatalogRollback, 2),
             ["catalog", "gc", ..] => (LifecycleOperationKind.CatalogGarbageCollect, 2),
-            ["catalog", "check", ..] => (LifecycleOperationKind.CatalogCheck, 2),
             _ => throw new InstallUsageException(UnknownCommand(args))
         };
         var values = new Dictionary<string, string?>(StringComparer.Ordinal);
@@ -623,20 +608,15 @@ internal static class CommandLine
             ImageReference = Get(values, "--image-ref"),
             ImageArchive = Get(values, "--image-archive"),
             ImageArchiveSha256 = Get(values, "--image-archive-sha256"),
-            ImageManifest = Get(values, "--image-manifest"),
-            ImageIndex = Get(values, "--image-index"),
-            ImageVersion = Get(values, "--image-version"),
+            Release = Get(values, "--release"),
+            ImageSource = ParseImageSource(Get(values, "--image-source")),
             NoDownload = flags.Contains("--no-download"),
             MigrationBackwardCompatible = flags.Contains("--migration-backward-compatible"),
             ConfirmationInstanceId = ParseGuid(Get(values, "--confirm-instance-id"), "--confirm-instance-id"),
             ConfirmRemovedOperationId = ParseGuid(
                 Get(values, "--confirm-removed-operation-id"), "--confirm-removed-operation-id"),
             CatalogBundle = Get(values, "--catalog-bundle"),
-            CatalogManifest = Get(values, "--catalog-manifest"),
-            CatalogIndex = Get(values, "--catalog-index"),
-            CatalogVersion = Get(values, "--catalog-version"),
-            AssetBaseUrl = Get(values, "--asset-base-url"),
-            Channel = ParseChannel(Get(values, "--channel"))
+            CatalogVersion = Get(values, "--catalog-version")
         };
         if (operation == LifecycleOperationKind.CatalogSelect && request.CatalogVersion is null)
         {
@@ -658,15 +638,7 @@ internal static class CommandLine
             flags.Contains("--json"))
         {
             AllowTestProductRoot = allowTestProductRoot,
-            ProductionProductRoot = productionProductRoot,
-            ImageManifest = Get(values, "--image-manifest"),
-            ImageIndex = Get(values, "--image-index"),
-            ImageVersion = Get(values, "--image-version"),
-            AssetBaseUrl = Get(values, "--asset-base-url"),
-            // Presence, not the resolved value: an explicit --channel local must be rejected without a signed
-            // release just as --channel stable is.
-            Channel = Get(values, "--channel") is { } channel ? ParseChannel(channel) : null,
-            NoDownload = flags.Contains("--no-download")
+            ProductionProductRoot = productionProductRoot
         };
         request.Validate();
         return request;
