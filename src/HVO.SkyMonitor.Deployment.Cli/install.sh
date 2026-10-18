@@ -45,13 +45,14 @@ hvo_sky_install_sh() {
   local failures=0
 
   # ---------------------------------------------------------------------------------------------------------------------
-  # Output
+  # Output: this script's own is on standard error, so standard output is the installer's alone (its --json result, for
+  # one). Only --help prints on standard output.
 
-  say() { printf '%s\n' "$*"; }
-  ok() { printf '  ok    %s\n' "$*"; }
-  note() { printf '  note  %s\n' "$*"; }
+  say() { printf '%s\n' "$*" >&2; }
+  ok() { printf '  ok    %s\n' "$*" >&2; }
+  note() { printf '  note  %s\n' "$*" >&2; }
   failed() {
-    printf '  FAIL  %s\n' "$*"
+    printf '  FAIL  %s\n' "$*" >&2
     failures=$((failures + 1))
   }
   die() {
@@ -222,7 +223,7 @@ EOF
       --source-ref "refs/tags/v${release_version}" --deny-self-hosted-runners 2>&1 </dev/null); then
       ok "$2's attestation says ${repository}'s ${workflow} built it for v${release_version}"
     else
-      printf '%s\n' "${verification}" | tail -n 5 | sed 's/^/        /'
+      printf '%s\n' "${verification}" | tail -n 5 | sed 's/^/        /' >&2
       die "$2's attestation did not verify, so it may not be the release's: nothing was installed."
     fi
   }
