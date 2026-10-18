@@ -62,7 +62,7 @@ installer's arguments, which start at the first argument that is not one of them
 | Option | Meaning |
 | --- | --- |
 | `--check` | Run the checks below, then stop. Nothing is downloaded or changed |
-| `--from DIR` | Take everything from `DIR`, a folder holding the release's files, instead of GitHub and ghcr.io: the installer, `SHA256SUMS`, the catalog and the offline image archive. ghcr.io is never contacted. `DIR`, and every folder above it, must be one that only you and root can change, and the release's files in it yours or root's, writable by no one else and not links: the installer reads `release.json`, `SHA256SUMS` and the archive there after `install.sh` has checked them. It is handed over by its physical path |
+| `--from DIR` | Take everything from `DIR`, a folder holding the release's files, instead of GitHub and ghcr.io: the installer, `SHA256SUMS`, the catalog and the offline image archive. ghcr.io is never contacted. `DIR`, and every folder above it, must be one that only you and root can change; `DIR` itself must be writable by no one but its owner, even when it is sticky; and the release's files in it must be yours or root's, writable by no one else and not links: the installer reads `release.json`, `SHA256SUMS` and the archive there after `install.sh` has checked them. `DIR` is resolved to its physical path once, when the command line is read, and everything uses that path |
 | `-h`, `--help` | Its usage. `--help` after the installer's arguments is the installer's |
 
 **What the installer is given.** `install.sh` adds to the installer's arguments only what the installer is not

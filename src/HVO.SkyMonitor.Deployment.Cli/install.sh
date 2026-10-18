@@ -199,7 +199,17 @@ EOF
 
   # The --from folder's problem when it is not a folder only you and root can change: the installer reads release.json,
   # SHA256SUMS and the image archive from it after this script has checked them, so no one else may change them between.
-  local exposed_from="is not a folder only you and root can change: it, or a folder above it, is someone else's or writable by others and not sticky, so someone else could change the release's files after they are checked and before the installer reads them. Put the release's files in a folder of your own that no one else can write to (chmod -R go-w DIR), then run this again."
+  local exposed_from="is not a folder only you and root can change: it is writable by its group or by others (sticky or not), or it or a folder above it is someone else's, or a folder above it is writable by others and not sticky, so someone else could change the release's files after they are checked and before the installer reads them. Put the release's files in a folder of your own that no one else can write to (chmod -R go-w DIR), then run this again."
+
+  # trusted_release_folder: --from's folder, already resolved to its physical path when the command line was read, is
+  # still that path (no folder in it has become a link), is one trusted_folder admits, and is itself writable by no one
+  # but its owner: the sticky exception is for the folders above it, such as /tmp, never for the release's own folder,
+  # where a sticky bit would still let others add files.
+  trusted_release_folder() {
+    local physical
+    physical=$(trusted_folder "${from}") && [ "${physical}" = "${from}" ] &&
+      [ -n "$(find "${from}" -maxdepth 0 ! -perm -0020 ! -perm -0002 2>/dev/null)" ]
+  }
 
   # check_space <path> <KiB needed> <what it is for>: the free space on the file system that holds the path (or the
   # nearest folder above it that is there).
@@ -288,13 +298,12 @@ EOF
   # returns.
   fetch_and_start() {
     local release_page="https://github.com/${repository}/releases/tag/v${release_version}"
-    local asset="hvo-sky-install-${rid}" work installer sums status=0 parent catalog="" catalog_dir="" file arch=arm64 physical
+    local asset="hvo-sky-install-${rid}" work installer sums status=0 parent catalog="" catalog_dir="" file arch=arm64
     [ "${rid}" != linux-x64 ] || arch=amd64
-    # A folder (--from) is used by its physical path, and only when only you and root can change it, so the files the
-    # installer reads there are the ones checked here.
+    # A folder (--from) is used by the physical path it was resolved to once, when the command line was read, and only
+    # when only you and root can change it, so the files the installer reads there are the ones checked here.
     if [ -n "${from}" ]; then
-      physical=$(trusted_folder "${from}") || refuse "${from} ${exposed_from} Nothing was installed."
-      from=${physical}
+      trusted_release_folder || refuse "${from} ${exposed_from} Nothing was installed."
     fi
     # The download goes in a new folder of this script's own, made by its physical path in a TMPDIR only you and root
     # can change (trusted_folder), so the installer that runs is the one checked. Only that folder is removed, and only
@@ -571,7 +580,9 @@ EOF
   done
   if [ -n "${from}" ]; then
     [ -d "${from}" ] || usage_error "--from ${from}: there is no such folder."
-    from=$(CDPATH='' cd -- "${from}" && pwd)
+    # Resolved once, here, to its physical path: every check, the attestation, the catalog and the hand-over use this path
+    # alone, so a link in --from that is pointed elsewhere later changes nothing.
+    from=$(CDPATH='' cd -- "${from}" && pwd -P) || usage_error "--from ${from}: the folder cannot be opened."
   elif ${takes_release} && ! ${names_image} && [ "${image_source}" = archive ]; then
     usage_error "Without --from, CameraAgent's image is pulled from ghcr.io by its digest, and its offline archive is not downloaded: leave out --image-source archive, or install from a folder holding the release's files (--from DIR)."
   fi
@@ -703,7 +714,7 @@ EOF
   # Docker pulls CameraAgent's image from ghcr.io.
   local arch=arm64 file
   [ "${rid}" != linux-x64 ] || arch=amd64
-  if [ -n "${from}" ] && ! trusted_folder "${from}" >/dev/null; then
+  if [ -n "${from}" ] && ! trusted_release_folder; then
     failed "${from} ${exposed_from}"
   elif [ -n "${from}" ]; then
     local -a files=("hvo-sky-install-${rid}" SHA256SUMS release.json)

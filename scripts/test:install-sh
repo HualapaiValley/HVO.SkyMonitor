@@ -1255,6 +1255,60 @@ test_an_installer_whose_version_fails_is_not_started() {
   assert_installer_did_not_run
 }
 
+# --- Review PR-1356-R2 -----------------------------------------------------------------------------------------------
+
+# R2-F1a: the release's own folder must be writable by no one but its owner, sticky or not: the sticky exception is for
+# the folders above it, such as /tmp, where it keeps others from replacing what you own.
+test_a_sticky_release_folder_others_can_write_to_is_refused() {
+  local mode arguments
+  for mode in 1775 1777; do
+    chmod "${mode}" "${WORK}/release"
+    for arguments in "--check" "--version" "cameraagent install"; do
+      rm -f "${FAKE_STATE_DIR}/installer.log"
+      # shellcheck disable=SC2086 # each case is its words
+      install_sh -- --from "${WORK}/release" ${arguments}
+      [ "${STATUS}" = 3 ] || fail_test "mode ${mode}, ${arguments}: exit ${STATUS}, not 3"
+      [[ "${OUTPUT}" == *"${WORK}/release is not a folder only you and root can change"* ]] ||
+        fail_test "mode ${mode}, ${arguments}: the folder was not refused"
+      [[ "${OUTPUT}" != *"${VERSION}+${COMMIT}"* ]] || fail_test "mode ${mode}, ${arguments}: the installer said its version"
+      [ ! -e "${FAKE_STATE_DIR}/installer.log" ] || fail_test "mode ${mode}, ${arguments}: the installer ran"
+    done
+  done
+}
+
+# R2-F1b: --from is resolved to its physical path once, when the command line is read. Someone pointing the link at
+# another release while the machine is checked (here, during docker info) changes nothing: the files checked are the
+# files used, and nothing is taken from the new target.
+test_a_folder_link_pointed_elsewhere_during_the_checks_changes_nothing() {
+  cp -a "${WORK}/release" "${WORK}/other"
+  chmod o+w "${WORK}/other/release.json"
+  : >"${WORK}/other/from-the-new-target"
+  ln -s "${WORK}/release" "${WORK}/release-link"
+  install_sh FAKE_RETARGET_LINK="${WORK}/release-link" FAKE_RETARGET_TO="${WORK}/other" \
+    -- --from "${WORK}/release-link" cameraagent install
+
+  [ "$(readlink "${WORK}/release-link")" = "${WORK}/other" ] || fail_test "the probe did not point the link elsewhere"
+  assert_status 0
+  assert_installer "args=[cameraagent][install][--release][${WORK}/release][--no-download][--catalog-bundle][${CATALOG_DIR}]"
+  ! grep -q "from-the-new-target" "${FAKE_STATE_DIR}/installer.log" || fail_test "the installer was given the new target"
+  assert_output_not_contains "${WORK}/other"
+  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
+}
+
+# The resolved path itself turned into a link while the machine is checked (the folder moved away, a link to another
+# release in its place) no longer resolves to itself: refused before anything is taken from it.
+test_a_release_folder_replaced_by_a_link_during_the_checks_is_refused() {
+  cp -a "${WORK}/release" "${WORK}/other"
+  : >"${WORK}/other/from-the-new-target"
+  install_sh FAKE_REPLACE_FOLDER="${WORK}/release" FAKE_REPLACE_WITH="${WORK}/other" \
+    -- --from "${WORK}/release" cameraagent install
+
+  [ -L "${WORK}/release" ] || fail_test "the probe did not replace the folder"
+  assert_status 3
+  assert_output_contains "install.sh: ${WORK}/release is not a folder only you and root can change"
+  assert_installer_did_not_run
+}
+
 # --- 4. Verification and the hand-over --------------------------------------------------------------------------------
 
 test_a_download_that_is_not_the_release_s_is_not_started() {

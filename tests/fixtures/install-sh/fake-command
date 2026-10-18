@@ -136,6 +136,12 @@ case "${name}" in
       # The limits it enforces, its CPUs and memory, and its data root.
       "info --format {{.MemoryLimit}},{{.CPUCfsQuota}},{{.PidsLimit}},{{.NCPU}},{{.MemTotal}},{{.DockerRootDir}}")
         [ "${FAKE_DOCKER_INFO:-works}" = works ] || { echo "Error response from daemon: info failed" >&2; exit 1; }
+        # FAKE_RETARGET_LINK: someone points this link at FAKE_RETARGET_TO while install.sh checks the machine.
+        [ -z "${FAKE_RETARGET_LINK:-}" ] || ln -sfn "${FAKE_RETARGET_TO}" "${FAKE_RETARGET_LINK}"
+        # FAKE_REPLACE_FOLDER: someone moves this folder away and puts a link to FAKE_REPLACE_WITH in its place.
+        if [ -n "${FAKE_REPLACE_FOLDER:-}" ]; then
+          mv "${FAKE_REPLACE_FOLDER}" "${FAKE_REPLACE_FOLDER}.moved" && ln -s "${FAKE_REPLACE_WITH}" "${FAKE_REPLACE_FOLDER}"
+        fi
         printf '%s,%s\n' "${FAKE_DOCKER_LIMITS:-true,true,true,4,8589934592}" "${FAKE_DOCKER_ROOT}"
         ;;
       *)
