@@ -175,6 +175,175 @@ public sealed class SkyCliCredentialTests
     }
 
     [TestMethod]
+    [DataRow("status")]
+    [DataRow("status --watch")]
+    [DataRow("info")]
+    [DataRow("config show")]
+    [DataRow("config get")]
+    [DataRow("config set")]
+    [DataRow("config diff")]
+    [DataRow("config apply")]
+    [DataRow("restart")]
+    [DataRow("login")]
+    [DataRow("logout")]
+    [DataRow("rig show")]
+    [DataRow("rig stage")]
+    [DataRow("rig apply")]
+    [DataRow("schedule show")]
+    [DataRow("schedule stage")]
+    [DataRow("schedule apply")]
+    public async Task AnInaccessibleCredentialsFolder_IsUnusableCredentialsWithExitThreeOnEveryCommandAsync(string command)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        RequireModesEnforced();
+        using var harness = new CliHarness();
+        using var stop = new CancellationTokenSource();
+        var args = SkyCliExitCodeTests.Prepare(command, harness, stop);
+        var folder = Path.GetDirectoryName(harness.CredentialsPath)!;
+        File.SetUnixFileMode(folder, UnixFileMode.None);
+        try
+        {
+            var result = await harness.RunAsync(stop.Token, [.. args, "--json"]).ConfigureAwait(false);
+
+            AssertUnusable(result, harness, "a folder on its path cannot be searched");
+        }
+        finally
+        {
+            File.SetUnixFileMode(folder, DirectoryMode);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("status")]
+    [DataRow("status --watch")]
+    [DataRow("info")]
+    [DataRow("config show")]
+    [DataRow("config get")]
+    [DataRow("config set")]
+    [DataRow("config diff")]
+    [DataRow("config apply")]
+    [DataRow("restart")]
+    [DataRow("login")]
+    [DataRow("logout")]
+    [DataRow("rig show")]
+    [DataRow("rig stage")]
+    [DataRow("rig apply")]
+    [DataRow("schedule show")]
+    [DataRow("schedule stage")]
+    [DataRow("schedule apply")]
+    public async Task AnInaccessibleCredentialsFile_IsUnusableCredentialsWithExitThreeOnEveryCommandAsync(string command)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        RequireModesEnforced();
+        using var harness = new CliHarness();
+        using var stop = new CancellationTokenSource();
+        var args = SkyCliExitCodeTests.Prepare(command, harness, stop);
+        File.SetUnixFileMode(harness.CredentialsPath, UnixFileMode.UserWrite);
+
+        var result = await harness.RunAsync(stop.Token, [.. args, "--json"]).ConfigureAwait(false);
+
+        AssertUnusable(result, harness, "cannot be read");
+    }
+
+    [TestMethod]
+    public async Task ACredentialsFolderThatIsAFile_IsUnusableCredentialsRatherThanAbsentAsync()
+    {
+        using var harness = new CliHarness();
+        var notAFolder = harness.WriteFile("not-a-folder", "x");
+
+        var result = await harness.RunAsync("status", "--json", "--credentials-file", Path.Combine(notAFolder, "credentials.json")).ConfigureAwait(false);
+
+        AssertUnusable(result, harness, "cannot be reached");
+    }
+
+    [TestMethod]
+    [DataRow("folder")]
+    [DataRow("file")]
+    public async Task Logout_UnusableCredentials_ExitsThreeAndSaysTheKeyCouldNotBeRemovedAsync(string which)
+    {
+        ArgumentNullException.ThrowIfNull(which);
+        RequireModesEnforced();
+        using var harness = new CliHarness();
+        var folder = Path.GetDirectoryName(harness.CredentialsPath)!;
+        File.SetUnixFileMode(which == "folder" ? folder : harness.CredentialsPath, which == "folder" ? UnixFileMode.None : UnixFileMode.UserWrite);
+        try
+        {
+            var result = await harness.RunAsync("logout").ConfigureAwait(false);
+
+            Assert.AreEqual(3, result.ExitCode, result.ToString());
+            StringAssert.StartsWith(result.Error, "The API key could not be removed: ", StringComparison.Ordinal);
+            Assert.DoesNotContain("No API key is saved", result.All, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.SetUnixFileMode(folder, DirectoryMode);
+            File.SetUnixFileMode(harness.CredentialsPath, FileMode);
+        }
+
+        Assert.AreEqual(CliHarness.Key, SkyCredentialStore.Load(harness.CredentialsPath)!.ApiKey, "Nothing was removed.");
+    }
+
+    [TestMethod]
+    public async Task ACredentialsFileOfAnotherUser_IsUnusableCredentialsWithExitThreeAsync()
+    {
+        using var harness = new CliHarness { UserId = SkyFileSystem.CurrentUserId + 1 };
+
+        var status = await harness.RunAsync("status", "--json").ConfigureAwait(false);
+        var logout = await harness.RunAsync("logout").ConfigureAwait(false);
+
+        AssertUnusable(status, harness, $"The credentials file {harness.CredentialsPath} cannot be used: it belongs to another user (user ID {SkyFileSystem.CurrentUserId})");
+        Assert.AreEqual(3, logout.ExitCode, logout.ToString());
+        StringAssert.StartsWith(logout.Error, "The API key could not be removed: ", StringComparison.Ordinal);
+        Assert.AreEqual(CliHarness.Key, SkyCredentialStore.Load(harness.CredentialsPath)!.ApiKey, "Nothing was removed.");
+    }
+
+    [TestMethod]
+    public async Task ACredentialsFolderOfAnotherUser_IsNotWrittenToAsync()
+    {
+        using var harness = new CliHarness { UserId = SkyFileSystem.CurrentUserId + 1 };
+        File.Delete(harness.CredentialsPath);
+        harness.Input.Enqueue(CliHarness.Key);
+
+        var result = await harness.RunAsync("login", "--url", CliHarness.Url).ConfigureAwait(false);
+
+        Assert.AreEqual(3, result.ExitCode, result.ToString());
+        StringAssert.Contains(result.Error, "CameraAgent accepted the key, but it was not saved", StringComparison.Ordinal);
+        StringAssert.Contains(result.Error, $"The credentials folder {Path.GetDirectoryName(harness.CredentialsPath)} cannot be used: it belongs to another user", StringComparison.Ordinal);
+        Assert.IsFalse(File.Exists(harness.CredentialsPath));
+    }
+
+    [TestMethod]
+    public void Store_TakesOnlyAMissingFileForAbsent()
+    {
+        using var harness = new CliHarness(signedIn: false);
+
+        Assert.IsNull(SkyCredentialStore.Load(harness.CredentialsPath), "No folder: absent.");
+        Directory.CreateDirectory(Path.GetDirectoryName(harness.CredentialsPath)!);
+        Assert.IsNull(SkyCredentialStore.Load(harness.CredentialsPath), "A folder with no file: absent.");
+        Directory.CreateDirectory(harness.CredentialsPath);
+        Assert.ThrowsExactly<SkyCredentialFileException>(() => SkyCredentialStore.Load(harness.CredentialsPath), "A folder where the file should be is not absent.");
+    }
+
+    private static void RequireModesEnforced()
+    {
+        if (Environment.UserName == "root")
+        {
+            Assert.Inconclusive("Needs a non-root user, for whom modes 0000 and 0200 are enforced.");
+        }
+    }
+
+    private static void AssertUnusable(CliResult result, CliHarness harness, string problem)
+    {
+        Assert.AreEqual(3, result.ExitCode, result.ToString());
+        var error = result.Json().GetProperty("error");
+        Assert.AreEqual("UnusableCredentials", error.GetProperty("kind").GetString(), result.ToString());
+        var message = error.GetProperty("message").GetString()!;
+        StringAssert.Contains(message, "cannot be used", StringComparison.Ordinal);
+        StringAssert.Contains(message, problem, StringComparison.Ordinal);
+        Assert.IsEmpty(harness.Api.Requests, "Nothing was sent.");
+    }
+
+    [TestMethod]
     public async Task TheEnvironment_OverridesTheFilesAddressAndKeyAndUrlOverridesTheEnvironmentAddressAsync()
     {
         using var harness = new CliHarness();

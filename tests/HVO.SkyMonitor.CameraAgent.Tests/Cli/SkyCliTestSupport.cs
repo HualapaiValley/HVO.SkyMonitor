@@ -67,6 +67,9 @@ internal sealed class FakeCameraAgent
     /// <summary>Every request waits until it is cancelled.</summary>
     public bool Hang { get; set; }
 
+    /// <summary>Every answer's headers arrive, and its body never does: reading it waits until the read is cancelled.</summary>
+    public bool StallBodies { get; set; }
+
     /// <summary>Raised as each request arrives, before it is answered.</summary>
     public Action<RecordedRequest>? OnRequest { get; set; }
 
@@ -143,9 +146,16 @@ internal sealed class FakeCameraAgent
             return ProblemResponse(status, status == HttpStatusCode.Unauthorized ? "Unauthorized" : "Refused");
         }
 
-        return _routes.TryGetValue($"{recorded.Method} {request.RequestUri.AbsolutePath}", out var respond)
+        var response = _routes.TryGetValue($"{recorded.Method} {request.RequestUri.AbsolutePath}", out var respond)
             ? respond(recorded)
             : ProblemResponse(HttpStatusCode.NotFound, "No such route in the fake API.");
+        if (StallBodies)
+        {
+            response.Content.Dispose();
+            response.Content = new StalledContent();
+        }
+
+        return response;
     }
 
     // A fresh handler per client that never disposes the fake, which every command's client would otherwise do.
@@ -196,6 +206,12 @@ internal sealed class CliHarness : IDisposable
 
     public bool Interactive { get; set; }
 
+    /// <summary>How long the person at the terminal takes to answer each prompt.</summary>
+    public TimeSpan AnswerDelay { get; set; }
+
+    /// <summary>The user hvo-sky takes itself to run as: another than this process's makes its own files someone else's.</summary>
+    public uint UserId { get; set; } = SkyFileSystem.CurrentUserId;
+
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromMilliseconds(5);
 
     /// <summary>The fake's current process start time, which a restart replaces.</summary>
@@ -233,12 +249,13 @@ internal sealed class CliHarness : IDisposable
             ReadLine = (prompt, secret) =>
             {
                 Prompts.Add((prompt, secret));
+                Thread.Sleep(AnswerDelay);
                 return Input.Count > 0 ? Input.Dequeue() : null;
             },
             IsInteractive = Interactive,
             ReadAllInput = () => StandardInput,
             PollInterval = PollInterval,
-            RequestTimeout = TimeSpan.FromSeconds(10),
+            UserId = UserId,
             ClientVersion = "0.9.0-test+" + new string('c', 40),
             CreateHandler = Api.CreateHandler
         };
@@ -429,11 +446,11 @@ internal static class Fake
         caller = new { credential = "ApiKey", apiKeyId = CliHarness.KeyId, access }
     };
 
-    public static object Rigs(string? active, string? pending, string? pendingFailure = null) => new
+    public static object Rigs(string? active, string? pending, string? pendingFailure = null, string? activeFailure = null) => new
     {
         selection = new { activeRevisionId = active, pendingRevisionId = pending, version = 7, pendingScheduleRevisionId = (string?)null },
         pendingRuntimeFailure = pendingFailure,
-        activeRuntimeFailure = (string?)null,
+        activeRuntimeFailure = activeFailure,
         revisions = new[]
         {
             new { revisionId = "rig-1", profileId = "allsky", revisionNumber = 1, moduleType = "VirtualSky", sensorName = "ASI676MC" },
@@ -536,6 +553,66 @@ internal static class Fake
         problem = (string?)null,
         allowedValues
     };
+}
+
+/// <summary>A JSON answer whose body never arrives: a read of it waits until it is cancelled.</summary>
+internal sealed class StalledContent : HttpContent
+{
+    public StalledContent() => Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
+    protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+        => Task.Delay(Timeout.InfiniteTimeSpan);
+
+    protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context, CancellationToken cancellationToken)
+        => Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+
+    protected override Task<Stream> CreateContentReadStreamAsync() => Task.FromResult<Stream>(new StalledStream());
+
+    protected override Task<Stream> CreateContentReadStreamAsync(CancellationToken cancellationToken) => CreateContentReadStreamAsync();
+
+    protected override bool TryComputeLength(out long length)
+    {
+        length = 0;
+        return false;
+    }
+
+    private sealed class StalledStream : Stream
+    {
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            return 0;
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
 }
 
 /// <summary>A clock whose timers fire only when the test says, for the termination grace period.</summary>

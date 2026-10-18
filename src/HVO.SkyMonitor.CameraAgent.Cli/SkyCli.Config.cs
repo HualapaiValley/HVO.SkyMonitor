@@ -333,7 +333,7 @@ internal static partial class SkyCli
                 text = path == "-"
                     ? context.Host.IsInteractive
                         ? throw new SkyCliUsageException("'-' reads the settings file from standard input, which is a terminal here.")
-                        : context.Host.ReadAllInput()
+                        : context.ReadAllInput()
                     : File.ReadAllText(path);
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
@@ -370,7 +370,9 @@ internal static partial class SkyCli
                     throw new SkyCliUsageException("The settings file names a member twice.");
                 }
 
-                if (!root.TryGetProperty("schemaVersion", out var schema) || !schema.TryGetInt32(out var version) || version != SettingsFileSchemaVersion)
+                // The kind first: TryGetInt32 throws on a string, which would make a usage error a failure.
+                if (!root.TryGetProperty("schemaVersion", out var schema) || schema.ValueKind != JsonValueKind.Number
+                    || !schema.TryGetInt32(out var version) || version != SettingsFileSchemaVersion)
                 {
                     throw new SkyCliUsageException($"The settings file must have \"schemaVersion\": {SettingsFileSchemaVersion}.");
                 }
@@ -519,15 +521,19 @@ internal static partial class SkyCli
                 SkySettingsWriteResponse response;
                 try
                 {
-                    response = SkyApiClient.Read<SkySettingsWriteResponse>(await client.SendAsync(
-                        HttpMethod.Put, $"{SkySettingsContract.Route}/{Uri.EscapeDataString(group.Key)}", request, cancellationToken).ConfigureAwait(false));
+                    // A group CameraAgent already had is not a change: a refusal after only such groups changed nothing (exit 3).
+                    response = SkyApiClient.Read<SkySettingsWriteResponse>(await context.SendChangeAsync(
+                        client, HttpMethod.Put, $"{SkySettingsContract.Route}/{Uri.EscapeDataString(group.Key)}", request,
+                        $"the {group.Key} settings", cancellationToken,
+                        static answer => SkyJson.Text(answer, "status") != "Unchanged").ConfigureAwait(false));
                 }
-                catch (Exception error) when (saved.Count > 0 && error is not OperationCanceledException)
+                catch (Exception error) when (context.AcceptedChange is not null && error is not OperationCanceledException)
                 {
                     var (_, _, message) = SkyCliContext.Classify(error);
                     throw new SkyCliOutcomeException(
                         $"The {group.Key} group was not saved: {message} The groups before it were saved; run the command again to continue.",
-                        SkyExitCode.Failed, "Failed", error);
+                        SkyExitCode.Failed, "Failed", error)
+                    { SaysWhatWasAccepted = true };
                 }
 
                 saved.Add(new

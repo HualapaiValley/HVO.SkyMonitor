@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text;
+using HVO.SkyMonitor.CameraAgent.Cli.Client;
 
 namespace HVO.SkyMonitor.CameraAgent.Cli;
 
@@ -36,11 +37,17 @@ internal sealed class SkyCliHost
 
     public TimeProvider Time { get; init; } = TimeProvider.System;
 
-    /// <summary>How often <c>status --watch</c> reads the status, and a restart's wait looks for the new process.</summary>
+    /// <summary>
+    /// How often <c>status --watch</c> reads the status by default, and how often a restart's or a rig's wait reads
+    /// CameraAgent again.
+    /// </summary>
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(2);
 
-    /// <summary>How long one request may take.</summary>
-    public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    /// <summary>
+    /// The user this process runs as (its effective user ID), who must own the credentials file and its folder. Tests
+    /// give another, to see a file that belongs to someone else refused.
+    /// </summary>
+    public uint UserId { get; init; } = SkyFileSystem.CurrentUserId;
 
     /// <summary>hvo-sky's own version: <c>&lt;version&gt;+&lt;commit&gt;</c>.</summary>
     public string ClientVersion { get; init; } = Version;

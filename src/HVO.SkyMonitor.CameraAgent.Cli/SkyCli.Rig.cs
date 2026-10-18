@@ -140,14 +140,14 @@ internal static partial class SkyCli
                     return (int)SkyExitCode.Refused;
                 }
 
-                var receipt = await client.SendAsync(HttpMethod.Post, SkyRoutes.RigStage, new
+                var receipt = await context.SendChangeAsync(client, HttpMethod.Post, SkyRoutes.RigStage, new
                 {
                     revisionId = id,
                     expectedVersion = version,
                     acknowledgeUnvalidated = true,
                     expectedScheduleRevisionId = SkyJson.Text(preview, "scheduleRevisionId"),
                     expectedScheduleProfileSha256 = SkyJson.Text(preview, "scheduleProfileSha256")
-                }, cancellationToken).ConfigureAwait(false);
+                }, $"the staging of rig revision {id}", cancellationToken).ConfigureAwait(false);
                 return Report(context, receipt,
                     $"Staged rig revision {id}. It takes effect when CameraAgent next starts: '{CommandName} rig apply' restarts it now.");
             });
@@ -166,18 +166,15 @@ internal static partial class SkyCli
         {
             var force = ForceOption("Restart without asking. Needed without a terminal, and with --json.");
             var noWait = NoWaitOption();
-            var timeout = TimeoutOption();
             var command = new Command(
                 "apply",
-                "Apply the staged rig revision by restarting CameraAgent, then check that it became the active one. Capture stops until CameraAgent is back.")
+                "Apply the staged rig revision by restarting CameraAgent, then wait (within --timeout) until it is the active one, or its camera fails to initialize. Capture stops until CameraAgent is back.")
             {
                 force,
-                noWait,
-                timeout
+                noWait
             };
             SetAction(command, async (context, parseResult, cancellationToken) =>
             {
-                var wait = ReadTimeout(parseResult, timeout);
                 var connection = context.ResolveConnection();
                 using var client = context.CreateClient(connection);
                 var rigs = await client.GetAsync(SkyRoutes.RigProfiles, cancellationToken).ConfigureAwait(false);
@@ -193,26 +190,57 @@ internal static partial class SkyCli
                     return (int)SkyExitCode.Refused;
                 }
 
-                var outcome = await RestartAsync(context, client, !parseResult.GetValue(noWait), wait, cancellationToken).ConfigureAwait(false);
+                var outcome = await RestartAsync(context, client, !parseResult.GetValue(noWait), $"the restart that applies rig revision {pending}", cancellationToken)
+                    .ConfigureAwait(false);
                 if (outcome.After is null)
                 {
                     return Report(context, new { applied = (bool?)null, revisionId = pending, restarting = true },
                         $"CameraAgent is restarting to apply rig revision {pending}. '{CommandName} rig show' says whether it became active.");
                 }
 
-                var after = await client.GetAsync(SkyRoutes.RigProfiles, cancellationToken).ConfigureAwait(false);
-                if (SkyJson.Text(after, "selection", "activeRevisionId") != pending)
-                {
-                    var failure = SkyJson.Text(after, "pendingRuntimeFailure") ?? SkyJson.Text(after, "activeRuntimeFailure");
-                    throw new SkyCliOutcomeException(
-                        $"CameraAgent restarted, but rig revision {pending} did not become active{(failure is null ? "." : $": {failure}")} '{CommandName} rig show' shows the rig in use.",
-                        SkyExitCode.Failed, "Failed");
-                }
-
+                await WaitForRigAsync(context, client, pending, cancellationToken).ConfigureAwait(false);
                 return Report(context, new { applied = true, revisionId = pending, startedUtc = outcome.After.Host.ProcessStartedUtc },
                     $"Rig revision {pending} is active. CameraAgent restarted at {SkyCliFormat.Time(outcome.After.Host.ProcessStartedUtc)}.");
             });
             return command;
         }
+
+        /// <summary>
+        /// After the restart, the staged rig becomes active only once its camera has initialized, so the rig is read until
+        /// <paramref name="pending"/> is the active revision; until CameraAgent reports that it failed to initialize, or that
+        /// it is no longer staged; or until the deadline.
+        /// </summary>
+        private static Task<string> WaitForRigAsync(SkyCliContext context, SkyApiClient client, string pending, CancellationToken cancellationToken)
+            => PollAsync(
+                context,
+                context.Deadline,
+                $"waiting for rig revision {pending} to become active. '{CommandName} rig show' shows the rig in use",
+                async token =>
+                {
+                    var rigs = await client.GetAsync(SkyRoutes.RigProfiles, token).ConfigureAwait(false);
+                    if (SkyJson.Text(rigs, "selection", "activeRevisionId") == pending)
+                    {
+                        return pending;
+                    }
+
+                    if ((SkyJson.Text(rigs, "pendingRuntimeFailure") ?? SkyJson.Text(rigs, "activeRuntimeFailure")) is { } failure)
+                    {
+                        throw new SkyCliOutcomeException(
+                            $"CameraAgent restarted, but rig revision {pending} did not become active: {failure} '{CommandName} rig show' shows the rig in use.",
+                            SkyExitCode.Failed, "Failed")
+                        { SaysWhatWasAccepted = true };
+                    }
+
+                    if (SkyJson.Text(rigs, "selection", "pendingRevisionId") != pending)
+                    {
+                        throw new SkyCliOutcomeException(
+                            $"CameraAgent restarted, but rig revision {pending} is no longer staged and did not become active. '{CommandName} rig show' shows the rig in use.",
+                            SkyExitCode.Failed, "Failed")
+                        { SaysWhatWasAccepted = true };
+                    }
+
+                    return null;
+                },
+                cancellationToken);
     }
 }

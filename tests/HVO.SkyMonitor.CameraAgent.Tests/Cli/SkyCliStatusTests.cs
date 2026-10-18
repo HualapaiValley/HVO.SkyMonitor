@@ -137,6 +137,36 @@ public sealed class SkyCliStatusTests
     }
 
     [TestMethod]
+    [DataRow(HttpStatusCode.Unauthorized, "SignedOut")]
+    [DataRow(HttpStatusCode.Forbidden, "Forbidden")]
+    public async Task Watch_Json_EndsWithOneCompactErrorLineAndKeepsExitThreeWhenTheKeyIsRefusedAsync(HttpStatusCode status, string kind)
+    {
+        using var harness = new CliHarness();
+        var reads = 0;
+        harness.Api.Handle("GET", Fake.SummaryRoute, _ => ++reads == 1
+            ? FakeCameraAgent.Response(HttpStatusCode.OK, Fake.Summary())
+            : FakeCameraAgent.ProblemResponse(status, "Refused"));
+
+        var result = await harness.RunAsync("status", "--watch", "--json").ConfigureAwait(false);
+
+        Assert.AreEqual(3, result.ExitCode, result.ToString());
+        var lines = result.Out.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.HasCount(2, lines, result.Out);
+        foreach (var line in lines)
+        {
+            using var document = JsonDocument.Parse(line);
+            Assert.AreEqual(JsonValueKind.Object, document.RootElement.ValueKind, line);
+            Assert.AreEqual(line.Trim(), line, "Each line is one compact document.");
+        }
+
+        using var last = JsonDocument.Parse(lines[^1]);
+        var error = last.RootElement.GetProperty("error");
+        Assert.AreEqual(kind, error.GetProperty("kind").GetString());
+        Assert.AreEqual(3, error.GetProperty("exitCode").GetInt32());
+        Assert.IsEmpty(result.Error);
+    }
+
+    [TestMethod]
     [DataRow("status --watch --interval 0", "--interval takes 1 to 3600 seconds.")]
     [DataRow("status --interval 5", "--interval is used with --watch.")]
     public async Task Watch_IntervalOutOfRangeOrWithoutWatch_IsAUsageErrorAsync(string commandLine, string expected)

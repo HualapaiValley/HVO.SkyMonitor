@@ -59,9 +59,18 @@ hvo-sky logout                                # removes the saved key; the addre
 - **The file** is `$XDG_CONFIG_HOME/hvo-sky/credentials.json`, or `~/.config/hvo-sky/credentials.json` when that
   variable is not set. `--credentials-file` names another. It holds the address and the key, written atomically with
   mode `0600` in a directory with mode `0700`.
-- `hvo-sky` refuses a credentials file that other users can read or change, and a directory that other users can
-  change, and says which `chmod` fixes it (exit 3). It also refuses a file it cannot read, such as one of another
-  schema, with an unknown member, or with a key that is not in CameraAgent's format.
+- **Absent or unusable.** Only a file that does not exist (`ENOENT`, for the file or a folder on its path) is absent,
+  which `hvo-sky` reports as not signed in. A file that exists but cannot be used is refused on every command, `logout`
+  included, as unusable credentials (exit 3, `kind` `UnusableCredentials`), and `hvo-sky` says why:
+  - it, or a folder on its path, cannot be reached or read (for example a folder with mode `0000`, or a file with
+    mode `0200`);
+  - it belongs to another user than the one running `hvo-sky`, or its folder belongs to another user than that user
+    or `root`;
+  - other users can read or change it, or change its folder, and it says which `chmod` fixes that;
+  - it is not a credentials file this `hvo-sky` reads: another schema, an unknown member, or a key that is not in
+    CameraAgent's format.
+
+  `logout` on unusable credentials says that the key could not be removed, since it may still be in the file.
 - **The environment** overrides the file: `HVO_SKY_URL` (the address) and `HVO_SKY_API_KEY` (the key). `--url`
   overrides both for the address. A variable whose value cannot be used is an error (exit 3) that names the variable
   and never repeats a key.
@@ -75,7 +84,14 @@ hvo-sky logout                                # removes the saved key; the addre
 
 ## Commands
 
-Every command takes `--json`, `--url` and `--credentials-file`; `--help` describes each.
+Every command takes `--json`, `--url`, `--credentials-file` and `--timeout`; `--help` describes each.
+
+**`--timeout S`** (1 to 3600, default 30) is the one deadline of a command: the time it may spend waiting for
+CameraAgent, across every request, every answer's body and every wait between reads, a restart's and a rig's included.
+Time spent answering a prompt does not count. A command that runs out of time exits 1 and says it timed out
+(`kind` `TimedOut`), which Ctrl+C (130) never does. `status --watch` runs until it is interrupted, so there it bounds
+each read, and a read that runs out of time is a failed read. A restart on a slow host may need longer than 30 s:
+`hvo-sky restart --timeout 180`.
 
 | Command | Key | What it does |
 | --- | --- | --- |
@@ -86,13 +102,13 @@ Every command takes `--json`, `--url` and `--credentials-file`; `--help` describ
 | `config set KEY=VALUE... [--reason R] [--dry-run] [--force]` | ReadWrite | Changes settings of one group. Each value is checked against the catalogue first (exit 2 and nothing sent when it is refused), and the group is sent with the version read, so a change made meanwhile is refused as a conflict rather than overwritten. An empty value clears a setting that may be empty. |
 | `config diff FILE` | Read | How a settings file differs from the instance's settings. Nothing is sent. |
 | `config apply FILE [--reason R] [--dry-run] [--force]` | ReadWrite | Changes every setting that differs from a settings file, one group at a time in catalogue order. |
-| `restart [--force] [--no-wait] [--timeout S]` | ReadWrite | Restarts CameraAgent, so settings and a staged rig that apply at its next start take effect, then waits (up to `--timeout`, default 180 s) until a new process answers. |
+| `restart [--force] [--no-wait]` | ReadWrite | Restarts CameraAgent, so settings and a staged rig that apply at its next start take effect, then waits (within `--timeout`) until a new process answers. |
 | `rig show` | Read | The active and staged rig revisions, and the rig revisions the instance has. |
 | `rig stage REVISION [--acknowledge-unvalidated]` | ReadWrite | Stages a rig revision for the next start, after CameraAgent's preview checks it against the active schedule. |
-| `rig apply [--force] [--no-wait] [--timeout S]` | ReadWrite | Restarts CameraAgent to apply the staged rig revision, then checks that it became the active one. |
+| `rig apply [--force] [--no-wait]` | ReadWrite | Restarts CameraAgent to apply the staged rig revision, then waits (within `--timeout`) until it is the active one, or CameraAgent reports that its camera failed to initialize. |
 | `schedule show` | Read | The active and staged schedule revisions, whether capture is admitted now and when that changes, overrides, and the next capture windows. |
 | `schedule stage FILE [--basis REV] [--reason R]` | ReadWrite | Stages a schedule revision from a capture profile: the `profile` of a revision as `schedule show --json` gives it, edited. `--basis` names the revision whose module and step options it keeps (default the active one). |
-| `schedule apply [REVISION] [--reason R]` | ReadWrite | Activates the staged revision, or the one named, at the next capture boundary. An older revision goes back by rollback, as the settings API's schedule group does. |
+| `schedule apply [REVISION] [--reason R]` | ReadWrite | Activates the staged revision, or the one named, at the next capture boundary. An older revision goes back by rollback. Which one it is comes from the revision numbers CameraAgent lists; a revision it does not list is refused (exit 3). |
 | `login`, `logout` | none | See [Signing in](#signing-in). |
 
 ### Settings
@@ -139,29 +155,42 @@ container, unless `CameraAgent:Restart:Supervised` is `true`) refuses, and `hvo-
 
 `restart` and `rig apply` ask first at a terminal; without one, and with `--json`, they need `--force` (exit 2 until
 then). They then wait until a process with a new start time answers, through the old process stopping and the new one
-starting. One that does not answer within `--timeout` seconds exits 1. With `--no-wait` they return once CameraAgent
-has accepted the restart.
+starting. One that does not answer within `--timeout` exits 1, saying that CameraAgent accepted the restart but that
+it could not be verified. With `--no-wait` they return once CameraAgent has accepted the restart.
 
 ### Rig and schedule
 
 A rig revision is checked against the active schedule when it is staged, and against the camera only when CameraAgent
 next starts with it: `rig stage` asks you to acknowledge that, or takes `--acknowledge-unvalidated`, as the Camera & rig
 page's checkbox does. One rig revision, or one schedule draft, is staged at a time. `rig apply` restarts CameraAgent and
-then reads the rig selection: a staged revision that did not become active is a failure (exit 1), with CameraAgent's
-reason. A schedule revision applies at the next capture boundary and needs no restart.
+then reads the rig selection until the staged revision is active, which it becomes only once its camera has initialized.
+A failure CameraAgent reports (the staged or the active camera did not initialize), a revision no longer staged, or the
+end of `--timeout` is a failure (exit 1), with CameraAgent's reason when it gave one.
+
+A schedule revision applies at the next capture boundary and needs no restart. CameraAgent takes going forward
+(`activate`) and going back (`rollback`) as separate commands, and refuses either in the wrong direction. `schedule apply`
+decides which from the revision numbers CameraAgent reports for the named revision and the active one. The schedule
+lists the active, the staged and the most recent revisions; a revision it does not list, or one listed without a number,
+is refused with the reason and nothing sent (exit 3), rather than guessed.
 
 ## Scripts
 
 - **Output.** Results go to standard output. Errors, progress and prompts go to standard error.
 - **`--json`.** Writes one JSON document on standard output. On failure, that document is
-  `{"error": {"exitCode", "kind", "message", "status", "code", "detail", "errors", "settings"}}`, and nothing is
-  written to standard error. `status --watch --json` writes one line of JSON per change. A command line that cannot be
-  parsed is reported as text on standard error with exit 2, even with `--json`.
+  `{"error": {"exitCode", "kind", "cause", "message", "status", "code", "detail", "errors", "settings"}}`, and nothing
+  is written to standard error. `status --watch --json` writes one compact JSON document per line, for each change and
+  each failed read, and its final error, when one ends it, is one such line too. A command line that cannot be parsed
+  is reported as text on standard error with exit 2, even with `--json`.
 - **Unattended use.** A script never gets a prompt it cannot answer. Without a terminal, a key is read as one line of
   standard input, and a question no one can answer is exit 2 with the option that answers it (`--force`,
   `--acknowledge-unvalidated`).
 - **Retries.** A change carries a fresh `Idempotency-Key` and the version it read. A refused change (exit 3) changed
   nothing; read again and retry. After exit 1, check with `hvo-sky status` or `config show` before retrying.
+- **A change accepted, then a failure.** Exit 3 means the command changed nothing. Once CameraAgent has accepted a
+  change (a restart, a staged rig or schedule, an activation, a settings group), any later failure exits 1 with `kind`
+  `Unverified`, saying what was accepted and why it could not be verified; `cause` is the failure's own kind, such as
+  `SignedOut` for a key refused while waiting. Ctrl+C then still exits 130, saying the same. When a change's own
+  request fails without an answer, the message says that whether CameraAgent received it is not known.
 
 ### Exit codes
 
@@ -171,10 +200,10 @@ With `--json`, the error document's `kind` says which case it was.
 | Code | Meaning | `kind` |
 | ---: | --- | --- |
 | 0 | Done, or nothing to change. | |
-| 1 | A step failed; re-running continues. CameraAgent could not be reached or did not answer in time, answered with a server error (HTTP 5xx) or an answer that could not be read, did not come back after a restart, or a staged rig did not become active; `config apply` stopped after an earlier group was saved; `status --watch` was ended while CameraAgent was not answering. | `Unreachable`, `Failed` |
+| 1 | A step failed; re-running continues. CameraAgent could not be reached, answered with a server error (HTTP 5xx) or an answer that could not be read, or a staged rig did not become active; the command ran out of time (`--timeout`); CameraAgent accepted a change that could then not be verified; `config apply` stopped after an earlier group was saved; `status --watch` was ended while CameraAgent was not answering. | `Unreachable`, `Failed`, `TimedOut`, `Unverified` |
 | 2 | The command line was not valid (an unknown command or option, a missing or malformed value, a value the settings catalogue refuses, or a credential given on the command line), or a question had no one to answer it. Nothing was sent. | `Usage`, `ConfirmationRequired` |
-| 3 | Refused, and nothing changed: no address or key, a credentials file that cannot be used, CameraAgent did not accept the key (HTTP 401) or its access (HTTP 403), refused the request (a version conflict, a read-only setting, a value it does not accept, a state that does not allow it, a CameraAgent that cannot restart itself), or a person answered no. | `NotConfigured`, `SignedOut`, `Forbidden`, `Refused` |
-| 130 | Interrupted (Ctrl+C, SIGTERM, or the terminal closing). What was already sent may still take effect. | `Interrupted` |
+| 3 | Refused, and nothing changed: no address or key, a credentials file or credential variable that cannot be used, CameraAgent did not accept the key (HTTP 401) or its access (HTTP 403), refused the request (a version conflict, a read-only setting, a value it does not accept, a state that does not allow it, a CameraAgent that cannot restart itself), a schedule revision whose order cannot be established, or a person answered no. | `NotConfigured`, `UnusableCredentials`, `SignedOut`, `Forbidden`, `Refused` |
+| 130 | Interrupted (Ctrl+C, SIGTERM, or the terminal closing). What was already sent may still take effect; after CameraAgent accepted a change, the message says so. | `Interrupted` |
 
 `logout` sends nothing, so it exits only 0, 2 or 3. `status --watch` ends on a signal by design: it exits 0 when its last
 read succeeded and 1 when it did not.
