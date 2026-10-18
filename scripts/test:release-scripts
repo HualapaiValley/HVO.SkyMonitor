@@ -678,13 +678,13 @@ check_labels "$labels_root/release" >"$labels_root/release.out" || fail "the ima
 linux/arm64: CameraAgent 1.2.0-dev.3, commit $commit, created 2026-10-17T18:00:00Z" ]] ||
     { cat "$labels_root/release.out" >&2; fail "the image check did not name each platform image it checked."; }
 expect_labels_refusal "an image without a created label" \
-    "linux/arm64: its created label (org.opencontainers.image.created) is '', not release.json's created time 2026-10-17T18:00:00Z." \
+    "linux/arm64: its created label (org.opencontainers.image.created) is absent, not release.json's created time 2026-10-17T18:00:00Z." \
     "$release_labels" "$(jq -c 'del(.["org.opencontainers.image.created"])' <<<"$release_labels")"
 expect_labels_refusal "an image created at another time" \
-    "linux/amd64: its created label (org.opencontainers.image.created) is '2026-10-17T18:00:00+00:00', not release.json's created time 2026-10-17T18:00:00Z." \
+    "linux/amd64: its created label (org.opencontainers.image.created) is \"2026-10-17T18:00:00+00:00\", not release.json's created time 2026-10-17T18:00:00Z." \
     "$(jq -c '.["org.opencontainers.image.created"] = "2026-10-17T18:00:00+00:00"' <<<"$release_labels")"
 expect_labels_refusal "a release.json created at another time" \
-    "linux/amd64: its created label (org.opencontainers.image.created) is '2026-10-17T18:00:00Z', not release.json's created time 2026-10-17T18:00:01Z." \
+    "linux/amd64: its created label (org.opencontainers.image.created) is \"2026-10-17T18:00:00Z\", not release.json's created time 2026-10-17T18:00:01Z." \
     "$release_labels" "$release_labels" '.created = "2026-10-17T18:00:01Z"'
 expect_labels_refusal "an image without a state contract" \
     "linux/arm64: its state contract label (io.hvo.skymonitor.state-contracts) is not release.json's stateContracts.cameraAgent." \
@@ -707,6 +707,47 @@ expect_labels_refusal "an archive of another image" "not the image sha256:$(prin
 expect_labels_refusal "an archive with an image for a platform the release does not list" \
     "holds images for linux/amd64,linux/arm64, not linux/amd64." "$release_labels" "$release_labels" \
     '.images.cameraAgent.platforms = ["linux/amd64"]'
+# Each value is compared whole, as JSON gives it: a shell copy would drop a trailing LF and pass it (PR-1364-R1 F1).
+# release.json's own values must be whole and valid, so a matching label cannot make an invalid one pass.
+expect_labels_refusal "an image whose created label ends in LF" \
+    "linux/arm64: its created label (org.opencontainers.image.created) is \"2026-10-17T18:00:00Z\\n\", not release.json's created time 2026-10-17T18:00:00Z." \
+    "$release_labels" "$(jq -c '.["org.opencontainers.image.created"] += "\n"' <<<"$release_labels")"
+expect_labels_refusal "an image whose created label is empty" \
+    "linux/amd64: its created label (org.opencontainers.image.created) is \"\", not release.json's created time 2026-10-17T18:00:00Z." \
+    "$(jq -c '.["org.opencontainers.image.created"] = ""' <<<"$release_labels")"
+expect_labels_refusal "a release.json whose created time ends in LF" \
+    "has no created time, an RFC 3339 UTC time such as 2026-10-17T18:00:00Z." \
+    "$release_labels" "$release_labels" '.created += "\n"'
+expect_labels_refusal "an empty created time and images without the label" \
+    "has no created time, an RFC 3339 UTC time such as 2026-10-17T18:00:00Z." \
+    "$(jq -c 'del(.["org.opencontainers.image.created"])' <<<"$release_labels")" "" '.created = ""'
+expect_labels_refusal "a created time that is no time, matched by the label" \
+    "has no created time, an RFC 3339 UTC time such as 2026-10-17T18:00:00Z." \
+    "$(jq -c '.["org.opencontainers.image.created"] = "not-a-time"' <<<"$release_labels")" "" '.created = "not-a-time"'
+expect_labels_refusal "a created time that is no date, matched by the label" \
+    "has no created time, an RFC 3339 UTC time such as 2026-10-17T18:00:00Z." \
+    "$(jq -c '.["org.opencontainers.image.created"] = "2026-02-30T18:00:00Z"' <<<"$release_labels")" "" \
+    '.created = "2026-02-30T18:00:00Z"'
+expect_labels_refusal "an image whose version label ends in LF" \
+    "linux/arm64: the image is not labelled as CameraAgent 1.2.0-dev.3 from commit $commit." \
+    "$release_labels" "$(jq -c '.["org.opencontainers.image.version"] += "\n"' <<<"$release_labels")"
+expect_labels_refusal "an image whose revision label ends in LF" \
+    "linux/arm64: the image is not labelled as CameraAgent 1.2.0-dev.3 from commit $commit." \
+    "$release_labels" "$(jq -c '.["org.opencontainers.image.revision"] += "\n"' <<<"$release_labels")"
+expect_labels_refusal "an image whose component label ends in LF" \
+    "linux/arm64: the image is not labelled as CameraAgent 1.2.0-dev.3 from commit $commit." \
+    "$release_labels" "$(jq -c '.["io.hvo.skymonitor.component"] += "\n"' <<<"$release_labels")"
+expect_labels_refusal "an image whose state contract label ends in LF" \
+    "linux/arm64: its state contract label (io.hvo.skymonitor.state-contracts) is not release.json's stateContracts.cameraAgent." \
+    "$release_labels" "$(jq -c '.["io.hvo.skymonitor.state-contracts"] += "\n"' <<<"$release_labels")"
+expect_labels_refusal "a release.json whose version ends in LF" "has no version, a release version such as 1.2.0-dev.3." \
+    "$release_labels" "$release_labels" '.version += "\n"'
+expect_labels_refusal "a release.json whose commit ends in LF" "has no commit, a 40-character lowercase commit ID." \
+    "$release_labels" "$release_labels" '.commit += "\n"'
+expect_labels_refusal "a release.json whose image digest ends in LF" "has no cameraAgent image." \
+    "$release_labels" "$release_labels" '.images.cameraAgent.digest += "\n"'
+expect_labels_refusal "a release.json whose last platform ends in LF" "has no cameraAgent image platforms" \
+    "$release_labels" "$release_labels" '.images.cameraAgent.platforms[1] += "\n"'
 
 # The asset script refuses bad arguments before it builds anything.
 cat >"$fake_bin/docker" <<'FAKE_DOCKER'
