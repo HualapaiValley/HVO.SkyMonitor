@@ -77,5 +77,16 @@ updates:
       - dependency-name: "dotnet/aspnet"
         update-types:
           - "version-update:semver-major"
+      - dependency-name: "dotnet/runtime-deps"
+        update-types:
+          - "version-update:semver-major"
+      # Ubuntu LTS changes and devcontainer base generations require deliberate
+      # OS/package/tooling qualification; allow minor/patch/digest refreshes.
+      - dependency-name: "ubuntu"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "devcontainers/base"
+        update-types:
+          - "version-update:semver-major"
     # No labels key: Dependabot applies its default "dependencies" and "docker" labels and creates "docker",
     # whereas a listed label that the repository lacks would be ignored.

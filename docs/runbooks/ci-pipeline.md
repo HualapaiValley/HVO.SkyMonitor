@@ -267,22 +267,39 @@ Dependabot updates `FROM` lines. CameraAgent pins its external images on the
 those aliases through `DOTNET_SDK_IMAGE` and `DOTNET_ASPNET_IMAGE`. The ARM64
 advisory build passes resolved native references through the same arguments.
 
-- `dotnet/aspnet` receives patch releases and digest refreshes. A new major
-  version is ignored, because it is a target-framework migration.
+- `dotnet/aspnet` and `dotnet/runtime-deps` receive patch releases and digest
+  refreshes. A new major version is ignored, because it is a target-framework
+  migration.
 - `dotnet/sdk` receives digest refreshes of the pinned tag only. `global.json`
   requires that SDK exactly (`rollForward: disable`), so a new SDK is a manual
   change to `global.json`, every SDK-bearing Dockerfile, and the other SDK pins
   together.
+- `ubuntu` and `devcontainers/base` ignore semver-major updates. Moving the
+  Ubuntu LTS or devcontainer base generation requires deliberate OS, package
+  and tooling qualification. Minor, patch and digest refreshes remain enabled.
 
 Every Development v1 Preflight, including drafts, runs
 `./scripts/ci:base-images`. This offline check enumerates tracked and non-ignored
-new `Dockerfile`, `Dockerfile.*`, and `*.Dockerfile` files, requires SDK FROM tags
-to equal `global.json`, requires identical image tags to share one digest, and
-requires every external FROM to carry a full `sha256` digest. Earlier stage
-aliases inherit their checked base; global ARG defaults are resolved before
-checking FROMs. Unresolved arguments and unsupported FROM forms fail closed.
-There are no pinning exceptions. Build-time argument overrides are outside this
-source check; the ARM64 harness separately resolves its native references.
+new files named `dockerfile` or `containerfile`, case-insensitively, including
+`X.*` and `*.X` variants, while excluding `*.dockerignore`. The Dependabot
+coverage contract uses the same discovery. SDK tags must equal the strict,
+stable `major.minor.patch` version in `global.json`. Registry hosts are
+lowercased, default ports 80/443 removed, and Docker Hub short names and host
+aliases expanded to `docker.io/library/…` for single-component repositories.
+Identical normalized tagged references must share one digest, with the first
+location retained in diagnostics. Digest-only references are independently
+pinned and are not compared as a shared tag.
+
+Every external FROM must carry a full `sha256` digest. `FROM scratch` has no
+base image; earlier stage aliases inherit their checked base. Global ARG
+defaults are resolved before checking FROMs. UTF-8 BOMs are decoded before
+parser directives or instructions. Unknown instructions, unresolved arguments,
+unsupported FROM forms and backtick escape directives fail closed. Instructions
+containing `<<` are refused as unsupported heredocs; use a separate COPY source
+or a non-heredoc instruction.
+Diagnostics escape repository text and reject Dockerfile control characters.
+There are no external-image pinning exceptions. Build-time argument overrides
+are outside this source check; the ARM64 harness separately resolves its native references.
 `./scripts/test:development-v1-ci` includes offline mismatch/alignment fixtures
 and verifies that every checked-in Dockerfile directory is listed in Dependabot.
 No Docker daemon, image pull, SDK invocation, or registry access is needed.

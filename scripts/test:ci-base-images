@@ -3,6 +3,7 @@
 import json
 import pathlib
 import re
+import runpy
 import subprocess
 import tempfile
 import unittest
@@ -36,6 +37,7 @@ class BaseImages(unittest.TestCase):
         else:
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertIn(error, result.stderr)
+        return result
 
     def test_sdk_mismatch_then_aligned(self):
         self.dockerfile("src/A/Dockerfile", f"FROM mcr.microsoft.com/dotnet/sdk:10.0.401@sha256:{A}\n")
@@ -46,7 +48,7 @@ class BaseImages(unittest.TestCase):
     def test_shared_tag_mismatch_then_aligned(self):
         self.dockerfile("src/A/Dockerfile", f"FROM ubuntu:24.04@sha256:{A}\n")
         self.dockerfile("tools/B/Dockerfile", f"FROM ubuntu:24.04@sha256:{B}\n")
-        self.check("conflicting digests for ubuntu:24.04")
+        self.check("conflicting digests")
         self.dockerfile("tools/B/Dockerfile", f"FROM ubuntu:24.04@sha256:{A}\n")
         self.check()
 
@@ -104,9 +106,7 @@ FROM build AS final
     def test_real_repository_and_dependabot_coverage(self):
         result = subprocess.run([CHECK], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        paths = subprocess.check_output(["git", "-C", ROOT, "ls-files", "-z"]).decode().split("\0")
-        dockerfiles = [p for p in paths if pathlib.PurePosixPath(p).name.startswith("Dockerfile")
-                       or pathlib.PurePosixPath(p).name.endswith(".Dockerfile")]
+        dockerfiles = runpy.run_path(str(CHECK))["discover_dockerfiles"](ROOT)
         config = (ROOT / ".github/dependabot.yml").read_text()
         docker = config.split('  - package-ecosystem: "docker"\n', 1)[1].split('  - package-ecosystem:', 1)[0]
         directories = set(re.findall(r'^      - "(/[^"*]*)"$', docker, re.M))
@@ -115,6 +115,113 @@ FROM build AS final
             directory = "/" if parent == "." else "/" + parent
             self.assertIn(directory, directories, f"Dependabot does not cover {path}")
         self.assertTrue(dockerfiles)
+
+
+    def test_F1_bom_unpinned_first_from(self):
+        self.dockerfile("Dockerfile", f"\ufeffFROM alpine:3.22 AS first\nFROM ubuntu:24.04@sha256:{A}\n")
+        self.check("FROM must be pinned")
+
+    def test_F1_bom_escape_directive(self):
+        self.dockerfile("Dockerfile", f"\ufeff# escape=`\nRUN echo hello \\\nFROM alpine:3.22\nFROM ubuntu:24.04@sha256:{A}\n")
+        self.check("unsupported Dockerfile escape directive")
+
+    def test_F1_unknown_instruction(self):
+        self.dockerfile("Dockerfile", f"FROM ubuntu:24.04@sha256:{A}\nFR0M alpine:3.22\n")
+        self.check("unknown Dockerfile instruction")
+
+    def test_F3_discovery_variants(self):
+        for name in ("dockerfile", "Containerfile", "build.dockerfile", "containerfile.test", "build.CONTAINERFILE"):
+            with self.subTest(name=name):
+                self.dockerfile(name + "/" + name, "FROM ubuntu:24.04\n")
+                self.check("FROM must be pinned")
+                self.dockerfile(name + "/" + name, f"FROM ubuntu:24.04@sha256:{A}\n")
+
+    def test_F3_shared_discovery(self):
+        discover = runpy.run_path(str(CHECK))["discover_dockerfiles"]
+        expected = ["a/dockerfile", "b/Containerfile", "c/build.dockerfile"]
+        for name in expected:
+            self.dockerfile(name, f"FROM ubuntu:24.04@sha256:{A}\n")
+        self.dockerfile("Dockerfile.dockerignore", "not a Dockerfile\n")
+        self.assertEqual(discover(self.root), expected)
+
+    def assert_safe(self, result):
+        for stream in (result.stdout, result.stderr):
+            self.assertFalse(any(ord(c) < 32 and c != "\n" or 127 <= ord(c) <= 159 for c in stream), repr(stream))
+            self.assertFalse(any(line.lstrip().startswith("::") for line in stream.splitlines()), repr(stream))
+
+    def test_F4_directory_workflow_command(self):
+        self.dockerfile("bad\n::error injected/Dockerfile", "FROM ubuntu:24.04\n")
+        self.assert_safe(self.check("FROM must be pinned"))
+
+    def test_F4_sdk_workflow_command(self):
+        (self.root / "global.json").write_text(json.dumps({"sdk": {"version": "10.0.402\n::error injected"}}))
+        self.dockerfile("Dockerfile", f"FROM mcr.microsoft.com/dotnet/sdk:{SDK}@sha256:{A}\n")
+        result = self.check("invalid global.json sdk.version")
+        self.assert_safe(result)
+
+    def test_F4_terminal_controls(self):
+        for payload in ("\x1b]0;injected\x07", "\x85", "\r::error injected"):
+            with self.subTest(payload=repr(payload)):
+                self.dockerfile("Dockerfile", f"FROM ubuntu:{payload}\n")
+                self.assert_safe(self.check("control character"))
+
+    def test_F4_strict_sdk_version(self):
+        self.dockerfile("Dockerfile", f"FROM ubuntu:24.04@sha256:{A}\n")
+        for version in (None, 10, "10.0", "10.0.402-extra", "10.0.402 ", "１０.0.402"):
+            with self.subTest(version=version):
+                (self.root / "global.json").write_text(json.dumps({"sdk": {"version": version}}))
+                self.assert_safe(self.check("invalid global.json sdk.version"))
+
+    def test_F5_sdk_normalized_registry(self):
+        for host in ("MCR.MICROSOFT.COM", "mcr.microsoft.com:443", "MCR.MICROSOFT.COM:80"):
+            with self.subTest(host=host):
+                self.dockerfile("Dockerfile", f"FROM {host}/dotnet/sdk:wrong@sha256:{A}\n")
+                self.check("SDK tag must equal global.json")
+                self.dockerfile("Dockerfile", f"FROM {host}/dotnet/sdk:{SDK}@sha256:{A}\n")
+                self.check()
+
+    def test_F5_hub_aliases_share_tag(self):
+        self.dockerfile("a/Dockerfile", f"FROM alpine:3.22@sha256:{A}\n")
+        for image in ("library/alpine", "docker.io/alpine", "docker.io/library/alpine", "DOCKER.IO:443/library/alpine", "index.docker.io/library/alpine"):
+            with self.subTest(image=image):
+                self.dockerfile("b/Dockerfile", f"FROM {image}:3.22@sha256:{B}\n")
+                self.check("conflicting digests")
+                self.dockerfile("b/Dockerfile", f"FROM {image}:3.22@sha256:{A}\n")
+                self.check()
+
+    def test_F6_scratch_has_no_base(self):
+        self.dockerfile("Dockerfile", "FROM scratch AS empty\nFROM empty\n")
+        self.check()
+
+    def test_F6_digest_only_references(self):
+        self.dockerfile("Dockerfile", f"FROM alpine@sha256:{A} AS one\nFROM alpine@sha256:{B}\n")
+        self.check()
+
+    def test_F6_dockerignore_is_excluded(self):
+        self.dockerfile("Dockerfile", f"FROM alpine:3.22@sha256:{A}\n")
+        self.dockerfile("Dockerfile.dockerignore", "FROM intentionally not Dockerfile syntax\n")
+        self.check()
+
+    def test_F6_first_location_is_preserved(self):
+        for path, digest in (("a", A), ("b", A), ("c", B)):
+            self.dockerfile(path + "/Dockerfile", f"FROM ubuntu:24.04@sha256:{digest}\n")
+        result = self.check("conflicting digests")
+        self.assertIn("a/Dockerfile:1", result.stderr)
+
+    def test_F6_heredoc_explicit_remedy(self):
+        for header in ("RUN <<EOF", "RUN cat<<EOF", 'COPY <<"EOF" /tmp/source'):
+            with self.subTest(header=header):
+                self.dockerfile("Dockerfile", f"FROM alpine:3.22@sha256:{A}\n{header}\nfrom ordinary prose\nEOF\n")
+                self.check("heredoc unsupported")
+
+    def test_F7_enrolled_image_major_policy(self):
+        config = (ROOT / ".github/dependabot.yml").read_text()
+        docker = config.split('  - package-ecosystem: "docker"\n', 1)[1]
+        for dependency in ("dotnet/runtime-deps", "ubuntu", "devcontainers/base"):
+            with self.subTest(dependency=dependency):
+                match = re.search(r'      - dependency-name: "' + re.escape(dependency) + r'"\n(.*?)(?=      - dependency-name:|    # No labels|\Z)', docker, re.S)
+                self.assertIsNotNone(match, dependency)
+                self.assertIn('"version-update:semver-major"', match[1])
 
 
 if __name__ == "__main__":

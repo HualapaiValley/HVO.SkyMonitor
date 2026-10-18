@@ -73,18 +73,31 @@ Do not duplicate them in the runner installation `.env`, and remove any stale
 `DOTNET_ROOT` assignment from that file. The setup action exports the selected
 install directory as job-scoped `DOTNET_ROOT`.
 
-The service account must also have a real, writable, non-symlinked absolute
-`HOME` directory (including its parent path), for example `/home/actions`.
-.NET runtime 10.0.13 named mutexes use `XDG_RUNTIME_DIR` when set, otherwise
-`~/.dotnet/corefx/Runtime/SharedMemory`; `DOTNET_CLI_HOME` alone does not redirect
-this runtime state ([dotnet/runtime#135726](https://github.com/dotnet/runtime/issues/135726)).
-If a physical writable HOME is unavailable, explicitly set `XDG_RUNTIME_DIR` in
-the service drop-in to an existing, service-account-owned, writable physical
-directory, for example `/srv/runner-data/cache/dotnet-runtime` with mode 0700.
-Create it before starting the service. A configured `XDG_RUNTIME_DIR` must be
-usable even when HOME is valid, because the runtime prefers it. The harness
-preflight checks the selected directory, rejects symlinks (including ancestors),
-and probes file creation before invoking dotnet; it does not repair the account.
+The service account must also have a real, writable and searchable absolute
+`HOME` directory, for example `/home/actions`. It must be owned by the service
+UID, have no group or other write bits (0700 is recommended; 0755 is allowed,
+0770 is refused), and have no symlinks anywhere in its path.
+.NET runtime 10.0.13 named mutexes use a nonempty `XDG_RUNTIME_DIR` when set,
+otherwise `~/.dotnet/corefx/Runtime/SharedMemory`; `DOTNET_CLI_HOME` alone does
+not redirect this runtime state
+([dotnet/runtime#135726](https://github.com/dotnet/runtime/issues/135726)).
+
+When HOME is selected, the preflight walks `.dotnet`, `.dotnet/corefx`,
+`.dotnet/corefx/Runtime` and `.dotnet/corefx/Runtime/SharedMemory`. Every existing
+component must be a non-symlink directory owned by the service UID and writable
+and searchable. It probes file creation in the deepest existing component,
+or in HOME when none exist. Repair any file, symlink, ownership or permissions
+blocking this chain before starting the runner.
+
+Alternatively, explicitly set `XDG_RUNTIME_DIR` in the service drop-in to an
+existing absolute directory, for example `/srv/runner-data/cache/dotnet-runtime`.
+It must be owned by the service UID, writable and searchable, have no symlinks
+in its path, and have no group or other write bits (0700 is recommended).
+`/tmp`, `/dev/shm` and 0777 directories are refused. Create the directory before
+starting the service. A nonempty `XDG_RUNTIME_DIR` takes precedence even when
+HOME is valid; the preflight checks and probes that directory directly without
+walking HOME's `.dotnet` chain or falling back to HOME. An empty value selects
+HOME. The check runs before dotnet and does not repair the account.
 
 On a current Raspberry Pi kernel, grant the service account access only to the
 restricted `/dev/vcio_gencmd` interface through a dedicated group such as
