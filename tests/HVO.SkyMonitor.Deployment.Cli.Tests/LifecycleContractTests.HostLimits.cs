@@ -151,6 +151,7 @@ public sealed partial class LifecycleContractTests
         fixture.Runner.CpuCfsQuota = false;
         fixture.Runner.Cpus = 1;
         var started = fixture.Runner.StartedModels.Count;
+        var restarted = fixture.Runner.RestartedModels.Count;
         using var error = new StringWriter();
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
@@ -169,6 +170,8 @@ public sealed partial class LifecycleContractTests
             startedModel,
             await File.ReadAllTextAsync(Path.Combine(
                 fixture.Paths.OperationsRoot, "lifecycle", result.OperationId!.Value.ToString("D"), CameraAgentLifecycleManager.HostComposeName)));
+        // The restart after the candidate's verification is given the same host-compose.yml model (R2 F3).
+        Assert.AreEqual(startedModel, fixture.Runner.RestartedModels.Skip(restarted).Single());
         // The instance's Compose model keeps every limit it records, under the identity its manifest authenticates.
         Assert.AreEqual(upgradedCompose, await File.ReadAllTextAsync(composePath));
         var rolledBack = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);

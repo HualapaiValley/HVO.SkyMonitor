@@ -1029,7 +1029,7 @@ internal sealed partial class CameraAgentLifecycleManager
             }, cancellationToken)
                 .ConfigureAwait(false);
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
-            await docker.ComposeAsync(candidateCompose.ComposeFile, candidateCompose.EnvironmentFile, candidateCompose.ProjectName, ["restart"], cancellationToken)
+            await StartOnThisHostAsync(docker, candidateCompose, hostLimits, operationRoot, cancellationToken, restart: true)
                 .ConfigureAwait(false);
             verifiedOwnerState = await VerifyCandidateAsync(
                 owner, docker, candidateCompose, paths, manifest, installationResult, candidate, verificationToken, uid, gid,

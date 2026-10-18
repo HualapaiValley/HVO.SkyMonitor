@@ -3278,6 +3278,9 @@ public sealed partial class LifecycleContractTests
         /// <summary>The Compose model of each <c>up</c> Docker accepted, in order.</summary>
         public List<string> StartedModels { get; } = [];
 
+        /// <summary>The Compose model each <c>restart</c> was given, in order.</summary>
+        public List<string> RestartedModels { get; } = [];
+
         /// <summary>Adds a line to <c>image ls</c> that is not an image this installer reads.</summary>
         public bool MalformedImageListing { get; set; }
 
@@ -3477,7 +3480,13 @@ public sealed partial class LifecycleContractTests
                     running = true;
                     OnComposeUp?.Invoke(activeImageId);
                 }
-                if (arguments.Contains("restart", StringComparer.Ordinal)) running = true;
+                if (arguments.Contains("restart", StringComparer.Ordinal))
+                {
+                    // A restart keeps each container's configuration, so Docker applies nothing from the model; it is
+                    // recorded so a test can see which model every start was given (#1357 R2 F3).
+                    RestartedModels.Add(File.ReadAllText(arguments[arguments.ToList().IndexOf("--file") + 1]));
+                    running = true;
+                }
                 if (arguments.Contains("down", StringComparer.Ordinal))
                 {
                     ComposeDownCount++;
