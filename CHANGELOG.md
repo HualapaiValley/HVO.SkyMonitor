@@ -12,6 +12,19 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 ### Added
 
+- `hvo-sky-install` follows the shared install contract's command surface. `--plan` (the new name of `--dry-run`)
+  reports what install, a re-run of one, `upgrade`, `rollback`, `reinstall`, `uninstall` and `purge` would create,
+  change, leave unchanged or remove, after the same checks the command makes, and writes nothing, not even a temporary
+  file or a lock. `cameraagent install --answers FILE` installs from a strict,
+  versioned JSON answers file in which an unknown member is an error. Running an install again with the same answers
+  prints `Nothing to change`, and writes and restarts nothing. (#1315)
+- The installer keeps a machine install record, `/etc/hvo-sky/install.json`: each instance's condition, images, URL
+  and container limits, the release version it runs, the one before, and the one a rollback left, and no secret. The
+  versions are read from the instance's own release records, which stay their only source. Every completed operation
+  updates it, through a narrow `sudo` helper because the file is root-owned. (#1315)
+- Re-running an install with new `--cpus` or `--memory` changes an installed instance's container limits: the
+  container is recreated with them and must come back healthy, or the recorded limits are restored. The host check
+  and the 2 CPU and 4 GiB floor still apply. (#1315)
 - Each release carries `install.sh`, the one-line entry point: `curl -fsSL
   https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v<version>/install.sh | bash -s -- cameraagent install
   ...`. Before it changes anything it checks the platform (64-bit Linux with glibc), `curl`, `tar` and `sha256sum`,
@@ -68,6 +81,14 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 ### Changed
 
+- Installer exit codes follow the install contract on every command: `0` done, `1` a step failed, `2` invalid command
+  line or answers, `3` refused with nothing changed, `130` interrupted. Refusals that used to exit `1` now exit `3`,
+  among them unmet host prerequisites, an incompatible `cameraagent preflight`, running as root, an upgrade to the image
+  already active, an untrusted host policy, and every refusal of a `--release` folder or of an image that is not the
+  release's, a registry that cannot be read included; an unreadable `--config` file now exits `2`. A refusal says
+  `Installation refused: ... Nothing was changed.`, or with `--json` reports `errorCode` `refused`. (#1315)
+- A re-run of a completed install is checked against the instance its records describe rather than against the first
+  request's exact inputs: anything but the container limits that differs is refused and named. (#1315)
 - One product version: `VersionPrefix` in `Directory.Build.props`, now `0.9.0`, the first final release's (owner
   decision 2026-10-18). A release's tag, files, installers and image carry it or a pre-release of it, and a build given
   any other version is refused. A build given no version is its development build, `0.9.0-dev`:
@@ -129,6 +150,12 @@ onward; earlier development is recorded in its pull requests. A release renames 
   indexes, SBOM and provenance files, the embedded P-256 trust root, the bootstrap script
   `scripts/install-hvo-sky-install.sh`, and the release tool's signing and train commands. A release is trusted by
   `SHA256SUMS` and its build-provenance attestations. (#1310)
+
+### Deprecated
+
+- `--config FILE` is deprecated in favour of `--answers FILE` (the same members, plus `"schemaVersion": 1`, without
+  `dryRun`, `resume` and `json`). `--migration-backward-compatible` is deprecated: it has had no effect since #1314 and
+  now warns; it stays accepted so an interrupted upgrade begun with it still resumes. (#1315)
 
 ### Fixed
 

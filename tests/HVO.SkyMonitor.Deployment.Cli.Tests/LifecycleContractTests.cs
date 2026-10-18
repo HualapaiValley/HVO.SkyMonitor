@@ -132,6 +132,7 @@ public sealed partial class LifecycleContractTests
         StringAssert.StartsWith(exception.Message, "release.json does not match its SHA-256 in SHA256SUMS", StringComparison.Ordinal);
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
         Assert.AreEqual(0, fixture.Runner.InvocationCount);
+        Assert.IsTrue(exception.IsRefusal, "the release is checked before the instance is touched, so it is a refusal (exit 3)");
     }
 
     /// <summary>
@@ -173,6 +174,7 @@ public sealed partial class LifecycleContractTests
             StringAssert.StartsWith(exception.Message, expected[1..], StringComparison.Ordinal);
         else
             Assert.AreEqual($"The offline archive {(string)release.Archive(platform)["name"]!} {expected}", exception.Message);
+        Assert.IsTrue(exception.IsRefusal, "the archive is checked before the journal or a load, so it is a refusal (exit 3)");
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath), "a refused release must not open the journal");
         Assert.AreEqual(0, fixture.Runner.LoadCount, "a refused archive must never be loaded");
         Assert.IsEmpty(fixture.Runner.CandidateHeld!);
@@ -233,6 +235,7 @@ public sealed partial class LifecycleContractTests
         Assert.IsGreaterThan(0, fixture.Runner.Registry!.Reads);
         Assert.AreEqual(0, fixture.Runner.PullCount, "a refused registry image must never be pulled");
         Assert.IsEmpty(fixture.Runner.RemovedImages, "nothing was pulled, so nothing is removed");
+        Assert.IsTrue(exception.IsRefusal, "nothing was pulled, so it is a refusal (exit 3)");
         Assert.IsEmpty(fixture.Runner.CandidateHeld!);
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath), "a refused release must not open the journal");
         CollectionAssert.AreEqual(instanceBefore, InstanceTree(fixture), "a refused release changed the instance");
@@ -279,6 +282,7 @@ public sealed partial class LifecycleContractTests
             fixture.Uid, fixture.Gid, CancellationToken.None));
 
         Assert.AreEqual(expected, exception.Message);
+        Assert.IsTrue(exception.IsRefusal, "the pull is removed before the journal, so it is a refusal (exit 3)");
         Assert.AreEqual(1, fixture.Runner.PullCount);
         CollectionAssert.Contains(fixture.Runner.RemovedImages, release.DigestReference);
         Assert.IsEmpty(fixture.Runner.CandidateHeld!, "the refused pull is still in Docker");
@@ -1432,6 +1436,8 @@ public sealed partial class LifecycleContractTests
 
         StringAssert.Contains(exception.Message, $"is not labelled as CameraAgent {release.Version}", StringComparison.Ordinal);
         Assert.AreEqual(0, lifecycle.PauseCount);
+        // The load runs after the journal entry, so the refusal is settled in the journal and is a failure (exit 1) (#1315).
+        Assert.IsFalse(exception.IsRefusal, "refused after the journal entry, so a journaled failure (exit 1)");
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
         Assert.AreEqual(manifestBefore, await File.ReadAllTextAsync(fixture.Paths.ManifestPath));
         Assert.IsFalse(File.Exists(evidencePath), "A refused release wrote a release record.");
@@ -1500,8 +1506,9 @@ public sealed partial class LifecycleContractTests
             fixture.Uid, fixture.Gid, CancellationToken.None);
         Assert.AreEqual("completed", upgraded.Outcome);
 
-        // Upgrading to the image that is already active is refused after the journal is opened and before any
-        // mutation, the same window the label-agreement gate occupies.
+        // Upgrading to the image that is already active is refused before anything is written, so the journal still
+        // holds the completed upgrade (#1315).
+        var journal = await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath);
         var refused = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
             ImageReference = candidateReference,
@@ -1512,10 +1519,8 @@ public sealed partial class LifecycleContractTests
             refused, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None));
         StringAssert.Contains(exception.Message, "already active", StringComparison.Ordinal);
-        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
-        Assert.AreEqual(InstallationStatus.Failed, retained!.Status);
-        Assert.AreEqual(CameraAgentLifecycleManager.RefusedFailureCode, retained.FailureCode);
-        Assert.IsFalse(retained.MutationStarted);
+        Assert.IsTrue(exception.IsRefusal);
+        Assert.AreEqual(journal, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
         Assert.AreEqual(1, lifecycle.PauseCount);
 
         var rolledBack = await CameraAgentLifecycleManager.ExecuteAsync(
@@ -1543,11 +1548,12 @@ public sealed partial class LifecycleContractTests
             NoDownload = true,
             MigrationBackwardCompatible = true
         };
-        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
             refused, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None));
-        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
-        Assert.AreEqual(CameraAgentLifecycleManager.RefusedFailureCode, retained!.FailureCode);
+        // Refused before anything is written: no journal entry is left to block the uninstall (#1315).
+        Assert.IsTrue(refusal.IsRefusal);
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
 
         var uninstalled = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.Uninstall), fixture.Runner, _ => lifecycle, null,
@@ -1769,7 +1775,13 @@ public sealed partial class LifecycleContractTests
         var candidateImageId = $"sha256:{new string('5', 64)}";
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
-        fixture.Runner.OnCandidateInspect = () => throw new OperationCanceledException("simulated cancellation during preparation");
+        // The admission before any write inspects the candidate first; the cancellation lands on the preparation's own
+        // inspection, after the journal entry and before any mutation.
+        var inspections = 0;
+        fixture.Runner.OnCandidateInspect = () =>
+        {
+            if (++inspections == 2) throw new OperationCanceledException("simulated cancellation during preparation");
+        };
         var lifecycle = new FakeLifecycleClient();
         var request = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
@@ -3232,6 +3244,45 @@ public sealed partial class LifecycleContractTests
         /// <summary>Cancels this source while a pull runs, after Docker has the image, as a Ctrl+C mid-pull does.</summary>
         public CancellationTokenSource? CancelDuringPull { get; set; }
 
+        /// <summary>Runs while a pull runs, after Docker has the image, as another run changing the instance meanwhile does.</summary>
+        public Action? OnPull { get; set; }
+
+        /// <summary>Makes every <c>image rm</c> exit 1 and remove nothing, as Docker refusing a removal does.</summary>
+        public bool FailImageRemoval { get; set; }
+
+        /// <summary>Makes Docker unreadable once an <c>image rm</c> has run, as a daemon that stops answering does.</summary>
+        public bool FailDaemonReadAfterRemoval { get; set; }
+
+        /// <summary>
+        /// Makes every <c>image inspect</c> exit 1 once an <c>image rm</c> has run while <c>docker info</c> still answers, as
+        /// the containerd image store does when it cannot list images (#1315 PR-1355-R5 R5-1).
+        /// </summary>
+        public bool FailImageInspectAfterRemoval { get; set; }
+
+        /// <summary>Makes <c>image ls</c> exit 1.</summary>
+        public bool FailImageListing { get; set; }
+
+        /// <summary>Adds a line to <c>image ls</c> that is not an image this installer reads.</summary>
+        public bool MalformedImageListing { get; set; }
+
+        /// <summary>
+        /// One line of <c>docker image ls --all --digests --no-trunc --format '{{json .}}'</c> that shows the image
+        /// <paramref name="id"/> under <paramref name="name"/>.
+        /// </summary>
+        internal static string ListingLine(string id, string name)
+        {
+            var at = name.IndexOf('@', StringComparison.Ordinal);
+            return JsonSerializer.Serialize(new Dictionary<string, string>
+            {
+                ["Containers"] = "N/A",
+                ["Digest"] = at > 0 ? name[(at + 1)..] : "<none>",
+                ["ID"] = name.StartsWith("sha256:", StringComparison.Ordinal) ? name : id,
+                ["Repository"] = at > 0 ? name[..at] : "<none>",
+                ["Size"] = "1MB",
+                ["Tag"] = "<none>"
+            });
+        }
+
         public void ConfigureRuntime(
             InstallationPaths installationPaths,
             string immutableInitialReference,
@@ -3280,6 +3331,8 @@ public sealed partial class LifecycleContractTests
             if (FakeRegistry.IsRead(arguments))
                 return Task.FromResult(Registry?.Answer(arguments) ?? throw new AssertFailedException("The test gave no registry."));
             if (arguments[0] == "image") ImagePreparationCount++;
+            if (arguments is ["info", ..] && FailDaemonReadAfterRemoval && RemovedImages.Count > 0)
+                return Task.FromResult(new ProcessResult(1, string.Empty, "Cannot connect to the Docker daemon."));
             if (arguments is ["info", ..])
             {
                 infoCallCount++;
@@ -3301,6 +3354,7 @@ public sealed partial class LifecycleContractTests
             {
                 PullCount++;
                 if (candidateImageId is not null) CandidateHeld?.UnionWith([pulled, candidateImageId]);
+                OnPull?.Invoke();
                 if (CancelDuringPull is { } cancellation)
                 {
                     cancellation.Cancel();
@@ -3314,9 +3368,27 @@ public sealed partial class LifecycleContractTests
                 CandidateHeld?.Add(candidateImageId);
                 return Task.FromResult(new ProcessResult(0, $"Loaded image ID: {candidateImageId}\n", string.Empty));
             }
+            if (arguments is ["image", "ls", ..])
+            {
+                if (FailImageListing || FailDaemonReadAfterRemoval && RemovedImages.Count > 0)
+                    return Task.FromResult(new ProcessResult(1, string.Empty, "Cannot connect to the Docker daemon."));
+                var lines = new List<string>();
+                if (initialImageId is not null && initialReference is not null) lines.Add(ListingLine(initialImageId, initialReference));
+                if (candidateImageId is not null && candidateReference is not null && CandidateHeld is not { Count: 0 })
+                {
+                    lines.AddRange((CandidateHeld ?? [candidateReference, candidateImageId]).Order(StringComparer.Ordinal)
+                        .Select(name => ListingLine(candidateImageId, name)));
+                }
+                if (MalformedImageListing) lines.Add("{\"ID\": 42, \"Repository\": \"cameraagent\"}");
+                return Task.FromResult(new ProcessResult(0, string.Join('\n', lines) + "\n", string.Empty));
+            }
+            if (arguments is ["image", "inspect", _] && (FailImageInspectAfterRemoval || FailDaemonReadAfterRemoval) && RemovedImages.Count > 0)
+                return Task.FromResult(new ProcessResult(1, "[]", "Error response from daemon: failed to list images"));
             if (arguments is ["image", "rm", var removed])
             {
                 RemovedImages.Add(removed);
+                if (FailImageRemoval)
+                    return Task.FromResult(new ProcessResult(1, string.Empty, $"Error response from daemon: conflict: unable to remove {removed}"));
                 if (CandidateHeld is null || !CandidateHeld.Remove(removed))
                     return Task.FromResult(new ProcessResult(1, string.Empty, $"Error: No such image: {removed}"));
                 CandidateHeld.Clear();

@@ -163,6 +163,7 @@ public sealed class ReleaseRegistryImageTests
         Assert.AreEqual(
             $"The CameraAgent image {selection.DigestReference} in its registry is not the {Platform} image release v{release.Version} names: {expected}. Nothing was pulled.",
             exception.Message);
+        Assert.IsTrue(exception.IsRefusal, "reading the registry pulls nothing, so it is a refusal (exit 3)");
     }
 
     [TestMethod]
@@ -183,6 +184,7 @@ public sealed class ReleaseRegistryImageTests
             $"The CameraAgent image {release.DigestReference} in its registry is not labelled as CameraAgent {release.Version} from " +
             $"commit {ReleaseFixture.Commit}, created {ReleaseFixture.Created}, as release v{release.Version} requires. Nothing was pulled.",
             exception.Message);
+        Assert.IsTrue(exception.IsRefusal, "reading the registry pulls nothing, so it is a refusal (exit 3)");
     }
 
     [TestMethod]
@@ -201,6 +203,7 @@ public sealed class ReleaseRegistryImageTests
         StringAssert.Contains(exception.Message, "the default image source (leave out --image-source registry)", StringComparison.Ordinal);
         Assert.DoesNotContain("secret", exception.Message, "a credential in Docker's diagnostic reached the message");
         Assert.AreEqual(1, registry.Reads, "nothing further is read once the registry cannot be");
+        Assert.IsTrue(exception.IsRefusal, "reading the registry pulls nothing, so it is a refusal (exit 3)");
     }
 
     [TestMethod]
@@ -218,6 +221,7 @@ public sealed class ReleaseRegistryImageTests
             "--image-source registry), or let this user read the registry with 'docker buildx imagetools inspect' (buildx 0.8 or later).",
             exception.Message);
         Assert.AreEqual(3, registry.Reads, "the index and manifest are read raw; the configuration read is the one that fails");
+        Assert.IsTrue(exception.IsRefusal, "reading the registry pulls nothing, so it is a refusal (exit 3)");
     }
 
     [TestMethod]
@@ -231,6 +235,7 @@ public sealed class ReleaseRegistryImageTests
             CancellationToken.None));
 
         StringAssert.EndsWith(exception.Message, "its metadata is larger than the installer reads. Nothing was pulled.", StringComparison.Ordinal);
+        Assert.IsTrue(exception.IsRefusal, "reading the registry pulls nothing, so it is a refusal (exit 3)");
     }
 
     private static bool IsHost(JsonNode? entry) => (string)entry!["platform"]!["architecture"]! == "amd64";

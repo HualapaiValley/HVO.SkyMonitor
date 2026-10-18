@@ -80,6 +80,30 @@ internal static class ReleaseRecords
         }
     }
 
+    /// <summary>
+    /// The release version <paramref name="imageId"/> came from, from the records this instance keeps (its running image
+    /// and the one it ran before), or <see langword="null"/> when no release names it. These records own the installed
+    /// version: the machine install record (<see cref="InstallRecordStore"/>) reads its versions here and keeps none of
+    /// its own (#1315).
+    /// </summary>
+    public static async Task<string?> VersionOfAsync(InstallationPaths paths, string imageId, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        ArgumentNullException.ThrowIfNull(imageId);
+        var current = Valid(await ReadAsync(
+                Path.Combine(paths.DeploymentStateRoot, CurrentFileName), DeploymentJsonContext.Default.CameraAgentImageReleaseEvidence,
+                cancellationToken)
+            .ConfigureAwait(false));
+        var kept = (await ReadAsync(
+                    Path.Combine(paths.DeploymentStateRoot, RecordsFileName), DeploymentJsonContext.Default.CameraAgentImageReleaseRecords,
+                    cancellationToken)
+                .ConfigureAwait(false))?.Records.Select(Valid).OfType<CameraAgentImageReleaseEvidence>() ?? [];
+        return kept.Concat(current is null ? [] : [current])
+            .Where(record => string.Equals(record.ImageId, imageId, StringComparison.Ordinal))
+            .OrderByDescending(static record => record.RecordedUtc)
+            .FirstOrDefault()?.ReleaseVersion;
+    }
+
     /// <summary>A record this installer wrote and can use; anything else, an older schema included, counts as none.</summary>
     private static CameraAgentImageReleaseEvidence? Valid(CameraAgentImageReleaseEvidence? record)
         => record is { SchemaVersion: DeploymentSchemaVersions.ImageReleaseEvidence } &&

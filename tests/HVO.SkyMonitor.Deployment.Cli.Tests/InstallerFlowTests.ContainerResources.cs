@@ -7,9 +7,9 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
 /// The CameraAgent container limits an installation records with the instance, renders into its Compose file, and
-/// holds a re-run to: the defaults, operator-set limits, an instance an earlier installer completed without a record,
-/// and a host whose memory is below the limit, whose advisory the human form renders on standard error and the
-/// <c>--json</c> result reports as a warning.
+/// keeps across a re-run that gives none: the defaults, operator-set limits, an instance an earlier installer completed
+/// without a record, and a host whose memory is below the limit, whose advisory the human form renders on standard error
+/// and the <c>--json</c> result reports as a warning. Changing them by re-run is in <c>InstallerFlowTests.ReRun</c>.
 /// </summary>
 public sealed partial class InstallerFlowTests
 {
@@ -48,11 +48,16 @@ public sealed partial class InstallerFlowTests
             await InstallResourceRequestAsync(request, runner, owner);
             Assert.AreEqual(retainedManifest, await File.ReadAllTextAsync(manifestPath));
 
-            // Pinning a limit, even to the default, is a different request from the one this instance recorded.
-            var pinned = await Assert.ThrowsExactlyAsync<InstallerException>(
-                () => InstallResourceRequestAsync(request with { Cpus = 2m }, runner, owner));
-            StringAssert.Contains(pinned.Message, "different immutable inputs", StringComparison.Ordinal);
-            Assert.AreEqual(retainedManifest, await File.ReadAllTextAsync(manifestPath));
+            // Pinning a limit to the default changes no limit, only who set it (#1315): a re-run records it as the
+            // operator's, so the next upgrade keeps it.
+            await InstallResourceRequestAsync(request with { Cpus = 2m }, runner, owner);
+            Assert.AreEqual(
+                new ContainerResourceLimits(2m, 4 * ResourceGibibyte, 256, true, false),
+                (await CameraAgentLifecycleManager.ReadManifestAsync(manifestPath, CancellationToken.None)).Resources);
+            StringAssert.Contains(
+                await File.ReadAllTextAsync(composePath),
+                "    cpus: \"2\"\n    mem_limit: 4G\n    pids_limit: 256\n",
+                StringComparison.Ordinal);
         }
         finally
         {
@@ -62,7 +67,7 @@ public sealed partial class InstallerFlowTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task InstallAsync_OperatorLimits_AreRecordedAsOperatorSetAndAReRunMustRepeatThem()
+    public async Task InstallAsync_OperatorLimits_AreRecordedAsOperatorSetAndAReRunThatLeavesThemOutKeepsThem()
     {
         var bundle = RequireProductionCatalogBundle();
         var (defaultRequest, root) = ResourceRequest(bundle, Guid.Parse("6d1e2f3a-4b5c-4d7e-8f90-a1b2c3d4e5f6"));
@@ -81,11 +86,12 @@ public sealed partial class InstallerFlowTests
                 "    cpus: \"3.5\"\n    mem_limit: 6G\n    pids_limit: 256\n",
                 StringComparison.Ordinal);
 
-            // The same limits written another way are the same request; leaving them out is not.
-            await InstallResourceRequestAsync(request with { Memory = "6g" }, runner, owner);
-            var omitted = await Assert.ThrowsExactlyAsync<InstallerException>(
-                () => InstallResourceRequestAsync(defaultRequest, runner, owner));
-            StringAssert.Contains(omitted.Message, "different immutable inputs", StringComparison.Ordinal);
+            // The same limits written another way change nothing, and a re-run that leaves them out keeps them
+            // (install contract section 7: limits change only when a re-run gives new ones).
+            var restated = await InstallResourceRequestAsync(request with { Memory = "6g" }, runner, owner);
+            var omitted = await InstallResourceRequestAsync(defaultRequest, runner, owner);
+            Assert.IsFalse(restated.Plan!.HasChanges);
+            Assert.IsFalse(omitted.Plan!.HasChanges);
             Assert.AreEqual(
                 manifest,
                 await CameraAgentLifecycleManager.ReadManifestAsync(manifestPath, CancellationToken.None));
@@ -177,11 +183,12 @@ public sealed partial class InstallerFlowTests
             Assert.AreEqual("Installed", (string?)reported["outcome"]);
             AssertMemoryAdvisory(reported);
 
-            // The retained result is the reported one without its warnings, so a completed re-run still matches it,
-            // and reports the advisory again.
+            // The retained result is the reported one without its warnings and its plan, which describe this
+            // invocation, so a completed re-run still matches it, and reports the advisory again.
             var resultPath = Path.Combine(installed.StateRoot, "deployment", "installation-result.json");
             var retained = await File.ReadAllTextAsync(resultPath);
             Assert.IsTrue(reported.Remove("warnings"));
+            Assert.IsTrue(reported.Remove("plan"));
             Assert.IsTrue(JsonNode.DeepEquals(reported, JsonNode.Parse(retained)), retained);
 
             var (rerun, rerunError) = await InstallCapturingStandardErrorAsync(request, runner, owner);
@@ -294,7 +301,7 @@ public sealed partial class InstallerFlowTests
     private static Task<InstallationResult> InstallResourceRequestAsync(
         InstallRequest request,
         InstallerProcessRunner runner,
-        InstallerOwnerClient owner)
+        IOwnerBootstrapClient owner)
         => CameraAgentInstaller.InstallAsync(
             request,
             runner,

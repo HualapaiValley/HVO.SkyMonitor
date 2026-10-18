@@ -32,9 +32,25 @@ internal static class ReleaseRegistryImage
     /// <summary>
     /// The configuration identity of the release's image for its platform, with the selection extended by every identity
     /// the registry gave it (the release's digest, the platform manifest's and the configuration's). Throws
-    /// <see cref="InstallerException"/> when the registry cannot be read or does not serve the release's image.
+    /// <see cref="InstallerException"/> when the registry cannot be read or does not serve the release's image. Reading
+    /// pulls nothing, so either way that is a refusal (exit 3, #1315).
     /// </summary>
     public static async Task<(ImageInstallationIdentity Image, ReleaseImageSelection Release)> ReadAsync(
+        ReleaseImageSelection release,
+        Func<IReadOnlyList<string>, CancellationToken, Task<ProcessResult>> runDocker,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await ReadReleaseImageAsync(release, runDocker, cancellationToken).ConfigureAwait(false);
+        }
+        catch (InstallerException exception) when (!exception.IsRefusal)
+        {
+            throw InstallerException.Refused(exception.Message, exception);
+        }
+    }
+
+    private static async Task<(ImageInstallationIdentity Image, ReleaseImageSelection Release)> ReadReleaseImageAsync(
         ReleaseImageSelection release,
         Func<IReadOnlyList<string>, CancellationToken, Task<ProcessResult>> runDocker,
         CancellationToken cancellationToken)

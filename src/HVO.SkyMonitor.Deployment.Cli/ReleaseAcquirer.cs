@@ -60,7 +60,28 @@ internal static class ReleaseAcquirer
                 release, source ?? ReleaseImageSource.Archive, DaemonImageArchitecture(daemonArchitecture),
                 RecordedDaemonAuthority, cancellationToken);
 
+    /// <summary>
+    /// Acquisition reads and checks only the release's folder, before the Docker daemon is contacted, so whatever it finds
+    /// wrong has changed nothing: every failure here is a refusal (exit 3, #1315).
+    /// </summary>
     private static async Task<AcquiredImage?> AcquireAsync(
+        string? folder,
+        ReleaseImageSource source,
+        string architecture,
+        string selectingAuthority,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await SelectAsync(folder, source, architecture, selectingAuthority, cancellationToken).ConfigureAwait(false);
+        }
+        catch (InstallerException exception) when (!exception.IsRefusal)
+        {
+            throw InstallerException.Refused(exception.Message, exception);
+        }
+    }
+
+    private static async Task<AcquiredImage?> SelectAsync(
         string? folder,
         ReleaseImageSource source,
         string architecture,
@@ -290,6 +311,18 @@ internal sealed record AcquiredImage(
     /// registry image, which is read from its registry before it is pulled.
     /// </summary>
     public ImageInstallationIdentity? ArchivedImage { get; init; }
+
+    /// <summary>
+    /// The image read from its registry, by the digest release.json names, before anything is pulled; set once the
+    /// registry has been read (<see cref="DockerClient.ReadRegistryReleaseImageAsync"/>).
+    /// </summary>
+    public ImageInstallationIdentity? RegistryImage { get; init; }
+
+    /// <summary>
+    /// The release's image as it was read and checked before any import, from the archive or the registry. A plan,
+    /// which imports nothing, describes the image by it when Docker does not hold the image yet (#1315).
+    /// </summary>
+    public ImageInstallationIdentity? CheckedImage => ArchivedImage ?? RegistryImage;
 
     /// <summary>The release the image belongs to.</summary>
     public ReleaseManifest Release => VerifiedRelease.Manifest;

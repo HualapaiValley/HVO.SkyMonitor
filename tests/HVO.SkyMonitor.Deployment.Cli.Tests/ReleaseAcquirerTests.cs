@@ -202,6 +202,7 @@ public sealed class ReleaseAcquirerTests
             () => ReleaseAcquirer.AcquireImageAsync(Request(folder), CancellationToken.None));
 
         Assert.AreEqual(expected, exception.Message);
+        Assert.IsTrue(exception.IsRefusal, "the release is checked before Docker is contacted, so it is a refusal (exit 3)");
     }
 
     [TestMethod]

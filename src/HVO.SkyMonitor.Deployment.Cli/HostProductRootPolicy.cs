@@ -403,13 +403,26 @@ internal static class HostProductRootPolicy
 
     private static HostPolicyDocument? TryReadPolicy(HostPolicyLocation location)
     {
-        var policyPath = location.PolicyPath;
-        if (!Path.IsPathFullyQualified(policyPath) || !string.Equals(Path.GetFullPath(policyPath), policyPath, StringComparison.Ordinal))
+        var content = TryReadTrustedFile(location, location.PolicyPath, MaximumPolicyBytes, "Host policy");
+        return content is null ? null : Deserialize(content, location.PolicyPath);
+    }
+
+    /// <summary>
+    /// Reads a file the policy owner keeps beside the policy, such as the install record, with the policy's own checks:
+    /// every directory from the trust root and the file itself owned by the policy owner and not writable by group or
+    /// other users, no symbolic link and no hard link, and no larger than <paramref name="maximumBytes"/>. Returns
+    /// <see langword="null"/> when the file, or a directory on its path, is absent.
+    /// </summary>
+    internal static byte[]? TryReadTrustedFile(HostPolicyLocation location, string path, int maximumBytes, string description)
+    {
+        ArgumentNullException.ThrowIfNull(location);
+        ArgumentNullException.ThrowIfNull(path);
+        if (!Path.IsPathFullyQualified(path) || !string.Equals(Path.GetFullPath(path), path, StringComparison.Ordinal))
         {
-            throw new InstallerException($"Host policy path '{policyPath}' must be absolute and normalized.");
+            throw new InstallerException($"{description} path '{path}' must be absolute and normalized.");
         }
-        var components = ComponentsBelowTrustRoot(location, policyPath, "The host policy");
-        using var parent = WalkTrustedDirectories(location, components[..^1], Path.GetDirectoryName(policyPath)!, createMissing: false, missingIsAbsence: true);
+        var components = ComponentsBelowTrustRoot(location, path, description);
+        using var parent = WalkTrustedDirectories(location, components[..^1], Path.GetDirectoryName(path)!, createMissing: false, missingIsAbsence: true);
         if (parent is null)
         {
             return null;
@@ -422,45 +435,43 @@ internal static class HostProductRootPolicy
         }
         if (observed.Type == SymbolicLinkType)
         {
-            throw new InstallerException($"Host policy '{policyPath}' must not be a symbolic link.");
+            throw new InstallerException($"{description} '{path}' must not be a symbolic link.");
         }
         if (observed.Type != RegularFileType)
         {
-            throw new InstallerException($"Host policy '{policyPath}' must be a regular file.");
+            throw new InstallerException($"{description} '{path}' must be a regular file.");
         }
         using var handle = NativeLinux.OpenNodeAt(parent, name);
-        var opened = NativeLinux.GetOpenNodeIdentity(handle, policyPath);
+        var opened = NativeLinux.GetOpenNodeIdentity(handle, path);
         if (opened.Type != RegularFileType || opened.Inode != observed.Inode ||
             opened.DeviceMajor != observed.DeviceMajor || opened.DeviceMinor != observed.DeviceMinor)
         {
-            throw new InstallerException($"Host policy '{policyPath}' changed while it was read.");
+            throw new InstallerException($"{description} '{path}' changed while it was read.");
         }
         if (opened.LinkCount != 1)
         {
-            throw new InstallerException($"Host policy '{policyPath}' must not have hard links.");
+            throw new InstallerException($"{description} '{path}' must not have hard links.");
         }
-        EnsureTrusted(location, opened, policyPath);
-        return Deserialize(handle, policyPath);
-    }
-
-    private static HostPolicyDocument Deserialize(SafeFileHandle handle, string policyPath)
-    {
-        var buffer = new byte[MaximumPolicyBytes + 1];
+        EnsureTrusted(location, opened, path);
+        var buffer = new byte[maximumBytes + 1];
         var length = 0;
         int read;
         while (length < buffer.Length && (read = RandomAccess.Read(handle, buffer.AsSpan(length), length)) > 0)
         {
             length += read;
         }
-        if (length > MaximumPolicyBytes)
+        if (length > maximumBytes)
         {
-            throw new InstallerException($"Host policy '{policyPath}' exceeds {MaximumPolicyBytes} bytes.");
+            throw new InstallerException($"{description} '{path}' exceeds {maximumBytes} bytes.");
         }
+        return buffer[..length];
+    }
+
+    private static HostPolicyDocument Deserialize(byte[] content, string policyPath)
+    {
         try
         {
-            return JsonSerializer.Deserialize(
-                       buffer.AsSpan(0, length),
-                       HostPolicyJsonContext.Default.HostPolicyDocument)
+            return JsonSerializer.Deserialize(content, HostPolicyJsonContext.Default.HostPolicyDocument)
                    ?? throw new InstallerException($"Host policy '{policyPath}' is empty.");
         }
         catch (JsonException exception)
@@ -471,28 +482,41 @@ internal static class HostProductRootPolicy
     }
 
     private static void WritePolicy(HostPolicyLocation location, string productRoot, string mountPoint)
+        => WriteTrustedFile(
+            location,
+            location.PolicyPath,
+            Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
+                new HostPolicyDocument(productRoot, mountPoint), HostPolicyJsonContext.Default.HostPolicyDocument) + "\n"),
+            "The host policy");
+
+    /// <summary>
+    /// Publishes a file beside the policy atomically, as the policy itself is published: the directories from the trust
+    /// root authenticated (missing ones created owned by the policy owner, mode <c>0755</c>), the content written to a
+    /// temporary file owned by the policy owner with mode <c>0644</c> and flushed to disk, renamed over the file, and the
+    /// directory flushed. The caller must already hold the policy owner's authority.
+    /// </summary>
+    internal static void WriteTrustedFile(HostPolicyLocation location, string path, ReadOnlySpan<byte> content, string description)
     {
-        var policyPath = location.PolicyPath;
-        var directory = Path.GetDirectoryName(policyPath)!;
-        var components = ComponentsBelowTrustRoot(location, policyPath, "The host policy");
+        ArgumentNullException.ThrowIfNull(location);
+        ArgumentNullException.ThrowIfNull(path);
+        var directory = Path.GetDirectoryName(path)!;
+        var components = ComponentsBelowTrustRoot(location, path, description);
         using (WalkTrustedDirectories(location, components[..^1], directory, createMissing: true, missingIsAbsence: false))
         {
         }
-        var content = JsonSerializer.Serialize(
-            new HostPolicyDocument(productRoot, mountPoint), HostPolicyJsonContext.Default.HostPolicyDocument) + "\n";
-        var temporary = Path.Combine(directory, $".{Path.GetFileName(policyPath)}.{Guid.NewGuid():N}.tmp");
+        var temporary = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
         try
         {
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
                 NativeLinux.ChangeOwner(temporary, location.OwnerUid, location.OwnerGid);
                 File.SetUnixFileMode(temporary, PolicyFileMode);
-                stream.Write(Encoding.UTF8.GetBytes(content));
+                stream.Write(content);
 #pragma warning disable CA1849 // Atomic policy publication requires a flush-to-disk boundary.
                 stream.Flush(flushToDisk: true);
 #pragma warning restore CA1849
             }
-            File.Move(temporary, policyPath, overwrite: true);
+            File.Move(temporary, path, overwrite: true);
             NativeLinux.FlushDirectory(directory);
         }
         finally

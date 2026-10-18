@@ -9,8 +9,15 @@ using System.Diagnostics.CodeAnalysis;
 
 namespace HVO.SkyMonitor.Deployment;
 
-internal sealed class CameraAgentInstaller
+internal sealed partial class CameraAgentInstaller
 {
+    /// <summary>
+    /// Runs at each step an interruption can fall between, named <c>configuration-written</c>, <c>limits-verified</c>,
+    /// <c>limits-manifest-written</c> or <c>limits-result-written</c>. Interruption-injection tests cancel or fail the run
+    /// there; production leaves it empty.
+    /// </summary>
+    internal static Action<string> StepCompleted { get; set; } = static _ => { };
+
     public static async Task<InstallationResult> InstallAsync(InstallRequest request, CancellationToken cancellationToken)
     {
         var processRunner = new ProcessRunner();
@@ -46,34 +53,24 @@ internal sealed class CameraAgentInstaller
         var docker = new DockerClient(processRunner);
         var instanceId = request.InstanceId ?? Guid.NewGuid();
         var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.DefaultCatalogId);
-        if (request.DryRun)
-        {
-            var dryRunImage = await ReleaseAcquirer.AcquireImageAsync(request, cancellationToken).ConfigureAwait(false);
-            var plannedRequest = ApplyReleaseImage(request, dryRunImage);
-            // A dry run evaluates the same host prerequisites an install does, so a host that cannot run the instance
-            // as deployed is refused by the plan rather than discovered after the product root exists.
-            var (_, plannedWarnings) = await EnsureHostPrerequisitesAsync(plannedRequest, docker, hostEnvironment, cancellationToken)
-                .ConfigureAwait(false);
-            var plan = await PlanAsync(
-                    plannedRequest,
-                    paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(plannedRequest.CatalogBundle!).CatalogId),
-                    instanceId,
-                    docker,
-                    dryRunImage?.Image,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            return plan with { Warnings = plannedWarnings };
-        }
 
+        // Admission: every check a plan and a run make before anything changes, shared so that a plan refuses exactly
+        // where the run would, and none of which writes anything, so a refusal here leaves nothing behind (#1315).
         if (uid == 0)
         {
-            throw new InstallerException("Run the installer as the Docker-capable runtime user, not as root or through sudo.");
+            throw InstallerException.Refused("Run the installer as the Docker-capable runtime user, not as root or through sudo.");
         }
-
-        if (File.Exists(paths.ManifestPath))
-            _ = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
-        if (File.Exists(paths.ResultPath))
-            _ = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
+        var retained = await ReadRetainedAsync(paths, cancellationToken).ConfigureAwait(false);
+        if (retained is null)
+        {
+            if (File.Exists(paths.ManifestPath))
+                _ = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
+            if (File.Exists(paths.ResultPath))
+                _ = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
+        }
+        // Read before anything is prepared, so the host is checked against the limits this run would apply. A run that
+        // goes on to change something reads everything again under the instance lock.
+        var hostCheckLimits = HostCheckLimits(request, retained);
 
         // The release is read and checked against its SHA256SUMS, its platform selected, and its archive verified before
         // the Docker daemon is contacted, so an unsupported architecture or tampered file fails with nothing yet mutated.
@@ -82,23 +79,84 @@ internal sealed class CameraAgentInstaller
 
         // Every host prerequisite is evaluated, and every finding reported together, before the product root is
         // prepared or anything else is created.
-        var (preflightDaemon, warnings) = await EnsureHostPrerequisitesAsync(request, docker, hostEnvironment, cancellationToken)
+        var (preflightDaemon, warnings) = await EnsureHostPrerequisitesAsync(
+                request, docker, hostEnvironment, hostCheckLimits, cancellationToken)
             .ConfigureAwait(false);
-        ValidateCatalogInput(request.CatalogBundle!);
+        // The clock gate protects every production install, whichever root the host policy names; only an admitted
+        // test root is exempt.
+        if (request.IsProductionRoot && !NativeLinux.IsClockSynchronized())
+        {
+            throw new InstallerException("The host clock is not synchronized.");
+        }
+        if (retained is { Completed: false } &&
+            !RequestIdentityMatches(retained.State.RequestSha256, identityRequest, instanceId, acquiredImage?.VerifiedRelease))
+        {
+            // An unfinished installation resumes only with exactly the inputs it began with. A completed one is held to
+            // the instance its records describe instead, so a re-run may change its container limits (install contract
+            // section 7) and nothing else.
+            throw InstallerException.Refused("The retained installation state belongs to different immutable inputs.");
+        }
+        if (request.Resume && retained is null)
+        {
+            throw new InstallerException("No resumable installation state exists for --instance-id.");
+        }
+        // The catalog bundle is admitted where it lies, completely and read-only, by a run and its plan alike; a re-run
+        // validates the version the instance already has (#1315).
+        if (retained is not { Completed: true })
+        {
+            _ = CatalogInstaller.Admit(request.CatalogBundle!, paths.ProductRoot);
+        }
         // The bundle's approved specification selects the side-by-side catalog root this instance installs into.
         var catalogId = ProductionCatalog.ReadBundleSpecification(request.CatalogBundle!).CatalogId;
         paths = paths.WithCatalog(catalogId);
         // A release's image is proved to be the release's, and an image this instance can run, and a new installation
         // imports it, before anything is claimed for it: no product root, state, application identity, catalog or staged
-        // archive exists yet when it is refused or when Docker cannot import it.
+        // archive exists yet when it is refused or when Docker cannot import it. A plan imports nothing.
         var releaseImported = false;
         if (acquiredImage is not null)
         {
             (acquiredImage, releaseImported) = await EnsureReleaseImageAsync(
-                    request, acquiredImage, docker, catalogId, File.Exists(paths.StatePath), cancellationToken)
+                    request, acquiredImage, docker, catalogId, import: retained is null && !request.DryRun, cancellationToken)
                 .ConfigureAwait(false);
         }
+        if (retained is { Completed: true })
+        {
+            return request.DryRun
+                ? await PlanReRunAsync(request, retained, paths, instanceId, docker, acquiredImage, uid, gid, warnings, cancellationToken)
+                    .ConfigureAwait(false)
+                : await ReRunAsync(
+                        request, paths, instanceId, docker, acquiredImage, preflightDaemon, warnings, uid, gid, ownerClientFactory,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+        }
+        if (retained is not null)
+        {
+            await EnsureRetainedStateCompatibleAsync(request, paths, instanceId, retained, docker, acquiredImage, uid, gid, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        if (request.DryRun)
+        {
+            var plan = await PlanAsync(request, paths, instanceId, docker, acquiredImage, cancellationToken)
+                .ConfigureAwait(false);
+            var plannedPaths = paths.WithCatalog(Path.GetFileName(plan.Catalog.InstallRoot));
+            var plannedRecord = InstallRecordLocation.For(plannedPaths.ProductRoot, request.ProductionProductRoot);
+            return plan with
+            {
+                Warnings = warnings,
+                Plan = InstalledPlan(
+                    plannedPaths,
+                    instanceId,
+                    plan.Image.ImageId,
+                    request.ContainerResources(),
+                    FreshInstallFacts.Observe(plannedPaths),
+                    await FreshRecordActionAsync(plannedRecord, instanceId, cancellationToken).ConfigureAwait(false),
+                    plannedRecord)
+            };
+        }
 
+        var freshFacts = FreshInstallFacts.Observe(paths);
+        // The first write. Everything above changed nothing, so a refusal there exits 3 with nothing to undo; from here
+        // on a gate that decides not to go ahead is a failure, journaled so that a re-run resumes it (#1315).
         await PrivilegedPreparation.PrepareAsync(paths, uid, gid, processRunner, cancellationToken).ConfigureAwait(false);
         using var productLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
         using var instanceLock = OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
@@ -106,16 +164,15 @@ internal sealed class CameraAgentInstaller
         {
             portAvailabilityProbe(request.BindAddress, request.Port);
         }
-        // The clock gate protects every production install, whichever root the host policy names; only an admitted
-        // test root is exempt.
-        if (request.IsProductionRoot && !NativeLinux.IsClockSynchronized())
-        {
-            throw new InstallerException("The host clock is not synchronized.");
-        }
 
         var requestSha256 = ComputeRequestSha256(identityRequest, instanceId, acquiredImage?.VerifiedRelease);
         var existingState = await ReadStateAsync(paths.StatePath, cancellationToken).ConfigureAwait(false);
         EnsureInstanceRootCanBeOwned(paths, existingState is not null);
+        // Read again under the lock: another run may have moved the installation on since it was admitted.
+        if (existingState?.Status == InstallationStatus.Completed)
+        {
+            throw new InstallerException("Another run completed this installation while this one was starting; run it again to check it.");
+        }
         if (existingState is not null && !RequestIdentityMatches(
                 existingState.RequestSha256,
                 identityRequest,
@@ -123,11 +180,6 @@ internal sealed class CameraAgentInstaller
                 acquiredImage?.VerifiedRelease))
         {
             throw new InstallerException("The retained installation state belongs to different immutable inputs.");
-        }
-        InstallationResult? retainedCompletedResult = null;
-        if (existingState?.Status == InstallationStatus.Completed)
-        {
-            retainedCompletedResult = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
         }
         if (request.Resume && existingState is null)
         {
@@ -143,16 +195,12 @@ internal sealed class CameraAgentInstaller
             InstallationPhase.Preflight,
             InstallationStatus.Pending,
             DateTimeOffset.UtcNow);
-        var completedCandidateValidated = false;
-        if (retainedCompletedResult is null)
-        {
-            state = await RecordPhaseAsync(paths, state, InstallationPhase.Preflight, cancellationToken).ConfigureAwait(false);
-        }
+        state = await RecordPhaseAsync(paths, state, InstallationPhase.Preflight, cancellationToken).ConfigureAwait(false);
         try
         {
             var applicationIdentity = await GetOrCreateApplicationIdentityAsync(
                 paths.ApplicationIdentityPath,
-                allowCreation: retainedCompletedResult is null,
+                allowCreation: true,
                 cancellationToken).ConfigureAwait(false);
             var existingManifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
             if (existingManifest is not null &&
@@ -167,47 +215,21 @@ internal sealed class CameraAgentInstaller
             {
                 throw new InstallerException("The retained instance manifest does not correlate with this installation.");
             }
-            if (retainedCompletedResult is not null && existingManifest is null)
-            {
-                throw new InstallerException("A completed installation requires its retained instance manifest.");
-            }
-            if (retainedCompletedResult is not null &&
-                (retainedCompletedResult.InstallationId != installationId ||
-                 retainedCompletedResult.InstanceId != instanceId ||
-                 retainedCompletedResult.ApplicationIdentity != applicationIdentity))
-            {
-                throw new InstallerException("The retained installation result does not correlate with this installation.");
-            }
-            if (retainedCompletedResult is not null && existingManifest!.LifecycleCondition == InstanceLifecycleCondition.Uninstalled)
-            {
-                throw new InstallerException("A preserved uninstalled instance must be restored with cameraagent reinstall.");
-            }
-            if (retainedCompletedResult is null)
-            {
-                state = await RecordPhaseAsync(paths, state, InstallationPhase.Prepare, cancellationToken).ConfigureAwait(false);
-            }
+            state = await RecordPhaseAsync(paths, state, InstallationPhase.Prepare, cancellationToken).ConfigureAwait(false);
 
-            if (retainedCompletedResult is null)
-            {
-                state = await RecordPhaseAsync(paths, state, InstallationPhase.Catalog, cancellationToken).ConfigureAwait(false);
-            }
-            var catalog = retainedCompletedResult is null
-                ? CatalogInstaller.Install(request.CatalogBundle!, paths.CatalogRoot, installationId)
-                : CatalogInstaller.ValidateExisting(request.CatalogBundle!, paths.CatalogRoot);
+            state = await RecordPhaseAsync(paths, state, InstallationPhase.Catalog, cancellationToken).ConfigureAwait(false);
+            var catalog = CatalogInstaller.Install(request.CatalogBundle!, paths.CatalogRoot, installationId);
 
-            if (retainedCompletedResult is null)
-            {
-                state = await RecordPhaseAsync(paths, state, InstallationPhase.Image, cancellationToken).ConfigureAwait(false);
-            }
+            state = await RecordPhaseAsync(paths, state, InstallationPhase.Image, cancellationToken).ConfigureAwait(false);
             var effectiveRequest = await StageImageArchiveAsync(
                 request,
                 paths,
-                allowMutation: retainedCompletedResult is null,
+                allowMutation: true,
                 cancellationToken).ConfigureAwait(false);
             // A release image imported before anything was claimed is found and checked again here, not imported twice.
             var (daemon, image) = await docker.PrepareImageAsync(
                 effectiveRequest,
-                allowMutation: retainedCompletedResult is null && !releaseImported,
+                allowMutation: !releaseImported,
                 acquiredImage?.Image,
                 cancellationToken)
                 .ConfigureAwait(false);
@@ -218,68 +240,25 @@ internal sealed class CameraAgentInstaller
             {
                 throw new InstallerException("The Docker daemon identity changed after preflight.");
             }
-            if (retainedCompletedResult is not null && request.ReplayProfile == CameraAgentReplayProfile.InProcess &&
-                existingManifest!.Image.ReplayRunnerContract is null && retainedCompletedResult.Image.ReplayRunnerContract is null)
-            {
-                image = image with { ReplayRunnerContract = null };
-            }
 
-            if (retainedCompletedResult is null)
-            {
-                state = await RecordPhaseAsync(paths, state, InstallationPhase.Configuration, cancellationToken).ConfigureAwait(false);
-            }
+            state = await RecordPhaseAsync(paths, state, InstallationPhase.Configuration, cancellationToken).ConfigureAwait(false);
             var generatedPasswordPath = Path.Combine(paths.ConfigRoot, "owner-bootstrap", "temporary-password");
-            var passwordPath = retainedCompletedResult?.PasswordFile ?? await CreateOwnerPasswordAsync(
+            var passwordPath = await CreateOwnerPasswordAsync(
                     request,
                     generatedPasswordPath,
                     cancellationToken).ConfigureAwait(false);
-            var verificationTokenPath = Path.Combine(paths.ConfigRoot, "installation-verification", "token");
-            if (retainedCompletedResult is null)
-            {
-                verificationTokenPath = await CredentialFile.GetOrCreateAsync(
-                    null,
-                    verificationTokenPath,
-                    cancellationToken).ConfigureAwait(false);
-            }
+            var verificationTokenPath = await CredentialFile.GetOrCreateAsync(
+                null,
+                Path.Combine(paths.ConfigRoot, "installation-verification", "token"),
+                cancellationToken).ConfigureAwait(false);
             var verificationToken = await ReadOwnerSecretAsync(verificationTokenPath, cancellationToken).ConfigureAwait(false);
-            var lifecycleControlTokenPath = Path.Combine(paths.ConfigRoot, "lifecycle-control", "token");
-            if (retainedCompletedResult is null)
-            {
-                lifecycleControlTokenPath = await CredentialFile.GetOrCreateAsync(
-                    null,
-                    lifecycleControlTokenPath,
-                    cancellationToken).ConfigureAwait(false);
-            }
+            var lifecycleControlTokenPath = await CredentialFile.GetOrCreateAsync(
+                null,
+                Path.Combine(paths.ConfigRoot, "lifecycle-control", "token"),
+                cancellationToken).ConfigureAwait(false);
             var lifecycleControlToken = await ReadOwnerSecretAsync(lifecycleControlTokenPath, cancellationToken).ConfigureAwait(false);
-            var passwordAuthorityEnabled = retainedCompletedResult is null &&
-                                            (existingState is null || existingState.Phase < InstallationPhase.OwnerSeeded);
-            // A re-run of a completed installation keeps the limits it recorded, which the request identity has already
-            // matched. An instance an earlier installer completed records none and keeps its original limits until its
-            // next upgrade.
-            var resources = retainedCompletedResult is null ? request.ContainerResources() : existingManifest!.Resources;
-            if (retainedCompletedResult is not null)
-            {
-                await ValidateCompletedCandidateAsync(
-                    request,
-                    paths,
-                    instanceId,
-                    installationId,
-                    applicationIdentity,
-                    uid,
-                    gid,
-                    passwordPath,
-                    verificationToken,
-                    lifecycleControlToken,
-                    catalog,
-                    image,
-                    daemon,
-                    existingManifest!,
-                    retainedCompletedResult,
-                    resources,
-                    docker,
-                    cancellationToken).ConfigureAwait(false);
-                completedCandidateValidated = true;
-            }
+            var passwordAuthorityEnabled = existingState is null || existingState.Phase < InstallationPhase.OwnerSeeded;
+            var resources = request.ContainerResources();
             var compose = ComposeDeployment.Write(
                 request,
                 paths,
@@ -294,6 +273,7 @@ internal sealed class CameraAgentInstaller
                 lifecycleControlToken,
                 passwordAuthorityEnabled,
                 resources);
+            StepCompleted("configuration-written");
 
             // Compose writing created every writable bind source with the runtime identity. Prove the persisted
             // catalog, Identity, and raw-ingress boundaries match this image before Compose starts the container,
@@ -328,14 +308,11 @@ internal sealed class CameraAgentInstaller
                 request, paths, instanceId, installationId, applicationIdentity, uid, gid,
                 verificationToken, lifecycleControlToken, compose, composeModelSha256, catalog, image, daemon, existingManifest,
                 resources);
-            if (retainedCompletedResult is null)
-            {
-                await SafeFileSystem.WriteJsonAtomicAsync(
-                    paths.ManifestPath,
-                    manifest,
-                    DeploymentJsonContext.Default.InstanceManifest,
-                    cancellationToken).ConfigureAwait(false);
-            }
+            await SafeFileSystem.WriteJsonAtomicAsync(
+                paths.ManifestPath,
+                manifest,
+                DeploymentJsonContext.Default.InstanceManifest,
+                cancellationToken).ConfigureAwait(false);
 
             state = await RecordPhaseAsync(paths, state, InstallationPhase.Startup, cancellationToken).ConfigureAwait(false);
             await docker.ComposeAsync(
@@ -350,53 +327,47 @@ internal sealed class CameraAgentInstaller
             var ownerClient = ownerClientFactory(baseAddress);
             await ownerClient.WaitForHealthAsync(ProductionCatalog.Get(catalog.CatalogId), cancellationToken).ConfigureAwait(false);
 
-            var ownerState = retainedCompletedResult?.OwnerBootstrapState ?? "owner-temporary-password";
+            state = await RecordPhaseAsync(paths, state, InstallationPhase.OwnerBootstrap, cancellationToken).ConfigureAwait(false);
             // Whether the owner's first sign-in is the documented default comes from the credential actually seeded,
             // not from this invocation's flags, because a resumed installation keeps the credential its first run wrote.
-            var ownerPasswordIsDefault = retainedCompletedResult?.OwnerPasswordIsDefault ?? false;
-            string? password = null;
-            if (retainedCompletedResult is null)
+            var password = await ReadOwnerPasswordAsync(passwordPath, cancellationToken).ConfigureAwait(false);
+            var ownerPasswordIsDefault = string.Equals(password, OwnerCredentialDefaults.Password, StringComparison.Ordinal);
+            var ownerState = await ownerClient.ReadStateAsync(request.OwnerEmail, password, cancellationToken)
+                .ConfigureAwait(false);
+            if (ownerState == "owner-temporary-password")
             {
-                state = await RecordPhaseAsync(paths, state, InstallationPhase.OwnerBootstrap, cancellationToken).ConfigureAwait(false);
-                password = await ReadOwnerPasswordAsync(passwordPath, cancellationToken).ConfigureAwait(false);
-                ownerPasswordIsDefault = string.Equals(password, OwnerCredentialDefaults.Password, StringComparison.Ordinal);
+                state = await RecordPhaseAsync(paths, state, InstallationPhase.OwnerSeeded, cancellationToken)
+                    .ConfigureAwait(false);
+                compose = ComposeDeployment.Write(
+                    request,
+                    paths,
+                    instanceId,
+                    applicationIdentity,
+                    uid,
+                    gid,
+                    image.ImageId,
+                    catalog.PackageVersion,
+                    passwordPath,
+                    verificationToken,
+                    lifecycleControlToken,
+                    passwordAuthorityEnabled: false,
+                    resources);
+                rendered = await docker.ComposeAsync(
+                    compose.ComposeFile,
+                    compose.EnvironmentFile,
+                    compose.ProjectName,
+                    ["config"],
+                    cancellationToken).ConfigureAwait(false);
+                composeModelSha256 = ComposeDeployment.ComputeSha256(rendered.StandardOutput);
+                await docker.ComposeAsync(
+                    compose.ComposeFile,
+                    compose.EnvironmentFile,
+                    compose.ProjectName,
+                    ["up", "--detach", "--remove-orphans"],
+                    cancellationToken).ConfigureAwait(false);
+                await ownerClient.WaitForHealthAsync(ProductionCatalog.Get(catalog.CatalogId), cancellationToken).ConfigureAwait(false);
                 ownerState = await ownerClient.ReadStateAsync(request.OwnerEmail, password, cancellationToken)
                     .ConfigureAwait(false);
-                if (ownerState == "owner-temporary-password")
-                {
-                    state = await RecordPhaseAsync(paths, state, InstallationPhase.OwnerSeeded, cancellationToken)
-                        .ConfigureAwait(false);
-                    compose = ComposeDeployment.Write(
-                        request,
-                        paths,
-                        instanceId,
-                        applicationIdentity,
-                        uid,
-                        gid,
-                        image.ImageId,
-                        catalog.PackageVersion,
-                        passwordPath,
-                        verificationToken,
-                        lifecycleControlToken,
-                        passwordAuthorityEnabled: false,
-                        resources);
-                    rendered = await docker.ComposeAsync(
-                        compose.ComposeFile,
-                        compose.EnvironmentFile,
-                        compose.ProjectName,
-                        ["config"],
-                        cancellationToken).ConfigureAwait(false);
-                    composeModelSha256 = ComposeDeployment.ComputeSha256(rendered.StandardOutput);
-                    await docker.ComposeAsync(
-                        compose.ComposeFile,
-                        compose.EnvironmentFile,
-                        compose.ProjectName,
-                        ["up", "--detach", "--remove-orphans"],
-                        cancellationToken).ConfigureAwait(false);
-                    await ownerClient.WaitForHealthAsync(ProductionCatalog.Get(catalog.CatalogId), cancellationToken).ConfigureAwait(false);
-                    ownerState = await ownerClient.ReadStateAsync(request.OwnerEmail, password, cancellationToken)
-                        .ConfigureAwait(false);
-                }
             }
             if (ownerState != "owner-password-change-required")
             {
@@ -423,22 +394,15 @@ internal sealed class CameraAgentInstaller
                     manifest.DeploymentLocationSha256,
                     (ContractReplayProfile)request.ReplayProfile,
                     catalog,
-                    AllowCompletedPasswordReplacement: retainedCompletedResult is not null),
+                    AllowCompletedPasswordReplacement: false),
                 cancellationToken).ConfigureAwait(false);
 
             manifest = manifest with { ComposeModelSha256 = composeModelSha256 };
-            if (retainedCompletedResult is not null && manifest != existingManifest)
-            {
-                throw new InstallerException("The completed installation differs from its retained immutable manifest.");
-            }
-            if (retainedCompletedResult is null)
-            {
-                await SafeFileSystem.WriteJsonAtomicAsync(
-                    paths.ManifestPath,
-                    manifest,
-                    DeploymentJsonContext.Default.InstanceManifest,
-                    cancellationToken).ConfigureAwait(false);
-            }
+            await SafeFileSystem.WriteJsonAtomicAsync(
+                paths.ManifestPath,
+                manifest,
+                DeploymentJsonContext.Default.InstanceManifest,
+                cancellationToken).ConfigureAwait(false);
 
             state = await RecordPhaseAsync(paths, state, InstallationPhase.Verification, cancellationToken).ConfigureAwait(false);
             var result = CreateInstalledResult(
@@ -458,57 +422,107 @@ internal sealed class CameraAgentInstaller
                 ownerState,
                 ownerPasswordIsDefault,
                 DateTimeOffset.UtcNow);
-            if (retainedCompletedResult is not null)
-            {
-                var comparableResult = result with { CompletedUtc = retainedCompletedResult.CompletedUtc };
-                if (comparableResult != retainedCompletedResult)
-                {
-                    throw new InstallerException("The completed installation differs from its retained result.");
-                }
-                result = retainedCompletedResult;
-            }
-            else
-            {
-                await SafeFileSystem.WriteJsonAtomicAsync(
-                    paths.ResultPath,
-                    result,
-                    DeploymentJsonContext.Default.InstallationResult,
-                    cancellationToken).ConfigureAwait(false);
-            }
+            await SafeFileSystem.WriteJsonAtomicAsync(
+                paths.ResultPath,
+                result,
+                DeploymentJsonContext.Default.InstallationResult,
+                cancellationToken).ConfigureAwait(false);
             // The release record is retained only once the installation is complete, so a failure at any earlier
             // stage never leaves evidence naming a release no container is running.
             if (acquiredImage is not null)
             {
                 await ReleaseRecords.SettleAsync(paths, acquiredImage, result.Image, cancellationToken).ConfigureAwait(false);
             }
+            // The install record follows the instance's own records, so it is settled once they are complete and before
+            // the installation is recorded as completed: an interruption between the two is finished by a re-run.
+            var recordLocation = InstallRecordLocation.For(paths.ProductRoot, request.ProductionProductRoot);
+            var recordAction = await InstallRecordStore.SettleInstanceAsync(
+                    recordLocation,
+                    paths,
+                    manifest,
+                    InstallRecordEvent.Install,
+                    cancellationToken)
+                .ConfigureAwait(false);
             _ = await RecordPhaseAsync(
                 paths,
                 state,
                 InstallationPhase.Completed,
                 cancellationToken,
                 InstallationStatus.Completed).ConfigureAwait(false);
-            // The warnings describe the host this invocation evaluated, so only the reported result carries them: the
-            // retained result was written, and a completed re-run compared with it, without them.
-            return result with { Warnings = warnings };
+            // The warnings and the plan describe this invocation, so only the reported result carries them.
+            return result with
+            {
+                Warnings = warnings,
+                Plan = InstalledPlan(paths, instanceId, image.ImageId, resources, freshFacts, recordAction, recordLocation)
+            };
         }
         catch (OperationCanceledException exception)
         {
-            if (retainedCompletedResult is null || completedCandidateValidated)
-            {
-                await RecordFailureAsync(paths, state, exception, CancellationToken.None).ConfigureAwait(false);
-            }
+            await RecordFailureAsync(paths, state, exception, CancellationToken.None).ConfigureAwait(false);
             throw;
         }
         catch (Exception exception)
         {
-            if (retainedCompletedResult is null || completedCandidateValidated)
+            await RecordFailureAsync(paths, state, exception, CancellationToken.None).ConfigureAwait(false);
+            // The installation has written by now, so even a gate that decides here not to go ahead cannot say nothing
+            // changed: it is a failure, journaled above, that a re-run resumes (#1315).
+            throw exception switch
             {
-                await RecordFailureAsync(paths, state, exception, CancellationToken.None).ConfigureAwait(false);
-            }
-            throw exception is InstallerException installerException
-                ? installerException
-                : new InstallerException("Installation failed at a durable phase boundary.", exception);
+                InstallerException { IsRefusal: true } refusal => new InstallerException(refusal.Message, refusal),
+                InstallerException installerException => installerException,
+                _ => new InstallerException("Installation failed at a durable phase boundary.", exception)
+            };
         }
+    }
+
+    /// <summary>
+    /// Proves the persisted state an unfinished installation left behind can be used by this image, before the run
+    /// changes anything and in its plan alike (#1315). The check only reads, and only an image Docker already holds can
+    /// be checked: one this run has yet to import is checked by the run's own preflight once imported, where a refusal is
+    /// a failure because the run has written by then.
+    /// </summary>
+    private static async Task EnsureRetainedStateCompatibleAsync(
+        InstallRequest request,
+        InstallationPaths paths,
+        Guid instanceId,
+        RetainedInstallation retained,
+        DockerClient docker,
+        AcquiredImage? release,
+        uint uid,
+        uint gid,
+        CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(paths.StateRoot))
+        {
+            return;
+        }
+        ImageInstallationIdentity image;
+        try
+        {
+            var effectiveRequest = await StageImageArchiveAsync(request, paths, allowMutation: false, cancellationToken).ConfigureAwait(false);
+            (_, image) = await docker.PrepareImageAsync(effectiveRequest, allowMutation: false, release?.Image, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (InstallerException exception) when (!exception.IsRefusal)
+        {
+            return;
+        }
+        await CameraAgentStatePreflight.EnsureCompatibleAsync(
+                paths,
+                instanceId,
+                image,
+                retained.Manifest is { } manifest
+                    ? manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility
+                    : image.UpgradeCompatibility,
+                uid,
+                gid,
+                (ContractReplayProfile)request.ReplayProfile,
+                persist: false,
+                renderToStandardError: !request.Json,
+                cancellationToken,
+                CameraAgentStateContractPolicy.AllowLegacy,
+                release?.Release.Tag)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -522,23 +536,33 @@ internal sealed class CameraAgentInstaller
     /// here.</item>
     /// </list>
     /// What Docker holds after the import is checked again, and an import that is refused, fails or is cancelled is
-    /// removed. An installation that already has state (a resumed or repeated one) imports nothing here; its image step
-    /// does, as before, from the same verified inputs. Returns the release, with the identities its registry gave, and
-    /// whether the image is now imported.
+    /// removed. Only a new installation imports (<paramref name="import"/>): one that already has state (a resumed or
+    /// repeated one) imports nothing here, and its image step does, as before, from the same verified inputs; a plan
+    /// imports nothing at all. Returns the release, with the identities its registry gave, and whether the image is now
+    /// imported.
     /// </summary>
     private static async Task<(AcquiredImage Release, bool Imported)> EnsureReleaseImageAsync(
         InstallRequest request,
         AcquiredImage release,
         DockerClient docker,
         string catalogId,
-        bool stateExists,
+        bool import,
         CancellationToken cancellationToken)
     {
+        // Whatever this refuses has changed nothing: the image is not imported yet, or the import that added it is
+        // removed again, so it is a refusal (exit 3, #1315).
         void Validate(ImageInstallationIdentity image)
         {
-            if (!IsValid(image, request.ReplayProfile))
-                throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
-            EnsureImageSupportsCatalog(image, catalogId);
+            try
+            {
+                if (!IsValid(image, request.ReplayProfile))
+                    throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
+                EnsureImageSupportsCatalog(image, catalogId);
+            }
+            catch (InstallerException exception) when (!exception.IsRefusal)
+            {
+                throw InstallerException.Refused(exception.Message, exception);
+            }
         }
         if (release.ArchivedImage is { } archived)
         {
@@ -549,9 +573,9 @@ internal sealed class CameraAgentInstaller
             var (registryImage, selection) = await docker.ReadRegistryReleaseImageAsync(release.Image, cancellationToken)
                 .ConfigureAwait(false);
             Validate(registryImage);
-            release = release with { Image = selection };
+            release = release with { Image = selection, RegistryImage = registryImage };
         }
-        if (stateExists)
+        if (!import)
         {
             return (release, false);
         }
@@ -574,95 +598,83 @@ internal sealed class CameraAgentInstaller
                 ImageArchiveSha256 = image.ArchiveSha256
             };
 
+    /// <summary>
+    /// The plan of a fresh install, or of the resumption of one, computed without writing anything anywhere, not even a
+    /// temporary file (#1315): the catalog is inspected where it lies, the image is inspected, and the Compose files are
+    /// rendered in memory. Docker renders a Compose model only from files, so a plan reports no model hash. A release
+    /// image Docker does not hold yet, which the run would import, is described as it was read and checked from the
+    /// release's archive or registry.
+    /// </summary>
     private static async Task<InstallationResult> PlanAsync(
         InstallRequest request,
         InstallationPaths finalPaths,
         Guid instanceId,
         DockerClient docker,
-        ReleaseImageSelection? releaseImage,
+        AcquiredImage? release,
         CancellationToken cancellationToken)
     {
-        var temporaryRoot = Path.Combine(Path.GetTempPath(), $"hvo-installer-plan-{Guid.NewGuid():N}");
-        try
-        {
-            var applicationIdentity = Guid.NewGuid();
-            var temporaryPaths = InstallationPaths.Create(temporaryRoot, instanceId, Path.GetFileName(finalPaths.CatalogRoot));
-            var catalog = CatalogInstaller.Install(request.CatalogBundle!, temporaryPaths.CatalogRoot, Guid.NewGuid()) with
-            {
-                InstallRoot = finalPaths.CatalogRoot
-            };
-            var (daemon, image) = await docker.PrepareImageAsync(request, allowMutation: false, releaseImage, cancellationToken)
+        var applicationIdentity = Guid.NewGuid();
+        var catalog = CatalogInstaller.Inspect(request.CatalogBundle!, finalPaths.CatalogRoot);
+        var (daemon, image) = release?.CheckedImage is { } checkedImage &&
+                              !await docker.HoldsReleaseImageAsync(release.Image, cancellationToken).ConfigureAwait(false)
+            ? (await docker.PreflightAsync(cancellationToken).ConfigureAwait(false), checkedImage)
+            : await docker.PrepareImageAsync(request, allowMutation: false, release?.Image, cancellationToken)
                 .ConfigureAwait(false);
-            if (!IsValid(image, request.ReplayProfile))
-                throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
-            EnsureImageSupportsCatalog(image, catalog.CatalogId);
-            var compose = ComposeDeployment.Write(
-                request,
-                temporaryPaths,
-                instanceId,
-                applicationIdentity,
-                NativeLinux.getuid(),
-                NativeLinux.getgid(),
-                image.ImageId,
-                catalog.PackageVersion,
-                "/dev/null",
-                "dry-run-installation-verification-token",
-                "dry-run-lifecycle-control-token",
-                passwordAuthorityEnabled: true,
-                request.ContainerResources());
-            var rendered = await docker.ComposeAsync(
-                compose.ComposeFile,
-                compose.EnvironmentFile,
-                compose.ProjectName,
-                ["config"],
-                cancellationToken).ConfigureAwait(false);
-            return new InstallationResult(
-                DeploymentSchemaVersions.InstallationResult,
-                InstallationOutcome.Planned,
-                Guid.Empty,
-                instanceId,
-                applicationIdentity,
-                request.FriendlyName,
-                PublicUri(request),
-                request.OwnerEmail,
-                "<generated-during-install>",
-                finalPaths.ProductRoot,
-                finalPaths.InstanceRoot,
-                finalPaths.ConfigRoot,
-                finalPaths.StateRoot,
-                NativeLinux.getuid(),
-                NativeLinux.getgid(),
-                ComposeDeployment.TemplateVersionFor(request.ReplayProfile),
-                request.LatitudeDegrees,
-                request.LongitudeDegrees,
-                request.ElevationMeters,
-                request.TimeZoneId,
-                compose.ConfigurationSha256,
-                compose.RigProfileSha256,
-                compose.ScheduleSha256,
-                compose.RigProfileName,
-                compose.RigProfileVersion,
-                compose.ScheduleSchemaVersion,
-                compose.ScheduleState,
-                ComposeDeployment.ComputeSha256(rendered.StandardOutput),
-                catalog,
-                image,
-                daemon,
-                Alive: false,
-                Healthy: false,
-                "planned",
-                DateTimeOffset.UtcNow,
-                (ContractReplayProfile)request.ReplayProfile,
-                OwnerPasswordIsDefault: request.PasswordFile is null && !request.GeneratePassword);
-        }
-        finally
-        {
-            if (Directory.Exists(temporaryRoot))
-            {
-                SafeFileSystem.MakeTreeOwnerWritable(temporaryRoot);
-                Directory.Delete(temporaryRoot, recursive: true);
-            }
-        }
+        if (!IsValid(image, request.ReplayProfile))
+            throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
+        EnsureImageSupportsCatalog(image, catalog.CatalogId);
+        var compose = ComposeDeployment.Render(
+            request,
+            finalPaths,
+            instanceId,
+            applicationIdentity,
+            NativeLinux.getuid(),
+            NativeLinux.getgid(),
+            image.ImageId,
+            catalog.PackageVersion,
+            "/dev/null",
+            "dry-run-installation-verification-token",
+            "dry-run-lifecycle-control-token",
+            passwordAuthorityEnabled: true,
+            request.ContainerResources()).Files;
+        return new InstallationResult(
+            DeploymentSchemaVersions.InstallationResult,
+            InstallationOutcome.Planned,
+            Guid.Empty,
+            instanceId,
+            applicationIdentity,
+            request.FriendlyName,
+            PublicUri(request),
+            request.OwnerEmail,
+            "<generated-during-install>",
+            finalPaths.ProductRoot,
+            finalPaths.InstanceRoot,
+            finalPaths.ConfigRoot,
+            finalPaths.StateRoot,
+            NativeLinux.getuid(),
+            NativeLinux.getgid(),
+            ComposeDeployment.TemplateVersionFor(request.ReplayProfile),
+            request.LatitudeDegrees,
+            request.LongitudeDegrees,
+            request.ElevationMeters,
+            request.TimeZoneId,
+            compose.ConfigurationSha256,
+            compose.RigProfileSha256,
+            compose.ScheduleSha256,
+            compose.RigProfileName,
+            compose.RigProfileVersion,
+            compose.ScheduleSchemaVersion,
+            compose.ScheduleState,
+            string.Empty,
+            catalog,
+            image,
+            daemon,
+            Alive: false,
+            Healthy: false,
+            "planned",
+            DateTimeOffset.UtcNow,
+            (ContractReplayProfile)request.ReplayProfile,
+            OwnerPasswordIsDefault: request.PasswordFile is null && !request.GeneratePassword);
     }
 
     private static async Task<Guid> GetOrCreateApplicationIdentityAsync(
@@ -699,104 +711,12 @@ internal sealed class CameraAgentInstaller
         return identity;
     }
 
-    private static async Task ValidateCompletedCandidateAsync(
-        InstallRequest request,
-        InstallationPaths paths,
-        Guid instanceId,
-        Guid installationId,
-        Guid applicationIdentity,
-        uint uid,
-        uint gid,
-        string passwordPath,
-        string verificationToken,
-        string lifecycleControlToken,
-        CatalogInstallationIdentity catalog,
-        ImageInstallationIdentity image,
-        DockerDaemonIdentity daemon,
-        InstanceManifest retainedManifest,
-        InstallationResult retainedResult,
-        ContainerResourceLimits? resources,
-        DockerClient docker,
-        CancellationToken cancellationToken)
-    {
-        var temporaryRoot = Path.Combine(Path.GetTempPath(), $"hvo-installer-rerun-{Guid.NewGuid():N}");
-        try
-        {
-            var outputPaths = InstallationPaths.Create(temporaryRoot, instanceId, Path.GetFileName(paths.CatalogRoot));
-            var compose = ComposeDeployment.Write(
-                request,
-                paths,
-                instanceId,
-                applicationIdentity,
-                uid,
-                gid,
-                image.ImageId,
-                catalog.PackageVersion,
-                passwordPath,
-                verificationToken,
-                lifecycleControlToken,
-                passwordAuthorityEnabled: false,
-                resources,
-                outputPaths: outputPaths);
-            var rendered = await docker.ComposeAsync(
-                compose.ComposeFile,
-                compose.EnvironmentFile,
-                compose.ProjectName,
-                ["config"],
-                cancellationToken).ConfigureAwait(false);
-            var candidate = CreateManifest(
-                request,
-                paths,
-                instanceId,
-                installationId,
-                applicationIdentity,
-                uid,
-                gid,
-                verificationToken,
-                lifecycleControlToken,
-                compose,
-                ComposeDeployment.ComputeSha256(rendered.StandardOutput),
-                catalog,
-                image,
-                daemon,
-                retainedManifest,
-                resources);
-            if (candidate != retainedManifest)
-            {
-                throw new InstallerException("The completed installation differs from its retained immutable manifest.");
-            }
-            var candidateResult = CreateInstalledResult(
-                request,
-                paths,
-                instanceId,
-                installationId,
-                applicationIdentity,
-                uid,
-                gid,
-                passwordPath,
-                compose,
-                ComposeDeployment.ComputeSha256(rendered.StandardOutput),
-                catalog,
-                image,
-                daemon,
-                "owner-password-change-required",
-                retainedResult.OwnerPasswordIsDefault,
-                retainedResult.CompletedUtc);
-            if (candidateResult != retainedResult)
-            {
-                throw new InstallerException("The completed installation differs from its retained result.");
-            }
-        }
-        finally
-        {
-            if (Directory.Exists(temporaryRoot))
-            {
-                SafeFileSystem.MakeTreeOwnerWritable(temporaryRoot);
-                Directory.Delete(temporaryRoot, recursive: true);
-            }
-        }
-    }
-
+    /// <summary>
+    /// Proves a completed installation is exactly what its retained manifest and result say, by rendering it again from
+    /// the request into a temporary root. Returns <see langword="true"/> when the result differs from the manifest only
+    /// in its Compose model: a limits change interrupted after its manifest commit, which the caller repairs. The manifest
+    /// was just proved against a fresh render, so the result follows it.
+    /// </summary>
     private static InstanceManifest CreateManifest(
         InstallRequest request,
         InstallationPaths paths,
@@ -813,7 +733,8 @@ internal sealed class CameraAgentInstaller
         ImageInstallationIdentity image,
         DockerDaemonIdentity daemon,
         InstanceManifest? previous,
-        ContainerResourceLimits? resources)
+        ContainerResourceLimits? resources,
+        bool keepPreviousStateSnapshot = false)
     {
         var location = HVO.SkyMonitor.AgentCore.DeploymentLocationSnapshot.Create(
             $"installer-{instanceId:D}",
@@ -873,7 +794,11 @@ internal sealed class CameraAgentInstaller
             ComposeDeployment.ComputeSha256(lifecycleControlToken),
             previous?.PreviousComposeModelSha256,
             (ContractReplayProfile)request.ReplayProfile,
-            resources);
+            resources,
+            // A completed installation's re-run describes the manifest as it is, retained database snapshot included. Any
+            // other install (a fresh one, a resumed one, the reinstall after a state reset) drops it, so a later
+            // rollback can never bring back databases from before the reset.
+            keepPreviousStateSnapshot ? previous?.PreviousStateSnapshot : null);
     }
 
     private static InstallationResult CreateInstalledResult(
@@ -1161,6 +1086,7 @@ internal sealed class CameraAgentInstaller
         InstallRequest request,
         DockerClient docker,
         IHostEnvironment hostEnvironment,
+        ContainerResourceLimits limits,
         CancellationToken cancellationToken)
     {
         var capabilities = await docker.ReadHostCapabilitiesAsync(cancellationToken).ConfigureAwait(false);
@@ -1171,7 +1097,7 @@ internal sealed class CameraAgentInstaller
             productRootBytes,
             dockerRootBytes,
             hostEnvironment,
-            request.ContainerResources());
+            limits);
         if (!report.Satisfied)
         {
             throw new HostPrerequisiteException(report);
@@ -1205,22 +1131,6 @@ internal sealed class CameraAgentInstaller
             throw new InstallerException("The CameraAgent image cannot resolve the selected catalog.");
     }
 
-    private static void ValidateCatalogInput(string bundlePath)
-    {
-        var temporaryRoot = Path.Combine(Path.GetTempPath(), $"hvo-installer-catalog-preflight-{Guid.NewGuid():N}");
-        try
-        {
-            _ = CatalogInstaller.Install(bundlePath, temporaryRoot, Guid.NewGuid());
-        }
-        finally
-        {
-            if (Directory.Exists(temporaryRoot))
-            {
-                SafeFileSystem.MakeTreeOwnerWritable(temporaryRoot);
-                Directory.Delete(temporaryRoot, recursive: true);
-            }
-        }
-    }
 
     /// <summary>
     /// The identity of an install request, which a re-run or a resume must match. A release install binds the release

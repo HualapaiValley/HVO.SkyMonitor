@@ -173,7 +173,9 @@ public sealed partial class InstallerFlowTests
                 "installation-state.json")));
             Assert.AreEqual("Completed", state.RootElement.GetProperty("phase").GetString());
             Assert.AreEqual("Completed", state.RootElement.GetProperty("status").GetString());
-            Assert.AreEqual(3, runner.ComposeUpCount);
+            // The install started the container twice, once to seed the owner; the completed re-run, with nothing to
+            // change, starts nothing (#1315).
+            Assert.AreEqual(2, runner.ComposeUpCount);
 
             var driftedResult = JsonNode.Parse(legacyInProcessResultJson)?.AsObject()
                 ?? throw new AssertFailedException("The retained result was not valid JSON.");
@@ -188,7 +190,7 @@ public sealed partial class InstallerFlowTests
                 CancellationToken.None,
                 portAvailabilityProbe: probe.Probe));
             StringAssert.Contains(resultDrift.Message, "retained result", StringComparison.Ordinal);
-            Assert.AreEqual(3, runner.ComposeUpCount);
+            Assert.AreEqual(2, runner.ComposeUpCount);
             await File.WriteAllTextAsync(resultPath, legacyInProcessResultJson);
 
             var unsupportedState = JsonNode.Parse(await File.ReadAllTextAsync(statePath))?.AsObject()
@@ -621,6 +623,7 @@ public sealed partial class InstallerFlowTests
                 exception.Message);
             Assert.AreEqual(0, runner.ComposeUpCount);
             Assert.AreEqual(1, runner.LoadCount);
+            Assert.IsTrue(exception.IsRefusal, "the load is undone before anything is claimed, so it is a refusal (exit 3)");
             CollectionAssert.Contains(runner.Removed, imageId);
             Assert.IsEmpty(runner.Held!, "the image the refused install loaded is still in Docker");
             // A refused release leaves no state, and so no evidence claiming the instance runs it.
@@ -668,6 +671,7 @@ public sealed partial class InstallerFlowTests
             Assert.AreEqual(
                 $"The CameraAgent image Docker resolved is not the {platform} image release v{release.Version} names.",
                 exception.Message);
+            Assert.IsTrue(exception.IsRefusal, "the import is undone before anything is claimed, so it is a refusal (exit 3)");
             Assert.AreEqual(0, runner.ComposeUpCount);
             Assert.IsEmpty(runner.Held!, "the image the refused install imported is still in Docker");
             // A loaded or pulled image is checked before the install claims anything.
@@ -996,6 +1000,7 @@ public sealed partial class InstallerFlowTests
                 .Replace("{backslash-alias}", backslashAlias, StringComparison.Ordinal)
                 .Replace("{name}", name, StringComparison.Ordinal);
             Assert.AreEqual(message.StartsWith('!') ? message[1..] : $"The offline archive {name} {message}", exception.Message);
+            Assert.IsTrue(exception.IsRefusal, "the archive is refused before anything is loaded or claimed, so it is a refusal (exit 3)");
             Assert.AreEqual(0, runner.LoadCount, "a refused archive must never be loaded");
             Assert.AreEqual(0, runner.PullCount);
             Assert.IsEmpty(runner.Held!);
@@ -1095,6 +1100,7 @@ public sealed partial class InstallerFlowTests
                     .Replace("{created}", ReleaseFixture.Created, StringComparison.Ordinal),
                 exception.Message);
             Assert.IsGreaterThan(0, runner.Registry!.Reads);
+            Assert.IsTrue(exception.IsRefusal, "nothing was pulled or claimed, so it is a refusal (exit 3)");
             Assert.AreEqual(0, runner.PullCount, "a refused registry image must never be pulled");
             Assert.AreEqual(0, runner.LoadCount);
             Assert.IsEmpty(runner.Held!);
@@ -1144,6 +1150,7 @@ public sealed partial class InstallerFlowTests
                 exception.Message);
             Assert.AreEqual(1, runner.PullCount);
             CollectionAssert.Contains(runner.Removed, release.DigestReference);
+            Assert.IsTrue(exception.IsRefusal, "the pull is removed before anything is claimed, so it is a refusal (exit 3)");
             Assert.IsEmpty(runner.Held!, "the refused pull is still in Docker");
             Assert.AreEqual(0, runner.ComposeUpCount);
             CollectionAssert.AreEqual(before, Tree(root), "a refused pull changed the file system");
@@ -1548,6 +1555,9 @@ public sealed partial class InstallerFlowTests
         public string ExpectedOwnerEmail { get; init; } = "owner@example.test";
         public List<string> Passwords { get; } = [];
 
+        /// <summary>How many times the installation was verified.</summary>
+        public int Verifications { get; private set; }
+
         public Task WaitForHealthAsync(
             ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null)
         {
@@ -1576,6 +1586,7 @@ public sealed partial class InstallerFlowTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            Verifications++;
             Assert.AreEqual("hyg-v42-production", expectation.Catalog.CatalogId);
             Assert.AreEqual(64, expectation.ConfigurationSha256.Length);
             Assert.AreEqual(HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess, expectation.ReplayProfile);
@@ -1597,6 +1608,15 @@ public sealed partial class InstallerFlowTests
     {
         public int ComposeUpCount { get; private set; }
 
+        /// <summary>The Compose file the last <c>compose up</c> started the instance from: the limits it now runs with.</summary>
+        public string? LastComposeUp { get; private set; }
+
+        /// <summary>
+        /// The number the failing <c>compose up</c> would have: that one fails as Docker fails one it cannot complete, and
+        /// the container keeps what it ran before.
+        /// </summary>
+        public int FailComposeUpNumber { get; set; } = -1;
+
         public int Invocations { get; private set; }
 
         public int LoadCount { get; private set; }
@@ -1604,6 +1624,12 @@ public sealed partial class InstallerFlowTests
         public int PullCount { get; private set; }
 
         public string DockerInfo { get; init; } = SupportedDockerInfo;
+
+        /// <summary>
+        /// When set, <c>compose config</c> renders the Compose file it was given, so the rendered model follows the
+        /// limits the file carries, as Docker's does; otherwise it renders one fixed model.
+        /// </summary>
+        public bool RenderComposeFile { get; init; }
 
         /// <summary>The labels the image carries; by default the contract labels of an unreleased build.</summary>
         public IReadOnlyDictionary<string, string> Labels { get; init; } = new Dictionary<string, string>(ReleaseFixture.ContractLabels)
@@ -1688,6 +1714,16 @@ public sealed partial class InstallerFlowTests
                 CancelImport();
                 return Success(string.Empty);
             }
+            if (arguments is ["image", "ls", ..])
+            {
+                // The fake holds one image, listed under every name it holds, as the containerd image store lists it.
+                var listedId = imageId.StartsWith("sha256:", StringComparison.Ordinal) && imageId.Length == 71
+                    ? imageId
+                    : $"sha256:{Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(imageId)))}";
+                string[] names = Held is null ? [imageId, .. RepoDigests] : [.. Held.Order(StringComparer.Ordinal)];
+                return Success(string.Concat(names.Select(name => LifecycleContractTests.FakeRunner.ListingLine(
+                    listedId, name.StartsWith("sha256:", StringComparison.Ordinal) && name.Length != 71 ? listedId : name) + "\n")));
+            }
             if (arguments is ["image", "rm", var removed])
             {
                 Removed.Add(removed);
@@ -1740,7 +1776,7 @@ public sealed partial class InstallerFlowTests
                                 ["io.hvo.skymonitor.instance-id"] = id
                             }
                         },
-                        HostConfig = new { ReadonlyRootfs = true, Privileged = false },
+                        HostConfig = Limits(),
                         Mounts = new[]
                         {
                             new { Source = Path.Combine(instanceRoot, "config", "camera-module.json"), Destination = "/app/cameraagent.deploy.json", RW = false },
@@ -1752,12 +1788,21 @@ public sealed partial class InstallerFlowTests
             }
             if (arguments.Contains("config", StringComparer.Ordinal))
             {
-                return Success("services:\n  cameraagent:\n    image: immutable\n");
+                var file = arguments.ToList().IndexOf("--file");
+                return RenderComposeFile && file >= 0
+                    ? RenderAsync(arguments[file + 1], cancellationToken)
+                    : Success("services:\n  cameraagent:\n    image: immutable\n");
             }
             if (arguments.Contains("up", StringComparer.Ordinal))
             {
+                if (ComposeUpCount + 1 == FailComposeUpNumber)
+                {
+                    FailComposeUpNumber = -1;
+                    return Task.FromResult(new ProcessResult(1, string.Empty, "Error response from daemon: cannot recreate the container"));
+                }
                 ComposeUpCount++;
-                return Success(string.Empty);
+                var file = arguments.ToList().IndexOf("--file");
+                return file >= 0 ? UpAsync(arguments[file + 1], cancellationToken) : Success(string.Empty);
             }
             Assert.Fail($"Unexpected process: {fileName} {string.Join(' ', arguments)}");
             return Success(string.Empty);
@@ -1765,6 +1810,28 @@ public sealed partial class InstallerFlowTests
 
         private static Task<ProcessResult> Success(string output)
             => Task.FromResult(new ProcessResult(0, output, string.Empty));
+
+        /// <summary>The container's host configuration, with the limits of the Compose file it was last started from.</summary>
+        private object Limits()
+            => LastComposeUp is not null && CameraAgentContainerResources.TryReadLimits(LastComposeUp) is { } limits
+                ? new
+                {
+                    ReadonlyRootfs = true,
+                    Privileged = false,
+                    NanoCpus = (long)(limits.Cpus * 1_000_000_000m),
+                    Memory = limits.MemoryBytes,
+                    PidsLimit = (long)limits.PidsLimit
+                }
+                : new { ReadonlyRootfs = true, Privileged = false };
+
+        private static async Task<ProcessResult> RenderAsync(string composeFile, CancellationToken cancellationToken)
+            => new(0, await File.ReadAllTextAsync(composeFile, cancellationToken), string.Empty);
+
+        private async Task<ProcessResult> UpAsync(string composeFile, CancellationToken cancellationToken)
+        {
+            LastComposeUp = await File.ReadAllTextAsync(composeFile, cancellationToken);
+            return new ProcessResult(0, string.Empty, string.Empty);
+        }
 
         private void CancelImport()
         {

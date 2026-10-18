@@ -20,6 +20,12 @@ internal abstract record DeploymentCommand(bool Json)
     /// validates against it, so an instance is found under a relocated root with no extra option.
     /// </summary>
     public string ProductionProductRoot { get; init; } = InstallRequest.DefaultProductRoot;
+
+    /// <summary>
+    /// Advisories about the command line itself, such as a deprecated option that was accepted. They are said before the
+    /// command runs, or with <c>--json</c> reported in its result, and never change what it does.
+    /// </summary>
+    public IReadOnlyList<InstallationWarning> ParseWarnings { get; init; } = [];
 }
 
 internal sealed record InstallDeploymentCommand(InstallRequest Request) : DeploymentCommand(Request.Json);

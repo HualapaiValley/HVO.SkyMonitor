@@ -63,7 +63,7 @@ internal static class UpgradeNotes
         ArgumentNullException.ThrowIfNull(target);
         if (installedVersion is not null && ProductVersion.IsOlder(target.Version, installedVersion))
         {
-            throw new InstallerException(
+            throw InstallerException.Refused(
                 $"{installedVersion} is installed, which is newer than the upgrade target {target.Version}; an upgrade never goes back. " +
                 $"To return to the previous image, run 'hvo-sky-install cameraagent rollback --instance-id {instanceId:D}'.");
         }

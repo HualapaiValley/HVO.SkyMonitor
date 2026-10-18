@@ -1,7 +1,31 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Runtime.InteropServices;
+using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
+
+/// <summary>
+/// The installer's exit codes (install contract section 5). Every command ends with one of these, and only
+/// <see cref="Program.RunAsync"/> chooses which.
+/// </summary>
+internal enum InstallerExitCode
+{
+    /// <summary>Done; with <c>--plan</c>, the plan can be carried out.</summary>
+    Done = 0,
+
+    /// <summary>A step failed. Re-running the same command continues (with <c>--resume</c> where it says so).</summary>
+    Failed = 1,
+
+    /// <summary>The command line or the answers file is invalid, or a question had no one to answer it.</summary>
+    Usage = 2,
+
+    /// <summary>The installer refused, and nothing was changed.</summary>
+    Refused = 3,
+
+    /// <summary>Interrupted, by Ctrl+C or SIGTERM.</summary>
+    Interrupted = 130
+}
 
 internal static class Program
 {
@@ -19,6 +43,10 @@ internal static class Program
         {
             return PrivilegedHostPolicy.RunInternal(args);
         }
+        if (args.Length > 0 && args[0] == InstallRecordStore.CommandName)
+        {
+            return InstallRecordStore.RunInternal(args);
+        }
 
         using var cancellation = new CancellationTokenSource();
         Console.CancelKeyPress += (_, eventArgs) =>
@@ -31,24 +59,52 @@ internal static class Program
             context.Cancel = true;
             cancellation.Cancel();
         });
+        return await RunAsync(args, ProgramServices.Production, cancellation.Token).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Parses and runs one command and returns its exit code. The services are the real ones in production; a test
+    /// substitutes them to pin the exit code of every command without a Docker host.
+    /// </summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Every command must end with a contract exit code, so an unforeseen failure is reported as a failed step (1) with a redacted message rather than an unhandled-exception crash.")]
+    internal static async Task<int> RunAsync(string[] args, ProgramServices services, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        ArgumentNullException.ThrowIfNull(services);
         var jsonErrors = args.Contains("--json", StringComparer.Ordinal);
         try
         {
-            var command = CommandLine.ParseCommand(args);
-            // A --config install can select JSON output without a --json token, so the error stream mode follows
-            // the parsed command once parsing succeeds; the argv guess only covers a parse failure.
+            var command = services.Parse(args);
+            // A --config or --answers install can select JSON output without a --json token, so the error stream mode
+            // follows the parsed command once parsing succeeds; the argv guess only covers a parse failure.
             jsonErrors = command.Json;
             if (command is HelpCommand help)
             {
                 await Console.Out.WriteAsync(help.Usage).ConfigureAwait(false);
+                return (int)InstallerExitCode.Done;
             }
-            else if (command is VersionCommand version)
+            if (command is VersionCommand version)
             {
                 await Console.Out.WriteLineAsync(version.Identity).ConfigureAwait(false);
+                return (int)InstallerExitCode.Done;
             }
-            else if (command is InstallDeploymentCommand install)
+            // Interrupted before it began: nothing ran, and the command exits as interrupted, whichever it is.
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!command.Json)
             {
-                var result = await CameraAgentInstaller.InstallAsync(install.Request, cancellation.Token).ConfigureAwait(false);
+                // Without --json an advisory is said before anything runs; with --json it is in the result instead.
+                foreach (var warning in command.ParseWarnings)
+                {
+                    await Console.Error.WriteLineAsync($"Warning: {warning.Message}").ConfigureAwait(false);
+                }
+            }
+            if (command is InstallDeploymentCommand install)
+            {
+                var result = await services.Install(install.Request, cancellationToken).ConfigureAwait(false);
+                if (install.ParseWarnings.Count > 0)
+                {
+                    result = result with { Warnings = [.. install.ParseWarnings, .. result.Warnings ?? []] };
+                }
                 if (install.Json)
                 {
                     await Console.Out.WriteLineAsync(
@@ -61,25 +117,25 @@ internal static class Program
             }
             else if (command is CameraAgentStatePreflightRequest preflight)
             {
-                var report = await CameraAgentStatePreflightManager.ExecuteAsync(preflight, cancellation.Token)
-                    .ConfigureAwait(false);
+                var report = await services.Preflight(preflight, cancellationToken).ConfigureAwait(false);
                 await Console.Out.WriteLineAsync(preflight.Json
                     ? JsonSerializer.Serialize(report, DeploymentJsonContext.Default.CameraAgentStatePreflightReport)
                     : CameraAgentStatePreflight.Render(report)).ConfigureAwait(false);
                 if (report.Compatible)
                 {
-                    return 0;
+                    return (int)InstallerExitCode.Done;
                 }
+                // A read-only check that finds the state incompatible refuses the candidate; it changed nothing.
                 await WriteErrorAsync(
                     preflight.Json,
                     "state-incompatible",
-                    "The persisted CameraAgent state is incompatible with the candidate image.").ConfigureAwait(false);
-                return 1;
+                    "The persisted CameraAgent state is incompatible with the candidate image.",
+                    refused: true).ConfigureAwait(false);
+                return (int)InstallerExitCode.Refused;
             }
             else if (command is CameraAgentStateResetRequest reset)
             {
-                var result = await CameraAgentStateResetManager.ExecuteAsync(reset, cancellation.Token)
-                    .ConfigureAwait(false);
+                var result = await services.Reset(reset, cancellationToken).ConfigureAwait(false);
                 if (reset.Json)
                 {
                     await Console.Out.WriteLineAsync(
@@ -93,7 +149,7 @@ internal static class Program
             }
             else if (command is HostProductRootRequest host)
             {
-                var result = await PrivilegedHostPolicy.SetProductRootAsync(host, cancellation.Token).ConfigureAwait(false);
+                var result = await services.HostPolicy(host, cancellationToken).ConfigureAwait(false);
                 if (host.Json)
                 {
                     await Console.Out.WriteLineAsync(
@@ -112,9 +168,13 @@ internal static class Program
                 OwnerRecoveryResult result;
                 try
                 {
-                    result = await OwnerRecoveryManager.ExecuteAsync(recovery, cancellation.Token).ConfigureAwait(false);
+                    result = await services.OwnerRecovery(recovery, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OwnerRecoveryProtocolException)
+                {
+                    throw;
+                }
+                catch (InstallerException exception) when (exception.IsRefusal)
                 {
                     throw;
                 }
@@ -146,8 +206,11 @@ internal static class Program
             }
             else
             {
-                var lifecycle = await CameraAgentLifecycleManager.ExecuteAsync((LifecycleRequest)command, cancellation.Token)
-                    .ConfigureAwait(false);
+                var lifecycle = await services.Lifecycle((LifecycleRequest)command, cancellationToken).ConfigureAwait(false);
+                if (command.ParseWarnings.Count > 0)
+                {
+                    lifecycle = lifecycle with { Warnings = [.. command.ParseWarnings, .. lifecycle.Warnings ?? []] };
+                }
                 if (command.Json)
                 {
                     await Console.Out.WriteLineAsync(
@@ -158,30 +221,30 @@ internal static class Program
                     await WriteLifecycleResultAsync(lifecycle).ConfigureAwait(false);
                 }
             }
-            return 0;
+            return (int)InstallerExitCode.Done;
         }
         catch (InstallUsageException exception) when (exception.Usage is not null && !jsonErrors)
         {
             // A command-line mistake is not an installation attempt: say what was wrong, then how to use the command.
             await Console.Error.WriteLineAsync(Redaction.SafeDiagnostic(exception.Message)).ConfigureAwait(false);
             await Console.Error.WriteAsync(exception.Usage).ConfigureAwait(false);
-            return 2;
+            return (int)InstallerExitCode.Usage;
         }
         catch (InstallUsageException exception)
         {
             await WriteErrorAsync(jsonErrors, "usage", exception.Message).ConfigureAwait(false);
-            return 2;
+            return (int)InstallerExitCode.Usage;
         }
         catch (OperationCanceledException)
         {
             await WriteErrorAsync(jsonErrors, "canceled", "Deployment operation canceled.").ConfigureAwait(false);
-            return 130;
+            return (int)InstallerExitCode.Interrupted;
         }
         catch (HostPrerequisiteException exception)
         {
             // Every finding and its remedy is reported at once: as the structured report on standard output for
             // --json, whose standard error carries only one-line JSON objects, and rendered on standard error
-            // otherwise.
+            // otherwise. The prerequisites are evaluated before anything is created, so this is a refusal.
             if (exception.Report is { } report)
             {
                 if (jsonErrors)
@@ -194,8 +257,8 @@ internal static class Program
                     await Console.Error.WriteLineAsync(HostPrerequisites.Render(report)).ConfigureAwait(false);
                 }
             }
-            await WriteErrorAsync(jsonErrors, "host-prerequisites", exception.Message).ConfigureAwait(false);
-            return 1;
+            await WriteErrorAsync(jsonErrors, "host-prerequisites", exception.Message, refused: true).ConfigureAwait(false);
+            return (int)InstallerExitCode.Refused;
         }
         catch (OwnerRecoveryProtocolException exception)
         {
@@ -212,21 +275,34 @@ internal static class Program
                     "CameraAgent owner recovery is unsupported or is not enabled for this installation.")
             };
             await WriteErrorAsync(jsonErrors, code, message).ConfigureAwait(false);
-            return 1;
+            return (int)InstallerExitCode.Failed;
+        }
+        catch (InstallerException exception) when (exception.IsRefusal)
+        {
+            await WriteErrorAsync(jsonErrors, "refused", exception.Message, refused: true).ConfigureAwait(false);
+            return (int)InstallerExitCode.Refused;
         }
         catch (InstallerException exception)
         {
             await WriteErrorAsync(jsonErrors, "installation-failed", exception.Message).ConfigureAwait(false);
-            return 1;
+            return (int)InstallerExitCode.Failed;
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            await WriteErrorAsync(jsonErrors, "installation-failed", $"Unexpected {exception.GetType().Name}: {exception.Message}")
+                .ConfigureAwait(false);
+            return (int)InstallerExitCode.Failed;
         }
     }
 
-    private static Task WriteErrorAsync(bool json, string code, string message)
+    private static Task WriteErrorAsync(bool json, string code, string message, bool refused = false)
         => Console.Error.WriteLineAsync(json
             ? JsonSerializer.Serialize(new { schemaVersion = 1, errorCode = code, message = Redaction.SafeDiagnostic(message) })
-            : $"Installation failed: {Redaction.SafeDiagnostic(message)}");
+            : refused
+                ? $"Installation refused: {Redaction.SafeDiagnostic(message)} Nothing was changed."
+                : $"Installation failed: {Redaction.SafeDiagnostic(message)}");
 
-    private static async Task WriteHumanResultAsync(HVO.SkyMonitor.Deployment.Contracts.InstallationResult result)
+    private static async Task WriteHumanResultAsync(InstallationResult result)
     {
         await Console.Out.WriteLineAsync($"Outcome: {result.Outcome}").ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"Instance: {result.InstanceId:D} ({result.FriendlyName})").ConfigureAwait(false);
@@ -241,18 +317,19 @@ internal static class Program
         await Console.Out.WriteLineAsync($"Image: {result.Image.ImageId}").ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"Runtime: {result.RuntimeUid}:{result.RuntimeGid}; alive={result.Alive}; healthy={result.Healthy}").ConfigureAwait(false);
         await Console.Out.WriteLineAsync($"State: {result.OwnerBootstrapState}").ConfigureAwait(false);
+        await WritePlanAsync(result.Plan, result.Outcome == InstallationOutcome.Planned).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Tells the operator how to sign in for the first time. The documented default is named outright because it is
     /// public by design; any other temporary password is only ever referred to by its owner-only file.
     /// </summary>
-    internal static string OwnerSignInInstruction(HVO.SkyMonitor.Deployment.Contracts.InstallationResult result)
+    internal static string OwnerSignInInstruction(InstallationResult result)
         => result.OwnerPasswordIsDefault
             ? $"Sign in as {OwnerCredentialDefaults.UserName} / {OwnerCredentialDefaults.Password}; a password change is required at first sign-in."
             : $"Temporary password file: {result.PasswordFile}";
 
-    private static async Task WriteLifecycleResultAsync(HVO.SkyMonitor.Deployment.Contracts.LifecycleResult result)
+    private static async Task WriteLifecycleResultAsync(LifecycleResult result)
     {
         await Console.Out.WriteLineAsync($"Outcome: {result.Outcome}").ConfigureAwait(false);
         if (result.Operation is not null) await Console.Out.WriteLineAsync($"Operation: {result.Operation} / {result.OperationId}").ConfigureAwait(false);
@@ -262,6 +339,24 @@ internal static class Program
         if (result.Running is not null) await Console.Out.WriteLineAsync($"Runtime: running={result.Running}; healthy={result.Healthy}").ConfigureAwait(false);
         foreach (var path in result.PreservedPaths) await Console.Out.WriteLineAsync($"Preserved: {path}").ConfigureAwait(false);
         if (result.ResumeCommand is not null) await Console.Out.WriteLineAsync($"Resume: {result.ResumeCommand}").ConfigureAwait(false);
+        await WritePlanAsync(result.Plan, result.Outcome == "planned").ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The plan as an operator reads it: each item's action, kind, target and detail, then the summary, which a re-run
+    /// that changes nothing ends with <see cref="DeploymentPlan.NothingToChange"/>.
+    /// </summary>
+    private static async Task WritePlanAsync(DeploymentPlan? plan, bool planned)
+    {
+        if (plan is null)
+        {
+            return;
+        }
+        await Console.Out.WriteLineAsync(planned ? "Plan:" : "Changes:").ConfigureAwait(false);
+        foreach (var line in DeploymentPlanText.Lines(plan))
+        {
+            await Console.Out.WriteLineAsync(line).ConfigureAwait(false);
+        }
     }
 
     private static async Task WriteStateResetResultAsync(CameraAgentStateResetResult result)
@@ -292,4 +387,53 @@ internal static class Program
         }
         await Console.Out.WriteLineAsync($"State: {result.OwnerBootstrapState}").ConfigureAwait(false);
     }
+}
+
+/// <summary>
+/// What <see cref="Program.RunAsync"/> parses with and runs each command through. Production uses the real parser and
+/// managers; a test substitutes them so every command's exit code is pinned without a Docker host.
+/// </summary>
+internal sealed record ProgramServices(
+    Func<string[], DeploymentCommand> Parse,
+    Func<InstallRequest, CancellationToken, Task<InstallationResult>> Install,
+    Func<CameraAgentStatePreflightRequest, CancellationToken, Task<CameraAgentStatePreflightReport>> Preflight,
+    Func<CameraAgentStateResetRequest, CancellationToken, Task<CameraAgentStateResetResult>> Reset,
+    Func<HostProductRootRequest, CancellationToken, Task<HostPolicyResult>> HostPolicy,
+    Func<OwnerRecoveryRequest, CancellationToken, Task<OwnerRecoveryResult>> OwnerRecovery,
+    Func<LifecycleRequest, CancellationToken, Task<LifecycleResult>> Lifecycle)
+{
+    public static ProgramServices Production { get; } = new(
+        CommandLine.ParseCommand,
+        CameraAgentInstaller.InstallAsync,
+        CameraAgentStatePreflightManager.ExecuteAsync,
+        CameraAgentStateResetManager.ExecuteAsync,
+        PrivilegedHostPolicy.SetProductRootAsync,
+        OwnerRecoveryManager.ExecuteAsync,
+        CameraAgentLifecycleManager.ExecuteAsync);
+}
+
+/// <summary>How a <see cref="DeploymentPlan"/> reads in the human output.</summary>
+internal static class DeploymentPlanText
+{
+    public static IReadOnlyList<string> Lines(DeploymentPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        var lines = new List<string>(plan.Items.Count + 1);
+        foreach (var item in plan.Items)
+        {
+            var detail = item.Detail is null ? string.Empty : $" ({item.Detail})";
+            lines.Add($"  {Word(item.Action),-9}  {item.Kind,-9}  {item.Target}{detail}");
+        }
+        lines.Add(plan.Summary);
+        return lines;
+    }
+
+    public static string Word(DeploymentPlanAction action) => action switch
+    {
+        DeploymentPlanAction.Create => "create",
+        DeploymentPlanAction.Change => "change",
+        DeploymentPlanAction.Unchanged => "unchanged",
+        DeploymentPlanAction.Remove => "remove",
+        _ => throw new ArgumentOutOfRangeException(nameof(action), action, null)
+    };
 }
