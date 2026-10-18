@@ -243,10 +243,15 @@ curl -fsSL https://github.com/HualapaiValley/<repo>/releases/latest/download/ins
   - Reason: a fact kept in two authoritative places drifts after an interrupted operation. A product with several
     instances per host (SkyMonitor) commits each instance's change in that instance's own records, under its own lock,
     while the machine-level file is one per host.
-  - **SkyMonitor's install record is a summary view** (owner decision of 2026-10-18). `/etc/hvo-sky/install.json` is
-    written after the per-instance records, and the per-instance manifests stay authoritative. They are the instance
-    manifest and the installed-release record `<instance root>/state/deployment/image-distribution.json`, with the
-    previous image's record in `image-distribution.records.json`.
+  - **SkyMonitor's install record is a summary view** (owner decision of 2026-10-18), at `/etc/hvo-sky/install.json`
+    under the flat `hvo-sky` paths (decision 5, #1331).
+    - The per-instance records stay authoritative. The instance manifest names the running and previous images.
+      #1343's release records own the installed version: `<instance root>/state/deployment/image-distribution.json`,
+      with the previous image's record in `image-distribution.records.json`.
+    - At every settle, after those records are written, each instance's entry reads `version`, `previousVersion` and
+      `rolledBackFrom` from the release records, by image ID.
+    - The entry adds `lastImageChange`: whether the image last changed by upgrade or by rollback. That decides whether
+      the previous image's release is `previousVersion` or `rolledBackFrom`.
   - **Today:** RoofController's install record is authoritative, and its upgrade, rollback and uninstall read it.
     SkyMonitor's view is #1315.
 - **Data** goes under `/var/lib/hvo-<product>/`, or a product root the operator chooses through a root-owned host policy.
@@ -443,4 +448,5 @@ Owner decisions of 2026-10-18:
 - **D9. `org.opencontainers.image.created`:** required (section 1).
 - **D10. Authoritative record:** one authoritative record per fact; the install record is either it or a view of
   per-instance records (section 5). SkyMonitor keeps `/etc/hvo-sky/install.json` as a summary view, written after the
-  per-instance records, which stay authoritative.
+  per-instance records, which stay authoritative. #1343's release records own the installed version. At every settle
+  the view reads `version`, `previousVersion` and `rolledBackFrom` from them, and adds `lastImageChange`.
