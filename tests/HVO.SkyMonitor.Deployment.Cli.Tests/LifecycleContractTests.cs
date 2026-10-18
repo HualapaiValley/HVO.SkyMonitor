@@ -141,7 +141,8 @@ public sealed partial class LifecycleContractTests
     /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("version-label", "holds an image that is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, as release v1.2.0-dev.3 requires.")]
+    [DataRow("version-label", "holds an image that is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires.")]
+    [DataRow("created-label", "holds an image that is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires.")]
     [DataRow("contract-label", "!The candidate image does not declare the required CameraAgent configuration and catalog contracts.")]
     [DataRow("state-contract", "!The candidate image declares state compatibility")]
     public async Task UpgradeAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeTheJournalOrALoad(string fault, string expected)
@@ -155,6 +156,7 @@ public sealed partial class LifecycleContractTests
             switch (fault)
             {
                 case "version-label": labels["org.opencontainers.image.version"] = "9.9.9"; break;
+                case "created-label": labels.Remove("org.opencontainers.image.created"); break;
                 case "contract-label": labels.Remove("io.hvo.skymonitor.configuration-contract"); break;
                 case "state-contract": labels["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v1"; break;
             }
@@ -185,7 +187,8 @@ public sealed partial class LifecycleContractTests
     /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("version-label", "The CameraAgent image {reference} in its registry is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, as release v1.2.0-dev.3 requires. Nothing was pulled.")]
+    [DataRow("version-label", "The CameraAgent image {reference} in its registry is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires. Nothing was pulled.")]
+    [DataRow("created-label", "The CameraAgent image {reference} in its registry is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires. Nothing was pulled.")]
     [DataRow("contract-label", "The candidate image does not declare the required CameraAgent configuration and catalog contracts.")]
     [DataRow("state-contract", "!The candidate image declares state compatibility")]
     [DataRow("unavailable", "The installer cannot read {reference} from its registry before pulling it, so it pulls nothing (docker: 'buildx' is not a docker command.). Install from the release's offline archive, the default image source (leave out --image-source registry), or let this user read the registry with 'docker buildx imagetools inspect' (buildx 0.8 or later).")]
@@ -200,6 +203,7 @@ public sealed partial class LifecycleContractTests
             switch (fault)
             {
                 case "version-label": labels["org.opencontainers.image.version"] = "9.9.9"; break;
+                case "created-label": labels.Remove("org.opencontainers.image.created"); break;
                 case "contract-label": labels.Remove("io.hvo.skymonitor.configuration-contract"); break;
                 case "state-contract": labels["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v1"; break;
             }
@@ -244,7 +248,8 @@ public sealed partial class LifecycleContractTests
     /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("version-label", "The CameraAgent image Docker resolved is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, as release v1.2.0-dev.3 requires.")]
+    [DataRow("version-label", "The CameraAgent image Docker resolved is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires.")]
+    [DataRow("created-label", "The CameraAgent image Docker resolved is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires.")]
     [DataRow("contract-label", "The candidate image does not declare the required CameraAgent configuration and catalog contracts.")]
     public async Task UpgradeAsync_PulledImageDockerReportsAsAnotherRelease_IsRemovedBeforeTheJournal(string fault, string expected)
     {
@@ -260,6 +265,7 @@ public sealed partial class LifecycleContractTests
         switch (fault)
         {
             case "version-label": fixture.Runner.CandidateLabels["org.opencontainers.image.version"] = "9.9.9"; break;
+            case "created-label": fixture.Runner.CandidateLabels["org.opencontainers.image.created"] = null; break;
             case "contract-label": fixture.Runner.CandidateLabels["io.hvo.skymonitor.configuration-contract"] = null; break;
         }
         fixture.Runner.CandidateHeld = [];
@@ -1869,6 +1875,7 @@ public sealed partial class LifecycleContractTests
     {
         fixture.Runner.CandidateLabels["org.opencontainers.image.version"] = version;
         fixture.Runner.CandidateLabels["org.opencontainers.image.revision"] = ReleaseFixture.Commit;
+        fixture.Runner.CandidateLabels["org.opencontainers.image.created"] = ReleaseFixture.Created;
         var archived = fixture.Runner.CandidateImageLabels();
         labels?.Invoke(archived);
         var release = ReleaseFixture.Create(

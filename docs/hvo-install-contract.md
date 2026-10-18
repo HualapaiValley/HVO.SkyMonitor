@@ -36,7 +36,9 @@ controller's verified Stop and idle-only redeploy, and CameraAgent's capture pau
   - Reason: it dates an image without trusting a registry or a file time, and a release reproduces it from
     `release.json`. A base image's `created` would date the base, not the release.
   - **Today:** RoofController sets it from `ROOF_CREATED` and `build/check-image-labels.sh` refuses an image whose
-    `created` is not an RFC 3339 time. SkyMonitor's CameraAgent image carries `version` and `revision` only (#1359).
+    `created` is not an RFC 3339 time. SkyMonitor's CameraAgent image carries it too, set from `HVO_CREATED` to
+    `release.json`'s `created`, and its release checks and installer refuse an image without it or with another value
+    (#1359, #1364).
 - **Where the version shows:** `--version` on every binary, the application's System page and footer, its startup log
   line, its info/health API, and the image labels. CI asserts `--version` equals `<version>+<commit>`.
 - **Data packages keep their own train.** Data that changes on its own cadence is versioned and released separately from the
@@ -86,8 +88,10 @@ Reason: an integration pre-release exists to put a branch head on a real host qu
 deliberate act on a reviewed, green commit, and a second approval would add a wait without adding a check. A final
 release is what operators install from `latest`, so it keeps the approval and both platforms.
 
-**Today:** SkyMonitor cuts pre-releases this way (`.github/workflows/prerelease.yml`, #1309). Its final releases are
-#1310. RoofController cuts no integration pre-releases; its release candidates follow the final-release path.
+**Today:** SkyMonitor cuts pre-releases this way (`.github/workflows/prerelease.yml`, #1309), and its final releases
+and release candidates by the final-release path above (`.github/workflows/release.yml`, #1310), with the approval in
+its `production-release` environment. RoofController cuts no integration pre-releases; its release candidates follow
+the final-release path.
 
 ## 4. Release assets
 
@@ -158,7 +162,7 @@ Every release carries assets with these names and kinds:
   - Reason: RoofController's released installers already read `images.controller`, while SkyMonitor has published
     only integration pre-releases, so this choice changes the product that has no released readers. A component's key
     also outlives a rename of its image.
-  - **Today:** RoofController uses these keys. SkyMonitor uses the image name, `images.skymonitor-cameraagent` (#1359).
+  - **Today:** both products use these keys. SkyMonitor's `release.json` names `images.cameraAgent` (#1359, #1364).
 - **Upgrade-note text** follows one terminal-safety rule. The tool that writes `release.json` applies it, and so does
   the installer that reads it. CRLF is normalized to LF first. After that, a note is
   refused if it holds a Unicode control character (Cc) other than LF and TAB, a format character (Cf), a line or
@@ -313,32 +317,34 @@ it gives the newest schema a release may write, and every schema it reads:
   no knowledge of the product's schemas.
 - **Today:** RoofController declares this shape in `build/release-assets.py` and in its controller Dockerfile's label
   `io.hvo.roof.state-contracts`, which its release tests check agree. Its installer compares contracts before an
-  upgrade and a rollback. SkyMonitor
-  declares its state as one contract name (`io.hvo.skymonitor.state-compatibility`, `cameraagent-state-v2`) plus
-  boundary labels, and treats any changed boundary label as a state migration (#1340). `release.json` omits
-  `stateContracts` (#1359).
+  upgrade and a rollback. SkyMonitor declares every store in the mapping below in its CameraAgent Dockerfile's label
+  `io.hvo.skymonitor.state-contracts` and in `release.json`'s `stateContracts.cameraAgent` (#1359, #1364). Its
+  installer does not compare them yet: it still decides a state migration from one contract name
+  (`io.hvo.skymonitor.state-compatibility`, `cameraagent-state-v2`) plus boundary labels, and treats any changed
+  boundary label as a state migration (#1340).
 
 **The SkyMonitor mapping.** Component `cameraAgent`, with one store for each SQLite database an instance keeps:
 
 D1's target is a whole-number schema for each store in `stateContracts`. The table gives the marker each store keeps
-its schema in today, and what is declared:
+its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateContracts.cameraAgent` declare:
 
 | Store | Database (under the instance's state root) | Schema marker today | Declared today |
 | --- | --- | --- | --- |
-| `identity` | `identity/cameraagent_identity.db` | The applied EF Core migrations in `__EFMigrationsHistory` (their number is the store's schema) | `io.hvo.skymonitor.identity-migration` names the newest, `20260827053715_InitialIdentity`: writes 1, reads 1 to 1 |
-| `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | `io.hvo.skymonitor.raw-ingress-schema` 15 and `raw-ingress-migration` `canonical-v13-v14-to-v15`: writes 15, reads 13 to 15 |
-| `artifactOutbox` | `outbox/artifact-outbox.db` in each storage root (`raw`, `archive`, and every FileStorage root) | The `artifact_outbox_schema.version` column | Not declared |
-| `fleetStatus` | `raw/.fleet/fleet-status.db` | The `fleet_status_metadata.schema_version` column | Not declared |
-| `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Not declared |
-| `executionEvidenceOutbox` | `raw/evidence/execution-evidence-outbox.db` | The `execution_evidence_schema.version` column | Not declared |
-| `timeLapses` | `raw/.time-lapses/time-lapses.db` | `PRAGMA user_version` | Not declared |
-| `nightlyProducts` | `raw/.nightly-products/nightly-products.db` | `PRAGMA user_version` | Not declared |
-| `localAutomations` | `raw/.automation/local-automations.db` | `PRAGMA user_version` | Not declared |
+| `identity` | `identity/cameraagent_identity.db` | The applied EF Core migrations in `__EFMigrationsHistory` (their number is the store's schema) | Writes 1, reads 1 to 1. `io.hvo.skymonitor.identity-migration` also names the newest, `20260827053715_InitialIdentity` |
+| `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | Writes 15, reads 13 to 15. `io.hvo.skymonitor.raw-ingress-schema` 15 and `raw-ingress-migration` `canonical-v13-v14-to-v15` also declare it |
+| `artifactOutbox` | `outbox/artifact-outbox.db` in each storage root (`raw`, `archive`, and every FileStorage root) | The `artifact_outbox_schema.version` column | Writes 2, reads 2 to 2 |
+| `fleetStatus` | `raw/.fleet/fleet-status.db` | The `fleet_status_metadata.schema_version` column | Writes 1, reads 1 to 1 |
+| `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Writes 3, reads 3 to 3 |
+| `executionEvidenceOutbox` | `raw/evidence/execution-evidence-outbox.db` | The `execution_evidence_schema.version` column | Writes 1, reads 1 to 1 |
+| `timeLapses` | `raw/.time-lapses/time-lapses.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1 |
+| `nightlyProducts` | `raw/.nightly-products/nightly-products.db` | `PRAGMA user_version` | Writes 2, reads 2 to 2 |
+| `localAutomations` | `raw/.automation/local-automations.db` | `PRAGMA user_version` | Writes 3, reads 3 to 3 |
 
 - These are the stores the state snapshot of #1340 copies.
 - The star catalog is a data package (section 1), not a store. The catalog labels keep the versions CameraAgent
   accepts: `io.hvo.skymonitor.catalog-contract` and `catalog-manifest-version`.
-- Declaring every store's schema in `stateContracts`, from these markers, is outstanding conformance work (#1359).
+- Every store's schema is declared from these markers (#1359, #1364). Deciding a migration by comparing the declared
+  contracts is not done yet, as above.
 
 ### Copies of the small stores
 
@@ -440,8 +446,9 @@ Owner decisions of 2026-10-18:
 6. **Hosts that cannot enforce the container limits:** match RoofController fully. Both products refuse install and
    upgrade with no override, and a rollback proceeds with a loud warning (section 7). SkyMonitor's upgrade and rollback
    part is #1357.
-7. **Draft 4's decisions** D1, D2 and D5–D10, below, are accepted as written. SkyMonitor's resulting gaps (the
-   `cameraAgent` image key, `stateContracts` and the `created` label) are #1359.
+7. **Draft 4's decisions** D1, D2 and D5–D10, below, are accepted as written. SkyMonitor met the resulting rules (the
+   `cameraAgent` image key, `stateContracts` and the `created` label) in #1359 (#1364). Its installer still decides a
+   state migration from boundary labels rather than from `stateContracts` (section 6).
 
 - **D1. State contracts:** RoofController's per-component, per-store `writes` and `reads` shape, with the SkyMonitor
   mapping (section 6).

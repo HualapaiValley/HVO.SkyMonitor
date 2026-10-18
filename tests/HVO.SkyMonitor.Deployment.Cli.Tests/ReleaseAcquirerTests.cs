@@ -33,7 +33,7 @@ public sealed class ReleaseAcquirerTests
             new[] { release.Digest, release.ManifestDigest(HostPlatform), release.ConfigDigest(HostPlatform) },
             image.Image.ImageIds!.ToArray());
         Assert.AreEqual(new ReleaseImageSelection(
-            $"v{release.Version}", release.Version, ReleaseFixture.Commit, HostPlatform, release.DigestReference,
+            $"v{release.Version}", release.Version, ReleaseFixture.Commit, ReleaseFixture.Created, HostPlatform, release.DigestReference,
             image.Image.ImageIds), image.Image);
         Assert.AreEqual(release.Version, image.Release.Version);
         Assert.AreEqual(Sha256(Path.Combine(release.Folder, "release.json")), image.VerifiedRelease.ManifestSha256);
@@ -150,7 +150,7 @@ public sealed class ReleaseAcquirerTests
             case "checksums-malformed": release.WriteChecksums(release.ReadChecksums().Replace("  ", " *", StringComparison.Ordinal)); break;
             case "schema-unknown": release.Rewrite(static root => root["schemaVersion"] = 2); break;
             case "digest-malformed":
-                release.Rewrite(static root => root["images"]![ReleaseManifest.CameraAgentImageName]!["digest"] = "sha256:short");
+                release.Rewrite(static root => root["images"]![ReleaseFixture.ImageKey]!["digest"] = "sha256:short");
                 break;
             case "archive-missing": File.Delete(archive!); break;
             case "archive-truncated":

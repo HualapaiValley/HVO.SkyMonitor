@@ -26,6 +26,8 @@ public sealed class ReleaseAssetsToolTests
         "skymonitor-cameraagent-1.2.0-dev.3-linux-amd64.oci.tar", "skymonitor-cameraagent-1.2.0-dev.3-linux-arm64.oci.tar"
     ];
 
+    private const string StateContractsLabel = "io.hvo.skymonitor.state-contracts";
+
     private static readonly string[] Platforms = ["linux/amd64", "linux/arm64"];
 
     [TestMethod]
@@ -50,13 +52,15 @@ public sealed class ReleaseAssetsToolTests
         Assert.AreEqual(OciReleaseFixture.Commit, (string)release["commit"]!);
         Assert.AreEqual(OciReleaseFixture.Created, (string)release["created"]!);
         Assert.AreEqual("https://github.com/HualapaiValley/HVO.SkyMonitor", (string)release["repository"]!);
-        var image = release["images"]!["skymonitor-cameraagent"]!.AsObject();
+        var image = release["images"]!["cameraAgent"]!.AsObject();
         Assert.AreEqual("ghcr.io/hualapaivalley/skymonitor-cameraagent", (string)image["repository"]!);
         Assert.AreEqual(OciReleaseFixture.Version, (string)image["tag"]!);
         Assert.AreEqual(fixture.IndexDigest, (string)image["digest"]!);
         Assert.AreEqual(
             $"ghcr.io/hualapaivalley/skymonitor-cameraagent:{OciReleaseFixture.Version}@{fixture.IndexDigest}", (string)image["reference"]!);
         CollectionAssert.AreEqual(Platforms, image["platforms"]!.AsArray().Select(static node => (string)node!).ToArray());
+        // The image's state contract label, as the image declares it, under the image's key (install contract section 6).
+        Assert.AreEqual($$"""{"cameraAgent":{{OciReleaseFixture.StateContracts}}}""", release["stateContracts"]!.ToJsonString());
         foreach (var archive in image["offlineArchives"]!.AsArray().Select(static node => node!.AsObject()))
         {
             var platform = (string)archive["platform"]!;
@@ -174,7 +178,7 @@ public sealed class ReleaseAssetsToolTests
         Assert.AreEqual(0, await Program.Main(fixture.Arguments(output, "--platforms", "linux/amd64")));
 
         var (manifest, config, layer) = fixture.Platforms["linux/amd64"];
-        var image = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(output, "release.json")))!["images"]!["skymonitor-cameraagent"]!;
+        var image = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(output, "release.json")))!["images"]!["cameraAgent"]!;
         Assert.AreEqual(manifest, (string)image["digest"]!);
         Assert.AreEqual($"ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3@{manifest}", (string)image["reference"]!);
         var archive = image["offlineArchives"]!.AsArray().Single()!;
@@ -194,6 +198,23 @@ public sealed class ReleaseAssetsToolTests
     [DataRow("version", "The linux/arm64 image is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567.")]
     [DataRow("revision", "The linux/arm64 image is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567.")]
     [DataRow("component", "The linux/arm64 image is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567.")]
+    [DataRow("created-missing", "The linux/arm64 image's org.opencontainers.image.created label is not the release's created time, 2026-10-17T18:00:00Z.")]
+    [DataRow("created-other", "The linux/arm64 image's org.opencontainers.image.created label is not the release's created time, 2026-10-17T18:00:00Z.")]
+    [DataRow("state-contracts-missing", "The linux/arm64 image's io.hvo.skymonitor.state-contracts label is not a state contract: a JSON object of stores, each {\"writes\": W, \"reads\": {\"min\": A, \"max\": B}} with whole numbers 1 <= A <= W <= B.")]
+    [DataRow("state-contracts-not-json", "The linux/arm64 image's io.hvo.skymonitor.state-contracts label is not a state contract: a JSON object of stores, each {\"writes\": W, \"reads\": {\"min\": A, \"max\": B}} with whole numbers 1 <= A <= W <= B.")]
+    [DataRow("state-contracts-not-an-object", "The linux/arm64 image's io.hvo.skymonitor.state-contracts label is not a state contract: a JSON object of stores, each {\"writes\": W, \"reads\": {\"min\": A, \"max\": B}} with whole numbers 1 <= A <= W <= B.")]
+    [DataRow("state-contracts-store-not-an-object", "The linux/arm64 image's io.hvo.skymonitor.state-contracts label is not a state contract: a JSON object of stores, each {\"writes\": W, \"reads\": {\"min\": A, \"max\": B}} with whole numbers 1 <= A <= W <= B.")]
+    [DataRow("state-contracts-store-name", "The linux/arm64 image's io.hvo.skymonitor.state-contracts label is not a state contract: a JSON object of stores, each {\"writes\": W, \"reads\": {\"min\": A, \"max\": B}} with whole numbers 1 <= A <= W <= B.")]
+    [DataRow("state-contracts-duplicate-store", "The linux/arm64 image's io.hvo.skymonitor.state-contracts label is not a state contract: a JSON object of stores, each {\"writes\": W, \"reads\": {\"min\": A, \"max\": B}} with whole numbers 1 <= A <= W <= B.")]
+    [DataRow("state-contracts-extra-member", "The linux/arm64 image's io.hvo.skymonitor.state-contracts label is not a state contract: a JSON object of stores, each {\"writes\": W, \"reads\": {\"min\": A, \"max\": B}} with whole numbers 1 <= A <= W <= B.")]
+    [DataRow("state-contracts-reads-missing", "The linux/arm64 image's io.hvo.skymonitor.state-contracts label is not a state contract: a JSON object of stores, each {\"writes\": W, \"reads\": {\"min\": A, \"max\": B}} with whole numbers 1 <= A <= W <= B.")]
+    [DataRow("state-contracts-reads-extra-member", "The linux/arm64 image's io.hvo.skymonitor.state-contracts label is not a state contract: a JSON object of stores, each {\"writes\": W, \"reads\": {\"min\": A, \"max\": B}} with whole numbers 1 <= A <= W <= B.")]
+    [DataRow("state-contracts-writes-zero", "The linux/arm64 image's io.hvo.skymonitor.state-contracts label is not a state contract: a JSON object of stores, each {\"writes\": W, \"reads\": {\"min\": A, \"max\": B}} with whole numbers 1 <= A <= W <= B.")]
+    [DataRow("state-contracts-writes-fraction", "The linux/arm64 image's io.hvo.skymonitor.state-contracts label is not a state contract: a JSON object of stores, each {\"writes\": W, \"reads\": {\"min\": A, \"max\": B}} with whole numbers 1 <= A <= W <= B.")]
+    [DataRow("state-contracts-writes-text", "The linux/arm64 image's io.hvo.skymonitor.state-contracts label is not a state contract: a JSON object of stores, each {\"writes\": W, \"reads\": {\"min\": A, \"max\": B}} with whole numbers 1 <= A <= W <= B.")]
+    [DataRow("state-contracts-writes-above-max", "The linux/arm64 image's io.hvo.skymonitor.state-contracts label is not a state contract: a JSON object of stores, each {\"writes\": W, \"reads\": {\"min\": A, \"max\": B}} with whole numbers 1 <= A <= W <= B.")]
+    [DataRow("state-contracts-min-above-writes", "The linux/arm64 image's io.hvo.skymonitor.state-contracts label is not a state contract: a JSON object of stores, each {\"writes\": W, \"reads\": {\"min\": A, \"max\": B}} with whole numbers 1 <= A <= W <= B.")]
+    [DataRow("state-contracts-other-platform", "The linux/arm64 image's io.hvo.skymonitor.state-contracts label is not the linux/amd64 image's.")]
     [DataRow("platform-missing", "The image index must list one image for each of linux/amd64, linux/arm64 and nothing else.")]
     [DataRow("platform-extra", "The image index must list one image for each of linux/amd64 and nothing else.")]
     [DataRow("two-images", "The image archive must hold exactly one image.")]
@@ -212,6 +233,23 @@ public sealed class ReleaseAssetsToolTests
             case "version": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, "org.opencontainers.image.version", "1.2.0-dev.4")); break;
             case "revision": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, "org.opencontainers.image.revision", new string('f', 40))); break;
             case "component": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, "io.hvo.skymonitor.component", "LogicHost")); break;
+            case "created-missing": fixture.Build(labels: static (platform, labels) => Unlabel(platform, labels, "org.opencontainers.image.created")); break;
+            case "created-other": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, "org.opencontainers.image.created", "2026-10-17T18:00:00+00:00")); break;
+            case "state-contracts-missing": fixture.Build(labels: static (platform, labels) => Unlabel(platform, labels, StateContractsLabel)); break;
+            case "state-contracts-not-json": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, StateContractsLabel, "{\"identity\":")); break;
+            case "state-contracts-not-an-object": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, StateContractsLabel, "[]")); break;
+            case "state-contracts-store-not-an-object": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, StateContractsLabel, "{\"identity\":1}")); break;
+            case "state-contracts-store-name": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, StateContractsLabel, "{\"raw-ingress\":{\"writes\":15,\"reads\":{\"min\":13,\"max\":15}}}")); break;
+            case "state-contracts-duplicate-store": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, StateContractsLabel, "{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"identity\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}}}")); break;
+            case "state-contracts-extra-member": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, StateContractsLabel, "{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1},\"migrates\":true}}")); break;
+            case "state-contracts-reads-missing": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, StateContractsLabel, "{\"identity\":{\"writes\":1}}")); break;
+            case "state-contracts-reads-extra-member": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, StateContractsLabel, "{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1,\"newest\":1}}}")); break;
+            case "state-contracts-writes-zero": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, StateContractsLabel, "{\"identity\":{\"writes\":0,\"reads\":{\"min\":0,\"max\":1}}}")); break;
+            case "state-contracts-writes-fraction": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, StateContractsLabel, "{\"identity\":{\"writes\":1.0,\"reads\":{\"min\":1,\"max\":1}}}")); break;
+            case "state-contracts-writes-text": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, StateContractsLabel, "{\"identity\":{\"writes\":\"1\",\"reads\":{\"min\":1,\"max\":1}}}")); break;
+            case "state-contracts-writes-above-max": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, StateContractsLabel, "{\"rawIngress\":{\"writes\":16,\"reads\":{\"min\":13,\"max\":15}}}")); break;
+            case "state-contracts-min-above-writes": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, StateContractsLabel, "{\"rawIngress\":{\"writes\":15,\"reads\":{\"min\":16,\"max\":16}}}")); break;
+            case "state-contracts-other-platform": fixture.Build(labels: static (platform, labels) => Relabel(platform, labels, StateContractsLabel, "{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}")); break;
             case "platform-missing": fixture.Build(platforms: ["linux/amd64"]); break;
             case "platform-extra": extra = ["--platforms", "linux/amd64"]; break;
             case "two-images": fixture.Build(layout: static top => top["manifests"]!.AsArray().Add(top["manifests"]![0]!.DeepClone())); break;
@@ -247,6 +285,43 @@ public sealed class ReleaseAssetsToolTests
             .Replace("{layer}", fixture.Platforms.GetValueOrDefault("linux/arm64").Layer, StringComparison.Ordinal);
         Assert.AreEqual($"release error: {expected}{Environment.NewLine}", error.ToString());
         Assert.IsFalse(Directory.Exists(output), "a refused release must leave nothing behind");
+    }
+
+    /// <summary>
+    /// The owner retired the key-signed manifests and indexes on 2026-10-16 (#1310): a release's trust is SHA256SUMS and
+    /// its build provenance attestations, so the tool that writes a release signs nothing and verifies no signature.
+    /// </summary>
+    [TestMethod]
+    [DataRow("create-installer")]
+    [DataRow("create-catalog")]
+    [DataRow("create-image")]
+    [DataRow("create-index")]
+    [DataRow("sign-local")]
+    [DataRow("digest")]
+    [DataRow("write-azure-signature")]
+    [DataRow("verify")]
+    [DataRow("verify-signature")]
+    [DataRow("verify-index")]
+    [DataRow("verify-attestation")]
+    [DataRow("list-assets")]
+    [DataRow("describe-image-archive")]
+    [DataRow("image-index-digest")]
+    public async Task RetiredSigningAndTrainCommand_IsAnUnknownCommand(string command)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        using var error = new StringWriter();
+        var standardError = Console.Error;
+        Console.SetError(error);
+        try
+        {
+            Assert.AreEqual(1, await Program.Main([command]));
+        }
+        finally
+        {
+            Console.SetError(standardError);
+        }
+
+        Assert.AreEqual($"release error: Unknown release-tool command '{command}'.{Environment.NewLine}", error.ToString());
     }
 
     [TestMethod]
@@ -542,6 +617,14 @@ public sealed class ReleaseAssetsToolTests
         if (platform == "linux/arm64")
         {
             labels[name] = value;
+        }
+    }
+
+    private static void Unlabel(string platform, JsonObject labels, string name)
+    {
+        if (platform == "linux/arm64")
+        {
+            labels.Remove(name);
         }
     }
 

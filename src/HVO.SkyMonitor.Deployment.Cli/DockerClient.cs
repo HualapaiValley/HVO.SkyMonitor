@@ -297,7 +297,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         {
             EnsureReleaseImageAgreement(
                 release, imageId, installationIdentity.Component, CameraAgentImageLabels.Label(labels, "org.opencontainers.image.version"),
-                installationIdentity.SourceRevision);
+                installationIdentity.SourceRevision, CameraAgentImageLabels.Label(labels, "org.opencontainers.image.created"));
         }
         return (identity, installationIdentity);
     }
@@ -305,27 +305,29 @@ internal sealed class DockerClient(IProcessRunner processRunner)
     /// <summary>
     /// Requires the image Docker resolved to be the release's. Its digest pins its bytes, labels included, so the image
     /// must be one the release's offline archive names for this platform, when the release has one, and must name the
-    /// release's version and commit, which a release build stamps into it. A mismatch stops the deployment before any
-    /// state is touched, and what the step imported is removed, so it is a refusal (exit 3, #1315). The message names only
-    /// the release's own validated values, never the image's labels.
+    /// release's version, commit and created time, which a release build stamps into it. A mismatch stops the deployment
+    /// before any state is touched, and what the step imported is removed, so it is a refusal (exit 3, #1315); an upgrade
+    /// loads an offline archive after its journal entry, where the refusal is settled in the journal and exits 1. The
+    /// message names only the release's own validated values, never the image's labels.
     /// </summary>
     private static void EnsureReleaseImageAgreement(
         ReleaseImageSelection release,
         string imageId,
         string? component,
         string? version,
-        string? revision)
+        string? revision,
+        string? created)
     {
         if (release.ImageIds is { } identities && !identities.Contains(imageId, StringComparer.Ordinal))
         {
             throw InstallerException.Refused(
                 $"The CameraAgent image Docker resolved is not the {release.Platform} image release {release.ReleaseTag} names.");
         }
-        if (component != "CameraAgent" || version != release.Version || revision != release.Commit)
+        if (component != "CameraAgent" || version != release.Version || revision != release.Commit || created != release.Created)
         {
             throw InstallerException.Refused(
                 $"The CameraAgent image Docker resolved is not labelled as CameraAgent {release.Version} from commit " +
-                $"{release.Commit}, as release {release.ReleaseTag} requires.");
+                $"{release.Commit}, created {release.Created}, as release {release.ReleaseTag} requires.");
         }
     }
 

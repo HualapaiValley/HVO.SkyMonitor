@@ -151,7 +151,7 @@ fi
 # Discovery must reach the library directory whose omission from the enumerated list is the
 # reported defect, and must not regress to checking nothing.
 discovered="$(run_checker --list)"
-for required in scripts/lib/trx-evidence.sh scripts/lib/registry-blob.sh .devcontainer/install-playwright.sh; do
+for required in scripts/lib/trx-evidence.sh scripts/lib/github-api.sh .devcontainer/install-playwright.sh; do
     cases=$((cases + 1))
     if ! grep -qxF "$required" <<<"$discovered"; then
         failures=$((failures + 1))
@@ -171,7 +171,7 @@ fi
 
 # Non-shell files that live beside the scripts must not be dragged in: bash -n over a Python
 # or jq file would fail for a reason that has nothing to do with shell syntax.
-for excluded in scripts/lib/atomic-directory-publish.py scripts/lib/component-inventory.jq; do
+for excluded in scripts/lib/atomic-directory-publish.py scripts/lib/assembly-identity.fsx; do
     cases=$((cases + 1))
     if grep -qxF "$excluded" <<<"$discovered"; then
         failures=$((failures + 1))

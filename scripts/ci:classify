@@ -65,16 +65,20 @@ is_secret_scan_contract_path() {
 }
 
 is_release_scripts_path() {
-  # scripts/test:release-scripts proves the pre-release scripts with fake gh, skopeo and docker commands, and runs
-  # scripts/test:install-sh, which proves the release's install.sh with fake commands of its own. It runs when those
-  # scripts, the libraries they source (test:release-install's, and the strict GitHub reads), install.sh or its fakes,
-  # the pre-release workflow or the release tool change, or the Preflight wiring that runs it.
+  # scripts/test:release-scripts proves the pre-release and release scripts with fake gh, skopeo and docker commands,
+  # and the release workflow's shape, and runs scripts/test:install-sh, which proves the release's install.sh with fake
+  # commands of its own. It runs when those scripts, the libraries they source (test:release-install's, the strict
+  # GitHub reads and the newest-release rule), install.sh or its fakes, either release workflow, the product version
+  # (Directory.Build.props) or the release tool change, or the Preflight wiring that runs it.
   case "$1" in
-    scripts/release:assets | scripts/release:push-image | scripts/release:prerelease-gate | \
-      scripts/release:prerelease-check | scripts/release:publish-prerelease | scripts/test:release-install | \
-      scripts/test:release-scripts | scripts/lib/deployment-installer-qualification.sh | scripts/lib/github-api.sh | \
+    scripts/release:assets | scripts/release:check-image-labels | scripts/release:push-image | \
+      scripts/release:prerelease-gate | scripts/release:prerelease-check | scripts/release:publish-prerelease | \
+      scripts/release:version | scripts/release:notes | scripts/release:gate | scripts/release:check-environment | \
+      scripts/release:publish | scripts/release:tag-latest | \
+      scripts/test:release-install | scripts/test:release-scripts | scripts/lib/deployment-installer-qualification.sh | \
+      scripts/lib/github-api.sh | scripts/lib/releases.sh | \
       src/HVO.SkyMonitor.Deployment.Cli/install.sh | scripts/test:install-sh | tests/fixtures/install-sh/* | \
-      .github/workflows/prerelease.yml | \
+      .github/workflows/prerelease.yml | .github/workflows/release.yml | Directory.Build.props | \
       tools/HVO.SkyMonitor.Deployment.ReleaseTool/* | .github/workflows/development-v1.yml | scripts/ci:classify)
       return 0
       ;;
@@ -129,7 +133,7 @@ is_deployment_path() {
     scripts/ci:* | scripts/test:ci-classification | scripts/release:* | scripts/test:release-install | scripts/test:release-scripts | scripts/lib/*)
       return 0
       ;;
-    scripts/deploy:environment | scripts/deploy/* | scripts/install-hvo-sky-install.sh)
+    scripts/deploy:environment | scripts/deploy/*)
       return 0
       ;;
     scripts/qualify:filesystem-object-store | scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/test:deployment-logichost-outage-contract | scripts/test:deployment-normal-flow-contract | scripts/test:filesystem-object-store-qualification)
@@ -150,7 +154,7 @@ is_deployment_path() {
     src/HVO.SkyMonitor.CameraAgent/Dockerfile | src/HVO.SkyMonitor.LogicHost/Dockerfile)
       return 0
       ;;
-    src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.Deployment.Distribution/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
+    src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
       return 0
       ;;
     src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json)
@@ -200,7 +204,7 @@ select_deployment_suites() {
       deployment_catalog="true"
       deployment_installer="true"
       ;;
-    scripts/install-hvo-sky-install.sh | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/release:* | scripts/test:release-install | scripts/test:release-scripts | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.Deployment.Distribution/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
+    scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/release:* | scripts/test:release-install | scripts/test:release-scripts | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
       deployment_installer="true"
       ;;
     scripts/qualify:filesystem-object-store | scripts/test:filesystem-object-store-qualification)
@@ -277,7 +281,6 @@ combined_projects=(
 delivery_projects=(
   HVO.SkyMonitor.Deployment.Cli
   HVO.SkyMonitor.Deployment.Contracts
-  HVO.SkyMonitor.Deployment.Distribution
   HVO.SkyMonitor.Deployment.ReleaseTool
   HVO.SkyMonitor.Deployment.Cli.Tests
   HVO.SkyMonitor.Deployment.Distribution.Tests

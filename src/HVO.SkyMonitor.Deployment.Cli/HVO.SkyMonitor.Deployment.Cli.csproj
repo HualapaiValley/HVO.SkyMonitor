@@ -18,16 +18,11 @@
   </PropertyGroup>
   <!--
     The installer's build identity (install contract section 1, #1312): its informational version is
-    <version>+<40-character commit>, which the installer's version option prints. A build given no version is an unreleased
-    workstation or CI build, 0.0.0-dev, as CameraAgent image builds are (#1305); a release publish passes
-    -p:InformationalVersion=<version>, so AssemblyVersion and FileVersion keep the SDK default and binding identity does
-    not change between builds. A version given as Version or VersionPrefix (the product version #1310 introduces) flows
-    through the SDK unchanged. The SDK appends the commit it reads from the checkout, or the -p:SourceRevisionId a build
-    without one is given.
+    <version>+<40-character commit>, which the installer's version option prints. The version is the product version
+    (Directory.Build.props, #1310): a release publish is given the release's as -p:Version, and a build given none is
+    the development build, X.Y.Z-dev. The SDK appends the commit it reads from the checkout, or the -p:SourceRevisionId
+    a build without one is given.
   -->
-  <PropertyGroup>
-    <InformationalVersion Condition="'$(InformationalVersion)' == '' and '$(Version)' == '' and '$(VersionPrefix)' == ''">0.0.0-dev</InformationalVersion>
-  </PropertyGroup>
   <Target Name="HvoInstallerBuildIdentity"
           AfterTargets="InitializeSourceControlInformation"
           BeforeTargets="AddSourceRevisionToInformationalVersion">

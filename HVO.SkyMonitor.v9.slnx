@@ -16,7 +16,6 @@
     <Project Path="src/HVO.SkyMonitor.ProcessingRunner.Contracts/HVO.SkyMonitor.ProcessingRunner.Contracts.csproj" />
     <Project Path="src/HVO.SkyMonitor.Common/HVO.SkyMonitor.Common.csproj" />
     <Project Path="src/HVO.SkyMonitor.Deployment.Contracts/HVO.SkyMonitor.Deployment.Contracts.csproj" />
-    <Project Path="src/HVO.SkyMonitor.Deployment.Distribution/HVO.SkyMonitor.Deployment.Distribution.csproj" />
     <Project Path="src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" />
     <Project Path="src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj" />
     <Project Path="src/HVO.SkyMonitor.TestSupport/HVO.SkyMonitor.TestSupport.csproj" />

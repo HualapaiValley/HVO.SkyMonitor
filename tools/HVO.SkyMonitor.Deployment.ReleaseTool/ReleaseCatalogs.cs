@@ -5,7 +5,7 @@ namespace HVO.SkyMonitor.Deployment.ReleaseTool;
 
 /// <summary>
 /// The release tool's view of the approved catalog registry embedded in <c>HVO.SkyMonitor.Catalog.Sqlite</c>
-/// (issue #521). A catalog release can only package and verify a catalog that registry approves.
+/// (issue #521). A release can attach only a catalog bundle that registry approves.
 /// </summary>
 internal static class ReleaseCatalogs
 {

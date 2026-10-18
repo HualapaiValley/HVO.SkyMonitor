@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# The notes a release carries (install contract section 3, #1310). A final release, X.Y.Z, needs both of these, which
+# the release PR adds: its CHANGELOG.md section, "## [X.Y.Z]", the [Unreleased] section renamed, and its upgrade notes,
+# a non-empty docs/upgrade-notes/X.Y.Z.md. The release tool copies every release's upgrade notes up to this one's into
+# release.json (scripts/release:assets). A release candidate or a pre-release needs neither.
+#
+#   scripts/release:notes --check <version>   succeeds when <version>'s release has the notes it needs, and fails naming
+#                                             what is missing otherwise
+#   scripts/release:notes --body <version>    the release page's notes: <version>'s CHANGELOG section and upgrade
+#                                             notes, as far as they exist (a final release's always do, once --check
+#                                             passed)
+#
+# It reads this checkout's CHANGELOG.md and docs/upgrade-notes.
+set -euo pipefail
+
+usage() {
+    sed -n '7,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+    exit 2
+}
+
+fail() {
+    printf 'release:notes: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ $# -eq 2 ]] || usage
+mode="$1"
+version="$2"
+[[ "$version" =~ ^((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))(-[0-9A-Za-z.-]+)?$ ]] ||
+    fail "'$version' is not a release version such as 0.9.0 or 0.9.0-rc.1."
+release="${BASH_REMATCH[1]}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+changelog="$repo_root/CHANGELOG.md"
+notes="$repo_root/docs/upgrade-notes/$release.md"
+
+# The release's CHANGELOG section: the lines after its "## [X.Y.Z]" heading, up to the next "## " heading, without
+# the link references (such as "[0.9.0]: https://...") Keep a Changelog ends the file with.
+section() {
+    [[ -f "$changelog" ]] || return 0
+    awk -v heading="## [$release]" '
+        index($0, heading) == 1 && (length($0) == length(heading) || substr($0, length(heading) + 1, 1) == " ") { found = 1; next }
+        found && /^## / { exit }
+        found && /^\[[^]]+\]: / { next }
+        found && !started && /^[[:space:]]*$/ { next }
+        found { started = 1; print }
+    ' "$changelog"
+}
+
+# Whether text holds anything but white space.
+written() {
+    [[ -n "${1//[[:space:]]/}" ]]
+}
+
+case "$mode" in
+    --check)
+        if [[ "$version" != *-* ]]; then
+            written "$(section)" ||
+                fail "CHANGELOG.md has no '## [$release]' section with text: a final release renames [Unreleased] to it first."
+            [[ -f "$notes" ]] && written "$(cat "$notes")" ||
+                fail "docs/upgrade-notes/$release.md is missing or empty: a final release's notes say what someone upgrading must do."
+        fi
+        ;;
+    --body)
+        changes="$(section)"
+        if written "$changes"; then
+            printf '## Changes\n\n%s\n\n' "$changes"
+        fi
+        if [[ -f "$notes" ]] && written "$(cat "$notes")"; then
+            printf '## Upgrade notes\n\n%s\n\n' "$(cat "$notes")"
+        fi
+        ;;
+    *)
+        usage
+        ;;
+esac

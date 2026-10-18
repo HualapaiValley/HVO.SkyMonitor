@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# The GitHub checks the pre-release workflow's draft and publish jobs make before they write (install contract section
-# 3, #1309). It needs gh, signed in or with GH_TOKEN, and jq.
+# The GitHub checks the pre-release and release workflows' draft and publish jobs make before they write (install
+# contract section 3, #1309, #1310). A tag is a pre-release's, vX.Y.Z-dev.N, a release candidate's, vX.Y.Z-rc.N, or a
+# final release's, vX.Y.Z. It needs gh, signed in or with GH_TOKEN, and jq.
 #
 #   scripts/release:prerelease-check unreleased <tag>   no release or draft has the tag yet; with a token that can write
 #                                                       (contents: write) the list includes drafts
-#   scripts/release:prerelease-check draft <tag>        exactly one release has the tag, and it is a draft pre-release
+#   scripts/release:prerelease-check draft <tag>        exactly one release has the tag, and it is a draft, marked a
+#                                                       pre-release exactly when the tag is a pre-release's or a release
+#                                                       candidate's
 #   scripts/release:prerelease-check attested <digest>  the image digest has at least one attestation of this
 #                                                       repository on record (attestations: read)
 #
@@ -30,8 +33,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo_root/scripts/lib/github-api.sh"
 
 require_tag() {
-    [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-dev\.(0|[1-9][0-9]*)$ ]] ||
-        fail "$1 is not an integration pre-release tag, vX.Y.Z-dev.N."
+    [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-dev\.(0|[1-9][0-9]*)|-rc\.([1-9][0-9]*))?$ ]] ||
+        fail "$1 is not a release tag: vX.Y.Z, vX.Y.Z-rc.N or vX.Y.Z-dev.N."
 }
 
 # The releases with the tag, from every page of the list.
@@ -58,9 +61,15 @@ case "$check" in
         [[ "$count" != 0 ]] || fail "No release or draft has $tag; the tested draft is gone."
         [[ "$count" == 1 ]] || fail "$count releases have the tag $tag; only one draft can be published."
         state="$(jq -r '.[0] | "draft=\(.draft) prerelease=\(.prerelease)"' <<<"$tagged")"
-        [[ "$state" == "draft=true prerelease=true" ]] ||
-            fail "The release for $tag is not a draft pre-release ($state); it is not published again."
-        printf '%s is a draft pre-release.\n' "$tag"
+        if [[ "$tag" == *-* ]]; then
+            [[ "$state" == "draft=true prerelease=true" ]] ||
+                fail "The release for $tag is not a draft pre-release ($state); it is not published again."
+            printf '%s is a draft pre-release.\n' "$tag"
+        else
+            [[ "$state" == "draft=true prerelease=false" ]] ||
+                fail "The release for $tag is not a draft final release ($state); it is not published again."
+            printf '%s is a draft final release.\n' "$tag"
+        fi
         ;;
     attested)
         digest="$2"

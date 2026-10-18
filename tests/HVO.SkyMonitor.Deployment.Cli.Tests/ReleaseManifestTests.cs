@@ -16,6 +16,7 @@ public sealed class ReleaseManifestTests
 {
     private const string ArchiveName = "skymonitor-cameraagent-1.2.0-linux-arm64.oci.tar";
     private const string ImageName = ReleaseManifest.CameraAgentImageName;
+    private const string ImageKey = ReleaseFixture.ImageKey;
 
     [TestMethod]
     public void Parse_CompleteSchema1Release_ReadsEveryMemberTheInstallerUses()
@@ -175,7 +176,8 @@ public sealed class ReleaseManifestTests
     [DataRow("repository-missing", "it is not a release of https://github.com/HualapaiValley/HVO.SkyMonitor")]
     [DataRow("images-missing", "it lists no images")]
     [DataRow("images-list", "it lists no images")]
-    [DataRow("image-missing", "it has no skymonitor-cameraagent image")]
+    [DataRow("image-missing", "it has no cameraAgent image")]
+    [DataRow("image-keyed-by-name", "it has no cameraAgent image")]
     [DataRow("image-repository-hub", "the skymonitor-cameraagent image's repository is not a <registry>/<path>/skymonitor-cameraagent repository")]
     [DataRow("image-repository-name", "the skymonitor-cameraagent image's repository is not a <registry>/<path>/skymonitor-cameraagent repository")]
     [DataRow("image-repository-upper", "the skymonitor-cameraagent image's repository is not a <registry>/<path>/skymonitor-cameraagent repository")]
@@ -424,7 +426,7 @@ public sealed class ReleaseManifestTests
         Assert.AreEqual($"The installer will not use release.json: {reason}.", exception.Message);
     }
 
-    private static JsonObject Image(JsonObject root) => root["images"]![ImageName]!.AsObject();
+    private static JsonObject Image(JsonObject root) => root["images"]![ImageKey]!.AsObject();
 
     private static JsonObject Archive(JsonObject root) => Image(root)["offlineArchives"]![0]!.AsObject();
 
@@ -476,7 +478,12 @@ public sealed class ReleaseManifestTests
             case "repository-missing": root.Remove("repository"); break;
             case "images-missing": root.Remove("images"); break;
             case "images-list": root["images"] = new JsonArray(); break;
-            case "image-missing": root["images"]!.AsObject().Remove(ImageName); break;
+            case "image-missing": root["images"]!.AsObject().Remove(ImageKey); break;
+            case "image-keyed-by-name":
+                // The image name was the key before install contract draft 4 (D6); no released reader read it.
+                root["images"]!.AsObject().Remove(ImageKey);
+                root["images"]![ImageName] = image;
+                break;
             case "image-repository-hub": SetRepository(root, $"hualapaivalley/{ImageName}"); break;
             case "image-repository-name": SetRepository(root, "ghcr.io/hualapaivalley/roof-controller"); break;
             case "image-repository-upper": SetRepository(root, $"ghcr.io/HualapaiValley/{ImageName}"); break;

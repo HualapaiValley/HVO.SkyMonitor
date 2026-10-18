@@ -41,7 +41,7 @@ documents link back without maintaining competing status.
 | Processing entitlements and fair scheduling | `docs/runbooks/processing-entitlements.md` | Per-observatory entitlements, weighted fair share and starvation ordering, resource classes and budgets, runner pools, usage records, signals, backpressure, and capacity guidance. |
 | Elastic provider adapters | `docs/runbooks/elastic-providers.md` | `elastic-provider-v1` boundaries, the `local-process` proof adapter, autoscaling bounds and placement policy, orphan cleanup, signals, and evidence. |
 | Integration pre-releases | `docs/runbooks/prereleases.md` | Cutting a `vX.Y.Z-dev.<n>` pre-release from `development/v1`, what the workflow checks and publishes, and installing or upgrading a host from it. |
-| Signed distribution releases (retired) | `docs/runbooks/release-distribution.md` | The retired signed design: independent installer/catalog trains, Key Vault signing, immutable publication, public verification, retention, mirrors, and recovery. #1310 replaces it. |
+| Releases | `docs/runbooks/releases.md` | The product version, cutting a final `vX.Y.Z` release or `vX.Y.Z-rc.<n>` candidate from `main`, the CI qualification, the install tests on both platforms, the owner's approval, when `latest` moves, and the owner settings it relies on. |
 | CameraAgent retention recovery | `docs/runbooks/cameraagent-retention.md` | Pending-upload retention invariant and outage recovery procedure. |
 | CameraAgent local automation | `docs/runbooks/cameraagent-local-automation.md` | Versioned local automation definitions, the closed task and trigger registry, storage and bounded retention, runner behaviour, restart recovery, and owner-only endpoints. |
 

@@ -104,7 +104,8 @@ internal static class ReleaseAcquirer
         }
         var archive = image.ArchiveFor(platform);
         var selection = new ReleaseImageSelection(
-            manifest.Tag, manifest.Version, manifest.Commit, platform, image.DigestReference,
+            manifest.Tag, manifest.Version, manifest.Commit, ReleaseManifest.FormatCreated(manifest.Created), platform,
+            image.DigestReference,
             archive is null ? null : [image.Digest, archive.ManifestDigest, archive.ConfigDigest]);
         if (source == ReleaseImageSource.Registry)
         {
@@ -280,8 +281,8 @@ internal static class ReleaseAcquirer
 internal sealed record VerifiedRelease(ReleaseManifest Manifest, string ManifestSha256, string ChecksumsSha256);
 
 /// <summary>
-/// What Docker must resolve for a release's CameraAgent image on one platform: an image carrying the release's version
-/// and commit, and, when the release has an offline archive for the platform, one of the identities that archive's
+/// What Docker must resolve for a release's CameraAgent image on one platform: an image carrying the release's version,
+/// commit and created time (as release.json gives it, such as 2026-10-17T18:00:00Z), and, when the release has an offline archive for the platform, one of the identities that archive's
 /// image has: the index digest (Docker's containerd image store), the platform manifest's, or the config digest (the
 /// classic store's image ID).
 /// </summary>
@@ -289,6 +290,7 @@ internal sealed record ReleaseImageSelection(
     string ReleaseTag,
     string Version,
     string Commit,
+    string Created,
     string Platform,
     string DigestReference,
     IReadOnlyList<string>? ImageIds);

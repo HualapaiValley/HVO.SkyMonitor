@@ -18,6 +18,8 @@ namespace HVO.SkyMonitor.Deployment.ReleaseTool;
 /// <item><c>install.sh</c>, when given, with the release's version written in (<see cref="StampInstallScript"/>);</item>
 /// <item><c>release.json</c>, and <c>SHA256SUMS</c> over every file.</item>
 /// </list>
+/// release.json names the image by its key, <c>images.cameraAgent</c>, and repeats the image's state contract label as
+/// <c>stateContracts.cameraAgent</c> (install contract sections 4 and 6).
 /// Upgrade notes pass the installer's own terminal-safety rule (<see cref="UpgradeNoteText"/>) here, so a note that
 /// would stop every upgrade on site stops the release instead.
 /// </summary>
@@ -26,6 +28,12 @@ internal static partial class Program
     internal const string ReleaseProduct = "HVO SkyMonitor";
     internal const string ReleaseRepositoryUrl = "https://github.com/HualapaiValley/HVO.SkyMonitor";
     internal const string CameraAgentImageName = "skymonitor-cameraagent";
+
+    /// <summary>The CameraAgent image's key under release.json's <c>images</c> and <c>stateContracts</c> (decision D6).</summary>
+    internal const string CameraAgentImageKey = "cameraAgent";
+
+    /// <summary>release.json's <c>created</c>, which is also the image's <c>org.opencontainers.image.created</c> label.</summary>
+    internal const string CreatedFormat = "yyyy'-'MM'-'dd'T'HH':'mm':'ss'Z'";
     internal const string DefaultCameraAgentRepository = "ghcr.io/hualapaivalley/skymonitor-cameraagent";
 
     /// <summary>The longest upgrade note a release carries; the installer prints every note whole before it upgrades.</summary>
@@ -74,7 +82,7 @@ internal static partial class Program
                 CopyExecutable(installer, Path.Combine(output, name));
                 assets.Add(await AssetAsync(output, name, "installer", runtime, null, cancellationToken).ConfigureAwait(false));
             }
-            var (digest, archives) = await OciImageArchive.SplitAsync(
+            var (digest, archives, stateContracts) = await OciImageArchive.SplitAsync(
                 imageArchive, CameraAgentImageName, repository, version, commit, platforms, output, created, cancellationToken)
                 .ConfigureAwait(false);
             foreach (var archive in archives)
@@ -95,7 +103,8 @@ internal static partial class Program
                 assets.Add(await AssetAsync(output, "install.sh", "install-script", null, null, cancellationToken).ConfigureAwait(false));
             }
 
-            var release = ReleaseDocument(version, commit, created, repository, digest, platforms, archives, notes, assets);
+            var release = ReleaseDocument(
+                version, commit, created, repository, digest, platforms, archives, stateContracts, notes, assets);
             await File.WriteAllTextAsync(
                 Path.Combine(output, "release.json"),
                 release.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + "\n",
@@ -125,6 +134,7 @@ internal static partial class Program
         string digest,
         IReadOnlyList<string> platforms,
         IReadOnlyList<OfflineImageArchive> archives,
+        JsonObject stateContracts,
         IReadOnlyList<(string Version, string Text)> notes,
         IReadOnlyList<JsonObject> assets)
         => new()
@@ -135,11 +145,11 @@ internal static partial class Program
             ["tag"] = $"v{version}",
             ["prerelease"] = ProductVersion.IsPrerelease(version),
             ["commit"] = commit,
-            ["created"] = created.ToString("yyyy'-'MM'-'dd'T'HH':'mm':'ss'Z'", CultureInfo.InvariantCulture),
+            ["created"] = created.ToString(CreatedFormat, CultureInfo.InvariantCulture),
             ["repository"] = ReleaseRepositoryUrl,
             ["images"] = new JsonObject
             {
-                [CameraAgentImageName] = new JsonObject
+                [CameraAgentImageKey] = new JsonObject
                 {
                     ["repository"] = repository,
                     ["tag"] = version,
@@ -157,6 +167,7 @@ internal static partial class Program
                     })])
                 }
             },
+            ["stateContracts"] = new JsonObject { [CameraAgentImageKey] = stateContracts },
             ["upgradeNotes"] = new JsonArray([.. notes.Select(static note => (JsonNode)new JsonObject
             {
                 ["version"] = note.Version,

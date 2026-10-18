@@ -56,8 +56,8 @@ case "$component" in
     publish_project src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj installer-linux-x64 linux-x64
     test -x "$evidence_root/installer-linux-x64/HVO.SkyMonitor.Deployment.Cli"
     # The installer names the version and commit it was built from (install contract section 1, #1312). A lane
-    # publish is given no version, so it is the 0.0.0-dev build of the checked-out commit.
-    expected_version="0.0.0-dev+$(git rev-parse HEAD)"
+    # publish is given no version, so it is the product version's development build of the checked-out commit (#1310).
+    expected_version="$(./scripts/release:version --dev)+$(git rev-parse HEAD)"
     actual_version="$("$evidence_root/installer-linux-x64/HVO.SkyMonitor.Deployment.Cli" --version)"
     if [[ "$actual_version" != "$expected_version" ]]; then
       printf 'Installer --version printed %s, not %s.\n' "$actual_version" "$expected_version" >&2

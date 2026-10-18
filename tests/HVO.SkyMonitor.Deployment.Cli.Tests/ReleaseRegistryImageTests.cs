@@ -170,6 +170,7 @@ public sealed class ReleaseRegistryImageTests
     [DataRow("org.opencontainers.image.version", "9.9.9")]
     [DataRow("org.opencontainers.image.revision", "ffffffffffffffffffffffffffffffffffffffff")]
     [DataRow("io.hvo.skymonitor.component", "LogicHost")]
+    [DataRow("org.opencontainers.image.created", "2026-10-17T18:00:00+00:00")]
     public async Task ReadAsync_ImageNotLabelledAsTheRelease_IsRefusedBeforeAnythingIsPulled(string label, string value)
     {
         var labels = ReleaseFixture.ReleaseLabels("1.2.0-dev.3");
@@ -181,7 +182,7 @@ public sealed class ReleaseRegistryImageTests
 
         Assert.AreEqual(
             $"The CameraAgent image {release.DigestReference} in its registry is not labelled as CameraAgent {release.Version} from " +
-            $"commit {ReleaseFixture.Commit}, as release v{release.Version} requires. Nothing was pulled.",
+            $"commit {ReleaseFixture.Commit}, created {ReleaseFixture.Created}, as release v{release.Version} requires. Nothing was pulled.",
             exception.Message);
         Assert.IsTrue(exception.IsRefusal, "reading the registry pulls nothing, so it is a refusal (exit 3)");
     }
@@ -245,7 +246,7 @@ public sealed class ReleaseRegistryImageTests
     /// </summary>
     private static ReleaseImageSelection Selection(ReleaseFixture release, bool archived = true)
         => new(
-            $"v{release.Version}", release.Version, ReleaseFixture.Commit, Platform, release.DigestReference,
+            $"v{release.Version}", release.Version, ReleaseFixture.Commit, ReleaseFixture.Created, Platform, release.DigestReference,
             archived ? [release.Digest, release.ManifestDigest(Platform), release.ConfigDigest(Platform)] : null);
 
     private static Func<IReadOnlyList<string>, CancellationToken, Task<ProcessResult>> Docker(FakeRegistry registry)

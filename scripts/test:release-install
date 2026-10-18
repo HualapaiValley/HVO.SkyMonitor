@@ -96,8 +96,8 @@ step "Checking the release's files"
 manifest="$release/release.json"
 version="$(jq -er '.version' "$manifest")"
 commit="$(jq -er '.commit' "$manifest")"
-digest_reference="$(jq -er '.images["skymonitor-cameraagent"] | .repository + "@" + .digest' "$manifest")"
-mapfile -t release_ids < <(jq -er --arg platform "$platform" '.images["skymonitor-cameraagent"] as $image
+digest_reference="$(jq -er '.images.cameraAgent | .repository + "@" + .digest' "$manifest")"
+mapfile -t release_ids < <(jq -er --arg platform "$platform" '.images.cameraAgent as $image
     | $image.digest, ($image.offlineArchives[] | select(.platform == $platform) | .manifestDigest, .configDigest)' "$manifest")
 [[ ${#release_ids[@]} -eq 3 ]] || fail "release.json has no offline archive for $platform."
 # Whatever the install loads or pulls is one of these, so it is removed on exit even when the install fails part-way;

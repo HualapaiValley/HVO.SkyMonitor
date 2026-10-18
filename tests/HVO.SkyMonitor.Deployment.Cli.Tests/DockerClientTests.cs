@@ -228,6 +228,7 @@ public sealed class DockerClientTests
     [DataRow("org.opencontainers.image.version")]
     [DataRow("org.opencontainers.image.revision")]
     [DataRow("io.hvo.skymonitor.component")]
+    [DataRow("org.opencontainers.image.created")]
     public async Task PrepareImageAsync_ReleaseImageWithoutTheReleasesLabel_IsRefusedWithoutEchoingTheLabel(string? missing)
     {
         var release = ReleaseSelection();
@@ -247,13 +248,13 @@ public sealed class DockerClientTests
 
         Assert.AreEqual(
             "The CameraAgent image Docker resolved is not labelled as CameraAgent 1.2.0-dev.3 from commit " +
-            "0123456789abcdef0123456789abcdef01234567, as release v1.2.0-dev.3 requires.",
+            "0123456789abcdef0123456789abcdef01234567, created 2026-10-17T18:00:00Z, as release v1.2.0-dev.3 requires.",
             exception.Message);
         Assert.IsTrue(exception.IsRefusal, "an image that is not the release's is refused (exit 3)");
     }
 
     private static ReleaseImageSelection ReleaseSelection() => new(
-        "v1.2.0-dev.3", "1.2.0-dev.3", "0123456789abcdef0123456789abcdef01234567", "linux/amd64",
+        "v1.2.0-dev.3", "1.2.0-dev.3", "0123456789abcdef0123456789abcdef01234567", "2026-10-17T18:00:00Z", "linux/amd64",
         $"ghcr.io/hualapaivalley/skymonitor-cameraagent@sha256:{new string('1', 64)}",
         [$"sha256:{new string('1', 64)}", $"sha256:{new string('2', 64)}", $"sha256:{new string('3', 64)}"]);
 
@@ -261,7 +262,8 @@ public sealed class DockerClientTests
         => new(ReleaseFixture.ContractLabels, StringComparer.Ordinal)
         {
             ["org.opencontainers.image.version"] = release.Version,
-            ["org.opencontainers.image.revision"] = release.Commit
+            ["org.opencontainers.image.revision"] = release.Commit,
+            ["org.opencontainers.image.created"] = release.Created
         };
 
     /// <summary>A daemon that knows exactly one image reference, as one image store would name the image.</summary>
