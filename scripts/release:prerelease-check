@@ -5,8 +5,8 @@
 #   scripts/release:prerelease-check unreleased <tag>   no release or draft has the tag yet; with a token that can write
 #                                                       (contents: write) the list includes drafts
 #   scripts/release:prerelease-check draft <tag>        exactly one release has the tag, and it is a draft pre-release
-#   scripts/release:prerelease-check attested <digest>  the image digest has at least one attestation on record
-#                                                       (attestations: read)
+#   scripts/release:prerelease-check attested <digest>  the image digest has at least one attestation of this
+#                                                       repository on record (attestations: read)
 #
 # Every read is strict (scripts/lib/github-api.sh): a read that fails, is cut short, or answers anything but one JSON
 # document of the expected shape fails the check naming what it could not read. It never counts as an answer, so a
@@ -65,12 +65,26 @@ case "$check" in
     attested)
         digest="$2"
         [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "$digest is not an image digest, sha256:<64 hex digits>."
+        repository_id="$(github_api_read "the repository $repository" 'type == "object" and (.id | type == "number" and . > 0)' \
+            "repos/$repository")" || exit 1
+        repository_id="$(jq '.id' <<<"$repository_id")"
         attestations="$(github_api_read "the attestations for $digest" \
             'type == "object" and (.attestations | type == "array" and all(.[]; type == "object"))' \
             "repos/$repository/attestations/$digest")" || exit 1
-        count="$(jq '.attestations | length' <<<"$attestations")"
-        [[ "$count" -ge 1 ]] || fail "No attestation is on record for $digest."
-        printf '%s has %s attestation(s) on record.\n' "$digest" "$count"
+        # A record counts only when it is this repository's and carries a bundle: the bundle_url GitHub serves it from
+        # (the usual answer, with a null bundle), or a Sigstore bundle with its verification material and signed
+        # envelope. An empty record, or one with a null bundle and nothing else, is not an attestation.
+        count="$(jq --argjson repository "$repository_id" '[.attestations[] | select(
+            .repository_id == $repository and (
+                (.bundle_url | type == "string" and startswith("https://")) or
+                (.bundle | type == "object"
+                    and (.mediaType | type == "string" and startswith("application/vnd.dev.sigstore.bundle"))
+                    and (.verificationMaterial | type == "object")
+                    and (.dsseEnvelope | type == "object" and (.payload | type == "string") and (.payloadType | type == "string")
+                        and (.signatures | type == "array" and length > 0))))
+        )] | length' <<<"$attestations")"
+        [[ "$count" -ge 1 ]] || fail "No attestation of $repository is on record for $digest."
+        printf '%s has %s attestation(s) of %s on record.\n' "$digest" "$count" "$repository"
         ;;
     *)
         usage
