@@ -133,13 +133,13 @@ public sealed partial class LifecycleContractTests
 
     /// <summary>
     /// Docker refuses to create a container with a CPU limit on a host without CPU quota support, rather than
-    /// discarding it, so the rollback withholds the CPU limit of CameraAgent and of its replay runner and keeps every
-    /// other limit. The CPUs the host reports no longer count. The instance keeps the limits it records, and the next
-    /// upgrade on a host that enforces them gives them all back.
+    /// discarding it, so the rollback starts CameraAgent and its replay runner from a model without their CPU limits and
+    /// with every other limit. The CPUs the host reports no longer count. The instance keeps the Compose model and the
+    /// limits it records, and the next start on a host that enforces them gives them all.
     /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task RollbackAsync_HostWithoutCpuQuota_WithholdsEveryCpuLimitAndTheNextUpgradeGivesThemBack()
+    public async Task RollbackAsync_HostWithoutCpuQuota_StartsWithoutCpuLimitsAndKeepsTheRecordedModel()
     {
         using var fixture = await LifecycleFixture.CreateAsync(
             InstanceLifecycleCondition.Installed, HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
@@ -150,6 +150,7 @@ public sealed partial class LifecycleContractTests
         StringAssert.Contains(upgradedCompose, "    cpus: \"0.5\"\n    mem_limit: 2G\n    pids_limit: 64\n", StringComparison.Ordinal);
         fixture.Runner.CpuCfsQuota = false;
         fixture.Runner.Cpus = 1;
+        var started = fixture.Runner.StartedModels.Count;
         using var error = new StringWriter();
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
@@ -159,21 +160,27 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual("completed", result.Outcome);
         AssertRecoveryWarning(error.ToString(), [CpuQuotaUnsupported], "standard error");
         AssertRecoveryWarning(await File.ReadAllTextAsync(InstallLogPath(fixture, result.OperationId!.Value)), [CpuQuotaUnsupported], "the install log");
-        var rolledBackCompose = await File.ReadAllTextAsync(composePath);
-        Assert.IsFalse(Regex.IsMatch(rolledBackCompose, "^ *cpus:", RegexOptions.Multiline), "The rollback gave Docker a CPU limit it refuses.");
-        Assert.AreEqual(CameraAgentContainerResources.WithoutCpuLimits(upgradedCompose), rolledBackCompose);
-        StringAssert.Contains(rolledBackCompose, "\n    mem_limit: 4G\n    pids_limit: 256\n", StringComparison.Ordinal);
-        StringAssert.Contains(rolledBackCompose, "\n    mem_limit: 2G\n    pids_limit: 64\n", StringComparison.Ordinal);
+        var startedModel = fixture.Runner.StartedModels.Skip(started).Single();
+        Assert.IsFalse(Regex.IsMatch(startedModel, "^ *cpus:", RegexOptions.Multiline), "The rollback gave Docker a CPU limit it refuses.");
+        Assert.AreEqual(CameraAgentContainerResources.WithoutCpuLimits(upgradedCompose), startedModel);
+        StringAssert.Contains(startedModel, "\n    mem_limit: 4G\n    pids_limit: 256\n", StringComparison.Ordinal);
+        StringAssert.Contains(startedModel, "\n    mem_limit: 2G\n    pids_limit: 64\n", StringComparison.Ordinal);
+        Assert.AreEqual(
+            startedModel,
+            await File.ReadAllTextAsync(Path.Combine(
+                fixture.Paths.OperationsRoot, "lifecycle", result.OperationId!.Value.ToString("D"), CameraAgentLifecycleManager.HostComposeName)));
+        // The instance's Compose model keeps every limit it records, under the identity its manifest authenticates.
+        Assert.AreEqual(upgradedCompose, await File.ReadAllTextAsync(composePath));
         var rolledBack = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
         Assert.AreEqual(CameraAgentContainerResources.Default, rolledBack.Resources);
-        Assert.AreEqual(ComposeDeployment.ComputeSha256(rolledBackCompose), rolledBack.ComposeModelSha256);
+        Assert.AreEqual(ComposeDeployment.ComputeSha256(upgradedCompose), rolledBack.ComposeModelSha256);
 
         fixture.Runner.CpuCfsQuota = true;
         fixture.Runner.Cpus = 64;
         var upgraded = await UpgradeForLimitsAsync(fixture);
 
         Assert.AreEqual("completed", upgraded.Outcome);
-        Assert.AreEqual(upgradedCompose, await File.ReadAllTextAsync(composePath));
+        Assert.AreEqual(upgradedCompose, fixture.Runner.StartedModels[^1], "A host that enforces the CPU limit is given it again.");
     }
 
     /// <summary>
@@ -288,6 +295,127 @@ public sealed partial class LifecycleContractTests
             await File.ReadAllTextAsync(InstallLogPath(fixture, request.RecoveryOperationId!.Value)), [MemoryLimitUnsupported], "the install log",
             "RESTORE-ONLY RECOVERY");
         CollectionAssert.AreEqual(new[] { MemoryLimitUnsupported }, result.Warnings!.Select(static warning => warning.Code).ToArray());
+    }
+
+    /// <summary>
+    /// A snapshot-backed restore-only recovery from <c>CandidateVerified</c>, on a host that has since lost CPU quota
+    /// support (PR-1370-R1 F1). It stops the runtime and puts the snapshot back, so it must then start the original
+    /// image from a model Docker accepts there: without its CPU limits, with every other limit. The Compose files the
+    /// instance records, which restore-only authenticates, stay exactly as they were.
+    /// </summary>
+    [TestMethod]
+    [DoNotParallelize]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RestoreOnly_SnapshotBackedRecoveryOnAHostThatLostCpuQuota_StartsTheOriginalWithoutCpuLimits()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed, recoveryState: true,
+            installedImage: static image => CurrentStateContract(image) with { RawIngressSchema = "15" });
+        fixture.Runner.CandidateRawIngressSchema = "15";
+        fixture.Runner.CandidateLabels["io.hvo.skymonitor.minimum-compatible-revision"] = new string('6', 40);
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            CandidateReference, CandidateImageId, fixture.Uid, fixture.Gid);
+        WriteCanonicalV15RawIngressJournal(fixture.Paths);
+        ExecuteSql(RawIngressPath(fixture.Paths), "INSERT INTO capture_control_state(state_key, state, version, updated_unix_ms) VALUES(1, 'running', 3, 0);");
+        WriteIdentityLineage(fixture.Paths);
+        foreach (var file in ComposeFileNames.Select(name => Path.Combine(fixture.Paths.ConfigRoot, "compose", name)))
+            SafeFileSystem.WriteTextAtomic(file, await File.ReadAllTextAsync(file));
+        var request = UpgradeRequest(fixture, assertMigration: false);
+        using var captured = new TemporaryDirectory();
+        var images = new List<CrashImage>();
+        CaptureCrashImages(fixture, captured.Path, images);
+        try
+        {
+            Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
+                request, fixture.Runner, _ => new StoreBackedLifecycleClient(fixture.Paths),
+                _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None)).Outcome);
+        }
+        finally
+        {
+            ResetCrashHooks();
+        }
+        RestoreCrashImage(fixture, images.First(static image => image.Step == "journal:CandidateVerified"));
+        var interrupted = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+        Assert.IsNotNull(interrupted.StateSnapshot, "The recovery must be snapshot-backed.");
+        var composePath = Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml");
+        var originalCompose = await File.ReadAllTextAsync(composePath);
+        StringAssert.Contains(originalCompose, "    cpus: \"", StringComparison.Ordinal);
+        fixture.Runner.CpuCfsQuota = false;
+        var started = fixture.Runner.StartedModels.Count;
+        using var error = new StringWriter();
+
+        var result = await CameraAgentLifecycleManager.ExecuteAsync(
+            request with { Resume = true, RestoreOnly = true, RecoveryOperationId = interrupted.OperationId },
+            fixture.Runner, _ => new StoreBackedLifecycleClient(fixture.Paths), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None, error: error);
+
+        Assert.AreEqual("restored-previous-healthy-admission-resumed", result.Outcome);
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        Assert.IsTrue(fixture.Runner.Running);
+        Assert.AreEqual(CameraAgentContainerResources.WithoutCpuLimits(originalCompose), fixture.Runner.StartedModels.Skip(started).Single());
+        Assert.AreEqual(originalCompose, await File.ReadAllTextAsync(composePath));
+        AssertRecoveryWarning(error.ToString(), [CpuQuotaUnsupported], "standard error", "RESTORE-ONLY RECOVERY");
+        AssertRecoveryWarning(
+            await File.ReadAllTextAsync(InstallLogPath(fixture, interrupted.OperationId)), [CpuQuotaUnsupported], "the install log",
+            "RESTORE-ONLY RECOVERY");
+    }
+
+    /// <summary>
+    /// A rollback interrupted at <c>CandidateVerified</c>, before its commit, and resumed on a host that has since lost
+    /// CPU quota support (PR-1370-R1 F2). The resume first restarts the image the rollback was leaving, from its
+    /// authenticated model, then retries the rollback: both starts must be models Docker accepts there, and the instance
+    /// keeps the Compose model and limits it records.
+    /// </summary>
+    [TestMethod]
+    [DoNotParallelize]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RollbackAsync_ResumeBeforeTheCommitOnAHostThatLostCpuQuota_StartsEveryImageWithoutCpuLimits()
+    {
+        using var fixture = await MigratingFixtureAsync();
+        SeedStores(fixture.Paths);
+        await UpgradeAndCommitAsync(fixture);
+        var composePath = Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml");
+        var upgradedCompose = await File.ReadAllTextAsync(composePath);
+        using var captured = new TemporaryDirectory();
+        var images = new List<CrashImage>();
+        CaptureCrashImages(fixture, captured.Path, images);
+        try
+        {
+            await RollBackAsync(fixture);
+        }
+        finally
+        {
+            ResetCrashHooks();
+        }
+        var rolledBackCompose = await File.ReadAllTextAsync(composePath);
+        RestoreCrashImage(fixture, images.Last(static image => image.Step == "journal:CandidateVerified"));
+        var interrupted = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+        Assert.AreEqual(LifecycleOperationKind.Rollback, interrupted.Kind);
+        Assert.IsTrue(interrupted.MutationStarted);
+        fixture.Runner.CpuCfsQuota = false;
+        var started = fixture.Runner.StartedModels.Count;
+        using var error = new StringWriter();
+
+        var resumed = await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Rollback) with { Resume = true }, fixture.Runner, _ => new FakeLifecycleClient(),
+            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None, error: error);
+
+        Assert.AreEqual("completed", resumed.Outcome);
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        var models = fixture.Runner.StartedModels.Skip(started).ToArray();
+        Assert.HasCount(2, models, "The resume restarts the image the rollback was leaving, then starts the rollback's own.");
+        Assert.AreEqual(CameraAgentContainerResources.WithoutCpuLimits(upgradedCompose), models[0]);
+        foreach (var model in models)
+        {
+            Assert.IsFalse(Regex.IsMatch(model, "^ *cpus:", RegexOptions.Multiline), "Docker was given a CPU limit it refuses.");
+            StringAssert.Contains(model, "    mem_limit: 4G\n    pids_limit: 256\n", StringComparison.Ordinal);
+        }
+        var committed = await File.ReadAllTextAsync(composePath);
+        Assert.AreEqual(rolledBackCompose, committed);
+        var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
+        Assert.AreEqual(ComposeDeployment.ComputeSha256(committed), manifest.ComposeModelSha256);
+        Assert.AreEqual(CameraAgentContainerResources.Default, manifest.Resources);
+        AssertRecoveryWarning(error.ToString(), [CpuQuotaUnsupported], "standard error");
     }
 
     [TestMethod]

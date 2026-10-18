@@ -3275,6 +3275,9 @@ public sealed partial class LifecycleContractTests
 
         public int Cpus { get; set; } = 64;
 
+        /// <summary>The Compose model of each <c>up</c> Docker accepted, in order.</summary>
+        public List<string> StartedModels { get; } = [];
+
         /// <summary>Adds a line to <c>image ls</c> that is not an image this installer reads.</summary>
         public bool MalformedImageListing { get; set; }
 
@@ -3456,6 +3459,16 @@ public sealed partial class LifecycleContractTests
                 }
                 if (arguments.Contains("up", StringComparer.Ordinal))
                 {
+                    // Docker refuses to create a container with a CPU limit on a host without CPU quota support, rather
+                    // than discarding it as it does a memory or PIDs limit (#1357); nothing is created or started.
+                    var model = File.ReadAllText(arguments[arguments.ToList().IndexOf("--file") + 1]);
+                    if (CpuCfsQuota != true && System.Text.RegularExpressions.Regex.IsMatch(
+                            model, "^ *cpus:", System.Text.RegularExpressions.RegexOptions.Multiline))
+                    {
+                        return Task.FromResult(new ProcessResult(1, string.Empty,
+                            "Error response from daemon: NanoCPUs can not be set, as your kernel does not support CPU CFS scheduler or the cgroup is not mounted"));
+                    }
+                    StartedModels.Add(model);
                     ComposeUpCount++;
                     Events.Add("compose-up");
                     var environmentPath = arguments[arguments.ToList().IndexOf("--env-file") + 1];

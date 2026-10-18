@@ -191,7 +191,7 @@ internal static class HostPrerequisites
         ("MemoryLimit", "docker-memory-limit-unsupported", "memory limit (mem_limit)", "memory",
             "Docker discards the memory limit, so CameraAgent can exhaust the host's memory."),
         ("CpuCfsQuota", CpuQuotaUnsupportedCode, "CPU quota (cpus)", "CPU",
-            "Docker refuses to create a container with a CPU limit here, so a rollback withholds the CPU limits of CameraAgent and its replay runner."),
+            "Docker refuses to create a container with a CPU limit here, so CameraAgent and its replay runner are started without their CPU limits."),
         ("PidsLimit", "docker-pids-limit-unsupported", "PIDs limit (pids_limit)", "PIDs",
             "Docker discards the PIDs limit, so CameraAgent's processes and threads are not bounded.")
     ];

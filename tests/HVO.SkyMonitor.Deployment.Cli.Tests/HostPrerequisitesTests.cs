@@ -342,7 +342,7 @@ public sealed class HostPrerequisitesTests
         var unenforced = new[]
         {
             (memory, "docker-memory-limit-unsupported", "Docker discards the memory limit"),
-            (cpu, "docker-cpu-quota-unsupported", "withholds the CPU limits of CameraAgent and its replay runner"),
+            (cpu, "docker-cpu-quota-unsupported", "CameraAgent and its replay runner are started without their CPU limits"),
             (pids, "docker-pids-limit-unsupported", "Docker discards the PIDs limit")
         }.Where(static limit => !limit.Item1).ToArray();
         CollectionAssert.AreEqual(

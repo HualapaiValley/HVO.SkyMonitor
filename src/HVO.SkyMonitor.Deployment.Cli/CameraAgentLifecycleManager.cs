@@ -214,7 +214,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 LifecycleOperationKind.Upgrade => await ChangeImageAsync(
                     request, paths, manifest, result, compose, docker, lifecycleClientFactory, uid, gid,
                     ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage,
-                    rollback: false, hostLimits: null, output, error, cancellationToken).ConfigureAwait(false),
+                    rollback: false, hostLimits, output, error, cancellationToken).ConfigureAwait(false),
                 LifecycleOperationKind.Rollback => await ChangeImageAsync(
                     request, paths, manifest, result, compose, docker, lifecycleClientFactory, uid, gid,
                     ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage: null,
@@ -395,8 +395,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (operation.StateSnapshot is not null && (!runtime.Running || runtime.ImageId != manifest.Image.ImageId))
         {
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
-            await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
-                ["up", "--detach", "--remove-orphans"], cancellationToken).ConfigureAwait(false);
+            await StartOnThisHostAsync(docker, compose, hostLimits, operationRoot, cancellationToken).ConfigureAwait(false);
             // The freshly started original must be running and healthy before restore-only inspects it.
             await docker.VerifyContainerAsync(compose, paths, manifest.Image, uid, gid, cancellationToken).ConfigureAwait(false);
             runtime = await docker.InspectContainerAsync(compose.ContainerName, cancellationToken).ConfigureAwait(false);
@@ -893,12 +892,6 @@ internal sealed partial class CameraAgentLifecycleManager
             sourceCompose,
             candidateResources ?? CameraAgentContainerResources.Legacy,
             rollback ? null : manifest.Resources ?? CameraAgentContainerResources.Legacy);
-        // Docker refuses a container with a CPU limit on a host that cannot enforce one, so a rollback there withholds
-        // every CPU limit and keeps the others; the manifest keeps the limits the instance records (#1357).
-        if (rollback && hostLimits is not null && HostPrerequisites.WithholdsCpuLimits(hostLimits))
-        {
-            limitedCompose = CameraAgentContainerResources.WithoutCpuLimits(limitedCompose);
-        }
         if (!string.Equals(limitedCompose, sourceCompose, StringComparison.Ordinal))
         {
             SafeFileSystem.WriteTextAtomic(stagedCompose, limitedCompose);
@@ -926,8 +919,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 operation = await RestoreStateSnapshotAsync(
                     paths, manifest, operation, interrupted, request.Json, error, cancellationToken).ConfigureAwait(false);
             }
-            await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
-                ["up", "--detach", "--remove-orphans"], cancellationToken).ConfigureAwait(false);
+            await StartOnThisHostAsync(docker, compose, hostLimits, operationRoot, cancellationToken).ConfigureAwait(false);
             var restoredOwnerState = await VerifyCandidateAsync(
                 owner, docker, compose, paths, manifest, installationResult, manifest.Image,
                 verificationToken, uid, gid, cancellationToken, expectedOwnerState, allowOwnerStateProgression)
@@ -1023,8 +1015,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 MutationStarted = true
             }, cancellationToken).ConfigureAwait(false);
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
-            await docker.ComposeAsync(candidateCompose.ComposeFile, candidateCompose.EnvironmentFile, candidateCompose.ProjectName,
-                ["up", "--detach", "--remove-orphans"], cancellationToken).ConfigureAwait(false);
+            await StartOnThisHostAsync(docker, candidateCompose, hostLimits, operationRoot, cancellationToken).ConfigureAwait(false);
             var verifiedOwnerState = await VerifyCandidateAsync(
                 owner, docker, candidateCompose, paths, manifest, installationResult, candidate, verificationToken, uid, gid,
                 cancellationToken, expectedOwnerState, allowOwnerStateProgression).ConfigureAwait(false);
@@ -1183,8 +1174,7 @@ internal sealed partial class CameraAgentLifecycleManager
                         operation = await RestoreStateSnapshotAsync(
                             paths, manifest, operation, taken, request.Json, error, recovery.Token).ConfigureAwait(false);
                     }
-                    await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
-                        ["up", "--detach", "--remove-orphans"], recovery.Token).ConfigureAwait(false);
+                    await StartOnThisHostAsync(docker, compose, hostLimits, operationRoot, recovery.Token).ConfigureAwait(false);
                     var restoredOwnerState = await VerifyCandidateAsync(
                         owner, docker, compose, paths, manifest, installationResult, manifest.Image,
                         verificationToken, uid, gid, recovery.Token, expectedOwnerState, allowOwnerStateProgression)
