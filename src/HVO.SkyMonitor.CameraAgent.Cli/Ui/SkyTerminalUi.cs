@@ -134,6 +134,12 @@ internal sealed class SkyTerminalUi : IDisposable
     /// <summary>Ended when the interface closes: reads it started stop.</summary>
     public CancellationToken Closing => _closing.Token;
 
+    /// <summary>
+    /// How long each read and each change may wait for CameraAgent: <c>--timeout</c>. The interface runs until F10, so the
+    /// deadline is each operation's rather than the whole command's.
+    /// </summary>
+    public TimeSpan OperationTimeout => Context.Deadline?.Limit ?? TimeSpan.FromSeconds(SkyCli.DefaultTimeoutSeconds);
+
     /// <summary>How long a status stays current without a newer read.</summary>
     public TimeSpan StaleAfter => TimeSpan.FromTicks(Math.Max(TimeSpan.FromSeconds(6).Ticks, Context.Host.PollInterval.Ticks * 3));
 
@@ -155,7 +161,7 @@ internal sealed class SkyTerminalUi : IDisposable
 
             if (summary.Failure is not null)
             {
-                return summary.FailureKind == "Unreachable" ? SkyUiFreshness.Offline : SkyUiFreshness.Stale;
+                return summary.FailureKind is "Unreachable" or "TimedOut" ? SkyUiFreshness.Offline : SkyUiFreshness.Stale;
             }
 
             if (!summary.HasValue)
@@ -205,6 +211,8 @@ internal sealed class SkyTerminalUi : IDisposable
             Page.DataChanged();
         }
 
+        // Who CameraAgent takes the key to be, and whether it can restart itself: the header and every page's changes use it.
+        Read(Data.Info, SkyRoutes.Info, SkyApiClient.Read<SkyInfo>);
         RefreshNow();
     }
 
@@ -274,7 +282,7 @@ internal sealed class SkyTerminalUi : IDisposable
 
         _prompt = null;
         Window.Remove(prompt.Panel);
-        prompt.Panel.Dispose();
+        prompt.Dispose();
         if (_index >= 0)
         {
             Page.FocusFirst();
@@ -375,24 +383,44 @@ internal sealed class SkyTerminalUi : IDisposable
     }
 
     /// <summary>
-    /// Runs <paramref name="work"/> with the client away from the interface's thread, then <paramref name="done"/> on it with
-    /// the result or the failure. Nothing runs without a connection.
+    /// Runs <paramref name="work"/> away from the interface's thread, within a deadline of its own (<see cref="OperationTimeout"/>),
+    /// then <paramref name="done"/> on it with the result or the failure.
     /// </summary>
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
-        Justification = "Every failure of background work is reported on the interface, never thrown on a thread pool thread.")]
     public void Run<T>(Func<CancellationToken, Task<T>> work, Action<T?, Exception?> done)
     {
         ArgumentNullException.ThrowIfNull(work);
         ArgumentNullException.ThrowIfNull(done);
+        Run((_, token) => work(token), (result, failure, _) => done(result, failure));
+    }
+
+    /// <summary>
+    /// Runs <paramref name="work"/> as one operation: away from the interface's thread, with a context of its own (its
+    /// deadline, and what CameraAgent accepted of it), then <paramref name="done"/> on the interface's thread with the
+    /// result or the failure and that context, which words the failure as the commands do. A deadline that passes is the
+    /// failure <c>TimedOut</c>, as a command's is.
+    /// </summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Every failure of background work is reported on the interface, never thrown on a thread pool thread.")]
+    public void Run<T>(Func<SkyCliContext, CancellationToken, Task<T>> work, Action<T?, Exception?, SkyCliContext> done)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        ArgumentNullException.ThrowIfNull(done);
         Interlocked.Increment(ref _pending);
-        var token = _closing.Token;
+        var closing = _closing.Token;
+        var limit = OperationTimeout;
         _ = Task.Run(async () =>
         {
             T? result = default;
             Exception? failure = null;
+            using var deadline = new SkyCliDeadline(Context.Host.Time, limit, closing);
+            var operation = Context.ForOperation(deadline);
             try
             {
-                result = await work(token).ConfigureAwait(false);
+                result = await work(operation, deadline.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (deadline.Expired && !closing.IsCancellationRequested)
+            {
+                failure = new SkyCliOutcomeException(deadline.Describe(), SkyExitCode.Failed, "TimedOut");
             }
             catch (Exception error) when (error is not OutOfMemoryException)
             {
@@ -403,7 +431,7 @@ internal sealed class SkyTerminalUi : IDisposable
                 {
                     try
                     {
-                        done(result, failure);
+                        done(result, failure, operation);
                     }
                     finally
                     {
@@ -414,6 +442,26 @@ internal sealed class SkyTerminalUi : IDisposable
                 Interlocked.Decrement(ref _pending);
             }
         }, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Says how a change ended, in the notice band: <paramref name="success"/>; or the failure, as the commands word it.
+    /// "<paramref name="notDone"/>" heads it only when nothing changed; once CameraAgent may have taken the change, the
+    /// failure says what it accepted, or that whether it received it is not known.
+    /// </summary>
+    public void SayOutcome(SkyCliContext operation, Exception? error, string success, string notDone, string? detail = null)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        if (error is null)
+        {
+            Say(HvoNotice.Success, success);
+            return;
+        }
+
+        var failure = operation.Describe(error);
+        var text = failure.ChangeMayHaveHappened ? failure.Message : $"{notDone}: {failure.Message}";
+        Say(HvoNotice.Danger, detail is { Length: > 0 } ? $"{text} {detail}" : text,
+            failure.ChangeMayHaveHappened ? "[UNVERIFIED]" : failure.Code == SkyExitCode.Refused ? "[REFUSED]" : "[FAILED]");
     }
 
     /// <summary>Runs <paramref name="action"/> on the interface's thread; false once the interface has closed.</summary>
@@ -443,11 +491,14 @@ internal sealed class SkyTerminalUi : IDisposable
     }
 
     /// <summary>
-    /// Restarts CameraAgent and waits for the new process, saying how it goes in the notice band; then
-    /// <paramref name="done"/> with the outcome or the failure.
+    /// Restarts CameraAgent as <paramref name="change"/> and waits for the new process, then, in the same operation and
+    /// within its deadline, for <paramref name="after"/> (the rig page's wait for the staged rig); then everything is read
+    /// again from the new process and <paramref name="done"/> runs with the outcome or the failure.
     /// </summary>
-    public void Restart(Action<SkyRestartOutcome?, Exception?> done)
+    public void Restart(string change, Func<SkyCliContext, SkyApiClient, CancellationToken, Task>? after, Action<SkyRestartOutcome?, Exception?, SkyCliContext> done)
     {
+        ArgumentNullException.ThrowIfNull(change);
+        ArgumentNullException.ThrowIfNull(done);
         if (_client is not { } client)
         {
             return;
@@ -455,12 +506,22 @@ internal sealed class SkyTerminalUi : IDisposable
 
         Say(HvoNotice.Info, "Restart requested: waiting for CameraAgent to come back.", "[RESTARTING]");
         Run(
-            token => SkyCli.RestartAsync(Context, client, wait: true, "the restart", token, progress: _ => { }),
-            (outcome, error) =>
+            async (operation, token) =>
             {
-                // A new process: everything is read again from it, then the caller checks what it asked for.
+                var outcome = await SkyCli.RestartAsync(operation, client, wait: true, change, token, operation.Deadline, progress: _ => { })
+                    .ConfigureAwait(false);
+                if (after is not null)
+                {
+                    await after(operation, client, token).ConfigureAwait(false);
+                }
+
+                return outcome;
+            },
+            (outcome, error, operation) =>
+            {
+                // A new process: everything is read again from it.
                 Connect();
-                done(outcome, error);
+                done(outcome, error, operation);
             });
     }
 
@@ -492,20 +553,21 @@ internal sealed class SkyTerminalUi : IDisposable
         var module = Data.Summary.HasValue ? SkyJson.Text(summary, "configuration", "value", "moduleType") : null;
         _header.Context = Connection is null
             ? "No CameraAgent address or API key"
-            : $"CameraAgent {Connection.Url}" + (agent is null ? string.Empty : $"  {agent}") + (module is null ? string.Empty : $" · {module}");
+            : $"CameraAgent {Connection.Url}" + (agent is null ? string.Empty : $"  {agent}") + (module is null ? string.Empty : $", {module}");
         _header.Note = Connection is null
             ? string.Empty
             : $"key {Connection.KeyId}" + (Data.Info.Value?.Caller.Access is { } access ? $" {SkyStatusText.DescribeAccess(access)}" : string.Empty);
         _keys.Right = Data.Summary.ReadAt is { } read ? $"read {SkyCliFormat.Time(read)[11..]}" : string.Empty;
 
-        var problem = DataNotice(freshness);
-        if (problem is { } shown)
-        {
-            _notice.Show(shown.Kind, shown.Text, shown.Word);
-        }
-        else if (_actionNotice is { } action)
+        // What the person just did is answered first; the header's badge and the panels' LAST KNOWN keep marking data
+        // that is not current meanwhile, and the band says so again on the next page or Ctrl+R.
+        if (_actionNotice is { } action)
         {
             _notice.Show(action.Kind, action.Text, action.Word);
+        }
+        else if (DataNotice(freshness) is { } problem)
+        {
+            _notice.Show(problem.Kind, problem.Text, problem.Word);
         }
         else
         {

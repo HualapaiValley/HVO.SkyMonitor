@@ -153,13 +153,14 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-## The installer's terminal packages
+## The terminal programs' packages
 
-`hvo-sky-install`, the installer, is one self-contained file. Its wizard (#1317)
-draws with Terminal.Gui, and the installer contains Terminal.Gui and every
-package it brings in, as listed here. Every release ships this file beside the
-installers as an asset of its own, `THIRD-PARTY-NOTICES.md` (install contract
-section 4).
+`hvo-sky-install`, the installer, and `hvo-sky`, CameraAgent's command line,
+are each one self-contained file. The installer's wizard and `hvo-sky ui`
+(#1317) draw with Terminal.Gui, and both files contain Terminal.Gui and every
+package it brings in, as listed here; `hvo-sky` also contains System.CommandLine.
+Every release ships this file beside them as an asset of its own,
+`THIRD-PARTY-NOTICES.md` (install contract section 4).
 
 | Package | Licence | Copyright | Source |
 | --- | --- | --- | --- |
@@ -187,12 +188,14 @@ section 4).
 | `Microsoft.Extensions.Logging.Abstractions` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
 | `Microsoft.Extensions.Options` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
 | `Microsoft.Extensions.Primitives` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
+| `System.CommandLine` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/command-line-api |
 
 Onigwrap carries a native build of Oniguruma, the regular-expression library,
-for each runtime, and the installer contains it (`libonigwrap`). The installer
-never loads it: Terminal.Gui loads TextMateSharp's and Onigwrap's managed code,
-but the wizard highlights no text, and a test checks that a wizard run never
-maps the native library. Its notice is here because the library is in the file.
+for each runtime, and the installer and `hvo-sky` contain it (`libonigwrap`).
+Neither loads it: Terminal.Gui loads TextMateSharp's and Onigwrap's managed
+code, but neither the wizard nor `hvo-sky ui` highlights text, and tests check
+that neither maps the native library. Its notice is here because the library is
+in the files.
 Onigwrap's own notices also name mono/SkiaSharp (Copyright (c) 2015-2016
 Xamarin, Inc.; Copyright (c) 2017-2018 Microsoft Corporation; MIT).
 

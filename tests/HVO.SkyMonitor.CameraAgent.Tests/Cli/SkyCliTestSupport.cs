@@ -212,6 +212,18 @@ internal sealed class CliHarness : IDisposable
     /// <summary>The user hvo-sky takes itself to run as: another than this process's makes its own files someone else's.</summary>
     public uint UserId { get; set; } = SkyFileSystem.CurrentUserId;
 
+    /// <summary>The clock hvo-sky reads the time from (its deadlines run on its timers).</summary>
+    public TimeProvider Time { get; set; } = TimeProvider.System;
+
+    /// <summary>Whether standard input and output are a terminal, for <c>hvo-sky ui</c>.</summary>
+    public bool HasTerminal { get; set; }
+
+    /// <summary>For <c>hvo-sky ui</c>: the Terminal.Gui application, which tests make on the in-memory driver.</summary>
+    public Func<Terminal.Gui.App.IApplication>? CreateApplication { get; set; }
+
+    /// <summary>For <c>hvo-sky ui</c>: what runs the interface, which tests replace to drive it.</summary>
+    public Action<Terminal.Gui.App.IApplication, Terminal.Gui.App.IRunnable>? RunApplication { get; set; }
+
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromMilliseconds(5);
 
     /// <summary>The fake's current process start time, which a restart replaces.</summary>
@@ -240,6 +252,14 @@ internal sealed class CliHarness : IDisposable
     {
         using var output = new StringWriter();
         using var error = new StringWriter();
+        var host = CreateHost(output, error);
+        var code = await SkyCli.RunAsync(args, host, cancellationToken).ConfigureAwait(false);
+        return new CliResult(code, output.ToString(), error.ToString());
+    }
+
+    /// <summary>The machine hvo-sky runs on: this harness's home, environment, answers, clock and fake API.</summary>
+    public SkyCliHost CreateHost(TextWriter output, TextWriter error)
+    {
         var host = new SkyCliHost
         {
             Out = output,
@@ -256,11 +276,14 @@ internal sealed class CliHarness : IDisposable
             ReadAllInput = () => StandardInput,
             PollInterval = PollInterval,
             UserId = UserId,
+            Time = Time,
+            HasTerminal = HasTerminal,
             ClientVersion = "0.9.0-test+" + new string('c', 40),
-            CreateHandler = Api.CreateHandler
+            CreateHandler = Api.CreateHandler,
+            CreateApplication = CreateApplication ?? SkyCliHost.CreateTerminalApplication,
+            RunApplication = RunApplication ?? SkyCliHost.RunTerminalApplication
         };
-        var code = await SkyCli.RunAsync(args, host, cancellationToken).ConfigureAwait(false);
-        return new CliResult(code, output.ToString(), error.ToString());
+        return host;
     }
 
     public void Dispose()

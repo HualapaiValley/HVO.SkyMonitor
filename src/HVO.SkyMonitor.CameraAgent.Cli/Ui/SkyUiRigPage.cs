@@ -37,7 +37,7 @@ internal sealed class SkyUiRigPage : SkyUiPage
         _revisionsPanel = AddPanel("Revisions", _revisions);
         _cameraPanel = AddPanel("Camera settings", _camera);
         _revisions.SelectionChanged += (_, _) => UpdateButtons();
-        _revisions.Activated += (_, _) => Stage();
+        _revisions.RowActivated += (_, _) => Stage();
         _stage = AddButton("Stage", Stage, primary: true);
         _apply = AddButton("Apply", Apply);
         _changeCamera = AddButton("Change camera", ChangeCamera);
@@ -54,7 +54,7 @@ internal sealed class SkyUiRigPage : SkyUiPage
 
     private string? Staged => Ui.Data.Rigs.HasValue ? SkyJson.Text(Ui.Data.Rigs.Value, "selection", "pendingRevisionId") : null;
 
-    private SkySettingField? CameraField => Ui.Data.Settings.Value?.FindGroup("camera")?.Fields.FirstOrDefault();
+    private SkySettingField? CameraField => Ui.Data.Settings.Value?.FindGroup("camera")?.Fields is { Count: > 0 } fields ? fields[0] : null;
 
     public override void Refresh()
     {
@@ -118,7 +118,7 @@ internal sealed class SkyUiRigPage : SkyUiPage
         => string.Join("\n\n", Describe(_activePanel.Caption, _active, 60), Describe(_stagedPanel.Caption, _staged, 60),
             Describe(_revisionsPanel.Caption, _revisions, 100), Describe(_cameraPanel.Caption, _camera, 76));
 
-    private static IReadOnlyList<SkyUiField> Describe(IReadOnlyList<JsonElement> revisions, string? id, string? failure)
+    private static List<SkyUiField> Describe(IReadOnlyList<JsonElement> revisions, string? id, string? failure)
     {
         if (id is null)
         {
@@ -184,19 +184,19 @@ internal sealed class SkyUiRigPage : SkyUiPage
                 ], "Stage", _ =>
                 {
                     Ui.Run(
-                        token => client.SendAsync(HttpMethod.Post, SkyRoutes.RigStage, new
+                        (operation, token) => operation.SendChangeAsync(client, HttpMethod.Post, SkyRoutes.RigStage, new
                         {
                             revisionId = id,
                             expectedVersion = version,
                             acknowledgeUnvalidated = true,
                             expectedScheduleRevisionId = SkyJson.Text(preview, "scheduleRevisionId"),
                             expectedScheduleProfileSha256 = SkyJson.Text(preview, "scheduleProfileSha256")
-                        }, token),
-                        (_, failure) =>
+                        }, $"the staging of rig revision {id}", token),
+                        (_, failure, operation) =>
                         {
-                            Ui.Say(failure is null ? HvoNotice.Success : HvoNotice.Danger, failure is null
-                                ? $"Staged rig revision {id}. It takes effect when CameraAgent next starts: Apply restarts it now."
-                                : $"Rig revision {id} was not staged: {SkyCliContext.Classify(failure).Message}", failure is null ? null : "[REFUSED]");
+                            Ui.SayOutcome(operation, failure,
+                                $"Staged rig revision {id}. It takes effect when CameraAgent next starts: Apply restarts it now.",
+                                $"Rig revision {id} was not staged");
                             Refresh();
                         });
                     return null;
@@ -217,31 +217,17 @@ internal sealed class SkyUiRigPage : SkyUiPage
         Ui.OpenPrompt(new SkyUiPromptSpec("Apply the staged rig",
         [
             new($"Restart CameraAgent at {Ui.Connection?.Url} to apply rig revision {staged}?"),
-            new("Capture stops until it is back. The interface waits for the new process, then checks the rig.", HvoTone.Muted)
+            new("Capture stops until it is back. The interface waits for the new process, then until the rig is active or its camera fails.", HvoTone.Muted)
         ], "Restart", _ =>
         {
-            Ui.Restart((outcome, error) =>
-            {
-                if (error is not null)
-                {
-                    Ui.Say(HvoNotice.Danger, $"CameraAgent was not restarted: {SkyCliContext.Classify(error).Message}", "[REFUSED]");
-                    return;
-                }
-
-                Ui.Read(Ui.Data.Rigs, SkyRoutes.RigProfiles, static element => element, () =>
-                {
-                    var active = SkyJson.Text(Ui.Data.Rigs.Value, "selection", "activeRevisionId");
-                    if (active == staged)
-                    {
-                        Ui.Say(HvoNotice.Success, $"Rig revision {staged} is active. CameraAgent restarted at {SkyCliFormat.Time(outcome!.After!.Host.ProcessStartedUtc)}.");
-                    }
-                    else
-                    {
-                        var failure = SkyJson.Text(Ui.Data.Rigs.Value, "pendingRuntimeFailure") ?? SkyJson.Text(Ui.Data.Rigs.Value, "activeRuntimeFailure");
-                        Ui.Say(HvoNotice.Danger, $"CameraAgent restarted, but rig revision {staged} did not become active{(failure is null ? "." : $": {failure}")}", "[FAILED]");
-                    }
-                });
-            });
+            // As 'hvo-sky rig apply': the staged rig becomes active only once its camera has initialized, so the rig is read
+            // until it is, CameraAgent reports a failure, or the deadline passes.
+            Ui.Restart(
+                $"the restart that applies rig revision {staged}",
+                (operation, client, token) => SkyCli.WaitForRigAsync(operation, client, staged, token),
+                (outcome, error, operation) => Ui.SayOutcome(operation, error,
+                    error is null ? $"Rig revision {staged} is active. CameraAgent restarted at {SkyCliFormat.Time(outcome!.After!.Host.ProcessStartedUtc)}." : string.Empty,
+                    "CameraAgent was not restarted"));
             return null;
         }));
     }

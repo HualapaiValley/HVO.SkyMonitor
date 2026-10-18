@@ -67,7 +67,12 @@ internal abstract class SkyUiPage : View
 
     protected HvoPanel AddPanel(string title, View body)
     {
+        ArgumentNullException.ThrowIfNull(body);
         var panel = new HvoPanel(Theme, title);
+        body.X = 0;
+        body.Y = 0;
+        body.Width = Dim.Fill();
+        body.Height = Dim.Fill();
         panel.Body.Add(body);
         Add(panel);
         return panel;

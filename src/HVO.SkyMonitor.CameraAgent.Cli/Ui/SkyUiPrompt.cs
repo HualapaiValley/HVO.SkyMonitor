@@ -31,7 +31,7 @@ internal sealed record SkyUiPromptSpec(string Title, IReadOnlyList<HvoLine> Line
 /// A prompt drawn over the page in a titled panel, not a modal dialog: Esc closes it, and the interface's keys keep
 /// working. The first field, choice or toggle has the focus; Enter in a field runs the action.
 /// </summary>
-internal sealed class SkyUiPrompt
+internal sealed class SkyUiPrompt : IDisposable
 {
     private readonly SkyUiPromptSpec _spec;
     private readonly Action<SkyUiPrompt> _close;
@@ -167,4 +167,7 @@ internal sealed class SkyUiPrompt
             .Concat(_choices?.Lines ?? [])
             .Concat(_acknowledge is null ? [] : [_acknowledge.Line])
             .Append(Error));
+
+    /// <summary>Disposes the panel, and with it every field, choice and button on it.</summary>
+    public void Dispose() => Panel.Dispose();
 }

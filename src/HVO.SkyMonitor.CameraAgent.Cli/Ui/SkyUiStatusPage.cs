@@ -10,6 +10,9 @@ namespace HVO.SkyMonitor.CameraAgent.Cli.Ui;
 /// </summary>
 internal sealed class SkyUiStatusPage : SkyUiPage
 {
+    /// <summary>The queues whose quarantined items the Queues panel adds up.</summary>
+    private static readonly string[] QuarantiningQueues = ["rawIngress", "captureLanes", "captureProcessing", "artifactOutbox"];
+
     private readonly SkyUiFields _capture;
     private readonly SkyUiFields _queues;
     private readonly SkyUiFields _delivery;
@@ -63,13 +66,17 @@ internal sealed class SkyUiStatusPage : SkyUiPage
         }
         else
         {
+            // 80 x 24: capture and queues side by side, storage, and the recent changes in the rows left.
             var left = (width - 3) / 2;
             Place(_capturePanel, 1, 0, left, 8);
             Place(_queuesPanel, 2 + left, 0, width - 3 - left, 8);
             Place(_storagePanel, 1, 8, width - 2, stores + 2);
+            var top = 8 + stores + 2;
+            var rows = height - top - 2;
+            Place(_changesPanel, 1, top, width - 2, Math.Max(3, rows));
             _deliveryPanel.Visible = false;
-            _changesPanel.Visible = false;
-            PlaceButtons(8 + stores + 3);
+            _changesPanel.Visible = rows >= 3;
+            PlaceButtons(Math.Max(top + (rows >= 3 ? rows : 0) + 1, height - 1));
         }
     }
 
@@ -131,8 +138,7 @@ internal sealed class SkyUiStatusPage : SkyUiPage
 
     internal static IReadOnlyList<SkyUiField> Queues(JsonElement summary)
     {
-        var quarantined = new[] { "rawIngress", "captureLanes", "captureProcessing", "artifactOutbox" }
-            .Sum(name => SkyJson.Integer(summary, name, "value", "quarantineCount") ?? 0);
+        var quarantined = QuarantiningQueues.Sum(name => SkyJson.Integer(summary, name, "value", "quarantineCount") ?? 0);
         var central = SkyJson.Text(summary, "configuration", "value", "centralIntegration") ?? "unknown";
         return
         [

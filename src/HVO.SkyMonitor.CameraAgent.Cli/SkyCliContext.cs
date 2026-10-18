@@ -85,6 +85,13 @@ internal sealed class SkyCliOutcomeException : Exception
     public bool SaysWhatWasAccepted { get; init; }
 }
 
+/// <summary>
+/// What a failure means, as a command reports it: its exit code and <c>--json</c> kind; the failure's own kind when it
+/// came after CameraAgent accepted a change (<see cref="Cause"/>); the message; and whether a change may have happened,
+/// so nothing that may have changed is called unchanged.
+/// </summary>
+internal readonly record struct SkyCliFailure(SkyExitCode Code, string Kind, string? Cause, string Message, bool ChangeMayHaveHappened);
+
 /// <summary>One run of a command: its global options, its output, and the connection to CameraAgent.</summary>
 internal sealed class SkyCliContext
 {
@@ -128,6 +135,12 @@ internal sealed class SkyCliContext
     /// changed something, so no failure may say that nothing changed (exit 3): it exits 1 and says what was accepted.
     /// </summary>
     public string? AcceptedChange { get; private set; }
+
+    /// <summary>
+    /// A context for one operation of the terminal interface: the same host and options, with a deadline and a record of
+    /// what CameraAgent accepted of its own, so that each change is reported as the command would report it.
+    /// </summary>
+    public SkyCliContext ForOperation(SkyCliDeadline deadline) => new(Host, Json, UrlOverride, CredentialsPath) { Deadline = deadline };
 
     /// <summary>Reads the credentials file: null when there is none.</summary>
     /// <exception cref="SkyCredentialFileException">The file, or its folder, exists but cannot be used.</exception>
@@ -277,33 +290,12 @@ internal sealed class SkyCliContext
     }
 
     /// <summary>
-    /// Reports <paramref name="error"/> and returns its exit code. After CameraAgent accepted a change, the failure exits 1
-    /// (kind <c>Unverified</c>) and says the change was accepted but could not be verified; an interruption still exits 130,
-    /// saying the same. A failure of the change's own request that leaves its fate unknown says so.
+    /// Reports <paramref name="error"/> as <see cref="Describe"/> words it, and returns its exit code.
     /// </summary>
     public int Fail(Exception error)
     {
         ArgumentNullException.ThrowIfNull(error);
-        var (code, kind, message) = Classify(error);
-        string? cause = null;
-        if (AcceptedChange is { } accepted && error is not SkyCliOutcomeException { SaysWhatWasAccepted: true })
-        {
-            if (code == SkyExitCode.Interrupted)
-            {
-                message = $"Interrupted after CameraAgent accepted {accepted}; it was not verified.";
-            }
-            else
-            {
-                cause = kind;
-                (code, kind, message) = (SkyExitCode.Failed, "Unverified", $"CameraAgent accepted {accepted}, but it could not be verified: {message}");
-            }
-        }
-        else if (_sending is { } sending && code != SkyExitCode.Interrupted && error is not SkyApiException { StatusCode: > 0 })
-        {
-            // The change was sent, and CameraAgent's answer, if any, was not read.
-            message = $"{message} Whether CameraAgent received {sending} is not known: check before sending it again.";
-        }
-
+        var (code, kind, cause, message, _) = Describe(error);
         var refusal = error as SkyApiException;
         if (Json)
         {
@@ -348,6 +340,36 @@ internal sealed class SkyCliContext
         }
 
         return (int)code;
+    }
+
+    /// <summary>
+    /// What <paramref name="error"/> means for this command. After CameraAgent accepted a change, a failure exits 1 (kind
+    /// <c>Unverified</c>) and says the change was accepted but could not be verified; an interruption still exits 130,
+    /// saying the same. A failure of the change's own request that leaves its fate unknown says so.
+    /// </summary>
+    public SkyCliFailure Describe(Exception error)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        var (code, kind, message) = Classify(error);
+        if (AcceptedChange is { } accepted && error is not SkyCliOutcomeException { SaysWhatWasAccepted: true })
+        {
+            return code == SkyExitCode.Interrupted
+                ? new(code, kind, null, $"Interrupted after CameraAgent accepted {accepted}; it was not verified.", true)
+                : new(SkyExitCode.Failed, "Unverified", kind, $"CameraAgent accepted {accepted}, but it could not be verified: {message}", true);
+        }
+
+        if (AcceptedChange is not null)
+        {
+            return new(code, kind, null, message, true);
+        }
+
+        if (_sending is { } sending && code != SkyExitCode.Interrupted && error is not SkyApiException { StatusCode: > 0 })
+        {
+            // The change was sent, and CameraAgent's answer, if any, was not read.
+            return new(code, kind, null, $"{message} Whether CameraAgent received {sending} is not known: check before sending it again.", true);
+        }
+
+        return new(code, kind, null, message, _sending is not null && code == SkyExitCode.Interrupted);
     }
 
     internal static (SkyExitCode Code, string Kind, string Message) Classify(Exception error) => error switch

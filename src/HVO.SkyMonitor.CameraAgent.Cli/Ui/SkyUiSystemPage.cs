@@ -39,10 +39,20 @@ internal sealed class SkyUiSystemPage : SkyUiPage
 
     public override void Arrange(int width, int height, bool wide)
     {
-        var left = (width - 3) / 2;
-        Place(_clientPanel, 1, 0, left, 9);
-        Place(_agentPanel, 2 + left, 0, width - 3 - left, 9);
-        PlaceButtons(Math.Min(height - 1, 10));
+        if (wide)
+        {
+            var left = (width - 3) / 2;
+            Place(_clientPanel, 1, 0, left, 9);
+            Place(_agentPanel, 2 + left, 0, width - 3 - left, 9);
+            PlaceButtons(Math.Min(height - 1, 10));
+        }
+        else
+        {
+            // 80 x 24: one above the other, so the paths and versions have the width.
+            Place(_clientPanel, 1, 0, width - 2, 8);
+            Place(_agentPanel, 1, 8, width - 2, 8);
+            PlaceButtons(Math.Min(height - 1, 17));
+        }
     }
 
     public override void DataChanged()
@@ -116,12 +126,12 @@ internal sealed class SkyUiSystemPage : SkyUiPage
 
                     try
                     {
-                        var file = SkyCredentialStore.Load(context.CredentialsPath);
-                        SkyCredentialStore.Save(context.CredentialsPath, (file ?? new SkyStoredCredentials()) with { Url = url, ApiKey = key });
+                        var file = context.LoadCredentials();
+                        context.SaveCredentials((file ?? new SkyStoredCredentials()) with { Url = url, ApiKey = key });
                     }
-                    catch (Exception failure) when (failure is SkyCredentialFileException or IOException or UnauthorizedAccessException)
+                    catch (SkyCredentialFileException failure)
                     {
-                        Ui.Say(HvoNotice.Danger, $"The key was accepted but not saved: {failure.Message}", "[ERROR]");
+                        Ui.Say(HvoNotice.Danger, $"CameraAgent accepted the key, but it was not saved: {failure.Message}", "[REFUSED]");
                         return;
                     }
 
@@ -151,17 +161,18 @@ internal sealed class SkyUiSystemPage : SkyUiPage
             new("The key itself works until the site owner revokes it in CameraAgent (Account, API keys).", HvoTone.Muted)
         ], "Sign out", _ =>
         {
+            // A file that exists but cannot be used is refused, as 'hvo-sky logout' refuses it: the key may still be in it.
             try
             {
-                var file = SkyCredentialStore.Load(Ui.Context.CredentialsPath);
+                var file = Ui.Context.LoadCredentials();
                 if (file is not null)
                 {
-                    SkyCredentialStore.Save(Ui.Context.CredentialsPath, file with { ApiKey = null });
+                    Ui.Context.SaveCredentials(file with { ApiKey = null });
                 }
             }
-            catch (Exception failure) when (failure is SkyCredentialFileException or IOException or UnauthorizedAccessException)
+            catch (SkyCredentialFileException failure)
             {
-                return $"The key could not be removed: {failure.Message}";
+                return $"The API key could not be removed: {failure.Message}";
             }
 
             Ui.Connect();
@@ -183,9 +194,9 @@ internal sealed class SkyUiSystemPage : SkyUiPage
             new("Settings and a staged rig that apply at its next start take effect. The interface waits for the new process.", HvoTone.Muted)
         ], "Restart", _ =>
         {
-            Ui.Restart((outcome, error) => Ui.Say(error is null ? HvoNotice.Success : HvoNotice.Danger, error is null
-                ? $"CameraAgent is back: started {SkyCliFormat.Time(outcome!.After!.Host.ProcessStartedUtc)}, running {outcome.After.Application.InformationalVersion}."
-                : $"CameraAgent was not restarted: {SkyCliContext.Classify(error).Message}", error is null ? null : "[REFUSED]"));
+            Ui.Restart("the restart", after: null, (outcome, error, operation) => Ui.SayOutcome(operation, error,
+                error is null ? $"CameraAgent is back: started {SkyCliFormat.Time(outcome!.After!.Host.ProcessStartedUtc)}, running {outcome.After.Application.InformationalVersion}." : string.Empty,
+                "CameraAgent was not restarted"));
             return null;
         }));
     }

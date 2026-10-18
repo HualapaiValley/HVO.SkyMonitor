@@ -2,7 +2,8 @@
 
 `hvo-sky` is the runtime client of a running CameraAgent (install contract section 8,
 [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317)). It shows the instance's status and versions,
-reads and changes its operator settings, stages and applies rig and schedule changes, and restarts it. It talks to
+reads and changes its operator settings, stages and applies rig and schedule changes, and restarts it, as commands or
+in a full-screen terminal interface (`hvo-sky ui`). It talks to
 CameraAgent's operations API over HTTP with an owner API key. It never reaches into CameraAgent's process, its
 containers or its databases, and it needs no `sudo`.
 
@@ -110,6 +111,7 @@ each read, and a read that runs out of time is a failed read. A restart on a slo
 | `schedule stage FILE [--basis REV] [--reason R]` | ReadWrite | Stages a schedule revision from a capture profile: the `profile` of a revision as `schedule show --json` gives it, edited. `--basis` names the revision whose module and step options it keeps (default the active one). |
 | `schedule apply [REVISION] [--reason R]` | ReadWrite | Activates the staged revision, or the one named, at the next capture boundary. An older revision goes back by rollback. Which one it is comes from the revision numbers CameraAgent lists; a revision it does not list is refused (exit 3). |
 | `login`, `logout` | none | See [Signing in](#signing-in). |
+| `ui` | Read; ReadWrite to change | The full-screen terminal interface: see [The terminal interface](#the-terminal-interface). |
 
 ### Settings
 
@@ -172,6 +174,47 @@ A schedule revision applies at the next capture boundary and needs no restart. C
 decides which from the revision numbers CameraAgent reports for the named revision and the active one. The schedule
 lists the active, the staged and the most recent revisions; a revision it does not list, or one listed without a number,
 is refused with the reason and nothing sent (exit 3), rather than guessed.
+
+## The terminal interface
+
+`hvo-sky ui` shows the same instance as the commands, on five pages, and makes the same changes with the same checks,
+over the same API and key. It is the terminal prototype of RoofController #158 in HVO Dark, drawn with the installer
+wizard's [`HVO.SkyMonitor.TerminalUi`](../../src/HVO.SkyMonitor.TerminalUi/README.md).
+
+![The Status page at 120 x 32](../images/terminal/ui-120x32-1-status.svg)
+
+| Key | Page | What it shows, and what it changes |
+| --- | --- | --- |
+| F1 | Status | Capture and the camera, the queues, storage and, from 110 columns, LogicHost delivery; the recent changes of state. Read every poll interval (2 s). |
+| F2 | Settings | The settings catalogue's groups and settings, each with its value, source and whether it can be changed here, and the chosen one's rules. **Change** builds its form from the catalogue, as `config set` checks it. |
+| F3 | Camera & rig | The active and staged rig revisions, the revisions, and the camera settings. **Stage** previews and stages a revision, with the acknowledgement `rig stage` asks for; **Apply** restarts CameraAgent and waits, as `rig apply` does. |
+| F4 | Schedule | The active and staged schedule revisions, whether capture is admitted, the revisions and the next capture windows. **Apply staged** and **Activate** activate a revision at the next capture boundary, going forward or back from the revision numbers, as `schedule apply` does. |
+| F5 | System | `hvo-sky`'s own version, the address and key in use and where they come from, and CameraAgent's version, runtime, catalog and restart support. **Sign in** checks a key with CameraAgent before saving it, as `login` does; **Sign out** removes it, as `logout` does; **Restart** restarts CameraAgent and waits for it. |
+
+- **Keys.** F1 to F5 choose a page and F10 quits; Tab moves between controls, Enter selects, Ctrl+R reads again. Esc
+  closes a prompt and never the interface. A change opens a prompt over the page that says what it does; nothing is sent
+  until its action is chosen.
+- **Sizes.** Every page is usable at 80 x 24; from 110 columns the pages use the width, and 120 x 32 shows more rows.
+- **What is current.** The header's badge says whether what shows is current: `[LIVE]`, `[STALE]` (not read again in
+  time), `[OFFLINE]` (CameraAgent did not answer, or not within `--timeout`), `[SIGNED OUT]` or `[NOT SIGNED IN]`. A
+  read that fails keeps the last values on screen, with `LAST KNOWN` in their panels' titles and when they were read:
+  nothing is shown as current that CameraAgent has not just said.
+- **Outcomes.** A change ends as the command would end it: done; refused, and nothing changed; or, once CameraAgent has
+  accepted it, `[UNVERIFIED]` with what it accepted and why it could not be verified.
+- **`--timeout`** bounds each read and change, since the interface runs until F10.
+- **Terminals.** True colour where the terminal says so (`COLORTERM=truecolor`), otherwise its 16 ANSI colours;
+  `NO_COLOR` gives the terminal's own colours with bold and reverse video; a locale that is not UTF-8 gets ASCII frames
+  and nothing but ASCII; `HVO_TERMINAL` overrides either.
+- **Exit codes.** 0 on F10; 130 on a signal; 2 without a terminal (standard input and output), or with `--json`; 1 when
+  Terminal.Gui cannot start on the terminal there is. Scripts use the commands.
+
+![The Settings page at 80 x 24 in a locale that is not UTF-8: ASCII frames](../images/terminal/ui-80x24-2-settings-ascii.svg)
+
+![The Status page at 80 x 24 while CameraAgent does not answer: OFFLINE, and the values LAST KNOWN](../images/terminal/ui-80x24-1-status-offline.svg)
+
+Every page's screenshot, at both sizes, in each fallback and while CameraAgent does not answer, is in
+[`docs/images/terminal`](../images/terminal) (`ui-*`). The interface's tests draw them on Terminal.Gui's in-memory
+driver, and `scripts/docs:terminal-screenshots` refreshes the folder.
 
 ## Scripts
 
@@ -243,6 +286,9 @@ Nothing here needs a camera, Docker or a Pi.
   every command's output, `--json` and exit codes 0, 1, 2, 3 and 130, the credentials file's modes, the environment
   overrides, the refusal of credentials on the command line, and that no output or URL ever holds the key.
 - **The new routes** are tested with the host's authorization metadata (`CameraAgentSystemOperationsEndpointsTests`).
+- **The terminal interface** runs on Terminal.Gui's in-memory driver against the same fake API
+  (`tests/HVO.SkyMonitor.CameraAgent.Tests/Cli/Ui`): the command's exit codes, the pages and keys, what is marked when it
+  is not current, each change and its outcome, and every page's screenshot at both sizes and in the fallbacks.
 - **Against the real host,** `HvoSkyCliTests` (Integration) runs `login`, `info`, `status`, `config`, `restart`, `rig`,
   `schedule` and `logout` against the in-process CameraAgent with keys the owner created, including a Read key refused a
   change and a revoked key.

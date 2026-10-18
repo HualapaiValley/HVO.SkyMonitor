@@ -79,7 +79,7 @@ internal sealed record SkyUiRow(string Key, IReadOnlyList<string> Cells, HvoTone
 /// <summary>
 /// A table to choose a row from: a muted heading, then the rows, the chosen one marked with <c>&gt;</c> (so it never
 /// depends on colour) and, while the table has the focus, on the strong accent. Up, Down, Page Up, Page Down, Home and End
-/// move the choice and scroll it into view; Enter is <see cref="Activated"/>. The choice survives a refresh by its key.
+/// move the choice and scroll it into view; Enter is <see cref="RowActivated"/>. The choice survives a refresh by its key.
 /// </summary>
 internal sealed class SkyUiTable : View
 {
@@ -106,7 +106,7 @@ internal sealed class SkyUiTable : View
         AddCommand(Command.End, () => Choose(_rows.Count - 1));
         AddCommand(Command.Accept, () =>
         {
-            Activated?.Invoke(this, EventArgs.Empty);
+            RowActivated?.Invoke(this, EventArgs.Empty);
             return true;
         });
         KeyBindings.Add(Key.CursorUp, Command.Up);
@@ -122,7 +122,7 @@ internal sealed class SkyUiTable : View
     public event EventHandler? SelectionChanged;
 
     /// <summary>Enter was pressed on the table.</summary>
-    public event EventHandler? Activated;
+    public event EventHandler? RowActivated;
 
     /// <summary>What the table says when it has no rows.</summary>
     public string Empty { get; set; } = "Nothing to show.";

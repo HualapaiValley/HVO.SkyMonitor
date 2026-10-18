@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="696" height="486" viewBox="0 0 696.00 486.00" role="img" aria-label="hvo-sky ui">
+<g font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', 'DejaVu Sans Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" xml:space="preserve" style="white-space: pre">
+<rect x="0" y="0" width="696.00" height="486.00" rx="8" fill="#000000"/>
+<rect x="0" y="0" width="696.00" height="30" rx="8" fill="#323233"/>
+<rect x="0" y="22" width="696.00" height="8" fill="#323233"/>
+<circle cx="16" cy="15.0" r="6" fill="#ff5f57"/>
+<circle cx="36" cy="15.0" r="6" fill="#febc2e"/>
+<circle cx="56" cy="15.0" r="6" fill="#28c840"/>
+<text x="348.00" y="20.0" fill="#cccccc" text-anchor="middle" font-size="13">hvo-sky ui</text>
+<rect x="20.40" y="402" width="92.80" height="18.4" fill="#29b8db"/>
+<rect x="20.40" y="438" width="92.80" height="18.4" fill="#2472c8"/>
+<line x1="24.60" y1="104.40" x2="24.60" y2="231.60" stroke="#666666" stroke-width="1.2"/>
+<line x1="24.60" y1="248.40" x2="24.60" y2="285.60" stroke="#666666" stroke-width="1.2"/>
+<line x1="24.60" y1="302.40" x2="24.60" y2="375.60" stroke="#666666" stroke-width="1.2"/>
+<line x1="24.00" y1="105.00" x2="37.80" y2="105.00" stroke="#666666" stroke-width="1.2"/>
+<line x1="112.20" y1="105.00" x2="336.00" y2="105.00" stroke="#666666" stroke-width="1.2"/>
+<line x1="351.60" y1="105.00" x2="365.40" y2="105.00" stroke="#666666" stroke-width="1.2"/>
+<line x1="431.40" y1="105.00" x2="672.00" y2="105.00" stroke="#666666" stroke-width="1.2"/>
+<line x1="335.40" y1="104.40" x2="335.40" y2="231.60" stroke="#666666" stroke-width="1.2"/>
+<line x1="352.20" y1="104.40" x2="352.20" y2="231.60" stroke="#666666" stroke-width="1.2"/>
+<line x1="671.40" y1="104.40" x2="671.40" y2="231.60" stroke="#666666" stroke-width="1.2"/>
+<line x1="671.40" y1="248.40" x2="671.40" y2="285.60" stroke="#666666" stroke-width="1.2"/>
+<line x1="671.40" y1="302.40" x2="671.40" y2="375.60" stroke="#666666" stroke-width="1.2"/>
+<line x1="24.00" y1="231.00" x2="336.00" y2="231.00" stroke="#666666" stroke-width="1.2"/>
+<line x1="351.60" y1="231.00" x2="672.00" y2="231.00" stroke="#666666" stroke-width="1.2"/>
+<line x1="24.00" y1="249.00" x2="37.80" y2="249.00" stroke="#666666" stroke-width="1.2"/>
+<line x1="112.20" y1="249.00" x2="672.00" y2="249.00" stroke="#666666" stroke-width="1.2"/>
+<line x1="24.00" y1="285.00" x2="672.00" y2="285.00" stroke="#666666" stroke-width="1.2"/>
+<line x1="24.00" y1="303.00" x2="37.80" y2="303.00" stroke="#666666" stroke-width="1.2"/>
+<line x1="171.00" y1="303.00" x2="672.00" y2="303.00" stroke="#666666" stroke-width="1.2"/>
+<line x1="24.00" y1="375.00" x2="672.00" y2="375.00" stroke="#666666" stroke-width="1.2"/>
+<text x="20.40" y="55.50" fill="#ffffff" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">HVO SKYMONITOR</text>
+<text x="625.20" y="55.50" fill="#23d18b" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[LIVE]</text>
+<text x="20.40" y="73.50" fill="#e5e5e5" textLength="285.60" lengthAdjust="spacingAndGlyphs">CameraAgent http://127.0.0.1:5130/</text>
+<text x="322.80" y="73.50" fill="#e5e5e5" textLength="168.00" lengthAdjust="spacingAndGlyphs">allsky01, VirtualSky</text>
+<text x="45.60" y="109.50" fill="#29b8db" textLength="58.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">CAPTURE</text>
+<text x="373.20" y="109.50" fill="#29b8db" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">QUEUES</text>
+<text x="37.20" y="127.50" fill="#e5e5e5" textLength="58.80" lengthAdjust="spacingAndGlyphs">Control</text>
+<text x="138.00" y="127.50" fill="#23d18b" textLength="58.80" lengthAdjust="spacingAndGlyphs">Running</text>
+<text x="364.80" y="127.50" fill="#e5e5e5" textLength="92.40" lengthAdjust="spacingAndGlyphs">Raw ingress</text>
+<text x="465.60" y="127.50" fill="#ffffff" textLength="75.60" lengthAdjust="spacingAndGlyphs">0 pending</text>
+<text x="37.20" y="145.50" fill="#e5e5e5" textLength="50.40" lengthAdjust="spacingAndGlyphs">Camera</text>
+<text x="138.00" y="145.50" fill="#23d18b" textLength="75.60" lengthAdjust="spacingAndGlyphs">Available</text>
+<text x="364.80" y="145.50" fill="#e5e5e5" textLength="42.00" lengthAdjust="spacingAndGlyphs">Lanes</text>
+<text x="465.60" y="145.50" fill="#ffffff" textLength="75.60" lengthAdjust="spacingAndGlyphs">0 pending</text>
+<text x="37.20" y="163.50" fill="#e5e5e5" textLength="84.00" lengthAdjust="spacingAndGlyphs">Last frame</text>
+<text x="138.00" y="163.50" fill="#ffffff" textLength="151.20" lengthAdjust="spacingAndGlyphs">19:29:58Z (7s ago)</text>
+<text x="364.80" y="163.50" fill="#e5e5e5" textLength="84.00" lengthAdjust="spacingAndGlyphs">Processing</text>
+<text x="465.60" y="163.50" fill="#ffffff" textLength="75.60" lengthAdjust="spacingAndGlyphs">0 pending</text>
+<text x="37.20" y="181.50" fill="#e5e5e5" textLength="33.60" lengthAdjust="spacingAndGlyphs">Rate</text>
+<text x="138.00" y="181.50" fill="#ffffff" textLength="134.40" lengthAdjust="spacingAndGlyphs">4.0 captures/min</text>
+<text x="364.80" y="181.50" fill="#e5e5e5" textLength="50.40" lengthAdjust="spacingAndGlyphs">Outbox</text>
+<text x="465.60" y="181.50" fill="#ffffff" textLength="159.60" lengthAdjust="spacingAndGlyphs">2 pending (4.0 KiB)</text>
+<text x="37.20" y="199.50" fill="#e5e5e5" textLength="67.20" lengthAdjust="spacingAndGlyphs">Exposure</text>
+<text x="138.00" y="199.50" fill="#ffffff" textLength="58.80" lengthAdjust="spacingAndGlyphs">unknown</text>
+<text x="364.80" y="199.50" fill="#e5e5e5" textLength="92.40" lengthAdjust="spacingAndGlyphs">Quarantined</text>
+<text x="465.60" y="199.50" fill="#ffffff">0</text>
+<text x="37.20" y="217.50" fill="#e5e5e5" textLength="50.40" lengthAdjust="spacingAndGlyphs">Config</text>
+<text x="138.00" y="217.50" fill="#23d18b" textLength="42.00" lengthAdjust="spacingAndGlyphs">Valid</text>
+<text x="364.80" y="217.50" fill="#e5e5e5" textLength="75.60" lengthAdjust="spacingAndGlyphs">LogicHost</text>
+<text x="465.60" y="217.50" fill="#ffffff" textLength="67.20" lengthAdjust="spacingAndGlyphs">Disabled</text>
+<text x="45.60" y="253.50" fill="#29b8db" textLength="58.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">STORAGE</text>
+<text x="37.20" y="271.50" fill="#e5e5e5" textLength="25.20" lengthAdjust="spacingAndGlyphs">raw</text>
+<text x="121.20" y="271.50" fill="#ffffff" textLength="411.60" lengthAdjust="spacingAndGlyphs">120.0 GiB free of 500.0 GiB (24% free), kept 30 d</text>
+<text x="45.60" y="307.50" fill="#29b8db" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">RECENT CHANGES</text>
+<text x="37.20" y="325.50" fill="#e5e5e5" textLength="75.60" lengthAdjust="spacingAndGlyphs">19:30:05Z</text>
+<text x="121.20" y="325.50" fill="#ffffff" textLength="537.60" lengthAdjust="spacingAndGlyphs">capture Running; camera Available; raw 0; lanes 0; processing 0;</text>
+<text x="20.40" y="415.50" fill="#000000" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold" text-decoration="underline">[ Refresh ]</text>
+<text x="20.40" y="433.50" fill="#e5e5e5" textLength="277.20" lengthAdjust="spacingAndGlyphs">Read every 2 s. Ctrl+R reads now.</text>
+<text x="20.40" y="451.50" fill="#ffffff" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[F1 Status]</text>
+<text x="129.60" y="451.50" fill="#ffffff" textLength="16.80" lengthAdjust="spacingAndGlyphs">F2</text>
+<text x="171.60" y="451.50" fill="#ffffff" textLength="16.80" lengthAdjust="spacingAndGlyphs">F3</text>
+<text x="213.60" y="451.50" fill="#ffffff" textLength="16.80" lengthAdjust="spacingAndGlyphs">F4</text>
+<text x="255.60" y="451.50" fill="#ffffff" textLength="16.80" lengthAdjust="spacingAndGlyphs">F5</text>
+<text x="600.00" y="451.50" fill="#e5e5e5" textLength="67.20" lengthAdjust="spacingAndGlyphs">F10 Quit</text>
+<text x="20.40" y="469.50" fill="#ffffff" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Tab</text>
+<text x="54.00" y="469.50" fill="#e5e5e5" textLength="33.60" lengthAdjust="spacingAndGlyphs">move</text>
+<text x="104.40" y="469.50" fill="#ffffff" textLength="42.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">Enter</text>
+<text x="154.80" y="469.50" fill="#e5e5e5" textLength="50.40" lengthAdjust="spacingAndGlyphs">select</text>
+<text x="222.00" y="469.50" fill="#ffffff" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Esc</text>
+<text x="255.60" y="469.50" fill="#e5e5e5" textLength="42.00" lengthAdjust="spacingAndGlyphs">close</text>
+<text x="314.40" y="469.50" fill="#ffffff" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">Ctrl+R</text>
+<text x="373.20" y="469.50" fill="#e5e5e5" textLength="58.80" lengthAdjust="spacingAndGlyphs">refresh</text>
+<text x="558.00" y="469.50" fill="#e5e5e5" textLength="117.60" lengthAdjust="spacingAndGlyphs">read 19:30:05Z</text>
+</g>
+</svg>

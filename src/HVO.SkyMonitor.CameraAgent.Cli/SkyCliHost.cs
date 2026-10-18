@@ -63,15 +63,25 @@ internal sealed class SkyCliHost
     /// Creates and initialises the Terminal.Gui application for <c>hvo-sky ui</c>. Tests give one on Terminal.Gui's
     /// in-memory driver with a virtual clock.
     /// </summary>
-    public Func<IApplication> CreateApplication { get; init; } = static () =>
+    public Func<IApplication> CreateApplication { get; init; } = CreateTerminalApplication;
+
+    /// <summary>Runs the interface until it closes. Tests replace this and drive the window themselves.</summary>
+    public Action<IApplication, IRunnable> RunApplication { get; init; } = RunTerminalApplication;
+
+    /// <summary>Terminal.Gui on this process's terminal.</summary>
+    public static IApplication CreateTerminalApplication()
     {
         var app = Application.Create();
         app.Init();
         return app;
-    };
+    }
 
-    /// <summary>Runs the interface until it closes. Tests replace this and drive the window themselves.</summary>
-    public Action<IApplication, IRunnable> RunApplication { get; init; } = static (app, window) => app.Run(window);
+    /// <summary>Runs <paramref name="window"/> until it is stopped.</summary>
+    public static void RunTerminalApplication(IApplication app, IRunnable window)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+        app.Run(window);
+    }
 
     /// <summary>This build's informational version, which <c>--version</c> prints.</summary>
     public static string Version { get; } =

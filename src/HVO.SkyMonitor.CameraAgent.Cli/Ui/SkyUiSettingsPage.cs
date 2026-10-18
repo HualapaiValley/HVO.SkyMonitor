@@ -31,13 +31,13 @@ internal sealed class SkyUiSettingsPage : SkyUiPage
         _aboutPanel = AddPanel("About", _about);
         _groups.SelectionChanged += (_, _) => ShowGroup();
         _settings.SelectionChanged += (_, _) => ShowSetting();
-        _settings.Activated += (_, _) => Change();
+        _settings.RowActivated += (_, _) => Change();
         _change = AddButton("Change", Change, primary: true);
         AddButton("Reload", () => Ui.ReadSettings());
     }
 
-    public override string Help => SelectedField is { } field && !field.CanWrite
-        ? $"{field.Key} is read-only here: {field.ReadOnlyReason}"
+    public override string Help => SelectedField is { } chosen && !chosen.CanWrite
+        ? $"{chosen.Key} is read-only here: {chosen.ReadOnlyReason}"
         : ChangeRefusal ?? "Up and Down choose; Enter or Change edits the chosen setting.";
 
     /// <summary>The setting chosen in the table.</summary>
@@ -54,14 +54,14 @@ internal sealed class SkyUiSettingsPage : SkyUiPage
 
     public override void Arrange(int width, int height, bool wide)
     {
-        var groups = wide ? 30 : 22;
+        var groups = wide ? 30 : 25;
         var top = wide ? 12 : 9;
         Place(_groupsPanel, 1, 0, groups, top);
         Place(_settingsPanel, 2 + groups, 0, width - 3 - groups, top);
         Place(_aboutPanel, 1, top, width - 2, Math.Max(4, Math.Min(wide ? 10 : 7, height - top - 2)));
         _settings.Columns = wide
             ? [new SkyUiColumn("SETTING", 30), new SkyUiColumn("VALUE", 22), new SkyUiColumn("SOURCE", 18), new SkyUiColumn("NOTE", 40)]
-            : [new SkyUiColumn("SETTING", 22), new SkyUiColumn("VALUE", 14), new SkyUiColumn("NOTE", 40)];
+            : [new SkyUiColumn("SETTING", 20), new SkyUiColumn("VALUE", 24), new SkyUiColumn("NOTE", 40)];
         PlaceButtons(Math.Min(height - 1, top + (wide ? 10 : 7) + 1));
         ShowGroup();
     }
@@ -242,17 +242,17 @@ internal static class SkyUiSettingChange
         var request = new SkySettingsUpdateRequest(group.Version, new Dictionary<string, JsonElement>(StringComparer.Ordinal) { [field.Key] = value }, reason);
         ui.Say(HvoNotice.Info, $"Saving {field.Key}...");
         ui.Run(
-            async token => SkyApiClient.Read<SkySettingsWriteResponse>(await client.SendAsync(
-                HttpMethod.Put, $"{SkySettingsContract.Route}/{Uri.EscapeDataString(group.Group)}", request, token).ConfigureAwait(false)),
-            (response, error) =>
+            async (operation, token) => SkyApiClient.Read<SkySettingsWriteResponse>(await operation.SendChangeAsync(
+                client, HttpMethod.Put, $"{SkySettingsContract.Route}/{Uri.EscapeDataString(group.Group)}", request,
+                $"the {group.Group} settings", token, static answer => SkyJson.Text(answer, "status") != "Unchanged").ConfigureAwait(false)),
+            (response, error, operation) =>
             {
                 if (error is not null)
                 {
-                    var (_, _, message) = SkyCliContext.Classify(error);
                     var details = error is SkyApiException refusal
                         ? string.Join(" ", refusal.Errors.SelectMany(entry => entry.Value).Concat(refusal.Settings.Values))
                         : string.Empty;
-                    ui.Say(HvoNotice.Danger, $"{field.Key} was not saved: {message}{(details.Length > 0 ? " " + details : string.Empty)}", "[REFUSED]");
+                    ui.SayOutcome(operation, error, string.Empty, $"{field.Key} was not saved", details);
                 }
                 else
                 {

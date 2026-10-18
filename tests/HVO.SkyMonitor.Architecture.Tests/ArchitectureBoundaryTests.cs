@@ -23,7 +23,7 @@ public sealed class ArchitectureBoundaryTests
     private const string CameraAgentReplayRunner = "HVO.SkyMonitor.CameraAgent.ReplayRunner";
 
     // hvo-sky (#1317), CameraAgent's runtime client: a separate executable that reaches CameraAgent only over its HTTP
-    // operations API, so it references no project.
+    // operations API, so it references no host project; its terminal interface, 'hvo-sky ui', draws with TerminalUi.
     private const string CameraAgentCli = "HVO.SkyMonitor.CameraAgent.Cli";
     private const string ProcessingRunnerContracts = "HVO.SkyMonitor.ProcessingRunner.Contracts";
     private const string ProcessingRunner = "HVO.SkyMonitor.ProcessingRunner";
@@ -78,7 +78,7 @@ public sealed class ArchitectureBoundaryTests
             [CameraAgentZwo] = Set(AgentCore),
             [CameraAgentReplay] = Set(AgentCore, Processing),
             [CameraAgentReplayRunner] = Set(Processing, CameraAgentReplay),
-            [CameraAgentCli] = Set(),
+            [CameraAgentCli] = Set(TerminalUi),
             [ProcessingRunnerContracts] = Set(AgentCore, Processing),
             [ProcessingRunner] = Set(AgentCore, Processing, ProcessingRunnerContracts),
             [CameraAgent] = Set(CameraAgentCommon, CameraAgentZwo, Catalog, Common),
@@ -220,7 +220,8 @@ public sealed class ArchitectureBoundaryTests
     {
         // #1317: what the terminal programs share. It takes Terminal.Gui and Wcwidth, the width table Terminal.Gui depends
         // on, and nothing else, so the installer and hvo-sky can both build on it; and no host draws a terminal, so
-        // neither CameraAgent nor LogicHost may take it, or Terminal.Gui with it.
+        // neither CameraAgent nor LogicHost may take it, or Terminal.Gui with it. hvo-sky is CameraAgent's terminal
+        // client, not a host: it counts with CameraAgent for test ownership, and its 'ui' draws with TerminalUi.
         var repository = Repository.Value;
         Assert.IsTrue(repository.Projects.TryGetValue(TerminalUi, out var project), $"{TerminalUi} is in the repository.");
         Assert.AreEqual(ProjectKind.Production, project.Kind);
@@ -230,7 +231,8 @@ public sealed class ArchitectureBoundaryTests
         CollectionAssert.AreEquivalent(new[] { "Terminal.Gui", "Wcwidth" }, project.PackageReferences.ToArray(), $"{TerminalUi} takes Terminal.Gui and Wcwidth only.");
 
         var hosts = repository.Projects.Values
-            .Where(candidate => candidate.Kind == ProjectKind.Production && CameraAgentImplementations.Concat([LogicHost]).Contains(candidate.Name))
+            .Where(candidate => candidate.Kind == ProjectKind.Production && candidate.Name != CameraAgentCli
+                && CameraAgentImplementations.Concat([LogicHost]).Contains(candidate.Name))
             .Where(candidate => candidate.References.Contains(TerminalUi) || candidate.PackageReferences.Contains("Terminal.Gui"))
             .Select(candidate => candidate.Name)
             .ToArray();

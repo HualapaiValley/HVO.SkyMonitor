@@ -11,9 +11,10 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# The test projects whose tests save screens. hvo-sky ui's tests add theirs here.
+# The test projects whose tests save screens: the installer's wizard, and hvo-sky ui.
 render_projects=(
   tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj
+  tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj
 )
 
 usage() {

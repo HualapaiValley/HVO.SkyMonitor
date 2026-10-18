@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="696" height="486" viewBox="0 0 696.00 486.00" role="img" aria-label="hvo-sky ui">
+<g font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', 'DejaVu Sans Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" xml:space="preserve" style="white-space: pre">
+<rect x="0" y="0" width="696.00" height="486.00" rx="8" fill="#0d1420"/>
+<rect x="0" y="0" width="696.00" height="30" rx="8" fill="#323233"/>
+<rect x="0" y="22" width="696.00" height="8" fill="#323233"/>
+<circle cx="16" cy="15.0" r="6" fill="#ff5f57"/>
+<circle cx="36" cy="15.0" r="6" fill="#febc2e"/>
+<circle cx="56" cy="15.0" r="6" fill="#28c840"/>
+<text x="348.00" y="20.0" fill="#cccccc" text-anchor="middle" font-size="13">hvo-sky ui</text>
+<rect x="12.00" y="60" width="672.40" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="78" width="672.40" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="96" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="230.40" y="96" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="96" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="114" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="230.40" y="114" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="114" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="132" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="37.20" y="132" width="176.80" height="18.4" fill="#2563eb"/>
+<rect x="230.40" y="132" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="132" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="150" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="230.40" y="150" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="150" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="168" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="230.40" y="168" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="168" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="186" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="230.40" y="186" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="186" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="204" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="230.40" y="204" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="204" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="222" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="230.40" y="222" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="222" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="240" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="230.40" y="240" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="240" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="258" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="258" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="276" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="276" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="294" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="294" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="312" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="312" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="330" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="330" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="348" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="348" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="366" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="366" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="384" width="672.40" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="402" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="20.40" y="402" width="84.40" height="18.4" fill="#2563eb"/>
+<rect x="104.40" y="402" width="17.20" height="18.4" fill="#05070d"/>
+<rect x="121.20" y="402" width="84.40" height="18.4" fill="#111c2a"/>
+<rect x="205.20" y="402" width="479.20" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="420" width="672.40" height="18.4" fill="#05070d"/>
+<rect x="62.40" y="438" width="109.60" height="18.4" fill="#2563eb"/>
+<rect x="12.00" y="456" width="672.40" height="18.4" fill="#05070d"/>
+<line x1="24.60" y1="104.40" x2="24.60" y2="249.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="24.60" y1="266.40" x2="24.60" y2="375.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="24.00" y1="105.00" x2="37.80" y2="105.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="103.80" y1="105.00" x2="226.80" y2="105.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="242.40" y1="105.00" x2="256.20" y2="105.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="372.60" y1="105.00" x2="672.00" y2="105.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="226.20" y1="104.40" x2="226.20" y2="249.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="243.00" y1="104.40" x2="243.00" y2="249.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="671.40" y1="104.40" x2="671.40" y2="249.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="671.40" y1="266.40" x2="671.40" y2="375.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="24.00" y1="249.00" x2="226.80" y2="249.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="242.40" y1="249.00" x2="672.00" y2="249.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="24.00" y1="267.00" x2="37.80" y2="267.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="271.80" y1="267.00" x2="672.00" y2="267.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="24.00" y1="375.00" x2="672.00" y2="375.00" stroke="#3a4a60" stroke-width="1.2"/>
+<text x="20.40" y="55.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">HVO SKYMONITOR</text>
+<text x="625.20" y="55.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[LIVE]</text>
+<text x="20.40" y="73.50" fill="#98a7bb" textLength="285.60" lengthAdjust="spacingAndGlyphs">CameraAgent http://127.0.0.1:5130/</text>
+<text x="322.80" y="73.50" fill="#98a7bb" textLength="168.00" lengthAdjust="spacingAndGlyphs">allsky01, VirtualSky</text>
+<text x="45.60" y="109.50" fill="#58a6ff" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">GROUPS</text>
+<text x="264.00" y="109.50" fill="#58a6ff" textLength="100.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">SITE PROFILE</text>
+<text x="54.00" y="127.50" fill="#98a7bb" textLength="42.00" lengthAdjust="spacingAndGlyphs">GROUP</text>
+<text x="272.40" y="127.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">SETTING</text>
+<text x="423.60" y="127.50" fill="#98a7bb" textLength="42.00" lengthAdjust="spacingAndGlyphs">VALUE</text>
+<text x="566.40" y="127.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">NOTE</text>
+<text x="37.20" y="145.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">&gt; Site profile</text>
+<text x="255.60" y="145.50" fill="#f7f9fc" textLength="151.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">&gt; Observatory name</text>
+<text x="423.60" y="145.50" fill="#f7f9fc" textLength="126.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">Hualapai Valley</text>
+<text x="54.00" y="163.50" fill="#f7f9fc" textLength="159.60" lengthAdjust="spacingAndGlyphs">Deployment location</text>
+<text x="54.00" y="181.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Sky map</text>
+<text x="54.00" y="199.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs">Camera</text>
+<text x="54.00" y="217.50" fill="#f7f9fc" textLength="134.40" lengthAdjust="spacingAndGlyphs">Capture schedule</text>
+<text x="45.60" y="271.50" fill="#58a6ff" textLength="218.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">ABOUT SITE.OBSERVATORYNAME</text>
+<text x="37.20" y="289.50" fill="#f7f9fc" textLength="243.60" lengthAdjust="spacingAndGlyphs">Observatory name of the site.</text>
+<text x="37.20" y="307.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">Accepts</text>
+<text x="121.20" y="307.50" fill="#98a7bb" textLength="369.60" lengthAdjust="spacingAndGlyphs">text, at most 64 characters; empty clears it</text>
+<text x="37.20" y="325.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">Applies</text>
+<text x="121.20" y="325.50" fill="#98a7bb" textLength="168.00" lengthAdjust="spacingAndGlyphs">at once; labels only</text>
+<text x="37.20" y="343.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">Source</text>
+<text x="121.20" y="343.50" fill="#98a7bb" textLength="100.80" lengthAdjust="spacingAndGlyphs">SettingsFile</text>
+<text x="20.40" y="415.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Change ]</text>
+<text x="121.20" y="415.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Reload ]</text>
+<text x="20.40" y="433.50" fill="#98a7bb" textLength="512.40" lengthAdjust="spacingAndGlyphs">Up and Down choose; Enter or Change edits the chosen setting.</text>
+<text x="28.80" y="451.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs">F1</text>
+<text x="62.40" y="451.50" fill="#f7f9fc" textLength="109.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">[F2 Settings]</text>
+<text x="188.40" y="451.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs">F3</text>
+<text x="230.40" y="451.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs">F4</text>
+<text x="272.40" y="451.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs">F5</text>
+<text x="600.00" y="451.50" fill="#98a7bb" textLength="67.20" lengthAdjust="spacingAndGlyphs">F10 Quit</text>
+<text x="20.40" y="469.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Tab</text>
+<text x="54.00" y="469.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">move</text>
+<text x="104.40" y="469.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">Enter</text>
+<text x="154.80" y="469.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">select</text>
+<text x="222.00" y="469.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Esc</text>
+<text x="255.60" y="469.50" fill="#98a7bb" textLength="42.00" lengthAdjust="spacingAndGlyphs">close</text>
+<text x="314.40" y="469.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">Ctrl+R</text>
+<text x="373.20" y="469.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">refresh</text>
+<text x="558.00" y="469.50" fill="#98a7bb" textLength="117.60" lengthAdjust="spacingAndGlyphs">read 19:30:05Z</text>
+</g>
+</svg>

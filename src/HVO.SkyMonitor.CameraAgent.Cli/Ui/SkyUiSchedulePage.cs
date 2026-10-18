@@ -36,7 +36,7 @@ internal sealed class SkyUiSchedulePage : SkyUiPage
         _revisionsPanel = AddPanel("Revisions", _revisions);
         _upcomingPanel = AddPanel("Upcoming", _upcoming);
         _revisions.SelectionChanged += (_, _) => UpdateButtons();
-        _revisions.Activated += (_, _) => Activate();
+        _revisions.RowActivated += (_, _) => Activate();
         _applyStaged = AddButton("Apply staged", ApplyStaged, primary: true);
         _activate = AddButton("Activate", Activate);
         AddButton("Refresh", Refresh);
@@ -63,8 +63,10 @@ internal sealed class SkyUiSchedulePage : SkyUiPage
         Place(_activePanel, 1, 0, left, 6);
         Place(_nowPanel, 2 + left, 0, width - 3 - left, 6);
         var rows = wide ? Math.Max(8, height - 6 - 3) : 8;
-        Place(_revisionsPanel, 1, 6, left, rows);
-        Place(_upcomingPanel, 2 + left, 6, width - 3 - left, rows);
+        // The revisions need less room than the windows, whose three columns fit 80 columns only so.
+        var revisions = wide ? left : 31;
+        Place(_revisionsPanel, 1, 6, revisions, rows);
+        Place(_upcomingPanel, 2 + revisions, 6, width - 3 - revisions, rows);
         PlaceButtons(Math.Min(height - 1, 6 + rows + 1));
     }
 
@@ -166,10 +168,18 @@ internal sealed class SkyUiSchedulePage : SkyUiPage
     {
         var schedule = Schedule;
         var version = SkyJson.Integer(schedule, "stateVersion");
-        var target = SkyJson.Items(schedule, "history").Append(SkyJson.Member(schedule, "pendingRevision") ?? default)
-            .FirstOrDefault(candidate => candidate.ValueKind == JsonValueKind.Object && SkyJson.Text(candidate, "revisionId") == id);
-        var rollback = target.ValueKind == JsonValueKind.Object
-            && SkyJson.Integer(target, "revisionNumber") < SkyJson.Integer(schedule, "activeRevision", "revisionNumber");
+        bool rollback;
+        try
+        {
+            // Forward or back from the revision numbers CameraAgent reports, never guessed, as 'hvo-sky schedule apply'.
+            rollback = SkyScheduleDirection.IsRollback(schedule, id);
+        }
+        catch (SkyCliOutcomeException refusal)
+        {
+            Ui.Say(HvoNotice.Danger, refusal.Message, "[REFUSED]");
+            return;
+        }
+
         Ui.OpenPrompt(new SkyUiPromptSpec($"Activate schedule {id}",
         [
             new($"Activate schedule revision {id}{(rollback ? ", going back from the active revision" : string.Empty)}?"),
@@ -188,13 +198,13 @@ internal sealed class SkyUiSchedulePage : SkyUiPage
             }
 
             Ui.Run(
-                token => client.SendAsync(HttpMethod.Post, rollback ? SkyRoutes.ScheduleRollback : SkyRoutes.ScheduleActivate,
-                    new { revisionId = id, expectedVersion = version, reason = reason.Length == 0 ? null : reason }, token),
-                (_, error) =>
+                (operation, token) => operation.SendChangeAsync(client, HttpMethod.Post, rollback ? SkyRoutes.ScheduleRollback : SkyRoutes.ScheduleActivate,
+                    new { revisionId = id, expectedVersion = version, reason = reason.Length == 0 ? null : reason },
+                    SkyScheduleDirection.Describe(id, rollback), token),
+                (_, error, operation) =>
                 {
-                    Ui.Say(error is null ? HvoNotice.Success : HvoNotice.Danger, error is null
-                        ? $"Schedule revision {id} is active from the next capture boundary."
-                        : $"Schedule revision {id} was not activated: {SkyCliContext.Classify(error).Message}", error is null ? null : "[REFUSED]");
+                    Ui.SayOutcome(operation, error, $"Schedule revision {id} is active from the next capture boundary.",
+                        $"Schedule revision {id} was not activated");
                     Refresh();
                 });
             return null;
