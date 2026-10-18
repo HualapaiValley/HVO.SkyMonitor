@@ -1,7 +1,7 @@
 # HVO Product Installation and Release Contract
 
 Status: **draft 4**, 2026-10-18. It includes the owner's decisions of 2026-10-16 and 2026-10-18 (section 10). The
-draft 4 decisions in section 10 are proposed for the owner to confirm. Owner: roys.
+owner accepted draft 4's decisions on 2026-10-18. Owner: roys.
 
 This contract is the one install and release experience shared by the HVO products. It covers HVO.RoofController
 and HVO.SkyMonitor: CameraAgent now, and LogicHost when its installer lifecycle exists. Each product implements it in its own
@@ -243,10 +243,12 @@ curl -fsSL https://github.com/HualapaiValley/<repo>/releases/latest/download/ins
   - Reason: a fact kept in two authoritative places drifts after an interrupted operation. A product with several
     instances per host (SkyMonitor) commits each instance's change in that instance's own records, under its own lock,
     while the machine-level file is one per host.
+  - **SkyMonitor's install record is a summary view** (owner decision of 2026-10-18). `/etc/hvo-sky/install.json` is
+    written after the per-instance records, and the per-instance manifests stay authoritative. They are the instance
+    manifest and the installed-release record `<instance root>/state/deployment/image-distribution.json`, with the
+    previous image's record in `image-distribution.records.json`.
   - **Today:** RoofController's install record is authoritative, and its upgrade, rollback and uninstall read it.
-    SkyMonitor keeps the instance's records authoritative: the instance manifest, and the installed-release record
-    `<instance root>/state/deployment/image-distribution.json` with the previous image's record in
-    `image-distribution.records.json`. `/etc/hvo-sky/install.json` is the view of them (#1315).
+    SkyMonitor's view is #1315.
 - **Data** goes under `/var/lib/hvo-<product>/`, or a product root the operator chooses through a root-owned host policy.
 - `<product>` is the short name used in the binaries: `roof` or `sky` (section 9).
 
@@ -419,13 +421,13 @@ Owner decisions of 2026-10-16:
    `/etc/hvo-sky`. RoofController does not migrate (HVO.RoofController#132, closed). SkyMonitor renamed its paths before its
    first release (#1313).
 
-Owner decision of 2026-10-18:
+Owner decisions of 2026-10-18:
 
 6. **Hosts that cannot enforce the container limits:** match RoofController fully. Both products refuse install and
    upgrade with no override, and a rollback proceeds with a loud warning (section 7). SkyMonitor's upgrade and rollback
    part is #1357.
-
-Draft 4 decisions, proposed on 2026-10-18 for the owner to confirm:
+7. **Draft 4's decisions** D1, D2 and D5–D10, below, are accepted as written. SkyMonitor's resulting gaps (the
+   `cameraAgent` image key, `stateContracts` and the `created` label) are #1359.
 
 - **D1. State contracts:** RoofController's per-component, per-store `writes` and `reads` shape, with the SkyMonitor
   mapping (section 6).
@@ -440,4 +442,5 @@ Draft 4 decisions, proposed on 2026-10-18 for the owner to confirm:
   (section 3).
 - **D9. `org.opencontainers.image.created`:** required (section 1).
 - **D10. Authoritative record:** one authoritative record per fact; the install record is either it or a view of
-  per-instance records (section 5).
+  per-instance records (section 5). SkyMonitor keeps `/etc/hvo-sky/install.json` as a summary view, written after the
+  per-instance records, which stay authoritative.
