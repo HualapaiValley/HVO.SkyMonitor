@@ -11,7 +11,9 @@ the operator names, and the catalog from a verified local bundle.
 `hvo-sky-install --version` prints the installer's version and the commit it was built from, as
 `<version>+<40-character commit>`, and exits 0. Like `--help`, it needs no Docker and does not read the
 [host policy](#production-product-root-on-another-filesystem), so it works even where that policy is refused. A build
-given no version is `0.0.0-dev`, and a build without a checkout or a supplied commit prints `0.0.0-dev+unknown`.
+given no version is the product version's development build, `X.Y.Z-dev` (`VersionPrefix` in `Directory.Build.props`,
+[releases.md](releases.md#the-product-version)), and a build without a checkout or a supplied commit prints
+`X.Y.Z-dev+unknown`.
 [Build Evidence](#build-evidence) describes how a publish is stamped.
 
 ## HVO Install Contract
@@ -27,7 +29,6 @@ runbook describes the installer as it behaves today.
 | --- | --- | --- |
 | Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | The `hvo-sky-install` CLI, configured by flags or `--config`; no runtime client or wizard | [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
 | `install.sh` entry point with `--check`, `--from DIR`, and `--install-docker` and the like | [`install.sh`](#installsh) checks the host, then verifies the release's installer and small files and starts it, online or with `--from DIR`; it gives `cameraagent install` and `upgrade` the release and the catalog. With no arguments it runs `cameraagent install`. It installs no Docker and changes no boot setting; it names the remedy. The installer itself still needs a command | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
-| Install and upgrade from a published release, by GHCR digest or offline archive | `--release <folder>` installs and upgrades from a downloaded release's `release.json` and `SHA256SUMS`, by GHCR digest or offline archive ([Release Install](#release-install)). Integration pre-releases are published ([prereleases.md](prereleases.md)); final releases are not yet | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
 | `--plan`, `--answers FILE`, `backup` and `restore FILE`, exit codes 0/1/2/3/130 | `--dry-run` and `--config`; no `backup` or `restore`; a refusal such as failed host prerequisites exits `1` | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
 | Container limits kept in the install record and changed with a re-run | Limits are set at install and recorded in the instance's `instance-manifest.json`. A re-run with different `--cpus` or `--memory` is refused, and an installed instance's limits change only when an upgrade moves limits the operator did not set to the new default (see [Container Resources](#container-resources)) | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
 | Settings catalogue served by the API | CameraAgent serves the [operator settings catalogue and group writes](../contracts/cameraagent-operator-settings-v1.md) through its operations API; the owner creates API keys for non-browser clients | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
@@ -2117,7 +2118,9 @@ by digest from GHCR ([prereleases.md](prereleases.md#what-the-workflow-does)).
 To repeat it by hand on a qualified ARM64 host, download a pre-release's files
 as [prereleases.md](prereleases.md#installing-a-pre-release-on-skymonitor01)
 shows and run `scripts/test:release-install --release <folder>`. Never use a
-production CameraAgent host for it.
+production CameraAgent host for it. A final release or release candidate runs the same test from its draft on both
+linux-x64 (a GitHub-hosted runner) and linux-arm64 before the owner can approve publishing it
+([releases.md](releases.md#what-the-workflow-does)).
 
 ## Build Evidence
 
@@ -2139,10 +2142,11 @@ into it, and the .NET host extracts it when the installer starts, under `$DOTNET
 `~/.net`; the user running the installer needs a writable home for that. `scripts/release:assets` refuses a publish that
 leaves anything the installer loads beside the executable.
 
-Each installer publish is stamped with its version and commit. A publish given no version is `0.0.0-dev+<commit>`. A
-release passes `-p:InformationalVersion=<version> -p:SourceRevisionId=<40-character commit>`. The build refuses a
-version that is not 1-128 letters, digits, periods and hyphens, and a commit that is not 40 lowercase hexadecimal
-digits or `unknown`. `scripts/ci:component-publish delivery`, the Architecture & Publish job and the release workflow
+Each installer publish is stamped with its version and commit. A publish given no version is the product version's
+development build, `X.Y.Z-dev+<commit>`. A release passes `-p:Version=<version> -p:SourceRevisionId=<40-character
+commit>`. The build refuses a version that is not the product version or a pre-release of it (`Directory.Build.targets`,
+[releases.md](releases.md#the-product-version)), a version that is not 1-128 letters, digits, periods and hyphens, and
+a commit that is not 40 lowercase hexadecimal digits or `unknown`. `scripts/ci:component-publish delivery`, the Architecture & Publish job and the release workflow
 each check that `--version` prints exactly `<version>+<commit>`. On ARM64 they check that the binary contains that
 string.
 
@@ -2185,31 +2189,6 @@ installation, configuration, catalog, and recovered Identity state. The exact
 production catalog bundle remains required through
 `HVO_PRODUCTION_CATALOG_BUNDLE`.
 
-The signed design below is retired (install contract section 10). Its workflow and
-bootstrap script remain until [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310)
-replaces them; integration pre-releases use [prereleases.md](prereleases.md) instead.
-The `Signed Distribution Release` workflow publishes independent installer and
-catalog tags, signed manifests and indexes, checksums, SBOMs, provenance,
-licenses, and attribution. The optional bootstrap script downloads and verifies
-only the selected self-contained CLI archive:
-
-```bash
-./scripts/install-hvo-sky-install.sh 1.0.0 /opt/hvo-installer-1.0.0
-```
-
-Resolve a signed installer-index default or exact indexed version with:
-
-```bash
-./scripts/install-hvo-sky-install.sh \
-  --index https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/installer-index-3/installer-release-index.json \
-  --version 1.0.0 \
-  /opt/hvo-installer-1.0.0
-```
-
-The optional third direct-mode argument and `--asset-base` support HTTPS mirrors
-or absolute local release directories. `HVO_INSTALLER_NO_DOWNLOAD=1` permits
-only local or cached bytes. `HVO_INSTALLER_CACHE` selects an owner-only bounded
-2 GiB cache; mirror redirects are refused and GitHub redirects are restricted
-to approved release CDN hosts. The script retains the signed manifest, signature,
-and sanitized `installer-distribution.txt` beside the verified executable; it
-does not download or execute a helper verifier.
+Final releases are cut by `.github/workflows/release.yml` ([releases.md](releases.md)), and integration pre-releases
+by `.github/workflows/prerelease.yml` ([prereleases.md](prereleases.md)). The key-signed design, its independent
+installer and catalog trains and its bootstrap script were retired by the owner on 2026-10-16 and removed (#1310).

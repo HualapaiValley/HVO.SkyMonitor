@@ -287,6 +287,43 @@ public sealed class ReleaseAssetsToolTests
         Assert.IsFalse(Directory.Exists(output), "a refused release must leave nothing behind");
     }
 
+    /// <summary>
+    /// The owner retired the key-signed manifests and indexes on 2026-10-16 (#1310): a release's trust is SHA256SUMS and
+    /// its build provenance attestations, so the tool that writes a release signs nothing and verifies no signature.
+    /// </summary>
+    [TestMethod]
+    [DataRow("create-installer")]
+    [DataRow("create-catalog")]
+    [DataRow("create-image")]
+    [DataRow("create-index")]
+    [DataRow("sign-local")]
+    [DataRow("digest")]
+    [DataRow("write-azure-signature")]
+    [DataRow("verify")]
+    [DataRow("verify-signature")]
+    [DataRow("verify-index")]
+    [DataRow("verify-attestation")]
+    [DataRow("list-assets")]
+    [DataRow("describe-image-archive")]
+    [DataRow("image-index-digest")]
+    public async Task RetiredSigningAndTrainCommand_IsAnUnknownCommand(string command)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        using var error = new StringWriter();
+        var standardError = Console.Error;
+        Console.SetError(error);
+        try
+        {
+            Assert.AreEqual(1, await Program.Main([command]));
+        }
+        finally
+        {
+            Console.SetError(standardError);
+        }
+
+        Assert.AreEqual($"release error: Unknown release-tool command '{command}'.{Environment.NewLine}", error.ToString());
+    }
+
     [TestMethod]
     [DataRow("--version", "1.2.0+build", "--version must be a release version such as 1.2.0 or 1.2.0-dev.3.")]
     [DataRow("--version", "v1.2.0", "--version must be a release version such as 1.2.0 or 1.2.0-dev.3.")]

@@ -129,8 +129,8 @@ public sealed class ProgramOutputTests
             RegexOptions.CultureInvariant);
         Assert.IsTrue(match.Success, stamped);
         // This test assembly comes from the same checkout and build, so the SDK stamped it with the same commit and
-        // version properties: the installer names that commit (unknown when there was none), and that version, or its
-        // own 0.0.0-dev default where the SDK defaulted to 1.0.0 because the build was given no version.
+        // version: the installer names that commit (unknown when there was none) and that version, which is the product
+        // version (#1310): X.Y.Z-dev for a build given none, or the release version a release build is given.
         var reference = typeof(ProgramOutputTests).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion;
         var separator = reference.IndexOf('+', StringComparison.Ordinal);
@@ -138,7 +138,32 @@ public sealed class ProgramOutputTests
             ? (reference, "unknown")
             : (reference[..separator], reference[(separator + 1)..]);
         Assert.AreEqual(referenceCommit, match.Groups["commit"].Value);
-        Assert.AreEqual(referenceVersion == "1.0.0" ? "0.0.0-dev" : referenceVersion, match.Groups["version"].Value);
+        Assert.AreEqual(referenceVersion, match.Groups["version"].Value);
+    }
+
+    [TestMethod]
+    public void InstallerVersion_IsTheProductVersionOrAPreReleaseOfIt()
+    {
+        // One product version (install contract section 1, #1310): the VersionPrefix in Directory.Build.props.
+        var props = File.ReadAllText(Path.Combine(RepositoryRoot(), "Directory.Build.props"));
+        var prefixes = Regex.Matches(props, "<VersionPrefix>([^<]*)</VersionPrefix>", RegexOptions.CultureInvariant);
+        Assert.HasCount(1, prefixes, "Directory.Build.props declares one VersionPrefix");
+        var prefix = prefixes[0].Groups[1].Value;
+        Assert.IsTrue(Regex.IsMatch(prefix, "\\A(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\z", RegexOptions.CultureInvariant), prefix);
+
+        var stamped = InstallerBuildIdentity.Of(typeof(Program).Assembly);
+        var version = stamped[..stamped.IndexOf('+', StringComparison.Ordinal)];
+        Assert.IsTrue(version == prefix || version.StartsWith(prefix + "-", StringComparison.Ordinal), stamped);
+    }
+
+    private static string RepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "HVO.SkyMonitor.v9.slnx")))
+        {
+            directory = directory.Parent;
+        }
+        return directory?.FullName ?? throw new DirectoryNotFoundException("Repository root was not found.");
     }
 
     [TestMethod]

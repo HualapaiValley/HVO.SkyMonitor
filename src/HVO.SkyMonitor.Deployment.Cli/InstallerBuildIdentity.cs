@@ -4,8 +4,9 @@ namespace HVO.SkyMonitor.Deployment;
 
 /// <summary>
 /// The installer's build identity, <c>&lt;version&gt;+&lt;40-character commit&gt;</c> (install contract section 1), which
-/// <c>--version</c> prints. The project file stamps it into the assembly's informational version: a publish not given a
-/// version is <c>0.0.0-dev</c>, and one built without a checkout or a supplied commit names its commit <c>unknown</c>.
+/// <c>--version</c> prints. The build stamps it into the assembly's informational version: a publish not given a
+/// version is the product version's development build, <c>X.Y.Z-dev</c> (Directory.Build.props), and one built without a
+/// checkout or a supplied commit names its commit <c>unknown</c>.
 /// </summary>
 internal static class InstallerBuildIdentity
 {

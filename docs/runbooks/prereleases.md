@@ -5,9 +5,10 @@ upgrade from it before a release exists ([install contract](../hvo-install-contr
 [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309)). It carries the release assets of contract
 section 4. It is a GitHub pre-release, needs no CHANGELOG section, and never moves `latest`.
 
-Final releases, `vX.Y.Z` and `vX.Y.Z-rc.<n>` from `main`, are
-[#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310)'s; until then
-[release-distribution.md](release-distribution.md) describes the retired signed design.
+Final releases and release candidates, `vX.Y.Z` and `vX.Y.Z-rc.<n>` from `main`, follow [releases.md](releases.md).
+A pre-release's version is a pre-release of the product version, `VersionPrefix` in `Directory.Build.props`
+([The product version](releases.md#the-product-version)): `scripts/release:assets` refuses a tag for another version
+in the Build job, before anything is pushed.
 
 ## What a pre-release carries
 
@@ -218,7 +219,7 @@ The installer refuses a release folder whose files disagree, and changes nothing
 anything. It needs a clean checkout at the commit it builds.
 
 ```bash
-scripts/release:assets --version 1.2.0-dev.0 --platforms linux/amd64 --builder default \
+scripts/release:assets --version "$(scripts/release:version)-dev.0" --platforms linux/amd64 --builder default \
   --catalog-bundle "$HVO_PRODUCTION_CATALOG_BUNDLE" \
   --output /tmp/hvo-release --image-oci /tmp/hvo-release.oci.tar
 scripts/test:release-install --release /tmp/hvo-release --upgrade-source archive

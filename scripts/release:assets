@@ -20,7 +20,8 @@ usage() {
 Usage: scripts/release:assets --version <version> --output <folder> --image-oci <file> [options]
 
 Required:
-  --version <version>          The release's version, such as 1.2.0-dev.3 (no build metadata).
+  --version <version>          The release's version: the product version in Directory.Build.props or a pre-release of
+                               it, such as 0.9.0, 0.9.0-rc.1 or 0.9.0-dev.3 (no build metadata; scripts/release:version).
   --output <folder>            The folder to write the release's files into. Must not exist.
   --image-oci <file>           Where to write the multi-platform OCI image archive the release pushes. Must not exist.
 
@@ -85,6 +86,12 @@ commit="${commit:-$head}"
 if [[ "$allow_dirty" == 0 ]] && { ! git diff-index --quiet HEAD -- || [[ -n "$(git ls-files --others --exclude-standard)" ]]; }; then
     fail "the checkout is modified; a release is built from an exact committed revision."
 fi
+# One product version (install contract section 1, #1310): the release's is the VersionPrefix or a pre-release of it,
+# which every build below is given as -p:Version and Directory.Build.targets checks again.
+version_error="$(./scripts/release:version --check "$version" 2>&1)" || fail "--version: ${version_error#release:version: }"
+# A final release carries its CHANGELOG section and upgrade notes (install contract section 3); the release tool copies
+# every release's upgrade notes up to this one's into release.json below.
+notes_error="$(./scripts/release:notes --check "$version" 2>&1)" || fail "${notes_error#release:notes: }"
 created="${created:-$(date -u -d "$(git show -s --format=%cI "$commit")" +%Y-%m-%dT%H:%M:%SZ)}"
 [[ "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
     fail "--created must be a UTC time such as 2026-10-17T18:00:00Z."
@@ -107,7 +114,7 @@ esac
 for rid in linux-x64 linux-arm64; do
     dotnet publish src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj --configuration Release \
         --runtime "$rid" --output "$work/installer-$rid" \
-        "-p:InformationalVersion=$version" "-p:SourceRevisionId=$commit" -nodeReuse:false -p:UseSharedCompilation=false >&2
+        "-p:Version=$version" "-p:SourceRevisionId=$commit" -nodeReuse:false -p:UseSharedCompilation=false >&2
     installer="$work/installer-$rid/HVO.SkyMonitor.Deployment.Cli"
     # The release ships the executable alone, so nothing it loads may be left beside it. Symbols and the static SQLite
     # library (*.a, for native linking only) are never loaded.
@@ -168,7 +175,8 @@ digest="$(dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.S
 (cd "$output" && sha256sum --check --strict --quiet SHA256SUMS) || fail "SHA256SUMS does not match the files written."
 jq -e --arg version "$version" --arg commit "$commit" --arg created "$created" --arg digest "$digest" '
     .version == $version and .commit == $commit and .created == $created and .images.cameraAgent.digest == $digest
-' "$output/release.json" >/dev/null || fail "release.json does not name the release that was built."
+    and (($version | contains("-")) or any(.upgradeNotes[]; .version == $version))
+' "$output/release.json" >/dev/null || fail "release.json does not name the release that was built, with a final release's notes."
 index_digest="$(tar -xOf "$image_oci" index.json | jq -r '.manifests[0].digest')"
 [[ "$index_digest" == "$digest" ]] || fail "release.json names $digest, but the image archive holds $index_digest."
 ./scripts/release:check-image-labels "$image_oci" "$output/release.json" >&2 ||

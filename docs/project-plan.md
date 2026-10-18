@@ -136,8 +136,7 @@ CameraAgent-owned revisions. These ownership statements are tracked as
 | `HVO.SkyMonitor.CameraAgent` | Local ASP.NET/Blazor host, local Identity, authenticated local APIs and composition | Central persistence or private processing algorithms |
 | `HVO.SkyMonitor.LogicHost` | Central SQL/Redis/provider-neutral object-storage services and provider adapters, durable jobs, workers, fleet state, history, retrieval, and central UI | CameraAgent references or host-private projection/image algorithms |
 | `HVO.SkyMonitor.Deployment.Contracts` | Host-neutral installation, lifecycle, distribution, release, and compatibility records | Filesystem, network, signature verification, Docker/Compose, host runtime, or secrets |
-| `HVO.SkyMonitor.Deployment.Distribution` | Immutable release/catalog signature, trust, checksum, and distribution verification | Installation mutation, Docker/Compose, application runtime, or host workflow ownership |
-| `HVO.SkyMonitor.Deployment.Cli` | Self-contained installation and lifecycle orchestration across signed distribution, catalogs, filesystem state, Docker/Compose placement, owner bootstrap, verification, diagnostics, and recovery | Application runtime behavior, acquisition/processing, domain persistence, or host UI/API |
+| `HVO.SkyMonitor.Deployment.Cli` | Self-contained installation and lifecycle orchestration across releases (`release.json` and `SHA256SUMS`), catalogs, filesystem state, Docker/Compose placement, owner bootstrap, verification, diagnostics, and recovery | Application runtime behavior, acquisition/processing, domain persistence, or host UI/API |
 
 CameraAgent and LogicHost must never reference each other. Shared behavior moves
 through AgentCore, Astronomy, Imaging, Processing, or another explicitly
@@ -171,8 +170,7 @@ AgentCore --> CameraAgent.Modules.Zwo --> CameraAgent
 Common --------------------> CameraAgent and LogicHost only
 Catalog.Sqlite ------------> CameraAgent and LogicHost composition roots
 
-Deployment.Contracts --> Deployment.Distribution
-AgentCore + Catalog.Sqlite + Deployment.Contracts + Deployment.Distribution
+AgentCore + Catalog.Sqlite + Deployment.Contracts
   +--> Deployment.Cli
 ```
 

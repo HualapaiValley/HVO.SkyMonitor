@@ -9,8 +9,10 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Deployment;
 [TestCategory("Unit")]
 public sealed class CameraAgentImageBuildIdentityTests
 {
+    // A build given a version passes it as -p:Version, which Directory.Build.targets checks against the product version
+    // (#1310); one given none is the product's development build.
     private const string StampArguments =
-        "\"-p:InformationalVersion=${HVO_VERSION}\" \"-p:SourceRevisionId=${HVO_SOURCE_REVISION}\"";
+        "${HVO_VERSION:+\"-p:Version=${HVO_VERSION}\"} \"-p:SourceRevisionId=${HVO_SOURCE_REVISION}\"";
 
     // Each stage inherits the one declared default instead of restating it. The release's created time has no default:
     // only a release build is dated.
@@ -18,13 +20,14 @@ public sealed class CameraAgentImageBuildIdentityTests
         ["ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION", "ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION", "ARG HVO_CREATED"];
 
     [TestMethod]
-    public void Dockerfile_DeclaresADevelopmentVersionAndAnUnknownRevisionByDefault()
+    public void Dockerfile_DeclaresNoVersionAndAnUnknownRevisionByDefault()
     {
         var instructions = ReadInstructions();
         var firstStage = instructions.FindIndex(static instruction => instruction.StartsWith("FROM ", StringComparison.Ordinal));
         var global = instructions[..firstStage];
 
-        CollectionAssert.Contains(global, "ARG HVO_VERSION=0.0.0-dev");
+        // No version is the product version's development build (Directory.Build.props), not a version of its own.
+        CollectionAssert.Contains(global, "ARG HVO_VERSION=\"\"");
         CollectionAssert.Contains(global, "ARG HVO_SOURCE_REVISION=unknown");
         CollectionAssert.AreEqual(
             StageIdentityDeclarations,
@@ -47,7 +50,11 @@ public sealed class CameraAgentImageBuildIdentityTests
         foreach (var (instruction, _) in publishes)
         {
             StringAssert.Contains(instruction, StampArguments, StringComparison.Ordinal);
+            Assert.DoesNotContain("InformationalVersion", instruction, StringComparison.Ordinal);
         }
+        // The product version and its check are in the build context the publishes run in.
+        CollectionAssert.Contains(build, "COPY Directory.Build.props ./");
+        CollectionAssert.Contains(build, "COPY Directory.Build.targets ./");
         // A change of revision alone must keep reusing restore and the source copy.
         Assert.IsGreaterThan(build.IndexOf("COPY src/ src/"), identity);
         Assert.IsGreaterThan(build.FindLastIndex(static instruction => instruction.StartsWith("RUN dotnet restore ", StringComparison.Ordinal)), identity);

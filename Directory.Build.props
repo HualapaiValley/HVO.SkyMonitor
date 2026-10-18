@@ -7,4 +7,16 @@
     <AnalysisLevel>latest-all</AnalysisLevel>
     <Deterministic>true</Deterministic>
   </PropertyGroup>
+  <!--
+    The product version (install contract section 1, #1310): one version for every program and image, the next
+    release's, which scripts/release:version reads. A release tag vX.Y.Z or vX.Y.Z-rc.N must name it, and a release's
+    builds are given the release's version as -p:Version (scripts/release:assets), which is this or a pre-release of it.
+    A build given no version is the development build of it, X.Y.Z-dev. Directory.Build.targets refuses a build given
+    any other version. The SDK appends the commit to the informational version, from the checkout or from
+    -p:SourceRevisionId.
+  -->
+  <PropertyGroup Label="Product Version">
+    <VersionPrefix>0.9.0</VersionPrefix>
+    <VersionSuffix Condition="'$(VersionSuffix)' == '' and '$(Version)' == ''">dev</VersionSuffix>
+  </PropertyGroup>
 </Project>

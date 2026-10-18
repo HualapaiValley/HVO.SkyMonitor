@@ -115,7 +115,8 @@ if [[ -n "$baseline_revision" ]]; then
   test "$candidate_image_id" != "$(docker image inspect --format '{{.Id}}' "$install_tag")"
   test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$install_tag")" = "$baseline_revision"
   test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$candidate_tag")" = "$candidate_revision"
-  test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$candidate_tag")" = 0.0.0-dev
+  # A development image is given no version, so its version label is empty (#1310).
+  test -z "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$candidate_tag")"
 elif [[ -n "${HVO_INSTALLER_RELEASE_ARCHIVE:-}" ]]; then
   # Install the exact bytes of an image archive an operator receives rather than an image built here, so the
   # lifecycle contract is proved against that artifact.
@@ -124,7 +125,7 @@ elif [[ -n "${HVO_INSTALLER_RELEASE_ARCHIVE:-}" ]]; then
 else
   docker build --build-arg "HVO_SOURCE_REVISION=$(git rev-parse HEAD)" --tag "$install_tag" \
     --file src/HVO.SkyMonitor.CameraAgent/Dockerfile .
-  test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$install_tag")" = 0.0.0-dev
+  test -z "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$install_tag")"
 fi
 dotnet restore "$source_root/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" --runtime "$host_cli_runtime"
 dotnet publish "$source_root/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
