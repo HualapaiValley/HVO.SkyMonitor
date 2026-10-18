@@ -62,6 +62,10 @@ internal sealed partial class CameraAgentLifecycleManager
         }
 
         var resumed = await AdmitAsync(request, paths, kind, manifest, cancellationToken).ConfigureAwait(false);
+        if (kind == LifecycleOperationKind.Backup && resumed is null)
+        {
+            await AdmitBackupAsync(request, paths, manifest, cancellationToken).ConfigureAwait(false);
+        }
         if (kind == LifecycleOperationKind.Upgrade && signedImage is not null)
         {
             signedImage = await CheckReleaseCandidateAsync(manifest, docker, signedImage, cancellationToken).ConfigureAwait(false);

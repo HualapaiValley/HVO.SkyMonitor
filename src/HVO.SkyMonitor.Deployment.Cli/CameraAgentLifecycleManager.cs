@@ -67,6 +67,11 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         if (request.Operation is not null && uid == 0)
             throw InstallerException.Refused("Run lifecycle operations as the Docker-capable runtime user, not as root.");
+        // A restore's target may be absent or half replaced, so it starts from the archive, not the instance manifest.
+        if (request.Operation == LifecycleOperationKind.Restore)
+        {
+            return await RestoreAsync(request, processRunner, uid, gid, error, cancellationToken).ConfigureAwait(false);
+        }
         if (request.Operation == LifecycleOperationKind.Purge && !Directory.Exists(paths.InstanceRoot))
         {
             if (!request.Resume) throw InstallerException.Refused("The instance root is absent; use --resume only for a retained purge operation.");
@@ -216,6 +221,10 @@ internal sealed partial class CameraAgentLifecycleManager
                 LifecycleOperationKind.Uninstall => await UninstallAsync(
                     request, paths, manifest, result, compose, docker, lifecycleClientFactory, lifecycleControlToken!, daemon,
                     cancellationToken)
+                    .ConfigureAwait(false),
+                LifecycleOperationKind.Backup => await BackupAsync(
+                    request, paths, manifest, result, compose, docker, lifecycleClientFactory, ownerClientFactory,
+                    lifecycleControlToken!, installationVerificationToken!, daemon, error, cancellationToken)
                     .ConfigureAwait(false),
                 LifecycleOperationKind.Purge => await PurgeAsync(
                     request, paths, manifest, compose, docker, daemon, processRunner, cancellationToken).ConfigureAwait(false),
@@ -2576,11 +2585,12 @@ internal sealed partial class CameraAgentLifecycleManager
 
     private static bool RequiresLifecycleControl(LifecycleOperationKind? operation)
         => operation is LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback or LifecycleOperationKind.Reinstall or
-            LifecycleOperationKind.Uninstall or LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback;
+            LifecycleOperationKind.Uninstall or LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback or
+            LifecycleOperationKind.Backup;
 
     private static bool RequiresInstallationVerification(LifecycleOperationKind? operation)
         => operation is LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback or LifecycleOperationKind.Reinstall or
-            LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback;
+            LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback or LifecycleOperationKind.Backup;
 
     internal static string? ResumableCatalogSelectionVersion(
         LifecycleRequest request,

@@ -29,7 +29,6 @@ runbook describes the installer as it behaves today.
 | --- | --- | --- |
 | Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | The `hvo-sky-install` CLI, configured by flags or an [answers file](#answers-file); no runtime client or wizard | [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
 | `install.sh` entry point with `--check`, `--from DIR`, and `--install-docker` and the like | [`install.sh`](#installsh) checks the host, then verifies the release's installer and small files and starts it, online or with `--from DIR`; it gives `cameraagent install` and `upgrade` the release and the catalog. With no arguments it runs `cameraagent install`. It installs no Docker and changes no boot setting; it names the remedy. The installer itself still needs a command | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
-| `backup` and `restore FILE` | No `backup` or `restore` | [#1353](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1353) |
 | Command words `install`, `upgrade`, `rollback`, `uninstall`, `status` | Instance commands are grouped under `cameraagent` (`cameraagent install`, `cameraagent upgrade`, ...), because one host holds several instances and the catalogs beside them; `status` is top level | Recorded for contract draft 4 |
 | Settings catalogue served by the API | CameraAgent serves the [operator settings catalogue and group writes](../contracts/cameraagent-operator-settings-v1.md) through its operations API; the owner creates API keys for non-browser clients | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
 | Install and upgrade refuse a host that cannot enforce the container limits; a rollback proceeds with a loud warning (contract section 7) | Install refuses such a host ([Host Prerequisites](#host-prerequisites)); upgrade and rollback do not check | [#1357](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1357) |
@@ -470,7 +469,7 @@ and report every finding together so the host can be fixed in one pass:
 | `docker-cpu-quota-unsupported` | `docker info` reports `CpuCfsQuota: true`, so the Compose `cpus` quota is enforced |
 | `docker-pids-limit-unsupported` | `docker info` reports `PidsLimit: true`, so the Compose `pids_limit` is enforced |
 | `docker-host-cpus-insufficient` | `docker info` reports at least as many CPUs (`NCPU`) as the CameraAgent [CPU limit](#container-resources); Docker refuses to create a container with a larger quota |
-| `tar-missing` | an executable `tar` on `PATH`, for an archive of the whole instance (the explicit `backup` command, [#1353](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1353)); upgrade and rollback no longer run it |
+| `tar-missing` | an executable `tar` on `PATH`. No lifecycle command runs it: [`backup`](#backup-and-restore) writes its archive itself, and upgrade and rollback archive nothing |
 | `product-root-storage-insufficient` | room on the filesystem that holds the product root: twice the catalog bundle and image archive together, plus 1 GiB |
 | `docker-root-storage-insufficient` | room on the filesystem that holds Docker's `DockerRootDir`: twice the image archive and 1 GiB |
 | `docker-root-unreported` | `docker info` reports an absolute `DockerRootDir` |
@@ -1728,6 +1727,8 @@ hvo-sky-install cameraagent upgrade --instance-id <uuid> \
 hvo-sky-install cameraagent rollback --instance-id <uuid>
 hvo-sky-install cameraagent uninstall --instance-id <uuid>
 hvo-sky-install cameraagent reinstall --instance-id <uuid>
+hvo-sky-install cameraagent backup --instance-id <uuid>
+hvo-sky-install cameraagent restore <archive> --instance-id <uuid>
 ```
 
 An upgrade whose candidate declares the installed state contract is a pure swap. The candidate declares a state
@@ -1761,6 +1762,94 @@ candidate restores the exact prior Compose, image, identity records and, for a
 declared migration, databases before capture resumes. Noncurrent manifests and
 results are rejected before lifecycle state mutation; invalid candidate images or
 rollback models are rejected before runtime mutation.
+
+### Backup and restore
+
+`backup` is the one command that copies everything an instance holds, bulk captures included; an upgrade or rollback
+never copies bulk data (install contract draft 4).
+
+```bash
+hvo-sky-install cameraagent backup --instance-id <uuid> [--plan] [--json] [--resume]
+hvo-sky-install cameraagent restore <archive> --instance-id <uuid> [--plan] [--json] [--resume]
+```
+
+**Where backups are kept.** Each backup is one file in `<product-root>/backups`, named
+`hvo-sky-<instance>-<yyyyMMddTHHmmssZ>-<operation>.tar.gz`, with its record `<archive>.json` beside it. Under the
+production product root, the folder and both files are `root:root` and owner-only, because a backup holds the
+instance's secrets: its Identity database, Data Protection keys and tokens. The installer reaches them through one
+narrow `sudo` helper, `internal-backup-vault`. That helper re-reads the host policy itself, accepts only archive names
+the installer gives, and streams one archive through its standard input or output. Under a test product root, the
+folder and files belong to the runtime user. Copy a backup off the host as root, both files together. Backups are kept
+until you remove them.
+
+**What a backup holds.** It is a gzip-compressed PAX tar:
+- under `instance/`, every folder and regular file of the instance root, except the instance lock and the owner
+  recovery socket;
+- under `snapshots/<operation>/<snapshot>/`, a verified snapshot of the instance's SQLite stores, taken while the
+  instance is stopped through the SQLite online backup API, as an upgrade takes one
+  ([Swap upgrade and database snapshots](#swap-upgrade-and-database-snapshots)), and the snapshot the manifest keeps
+  for a rollback, so a restored instance can still roll back;
+- as its last entry, the manifest `hvo-sky-backup.json`: every entry's path, type, mode, size and SHA-256, and the
+  instance, image, release, catalog, product root and runtime user the backup belongs to.
+
+A link, device or other special file in the instance refuses the backup before anything changes.
+
+**How a backup runs.**
+1. Before anything changes, it checks that there is room on each filesystem it writes: the archive at its worst case
+   (no compression), the snapshot, and 256 MiB of headroom on each, with the bytes of any partial archive an earlier
+   interrupted backup of the instance left counted as free. Too little room refuses it (exit `3`).
+2. A running instance's capture is paused and drained, and its container stopped, only while the snapshot and the
+   archive are written. The container is then started, verified and resumed before the archive is read back.
+3. The archive is written as `<archive>.partial`, made durable, read back in full, and proved whole against its
+   manifest and the hash taken as it was written. Only then does the backup commit it: the record is written first,
+   then the partial gets its name.
+4. Standard error reports progress at most every two seconds. With `--json` each report is a `backup-progress` event.
+   The backup has no fixed deadline, so a large instance is never cut off part of the way.
+5. Once complete, it removes every database snapshot of the instance that nothing refers to (see below).
+
+A failure or Ctrl+C discards the partial and puts the instance back as it was (exit `1` or `130`). After an
+interruption, `--resume` keeps nothing written before the archive was complete. From then on, it reads the archive
+back, commits it and finishes. A partial or unrecorded archive is never restorable.
+
+**How a restore runs.** `restore` puts back an instance that is uninstalled and preserved, or absent (after `purge`,
+or on a rebuilt host with the same product root and Docker daemon). It never replaces an installed instance: uninstall
+it first. `<archive>` is the backup's name, or its path in `<product-root>/backups`. Before anything changes, the
+restore reads the whole archive and refuses it (exit `3`) when:
+- it is partial, has no record, or its bytes are not the ones the record names;
+- an entry is not the one its manifest names, the manifest is not last, or the archive cannot be read to its end;
+- it belongs to another instance, product root or runtime user;
+- the catalog it needs is not installed, Docker is another daemon, the instance's container exists, or there is not
+  enough room to stage it.
+
+A `--plan` makes the same checks and writes nothing.
+
+The restore then:
+1. records the counters the replaced instance handed out;
+2. reads the archive a second time, staging its files in `<instance-root>/.hvo-restore/<operation>` and verifying
+   every byte again;
+3. swaps the staged files in, keeping what they replace until it completes;
+4. puts the databases back through the same staged, durable and verified snapshot restore an upgrade's recovery uses,
+   carrying every counter past what the replaced instance handed out;
+5. revokes again the credentials the live instance revoked after the backup: an API key the backup holds and the live
+   store does not is deleted, and an account whose password or security stamp changed keeps the live password and
+   stamp. With no live credential store to compare (an absent instance), it warns loudly that every key and password
+   valid at the backup is valid again. With `--json`, both are a `credentials-restored` event.
+
+The instance is restored uninstalled, with its release records and install record settled from the restored manifest.
+Start it with `hvo-sky-install cameraagent reinstall --instance-id <uuid>`, which brings it up through the verified
+reinstall path. The Docker image the backup names must still be on the host for that.
+
+Before the swap, a failure or Ctrl+C removes what was staged and changes nothing else. After it, the restore can only
+go forward: `--resume` finishes it.
+
+**Database snapshot cleanup.** When a backup or restore completes, it removes every snapshot under
+`<product-root>/operations/lifecycle/<operation>/state-snapshots/` that its manifest says belongs to this instance and
+that nothing refers to. A snapshot is kept when:
+- the instance manifest keeps it for a rollback;
+- an unfinished operation in the instance's journal wrote it or names it;
+- the manifest that operation saved names it.
+
+A snapshot whose manifest cannot be read, or that belongs to another instance, is never touched.
 
 ### Swap upgrade and database snapshots
 
@@ -2176,12 +2265,12 @@ they never publish terminal success. Repeating a successful restore-only request
 verifies the current result without another resume command. It never reports the
 upgrade completed, and ordinary `--resume` cannot restart a settled recovery.
 
-Issue [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044) remains
-open for size-aware backup deadlines, capacity, progress, and cancellation/partial
-cleanup, which now apply to the explicit `backup` command
-([#1353](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1353)) rather than to
-every upgrade. Do not manually edit the lifecycle journal or
-reduce an approved memory override to work around those remaining limits.
+The explicit [`backup` command](#backup-and-restore)
+([#1353](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1353)) checks its
+capacity, reports progress, has no fixed deadline, and discards its partial archive
+on cancellation; issue [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044)
+keeps the qualification of a large (61 GiB) instance. Do not manually edit the
+lifecycle journal or reduce an approved memory override to work around a limit.
 
 The protected installation-verification GET used by both the pre-mutation owner
 state read and full installation identity verification has one finite **120-second

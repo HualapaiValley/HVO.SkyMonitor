@@ -179,6 +179,9 @@ internal sealed record LifecycleRequest : DeploymentCommand
     public string? CatalogBundle { get; init; }
     public string? CatalogVersion { get; init; }
 
+    /// <summary>The name of the backup <c>cameraagent restore</c> puts back, in the product root's backup folder (#1353).</summary>
+    public string? Archive { get; init; }
+
     /// <summary>
     /// The release.json of the release an upgrade installs. The upgrade shows its notes and refuses an older target
     /// before anything changes. It is set only from the verified release.json that also selects the candidate image
@@ -202,6 +205,14 @@ internal sealed record LifecycleRequest : DeploymentCommand
         if (Operation == LifecycleOperationKind.Upgrade)
         {
             ValidateImage();
+        }
+        if (Operation == LifecycleOperationKind.Restore && (Archive is null || !BackupVaultFiles.IsName(Archive)))
+        {
+            throw new InstallUsageException("restore requires the name of a backup in the backup folder, such as hvo-sky-<instance>-<time>-<operation>.tar.gz.");
+        }
+        if (Operation != LifecycleOperationKind.Restore && Archive is not null)
+        {
+            throw new InstallUsageException("Only restore takes a backup archive.");
         }
         if (Operation == LifecycleOperationKind.Purge && ConfirmationInstanceId != InstanceId)
         {
@@ -267,6 +278,11 @@ internal sealed record LifecycleRequest : DeploymentCommand
         if (Release is not null)
         {
             value += JsonSerializer.Serialize(new { Release, ImageSource = ImageSource ?? ReleaseImageSource.Archive });
+        }
+        // A restore's archive likewise, so a --resume continues the restore of the same archive.
+        if (Archive is not null)
+        {
+            value += JsonSerializer.Serialize(new { Archive });
         }
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }

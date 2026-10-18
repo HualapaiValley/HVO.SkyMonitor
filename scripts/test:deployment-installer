@@ -490,11 +490,62 @@ for bind_source in identity data-protection provisioning raw archive replay-runn
   test "$(stat -c '%u:%g' "$instance_root/state/$bind_source")" = "$(id -u):$(id -g)"
 done
 
+# Backup and restore (#1353). The backup copies the running instance into one archive in the product root's backup
+# folder, with capture paused and the container stopped only while it writes, and puts the instance back healthy. The
+# archive is owner-only, its record names its bytes, and --json reports progress on standard error.
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent backup \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/backup.json" 2>"$root/backup-events.jsonl"
+test "$(jq -er '.outcome' "$root/backup.json")" = completed
+backup_archive="$(jq -er '.backup.archive' "$root/backup.json")"
+backup_path="$root/product/backups/$backup_archive"
+test "$(stat -c '%a' "$backup_path")" = 600
+test "$(stat -c '%a' "$backup_path.json")" = 600
+test "$(sha256sum "$backup_path" | cut -d' ' -f1)" = "$(jq -er '.backup.archiveSha256' "$root/backup.json")"
+test "$(jq -er '.archiveSha256' "$backup_path.json")" = "$(jq -er '.backup.archiveSha256' "$root/backup.json")"
+test -z "$(find "$root/product/backups" -name '*.partial' -print -quit)"
+jq -es 'length > 0 and all(.[]; .event == "backup-progress")' "$root/backup-events.jsonl" >/dev/null
+test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
+test "$(docker inspect --format '{{.State.Health.Status}}' "$runner_container")" = healthy
+
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
   --instance-id "$instance_id" \
   --product-root "$root/product" \
   --json >"$root/reset-uninstall.json"
 test "$(jq -er '.outcome' "$root/reset-uninstall.json")" = completed
+
+# The uninstalled instance is restored from the archive: its plan changes nothing, the restore leaves it uninstalled
+# on the archive's files and databases, and reinstall starts it healthy on them. It is then uninstalled again for the
+# reset below.
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent restore "$backup_archive" \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --plan \
+  --json >"$root/restore-plan.json" 2>"$root/restore-plan-events.jsonl"
+test "$(jq -er '.outcome' "$root/restore-plan.json")" = planned
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent restore "$backup_path" \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/restore.json" 2>"$root/restore-events.jsonl"
+test "$(jq -er '.outcome' "$root/restore.json")" = completed
+test "$(jq -er '.lifecycleCondition' "$root/restore.json")" = Uninstalled
+test "$(jq -er '.restore.archive' "$root/restore.json")" = "$backup_archive"
+test "$(jq -er '.restore.noLiveCredentialStore' "$root/restore.json")" = false
+test ! -e "$instance_root/.hvo-restore"
+test "$(jq -er '.lifecycleCondition' "$instance_root/instance-manifest.json")" = Uninstalled
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reinstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/restore-reinstall.json"
+test "$(jq -er '.outcome' "$root/restore-reinstall.json")" = completed
+test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
+test "$(docker inspect --format '{{.State.Health.Status}}' "$runner_container")" = healthy
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/restore-uninstall.json"
+test "$(jq -er '.outcome' "$root/restore-uninstall.json")" = completed
 
 if "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reset-state \
   --instance-id "$instance_id" \
