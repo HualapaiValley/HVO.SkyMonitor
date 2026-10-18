@@ -780,6 +780,13 @@ public sealed partial class InstallerFlowTests
     [DataRow("backslash-alias", "holds an entry named '{backslash-alias}', which is not the canonical spelling of a path.")]
     [DataRow("trailing-slash-file", "holds an entry named 'index.json/', which is not the canonical spelling of a path.")]
     [DataRow("repeated-slash-directory", "holds an entry named 'blobs//', which is not the canonical spelling of a path.")]
+    [DataRow("classic-repotags-lowercase", "!The installer will not use the offline archive {name}'s manifest.json: an object in it names one property in two spellings, which Docker's JSON decoder reads as the same name.")]
+    [DataRow("classic-repotags-long-s", "!The installer will not use the offline archive {name}'s manifest.json: an object in it names a property with a character outside ASCII, which Docker's JSON decoder can read as another property's name.")]
+    [DataRow("config-kelvin-alias", "!The installer will not use the offline archive {name}'s {platform} configuration: an object in it names a property with a character outside ASCII, which Docker's JSON decoder can read as another property's name.")]
+    [DataRow("classic-unknown-field", "is not the image release v{version} names: its manifest.json has a field 'Parent', which the installer does not accept.")]
+    [DataRow("layout-unknown-field", "is not the image release v{version} names: its OCI layout index's image has a field 'urls', which the installer does not accept.")]
+    [DataRow("oci-layout-unknown-field", "is not the image release v{version} names: its oci-layout has a field 'extensions', which the installer does not accept.")]
+    [DataRow("manifest-unknown-field", "is not the image release v{version} names: its {platform} manifest has a field 'subject', which the installer does not accept.")]
     public async Task InstallAsync_ReleaseArchiveNotHoldingTheReleasesImage_IsRefusedBeforeAnythingIsClaimedOrLoaded(string fault, string expected)
     {
         ArgumentNullException.ThrowIfNull(expected);
@@ -910,6 +917,27 @@ public sealed partial class InstallerFlowTests
                 case "repeated-slash-directory":
                     entries.Insert(0, new("blobs//", [], System.Formats.Tar.TarEntryType.Directory));
                     break;
+                case "classic-repotags-lowercase":
+                    // Go's decoder folds repotags into RepoTags, and the later spelling wins: it would tag nginx.
+                    Replace("manifest.json", new("manifest.json", Encoding.UTF8.GetBytes(Text("manifest.json").Replace(
+                        "\"Layers\":", "\"repotags\":[\"docker.io/library/nginx:latest\"],\"Layers\":", StringComparison.Ordinal))));
+                    break;
+                case "classic-repotags-long-s":
+                    // U+017F folds to s, so Go reads RepoTag\u017f as RepoTags.
+                    Replace("manifest.json", new("manifest.json", Encoding.UTF8.GetBytes(Text("manifest.json").Replace(
+                        "\"Layers\":", "\"RepoTag\\u017f\":[\"docker.io/library/nginx:latest\"],\"Layers\":", StringComparison.Ordinal))));
+                    break;
+                case "classic-unknown-field":
+                    Replace("manifest.json", new("manifest.json", Encoding.UTF8.GetBytes(Text("manifest.json").Replace(
+                        "\"Layers\":", $"\"Parent\":\"sha256:{new string('a', 64)}\",\"Layers\":", StringComparison.Ordinal))));
+                    break;
+                case "layout-unknown-field":
+                    Replace("index.json", new("index.json", Encoding.UTF8.GetBytes(Text("index.json").Replace(
+                        "\"annotations\":", "\"urls\":[\"https://example.com/image\"],\"annotations\":", StringComparison.Ordinal))));
+                    break;
+                case "oci-layout-unknown-field":
+                    Replace("oci-layout", new("oci-layout", """{"imageLayoutVersion":"1.0.0","extensions":{}}"""u8.ToArray()));
+                    break;
             }
         }
         using var release = ReleaseFixture.Create(
@@ -917,8 +945,16 @@ public sealed partial class InstallerFlowTests
             version: version,
             labels: labels,
             editArchive: Edit,
-            config: fault == "config-property-twice"
-                ? static (_, json) => json.Replace("\"os\":\"linux\"", "\"os\":\"windows\",\"os\":\"linux\"", StringComparison.Ordinal)
+            config: fault switch
+            {
+                "config-property-twice" => static (_, json) => json.Replace("\"os\":\"linux\"", "\"os\":\"windows\",\"os\":\"linux\"", StringComparison.Ordinal),
+                // The Kelvin sign folds to k, so Go reads Healthchec\u212a as Healthcheck, which this check never reads.
+                "config-kelvin-alias" => static (_, json) => json.Replace(
+                    "\"config\":{", "\"config\":{\"Healthchec\\u212a\":{\"Test\":[\"CMD\",\"true\"]},", StringComparison.Ordinal),
+                _ => null
+            },
+            platformManifest: fault == "manifest-unknown-field"
+                ? static (_, json) => json.Replace("\"config\":", $"\"subject\":{{\"mediaType\":\"{ReleaseFixture.ManifestMediaType}\",\"digest\":\"sha256:{new string('b', 64)}\",\"size\":2}},\"config\":", StringComparison.Ordinal)
                 : null);
         if (fault == "manifest-of-another-platform")
         {

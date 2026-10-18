@@ -324,6 +324,14 @@ Before it contacts Docker, the installer checks the folder. It refuses, naming t
   `blobs/sha256` directories and the blobs the image uses), appear once, and be a regular file, or a directory where
   the layout has one. A link, a duplicate, an alias such as `metadata/../index.json`, or a blob the image does not use
   is refused;
+- with `archive`, a JSON field a loader could read differently. Docker and containerd decode the layout, the index,
+  the manifest, `manifest.json` and the configuration with Go, which matches a field's name regardless of case,
+  Unicode folds included (`ſ` reads as `s`, the Kelvin sign as `k`), and lets a later spelling replace an earlier one.
+  So `oci-layout`, `index.json` and its image entry, the image index and its entries, the platform manifest and its
+  descriptors, and each `manifest.json` item may hold only the fields the release tool writes, spelled exactly:
+  `manifest.json` holds `Config`, `RepoTags` and `Layers`, and nothing else. In every object of the archive's JSON,
+  and of `release.json`, a property name must be ASCII and must not differ from another of the same object only in
+  case. A second `repotags` or `RepoTagſ` beside `RepoTags` is refused before anything is loaded;
 - `release.json`, or any JSON in the archive, names the same property twice in one object, compared after escapes are
   decoded, so two readers could see different values.
 

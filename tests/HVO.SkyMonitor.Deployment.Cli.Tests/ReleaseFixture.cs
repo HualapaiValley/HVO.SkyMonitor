@@ -78,7 +78,8 @@ internal sealed class ReleaseFixture : IDisposable
     /// as a one-platform build without an index is. <paramref name="editArchive"/> changes a platform's archive entries
     /// after their digests were taken, before the archive is written and release.json records its size and SHA-256, so the
     /// release stays consistent with its files while its archive disagrees with what it names. <paramref name="config"/>
-    /// rewrites a platform's configuration before its digest is taken, so release.json names the rewritten bytes.
+    /// rewrites a platform's configuration before its digest is taken, so release.json names the rewritten bytes, and
+    /// <paramref name="platformManifest"/> does the same for a platform's manifest.
     /// </summary>
     public static ReleaseFixture Create(
         string? root = null,
@@ -89,7 +90,8 @@ internal sealed class ReleaseFixture : IDisposable
         IReadOnlyDictionary<string, string>? labels = null,
         bool singleManifest = false,
         Action<string, List<ArchiveEntry>>? editArchive = null,
-        Func<string, string, string>? config = null)
+        Func<string, string, string>? config = null,
+        Func<string, string, string>? platformManifest = null)
     {
         var ownsRoot = root is null;
         root ??= Path.Combine(Path.GetTempPath(), $"hvo-release-{Guid.NewGuid():N}");
@@ -122,13 +124,14 @@ internal sealed class ReleaseFixture : IDisposable
                 }
             }.ToJsonString();
             var configBytes = Encoding.UTF8.GetBytes(config?.Invoke(platform, configuration) ?? configuration);
-            var manifest = Bytes(new JsonObject
+            var manifestJson = new JsonObject
             {
                 ["schemaVersion"] = 2,
                 ["mediaType"] = ManifestMediaType,
                 ["config"] = Descriptor("application/vnd.oci.image.config.v1+json", configBytes),
                 ["layers"] = new JsonArray(Descriptor("application/vnd.oci.image.layer.v1.tar+gzip", layer))
-            });
+            }.ToJsonString();
+            var manifest = Encoding.UTF8.GetBytes(platformManifest?.Invoke(platform, manifestJson) ?? manifestJson);
             images[platform] = (layer, configBytes, manifest);
             var entry = Descriptor(ManifestMediaType, manifest);
             entry["platform"] = new JsonObject { ["architecture"] = architecture, ["os"] = "linux" };

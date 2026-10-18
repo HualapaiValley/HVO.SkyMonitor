@@ -21,6 +21,9 @@ namespace HVO.SkyMonitor.Deployment;
 /// <item>every layer the manifest names is in the archive, the size the manifest gives it and the blob its digest
 /// names, so Docker cannot reject the load for a missing or damaged layer.</item>
 /// </list>
+/// Docker and containerd read the layout, the index, the manifest and <c>manifest.json</c> into structures whose fields
+/// they match regardless of case, so each of those objects may hold only the fields the release tool writes, spelled
+/// exactly, and the configuration's names must be ASCII and distinct ignoring case (<see cref="ReleaseJson"/>).
 /// A loader reads entries by their cleaned path and lets a later entry replace an earlier one, so the archive must spell
 /// each entry one way and hold it once: every entry name must be the canonical spelling of its path (no <c>.</c> or
 /// <c>..</c> segment, no empty segment, no leading <c>/</c>, no backslash, and a trailing <c>/</c> only on a
@@ -95,6 +98,7 @@ internal static class ReleaseImageArchive
 
         using (var layoutVersion = ReleaseJson.Parse(Entry("oci-layout", "OCI layout version"), $"the offline archive {archive.Name}'s oci-layout"))
         {
+            OnlyFields(layoutVersion.RootElement, "oci-layout", Refusal, "imageLayoutVersion");
             if (Text(layoutVersion.RootElement, "imageLayoutVersion") != "1.0.0")
             {
                 throw Refusal("its OCI layout is not version 1.0.0");
@@ -105,7 +109,9 @@ internal static class ReleaseImageArchive
         long? imageSize;
         using (var layout = ReleaseJson.Parse(Entry("index.json", "OCI layout index"), $"the offline archive {archive.Name}'s OCI layout index"))
         {
+            OnlyFields(layout.RootElement, "OCI layout index", Refusal, "schemaVersion", "mediaType", "manifests");
             var top = Single(layout.RootElement, "manifests") ?? throw Refusal("its OCI layout does not name exactly one image");
+            OnlyFields(top, "OCI layout index's image", Refusal, "mediaType", "digest", "size", "annotations");
             if (Text(top, "digest") != image.Digest)
             {
                 throw Refusal($"its OCI layout names an image other than {image.Digest}");
@@ -119,6 +125,7 @@ internal static class ReleaseImageArchive
             // Docker's containerd store names the image it loads from these annotations.
             if (top.TryGetProperty("annotations", out var annotations))
             {
+                OnlyFields(annotations, "OCI layout index's annotations", Refusal, "io.containerd.image.name", "org.opencontainers.image.ref.name");
                 if (annotations.ValueKind != JsonValueKind.Object ||
                     (annotations.TryGetProperty("io.containerd.image.name", out var name) && name.ValueKind != JsonValueKind.Null &&
                      !(name.ValueKind == JsonValueKind.String && name.GetString() == reference)) ||
@@ -139,6 +146,15 @@ internal static class ReleaseImageArchive
             {
                 throw Refusal("its image index lists no platforms");
             }
+            OnlyFields(index.RootElement, "image index", Refusal, "schemaVersion", "mediaType", "manifests", "annotations");
+            foreach (var entry in manifests.EnumerateArray())
+            {
+                OnlyFields(entry, "image index entry", Refusal, "mediaType", "digest", "size", "platform", "annotations");
+                if (entry.ValueKind == JsonValueKind.Object && entry.TryGetProperty("platform", out var entryPlatform))
+                {
+                    OnlyFields(entryPlatform, "image index entry's platform", Refusal, "architecture", "os", "variant");
+                }
+            }
             var matching = manifests.EnumerateArray()
                 .Where(entry => entry.ValueKind == JsonValueKind.Object &&
                                 entry.TryGetProperty("platform", out var platform) && platform.ValueKind == JsonValueKind.Object &&
@@ -157,15 +173,21 @@ internal static class ReleaseImageArchive
         using (var manifest = ReleaseJson.Parse(Blob(archive.ManifestDigest, manifestSize, $"{archive.Platform} manifest"), $"the offline archive {archive.Name}'s {archive.Platform} manifest"))
         {
             var root = manifest.RootElement;
+            OnlyFields(root, $"{archive.Platform} manifest", Refusal, "schemaVersion", "mediaType", "config", "layers", "annotations");
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("config", out var config) ||
                 config.ValueKind != JsonValueKind.Object || Text(config, "digest") != archive.ConfigDigest)
             {
                 throw Refusal($"its {archive.Platform} manifest does not name the configuration {archive.ConfigDigest}");
             }
+            OnlyFields(config, $"{archive.Platform} manifest's configuration descriptor", Refusal, "mediaType", "digest", "size", "annotations");
             configSize = Size(config);
             if (!root.TryGetProperty("layers", out var layerValues) || layerValues.ValueKind != JsonValueKind.Array)
             {
                 throw Refusal($"its {archive.Platform} manifest lists no layers");
+            }
+            foreach (var layer in layerValues.EnumerateArray())
+            {
+                OnlyFields(layer, $"{archive.Platform} manifest's layer descriptor", Refusal, "mediaType", "digest", "size", "annotations");
             }
             layerDescriptors = [.. layerValues.EnumerateArray().Select(layer => layer.ValueKind == JsonValueKind.Object &&
                                                                                 Text(layer, "digest") is { } digest && IsDigest(digest) &&
@@ -200,6 +222,8 @@ internal static class ReleaseImageArchive
             var only = dockerManifest.RootElement.ValueKind == JsonValueKind.Array && dockerManifest.RootElement.GetArrayLength() == 1
                 ? dockerManifest.RootElement[0]
                 : default;
+            // Docker reads RepoTags from any spelling it folds to that name, so only these exact fields may be present.
+            OnlyFields(only, "manifest.json", Refusal, "Config", "RepoTags", "Layers");
             var describesTheImage = only.ValueKind == JsonValueKind.Object &&
                                     Text(only, "Config") == BlobPrefix + Hex(archive.ConfigDigest) &&
                                     only.TryGetProperty("Layers", out var dockerLayers) && dockerLayers.ValueKind == JsonValueKind.Array &&
@@ -354,6 +378,30 @@ internal static class ReleaseImageArchive
                '.' or '/' or '-' or '_' or '+' or '@' or ':' or '\\')
             ? $"'{name}'"
             : "that the installer will not print";
+
+    /// <summary>
+    /// Refuses a field of <paramref name="element"/>, when it is an object, that is not exactly one of
+    /// <paramref name="allowed"/>. Docker and containerd match these objects' fields regardless of case, so a field this
+    /// check does not read by its exact name could still be one they act on, with a value this check never saw.
+    /// </summary>
+    private static void OnlyFields(JsonElement element, string what, Func<string, InstallerException> refusal, params string[] allowed)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+        foreach (var property in element.EnumerateObject())
+        {
+            if (!allowed.Contains(property.Name, StringComparer.Ordinal))
+            {
+                var field = property.Name.Length is > 0 and <= 64 &&
+                            property.Name.All(static character => character is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '.' or '-' or '_')
+                    ? $"'{property.Name}'"
+                    : "whose name it will not print";
+                throw refusal($"its {what} has a field {field}, which the installer does not accept");
+            }
+        }
+    }
 
     /// <summary>The <c>size</c> a descriptor gives, or <see langword="null"/> when it gives none that is a byte count.</summary>
     private static long? Size(JsonElement descriptor)
