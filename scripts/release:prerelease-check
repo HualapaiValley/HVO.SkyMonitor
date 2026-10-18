@@ -71,19 +71,16 @@ case "$check" in
         attestations="$(github_api_read "the attestations for $digest" \
             'type == "object" and (.attestations | type == "array" and all(.[]; type == "object"))' \
             "repos/$repository/attestations/$digest")" || exit 1
-        # A record counts only when it is this repository's and carries a bundle: the bundle_url GitHub serves it from
-        # (the usual answer, with a null bundle), or a Sigstore bundle with its verification material and signed
-        # envelope. An empty record, or one with a null bundle and nothing else, is not an attestation.
+        # This is a presence check on GitHub's answer, not a verifier: the files' and image's attestations were verified
+        # cryptographically before. A record counts only when it is this repository's and names the bundle_url GitHub
+        # serves its bundle from, as an absolute HTTPS URL with a host and a path; GitHub's list answer carries a null
+        # inline bundle beside it. An answer with inline bundles only, or with nothing usable, stops publication.
         count="$(jq --argjson repository "$repository_id" '[.attestations[] | select(
-            .repository_id == $repository and (
-                (.bundle_url | type == "string" and startswith("https://")) or
-                (.bundle | type == "object"
-                    and (.mediaType | type == "string" and startswith("application/vnd.dev.sigstore.bundle"))
-                    and (.verificationMaterial | type == "object")
-                    and (.dsseEnvelope | type == "object" and (.payload | type == "string") and (.payloadType | type == "string")
-                        and (.signatures | type == "array" and length > 0))))
+            .repository_id == $repository and
+            (.bundle_url | type == "string" and test("^https://[A-Za-z0-9.-]+(:[0-9]+)?/[^[:space:]]+$"))
         )] | length' <<<"$attestations")"
-        [[ "$count" -ge 1 ]] || fail "No attestation of $repository is on record for $digest."
+        [[ "$count" -ge 1 ]] ||
+            fail "No attestation of $repository is on record for $digest. A record counts only when it names this repository and an https bundle_url with a host and a path."
         printf '%s has %s attestation(s) of %s on record.\n' "$digest" "$count" "$repository"
         ;;
     *)

@@ -480,21 +480,28 @@ for answer in '200:{}' '200:[{}]' '200:{"attestations":{"a":1}}' '200:{"attestat
 done
 expect_check_read_refusal "attestations answered with none" "${repo}_attestations_$image_digest" '200:{"attestations":[]}' \
     "No attestation of HualapaiValley/HVO.SkyMonitor is on record for $image_digest." attested "$image_digest"
-# A record counts only when it is this repository's and carries a bundle (F11).
+# A record counts only when it is this repository's and names an https bundle_url with a host and a path (F11, F12).
+hollow_bundle='{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","verificationMaterial":{},"dsseEnvelope":{"payload":"e30=","payloadType":"application/vnd.in-toto+json","signatures":[null]}}'
 for record in '{}' '{"bundle":null}' '{"bundle":null,"repository_id":1}' '{"bundle":{},"repository_id":1}' \
     '{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net/bundles/example.json","repository_id":2}' \
     '{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net/bundles/example.json"}' \
     '{"bundle":null,"bundle_url":"http://tmaproduction.blob.core.windows.net/bundles/example.json","repository_id":1}' \
     '{"bundle":null,"bundle_url":"","repository_id":1}' \
     '{"bundle":{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"},"repository_id":1}' \
-    "{\"bundle\":$inline_bundle,\"repository_id\":\"1\"}"; do
+    "{\"bundle\":$inline_bundle,\"repository_id\":\"1\"}" \
+    '{"repository_id":1,"bundle_url":"https://"}' "{\"repository_id\":1,\"bundle\":$hollow_bundle}" \
+    '{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net","repository_id":1}' \
+    '{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net/","repository_id":1}' \
+    '{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net/bundles/a b.json","repository_id":1}' \
+    "{\"bundle\":$inline_bundle,\"repository_id\":1}"; do
     expect_check_read_refusal "an attestation record $record" "${repo}_attestations_$image_digest" "200:{\"attestations\":[$record]}" \
         "No attestation of HualapaiValley/HVO.SkyMonitor is on record for $image_digest." attested "$image_digest"
 done
-check_case attested-inline
+check_case attested-inline-only
 printf '%s\n' "{\"attestations\":[{\"bundle\":$inline_bundle,\"repository_id\":1}]}" \
     >"$FAKE_GH/${repo}_attestations_$image_digest.json"
-expect_check "an attestation whose Sigstore bundle is inline" attested "$image_digest"
+expect_check_refusal "an answer whose only bundle is inline" \
+    "A record counts only when it names this repository and an https bundle_url with a host and a path." attested "$image_digest"
 check_case attested-mixed
 printf '%s\n' "{\"attestations\":[{},{\"bundle\":null},$attestation_record]}" >"$FAKE_GH/${repo}_attestations_$image_digest.json"
 expect_check "a real attestation beside empty records" attested "$image_digest"
