@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Offline controls for the base-image guard and Dependabot inventory."""
+import json
+import pathlib
+import re
+import subprocess
+import tempfile
+import unittest
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+CHECK = ROOT / "scripts/ci:base-images"
+SDK = "10.0.402"
+A = "a" * 64
+B = "b" * 64
+
+
+class BaseImages(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = pathlib.Path(self.temp.name)
+        subprocess.run(["git", "init", "--quiet", self.root], check=True)
+        (self.root / "global.json").write_text(json.dumps({"sdk": {"version": SDK}}))
+
+    def dockerfile(self, path, text):
+        target = self.root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+        # Fixtures also exercise the tracked-file inventory used in CI.
+        subprocess.run(["git", "-C", self.root, "add", path], check=True)
+
+    def check(self, error=None):
+        result = subprocess.run([CHECK, self.root], capture_output=True, text=True)
+        if error is None:
+            self.assertEqual(result.returncode, 0, result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn(error, result.stderr)
+
+    def test_sdk_mismatch_then_aligned(self):
+        self.dockerfile("src/A/Dockerfile", f"FROM mcr.microsoft.com/dotnet/sdk:10.0.401@sha256:{A}\n")
+        self.check("SDK tag must equal global.json")
+        self.dockerfile("src/A/Dockerfile", f"FROM mcr.microsoft.com/dotnet/sdk:{SDK}@sha256:{A}\n")
+        self.check()
+
+    def test_shared_tag_mismatch_then_aligned(self):
+        self.dockerfile("src/A/Dockerfile", f"FROM ubuntu:24.04@sha256:{A}\n")
+        self.dockerfile("tools/B/Dockerfile", f"FROM ubuntu:24.04@sha256:{B}\n")
+        self.check("conflicting digests for ubuntu:24.04")
+        self.dockerfile("tools/B/Dockerfile", f"FROM ubuntu:24.04@sha256:{A}\n")
+        self.check()
+
+    def test_unpinned_then_pinned(self):
+        self.dockerfile(".devcontainer/Dockerfile", "FROM ubuntu:24.04\n")
+        self.check("FROM must be pinned by sha256 digest")
+        self.dockerfile(".devcontainer/Dockerfile", f"FROM ubuntu:24.04@sha256:{A}\n")
+        self.check()
+
+    def test_platform_continuation_case_and_alias_defaults(self):
+        self.dockerfile("Dockerfile", f"""ARG SDK_IMAGE=dotnet-sdk
+from --platform=$BUILDPLATFORM \\
+    mcr.microsoft.com/dotnet/sdk:{SDK}@sha256:{A} as dotnet-sdk
+FROM ${{SDK_IMAGE}} AS build
+FROM build AS final
+""")
+        self.check()
+
+    def test_unpinned_argument_then_pinned(self):
+        self.dockerfile("Dockerfile", "ARG BASE=ubuntu:24.04\nFROM $BASE\n")
+        self.check("FROM must be pinned by sha256 digest")
+        self.dockerfile("Dockerfile", f"ARG BASE=ubuntu:24.04@sha256:{A}\nFROM $BASE\n")
+        self.check()
+
+    def test_sdk_argument_is_checked(self):
+        self.dockerfile("Dockerfile", f"ARG BASE=mcr.microsoft.com/dotnet/sdk:wrong@sha256:{A}\nFROM $BASE\n")
+        self.check("SDK tag must equal global.json")
+
+    def test_unresolved_argument_fails(self):
+        self.dockerfile("Dockerfile", "ARG BASE\nFROM ${BASE}\n")
+        self.check("unresolved FROM argument")
+
+    def test_malformed_digest_fails(self):
+        self.dockerfile("Dockerfile", "FROM ubuntu:24.04@sha256:abc\n")
+        self.check("FROM must be pinned by sha256 digest")
+
+    def test_different_tags_can_have_different_digests(self):
+        self.dockerfile("Dockerfile", f"FROM ubuntu:24.04@sha256:{A} AS noble\nFROM ubuntu:22.04@sha256:{B}\n")
+        self.check()
+
+    def test_named_dockerfiles_are_checked(self):
+        self.dockerfile("docker/Dockerfile.test", "FROM ubuntu:24.04\n")
+        self.check("FROM must be pinned by sha256 digest")
+        self.dockerfile("docker/Dockerfile.test", f"FROM ubuntu:24.04@sha256:{A}\n")
+        self.dockerfile("tools/test.Dockerfile", "FROM ubuntu:24.04\n")
+        self.check("FROM must be pinned by sha256 digest")
+
+    def test_empty_inventory_fails(self):
+        self.check("no Dockerfiles found")
+
+    def test_dockerfile_without_from_fails(self):
+        self.dockerfile("Dockerfile", "# no build stages\n")
+        self.check("no FROM instructions")
+
+    def test_real_repository_and_dependabot_coverage(self):
+        result = subprocess.run([CHECK], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        paths = subprocess.check_output(["git", "-C", ROOT, "ls-files", "-z"]).decode().split("\0")
+        dockerfiles = [p for p in paths if pathlib.PurePosixPath(p).name.startswith("Dockerfile")
+                       or pathlib.PurePosixPath(p).name.endswith(".Dockerfile")]
+        config = (ROOT / ".github/dependabot.yml").read_text()
+        docker = config.split('  - package-ecosystem: "docker"\n', 1)[1].split('  - package-ecosystem:', 1)[0]
+        directories = set(re.findall(r'^      - "(/[^"*]*)"$', docker, re.M))
+        for path in dockerfiles:
+            parent = str(pathlib.PurePosixPath(path).parent)
+            directory = "/" if parent == "." else "/" + parent
+            self.assertIn(directory, directories, f"Dependabot does not cover {path}")
+        self.assertTrue(dockerfiles)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

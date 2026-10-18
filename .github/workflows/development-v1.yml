@@ -50,6 +50,10 @@ jobs:
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
 
+      # Offline and cheap enough to run on every draft/push (#1345).
+      - name: Check Dockerfile base images
+        run: ./scripts/ci:base-images
+
       - name: Check CI control contracts
         run: |
           ./scripts/ci:shell-syntax

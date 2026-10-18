@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Exercise runtime directory checks without Docker, dotnet, or ARM64 hardware.
+set -euo pipefail
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/dotnet-runtime-home.sh
+source "$script_dir/lib/dotnet-runtime-home.sh"
+# Bind the tested helper to the real harness before its first dotnet invocation.
+python3 - "$script_dir" <<'PYTHON'
+import pathlib
+import sys
+harness = (pathlib.Path(sys.argv[1]) / "test:cameraagent-arm64-ci").read_text()
+source = 'source "$SCRIPT_DIR/lib/dotnet-runtime-home.sh"'
+call = 'dotnet_runtime_home_check || fail "runner runtime directory is unusable"'
+assert source in harness and call in harness, "ARM64 harness must enforce the runtime directory check"
+assert harness.index(source) < harness.index(call) < harness.index('--arg sdk "$(dotnet --version)"')
+PYTHON
+work="$(mktemp -d)"
+trap 'chmod -R u+rwx "$work"; rm -rf "$work"' EXIT
+mkdir "$work/home" "$work/runtime" "$work/readonly"
+ln -s "$work/home" "$work/link"
+chmod 500 "$work/readonly"
+count=0
+expect() {
+    local expected="$1" home="$2" runtime="$3" status=0
+    HOME="$home" XDG_RUNTIME_DIR="$runtime" DOTNET_CLI_HOME="$work/home" \
+        dotnet_runtime_home_check >"$work/output" 2>&1 || status=$?
+    if [[ "$expected" == pass ]]; then
+        [[ "$status" == 0 ]] || { cat "$work/output" >&2; exit 1; }
+    else
+        [[ "$status" != 0 ]] || { printf 'Invalid runtime directory was accepted: %s %s\n' "$home" "$runtime" >&2; exit 1; }
+        grep -q 'DOTNET_CLI_HOME alone is insufficient' "$work/output"
+    fi
+    count=$((count + 1))
+}
+expect pass "$work/home" ''
+expect fail '' ''
+expect fail "$work/missing" ''
+expect fail "$work/link" ''
+expect fail "$work/link/" ''
+mkdir "$work/home/nested"
+expect fail "$work/link/nested" ''
+expect fail "$work/link/../home" ''
+expect fail relative ''
+if (( EUID != 0 )); then
+    expect fail "$work/readonly" ''
+else
+    printf 'Run as a non-root account to test unwritable directories.\n' >&2
+    exit 1
+fi
+expect pass "$work/link" "$work/runtime"
+expect pass '' "$work/runtime"
+expect fail "$work/home" "$work/missing"
+expect fail "$work/home" "$work/link"
+expect fail "$work/home" "$work/readonly"
+# A write failure despite -w must fail closed, and the aligned case must work again.
+mktemp() { return 1; }
+expect fail "$work/home" ''
+unset -f mktemp
+expect pass "$work/home" ''
+[[ -z "$(find "$work/home" "$work/runtime" -name '.hvo-dotnet-home.*' -print)" ]]
+printf 'ARM64 runtime HOME preflight: %s cases passed.\n' "$count"

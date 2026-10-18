@@ -73,6 +73,19 @@ Do not duplicate them in the runner installation `.env`, and remove any stale
 `DOTNET_ROOT` assignment from that file. The setup action exports the selected
 install directory as job-scoped `DOTNET_ROOT`.
 
+The service account must also have a real, writable, non-symlinked absolute
+`HOME` directory (including its parent path), for example `/home/actions`.
+.NET runtime 10.0.13 named mutexes use `XDG_RUNTIME_DIR` when set, otherwise
+`~/.dotnet/corefx/Runtime/SharedMemory`; `DOTNET_CLI_HOME` alone does not redirect
+this runtime state ([dotnet/runtime#135726](https://github.com/dotnet/runtime/issues/135726)).
+If a physical writable HOME is unavailable, explicitly set `XDG_RUNTIME_DIR` in
+the service drop-in to an existing, service-account-owned, writable physical
+directory, for example `/srv/runner-data/cache/dotnet-runtime` with mode 0700.
+Create it before starting the service. A configured `XDG_RUNTIME_DIR` must be
+usable even when HOME is valid, because the runtime prefers it. The harness
+preflight checks the selected directory, rejects symlinks (including ancestors),
+and probes file creation before invoking dotnet; it does not repair the account.
+
 On a current Raspberry Pi kernel, grant the service account access only to the
 restricted `/dev/vcio_gencmd` interface through a dedicated group such as
 `hvo-vcgencmd`. Persist the device group and mode with a udev rule because the
@@ -130,6 +143,9 @@ the generated service before starting it:
 RequiresMountsFor=/srv/runner-data
 
 [Service]
+Environment="HOME=/home/actions"
+# If HOME cannot be physical/writable, create a private directory first, then set:
+# Environment="XDG_RUNTIME_DIR=/srv/runner-data/cache/dotnet-runtime"
 Environment="DOTNET_INSTALL_DIR=/srv/runner-data/cache/dotnet-install"
 Environment="DOTNET_CLI_HOME=/srv/runner-data/cache/dotnet-cli"
 Environment="NUGET_PACKAGES=/srv/runner-data/cache/nuget/packages"

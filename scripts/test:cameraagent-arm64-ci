@@ -10,6 +10,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly REPO_ROOT
 # shellcheck source=lib/trx-evidence.sh
 source "$SCRIPT_DIR/lib/trx-evidence.sh"
+# shellcheck source=lib/dotnet-runtime-home.sh
+source "$SCRIPT_DIR/lib/dotnet-runtime-home.sh"
 readonly BUNDLE="${1:-}"
 readonly RUN_ID="${GITHUB_RUN_ID:-local}"
 readonly RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT:-$(date -u '+%Y%m%d%H%M%S')-$$}"
@@ -254,6 +256,9 @@ fi
 for command in cc curl date df docker dotnet du file find findmnt git grep id ip jq lsblk nproc readelf readlink realpath sha256sum sqlite3 stat timeout wc; do
     require_command "$command"
 done
+
+# Fail before invoking dotnet or creating any ARM64 workload resources.
+dotnet_runtime_home_check || fail "runner runtime directory is unusable"
 
 rm -rf -- "$RESULTS" "$UPLOAD_RESULTS" "$UPLOAD_STAGING"
 mkdir -p "$RESULTS" "$AGENT_ROOT/home" "$AGENT_ROOT/identity" "$AGENT_ROOT/provisioning" \
