@@ -40,7 +40,7 @@ public sealed class HvoPanel : View
         }
     }
 
-    /// <summary>The title as drawn on a panel <paramref name="width"/> wide: in capitals, a space each side, cut to fit.</summary>
+    /// <summary>The title as drawn on a panel <paramref name="width"/> cells wide: in capitals, a space each side, cut to fit.</summary>
     internal static string TitleText(string caption, int width)
     {
         if (width < 6 || caption.Length == 0)
@@ -48,8 +48,7 @@ public sealed class HvoPanel : View
             return string.Empty;
         }
 
-        var title = $" {caption.ToUpperInvariant()} ";
-        return title.Length > width - 4 ? title[..(width - 4)] : title;
+        return TerminalText.Clip($" {caption.ToUpperInvariant()} ", width - 4);
     }
 
     /// <inheritdoc/>

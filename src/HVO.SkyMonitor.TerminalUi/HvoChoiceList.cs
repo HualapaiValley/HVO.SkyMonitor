@@ -88,7 +88,6 @@ public sealed class HvoChoiceList : View
         return true;
     }
 
-    // The line cut to the width, padded so the highlight reaches the end of the label.
-    internal static string Fit(string line, int width)
-        => width <= 0 ? string.Empty : line.Length > width ? line[..width] : line;
+    // The line cut to the width in display cells, between text elements.
+    internal static string Fit(string line, int width) => TerminalText.Clip(line, width);
 }

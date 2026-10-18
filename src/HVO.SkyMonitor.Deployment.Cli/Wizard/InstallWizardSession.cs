@@ -77,7 +77,7 @@ internal sealed partial class InstallWizardSession
         Terminal = terminal;
         Version = version;
         (_given, _flags) = CommandLine.ReadInstallOptions(InstallWizardGate.InstallArguments(args));
-        Validate();
+        Validate(args);
         DefaultAnswersPath = AnswersPathFor(terminal.Environment);
         Saved = ReadSaved(DefaultAnswersPath, out var savedProblem);
         SavedProblem = savedProblem;
@@ -124,7 +124,12 @@ internal sealed partial class InstallWizardSession
             : Saved?.InstanceId == Answers.InstanceId ? "from the saved answers: installing again changes nothing that is already so"
             : "new";
 
-    /// <summary>The answers as the answers file holds them: what <c>--answers</c> reads.</summary>
+    /// <summary>
+    /// The answers as the answers file holds them: what <c>--answers</c> reads. A value the command line gave is kept as
+    /// it was given, never trimmed or turned into a default; a value restored from the saved answers stays unless an
+    /// option given replaces it. So the image source stays when only the release is handed over beside the answers, and
+    /// <c>--image-source</c>, handed over itself, replaces it.
+    /// </summary>
     public InstallAnswers ToAnswers()
     {
         var a = Answers;
@@ -133,27 +138,27 @@ internal sealed partial class InstallWizardSession
         {
             SchemaVersion = InstallAnswers.CurrentSchemaVersion,
             InstanceId = a.InstanceId,
-            FriendlyName = a.FriendlyName.Trim(),
-            OwnerEmail = Blank(a.OwnerEmail),
-            BindAddress = a.BindAddress.Trim(),
+            FriendlyName = GivenValue("--friendly-name") ?? a.FriendlyName.Trim(),
+            OwnerEmail = Given("--owner-email") ? GivenValue("--owner-email") : Blank(a.OwnerEmail),
+            BindAddress = GivenValue("--bind-address") ?? a.BindAddress.Trim(),
             Port = int.Parse(a.Port, NumberStyles.None, CultureInfo.InvariantCulture),
             ProductRoot = GivenValue("--product-root"),
             CatalogBundle = Given("--catalog-bundle") ? null : Blank(a.CatalogBundle),
             Release = handedRelease ? null : Blank(a.Release),
-            ImageSource = Given("--release") || Given("--image-ref") || Given("--image-source") || Blank(a.Release) is null ? null : a.ImageSource,
+            ImageSource = Given("--image-source") || Given("--image-ref") || (!Given("--release") && Blank(a.Release) is null) ? null : a.ImageSource,
             ImageReference = GivenValue("--image-ref"),
             ImageArchive = GivenValue("--image-archive"),
             ImageArchiveSha256 = GivenValue("--image-archive-sha256"),
-            PasswordFile = a.Password == OwnerPasswordChoice.File ? Blank(a.PasswordFile) : null,
+            PasswordFile = a.Password != OwnerPasswordChoice.File ? null : Given("--password-file") ? GivenValue("--password-file") : Blank(a.PasswordFile),
             LatitudeDegrees = Number(a.Latitude),
             LongitudeDegrees = Number(a.Longitude),
             ElevationMeters = Number(a.Elevation),
-            TimeZoneId = a.TimeZone.Trim(),
-            AcknowledgePlaintextHttp = IsLoopback(a.BindAddress) ? null : a.AcknowledgePlaintextHttp,
+            TimeZoneId = GivenValue("--time-zone") ?? a.TimeZone.Trim(),
+            AcknowledgePlaintextHttp = Given("--acknowledge-plaintext-http") ? true : IsLoopback(a.BindAddress) ? null : a.AcknowledgePlaintextHttp,
             GeneratePassword = a.Password == OwnerPasswordChoice.Generate ? true : null,
             ReplayProfile = a.ReplayProfile,
             Cpus = Blank(a.Cpus) is { } cpus ? decimal.Parse(cpus, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture) : null,
-            Memory = Blank(a.Memory)
+            Memory = Given("--memory") ? GivenValue("--memory") : Blank(a.Memory)
         };
     }
 
@@ -433,24 +438,35 @@ internal sealed partial class InstallWizardSession
         return Path.GetFullPath(Path.Combine(config, "hvo-sky", "install-answers.json"));
     }
 
-    // Every value the command line gave is checked as the command line would check it, so a mistake there is a usage
-    // error before the wizard opens rather than a page that cannot be left.
-    private void Validate()
+    // The command line is checked exactly as the direct path checks it, through the same parser and this host's policy,
+    // before any page is passed over: what cameraagent install refuses is a usage error (exit 2) before the wizard opens,
+    // rather than a page that cannot be left or a value quietly replaced. Only the questions the wizard asks and the
+    // command line left open are answered for the check, each with a stand-in that is never used.
+    private void Validate(string[] args)
     {
-        var unknown = _given.Keys.FirstOrDefault(option => !CommandLine.InstallValueOptions.Contains(option, StringComparer.Ordinal));
-        if (unknown is not null)
+        var probe = new List<string>(InstallWizardGate.InstallArguments(args));
+        if (!Given("--friendly-name"))
         {
-            throw new InstallUsageException($"Unknown option '{unknown}'.");
+            probe.AddRange(["--friendly-name", "Camera"]);
         }
 
-        _ = CommandLine.ParseGuid(GivenValue("--instance-id"), "--instance-id");
-        _ = CommandLine.ParseInt(GivenValue("--port"), 5130, "--port");
-        _ = CommandLine.ParseDouble(GivenValue("--latitude"), 0, "--latitude");
-        _ = CommandLine.ParseDouble(GivenValue("--longitude"), 0, "--longitude");
-        _ = CommandLine.ParseDouble(GivenValue("--elevation"), 0, "--elevation");
-        _ = CommandLine.ParseCpus(GivenValue("--cpus"));
-        _ = CommandLine.ParseImageSource(GivenValue("--image-source"));
-        _ = CommandLine.ParseReplayProfile(GivenValue("--replay-profile"));
+        if (!Given("--release") && !Given("--image-ref"))
+        {
+            probe.AddRange(["--release", "/hvo-sky-install-wizard/release"]);
+        }
+
+        if (!Given("--catalog-bundle"))
+        {
+            probe.AddRange(["--catalog-bundle", "/hvo-sky-install-wizard/catalog.bundle"]);
+        }
+
+        if (GivenValue("--bind-address") is { } address && !IsLoopback(address) && !Given("--acknowledge-plaintext-http"))
+        {
+            // Whether plain HTTP to other computers is understood is a question the network page asks.
+            probe.Add("--acknowledge-plaintext-http");
+        }
+
+        _ = Services.Parse([.. probe]);
     }
 
     // Each answer: the command line's, else the saved one, else the installer's default.

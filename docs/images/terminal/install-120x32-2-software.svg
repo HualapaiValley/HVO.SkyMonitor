@@ -116,31 +116,33 @@
 <text x="37.20" y="145.50" fill="#98a7bb" textLength="462.00" lengthAdjust="spacingAndGlyphs">SHA256SUMS and its image archive) and the star catalog.</text>
 <text x="692.40" y="145.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Release</text>
 <text x="793.20" y="145.50" fill="#f7f9fc">-</text>
-<text x="692.40" y="163.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Catalog</text>
-<text x="793.20" y="163.50" fill="#f7f9fc">-</text>
+<text x="692.40" y="163.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs">Image from</text>
+<text x="793.20" y="163.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs">the archive</text>
 <text x="37.20" y="181.50" fill="#98a7bb" textLength="117.60" lengthAdjust="spacingAndGlyphs">Release folder</text>
 <text x="188.40" y="181.50" fill="#f7f9fc" textLength="235.20" lengthAdjust="spacingAndGlyphs">/home/operator/hvo-sky-0.9.0</text>
-<text x="692.40" y="181.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Address</text>
-<text x="793.20" y="181.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs">127.0.0.1:5130</text>
+<text x="692.40" y="181.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Catalog</text>
+<text x="793.20" y="181.50" fill="#f7f9fc">-</text>
 <text x="188.40" y="199.50" fill="#98a7bb" textLength="394.80" lengthAdjust="spacingAndGlyphs">The folder holding the release's files, such as</text>
-<text x="692.40" y="199.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs">Location</text>
-<text x="793.20" y="199.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">0, 0, 0 m</text>
+<text x="692.40" y="199.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Address</text>
+<text x="793.20" y="199.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs">127.0.0.1:5130</text>
 <text x="188.40" y="217.50" fill="#98a7bb" textLength="201.60" lengthAdjust="spacingAndGlyphs">/home/you/hvo-sky-0.9.0.</text>
-<text x="692.40" y="217.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">Time zone</text>
-<text x="793.20" y="217.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs">UTC</text>
+<text x="692.40" y="217.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs">Location</text>
+<text x="793.20" y="217.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">0, 0, 0 m</text>
 <text x="37.20" y="235.50" fill="#98a7bb" textLength="84.00" lengthAdjust="spacingAndGlyphs">Image from</text>
 <text x="188.40" y="235.50" fill="#f7f9fc" textLength="260.40" lengthAdjust="spacingAndGlyphs">(*) the release's image archive</text>
-<text x="692.40" y="235.50" fill="#f7f9fc" textLength="33.60" lengthAdjust="spacingAndGlyphs">CPUs</text>
-<text x="793.20" y="235.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
+<text x="692.40" y="235.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">Time zone</text>
+<text x="793.20" y="235.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs">UTC</text>
 <text x="188.40" y="253.50" fill="#f7f9fc" textLength="260.40" lengthAdjust="spacingAndGlyphs">( ) the registry, by its digest</text>
-<text x="692.40" y="253.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs">Memory</text>
+<text x="692.40" y="253.50" fill="#f7f9fc" textLength="33.60" lengthAdjust="spacingAndGlyphs">CPUs</text>
 <text x="793.20" y="253.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
-<text x="692.40" y="271.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs">Owner</text>
+<text x="692.40" y="271.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs">Memory</text>
 <text x="793.20" y="271.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
 <text x="37.20" y="289.50" fill="#58a6ff" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">Catalog bundle</text>
 <text x="188.40" y="289.50" fill="#f7f9fc" textLength="394.80" lengthAdjust="spacingAndGlyphs">perator/.cache/hvo-sky/hyg-v4.2-p3-s2-r1.bundle</text>
+<text x="692.40" y="289.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs">Owner</text>
+<text x="793.20" y="289.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
 <text x="188.40" y="307.50" fill="#98a7bb" textLength="361.20" lengthAdjust="spacingAndGlyphs">The unpacked catalog's folder, NAME.bundle.</text>
-<text x="692.40" y="307.50" fill="#98a7bb" textLength="226.80" lengthAdjust="spacingAndGlyphs">* given on the command line</text>
+<text x="692.40" y="325.50" fill="#98a7bb" textLength="226.80" lengthAdjust="spacingAndGlyphs">* given on the command line</text>
 <text x="28.80" y="559.50" fill="#f7f9fc" font-weight="bold">[</text>
 <text x="45.60" y="559.50" fill="#f7f9fc" font-weight="bold" text-decoration="underline">B</text>
 <text x="54.00" y="559.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">ack ]</text>

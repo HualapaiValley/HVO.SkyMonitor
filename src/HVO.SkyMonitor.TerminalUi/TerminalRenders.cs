@@ -15,15 +15,19 @@ public static partial class TerminalRenders
     public const string DirectoryVariable = "HVO_TERMINAL_RENDERS_DIR";
 
     /// <summary>The folder the screens go to: <c>HVO_TERMINAL_RENDERS_DIR</c>, or <paramref name="fallback"/>.</summary>
-    public static string Folder(string fallback)
+    public static string Folder(string fallback) => Folder(fallback, Environment.GetEnvironmentVariable);
+
+    /// <summary>The folder the screens go to, with <paramref name="environment"/> as the process environment.</summary>
+    public static string Folder(string fallback, Func<string, string?> environment)
     {
         ArgumentNullException.ThrowIfNull(fallback);
-        return Environment.GetEnvironmentVariable(DirectoryVariable) is { Length: > 0 } configured ? configured : fallback;
+        ArgumentNullException.ThrowIfNull(environment);
+        return environment(DirectoryVariable) is { Length: > 0 } configured ? configured : fallback;
     }
 
     /// <summary>
-    /// Saves the screen <paramref name="app"/> shows as <paramref name="name"/>.ans in <see cref="Folder"/>, after a
-    /// full layout and draw, and returns the file's path. The name is lower-case letters, digits and hyphens.
+    /// Saves the screen <paramref name="app"/> shows as <paramref name="name"/>.ans in <see cref="Folder(string)"/>,
+    /// after a full layout and draw, and returns the file's path. The name is lower-case letters, digits and hyphens.
     /// </summary>
     public static string Save(IApplication app, string name, string fallback)
     {
@@ -32,8 +36,15 @@ public static partial class TerminalRenders
         return SaveText(app.Driver?.ToAnsi() ?? string.Empty, name, fallback);
     }
 
-    /// <summary>Saves <paramref name="ansi"/>, text with ANSI escapes, as <paramref name="name"/>.ans in <see cref="Folder"/>.</summary>
-    public static string SaveText(string ansi, string name, string fallback)
+    /// <summary>Saves <paramref name="ansi"/>, text with ANSI escapes, as <paramref name="name"/>.ans in <see cref="Folder(string)"/>.</summary>
+    public static string SaveText(string ansi, string name, string fallback) => SaveText(ansi, name, fallback, Environment.GetEnvironmentVariable);
+
+    /// <summary>
+    /// Saves <paramref name="ansi"/> as <paramref name="name"/>.ans in <see cref="Folder(string, Func{string, string})"/>
+    /// of <paramref name="environment"/>: a test of this class passes an environment without <c>HVO_TERMINAL_RENDERS_DIR</c>,
+    /// so it never writes where a run's screenshots are.
+    /// </summary>
+    public static string SaveText(string ansi, string name, string fallback, Func<string, string?> environment)
     {
         ArgumentNullException.ThrowIfNull(ansi);
         ArgumentNullException.ThrowIfNull(name);
@@ -42,7 +53,7 @@ public static partial class TerminalRenders
             throw new ArgumentException($"A render's name is lower-case letters, digits and hyphens, not '{name}'.", nameof(name));
         }
 
-        var folder = Folder(fallback);
+        var folder = Folder(fallback, environment);
         Directory.CreateDirectory(folder);
         var path = Path.Combine(folder, $"{name}.ans");
         File.WriteAllText(path, ansi);

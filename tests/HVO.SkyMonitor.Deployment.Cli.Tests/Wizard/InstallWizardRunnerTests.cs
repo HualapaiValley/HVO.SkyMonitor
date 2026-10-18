@@ -199,11 +199,11 @@ public sealed class InstallWizardRunnerTests
         driver.Press(Key.Enter);
     }
 
-    private static Task<(int ExitCode, string Output, string Error)> RunAsync(
+    internal static Task<(int ExitCode, string Output, string Error)> RunAsync(
         WizardHost host, string[] args, Action<WizardDriver> drive, ProgramServices? services = null, CancellationToken cancellationToken = default)
         => RunAsync(host, args, Interactive(host, drive), services, cancellationToken);
 
-    private static async Task<(int ExitCode, string Output, string Error)> RunAsync(
+    internal static async Task<(int ExitCode, string Output, string Error)> RunAsync(
         WizardHost host, string[] args, InstallWizardRunner.Interactive interactive, ProgramServices? services = null, CancellationToken cancellationToken = default)
     {
         var output = Console.Out;
@@ -228,7 +228,7 @@ public sealed class InstallWizardRunnerTests
         }
     }
 
-    private static InstallWizardRunner.Interactive Interactive(WizardHost host, Action<WizardDriver> drive)
+    internal static InstallWizardRunner.Interactive Interactive(WizardHost host, Action<WizardDriver> drive)
         => new(
             () => WizardDriver.CreateApplication(80, 24),
             (app, wizard) =>

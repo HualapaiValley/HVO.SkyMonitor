@@ -159,8 +159,9 @@ internal abstract class WizardPage : View
         var hint = Wrapped(text, AnswerColumn, HvoTone.Muted, rows: 2);
         Panel.Body.Add(hint);
         _description.Add(text);
-        _row += text.Length > Math.Max(width, 40) ? 2 : 1;
-        hint.Height = text.Length > Math.Max(width, 40) ? 2 : 1;
+        var rows = TerminalText.Width(text) > Math.Max(width, 40) ? 2 : 1;
+        _row += rows;
+        hint.Height = rows;
         return hint;
     }
 

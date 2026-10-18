@@ -451,6 +451,53 @@ public sealed class ReleaseAssetsToolTests
     }
 
     [TestMethod]
+    public async Task CreateRelease_Notices_AreAReleaseAssetOfTheirOwn()
+    {
+        // The installer is one file, so the notices of what it bundles travel beside it (#1317, PR-1371-R1 F7).
+        var source = Path.Combine(RepositoryRoot(), "THIRD-PARTY-NOTICES.md");
+        using var fixture = OciReleaseFixture.Create();
+        var output = Path.Combine(fixture.Root, "release");
+
+        Assert.AreEqual(0, await Program.Main(fixture.Arguments(output, "--notices", source)));
+
+        var written = Path.Combine(output, "THIRD-PARTY-NOTICES.md");
+        CollectionAssert.AreEqual(await File.ReadAllBytesAsync(source), await File.ReadAllBytesAsync(written));
+        var release = JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(output, "release.json")))!;
+        var asset = release["assets"]!.AsArray().Single(static node => (string)node!["name"]! == "THIRD-PARTY-NOTICES.md")!;
+        Assert.AreEqual("notices", (string)asset["kind"]!);
+        Assert.IsNull(asset["platform"]);
+        Assert.AreEqual(Sha256(written), (string)asset["sha256"]!);
+        Assert.AreEqual(new FileInfo(written).Length, (long)asset["size"]!);
+        CollectionAssert.Contains(await File.ReadAllLinesAsync(Path.Combine(output, "SHA256SUMS")), $"{Sha256(written)}  THIRD-PARTY-NOTICES.md");
+    }
+
+    [TestMethod]
+    [DataRow("")]
+    [DataRow("\u00ff\u00fe")]
+    public async Task CreateRelease_NoticesThatAreNotText_AreRefusedBeforeTheOutputExists(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        using var fixture = OciReleaseFixture.Create();
+        var notices = Path.Combine(fixture.Root, "notices.md");
+        await File.WriteAllBytesAsync(notices, text.Length == 0 ? [] : [0xff, 0xfe, 0x00]);
+        var output = Path.Combine(fixture.Root, "release");
+        using var error = new StringWriter();
+        var standardError = Console.Error;
+        Console.SetError(error);
+        try
+        {
+            Assert.AreEqual(1, await Program.Main(fixture.Arguments(output, "--notices", notices)));
+        }
+        finally
+        {
+            Console.SetError(standardError);
+        }
+
+        StringAssert.StartsWith(error.ToString(), "release error: --notices", StringComparison.Ordinal);
+        Assert.IsFalse(Directory.Exists(output), "a refused release must leave nothing behind");
+    }
+
+    [TestMethod]
     public async Task CreateRelease_TheRepositorysInstallScript_ChangesInItsVersionLineAlone()
     {
         var source = Path.Combine(RepositoryRoot(), "src", "HVO.SkyMonitor.Deployment.Cli", "install.sh");

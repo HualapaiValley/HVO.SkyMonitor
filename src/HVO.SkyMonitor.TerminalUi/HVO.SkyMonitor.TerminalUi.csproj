@@ -5,12 +5,14 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Description>What the terminal programs share: HVO Dark for Terminal.Gui, used by hvo-sky's interface and the installer.</Description>
-    <!-- Terminal.Gui only. No product project: the installer (HVO.SkyMonitor.Deployment.Cli) and hvo-sky both build on
+    <!-- Terminal.Gui and its width table only. No product project: the installer (HVO.SkyMonitor.Deployment.Cli) and hvo-sky both build on
          this, and the architecture test TerminalUiBoundaryIsNarrow keeps it reference-free. -->
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Terminal.Gui" />
+    <!-- Display widths: the table Terminal.Gui depends on, at the version in its closure. -->
+    <PackageReference Include="Wcwidth" />
   </ItemGroup>
 
   <ItemGroup>

@@ -14,8 +14,10 @@ public sealed class HvoThemeTests
 {
     [TestMethod]
     [DataRow("xterm-256color", "truecolor", "C.UTF-8", null, null, TerminalColours.TrueColour, TerminalBorders.Unicode)]
-    [DataRow("xterm-256color", null, "en_US.UTF-8", null, null, TerminalColours.TrueColour, TerminalBorders.Unicode)]
-    [DataRow("xterm-direct", null, "en_US.utf8", null, null, TerminalColours.TrueColour, TerminalBorders.Unicode)]
+    [DataRow("xterm-256color", null, "en_US.UTF-8", null, null, TerminalColours.Ansi16, TerminalBorders.Unicode)]
+    [DataRow("xterm-direct", null, "en_US.utf8", null, null, TerminalColours.Ansi16, TerminalBorders.Unicode)]
+    [DataRow("xterm-256color", "yes", "C.UTF-8", null, null, TerminalColours.Ansi16, TerminalBorders.Unicode)]
+    [DataRow("screen-256color", "24bit", "C.UTF-8", null, null, TerminalColours.TrueColour, TerminalBorders.Unicode)]
     [DataRow("xterm", "24bit", "C.UTF-8", null, null, TerminalColours.TrueColour, TerminalBorders.Unicode)]
     [DataRow("linux", null, "C.UTF-8", null, null, TerminalColours.Ansi16, TerminalBorders.Unicode)]
     [DataRow("xterm", null, "C.UTF-8", null, null, TerminalColours.Ansi16, TerminalBorders.Unicode)]

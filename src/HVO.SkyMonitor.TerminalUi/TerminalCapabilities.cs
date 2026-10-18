@@ -45,9 +45,8 @@ public sealed record TerminalCapabilities(TerminalColours Colours, TerminalBorde
     /// The capabilities <paramref name="environment"/> describes:
     /// <list type="bullet">
     /// <item><c>NO_COLOR</c> set and not empty, or <c>TERM=dumb</c>: no colour.</item>
-    /// <item><c>COLORTERM</c> of <c>truecolor</c> or <c>24bit</c>, or a <c>TERM</c> naming 256 colours or direct colour:
-    /// true colour.</item>
-    /// <item>Any other <c>TERM</c> (<c>linux</c>, <c>xterm</c>, <c>vt220</c>, <c>screen</c>…) or none: the 16 ANSI colours.</item>
+    /// <item><c>COLORTERM</c> of <c>truecolor</c> or <c>24bit</c>: true colour.</item>
+    /// <item>Anything else, a <c>TERM</c> naming 256 colours included: the 16 ANSI colours.</item>
     /// <item>ASCII frames when the locale (<c>LC_ALL</c>, else <c>LC_CTYPE</c>, else <c>LANG</c>) is not UTF-8, or the
     /// terminal is <c>dumb</c> or a VT100.</item>
     /// <item><c>HVO_TERMINAL</c> (<see cref="OverrideVariable"/>) overrides either: <c>truecolor</c>, <c>ansi16</c> or
@@ -59,10 +58,10 @@ public sealed record TerminalCapabilities(TerminalColours Colours, TerminalBorde
         ArgumentNullException.ThrowIfNull(environment);
         var term = environment("TERM") ?? string.Empty;
         var colourTerm = environment("COLORTERM") ?? string.Empty;
+        // True colour only when the terminal says so: a 256-colour terminal draws 24-bit colours wrongly or not at all.
         var colours = term == "dumb" ? TerminalColours.None
-            : colourTerm is "truecolor" or "24bit" || term.Contains("256color", StringComparison.Ordinal) || term.EndsWith("-direct", StringComparison.Ordinal)
-                ? TerminalColours.TrueColour
-                : TerminalColours.Ansi16;
+            : colourTerm is "truecolor" or "24bit" ? TerminalColours.TrueColour
+            : TerminalColours.Ansi16;
         var locale = FirstSet(environment, "LC_ALL", "LC_CTYPE", "LANG") ?? string.Empty;
         var utf8 = locale.Contains("UTF-8", StringComparison.OrdinalIgnoreCase) || locale.Contains("utf8", StringComparison.OrdinalIgnoreCase);
         var borders = !utf8 || term is "dumb" or "vt100" ? TerminalBorders.Ascii : TerminalBorders.Unicode;

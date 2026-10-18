@@ -350,6 +350,11 @@ internal sealed class InstallWizard : IDisposable
 
         Add("Camera", a.FriendlyName, "--friendly-name");
         Add("Release", Session.GivenValue("--image-ref") ?? a.Release, "--release");
+        if (!Session.Given("--image-ref"))
+        {
+            Add("Image from", a.ImageSource == ReleaseImageSource.Registry ? "the registry" : "the archive", "--image-source");
+        }
+
         Add("Catalog", a.CatalogBundle, "--catalog-bundle");
         Add("Address", $"{a.BindAddress}:{a.Port}", "--port");
         Add("Location", $"{a.Latitude}, {a.Longitude}, {a.Elevation} m", "--latitude");

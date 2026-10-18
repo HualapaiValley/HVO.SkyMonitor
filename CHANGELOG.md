@@ -26,6 +26,8 @@ onward; earlier development is recorded in its pull requests. A release renames 
   `--plan` checks it, then saves the answers to `~/.config/hvo-sky/install-answers.json` and installs with
   `--answers`, exactly as that command would. Esc or Ctrl+C leaves it with nothing changed (exit 130). It never asks
   for a password, and it is drawn in HVO Dark with 16-colour, `NO_COLOR` and ASCII fallbacks. (#1317)
+- Every release ships `THIRD-PARTY-NOTICES.md` as an asset of its own (kind `notices`): the notices of what the
+  release bundles, among them Terminal.Gui and the packages it brings into the installer. (#1317)
 
 - `hvo-sky-install` follows the shared install contract's command surface. `--plan` (the new name of `--dry-run`)
   reports what install, a re-run of one, `upgrade`, `rollback`, `reinstall`, `uninstall` and `purge` would create,

@@ -147,6 +147,21 @@ public sealed class InstallWizardRenderTests
         TestContext.AddResultFile(TerminalRenders.SaveText(stopped, $"install-{size}-8-stopped", Fallback));
     }
 
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(80, 24, "80x24")]
+    [DataRow(120, 32, "120x32")]
+    public void ANameInAnyScript_IsRendered(int width, int height, string size)
+    {
+        using var host = new WizardHost(Operator);
+        using var driver = WizardDriver.Start(host, ["cameraagent", "install", "--friendly-name", TerminalUi.HvoUnicodeTests.Name, "--release", "/home/operator/hvo-sky-0.9.0", "--catalog-bundle", "/home/operator/.cache/hvo-sky/hyg-v4.2-p3-s2-r1.bundle"], width, height);
+
+        driver.NextTo<ReviewPage>();
+        driver.WaitIdle("the plan check");
+        Fits(driver, width, height);
+        driver.Render(TestContext, $"install-{size}-7-review-unicode");
+    }
+
     private string Fallback => Path.Combine(TestContext.TestRunResultsDirectory ?? Path.GetTempPath(), "terminal-renders");
 
     private static string Plain(string text) => System.Text.RegularExpressions.Regex.Replace(text, "\u001b\\[[0-9;]*m", string.Empty);
@@ -155,7 +170,7 @@ public sealed class InstallWizardRenderTests
     {
         var rows = driver.Rows;
         Assert.AreEqual(height, rows.Length, driver.Screen);
-        Assert.IsTrue(rows.All(row => row.Length <= width), driver.Screen);
+        Assert.IsTrue(rows.All(row => TerminalUi.HvoUnicodeTests.Cells(row) <= width), driver.Screen);
         StringAssert.Contains(rows[0], "HVO SKYMONITOR INSTALLER", StringComparison.Ordinal);
         StringAssert.Contains(rows[height - 4], "[ Back ]", StringComparison.Ordinal);
         StringAssert.Contains(rows[height - 1], "Esc cancel", StringComparison.Ordinal);

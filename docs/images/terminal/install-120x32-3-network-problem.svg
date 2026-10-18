@@ -120,26 +120,28 @@
 <text x="793.20" y="163.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">.9.0 *</text>
 <text x="37.20" y="181.50" fill="#58a6ff" textLength="58.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">Address</text>
 <text x="188.40" y="181.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">0.0.0.0</text>
-<text x="692.40" y="181.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">Catalog</text>
-<text x="793.20" y="181.50" fill="#98a7bb" textLength="201.60" lengthAdjust="spacingAndGlyphs">/home/operator/.cache/hv</text>
+<text x="692.40" y="181.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs">Image from</text>
+<text x="793.20" y="181.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs">the archive</text>
 <text x="37.20" y="199.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">Port</text>
 <text x="188.40" y="199.50" fill="#f7f9fc" textLength="33.60" lengthAdjust="spacingAndGlyphs">5130</text>
-<text x="793.20" y="199.50" fill="#98a7bb" textLength="201.60" lengthAdjust="spacingAndGlyphs">o-sky/hyg-v4.2-p3-s2-r1.</text>
-<text x="793.20" y="217.50" fill="#98a7bb" textLength="67.20" lengthAdjust="spacingAndGlyphs">bundle *</text>
+<text x="692.40" y="199.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">Catalog</text>
+<text x="793.20" y="199.50" fill="#98a7bb" textLength="201.60" lengthAdjust="spacingAndGlyphs">/home/operator/.cache/hv</text>
+<text x="793.20" y="217.50" fill="#98a7bb" textLength="201.60" lengthAdjust="spacingAndGlyphs">o-sky/hyg-v4.2-p3-s2-r1.</text>
 <text x="188.40" y="235.50" fill="#f7f9fc" textLength="436.80" lengthAdjust="spacingAndGlyphs">[ ] Other computers reach it over plain HTTP: I know</text>
-<text x="692.40" y="235.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Address</text>
-<text x="793.20" y="235.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs">127.0.0.1:5130</text>
-<text x="692.40" y="253.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs">Location</text>
-<text x="793.20" y="253.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">0, 0, 0 m</text>
-<text x="692.40" y="271.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">Time zone</text>
-<text x="793.20" y="271.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs">UTC</text>
-<text x="692.40" y="289.50" fill="#f7f9fc" textLength="33.60" lengthAdjust="spacingAndGlyphs">CPUs</text>
-<text x="793.20" y="289.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
-<text x="692.40" y="307.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs">Memory</text>
+<text x="793.20" y="235.50" fill="#98a7bb" textLength="67.20" lengthAdjust="spacingAndGlyphs">bundle *</text>
+<text x="692.40" y="253.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Address</text>
+<text x="793.20" y="253.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs">127.0.0.1:5130</text>
+<text x="692.40" y="271.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs">Location</text>
+<text x="793.20" y="271.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">0, 0, 0 m</text>
+<text x="692.40" y="289.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">Time zone</text>
+<text x="793.20" y="289.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs">UTC</text>
+<text x="692.40" y="307.50" fill="#f7f9fc" textLength="33.60" lengthAdjust="spacingAndGlyphs">CPUs</text>
 <text x="793.20" y="307.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
-<text x="692.40" y="325.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs">Owner</text>
+<text x="692.40" y="325.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs">Memory</text>
 <text x="793.20" y="325.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
-<text x="692.40" y="361.50" fill="#98a7bb" textLength="226.80" lengthAdjust="spacingAndGlyphs">* given on the command line</text>
+<text x="692.40" y="343.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs">Owner</text>
+<text x="793.20" y="343.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
+<text x="692.40" y="379.50" fill="#98a7bb" textLength="226.80" lengthAdjust="spacingAndGlyphs">* given on the command line</text>
 <text x="28.80" y="559.50" fill="#98a7bb" textLength="67.20" lengthAdjust="spacingAndGlyphs" opacity="0.6">[ Back ]</text>
 <text x="121.20" y="559.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Next ]</text>
 <text x="20.40" y="595.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[1 Network]</text>

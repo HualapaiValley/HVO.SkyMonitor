@@ -7,7 +7,8 @@ look the terminal prototype of RoofController #158, which redraws every RoofCont
 CameraAgent's clean HVO Dark styling (`docs/prototypes/roofcontroller-terminal.html` and `docs/prototypes/README.md`
 in HVO.RoofController at `9cc8f2bbc677f41a9e30217a9881ded0c47860a9`).
 
-The project references Terminal.Gui and nothing else. The architecture test `TerminalUiBoundaryIsNarrow` keeps it so.
+The project references Terminal.Gui and `Wcwidth` (the width table Terminal.Gui depends on) and nothing else. The
+architecture test `TerminalUiBoundaryIsNarrow` keeps it so.
 
 ## The design
 
@@ -22,7 +23,9 @@ As the prototype draws it:
 - **Fields.** A muted label in a column, and the value beside it, aligned with the others.
 - **Actions.** Bracketed, `[ Next ]`, the primary one on the strong accent (`HvoTheme.CreateButton`).
 - **Bounded content.** Text wraps inside its box, a column's continuation lines indented under the column
-  (`HvoTextLines`); when there is more than fits, the last row says which lines show and which keys scroll.
+  (`HvoTextLines`); when there is more than fits, the last row says which lines show and which keys scroll. Text is
+  measured in display cells, on text-element boundaries (`TerminalText`, with `Wcwidth`): a CJK or supplementary-plane
+  character takes two cells and a combining mark none, so nothing runs past its box or is cut inside a character.
 - **Sizes.** Usable at 80 x 24. At 120 x 32 there is room for more: the wizard shows every answer so far beside the page.
 - **Keyboard.** Tab moves, Enter does what the primary action says, and Esc closes (the wizard: cancels).
 - **Never colour alone.** Every state also has a word or a mark: a notice starts with `[ERROR]`, `[WARNING]`, `[OK]` or
@@ -71,8 +74,8 @@ theme for it:
 
 | Mode | When | How it draws |
 | --- | --- | --- |
-| True colour | `COLORTERM=truecolor` or `24bit`, or a `TERM` naming 256 colours or direct colour | The Value column |
-| ANSI 16 | Any other `TERM` (`linux`, `xterm`, `vt220`, `screen`), or none | The ANSI-16 column; `HvoTheme.Prepare` makes Terminal.Gui write the 16 colours as such |
+| True colour | `COLORTERM=truecolor` or `COLORTERM=24bit` | The Value column |
+| ANSI 16 | Anything else, `TERM=xterm-256color` without `COLORTERM` included (a 256-colour terminal draws 24-bit colour wrongly) | The ANSI-16 column; `HvoTheme.Prepare` makes Terminal.Gui write the 16 colours as such |
 | No colour | `NO_COLOR` set and not empty (https://no-color.org), or `TERM=dumb` | The terminal's own colours, with bold for titles and warnings, underline for input fields, reverse video for the focus, the selection and the primary action, and faint for what is disabled |
 | ASCII frames | A locale (`LC_ALL`, else `LC_CTYPE`, else `LANG`) that is not UTF-8, or `TERM=dumb` or `vt100` | `+-+|++` in place of `┌─┐│└┘` |
 
@@ -93,6 +96,7 @@ have Terminal.Gui's decorations turned off.
 | `HvoTextLines`, `HvoLine` | Bounded, wrapped, scrollable lines in any role |
 | `HvoChoiceList`, `HvoToggle` | One of several answers, and a yes-or-no question |
 | `HvoConsoleText` | The same panels and notices as plain terminal output, for what a program prints outside Terminal.Gui |
+| `TerminalText` | Width, clipping and padding in display cells, on text-element boundaries |
 | `TerminalRenders` | Saves a screen as ANSI for the screenshots |
 
 ## Screenshots

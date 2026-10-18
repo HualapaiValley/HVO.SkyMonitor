@@ -8,8 +8,8 @@ namespace HVO.SkyMonitor.TerminalUi;
 /// HVO Dark as plain terminal output, for what a program writes outside Terminal.Gui: a panel (a frame, its title in
 /// capitals, and wrapped lines) and a notice band, with the same palette, frames, fallbacks and words in brackets as
 /// the views, written as text with ANSI colour codes (or none). The installer uses it for what it prints around its
-/// wizard, while <c>sudo</c> may need the terminal; a command's human output can use it too. Every line is at most
-/// <c>width</c> columns, so it never wraps on the terminal it was sized for.
+/// wizard, while <c>sudo</c> may need the terminal; a command's human output can use it too. Every line is <c>width</c> display
+/// cells (<see cref="TerminalText"/>), so it never wraps on the terminal it was sized for.
 /// </summary>
 public sealed class HvoConsoleText
 {
@@ -42,14 +42,14 @@ public sealed class HvoConsoleText
         var caption = HvoPanel.TitleText(title, width);
         text.Append(frame).Append(top[..2]);
         text.Append(Code(HvoDarkPalette.Accent, HvoDarkPalette.Surface, bold: true, plain: true)).Append(caption);
-        text.Append(frame).Append(top[(2 + caption.Length)..]).Append(Reset).Append('\n');
+        text.Append(frame).Append(top[(2 + TerminalText.Width(caption))..]).Append(Reset).Append('\n');
         foreach (var line in lines)
         {
             foreach (var row in HvoTextLines.Wrap(line.Text, inner))
             {
                 text.Append(frame).Append(glyphs.Vertical).Append(' ');
                 text.Append(Code(HvoTheme.Token(line.Tone), HvoDarkPalette.Surface, line.Bold, line.Bold || line.Tone is HvoTone.Accent or HvoTone.Warning or HvoTone.Danger));
-                text.Append(row.PadRight(inner)[..inner]);
+                text.Append(TerminalText.Pad(row, inner));
                 text.Append(frame).Append(' ').Append(glyphs.Vertical).Append(Reset).Append('\n');
             }
         }
@@ -77,7 +77,7 @@ public sealed class HvoConsoleText
         var output = new StringBuilder();
         foreach (var row in HvoTextLines.Wrap($"{word ?? HvoTheme.NoticeWord(kind)} {text}", width - 2))
         {
-            output.Append(code).Append(' ').Append(row.PadRight(width - 1)[..(width - 1)]).Append(Reset).Append('\n');
+            output.Append(code).Append(' ').Append(TerminalText.Pad(row, width - 1)).Append(Reset).Append('\n');
         }
 
         return output.ToString();
@@ -88,7 +88,7 @@ public sealed class HvoConsoleText
     {
         ArgumentNullException.ThrowIfNull(label);
         ArgumentNullException.ThrowIfNull(value);
-        return label.PadRight(Math.Max(label.Length + 2, column)) + value;
+        return TerminalText.Pad(label, Math.Max(TerminalText.Width(label) + 2, column)) + value;
     }
 
     /// <summary>The escape that starts text in <paramref name="foreground"/> on <paramref name="background"/>, or, without colour, its style alone.</summary>
