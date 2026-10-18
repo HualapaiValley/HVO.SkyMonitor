@@ -1937,7 +1937,7 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [DataRow("stop")]
-    [DataRow("backup")]
+    [DataRow("snapshot")]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task UpgradeAsync_InterruptedPreRecreateBoundaryRestoresOriginalRuntime(string failurePoint)
     {
@@ -1947,7 +1947,13 @@ public sealed partial class LifecycleContractTests
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
         fixture.Runner.RejectNextStop = failurePoint == "stop";
-        fixture.Runner.RejectNextBackup = failurePoint == "backup";
+        if (failurePoint == "snapshot")
+        {
+            // A store with recovery files but no database cannot be snapshotted, so the snapshot fails after the stop.
+            var orphan = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, "raw/.fleet/fleet-status.db") + "-wal";
+            Directory.CreateDirectory(Path.GetDirectoryName(orphan)!);
+            await File.WriteAllTextAsync(orphan, "orphaned log");
+        }
         var request = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
             ImageReference = candidateReference,
@@ -2863,6 +2869,15 @@ public sealed partial class LifecycleContractTests
         private bool running;
 
         public string? ActiveImageId => activeImageId;
+        public bool Running => running;
+        /// <summary>Runs after each Compose <c>up</c>, with the image it started, as that image's own startup would.</summary>
+        public Action<string>? OnComposeUp { get; set; }
+        /// <summary>What a host restart after a power loss brings back: the last container, running unless it was stopped.</summary>
+        public void Reboot(string? image, bool wasRunning)
+        {
+            activeImageId = image;
+            running = image is not null && wasRunning;
+        }
         public int InvocationCount { get; private set; }
         public int ComposeDownCount { get; private set; }
         public int ComposeUpCount { get; private set; }
@@ -2880,7 +2895,6 @@ public sealed partial class LifecycleContractTests
         public bool RetainOwnedOrphanAfterDown { get; set; }
         public bool OmitOwnershipLabel { get; set; }
         public bool RejectNextStop { get; set; }
-        public bool RejectNextBackup { get; set; }
         public string CandidateRawIngressSchema { get; set; } = "12";
         /// <summary>Candidate image labels to set, or with a null value to remove, over the defaults below.</summary>
         public Dictionary<string, string?> CandidateLabels { get; } = new(StringComparer.Ordinal);
@@ -2922,12 +2936,8 @@ public sealed partial class LifecycleContractTests
             InvocationCount++;
             if (fileName == "tar")
             {
+                // No lifecycle operation archives instance state any more; a tar run is counted so tests can prove it.
                 if (arguments.Contains("--create", StringComparer.Ordinal)) BackupCount++;
-                if (RejectNextBackup && arguments.Contains("--create", StringComparer.Ordinal))
-                {
-                    RejectNextBackup = false;
-                    return Task.FromResult(new ProcessResult(1, string.Empty, "simulated backup interruption"));
-                }
                 return new ProcessRunner().RunAsync(fileName, arguments, cancellationToken);
             }
             if (fileName == "sudo")
@@ -3029,6 +3039,7 @@ public sealed partial class LifecycleContractTests
                     activeImageId = File.ReadLines(environmentPath)
                         .Single(line => line.StartsWith("CAMERAAGENT_IMAGE=", StringComparison.Ordinal))["CAMERAAGENT_IMAGE=".Length..];
                     running = true;
+                    OnComposeUp?.Invoke(activeImageId);
                 }
                 if (arguments.Contains("restart", StringComparer.Ordinal)) running = true;
                 if (arguments.Contains("down", StringComparer.Ordinal))

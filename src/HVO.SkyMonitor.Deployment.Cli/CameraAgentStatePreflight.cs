@@ -173,10 +173,12 @@ internal static class CameraAgentStatePreflight
         string? instanceConfigurationContract = null,
         string? installedImageId = null,
         string? signedOfflineArchiveImageId = null,
-        string? signedPlatformManifestDigest = null)
+        string? signedPlatformManifestDigest = null,
+        CameraAgentStateDatabaseView? databases = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(requirements);
+        databases ??= CameraAgentStateDatabaseView.Live(paths);
         var findings = new List<CameraAgentStatePreflightFinding>();
         EvaluateStateContract(findings, requirements, installedStateContract, contractPolicy);
         if (candidateContracts is not null)
@@ -187,8 +189,8 @@ internal static class CameraAgentStatePreflight
         EvaluateCandidateImageIdentity(
             findings, installedImageId, signedOfflineArchiveImageId, signedPlatformManifestDigest);
         EvaluateCatalog(findings, paths, requirements);
-        EvaluateIdentityLineage(findings, paths, requirements);
-        EvaluateRawIngressSchema(findings, paths, requirements, contractPolicy);
+        EvaluateIdentityLineage(findings, databases.IdentityDatabasePath, requirements);
+        EvaluateRawIngressSchema(findings, databases.RawIngressDatabasePath, requirements, contractPolicy);
         EvaluateBindSources(findings, paths, uid, gid, replayProfile);
         var compatible = !findings.Any(static finding => finding.Blocking);
         return new CameraAgentStatePreflightReport(
@@ -245,7 +247,8 @@ internal static class CameraAgentStatePreflight
         bool renderToStandardError,
         CancellationToken cancellationToken,
         CameraAgentStateContractPolicy contractPolicy = CameraAgentStateContractPolicy.RequireCurrent,
-        string? candidateRelease = null)
+        string? candidateRelease = null,
+        CameraAgentStateDatabaseView? databases = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(candidate);
@@ -261,7 +264,8 @@ internal static class CameraAgentStatePreflight
             uid,
             gid,
             replayProfile,
-            contractPolicy);
+            contractPolicy,
+            databases: databases);
         var reportPath = Path.Combine(paths.DeploymentStateRoot, "state-preflight.json");
         if (persist)
         {
@@ -478,7 +482,7 @@ internal static class CameraAgentStatePreflight
 
     private static void EvaluateIdentityLineage(
         List<CameraAgentStatePreflightFinding> findings,
-        InstallationPaths paths,
+        string databasePath,
         CameraAgentStateRequirements requirements)
     {
         const string boundary = "identity";
@@ -486,7 +490,6 @@ internal static class CameraAgentStatePreflight
         {
             return;
         }
-        var databasePath = CameraAgentStateLayout.IdentityDatabasePath(paths.StateRoot);
         if (!File.Exists(databasePath))
         {
             return;
@@ -498,7 +501,7 @@ internal static class CameraAgentStatePreflight
         {
             (applied, uninitialized) = ReadIdentityLineage(databasePath);
         }
-        catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is SqliteException or IOException or UnauthorizedAccessException or InstallerException)
         {
             findings.Add(new CameraAgentStatePreflightFinding(
                 "identity-lineage-unreadable", boundary, Blocking: true, databasePath,
@@ -521,7 +524,7 @@ internal static class CameraAgentStatePreflight
 
     private static void EvaluateRawIngressSchema(
         List<CameraAgentStatePreflightFinding> findings,
-        InstallationPaths paths,
+        string databasePath,
         CameraAgentStateRequirements requirements,
         CameraAgentStateContractPolicy contractPolicy)
     {
@@ -530,7 +533,6 @@ internal static class CameraAgentStatePreflight
         {
             return;
         }
-        var databasePath = CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot);
         if (!File.Exists(databasePath))
         {
             return;
@@ -703,11 +705,16 @@ internal static class CameraAgentStatePreflight
             {
                 using var command = connection.CreateCommand();
                 command.CommandText =
-                    "SELECT MigrationId FROM __EFMigrationsHistory ORDER BY MigrationId;";
+                    "SELECT typeof(MigrationId), MigrationId FROM __EFMigrationsHistory ORDER BY MigrationId;";
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                 {
-                    migrations.Add(reader.GetString(0));
+                    // A recovery can read a history a candidate wrote, so a row in another shape is a lineage the
+                    // preflight cannot read, reported as such rather than cast.
+                    var type = reader.GetString(0);
+                    if (type != "text")
+                        throw new InstallerException($"The Identity migration history holds a migration ID stored as {type}, not text.");
+                    migrations.Add(reader.GetString(1));
                 }
             }
         }
@@ -770,7 +777,7 @@ internal static class CameraAgentStatePreflight
     /// alternative — copying a database a writer holds — is what the first two cases exist to avoid, and where
     /// the third case has no choice but to copy, the copy is checked rather than assumed.
     /// </summary>
-    private sealed class ReadOnlyDatabase : IDisposable
+    internal sealed class ReadOnlyDatabase : IDisposable
     {
         private readonly DirectoryInfo? snapshotRoot;
 
@@ -976,6 +983,18 @@ internal static class CameraAgentStatePreflight
             }
         }
     }
+}
+
+/// <summary>
+/// The Identity and raw-ingress databases a preflight reads. A rollback that restores a retained database snapshot
+/// evaluates that snapshot's copies, which are what the rollback image will start on, rather than the live stores.
+/// </summary>
+internal sealed record CameraAgentStateDatabaseView(string IdentityDatabasePath, string RawIngressDatabasePath)
+{
+    public static CameraAgentStateDatabaseView Live(InstallationPaths paths)
+        => new(
+            CameraAgentStateLayout.IdentityDatabasePath(paths.StateRoot),
+            CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot));
 }
 
 /// <summary>
