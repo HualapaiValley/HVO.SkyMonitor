@@ -71,7 +71,8 @@ public sealed class HvoHeaderBar : View
 
     /// <summary>
     /// <paramref name="left"/> from the second column and <paramref name="right"/> ending one column from the edge, with
-    /// at least two spaces between; <paramref name="right"/> is dropped, then <paramref name="left"/> cut, to fit.
+    /// at least two spaces between; <paramref name="right"/> is dropped, then <paramref name="left"/> cut, to fit. Every
+    /// measure is in display cells (<see cref="TerminalText"/>), so the row is exactly <paramref name="width"/> cells.
     /// </summary>
     public static string Row(string left, string right, int width)
     {
@@ -83,14 +84,15 @@ public sealed class HvoHeaderBar : View
         }
 
         var room = width - 2;
-        var leftText = left.Length > room ? left[..room] : left;
+        var leftText = TerminalText.Clip(left, room);
+        var rightCells = TerminalText.Width(right);
         var row = " " + leftText;
-        if (right.Length > 0 && leftText.Length + 2 + right.Length <= room)
+        if (right.Length > 0 && TerminalText.Width(leftText) + 2 + rightCells <= room)
         {
-            row = row.PadRight(width - 1 - right.Length) + right;
+            row = TerminalText.Pad(row, width - 1 - rightCells) + right;
         }
 
-        return row.PadRight(width);
+        return TerminalText.Pad(row, width);
     }
 
     /// <inheritdoc/>
@@ -105,7 +107,7 @@ public sealed class HvoHeaderBar : View
         if (Badge.Length > 0 && top.TrimEnd().EndsWith(Badge, StringComparison.Ordinal))
         {
             SetAttribute(_theme.Label(BadgeTone, HvoGround.Surface, bold: true).Normal);
-            AddStr(width - 1 - Badge.Length, 0, Badge);
+            AddStr(width - 1 - TerminalText.Width(Badge), 0, Badge);
         }
 
         if (Viewport.Height > 1)
@@ -188,7 +190,7 @@ public sealed class HvoNoticeBar : View
         for (var row = 0; row < Viewport.Height; row++)
         {
             var text = row < rows.Length ? " " + rows[row] : string.Empty;
-            AddStr(0, row, text.PadRight(width)[..width]);
+            AddStr(0, row, TerminalText.Pad(text, width));
         }
 
         return true;
@@ -250,7 +252,7 @@ public sealed class HvoKeyBar : View
         foreach (var (key, name) in Fitting(width - 2))
         {
             AddStr(column, 0, key);
-            column += key.Length + 1 + name.Length + 2;
+            column += TerminalText.Width(key) + 1 + TerminalText.Width(name) + 2;
         }
 
         return true;
@@ -261,7 +263,7 @@ public sealed class HvoKeyBar : View
         var used = 0;
         foreach (var key in _keys)
         {
-            var length = key.Key.Length + 1 + key.Name.Length + (used == 0 ? 0 : 2);
+            var length = TerminalText.Width(key.Key) + 1 + TerminalText.Width(key.Name) + (used == 0 ? 0 : 2);
             if (used + length > room)
             {
                 yield break;
@@ -330,20 +332,21 @@ public sealed class HvoTabBar : View
     /// <summary>The bar's cells: each tab's label as drawn and where it starts.</summary>
     public IReadOnlyList<(string Label, int Column, bool Current)> Layout(int width)
     {
-        var room = width - 2 - (_right.Length > 0 ? _right.Length + 3 : 0);
+        var room = width - 2 - (_right.Length > 0 ? TerminalText.Width(_right) + 3 : 0);
         var full = Cells(shorten: false);
-        var cells = full.Sum(cell => cell.Length + 1) - 1 <= room ? full : Cells(shorten: true);
+        var cells = full.Sum(cell => TerminalText.Width(cell) + 1) - 1 <= room ? full : Cells(shorten: true);
         var result = new List<(string, int, bool)>();
         var column = 1;
         for (var index = 0; index < cells.Count; index++)
         {
-            if (column + cells[index].Length > width - 1)
+            var cellWidth = TerminalText.Width(cells[index]);
+            if (column + cellWidth > width - 1)
             {
                 break;
             }
 
             result.Add((cells[index], column, index == _current));
-            column += cells[index].Length + 1;
+            column += cellWidth + 1;
         }
 
         return result;
@@ -361,10 +364,11 @@ public sealed class HvoTabBar : View
             AddStr(column, 0, label);
         }
 
-        if (_right.Length > 0 && width > _right.Length + 3)
+        var rightCells = TerminalText.Width(_right);
+        if (_right.Length > 0 && width > rightCells + 3)
         {
             SetAttribute(_theme.Label(HvoTone.Muted, HvoGround.Surface).Normal);
-            AddStr(width - 1 - _right.Length - 2, 0, $" {_right} ");
+            AddStr(width - 1 - rightCells - 2, 0, $" {_right} ");
         }
 
         return true;

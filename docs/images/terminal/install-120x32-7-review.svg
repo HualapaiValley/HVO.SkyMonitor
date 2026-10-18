@@ -120,44 +120,46 @@
 <text x="54.00" y="181.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
 <text x="146.40" y="181.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">folder</text>
 <text x="238.80" y="181.50" fill="#3fb950" textLength="411.60" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/cameraagents/6f9b3c1e-2d4a-4e8b-</text>
-<text x="692.40" y="181.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Catalog</text>
-<text x="793.20" y="181.50" fill="#f7f9fc" textLength="201.60" lengthAdjust="spacingAndGlyphs">/home/operator/.cache/hv</text>
+<text x="692.40" y="181.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs">Image from</text>
+<text x="793.20" y="181.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs">the archive</text>
 <text x="238.80" y="199.50" fill="#3fb950" textLength="142.80" lengthAdjust="spacingAndGlyphs">9c7d-1a2b3c4d5e6f</text>
-<text x="793.20" y="199.50" fill="#f7f9fc" textLength="201.60" lengthAdjust="spacingAndGlyphs">o-sky/hyg-v4.2-p3-s2-r1.</text>
+<text x="692.40" y="199.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Catalog</text>
+<text x="793.20" y="199.50" fill="#f7f9fc" textLength="201.60" lengthAdjust="spacingAndGlyphs">/home/operator/.cache/hv</text>
 <text x="54.00" y="217.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
 <text x="146.40" y="217.50" fill="#3fb950" textLength="33.60" lengthAdjust="spacingAndGlyphs">file</text>
 <text x="238.80" y="217.50" fill="#3fb950" textLength="411.60" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/cameraagents/6f9b3c1e-2d4a-4e8b-</text>
-<text x="793.20" y="217.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs">bundle</text>
+<text x="793.20" y="217.50" fill="#f7f9fc" textLength="201.60" lengthAdjust="spacingAndGlyphs">o-sky/hyg-v4.2-p3-s2-r1.</text>
 <text x="238.80" y="235.50" fill="#3fb950" textLength="344.40" lengthAdjust="spacingAndGlyphs">9c7d-1a2b3c4d5e6f/config/cameraagent.json</text>
-<text x="692.40" y="235.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Address</text>
-<text x="793.20" y="235.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs">127.0.0.1:5130</text>
+<text x="793.20" y="235.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs">bundle</text>
 <text x="54.00" y="253.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
 <text x="146.40" y="253.50" fill="#3fb950" textLength="42.00" lengthAdjust="spacingAndGlyphs">image</text>
 <text x="238.80" y="253.50" fill="#3fb950" textLength="411.60" lengthAdjust="spacingAndGlyphs">sha256:9c3f6e2b1a7d4c8e5f0a3b6d9e2c5f8a1b4d7e0c3f</text>
-<text x="692.40" y="253.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs">Location</text>
-<text x="793.20" y="253.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">0, 0, 0 m</text>
+<text x="692.40" y="253.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Address</text>
+<text x="793.20" y="253.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs">127.0.0.1:5130</text>
 <text x="238.80" y="271.50" fill="#3fb950" textLength="344.40" lengthAdjust="spacingAndGlyphs">6a9b2d5e8f1a4c7b0d3e6f (imported from the</text>
-<text x="692.40" y="271.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">Time zone</text>
-<text x="793.20" y="271.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs">UTC</text>
+<text x="692.40" y="271.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs">Location</text>
+<text x="793.20" y="271.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">0, 0, 0 m</text>
 <text x="238.80" y="289.50" fill="#3fb950" textLength="151.20" lengthAdjust="spacingAndGlyphs">release's archive)</text>
-<text x="692.40" y="289.50" fill="#f7f9fc" textLength="33.60" lengthAdjust="spacingAndGlyphs">CPUs</text>
-<text x="793.20" y="289.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
+<text x="692.40" y="289.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">Time zone</text>
+<text x="793.20" y="289.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs">UTC</text>
 <text x="54.00" y="307.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
 <text x="146.40" y="307.50" fill="#3fb950" textLength="58.80" lengthAdjust="spacingAndGlyphs">catalog</text>
 <text x="238.80" y="307.50" fill="#3fb950" textLength="285.60" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/catalogs/hyg-v4.2</text>
-<text x="692.40" y="307.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs">Memory</text>
+<text x="692.40" y="307.50" fill="#f7f9fc" textLength="33.60" lengthAdjust="spacingAndGlyphs">CPUs</text>
 <text x="793.20" y="307.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
 <text x="54.00" y="325.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
 <text x="146.40" y="325.50" fill="#3fb950" textLength="75.60" lengthAdjust="spacingAndGlyphs">container</text>
 <text x="238.80" y="325.50" fill="#3fb950" textLength="411.60" lengthAdjust="spacingAndGlyphs">hvo-sky-cameraagent-6f9b3c1e2d4a4e8b9c7d1a2b3c4d5</text>
-<text x="692.40" y="325.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs">Owner</text>
+<text x="692.40" y="325.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs">Memory</text>
 <text x="793.20" y="325.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
 <text x="238.80" y="343.50" fill="#3fb950" textLength="243.60" lengthAdjust="spacingAndGlyphs">e6f (2 CPUs, 4 GiB, 256 PIDs)</text>
+<text x="692.40" y="343.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs">Owner</text>
+<text x="793.20" y="343.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
 <text x="54.00" y="361.50" fill="#d29922" textLength="50.40" lengthAdjust="spacingAndGlyphs">change</text>
 <text x="146.40" y="361.50" fill="#d29922" textLength="50.40" lengthAdjust="spacingAndGlyphs">record</text>
 <text x="238.80" y="361.50" fill="#d29922" textLength="386.40" lengthAdjust="spacingAndGlyphs">/etc/hvo-sky/install.json (adds this instance)</text>
-<text x="692.40" y="361.50" fill="#98a7bb" textLength="226.80" lengthAdjust="spacingAndGlyphs">* given on the command line</text>
 <text x="37.20" y="379.50" fill="#f7f9fc" textLength="319.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">5 to create, 1 to change, 0 unchanged.</text>
+<text x="692.40" y="379.50" fill="#98a7bb" textLength="226.80" lengthAdjust="spacingAndGlyphs">* given on the command line</text>
 <text x="37.20" y="415.50" fill="#98a7bb" textLength="596.40" lengthAdjust="spacingAndGlyphs">Install saves the answers and runs: hvo-sky-install cameraagent install</text>
 <text x="37.20" y="433.50" fill="#98a7bb" textLength="512.40" lengthAdjust="spacingAndGlyphs">--answers /home/operator/.config/hvo-sky/install-answers.json</text>
 <text x="37.20" y="523.50" fill="#98a7bb" textLength="126.00" lengthAdjust="spacingAndGlyphs">Save answers to</text>

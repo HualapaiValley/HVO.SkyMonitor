@@ -85,68 +85,104 @@ public sealed class HvoTextLines : View
     }
 
     /// <summary>
-    /// <paramref name="line"/> wrapped at <paramref name="width"/>, at spaces where it can be, each continuation indented
-    /// by <see cref="HangingIndent"/>; a word too long for a line is cut.
+    /// <paramref name="line"/> wrapped at <paramref name="width"/> display cells (<see cref="TerminalText"/>), at spaces
+    /// where it can be and never inside a text element, each continuation indented by <see cref="HangingIndent"/>; a
+    /// word too long for a line is cut between its elements.
     /// </summary>
     public static IEnumerable<string> Wrap(string line, int width)
     {
         ArgumentNullException.ThrowIfNull(line);
-        if (width <= 0 || line.Length <= width)
+        if (width <= 0 || TerminalText.Width(line) <= width)
         {
-            yield return line;
-            yield break;
+            return [line];
         }
 
-        var indent = new string(' ', HangingIndent(line, width));
-        var rest = line;
-        var first = true;
-        while (true)
+        var elements = TerminalText.Elements(line);
+        var widths = elements.Select(TerminalText.ElementWidth).ToArray();
+        var indent = HangingIndent(line, width);
+        var leading = elements.TakeWhile(static element => element == " ").Count();
+        var rows = new List<string>();
+        var start = 0;
+        while (start < elements.Count)
         {
-            var prefix = first ? string.Empty : indent;
-            var room = width - prefix.Length;
-            if (rest.Length <= room)
+            var first = rows.Count == 0;
+            var room = Math.Max(1, width - (first ? 0 : indent));
+            var end = start;
+            var used = 0;
+            while (end < elements.Count && used + widths[end] <= room)
             {
-                yield return prefix + rest;
-                yield break;
+                used += widths[end];
+                end++;
             }
 
-            // The first line breaks only at a space past its hanging indent, so a column's long value (a plan step's
-            // path) starts on the line with its label and is cut there, rather than moving whole onto a line of its own.
-            var start = first ? Math.Max(rest.Length - rest.TrimStart(' ').Length, indent.Length) : 0;
-            var space = rest.LastIndexOf(' ', room);
-            var end = space > start ? space : room;
-            yield return prefix + rest[..end].TrimEnd(' ');
-            rest = rest[end..].TrimStart(' ');
-            first = false;
-            if (rest.Length == 0)
+            if (end == elements.Count)
             {
-                yield break;
+                rows.Add((first ? string.Empty : new string(' ', indent)) + string.Concat(elements.Skip(start)));
+                break;
+            }
+
+            // An element wider than the whole room goes on a line of its own, so the text always moves on.
+            end = Math.Max(end, start + 1);
+
+            // The first line breaks only at a space past its own indent and its hanging indent, so a column's long value
+            // (a plan step's path) starts on the line with its label and is cut there, rather than moving whole onto a
+            // line of its own. A later line breaks at its last space: the space just after the room counts, so a word that
+            // ends at the edge stays on its line.
+            var minimum = first ? Math.Max(leading, indent) : 0;
+            var cut = end;
+            var offset = 0;
+            for (var index = start; index <= end && index < elements.Count; index++)
+            {
+                if (elements[index] == " " && offset > minimum && index > start)
+                {
+                    cut = index;
+                }
+
+                offset += widths[index];
+            }
+
+            var text = string.Concat(elements.Skip(start).Take(cut - start)).TrimEnd(' ');
+            rows.Add((first ? string.Empty : new string(' ', indent)) + text);
+            start = cut;
+            while (start < elements.Count && elements[start] == " ")
+            {
+                start++;
             }
         }
+
+        return rows;
     }
 
     /// <summary>
-    /// Where a wrapped line's continuations start: under its last column (text after two or more spaces) that begins in
-    /// the first half of <paramref name="width"/>, or under its first character.
+    /// Where a wrapped line's continuations start, in cells: under its last column (text after two or more spaces) that
+    /// begins in the first half of <paramref name="width"/>, or under its first character.
     /// </summary>
     public static int HangingIndent(string line, int width)
     {
         ArgumentNullException.ThrowIfNull(line);
-        var limit = width / 2;
-        var indent = Math.Min(line.Length - line.TrimStart(' ').Length, limit);
-        for (var i = indent; i < line.Length - 2 && i < limit; i++)
+        var elements = TerminalText.Elements(line);
+        var offsets = new int[elements.Count + 1];
+        for (var index = 0; index < elements.Count; index++)
         {
-            if (line[i] != ' ' && line[i + 1] == ' ' && line[i + 2] == ' ')
+            offsets[index + 1] = offsets[index] + TerminalText.ElementWidth(elements[index]);
+        }
+
+        var limit = width / 2;
+        var leading = elements.TakeWhile(static element => element == " ").Count();
+        var indent = Math.Min(leading, limit);
+        for (var i = indent; i < elements.Count - 2 && offsets[i] < limit; i++)
+        {
+            if (elements[i] != " " && elements[i + 1] == " " && elements[i + 2] == " ")
             {
                 var column = i + 1;
-                while (column < line.Length && line[column] == ' ')
+                while (column < elements.Count && elements[column] == " ")
                 {
                     column++;
                 }
 
-                if (column < line.Length && column <= limit)
+                if (column < elements.Count && offsets[column] <= limit)
                 {
-                    indent = column;
+                    indent = offsets[column];
                 }
 
                 i = column - 1;

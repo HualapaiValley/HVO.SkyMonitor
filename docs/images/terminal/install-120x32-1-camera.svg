@@ -115,26 +115,28 @@
 <text x="37.20" y="145.50" fill="#98a7bb" textLength="344.40" lengthAdjust="spacingAndGlyphs">this installation apart from others here.</text>
 <text x="692.40" y="145.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Release</text>
 <text x="793.20" y="145.50" fill="#f7f9fc">-</text>
-<text x="692.40" y="163.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Catalog</text>
-<text x="793.20" y="163.50" fill="#f7f9fc">-</text>
+<text x="692.40" y="163.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs">Image from</text>
+<text x="793.20" y="163.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs">the archive</text>
 <text x="37.20" y="181.50" fill="#58a6ff" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">Camera name</text>
-<text x="692.40" y="181.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Address</text>
-<text x="793.20" y="181.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs">127.0.0.1:5130</text>
+<text x="692.40" y="181.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Catalog</text>
+<text x="793.20" y="181.50" fill="#f7f9fc">-</text>
 <text x="188.40" y="199.50" fill="#98a7bb" textLength="344.40" lengthAdjust="spacingAndGlyphs">Up to 80 characters, such as Allsky East.</text>
-<text x="692.40" y="199.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs">Location</text>
-<text x="793.20" y="199.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">0, 0, 0 m</text>
-<text x="692.40" y="217.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">Time zone</text>
-<text x="793.20" y="217.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs">UTC</text>
-<text x="692.40" y="235.50" fill="#f7f9fc" textLength="33.60" lengthAdjust="spacingAndGlyphs">CPUs</text>
-<text x="793.20" y="235.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
+<text x="692.40" y="199.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Address</text>
+<text x="793.20" y="199.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs">127.0.0.1:5130</text>
+<text x="692.40" y="217.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs">Location</text>
+<text x="793.20" y="217.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">0, 0, 0 m</text>
+<text x="692.40" y="235.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">Time zone</text>
+<text x="793.20" y="235.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs">UTC</text>
 <text x="37.20" y="253.50" fill="#98a7bb" textLength="92.40" lengthAdjust="spacingAndGlyphs">Instance ID</text>
 <text x="188.40" y="253.50" fill="#f7f9fc" textLength="302.40" lengthAdjust="spacingAndGlyphs">6f9b3c1e-2d4a-4e8b-9c7d-1a2b3c4d5e6f</text>
 <text x="507.60" y="253.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs">(new)</text>
-<text x="692.40" y="253.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs">Memory</text>
+<text x="692.40" y="253.50" fill="#f7f9fc" textLength="33.60" lengthAdjust="spacingAndGlyphs">CPUs</text>
 <text x="793.20" y="253.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
-<text x="692.40" y="271.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs">Owner</text>
+<text x="692.40" y="271.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs">Memory</text>
 <text x="793.20" y="271.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
-<text x="692.40" y="307.50" fill="#98a7bb" textLength="226.80" lengthAdjust="spacingAndGlyphs">* given on the command line</text>
+<text x="692.40" y="289.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs">Owner</text>
+<text x="793.20" y="289.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">default</text>
+<text x="692.40" y="325.50" fill="#98a7bb" textLength="226.80" lengthAdjust="spacingAndGlyphs">* given on the command line</text>
 <text x="28.80" y="559.50" fill="#98a7bb" textLength="67.20" lengthAdjust="spacingAndGlyphs" opacity="0.6">[ Back ]</text>
 <text x="121.20" y="559.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Next ]</text>
 <text x="20.40" y="595.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">[1 Camera]</text>

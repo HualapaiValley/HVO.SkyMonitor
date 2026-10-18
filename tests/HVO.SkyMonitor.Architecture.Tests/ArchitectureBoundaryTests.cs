@@ -212,16 +212,16 @@ public sealed class ArchitectureBoundaryTests
     [TestCategory("Unit")]
     public void TerminalUiBoundaryIsNarrow()
     {
-        // #1317: what the terminal programs share. It takes Terminal.Gui and nothing else, so the installer and hvo-sky
-        // can both build on it; and no host draws a terminal, so neither CameraAgent nor LogicHost may take it, or
-        // Terminal.Gui with it.
+        // #1317: what the terminal programs share. It takes Terminal.Gui and Wcwidth, the width table Terminal.Gui depends
+        // on, and nothing else, so the installer and hvo-sky can both build on it; and no host draws a terminal, so
+        // neither CameraAgent nor LogicHost may take it, or Terminal.Gui with it.
         var repository = Repository.Value;
         Assert.IsTrue(repository.Projects.TryGetValue(TerminalUi, out var project), $"{TerminalUi} is in the repository.");
         Assert.AreEqual(ProjectKind.Production, project.Kind);
         Assert.IsTrue(AllowedProductionReferences.TryGetValue(TerminalUi, out var allowed) && allowed.Count == 0,
             $"{TerminalUi} must be documented with an empty reference set.");
         Assert.IsEmpty(project.References, $"{TerminalUi} must reference no project: {string.Join(", ", project.References)}");
-        CollectionAssert.AreEqual(new[] { "Terminal.Gui" }, project.PackageReferences.ToArray(), $"{TerminalUi} takes Terminal.Gui only.");
+        CollectionAssert.AreEquivalent(new[] { "Terminal.Gui", "Wcwidth" }, project.PackageReferences.ToArray(), $"{TerminalUi} takes Terminal.Gui and Wcwidth only.");
 
         var hosts = repository.Projects.Values
             .Where(candidate => candidate.Kind == ProjectKind.Production && CameraAgentImplementations.Concat([LogicHost]).Contains(candidate.Name))
