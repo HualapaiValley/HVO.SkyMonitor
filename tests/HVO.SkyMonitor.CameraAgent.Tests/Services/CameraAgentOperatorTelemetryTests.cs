@@ -40,12 +40,14 @@ public sealed class CameraAgentOperatorTelemetryTests
     [TestMethod]
     public void PlanMutationUsesBoundedActionForActivityAndMetric()
     {
+        using var meter = new Meter(CameraAgentOperatorTelemetry.InstrumentationName);
+        using var existingUnrelatedTelemetry = new CameraAgentOperatorTelemetry();
         var measurements = new List<KeyValuePair<string, object?>[]>();
         using var meterListener = new MeterListener
         {
             InstrumentPublished = (instrument, listener) =>
             {
-                if (instrument.Meter.Name == CameraAgentOperatorTelemetry.InstrumentationName &&
+                if (ReferenceEquals(instrument.Meter, meter) &&
                     instrument.Name == "camera_agent.processing.plan.mutations")
                 {
                     listener.EnableMeasurementEvents(instrument);
@@ -60,10 +62,14 @@ public sealed class CameraAgentOperatorTelemetryTests
             Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData
         };
         ActivitySource.AddActivityListener(activityListener);
-        using var telemetry = new CameraAgentOperatorTelemetry();
+        using var telemetry = new CameraAgentOperatorTelemetry(meter);
 
+        // Other tests can publish the same metric before or after this listener starts.
+        using var newUnrelatedTelemetry = new CameraAgentOperatorTelemetry();
+        existingUnrelatedTelemetry.RecordPlanMutation("activate", "applied");
         using var activity = telemetry.StartPlanMutation("rollback");
         telemetry.RecordPlanMutation("rollback", "failed");
+        newUnrelatedTelemetry.RecordPlanMutation("activate", "applied");
 
         Assert.IsNotNull(activity);
         Assert.AreEqual("processing-plan.rollback", activity.OperationName);
