@@ -1,12 +1,14 @@
 # HVO Product Installation and Release Contract
 
-Status: **draft 3**, 2026-10-16. It includes the owner's decisions of 2026-10-16. Owner: roys.
+Status: **draft 4**, 2026-10-18. It includes the owner's decisions of 2026-10-16 and 2026-10-18 (section 10). The
+draft 4 decisions in section 10 are proposed for the owner to confirm. Owner: roys.
 
 This contract is the one install and release experience shared by the HVO products. It covers HVO.RoofController
 and HVO.SkyMonitor: CameraAgent now, and LogicHost when its installer lifecycle exists. Each product implements it in its own
 repository; it does not create a shared codebase. RoofController 4.1.1 already implements most of it, so where this
 document says "as RoofController does", its implementation is the reference. Conformance work is tracked in each
-repository's epic.
+repository's epic. Where a rule says **Today**, it records how each product meets it, and the issue that brings a
+product that does not.
 
 Product-specific safety rules stay product-specific and are never weakened by this contract. Examples are the roof
 controller's verified Stop and idle-only redeploy, and CameraAgent's capture pause and state-compatibility gate.
@@ -28,6 +30,13 @@ controller's verified Stop and idle-only redeploy, and CameraAgent's capture pau
 
 - **Stamping.** Every assembly carries `InformationalVersion` = `<version>+<40-character commit>`. Every image carries the
   OCI labels `org.opencontainers.image.version`, `.revision` and `.created`, never inherited from a base image.
+  - **`org.opencontainers.image.created` is required** (decision D9). It is the release's `created` time, the same value
+    as `release.json`'s `created`, as an RFC 3339 UTC time such as `2026-10-17T18:00:00Z`. The release checks refuse an
+    image without it, as they refuse one without `version` or `revision`.
+  - Reason: it dates an image without trusting a registry or a file time, and a release reproduces it from
+    `release.json`. A base image's `created` would date the base, not the release.
+  - **Today:** RoofController sets it from `ROOF_CREATED` and `build/check-image-labels.sh` refuses an image whose
+    `created` is not an RFC 3339 time. SkyMonitor's CameraAgent image carries `version` and `revision` only (#1359).
 - **Where the version shows:** `--version` on every binary, the application's System page and footer, its startup log
   line, its info/health API, and the image labels. CI asserts `--version` equals `<version>+<commit>`.
 - **Data packages keep their own train.** Data that changes on its own cadence is versioned and released separately from the
@@ -63,30 +72,93 @@ candidate, a pre-release or a fix to an older line never moves it.
 **Integration pre-releases** (`vX.Y.Z-dev.<n>`) can be cut from an integration branch for smoke testing. They carry the
 same assets, are marked as GitHub pre-releases, need no CHANGELOG section, and never move `latest`.
 
+**The pre-release exception** (decision D8). The approval and the end-to-end job above are for final releases and
+release candidates. An integration pre-release follows them except in these ways:
+- **The human step is the owner's tag.** An annotated `vX.Y.Z-dev.<n>` tag that only the owner can push, under the
+  release-tag ruleset, on a commit the integration branch's required checks passed. There is no environment approval.
+  The workflow publishes the tested draft itself.
+- **The end-to-end job installs and upgrades on linux-arm64 only**, the platform the integration hosts run. The
+  linux-x64 files are checked by `SHA256SUMS` and their attestations, not installed.
+- **A failure publishes nothing.** A transient failure is re-run on the same draft. Otherwise the draft is deleted and
+  the next `<n>` is cut. A tag is never moved and a release is never replaced.
+
+Reason: an integration pre-release exists to put a branch head on a real host quickly. The owner's tag is already a
+deliberate act on a reviewed, green commit, and a second approval would add a wait without adding a check. A final
+release is what operators install from `latest`, so it keeps the approval and both platforms.
+
+**Today:** SkyMonitor cuts pre-releases this way (`.github/workflows/prerelease.yml`, #1309). Its final releases are
+#1310. RoofController cuts no integration pre-releases; its release candidates follow the final-release path.
+
 ## 4. Release assets
 
 Every release carries assets with these names and kinds:
 
-| Asset | Contents |
-| --- | --- |
-| `hvo-<product>-install-<rid>` | The installer: single-file, self-contained, per runtime ID (`linux-arm64`, `linux-x64`, `osx-arm64` where supported) |
-| `hvo-<product>-<rid>` | The runtime client, when the product has one |
-| `install.sh` | The entry point, with the release version baked in |
-| `<image>-<version>-linux-<arch>.oci.tar` | An offline image archive per architecture |
-| `release.json` | The machine-readable release manifest |
-| `SHA256SUMS` | Covers every asset |
-| `CHANGELOG.md` section and upgrade notes | In the release body and in `release.json` |
+| Asset | Kind | Contents |
+| --- | --- | --- |
+| `hvo-<product>-install-<rid>` | `installer` | The installer: single-file, self-contained, per runtime ID (`linux-arm64`, `linux-x64`, `osx-arm64` where supported) |
+| `hvo-<product>-<rid>` | `cli` | The runtime client, when the product has one |
+| `install.sh` | `install-script` | The entry point, with the release version baked in |
+| `<image>-<version>-linux-<arch>.oci.tar` | `image-archive` | An offline image archive per architecture |
+| `<catalog version>.bundle.tar.gz` | `catalog` | A data package the release is tested with, under its own version (section 1): SkyMonitor's approved star catalog, today `hyg-v4.2-p3-s2-r1.bundle.tar.gz` |
+| `release.json` | | The machine-readable release manifest |
+| `SHA256SUMS` | | Covers every asset |
+| `CHANGELOG.md` section and upgrade notes | | In the release body and in `release.json` |
 
+- **The asset `kind` vocabulary** (decision D7). Each entry of `release.json`'s `assets[]` names one of these kinds:
+
+  | Kind | Asset | `platform` | Products |
+  | --- | --- | --- | --- |
+  | `installer` | The installer | its runtime ID | both |
+  | `cli` | The runtime client | its runtime ID | RoofController (`hvo-roof`); SkyMonitor with `hvo-sky` (#1317) |
+  | `install-script` | `install.sh` | `null` | RoofController; SkyMonitor (#1311) |
+  | `image-archive` | An offline image archive | the runtime ID of its architecture (`linux-x64` for `amd64`) | both |
+  | `catalog` | A data package | `null` | SkyMonitor |
+  | `compose`, `deploy-script`, `kiosk`, `linux-auth`, `mac-app` | RoofController's own files: its Compose file, deploy script, kiosk, Linux authentication worker and Mac app | as written | RoofController |
+
+  - A kind is lowercase: a letter, then letters, digits and `-`.
+  - A shared kind means the same in every product.
+  - A product-specific kind is listed in this table before a release uses it.
+  - `release.json` and `SHA256SUMS` describe the assets, so they are not entries of `assets[]`.
+  - Reason: an installer and `install.sh` select files by kind, so a kind that means two things, or one no reader knows,
+    would let a release be read two ways.
+  - **Today:** both products write only kinds in this table.
+- **A data package asset** (kind `catalog`) is the version of that data the release is tested with. It is an ordinary
+  asset: listed in `SHA256SUMS`, attested and checked like the others. The installer does not take it from the release
+  by itself: the operator, or `install.sh`, extracts it and passes it to the installer (SkyMonitor:
+  `--catalog-bundle`). The product still declares which data versions it accepts, so a newer data package can be
+  installed without a product release.
+- **Platform names** (decision D5). A name about an image uses the OCI architecture, `amd64` or `arm64`:
+  - the offline archive's file name, `<image>-<version>-linux-<arch>.oci.tar`;
+  - `images.<key>.platforms`;
+  - `offlineArchives[].platform`, as `linux/amd64` or `linux/arm64`.
+
+  A name about a binary uses the .NET runtime ID, `linux-x64`, `linux-arm64` or `osx-arm64`: the binary's file name
+  and every asset's `platform`, an image archive's included.
+  - Reason: each name is the one the tool that reads it uses, `docker load` and OCI for images, and `dotnet publish`
+    for binaries. Renaming either side would add a translation that both products already avoid.
+  - **Today:** both products name their files this way.
 - **Images** are pushed to `ghcr.io/hualapaivalley/<image>` with tag `<version>`, plus `latest` for the newest final release,
   and are always referenced by digest. Image names: `roof-controller`, `roof-hat-emulator`, `skymonitor-cameraagent`,
   and later `skymonitor-logichost`.
 - **`release.json`** follows RoofController's schema 1:
   - `version`, `tag`, `prerelease`, `commit`, `created`, `repository`;
-  - `images.<name>` with `repository`, `tag`, `digest`, `reference` and `platforms`;
+  - `images.<key>` with `repository`, `tag`, `digest`, `reference` and `platforms`;
   - cumulative `upgradeNotes[]`;
   - `assets[]` with name, kind, platform, size and sha256.
 
-  It adds `images.<name>.offlineArchives[]` and `stateContracts` (section 6).
+  It adds `images.<key>.offlineArchives[]` and `stateContracts` (section 6).
+- **Image keys** (decision D6). `images.<key>` names the component, not the image. The key is a lower-camel-case
+  logical name, and the image name is in `repository`. `stateContracts` uses the same keys:
+
+  | Product | Keys |
+  | --- | --- |
+  | RoofController | `controller` (`roof-controller`), `hatEmulator` (`roof-hat-emulator`) |
+  | SkyMonitor | `cameraAgent` (`skymonitor-cameraagent`), later `logicHost` (`skymonitor-logichost`) |
+
+  - Reason: RoofController's released installers already read `images.controller`, while SkyMonitor has published
+    only integration pre-releases, so this choice changes the product that has no released readers. A component's key
+    also outlives a rename of its image.
+  - **Today:** RoofController uses these keys. SkyMonitor uses the image name, `images.skymonitor-cameraagent` (#1359).
 - **Upgrade-note text** follows one terminal-safety rule. The tool that writes `release.json` applies it, and so does
   the installer that reads it. CRLF is normalized to LF first. After that, a note is
   refused if it holds a Unicode control character (Cc) other than LF and TAB, a format character (Cf), a line or
@@ -98,7 +170,8 @@ Every release carries assets with these names and kinds:
     `gh attestation verify`, is the only trust model.
   - SkyMonitor's key-signed manifests and indexes (ES256, Azure Key Vault, embedded trust root) are retired (owner
     decision, 2026-10-16).
-  - The release environment requires the owner's approval to publish.
+  - The release environment requires the owner's approval to publish, except for the integration pre-releases of
+    section 3.
   - Installers refuse an older version on `upgrade`; only `rollback` goes back.
 
 ## 5. Installer
@@ -161,6 +234,19 @@ curl -fsSL https://github.com/HualapaiValley/<repo>/releases/latest/download/ins
 - **Idempotent:** a second run with the same answers prints "Nothing to change".
 - **Install record:** `/etc/hvo-<product>/install.json` for machine roles, `~/.config/hvo-<product>/install.json` for user
   roles. It holds no secrets: `version`, `previousVersion`, `rolledBackFrom`, and the roles or instances installed.
+- **Which record is authoritative** (decision D10). Every fact about an installation has one authoritative record:
+  what is installed, its release, its previous release and its limits.
+  - A product either makes the install record that record, or keeps per-instance records authoritative and writes the
+    install record as a view of them.
+  - A view is written after the records it reflects and is rebuilt from them. Nothing decides anything from it, and a
+    view that disagrees with them is the one that is wrong.
+  - Reason: a fact kept in two authoritative places drifts after an interrupted operation. A product with several
+    instances per host (SkyMonitor) commits each instance's change in that instance's own records, under its own lock,
+    while the machine-level file is one per host.
+  - **Today:** RoofController's install record is authoritative, and its upgrade, rollback and uninstall read it.
+    SkyMonitor keeps the instance's records authoritative: the instance manifest, and the installed-release record
+    `<instance root>/state/deployment/image-distribution.json` with the previous image's record in
+    `image-distribution.records.json`. `/etc/hvo-sky/install.json` is the view of them (#1315).
 - **Data** goes under `/var/lib/hvo-<product>/`, or a product root the operator chooses through a root-owned host policy.
 - `<product>` is the short name used in the binaries: `roof` or `sky` (section 9).
 
@@ -175,8 +261,8 @@ curl -fsSL https://github.com/HualapaiValley/<repo>/releases/latest/download/ins
   4. If it fails, the previous version is restored automatically.
 - **Rollback** goes back exactly one release.
 - **State:**
-  - Each component declares a state contract (for example `cameraagent-state-v2` with raw-ingress schema 15) in its
-    image labels and in `release.json`.
+  - Each component declares a state contract in its image labels and in `release.json`'s `stateContracts`. Its shape
+    is given below.
   - If the contract is unchanged, upgrade and rollback are a pure swap. Nothing is copied and no operator assertion is
     needed.
   - A schema change must stay readable by the previous release for one release: add first, remove in a later
@@ -190,16 +276,105 @@ curl -fsSL https://github.com/HualapaiValley/<repo>/releases/latest/download/ins
 - **Full backup** of everything is the separate `backup` command, run on the operator's schedule. It is not a hidden
   step of every upgrade.
 
+### State contracts
+
+Decision D1. `stateContracts` names each component by its image key (section 4). For each store the component keeps,
+it gives the newest schema a release may write, and every schema it reads:
+
+```json
+"stateContracts": {
+  "controller": {
+    "identity": { "writes": 3, "reads": { "min": 1, "max": 3 } },
+    "settings": { "writes": 1, "reads": { "min": 1, "max": 1 } }
+  },
+  "hatEmulator": {}
+}
+```
+
+- **Shape:** `stateContracts.<component>.<store>` is `{ "writes": W, "reads": { "min": A, "max": B } }`. Each is a
+  whole number from 1, with `A ≤ W ≤ B`, and the release reads every schema from `A` to `B`. A component that keeps no
+  state has `{}`. The component's image carries the same object in its `io.hvo.<product>.state-contracts` label, and the
+  release checks refuse a release whose label and `release.json` differ.
+- **A store** is one durable store the component writes: a database, or a set of files with one schema version. A
+  store's schema is the version that store records about itself, never one the installer infers.
+- **A breaking change** is a target that writes a schema, for some store, newer than the installed release reads
+  (`target.writes > installed.reads.max`). A rollback to the installed release would then meet a store it cannot read.
+  Any other change keeps rollback a swap.
+- Reason: per-store numbers let the installer decide "swap" or "breaking" by comparing two `release.json` files, with
+  no knowledge of the product's schemas.
+- **Today:** RoofController declares this shape in `build/release-assets.py` and in its controller Dockerfile's label
+  `io.hvo.roof.state-contracts`, which its release tests check agree. Its installer compares contracts before an
+  upgrade and a rollback. SkyMonitor
+  declares its state as one contract name (`io.hvo.skymonitor.state-compatibility`, `cameraagent-state-v2`) plus
+  boundary labels, and treats any changed boundary label as a state migration (#1340). `release.json` omits
+  `stateContracts` (#1359).
+
+**The SkyMonitor mapping.** Component `cameraAgent`, with one store for each SQLite database an instance keeps:
+
+| Store | Database (under the instance's state root) | Its schema | Declared today |
+| --- | --- | --- | --- |
+| `identity` | `identity/cameraagent_identity.db` | The number of applied EF Core migrations in `__EFMigrationsHistory` | `io.hvo.skymonitor.identity-migration` names the newest, `20260827053715_InitialIdentity`: writes 1, reads 1 to 1 |
+| `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | `io.hvo.skymonitor.raw-ingress-schema` 15 and `raw-ingress-migration` `canonical-v13-v14-to-v15`: writes 15, reads 13 to 15 |
+| `artifactOutbox` | `outbox/artifact-outbox.db` in each storage root (`raw`, `archive`, and every FileStorage root) | `PRAGMA user_version` | Not declared |
+| `fleetStatus` | `raw/.fleet/fleet-status.db` | `PRAGMA user_version` | Not declared |
+| `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Not declared |
+| `executionEvidenceOutbox` | `raw/evidence/execution-evidence-outbox.db` | `PRAGMA user_version` | Not declared |
+| `timeLapses` | `raw/.time-lapses/time-lapses.db` | `PRAGMA user_version` | Not declared |
+| `nightlyProducts` | `raw/.nightly-products/nightly-products.db` | `PRAGMA user_version` | Not declared |
+| `localAutomations` | `raw/.automation/local-automations.db` | `PRAGMA user_version` | Not declared |
+
+- These are the stores the state snapshot of #1340 copies.
+- The star catalog is a data package (section 1), not a store. The catalog labels keep the versions CameraAgent
+  accepts: `io.hvo.skymonitor.catalog-contract` and `catalog-manifest-version`.
+- #1359 declares every store's numbers.
+
+### Copies of the small stores
+
+Decision D2. Before an upgrade can change a small store, the installer keeps a copy it can put back.
+- **When to copy.** A product copies at least when the target declares a state change. It may copy on every upgrade.
+  The copy is taken while nothing writes, after the product's safety gate, and is checked before the upgrade goes on.
+- **Rollback.** A rollback restores the copy of every store the release it returns to cannot read. It may restore
+  every copied store. It says which changes made since the upgrade are lost, before it changes anything.
+- **What is copied.** Only the small stores of section 6's state contracts. Bulk data is never copied (above).
+- **Full backups** are the `backup` command (section 5).
+- Reason: a copy is what makes a breaking change recoverable. Copying only small stores keeps an upgrade's time and
+  disk independent of how much the product has captured.
+- **Today:**
+  - RoofController takes a backup of its own data before every upgrade, as its `backup` command does, because that
+    data is a few small files. Its `rollback --restore-backup` puts back the stores the release before cannot read,
+    after asking (or with `--yes`).
+  - SkyMonitor snapshots its SQLite stores only when the candidate declares a state migration (#1340). Its rollback
+    restores the snapshot the upgrade it undoes took, and says what is lost.
+  - SkyMonitor's `backup` command is #1353; RoofController has one.
+
 ## 7. Container resources
 
-- **Defaults.** Every product container the installer creates is limited to at least **2 vCPUs and 4 GiB of memory**,
-  with a PID limit. Operators raise the limits as needed.
-- **Setting them.** Limits are given at install, through flags or `--answers`. They are kept in the install record,
-  kept across upgrade and rollback, and can be changed with a re-run.
-- **Host check.** The installer checks before installing that the host and Docker can enforce the limits and that the
-  host has the capacity.
-- **Roof controller.** Its limits additionally need evidence that the HAT and relays fail safe (motor drive
-  de-energised) when the controller process is killed.
+- **Per-product limits.** Every product container the installer creates has a CPU, memory and PID limit. The defaults
+  and floors are set per product, because the products' work differs by an order of magnitude (owner decisions of
+  2026-10-16 and HVO.RoofController#149):
+
+  | Container | Default | Floor | **Today** |
+  | --- | --- | --- | --- |
+  | SkyMonitor CameraAgent | 2 vCPUs, 4 GiB, 256 PIDs | 2 vCPUs, 4 GiB | Meets it (#1324) |
+  | RoofController controller | 1 vCPU, 2 GiB | 1 vCPU, 1 GiB | Meets it (HVO.RoofController#151) |
+
+  The operator raises a limit as needed, and an installer refuses one below the floor.
+- **Setting them.** Limits are given at install, through flags or `--answers`. They are kept in the install record
+  (section 5), kept across upgrade and rollback, and changed by re-running the installer with new limits (the re-run
+  of section 5).
+  - **Today:** RoofController changes them by a re-run. SkyMonitor keeps them in the instance manifest and refuses a
+    re-run with different limits; the re-run is #1315.
+- **Hosts that cannot enforce the limits** (owner decision of 2026-10-18, "match Roof fully"). Before it installs or
+  upgrades, the installer checks that Docker enforces the CPU, memory and PID limits and that the host has the CPUs.
+  - **Install and upgrade refuse** a host that cannot enforce them, and change nothing. There is no override.
+  - **A rollback proceeds.** It is the recovery path, so it applies the limits Docker can enforce and gives a loud
+    warning on standard error and in the logs. Everything else that refuses an install still refuses a rollback.
+  - Reason: an unbounded container can starve the host it shares, but refusing a rollback could leave an operator
+    with no way back from a failed release.
+  - **Today:** RoofController behaves this way (HVO.RoofController#151). SkyMonitor's install refuses such a host (its
+    host prerequisites). Its upgrade refusal and rollback warning are #1357.
+- **Roof controller.** Its limits are on by default because its supervisor de-energises the drive relays whenever the
+  controller exits or crash-loops (HVO.RoofController#138). A killed controller therefore leaves the motor drive safe.
 
 ## 8. Runtime client and settings
 
@@ -224,6 +399,7 @@ does with `hvo-roof`. It sits beside the installer: the installer owns lifecycle
 | Installer | `hvo-roof-install` | `hvo-sky-install` |
 | Runtime client | `hvo-roof` | `hvo-sky` |
 | Images | `roof-controller`, `roof-hat-emulator` | `skymonitor-cameraagent`, `skymonitor-logichost` |
+| Image keys (`release.json`, `stateContracts`) | `controller`, `hatEmulator` | `cameraAgent`, later `logicHost` |
 | Config root | `/etc/hvo-roof` | `/etc/hvo-sky` |
 | Data root | `/var/lib/hvo-roof` | `/var/lib/hvo-sky` |
 
@@ -235,8 +411,33 @@ Owner decisions of 2026-10-16:
    one.
 2. **Bulk data in upgrades:** upgrades **never copy bulk files** (section 6). Full backups are the explicit `backup`
    command. SkyMonitor #1044's scope narrows to that command.
-3. **Container resources:** at least 2 vCPUs and 4 GiB, adjustable by the operator (section 7).
+3. **Container resources:** set per product and adjustable by the operator (section 7). CameraAgent gets at least
+   2 vCPUs and 4 GiB. The roof controller gets 1 vCPU and 2 GiB, with a floor of 1 vCPU and 1 GiB
+   (HVO.RoofController#149). This revises draft 3's single 2 vCPU / 4 GiB minimum for every product.
 4. **Naming:** `hvo-sky-install` and `hvo-sky`, confirmed (section 9).
 5. **File locations:** RoofController's flat style, named after the binary, is the pattern: `/etc/hvo-roof` and
    `/etc/hvo-sky`. RoofController does not migrate (HVO.RoofController#132, closed). SkyMonitor renamed its paths before its
    first release (#1313).
+
+Owner decision of 2026-10-18:
+
+6. **Hosts that cannot enforce the container limits:** match RoofController fully. Both products refuse install and
+   upgrade with no override, and a rollback proceeds with a loud warning (section 7). SkyMonitor's upgrade and rollback
+   part is #1357.
+
+Draft 4 decisions, proposed on 2026-10-18 for the owner to confirm:
+
+- **D1. State contracts:** RoofController's per-component, per-store `writes` and `reads` shape, with the SkyMonitor
+  mapping (section 6).
+- **D2. Small-store copies:** a product copies at least when the target declares a state change, and may copy on every
+  upgrade. A rollback restores what the older release cannot read (section 6).
+- **D5. Platform names:** OCI architectures (`amd64`, `arm64`) for images, .NET runtime IDs (`linux-x64`) for binaries
+  and asset platforms (section 4).
+- **D6. Image keys:** logical lower-camel-case component keys (`controller`, `cameraAgent`), shared with
+  `stateContracts` (section 4).
+- **D7. Asset kinds:** the vocabulary of section 4, with `catalog` for data packages.
+- **D8. Pre-release exception:** the owner's tag is the human step, and the end-to-end job is linux-arm64 only
+  (section 3).
+- **D9. `org.opencontainers.image.created`:** required (section 1).
+- **D10. Authoritative record:** one authoritative record per fact; the install record is either it or a view of
+  per-instance records (section 5).
