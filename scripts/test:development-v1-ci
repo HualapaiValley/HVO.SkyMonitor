@@ -80,6 +80,10 @@ def violations(short, full):
         "test:pr-review-tools", "test:development-v1-ci",
     ):
         require(f"          ./scripts/{command}\n" in preflight, f"preflight {command}")
+    base_images = step(preflight, "Check Dockerfile base images")
+    require(base_images.strip() == "run: ./scripts/ci:base-images",
+            "base-image check is unconditional and fail-closed")
+    require("timeout-minutes: 3" in preflight, "Preflight keeps its 180-second budget")
     # Issue #1321: both required profiles scan the complete history for secrets,
     # inside a check that branch protection already requires.
     for profile, section in (("preflight", preflight), ("full Quality", quality)):
@@ -169,6 +173,10 @@ if errors:
 
 # Mutation controls prove the checks reject costly creep and silent loss of gates.
 mutations = (
+    ("base-image check removed", short.replace("run: ./scripts/ci:base-images", "run: true"), full),
+    ("base-image check gated", short.replace(
+        "- name: Check Dockerfile base images", "- name: Check Dockerfile base images\n        if: false"), full),
+    ("base-image failure masked", short.replace("run: ./scripts/ci:base-images", "run: ./scripts/ci:base-images || true"), full),
     ("missing Unit filter", short.replace('--filter "TestCategory=Unit"', ""), full),
     ("integration in fast run", short.replace("TestCategory=Unit", "TestCategory=Integration"), full),
     ("Docker enabled", short.replace("DOCKER_HOST: unix:///tmp/hvo-no-docker.sock", ""), full),
@@ -287,3 +295,7 @@ else:
             raise SystemExit("New promotion was not created as draft")
 print(f"Development v1 CI contracts passed; {len(mutations)} mutation controls and 8 offline promotion cases passed.")
 PY
+
+# Keep the cheap image and runtime-directory fixtures on the Preflight contract path.
+"$repo_root/scripts/test:ci-base-images"
+"$repo_root/scripts/test:cameraagent-arm64-preflight"

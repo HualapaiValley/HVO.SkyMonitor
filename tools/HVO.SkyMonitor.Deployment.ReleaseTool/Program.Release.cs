@@ -15,7 +15,7 @@ namespace HVO.SkyMonitor.Deployment.ReleaseTool;
 /// <item><c>hvo-sky-install-linux-x64</c> and <c>hvo-sky-install-linux-arm64</c>, the installers;</item>
 /// <item><c>skymonitor-cameraagent-&lt;version&gt;-linux-&lt;arch&gt;.oci.tar</c>, an offline image archive per platform;</item>
 /// <item><c>&lt;catalog version&gt;.bundle.tar.gz</c>, the catalog bundle, under its own version;</item>
-/// <item><c>install.sh</c>, when given;</item>
+/// <item><c>install.sh</c>, when given, with the release's version written in (<see cref="StampInstallScript"/>);</item>
 /// <item><c>release.json</c>, and <c>SHA256SUMS</c> over every file.</item>
 /// </list>
 /// Upgrade notes pass the installer's own terminal-safety rule (<see cref="UpgradeNoteText"/>) here, so a note that
@@ -53,7 +53,10 @@ internal static partial class Program
         var x64 = RequireExistingFile(options, "--installer-linux-x64");
         var arm64 = RequireExistingFile(options, "--installer-linux-arm64");
         var catalogBundle = options.ContainsKey("--catalog-bundle") ? RequireExistingDirectory(options, "--catalog-bundle") : null;
-        var installScript = options.ContainsKey("--install-script") ? RequireExistingFile(options, "--install-script") : null;
+        var installScript = options.ContainsKey("--install-script")
+            ? StampInstallScript(await ReadInstallScriptAsync(RequireExistingFile(options, "--install-script"), cancellationToken)
+                .ConfigureAwait(false), version)
+            : null;
         var notes = options.ContainsKey("--upgrade-notes")
             ? ReadUpgradeNotes(RequireExistingDirectory(options, "--upgrade-notes"), version)
             : [];
@@ -86,7 +89,9 @@ internal static partial class Program
             }
             if (installScript is not null)
             {
-                CopyExecutable(installScript, Path.Combine(output, "install.sh"));
+                var path = Path.Combine(output, "install.sh");
+                await File.WriteAllTextAsync(path, installScript, StrictUtf8, cancellationToken).ConfigureAwait(false);
+                SetExecutable(path);
                 assets.Add(await AssetAsync(output, "install.sh", "install-script", null, null, cancellationToken).ConfigureAwait(false));
             }
 
@@ -288,6 +293,35 @@ internal static partial class Program
         return lines;
     }
 
+    private static async Task<string> ReadInstallScriptAsync(string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return StrictUtf8.GetString(await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false));
+        }
+        catch (DecoderFallbackException exception)
+        {
+            throw new ReleaseToolException("--install-script is not UTF-8 text.", exception);
+        }
+    }
+
+    /// <summary>
+    /// <c>install.sh</c> as a release publishes it (install contract section 5): the repository's copy, whose one
+    /// <c>  local release_version=''</c> line, with or without a trailing comment, becomes
+    /// <c>  local release_version='&lt;version&gt;'</c>. The repository's copy names no release and refuses to run; a
+    /// release's copy installs that release. A script without exactly one such line is refused, so a release never
+    /// carries an <c>install.sh</c> that names no release, or two. The version is SemVer without build metadata, so it
+    /// needs no quoting inside the single quotes.
+    /// </summary>
+    internal static string StampInstallScript(string text, string version)
+    {
+        var lines = InstallScriptVersionLine().Count(text);
+        return lines == 1
+            ? InstallScriptVersionLine().Replace(text, $"  local release_version='{version}'")
+            : throw new ReleaseToolException(
+                $"--install-script must name its release on one line, \"  local release_version=''\", and has {lines}.");
+    }
+
     /// <summary>A release's version: SemVer without build metadata, which tags, the image tag and file names all carry.</summary>
     private static string RequireReleaseVersion(Dictionary<string, string> options, string name)
     {
@@ -329,12 +363,20 @@ internal static partial class Program
     private static void CopyExecutable(string source, string destination)
     {
         File.Copy(source, destination);
+        SetExecutable(destination);
+    }
+
+    private static void SetExecutable(string path)
+    {
         if (!OperatingSystem.IsWindows())
         {
-            File.SetUnixFileMode(destination, ExecutableMode);
+            File.SetUnixFileMode(path, ExecutableMode);
         }
     }
 
     [GeneratedRegex(@"\A(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.md\z", RegexOptions.CultureInvariant)]
     private static partial Regex UpgradeNoteFileName();
+
+    [GeneratedRegex(@"^  local release_version=''(?:  #[^\n]*)?$", RegexOptions.Multiline | RegexOptions.CultureInvariant)]
+    private static partial Regex InstallScriptVersionLine();
 }

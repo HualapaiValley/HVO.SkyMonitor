@@ -25,6 +25,19 @@ onward; earlier development is recorded in its pull requests. A release renames 
 - Re-running an install with new `--cpus` or `--memory` changes an installed instance's container limits: the
   container is recreated with them and must come back healthy, or the recorded limits are restored. The host check
   and the 2 CPU and 4 GiB floor still apply. (#1315)
+- Each release carries `install.sh`, the one-line entry point: `curl -fsSL
+  https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v<version>/install.sh | bash -s -- cameraagent install
+  ...`. Before it changes anything it checks the platform (64-bit Linux with glibc), `curl`, `tar` and `sha256sum`,
+  free space, the clock, github.com and ghcr.io, and, for an install or an upgrade, Docker 20.10 or later with Compose v2
+  that enforces CameraAgent's memory, CPU and PID limits (naming the `cgroup_enable=memory` remedy on a Raspberry Pi)
+  and, online, `docker buildx` 0.8 or later. It then downloads that release's `hvo-sky-install`, `SHA256SUMS`,
+  `release.json` and catalog, checks each against `SHA256SUMS` (and the attestations when `gh` is signed in) and the
+  installer against its `--version`, and runs it as you. `cameraagent install` and `upgrade` are given the release
+  (`--release`, with `--image-source registry`, so the image is pulled from ghcr.io by its digest), and `cameraagent
+  install` the release's catalog (`--catalog-bundle`, unpacked in `~/.cache/hvo-sky/catalogs`). With no installer
+  arguments it runs `cameraagent install`. `--check` stops after the checks. `--from DIR` takes everything from a downloaded release folder, the offline image archive included, and
+  never contacts ghcr.io. Exit codes are the install contract's: 3 when it refused and nothing changed, 1 when a
+  download failed, 2 for an invalid command line and 130 when interrupted. (#1311)
 - CameraAgent serves an operator settings catalogue and versioned group writes through its operations API. The
   site owner can create and revoke Read or ReadWrite API keys for non-browser clients. (#1316)
 - `hvo-sky-install --version` prints the installer's version and the commit it was built from, as
