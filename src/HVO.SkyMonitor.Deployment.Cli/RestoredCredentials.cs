@@ -106,6 +106,113 @@ internal static class RestoredCredentials
         return new Outcome(keys, reset, authority, changes);
     }
 
+    /// <summary>The columns of CameraAgent's <c>AspNetUsers</c> table, the only ones an account is copied by.</summary>
+    private static readonly string[] AccountColumns =
+    [
+        "Id", "UserName", "NormalizedUserName", "Email", "NormalizedEmail", "EmailConfirmed", "PasswordHash", "SecurityStamp",
+        "ConcurrencyStamp", "PhoneNumber", "PhoneNumberConfirmed", "TwoFactorEnabled", "LockoutEnd", "LockoutEnabled",
+        "AccessFailedCount", "IsSiteOwner", "PasswordChangeRequired"
+    ];
+
+    /// <summary>
+    /// Brings the live owner's account into <paramref name="restoredDatabase"/> when the restore keeps a live owner email,
+    /// <paramref name="ownerEmail"/>, that the backup has no account for, as when the live owner was installed after the
+    /// backup (#1353 PR-1369-R2 F14). The installer withdraws the temporary owner password once the owner is seeded, so
+    /// CameraAgent's startup seeder can then only find the owner, never create it, and without the account CameraAgent
+    /// would not start. The account comes as the live store has it, its password, security stamp, site ownership and
+    /// lockout included, as live credentials win for every account (<see cref="Revoke"/>). An account the backup holds
+    /// under its sign-in name, which the live store no longer has and <see cref="Revoke"/> has locked out, is renamed
+    /// <c>removed-&lt;id&gt;</c> first. Returns each change. Running it again changes nothing more.
+    /// </summary>
+    public static IReadOnlyList<string> CarryLiveOwner(string restoredDatabase, string liveDatabase, string ownerEmail)
+    {
+        ArgumentNullException.ThrowIfNull(restoredDatabase);
+        ArgumentNullException.ThrowIfNull(liveDatabase);
+        ArgumentException.ThrowIfNullOrEmpty(ownerEmail);
+        if (!File.Exists(restoredDatabase) || !File.Exists(liveDatabase)) return [];
+        var email = ownerEmail.ToUpperInvariant();
+        Dictionary<string, object?>? owner;
+        HashSet<string> liveAccounts;
+        using (var database = CameraAgentStatePreflight.ReadOnlyDatabase.Open(liveDatabase))
+        {
+            owner = ReadAccount(database.Connection, null, email);
+            liveAccounts = [.. Read(database.Connection, null).Accounts.Keys];
+        }
+        if (owner is null) return [];
+        using var restored = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = restoredDatabase,
+            Mode = SqliteOpenMode.ReadWrite,
+            Cache = SqliteCacheMode.Private,
+            Pooling = false
+        }.ToString());
+        restored.Open();
+        using var transaction = restored.BeginTransaction();
+        if (!HasTable(restored, transaction, "AspNetUsers")) return [];
+        var present = Columns(restored, transaction, "AspNetUsers");
+        if (!present.IsSupersetOf(["NormalizedEmail", "NormalizedUserName"])) return [];
+        var id = (string)owner["Id"]!;
+        using (var existing = Command(restored, transaction, "SELECT COUNT(*) FROM AspNetUsers WHERE NormalizedEmail = $email OR Id = $id;",
+                   ("$email", email), ("$id", id)))
+        {
+            if (Convert.ToInt64(existing.ExecuteScalar(), CultureInfo.InvariantCulture) > 0) return [];
+        }
+        var changes = new List<string>();
+        if (owner.GetValueOrDefault("NormalizedUserName") is string name)
+        {
+            string? holder;
+            using (var holding = Command(restored, transaction, "SELECT Id FROM AspNetUsers WHERE NormalizedUserName = $name;", ("$name", name)))
+            {
+                holder = holding.ExecuteScalar() as string;
+            }
+            if (holder is not null)
+            {
+                if (liveAccounts.Contains(holder))
+                {
+                    throw new InstallerException(
+                        $"The restore cannot bring back the live owner's account {id}: account {holder}, which the backup holds and the live instance still has, has its sign-in name.");
+                }
+                var freed = $"removed-{holder}";
+                var renamed = new List<(string Column, object? Value)> { ("UserName", freed), ("NormalizedUserName", freed.ToUpperInvariant()) };
+                if (present.Contains("ConcurrencyStamp")) renamed.Add(("ConcurrencyStamp", Guid.NewGuid().ToString("D")));
+                Update(restored, transaction, holder, [.. renamed]);
+                changes.Add($"account {holder}, which the live store no longer has, gave up its sign-in name to the live owner and is now '{freed}'");
+            }
+        }
+        var columns = AccountColumns.Where(column => owner.ContainsKey(column) && present.Contains(column)).ToArray();
+        using (var insert = Command(restored, transaction,
+                   $"INSERT INTO AspNetUsers ({string.Join(", ", columns)}) VALUES ({string.Join(", ", columns.Select(static (_, index) => string.Create(CultureInfo.InvariantCulture, $"$v{index}")))});"))
+        {
+            for (var index = 0; index < columns.Length; index++)
+            {
+                insert.Parameters.AddWithValue(string.Create(CultureInfo.InvariantCulture, $"$v{index}"), owner[columns[index]] ?? DBNull.Value);
+            }
+            insert.ExecuteNonQuery();
+        }
+        transaction.Commit();
+        changes.Add($"account {id}, the live owner, which the backup does not hold, was brought over from the live instance with its live credentials");
+        return changes;
+    }
+
+    /// <summary>The account <paramref name="normalizedEmail"/> names, by <see cref="AccountColumns"/>, or <see langword="null"/>.</summary>
+    private static Dictionary<string, object?>? ReadAccount(SqliteConnection connection, SqliteTransaction? transaction, string normalizedEmail)
+    {
+        if (!HasTable(connection, transaction, "AspNetUsers")) return null;
+        var present = Columns(connection, transaction, "AspNetUsers");
+        if (!present.Contains("NormalizedEmail")) return null;
+        var columns = AccountColumns.Where(present.Contains).ToArray();
+        using var command = Command(connection, transaction,
+            $"SELECT {string.Join(", ", columns)} FROM AspNetUsers WHERE NormalizedEmail = $email;", ("$email", normalizedEmail));
+        using var reader = command.ExecuteReader();
+        if (!reader.Read()) return null;
+        var account = new Dictionary<string, object?>(StringComparer.Ordinal);
+        for (var index = 0; index < columns.Length; index++)
+        {
+            account[columns[index]] = reader.IsDBNull(index) ? null : reader.GetValue(index);
+        }
+        return account;
+    }
+
     /// <summary>
     /// Takes every credential and every grant from an account the live store no longer has, and locks it out. An account
     /// already revoked this way is left as it is, so running it again changes nothing.

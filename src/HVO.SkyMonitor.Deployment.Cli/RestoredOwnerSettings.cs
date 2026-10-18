@@ -15,11 +15,14 @@ internal static class RestoredOwnerSettings
     /// <summary>The setting the seeder makes the site owner by.</summary>
     public const string AdminEmailSetting = "LocalIdentity__AdminEmail";
 
+    /// <summary>The setting that names the sign-in name of a site owner the seeder creates.</summary>
+    public const string AdminUserNameSetting = "LocalIdentity__AdminUserName";
+
     /// <summary>The files the seeder reads to grant authority, relative to the instance root.</summary>
     public static IReadOnlyList<string> Files { get; } =
     [
         $"config/secrets/{AdminEmailSetting}",
-        "config/secrets/LocalIdentity__AdminUserName",
+        $"config/secrets/{AdminUserNameSetting}",
         "config/secrets/LocalIdentity__AdminPassword",
         "config/secrets/LocalIdentity__AdminPasswordFile",
         "config/secrets/LocalIdentity__AllowMissingAdminPassword",
@@ -65,6 +68,16 @@ internal static class RestoredOwnerSettings
             }
         }
         return changed;
+    }
+
+    /// <summary>
+    /// The value of the setting <paramref name="name"/> under <paramref name="instanceRoot"/>'s <c>config/secrets</c>, as
+    /// CameraAgent reads it, or <see langword="null"/> when there is none.
+    /// </summary>
+    public static string? Setting(string instanceRoot, string name)
+    {
+        var path = Path.Combine(instanceRoot, "config", "secrets", name);
+        return File.Exists(path) ? Read(path).TrimEnd('\r', '\n') : null;
     }
 
     private static string Read(string path)

@@ -816,42 +816,48 @@ site_owner() {
   sqlite3 -readonly "$identity_root/cameraagent_identity.db" \
     "SELECT COALESCE(MAX(IsSiteOwner), 'absent') FROM AspNetUsers WHERE NormalizedEmail = upper('$1');"
 }
-test "$(site_owner "$backup_owner")" = 1
+# Fails the campaign with a message, so no step of this contract stops it silently.
+owner_contract_fails() {
+  printf 'Restore owner settings contract: %s\n' "$1" >&2
+  exit 1
+}
+[[ "$(site_owner "$backup_owner")" == 1 ]] || owner_contract_fails "$backup_owner is not the site owner before the backup."
 logged "$root/owner-backup-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent backup \
   --instance-id "$instance_id" \
   --product-root "$root/product" \
   --json >"$root/owner-backup.json"
-test "$(jq -er '.outcome' "$root/owner-backup.json")" = completed
+[[ "$(jq -er '.outcome' "$root/owner-backup.json")" == completed ]] || owner_contract_fails "the backup did not complete."
 owner_archive="$(jq -er '.backup.archive' "$root/owner-backup.json")"
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
   --instance-id "$instance_id" \
   --product-root "$root/product" \
   --json >"$root/owner-uninstall.json"
-test "$(jq -er '.outcome' "$root/owner-uninstall.json")" = completed
+[[ "$(jq -er '.outcome' "$root/owner-uninstall.json")" == completed ]] || owner_contract_fails "the uninstall did not complete."
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent purge \
   --instance-id "$instance_id" \
   --confirm-instance-id "$instance_id" \
   --product-root "$root/product" \
   --json >"$root/owner-purge.json"
-test "$(jq -er '.outcome' "$root/owner-purge.json")" = completed
-test ! -e "$instance_root"
+[[ "$(jq -er '.outcome' "$root/owner-purge.json")" == completed ]] || owner_contract_fails "the purge did not complete."
+[[ ! -e "$instance_root" ]] || owner_contract_fails "the purge left the instance root."
+[[ -f "$root/product/backups/$owner_archive" ]] || owner_contract_fails "the purge removed the backup."
 live_owner_install=("${common_arguments[@]}")
 for index in "${!live_owner_install[@]}"; do
   if [[ "${live_owner_install[$index]}" == "$backup_owner" ]]; then live_owner_install[$index]="$live_owner"; fi
 done
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" "${live_owner_install[@]}" >"$root/owner-install.json"
-test "$(jq -er '.healthy' "$root/owner-install.json")" = true
-test "$(site_owner "$live_owner")" = 1
+[[ "$(jq -er '.healthy' "$root/owner-install.json")" == true ]] || owner_contract_fails "the fresh install with $live_owner is not healthy."
+[[ "$(site_owner "$live_owner")" == 1 ]] || owner_contract_fails "the fresh install did not make $live_owner the site owner."
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
   --instance-id "$instance_id" \
   --product-root "$root/product" \
   --json >"$root/owner-live-uninstall.json"
-test "$(jq -er '.outcome' "$root/owner-live-uninstall.json")" = completed
+[[ "$(jq -er '.outcome' "$root/owner-live-uninstall.json")" == completed ]] || owner_contract_fails "the second uninstall did not complete."
 logged "$root/owner-restore-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent restore "$owner_archive" \
   --instance-id "$instance_id" \
   --product-root "$root/product" \
   --json >"$root/owner-restore.json"
-test "$(jq -er '.outcome' "$root/owner-restore.json")" = completed
+[[ "$(jq -er '.outcome' "$root/owner-restore.json")" == completed ]] || owner_contract_fails "the restore did not complete."
 owner_reinstall_status=0
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reinstall \
   --instance-id "$instance_id" \
@@ -859,20 +865,28 @@ owner_reinstall_status=0
   --json >"$root/owner-reinstall.json" 2>"$root/owner-reinstall-error.json" || owner_reinstall_status=$?
 # The real seeder has run on the restored databases once the reinstalled container started, whatever the reinstall's
 # own verification then decided.
-if [[ "$(site_owner "$backup_owner")" != 0 ]]; then
-  printf 'The restore brought back the backup'"'"'s owner settings: the startup seeder made %s the site owner again.\n' "$backup_owner" >&2
-  exit 1
+backup_owner_state="$(site_owner "$backup_owner")"
+live_owner_state="$(site_owner "$live_owner")"
+if [[ "$backup_owner_state" != 0 ]]; then
+  owner_contract_fails "the restore brought back the backup's owner settings: the startup seeder made $backup_owner the site owner again ($backup_owner_state)."
 fi
-test "$(site_owner "$live_owner")" = 1
 if (( owner_reinstall_status != 0 )); then
   cat "$root/owner-reinstall-error.json" >&2
-  exit 1
+  printf 'The restore reported: %s\n' "$(jq -c '.warnings' "$root/owner-restore.json")" >&2
+  sqlite3 -readonly "$identity_root/cameraagent_identity.db" \
+    "SELECT Id, UserName, Email, IsSiteOwner, PasswordHash IS NULL, LockoutEnd FROM AspNetUsers;" >&2 || true
+  docker logs --tail 60 "$container" >&2 || true
+  owner_contract_fails "the reinstall after the restore failed (exit $owner_reinstall_status; $live_owner is $live_owner_state)."
 fi
-test "$(jq -er '.outcome' "$root/owner-reinstall.json")" = completed
-test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
-test "$(cat "$instance_root/config/secrets/LocalIdentity__AdminEmail")" = "$live_owner"
-test "$(jq -er '.ownerEmail' "$instance_root/instance-manifest.json")" = "$live_owner"
-jq -e '[.warnings[]? | select(.code == "restore-live-owner-settings-kept")] | length == 1' "$root/owner-restore.json" >/dev/null
+[[ "$live_owner_state" == 1 ]] || owner_contract_fails "the startup seeder did not make $live_owner the site owner ($live_owner_state)."
+[[ "$(jq -er '.outcome' "$root/owner-reinstall.json")" == completed ]] || owner_contract_fails "the reinstall did not complete."
+[[ "$(docker inspect --format '{{.State.Health.Status}}' "$container")" == healthy ]] || owner_contract_fails "the reinstalled instance is not healthy."
+[[ "$(cat "$instance_root/config/secrets/LocalIdentity__AdminEmail")" == "$live_owner" ]] ||
+  owner_contract_fails "LocalIdentity__AdminEmail is not the live owner's."
+[[ "$(jq -er '.ownerEmail' "$instance_root/instance-manifest.json")" == "$live_owner" ]] ||
+  owner_contract_fails "the instance manifest does not name the live owner."
+jq -e '[.warnings[]? | select(.code == "restore-live-owner-settings-kept")] | length == 1' "$root/owner-restore.json" >/dev/null ||
+  owner_contract_fails "the restore did not report the owner settings it kept: $(jq -c '.warnings' "$root/owner-restore.json")."
 printf 'Restore owner settings contract passed for instance %s: the real seeder kept the backup'"'"'s owner demoted and the live owner the site owner.\n' \
   "$instance_id"
 

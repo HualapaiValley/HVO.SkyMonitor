@@ -772,13 +772,31 @@ internal sealed partial class CameraAgentLifecycleManager
             return [new InstallationWarning("restore-backup-owner-settings", warning)];
         }
         var changed = new List<string>(RestoredOwnerSettings.KeepLive(paths.InstanceRoot, previous));
+        // The live owner may have no account in the backup, which the seeder can only find, never create, once installed.
+        var identity = Path.Combine(CameraAgentStateLayout.IdentityDirectoryName, CameraAgentStateLayout.IdentityDatabaseFileName);
+        if (RestoredOwnerSettings.Setting(paths.InstanceRoot, RestoredOwnerSettings.AdminEmailSetting) is { Length: > 0 } ownerEmail)
+        {
+            changed.AddRange(RestoredCredentials.CarryLiveOwner(
+                Path.Combine(paths.StateRoot, identity), Path.Combine(previous, "state", identity), ownerEmail));
+        }
         var result = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(result.OwnerEmail, liveOwnerEmail, StringComparison.Ordinal))
         {
-            await SafeFileSystem.WriteJsonAtomicAsync(
-                    paths.ResultPath, result with { OwnerEmail = liveOwnerEmail }, DeploymentJsonContext.Default.InstallationResult, cancellationToken)
+            // Another owner: the instance runs with the live owner and its temporary password, so the result names them.
+            var liveResultPath = Path.Combine(previous, Path.GetRelativePath(paths.InstanceRoot, paths.ResultPath));
+            var owned = File.Exists(liveResultPath) &&
+                        await ReadResultAsync(liveResultPath, cancellationToken).ConfigureAwait(false) is { } live &&
+                        string.Equals(live.OwnerEmail, liveOwnerEmail, StringComparison.Ordinal)
+                ? result with
+                {
+                    OwnerEmail = live.OwnerEmail,
+                    PasswordFile = live.PasswordFile,
+                    OwnerPasswordIsDefault = live.OwnerPasswordIsDefault
+                }
+                : result with { OwnerEmail = liveOwnerEmail };
+            await SafeFileSystem.WriteJsonAtomicAsync(paths.ResultPath, owned, DeploymentJsonContext.Default.InstallationResult, cancellationToken)
                 .ConfigureAwait(false);
-            changed.Add("the records' ownerEmail");
+            changed.Add("the records' ownerEmail and temporary-password file");
         }
         if (changed.Count == 0) return [];
         var kept = string.Create(CultureInfo.InvariantCulture,

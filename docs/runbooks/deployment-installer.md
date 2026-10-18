@@ -1952,9 +1952,16 @@ The restore then:
    `config/secrets/LocalIdentity__AdminEmail`, the other `LocalIdentity__Admin*` settings,
    `LocalIdentity__AllowMissingAdminPassword` and `config/owner-bootstrap/temporary-password`. It also keeps the owner
    email the live records name, which `reinstall` verifies the running instance against. So the backup does not give
-   back site ownership the live instance moved. It reports each setting it kept, by name only
-   (`restore-live-owner-settings-kept`). With no live instance it warns loudly that the backup's owner settings are in
-   force again (`restore-backup-owner-settings`).
+   back site ownership the live instance moved.
+   - When the live owner has no account in the backup, as after a purge and a fresh install with another owner, the
+     restore brings that account over from the live instance, with its live password. An installed CameraAgent can
+     only find its owner, never create it, because the installer withdraws the temporary password once the owner is
+     seeded.
+   - An account the backup holds under the live owner's sign-in name, one the live store no longer has and the restore
+     has locked out, is renamed `removed-<id>` first.
+   - The restore reports each setting and account it kept, settings by name only (`restore-live-owner-settings-kept`).
+     With no live instance it warns loudly that the backup's owner settings are in force again
+     (`restore-backup-owner-settings`).
 
 The instance is restored uninstalled, with its release records and install record settled from the restored manifest.
 Start it with `hvo-sky-install cameraagent reinstall --instance-id <uuid>`, which brings it up through the verified

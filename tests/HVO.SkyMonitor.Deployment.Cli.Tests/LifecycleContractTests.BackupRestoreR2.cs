@@ -167,6 +167,44 @@ public sealed partial class LifecycleContractTests
     }
 
     /// <summary>
+    /// F14: when the live owner was installed after the backup, as a purge and a fresh install with a new owner leaves it,
+    /// the backup has no account for it, and CameraAgent's startup seeder can only find an installed owner, never create
+    /// it. So the restore brings the live owner's account over, with its live credentials, after renaming the backup's
+    /// owner, which the live store no longer has and the restore locked out, off the sign-in name they share. The backup's
+    /// owner stays demoted, and the records name the live owner, which the reinstall verifies.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RestoreAsync_LiveOwnerInstalledAfterTheBackup_BringsItsAccountOverForTheSeederToFind()
+    {
+        using var fixture = await BackupFixtureAsync();
+        var identity = CameraAgentLayoutIdentity(fixture);
+        SeedOnlyOwner(identity, "owner", fixture.Manifest.OwnerEmail);
+        WriteOwnerSettings(fixture, fixture.Manifest.OwnerEmail, "archived-temporary-password", passwordFile: false);
+        var backup = await BackupAsync(fixture, new FakeLifecycleClient());
+        // A purge and a fresh install with a new owner, whose account the seeder created under the same sign-in name.
+        SeedOnlyOwner(identity, "new-owner", NewOwnerEmail);
+        WriteOwnerSettings(fixture, NewOwnerEmail, "live-temporary-password", passwordFile: false);
+        await SetOwnerEmailAsync(fixture, NewOwnerEmail);
+        await UninstallAsync(fixture);
+
+        var restored = await RestoreAsync(fixture, backup.Backup!.Archive);
+
+        Assert.AreEqual("completed", restored.Outcome);
+        Assert.AreEqual(1L, Scalar(identity,
+            $"SELECT COUNT(*) FROM AspNetUsers WHERE Id = 'new-owner' AND NormalizedEmail = '{NewOwnerEmail.ToUpperInvariant()}' AND UserName = 'admin' AND IsSiteOwner = 1 AND PasswordHash = 'hash-new-owner';"),
+            "the live owner's account was not brought over as the live store has it");
+        Assert.AreEqual(1L, Scalar(identity, "SELECT COUNT(*) FROM AspNetUsers WHERE Id = 'owner' AND UserName = 'removed-owner' AND NormalizedUserName = 'REMOVED-OWNER';"));
+        Assert.AreEqual(0L, Scalar(identity, "SELECT IsSiteOwner FROM AspNetUsers WHERE Id = 'owner';"));
+        Assert.AreEqual(1L, Scalar(identity, "SELECT COUNT(*) FROM AspNetUsers WHERE Id = 'owner' AND PasswordHash IS NULL;"));
+        Assert.AreEqual(NewOwnerEmail, (await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None)).OwnerEmail);
+        Assert.AreEqual(NewOwnerEmail, (await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None)).OwnerEmail);
+        var kept = restored.Warnings!.Single(static warning => warning.Code == "restore-live-owner-settings-kept");
+        StringAssert.Contains(kept.Message, "account new-owner, the live owner", StringComparison.Ordinal);
+        StringAssert.Contains(kept.Message, "account owner, which the live store no longer has, gave up its sign-in name", StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// F14: with no live instance to compare, the restore says loudly that the backup's owner settings are in force again.
     /// </summary>
     [TestMethod]
@@ -484,6 +522,18 @@ public sealed partial class LifecycleContractTests
         else File.Delete(passwordSetting);
         SafeFileSystem.WriteTextAtomic(Path.Combine(bootstrap, "temporary-password"), temporaryPassword);
     }
+
+    /// <summary>
+    /// Makes the Identity store hold one account, <paramref name="id"/>, the site owner under the sign-in name the startup
+    /// seeder gives an owner, with Identity's own columns, as a fresh install leaves it.
+    /// </summary>
+    private static void SeedOnlyOwner(string database, string id, string email)
+        => Execute(database,
+            "DELETE FROM AspNetUserTokens; DELETE FROM AspNetUserRoles; DELETE FROM AspNetUserClaims; DROP TABLE AspNetUsers;" +
+            "CREATE TABLE AspNetUsers(Id TEXT PRIMARY KEY, UserName TEXT, NormalizedUserName TEXT UNIQUE, Email TEXT, NormalizedEmail TEXT, " +
+            "PasswordHash TEXT, SecurityStamp TEXT, ConcurrencyStamp TEXT, PasswordChangeRequired INTEGER NOT NULL, IsSiteOwner INTEGER NOT NULL, " +
+            "LockoutEnabled INTEGER NOT NULL, LockoutEnd TEXT);" +
+            $"INSERT INTO AspNetUsers VALUES('{id}', 'admin', 'ADMIN', '{email}', '{email.ToUpperInvariant()}', 'hash-{id}', 'stamp-{id}', 'c-{id}', 0, 1, 1, NULL);");
 
     /// <summary>Gives the instance's records another owner email, as a fresh install with a new owner writes them.</summary>
     private static async Task SetOwnerEmailAsync(LifecycleFixture fixture, string ownerEmail)
