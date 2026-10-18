@@ -83,7 +83,7 @@ def violations(short, full):
     base_images = step(preflight, "Check Dockerfile base images")
     require(base_images.strip() == "run: ./scripts/ci:base-images",
             "base-image check is unconditional and fail-closed")
-    require("timeout-minutes: 3" in preflight, "Preflight keeps its 180-second budget")
+    require("timeout-minutes: 4" in preflight, "Preflight keeps its 240-second budget")
     # Issue #1321: both required profiles scan the complete history for secrets,
     # inside a check that branch protection already requires.
     for profile, section in (("preflight", preflight), ("full Quality", quality)):
@@ -173,6 +173,9 @@ if errors:
 
 # Mutation controls prove the checks reject costly creep and silent loss of gates.
 mutations = (
+    ("Preflight budget reverted", short.replace("timeout-minutes: 4", "timeout-minutes: 3"), full),
+    ("Preflight budget raised", short.replace("timeout-minutes: 4", "timeout-minutes: 5"), full),
+    ("Preflight budget removed", short.replace("    timeout-minutes: 4\n", ""), full),
     ("base-image check removed", short.replace("run: ./scripts/ci:base-images", "run: true"), full),
     ("base-image check gated", short.replace(
         "- name: Check Dockerfile base images", "- name: Check Dockerfile base images\n        if: false"), full),

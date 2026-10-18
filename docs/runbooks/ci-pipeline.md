@@ -9,6 +9,16 @@ output does not by itself authorize an extra full-workflow dispatch for a v1 PR.
 Whole-repository ShellCheck remains in Quality; exhaustive category discovery
 remains in Build. Both are intentionally absent from the short workflow.
 
+## Development v1 Preflight Budget
+
+**Development v1 / Preflight** has a four-minute (240-second) job timeout,
+per the owner decision in #1365. This supersedes the three-minute (180-second)
+budget retained by #1333 when the secret-scanner contract became conditional.
+PR #1364 took 173 seconds with the contract selected; the new budget provides
+67 seconds of headroom for that measured run. Ordinary PRs remain near one minute.
+All checks, their order and selection rules, job names and required-check names
+remain unchanged.
+
 ## Required Checks
 
 | Check | Enforced behavior |
