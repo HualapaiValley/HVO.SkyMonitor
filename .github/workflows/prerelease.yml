@@ -1,0 +1,335 @@
+name: Integration Pre-release
+
+# An integration pre-release, vX.Y.Z-dev.N, is published from a commit on development/v1 whose Development v1 push run
+# is green (install contract section 3, #1309). Only the owner pushes v* tags; this workflow does the rest:
+#
+#   gate          admit the tag, read-only: annotated, vX.Y.Z-dev.N, on development/v1, green, not yet released
+#   build         build every release file from the tagged commit, read-only (scripts/release:assets)
+#   draft         push the image by its version tag, attest the image and every file, and create a draft pre-release
+#   install-test  install and upgrade a throwaway instance from the draft's files, on the dedicated arm64 runner
+#   publish       check the draft still holds the tested files, then publish it as a pre-release
+#
+# A pre-release never moves latest: the image is pushed under its version tag alone, and the release is created and
+# published with --latest=false. Final releases are #1310's.
+
+on:
+  push:
+    tags:
+      - 'v*-dev.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prerelease-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  IMAGE_REPOSITORY: ghcr.io/hualapaivalley/skymonitor-cameraagent
+
+jobs:
+  gate:
+    name: Pre-release / Gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.gate.outputs.version }}
+      tag: ${{ steps.gate.outputs.tag }}
+      commit: ${{ steps.gate.outputs.commit }}
+      created: ${{ steps.gate.outputs.created }}
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Admit only a green development/v1 commit
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # A step with no shell: is bash -e without pipefail, which would let tee hide the gate's failure.
+          set -o pipefail
+          [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_TYPE" == tag ]]
+          ./scripts/release:prerelease-gate "$TAG" "$GITHUB_SHA" | tee -a "$GITHUB_OUTPUT"
+
+  build:
+    name: Pre-release / Build
+    needs: gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.commit }}
+          persist-credentials: false
+      - name: Set up QEMU for the arm64 image
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      # Pinned as release.yml pins them, so an image build does not change with the runner's toolchain.
+      - name: Set up Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+        with:
+          version: v0.36.1
+          driver-opts: image=moby/buildkit:v0.26.1@sha256:8290a3b1183f45fb0c7ccd2faa7aa88eeb9af0ea85ff54458cbd8cbdb576e721
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Build the release's files
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          COMMIT: ${{ needs.gate.outputs.commit }}
+          CREATED: ${{ needs.gate.outputs.created }}
+          BUILDER: ${{ steps.buildx.outputs.name }}
+        run: |
+          install_script=()
+          # The bootstrap script is #1311's; it is attached once the tagged commit has it.
+          if [[ -f src/HVO.SkyMonitor.Deployment.Cli/install.sh ]]; then
+            install_script=(--install-script src/HVO.SkyMonitor.Deployment.Cli/install.sh)
+          fi
+          ./scripts/release:assets \
+            --version "$VERSION" --commit "$COMMIT" --created "$CREATED" --builder "$BUILDER" \
+            --image-repository "$IMAGE_REPOSITORY" "${install_script[@]}" \
+            --output "$RUNNER_TEMP/release" --image-oci "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar"
+      # Artifacts are named by run, not attempt, so re-running a failed install test or publish finds them; a full
+      # re-run replaces them, and then stops at the draft job while the earlier attempt's draft exists.
+      - name: Upload the release's files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: prerelease-files-${{ github.run_id }}
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+      - name: Upload the image archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: prerelease-image-${{ github.run_id }}
+          path: ${{ runner.temp }}/image/skymonitor-cameraagent.oci.tar
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  draft:
+    name: Pre-release / Draft
+    needs: [gate, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The job that pushes, attests and creates the draft. It builds nothing: it runs the tagged commit's own scripts on
+    # the files the build job wrote. Only it and publish hold a token that can write.
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.commit }}
+          persist-credentials: false
+      - name: Download the release's files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: prerelease-files-${{ github.run_id }}
+          path: ${{ runner.temp }}/release
+      - name: Download the image archive
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: prerelease-image-${{ github.run_id }}
+          path: ${{ runner.temp }}/image
+      - name: Check the files name the tagged release
+        id: files
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          TAG: ${{ needs.gate.outputs.tag }}
+          COMMIT: ${{ needs.gate.outputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$RUNNER_TEMP/release"
+          sha256sum --check --strict SHA256SUMS
+          # Every file is listed in SHA256SUMS, and nothing else is here.
+          [[ "$(find . -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)" == "$( (cut -c 67- SHA256SUMS; printf 'SHA256SUMS\n') | sort)" ]]
+          jq -e --arg version "$VERSION" --arg tag "$TAG" --arg commit "$COMMIT" --arg repository "$IMAGE_REPOSITORY" '
+            .version == $version and .tag == $tag and .commit == $commit and .prerelease == true
+            and .images["skymonitor-cameraagent"].repository == $repository
+            and .images["skymonitor-cameraagent"].tag == $version
+          ' release.json >/dev/null
+          digest="$(jq -er '.images["skymonitor-cameraagent"].digest' release.json)"
+          [[ "$(tar -xOf "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar" index.json | jq -r '.manifests[0].digest')" == "$digest" ]]
+          # A release is never replaced; this token also lists drafts, which the gate's could not. Every page is read
+          # strictly: a read that fails or is malformed fails the job, and never counts as there being no release.
+          "$GITHUB_WORKSPACE/scripts/release:prerelease-check" unreleased "$TAG"
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+      - name: Sign in to the image registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Push the image under its version tag
+        id: push
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          DIGEST: ${{ steps.files.outputs.digest }}
+        run: |
+          pushed="$(./scripts/release:push-image "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar" "$IMAGE_REPOSITORY:$VERSION")"
+          [[ "$pushed" == "$DIGEST" ]]
+          printf 'digest=%s\n' "$pushed" >> "$GITHUB_OUTPUT"
+      - name: Attest the image's build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE_REPOSITORY }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest every file's build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/release/*
+      - name: Verify the image's attestation from the registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ needs.gate.outputs.commit }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          gh attestation verify "oci://$IMAGE_REPOSITORY@$DIGEST" --bundle-from-oci --repo "$GITHUB_REPOSITORY" \
+            --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/prerelease.yml@$GITHUB_REF" \
+            --source-ref "$GITHUB_REF" --source-digest "$COMMIT" --deny-self-hosted-runners >/dev/null
+      - name: Sign out of the image registry
+        if: always()
+        run: docker logout ghcr.io
+      - name: Create the draft pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          TAG: ${{ needs.gate.outputs.tag }}
+          COMMIT: ${{ needs.gate.outputs.commit }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          cat > "$notes" <<NOTES
+          Integration pre-release $VERSION, from \`$COMMIT\` on development/v1. It is not a supported release.
+
+          CameraAgent image: \`$IMAGE_REPOSITORY:$VERSION@$DIGEST\`
+
+          Check the files with \`sha256sum --check SHA256SUMS\` and \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`,
+          then install or upgrade with \`--release <folder>\`: see docs/runbooks/prereleases.md.
+          NOTES
+          gh release create "$TAG" "$RUNNER_TEMP"/release/* \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft --prerelease --latest=false \
+            --title "SkyMonitor $VERSION" --notes-file "$notes"
+      - name: Read the draft's files back
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.gate.outputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/draft"
+          diff -r "$RUNNER_TEMP/release" "$RUNNER_TEMP/draft"
+      # The install test runs the draft's own bytes, read back above with this job's token, so the self-hosted runner
+      # never holds a token that can write.
+      - name: Upload the draft's files for the install test
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: prerelease-draft-${{ github.run_id }}
+          path: ${{ runner.temp }}/draft/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  install-test:
+    name: Pre-release / Install and Upgrade (arm64)
+    needs: [gate, draft]
+    # Tag pushes alone; this runner never runs a pull request's code.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: [self-hosted, linux, ARM64, hvo-skymonitor-arm64]
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.commit }}
+          persist-credentials: false
+      - name: Download the draft's files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: prerelease-draft-${{ github.run_id }}
+          path: ${{ runner.temp }}/prerelease-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Install from the offline archive, then upgrade by digest from the registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ runner.temp }}/prerelease-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          # The registry login lives in this run's own Docker configuration, not the runner's, and goes with it.
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker-config-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -m 700 "$DOCKER_CONFIG"
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          ./scripts/test:release-install --release "$RELEASE" --upgrade-source registry
+      - name: Remove the draft's files
+        if: always()
+        env:
+          RELEASE: ${{ runner.temp }}/prerelease-${{ github.run_id }}-${{ github.run_attempt }}
+        run: rm -rf "$RELEASE" "$RUNNER_TEMP/docker-config-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+  publish:
+    name: Pre-release / Publish
+    needs: [gate, draft, install-test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      attestations: read
+    steps:
+      # The tagged commit's scripts make every check below and the publish itself.
+      - name: Checkout the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.commit }}
+          persist-credentials: false
+      - name: Download the tested files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: prerelease-draft-${{ github.run_id }}
+          path: ${{ runner.temp }}/tested
+      - name: Check the draft still holds the tested, attested files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.gate.outputs.tag }}
+          COMMIT: ${{ needs.gate.outputs.commit }}
+          DIGEST: ${{ needs.draft.outputs.digest }}
+        run: |
+          # Drafts are not served by releases/tags/<tag>, so the whole list is read strictly: exactly one release has
+          # the tag, and it is still a draft pre-release.
+          ./scripts/release:prerelease-check draft "$TAG"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/draft"
+          diff -r "$RUNNER_TEMP/tested" "$RUNNER_TEMP/draft"
+          cd "$RUNNER_TEMP/draft"
+          sha256sum --check --strict SHA256SUMS
+          # Each file's provenance names this workflow at this tag and commit, built on a GitHub-hosted runner.
+          for file in *; do
+            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY" \
+              --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/prerelease.yml@$GITHUB_REF" \
+              --source-ref "$GITHUB_REF" --source-digest "$COMMIT" --deny-self-hosted-runners >/dev/null
+          done
+          # The draft job verified the image's attestation from the registry; it is still on record for the digest.
+          "$GITHUB_WORKSPACE/scripts/release:prerelease-check" attested "$DIGEST"
+      - name: Publish the pre-release without moving latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.gate.outputs.tag }}
+        # Only GitHub's 404 means there is no latest release; any other failed read stops or fails the job.
+        run: ./scripts/release:publish-prerelease "$TAG"

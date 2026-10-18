@@ -325,7 +325,7 @@ public sealed class HostProductRootPolicyTests
             ["catalog", "select", "--instance-id", instance, "--catalog-version", "hyg-v4.2-p3-s2-r1"],
             ["catalog", "rollback", "--instance-id", instance],
             ["catalog", "gc", "--dry-run"],
-            ["catalog", "check", "--catalog-manifest", "/srv/hvo/catalog-manifest.json"]
+            ["cameraagent", "upgrade", "--instance-id", instance, "--release", "/srv/hvo/release-v1.2.0-dev.3"]
         ];
 
         foreach (var arguments in commands)

@@ -6,14 +6,6 @@ using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
 
-internal enum DistributionChannel
-{
-    Local,
-    Stable,
-    Nightly,
-    Prerelease
-}
-
 internal enum CameraAgentReplayProfile
 {
     InProcess,
@@ -42,17 +34,21 @@ internal sealed record InstallRequest
     public int Port { get; init; } = 5130;
     public string ProductRoot { get; init; } = DefaultProductRoot;
     public string? CatalogBundle { get; init; }
-    public string? CatalogManifest { get; init; }
-    public string? CatalogIndex { get; init; }
-    public string? CatalogVersion { get; init; }
-    public string? AssetBaseUrl { get; init; }
-    public DistributionChannel Channel { get; init; } = DistributionChannel.Local;
     public string ImageReference { get; init; } = string.Empty;
     public string? ImageArchive { get; init; }
     public string? ImageArchiveSha256 { get; init; }
-    public string? ImageManifest { get; init; }
-    public string? ImageIndex { get; init; }
-    public string? ImageVersion { get; init; }
+
+    /// <summary>
+    /// The folder holding a release's files (<c>--release</c>): its release.json and SHA256SUMS, and its offline image
+    /// archive for an archive install. The release selects the CameraAgent image, so it excludes <see cref="ImageReference"/>.
+    /// </summary>
+    public string? Release { get; init; }
+
+    /// <summary>
+    /// How the release's image reaches Docker (<c>--image-source</c>), or <see langword="null"/> for the default, its
+    /// offline archive.
+    /// </summary>
+    public ReleaseImageSource? ImageSource { get; init; }
     public string? PasswordFile { get; init; }
     public double LatitudeDegrees { get; init; }
     public double LongitudeDegrees { get; init; }
@@ -144,37 +140,11 @@ internal sealed record InstallRequest
 
         ValidateAbsolutePath(ProductRoot, "--product-root");
         ProductRootAdmission.Validate(ProductRoot, ProductionProductRoot, AllowTestProductRoot);
-        if (CatalogManifest is not null && CatalogIndex is not null)
+        if (CatalogBundle is null)
         {
-            throw new InstallUsageException("--catalog-manifest cannot be combined with --catalog-index.");
+            throw new InstallUsageException("--catalog-bundle is required.");
         }
-        if (CatalogVersion is not null && CatalogIndex is null)
-        {
-            throw new InstallUsageException("--catalog-version requires --catalog-index.");
-        }
-        if (CatalogManifest is null && CatalogIndex is null)
-        {
-            if (CatalogBundle is null)
-            {
-                throw new InstallUsageException("--catalog-bundle or --catalog-manifest is required.");
-            }
-            if (Channel != DistributionChannel.Local)
-            {
-                throw new InstallUsageException("A non-local --channel requires --catalog-manifest.");
-            }
-        }
-        if (CatalogBundle is not null)
-        {
-            ValidateAbsolutePath(CatalogBundle, "--catalog-bundle");
-        }
-        if (CatalogManifest is not null)
-        {
-            ValidateDistributionLocator(CatalogManifest, "--catalog-manifest", Channel);
-        }
-        if (CatalogIndex is not null)
-        {
-            ValidateDistributionLocator(CatalogIndex, "--catalog-index", Channel);
-        }
+        ValidateAbsolutePath(CatalogBundle, "--catalog-bundle");
         if (ImageArchive is not null)
         {
             ValidateAbsolutePath(ImageArchive, "--image-archive");
@@ -214,7 +184,7 @@ internal sealed record InstallRequest
 
         _ = ContainerResources();
 
-        foreach (var value in new[] { FriendlyName, OwnerEmail, ProductRoot, CatalogBundle, CatalogManifest, CatalogIndex, CatalogVersion, AssetBaseUrl, ImageReference, ImageArchive, ImageManifest, ImageIndex, ImageVersion, PasswordFile, TimeZoneId, Memory })
+        foreach (var value in new[] { FriendlyName, OwnerEmail, ProductRoot, CatalogBundle, ImageReference, ImageArchive, Release, PasswordFile, TimeZoneId, Memory })
         {
             if (value?.Any(char.IsControl) == true)
             {
@@ -232,29 +202,22 @@ internal sealed record InstallRequest
     internal ContainerResourceLimits ContainerResources() => CameraAgentContainerResources.Resolve(Cpus, Memory);
 
     /// <summary>
-    /// Validates only how the image was selected. A signed image release and an operator-supplied image are
-    /// mutually exclusive: the installation either derives the immutable image from verified release metadata or is
-    /// told exactly which image to use, never both. A lifecycle upgrade resolves a signed release without a catalog
-    /// input, so it applies these rules alone rather than the whole install contract.
+    /// Validates only how the image was selected. A release and an operator-supplied image are mutually exclusive: the
+    /// installation either takes the immutable image from the release's verified release.json or is told exactly which
+    /// image to use, never both.
     /// </summary>
     internal void ValidateImageSelection()
     {
-        // The asset base steers both trains' immutable asset resolution, so it belongs to the selection rules an
-        // install, an upgrade, and a preflight all apply rather than to the install contract alone.
-        if (AssetBaseUrl is not null)
+        if (ImageSource is { } source && !Enum.IsDefined(source))
         {
-            ValidateDistributionLocator(AssetBaseUrl, "--asset-base-url", Channel);
+            throw new InstallUsageException("--image-source must be archive or registry.");
         }
-        if (ImageManifest is not null && ImageIndex is not null)
+        if (Release is null)
         {
-            throw new InstallUsageException("--image-manifest cannot be combined with --image-index.");
-        }
-        if (ImageVersion is not null && ImageIndex is null)
-        {
-            throw new InstallUsageException("--image-version requires --image-index.");
-        }
-        if (ImageManifest is null && ImageIndex is null)
-        {
+            if (ImageSource is not null)
+            {
+                throw new InstallUsageException("--image-source requires --release.");
+            }
             if (!Regex.IsMatch(ImageReference, "^sha256:[a-f0-9]{64}$", RegexOptions.CultureInvariant) &&
                 !Regex.IsMatch(ImageReference, "^[^@\\s]+@sha256:[a-f0-9]{64}$", RegexOptions.CultureInvariant))
             {
@@ -262,22 +225,14 @@ internal sealed record InstallRequest
             }
             return;
         }
+        ValidateAbsolutePath(Release, "--release");
         if (ImageReference.Length != 0)
         {
-            throw new InstallUsageException("--image-ref cannot be combined with a signed image release.");
+            throw new InstallUsageException("--image-ref cannot be combined with --release.");
         }
         if (ImageArchive is not null || ImageArchiveSha256 is not null)
         {
-            throw new InstallUsageException(
-                "--image-archive and --image-archive-sha256 cannot be combined with a signed image release.");
-        }
-        if (ImageManifest is not null)
-        {
-            ValidateDistributionLocator(ImageManifest, "--image-manifest", Channel);
-        }
-        if (ImageIndex is not null)
-        {
-            ValidateDistributionLocator(ImageIndex, "--image-index", Channel);
+            throw new InstallUsageException("--image-archive and --image-archive-sha256 cannot be combined with --release.");
         }
     }
 
@@ -297,29 +252,6 @@ internal sealed record InstallRequest
 
     private static bool IsSha256(string? value)
         => value is not null && Regex.IsMatch(value, "^[a-f0-9]{64}$", RegexOptions.CultureInvariant);
-
-    private static void ValidateDistributionLocator(string value, string option, DistributionChannel channel)
-    {
-        if (Path.IsPathFullyQualified(value))
-        {
-            ValidateAbsolutePath(value, option);
-            if (channel != DistributionChannel.Local)
-            {
-                throw new InstallUsageException($"{option} must use HTTPS for a non-local channel.");
-            }
-            return;
-        }
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps ||
-            !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Fragment))
-        {
-            throw new InstallUsageException($"{option} must be an absolute normalized path or an HTTPS URI without credentials or a fragment.");
-        }
-        if (channel == DistributionChannel.Local)
-        {
-            throw new InstallUsageException($"{option} cannot use HTTPS with the local channel.");
-        }
-    }
-
 }
 
 /// <summary>

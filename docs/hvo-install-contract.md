@@ -87,6 +87,12 @@ Every release carries assets with these names and kinds:
   - `assets[]` with name, kind, platform, size and sha256.
 
   It adds `images.<name>.offlineArchives[]` and `stateContracts` (section 6).
+- **Upgrade-note text** follows one terminal-safety rule. The tool that writes `release.json` applies it, and so does
+  the installer that reads it. CRLF is normalized to LF first. After that, a note is
+  refused if it holds a Unicode control character (Cc) other than LF and TAB, a format character (Cf), a line or
+  paragraph separator (Zl, Zp), a private-use character (Co) or a noncharacter. The refusal names the release version
+  and the first such code point as `U+XXXX`, never the text. A release whose notes break the rule is not written, and
+  an installer does not print it.
 - **Trust:**
   - `SHA256SUMS` plus a GitHub build-provenance attestation for every asset and image, verifiable with
     `gh attestation verify`, is the only trust model.

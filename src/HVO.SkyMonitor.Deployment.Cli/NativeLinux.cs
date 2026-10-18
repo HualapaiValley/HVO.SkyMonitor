@@ -18,6 +18,7 @@ internal static partial class NativeLinux
     private const uint DirectoryType = 0x4000;
     private const uint RegularFileType = 0x8000;
     internal const uint SocketNodeType = 0xC000;
+    internal const uint RegularFileNodeType = RegularFileType;
     private const uint TypeMask = 0xF000;
     private const int OpenReadOnly = 0;
     private const int OpenReadWrite = 2;
