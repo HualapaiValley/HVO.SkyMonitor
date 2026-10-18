@@ -66,6 +66,12 @@ onward; earlier development is recorded in its pull requests. A release renames 
 - A CameraAgent image names its version and commit, `<version>+<commit>`, in four places: the System > Software page,
   the startup log line, telemetry `service.version`, and the `org.opencontainers.image.version` image label. That label
   is no longer inherited from the Ubuntu base image. (#1305)
+- A release follows install contract draft 4. `release.json` names the CameraAgent image by its component key,
+  `images.cameraAgent`, with `skymonitor-cameraagent` in its `repository`, and the installer reads no other key. It
+  adds `stateContracts.cameraAgent`: for each SQLite store an instance keeps, the schema the release writes and the
+  schemas it reads, as the image's new `io.hvo.skymonitor.state-contracts` label declares them. The image carries
+  `org.opencontainers.image.created`, the release's `created` time. The release build, the pre-release workflow and
+  the installer refuse an image without that time or with another. (#1359)
 - `hvo-sky-install --help`, `-h` and `help` print usage on standard output and exit 0, and so does help for a single
   command (`hvo-sky-install cameraagent install --help`). A command-line mistake prints the reason and usage on standard
   error and exits 2, without the `Installation failed:` prefix. (#1302)

@@ -15,7 +15,8 @@ namespace HVO.SkyMonitor.Deployment;
 /// loaded image from it, names it <c>&lt;repository&gt;:&lt;version&gt;</c>;</item>
 /// <item>the release's index lists the platform once, as the manifest release.json names;</item>
 /// <item>that manifest names the configuration release.json names;</item>
-/// <item>the configuration is for the platform, and is labelled CameraAgent at the release's version and commit;</item>
+/// <item>the configuration is for the platform, and is labelled CameraAgent at the release's version, commit and created
+/// time;</item>
 /// <item><c>manifest.json</c>, which Docker's classic store loads instead, names that configuration and those layers,
 /// and tags only <c>&lt;repository&gt;:&lt;version&gt;</c>, so a load cannot retag another image on the host;</item>
 /// <item>every layer the manifest names is in the archive, the size the manifest gives it and the blob its digest
@@ -252,12 +253,13 @@ internal static class ReleaseImageArchive
             : default;
         var identity = CameraAgentImageLabels.Identity(
             "archive", archive.ConfigDigest, archive.ConfigDigest, archive.Platform["linux/".Length..], archive.Sha256, labels);
+        var created = ReleaseManifest.FormatCreated(release.Created);
         if (identity.Component != "CameraAgent" || CameraAgentImageLabels.Label(labels, "org.opencontainers.image.version") != release.Version ||
-            identity.SourceRevision != release.Commit)
+            identity.SourceRevision != release.Commit || CameraAgentImageLabels.Label(labels, "org.opencontainers.image.created") != created)
         {
             throw new InstallerException(
                 $"The offline archive {archive.Name} holds an image that is not labelled as CameraAgent {release.Version} from " +
-                $"commit {release.Commit}, as release {release.Tag} requires.");
+                $"commit {release.Commit}, created {created}, as release {release.Tag} requires.");
         }
 
         // Anything else under blobs/ is content no loader of this image reads, so the archive is not the one the release

@@ -20,11 +20,20 @@ internal sealed class ReleaseFixture : IDisposable
 {
     public const string Commit = "0123456789abcdef0123456789abcdef01234567";
 
+    /// <summary>The release's <c>created</c> time, which its image carries as <c>org.opencontainers.image.created</c>.</summary>
+    public const string Created = "2026-10-17T18:00:00Z";
+
+    /// <summary>The CameraAgent image's key under release.json's <c>images</c> (install contract section 4, D6).</summary>
+    public const string ImageKey = "cameraAgent";
+
     public const string IndexMediaType = "application/vnd.oci.image.index.v1+json";
 
     public const string ManifestMediaType = "application/vnd.oci.image.manifest.v1+json";
 
-    /// <summary>The labels a fake Docker daemon reports for a CameraAgent image, without the release's version and commit.</summary>
+    /// <summary>
+    /// The labels a fake Docker daemon reports for a CameraAgent image, without the release's version, commit and created
+    /// time.
+    /// </summary>
     public static readonly IReadOnlyDictionary<string, string> ContractLabels = new Dictionary<string, string>(StringComparer.Ordinal)
     {
         ["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v2",
@@ -58,9 +67,9 @@ internal sealed class ReleaseFixture : IDisposable
     public JsonObject Manifest { get; private set; }
 
     /// <summary>The digest of the image the release names: its index over the platforms, or one platform's manifest.</summary>
-    public string Digest => (string)Manifest["images"]![ReleaseManifest.CameraAgentImageName]!["digest"]!;
+    public string Digest => (string)Manifest["images"]![ImageKey]!["digest"]!;
 
-    public string Repository => (string)Manifest["images"]![ReleaseManifest.CameraAgentImageName]!["repository"]!;
+    public string Repository => (string)Manifest["images"]![ImageKey]!["repository"]!;
 
     public string DigestReference => $"{Repository}@{Digest}";
 
@@ -193,11 +202,11 @@ internal sealed class ReleaseFixture : IDisposable
             ["tag"] = $"v{version}",
             ["prerelease"] = version.Contains('-', StringComparison.Ordinal),
             ["commit"] = Commit,
-            ["created"] = "2026-10-17T18:00:00Z",
+            ["created"] = Created,
             ["repository"] = ReleaseManifest.RepositoryUrl,
             ["images"] = new JsonObject
             {
-                [ReleaseManifest.CameraAgentImageName] = new JsonObject
+                [ImageKey] = new JsonObject
                 {
                     ["repository"] = repository,
                     ["tag"] = version,
@@ -226,12 +235,15 @@ internal sealed class ReleaseFixture : IDisposable
         return fixture;
     }
 
-    /// <summary>The labels a release's own image carries: the contract labels with the release's version and commit.</summary>
+    /// <summary>
+    /// The labels a release's own image carries: the contract labels with the release's version, commit and created time.
+    /// </summary>
     public static Dictionary<string, string> ReleaseLabels(string version)
         => new(ContractLabels, StringComparer.Ordinal)
         {
             ["org.opencontainers.image.version"] = version,
-            ["org.opencontainers.image.revision"] = Commit
+            ["org.opencontainers.image.revision"] = Commit,
+            ["org.opencontainers.image.created"] = Created
         };
 
     /// <summary>The name an archive gives the blob of <paramref name="bytes"/>.</summary>
@@ -241,7 +253,7 @@ internal sealed class ReleaseFixture : IDisposable
 
     /// <summary>The offline archive release.json names for <paramref name="platform"/>.</summary>
     public JsonObject Archive(string platform)
-        => Manifest["images"]![ReleaseManifest.CameraAgentImageName]!["offlineArchives"]!.AsArray()
+        => Manifest["images"]![ImageKey]!["offlineArchives"]!.AsArray()
             .Select(static node => node!.AsObject())
             .Single(node => (string)node["platform"]! == platform);
 
@@ -251,7 +263,7 @@ internal sealed class ReleaseFixture : IDisposable
 
     public string ManifestDigest(string platform) => (string)Archive(platform)["manifestDigest"]!;
 
-    /// <summary>The labels the release's own image carries: the contract labels with the release's version and commit.</summary>
+    /// <summary>The labels the release's own image carries: the contract labels with the release's version, commit and created time.</summary>
     public Dictionary<string, string> Labels() => ReleaseLabels(Version);
 
     /// <summary>Changes release.json and writes it with a SHA256SUMS that matches it and every asset it lists.</summary>

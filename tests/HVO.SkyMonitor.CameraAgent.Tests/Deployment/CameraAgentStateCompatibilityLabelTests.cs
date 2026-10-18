@@ -79,13 +79,16 @@ public sealed class CameraAgentStateCompatibilityLabelTests
         var dockerfile = File.ReadAllText(
             Path.Combine(RepositoryRoot(), "src", "HVO.SkyMonitor.CameraAgent", "Dockerfile"));
         var labels = new Dictionary<string, string>(StringComparer.Ordinal);
+        // A value is double-quoted, and a quote or backslash in it is escaped with a backslash, as in the JSON of the
+        // state-contracts label.
         foreach (Match match in Regex.Matches(
                      dockerfile,
-                     "^\\s*(?:LABEL\\s+)?(io\\.hvo\\.skymonitor\\.[a-z-]+)=\"([^\"]*)\"",
+                     "^\\s*(?:LABEL\\s+)?(io\\.hvo\\.skymonitor\\.[a-z-]+)=\"((?:[^\"\\\\]|\\\\.)*)\"",
                      RegexOptions.Multiline | RegexOptions.CultureInvariant,
                      TimeSpan.FromSeconds(5)))
         {
-            labels[match.Groups[1].Value] = match.Groups[2].Value;
+            labels[match.Groups[1].Value] = Regex.Replace(
+                match.Groups[2].Value, "\\\\(.)", "$1", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5));
         }
         Assert.IsTrue(labels.Count >= 8, $"expected the full CameraAgent label set; found {labels.Count}");
         return labels;

@@ -157,11 +157,12 @@ internal static class ReleaseRegistryImage
         var identity = CameraAgentImageLabels.Identity(
             "registry", release.DigestReference, configDigest, release.Platform["linux/".Length..], null, labels);
         if (identity.Component != "CameraAgent" || CameraAgentImageLabels.Label(labels, "org.opencontainers.image.version") != release.Version ||
-            identity.SourceRevision != release.Commit)
+            identity.SourceRevision != release.Commit ||
+            CameraAgentImageLabels.Label(labels, "org.opencontainers.image.created") != release.Created)
         {
             throw new InstallerException(
                 $"The CameraAgent image {release.DigestReference} in its registry is not labelled as CameraAgent {release.Version} " +
-                $"from commit {release.Commit}, as release {release.ReleaseTag} requires. Nothing was pulled.");
+                $"from commit {release.Commit}, created {release.Created}, as release {release.ReleaseTag} requires. Nothing was pulled.");
         }
         return (identity, release with { ImageIds = [.. new[] { digest, manifestDigest, configDigest }.Distinct(StringComparer.Ordinal)] });
     }

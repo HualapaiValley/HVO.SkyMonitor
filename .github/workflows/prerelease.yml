@@ -156,19 +156,24 @@ jobs:
           VERSION: ${{ needs.gate.outputs.version }}
           TAG: ${{ needs.gate.outputs.tag }}
           COMMIT: ${{ needs.gate.outputs.commit }}
+          CREATED: ${{ needs.gate.outputs.created }}
           GH_TOKEN: ${{ github.token }}
         run: |
           cd "$RUNNER_TEMP/release"
           sha256sum --check --strict SHA256SUMS
           # Every file is listed in SHA256SUMS, and nothing else is here.
           [[ "$(find . -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)" == "$( (cut -c 67- SHA256SUMS; printf 'SHA256SUMS\n') | sort)" ]]
-          jq -e --arg version "$VERSION" --arg tag "$TAG" --arg commit "$COMMIT" --arg repository "$IMAGE_REPOSITORY" '
-            .version == $version and .tag == $tag and .commit == $commit and .prerelease == true
-            and .images["skymonitor-cameraagent"].repository == $repository
-            and .images["skymonitor-cameraagent"].tag == $version
+          jq -e --arg version "$VERSION" --arg tag "$TAG" --arg commit "$COMMIT" --arg created "$CREATED" \
+            --arg repository "$IMAGE_REPOSITORY" '
+            .version == $version and .tag == $tag and .commit == $commit and .created == $created and .prerelease == true
+            and .images.cameraAgent.repository == $repository
+            and .images.cameraAgent.tag == $version
           ' release.json >/dev/null
-          digest="$(jq -er '.images["skymonitor-cameraagent"].digest' release.json)"
+          digest="$(jq -er '.images.cameraAgent.digest' release.json)"
           [[ "$(tar -xOf "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar" index.json | jq -r '.manifests[0].digest')" == "$digest" ]]
+          # Each platform image is labelled with the release's version, commit and created time, and with the state
+          # contract release.json gives.
+          "$GITHUB_WORKSPACE/scripts/release:check-image-labels" "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar" release.json
           # A release is never replaced; this token also lists drafts, which the gate's could not. Every page is read
           # strictly: a read that fails or is malformed fails the job, and never counts as there being no release.
           "$GITHUB_WORKSPACE/scripts/release:prerelease-check" unreleased "$TAG"
