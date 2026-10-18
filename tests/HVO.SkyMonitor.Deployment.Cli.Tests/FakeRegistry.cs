@@ -15,6 +15,9 @@ internal sealed class FakeRegistry(IReadOnlyDictionary<string, byte[]> content)
     /// <summary>When set, every read fails with this diagnostic, as on a host whose Docker has no buildx.</summary>
     public string? Unavailable { get; init; }
 
+    /// <summary>Reads with <c>--format</c> fail as a buildx older than 0.8 fails them; <c>--raw</c> reads still answer.</summary>
+    public bool WithoutFormat { get; init; }
+
     /// <summary>The number of registry reads answered or refused.</summary>
     public int Reads { get; private set; }
 
@@ -35,6 +38,8 @@ internal sealed class FakeRegistry(IReadOnlyDictionary<string, byte[]> content)
                 return Find(reference) is { } bytes
                     ? new ProcessResult(0, Encoding.UTF8.GetString(bytes), string.Empty)
                     : NotFound(reference);
+            case ["buildx", "imagetools", "inspect", "--format", ..] when WithoutFormat:
+                return new ProcessResult(1, string.Empty, "unknown flag: --format");
             case ["buildx", "imagetools", "inspect", "--format", "{{json .Image}}", var reference]:
                 if (Find(reference) is not { } manifest)
                 {

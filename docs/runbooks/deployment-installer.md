@@ -295,7 +295,7 @@ hvo-sky-install cameraagent install \
 | `--image-source` | The image |
 | --- | --- |
 | `archive` (the default) | Loaded from the platform's offline archive in the folder. Nothing is pulled, so an air-gapped host needs only the folder |
-| `registry` | Pulled as `<repository>@<digest>`, the digest `release.json` names, never by tag, once its metadata has been read from the registry and checked (below). The host needs `docker buildx`, and must be signed in to `ghcr.io` while the package is private |
+| `registry` | Pulled as `<repository>@<digest>`, the digest `release.json` names, never by tag, once its metadata has been read from the registry and checked (below). The host needs `docker buildx` 0.8 or later, and must be signed in to `ghcr.io` while the package is private |
 
 Before it contacts Docker, the installer checks the folder. It refuses, naming the reason and changing nothing, when:
 
@@ -331,8 +331,8 @@ Each file is opened as a regular file with a single link, so a symbolic link, ha
 release file's name is refused rather than followed. Copy the files into the folder; do not link them.
 
 With `registry`, the image is read from the registry before anything is pulled. The installer runs `docker buildx
-imagetools inspect`, which uses this user's Docker credentials and credential helpers, so the installer never handles
-them. It reads, by the digest `release.json` names:
+imagetools inspect` (buildx 0.8 or later, which added the `--format` template and its `.Image` field). buildx uses
+this user's Docker credentials and credential helpers, so the installer never handles them. It reads, by the digest `release.json` names:
 
 - the release's image index (or, for a one-platform release, its manifest) exactly as the registry serves it, which must
   be the content that digest names;
@@ -343,8 +343,8 @@ them. It reads, by the digest `release.json` names:
   commit, and declare the contracts the instance needs.
 
 Anything else is refused with nothing pulled, naming what disagrees. When the registry cannot be read this way (no
-`docker buildx`, no network, or no credentials for a private package), the installer refuses the registry source before
-pulling anything and names the default archive source as the alternative.
+`docker buildx`, a buildx older than 0.8, no network, or no credentials for a private package), the installer refuses
+the registry source before pulling anything and names the default archive source as the alternative.
 
 A new installation then imports the release's image, by loading its archive or pulling it, before it claims anything:
 no product root, state, application identity, catalog, staged archive or journal entry exists yet. A load or pull that

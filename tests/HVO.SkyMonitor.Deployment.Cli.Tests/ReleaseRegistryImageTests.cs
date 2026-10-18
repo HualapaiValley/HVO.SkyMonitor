@@ -203,6 +203,23 @@ public sealed class ReleaseRegistryImageTests
     }
 
     [TestMethod]
+    public async Task ReadAsync_BuildxOlderThanTheFormatTemplate_IsRefusedNamingTheMinimumAndTheArchiveSource()
+    {
+        using var release = ReleaseFixture.Create();
+        var registry = new FakeRegistry(release.RegistryContent) { WithoutFormat = true };
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            ReleaseRegistryImage.ReadAsync(Selection(release), Docker(registry), CancellationToken.None));
+
+        Assert.AreEqual(
+            $"The installer cannot read {release.DigestReference} from its registry before pulling it, so it pulls nothing " +
+            "(unknown flag: --format). Install from the release's offline archive, the default image source (leave out " +
+            "--image-source registry), or let this user read the registry with 'docker buildx imagetools inspect' (buildx 0.8 or later).",
+            exception.Message);
+        Assert.AreEqual(3, registry.Reads, "the index and manifest are read raw; the configuration read is the one that fails");
+    }
+
+    [TestMethod]
     public async Task ReadAsync_OutputLargerThanAnyManifest_IsRefused()
     {
         using var release = ReleaseFixture.Create();

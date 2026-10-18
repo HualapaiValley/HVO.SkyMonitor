@@ -979,7 +979,8 @@ public sealed partial class InstallerFlowTests
     [DataRow("other-content", "The CameraAgent image {reference} in its registry is not the {platform} image release v{version} names: its image is not the content {digest} names. Nothing was pulled.")]
     [DataRow("other-manifest", "The CameraAgent image {reference} in its registry is not the {platform} image release v{version} names: its {platform} manifest is not the one release.json names. Nothing was pulled.")]
     [DataRow("other-config", "The CameraAgent image {reference} in its registry is not the {platform} image release v{version} names: its {platform} configuration is not the one release.json names. Nothing was pulled.")]
-    [DataRow("unavailable", "The installer cannot read {reference} from its registry before pulling it, so it pulls nothing (docker: 'buildx' is not a docker command.). Install from the release's offline archive, the default image source (leave out --image-source registry), or let this user read the registry with 'docker buildx imagetools inspect'.")]
+    [DataRow("buildx-too-old", "The installer cannot read {reference} from its registry before pulling it, so it pulls nothing (unknown flag: --format). Install from the release's offline archive, the default image source (leave out --image-source registry), or let this user read the registry with 'docker buildx imagetools inspect' (buildx 0.8 or later).")]
+    [DataRow("unavailable", "The installer cannot read {reference} from its registry before pulling it, so it pulls nothing (docker: 'buildx' is not a docker command.). Install from the release's offline archive, the default image source (leave out --image-source registry), or let this user read the registry with 'docker buildx imagetools inspect' (buildx 0.8 or later).")]
     public async Task InstallAsync_RegistryReleaseImageThatIsRefused_IsRefusedBeforeAnythingIsPulledOrClaimed(string fault, string expected)
     {
         ArgumentNullException.ThrowIfNull(expected);
@@ -1028,7 +1029,8 @@ public sealed partial class InstallerFlowTests
             Held = [],
             Registry = new FakeRegistry(release.RegistryContent)
             {
-                Unavailable = fault == "unavailable" ? "docker: 'buildx' is not a docker command." : null
+                Unavailable = fault == "unavailable" ? "docker: 'buildx' is not a docker command." : null,
+                WithoutFormat = fault == "buildx-too-old"
             }
         };
         var request = ReleaseRequest(root, bundle, instanceId, release.Folder) with { ImageSource = ReleaseImageSource.Registry };

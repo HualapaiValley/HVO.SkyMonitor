@@ -96,11 +96,16 @@ These settings are the owner's; the workflow cannot change them:
   `docker info` must then report `MemoryLimit`, `CpuCfsQuota` and `PidsLimit` as `true`. As of 2026-10-17,
   `github-runner-pi-01` and `skymonitor01` both meet this. A runner that does not fails every pre-release at the
   Install and Upgrade job, before anything is published. Once it is fixed, **Re-run failed jobs** completes the run.
-- **`docker buildx` on the arm64 runner.** The install test's upgrade pulls the image by digest, and the installer
-  first reads the image from the registry with `docker buildx imagetools inspect`
-  ([Release Install](deployment-installer.md#release-install)). A runner without buildx fails the Install and Upgrade
-  job at that read, before anything is pulled or published. `docker buildx version` confirms it. Any host that installs
-  with `--image-source registry` needs it too; the default archive source does not.
+- **`docker buildx` 0.8 or later on every host that installs from the registry**, the arm64 runner included. The
+  install test's upgrade pulls the image by digest, and the installer first reads the image from the registry with
+  `docker buildx imagetools inspect --raw` and `--format '{{json .Image}}'`, which buildx 0.8 added
+  ([Release Install](deployment-installer.md#release-install)). A host without it, or with an older buildx, is refused
+  the registry source before anything is pulled, so a runner without it fails the Install and Upgrade job before
+  anything is published. The job runs with a per-run `DOCKER_CONFIG`, so buildx must be installed system-wide (for
+  example the `docker-buildx-plugin` package, in `/usr/libexec/docker/cli-plugins`), not only under
+  `~/.docker/cli-plugins`. As of 2026-10-18, `github-runner-pi-01` has `docker-buildx-plugin` 0.36.1 system-wide
+  (`docker buildx version` works as `roys` and as the runner's `actions` user) and `skymonitor01` has 0.38.0. The
+  default archive source does not need buildx.
 - **The `skymonitor-cameraagent` package's visibility.** A new GHCR package is private, so a host must sign in to
   `ghcr.io` before it can pull by digest. The offline archives need no sign-in.
 
@@ -164,8 +169,8 @@ operations manual's change-management rules for a live host. An upgrade pauses c
    ```
 
    To pull the image by digest instead of loading the offline archive, add `--image-source registry`. The host then
-   needs `docker buildx`, which the installer uses to read the image from the registry before it pulls anything, and
-   must be signed in to `ghcr.io` while the package is private.
+   needs `docker buildx` 0.8 or later (`skymonitor01` has 0.38.0), which the installer uses to read the image from the
+   registry before it pulls anything, and must be signed in to `ghcr.io` while the package is private.
 
 5. Check the result, and keep the rollback command at hand:
 

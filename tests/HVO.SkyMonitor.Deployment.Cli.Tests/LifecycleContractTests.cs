@@ -186,7 +186,7 @@ public sealed partial class LifecycleContractTests
     [DataRow("version-label", "The CameraAgent image {reference} in its registry is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, as release v1.2.0-dev.3 requires. Nothing was pulled.")]
     [DataRow("contract-label", "The candidate image does not declare the required CameraAgent configuration and catalog contracts.")]
     [DataRow("state-contract", "!The candidate image declares state compatibility")]
-    [DataRow("unavailable", "The installer cannot read {reference} from its registry before pulling it, so it pulls nothing (docker: 'buildx' is not a docker command.). Install from the release's offline archive, the default image source (leave out --image-source registry), or let this user read the registry with 'docker buildx imagetools inspect'.")]
+    [DataRow("unavailable", "The installer cannot read {reference} from its registry before pulling it, so it pulls nothing (docker: 'buildx' is not a docker command.). Install from the release's offline archive, the default image source (leave out --image-source registry), or let this user read the registry with 'docker buildx imagetools inspect' (buildx 0.8 or later).")]
     public async Task UpgradeAsync_RegistryReleaseImageThatIsRefused_IsRefusedBeforeAnyPullOrTheJournal(string fault, string expected)
     {
         ArgumentNullException.ThrowIfNull(expected);

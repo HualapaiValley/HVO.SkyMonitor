@@ -29,7 +29,7 @@ onward; earlier development is recorded in its pull requests. A release renames 
   files. Before contacting Docker, the installer checks `release.json` against `SHA256SUMS` and every file it uses
   against both, and refuses a folder whose files disagree. `--image-source archive`, the default, loads the platform's
   offline archive; `--image-source registry` pulls the image by the digest `release.json` names, and needs `docker
-  buildx`. The image must be the release's, carry its version and commit, and declare the contracts the instance
+  buildx` 0.8 or later. The image must be the release's, carry its version and commit, and declare the contracts the instance
   needs. It is checked before anything is imported or claimed. An archive's image is read from the archive, every
   layer included, and an archive whose entries a loader could read differently (an alias such as
   `metadata/../index.json`, a duplicate, a link, or an entry no OCI layout has) is refused. A registry image is read

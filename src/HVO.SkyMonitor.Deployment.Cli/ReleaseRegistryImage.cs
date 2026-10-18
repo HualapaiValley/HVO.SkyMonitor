@@ -8,8 +8,10 @@ namespace HVO.SkyMonitor.Deployment;
 /// <summary>
 /// Reads the CameraAgent image a release names from its registry before Docker is asked to pull it, so a release whose
 /// registry image is not the release's image is refused while nothing has been imported, claimed or staged. It reads,
-/// by the digest release.json names, through <c>docker buildx imagetools inspect</c>, which uses this user's Docker
-/// credentials and credential helpers, so the installer never handles registry credentials:
+/// by the digest release.json names, through <c>docker buildx imagetools inspect</c> (buildx 0.8 or later, which added the
+/// <c>--format</c> template and its <c>.Image</c> field), which uses this user's Docker credentials and credential helpers,
+/// so the installer never handles registry credentials. A buildx that is missing or older fails the read, and the
+/// registry source is refused before anything is pulled, naming the archive source:
 /// <list type="bullet">
 /// <item>the release's image index, or for a one-platform release its manifest, exactly as the registry serves it,
 /// checked against the release's digest;</item>
@@ -55,7 +57,7 @@ internal static class ReleaseRegistryImage
                     $"The installer cannot read {release.DigestReference} from its registry before pulling it, so it pulls nothing " +
                     $"({Redaction.SafeDiagnostic(result.StandardError)}). Install from the release's offline archive, the default " +
                     "image source (leave out --image-source registry), or let this user read the registry with 'docker buildx " +
-                    "imagetools inspect'.");
+                    "imagetools inspect' (buildx 0.8 or later).");
             }
             if (result.StandardOutput.Length > MaximumMetadataBytes)
             {
