@@ -1,3 +1,4 @@
+using System.Text;
 using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.Deployment;
@@ -15,19 +16,23 @@ internal sealed partial class CameraAgentLifecycleManager
     /// Every refusal a lifecycle command can decide without changing anything: the instance's condition, a rollback with
     /// no previous image, an older release, the journal gates, the purge gates, a release candidate as read from its
     /// archive or its registry, and for an image change whose candidate is known without importing it, the already-active
-    /// and state-contract checks and the state preflight. A registry image is pulled last, once every check that only
+    /// and state-contract checks and the state preflight, and for an image change the host's container limits (#1357).
+    /// A registry image is pulled last, once every check that only
     /// reads has passed, so no refusal here follows the pull; a refused or failed pull is removed again, so its refusal
     /// still leaves Docker as it was. The command and its plan both pass here first, and a plan pulls nothing. Returns
     /// the release, with what its registry gave, and the names the pull added, which a refusal under the locks removes
-    /// again while nothing is written (#1315 PR-1355-R3 R3-1).
+    /// again while nothing is written (#1315 PR-1355-R3 R3-1), and for an image change the host limits it was admitted
+    /// with.
     /// </summary>
-    private static async Task<(AcquiredImage? Release, IReadOnlyList<string> Imported)> AdmitBeforeWritingAsync(
+    private static async Task<(AcquiredImage? Release, IReadOnlyList<string> Imported, HostPrerequisiteReport? HostLimits)> AdmitBeforeWritingAsync(
         LifecycleRequest request,
         InstallationPaths paths,
         InstanceManifest manifest,
         ComposeFiles compose,
         DockerClient docker,
+        DockerHostCapabilities? capabilities,
         AcquiredImage? signedImage,
+        TextWriter error,
         CancellationToken cancellationToken)
     {
         var kind = request.Operation!.Value;
@@ -62,6 +67,7 @@ internal sealed partial class CameraAgentLifecycleManager
         }
 
         var resumed = await AdmitAsync(request, paths, kind, manifest, cancellationToken).ConfigureAwait(false);
+        var hostLimits = imageChange ? AdmitHostLimits(request, paths, manifest, capabilities!) : null;
         if (kind == LifecycleOperationKind.Backup && resumed is null)
         {
             await AdmitBackupAsync(request, paths, manifest, cancellationToken).ConfigureAwait(false);
@@ -74,13 +80,103 @@ internal sealed partial class CameraAgentLifecycleManager
         {
             await AdmitCandidateAsync(request, paths, manifest, docker, signedImage, cancellationToken).ConfigureAwait(false);
         }
+        // Every check that only reads has admitted the rollback, so it goes ahead: the warning comes now, before anything
+        // changes, so a plan gives it too.
+        await WarnOfUnenforcedLimitsAsync(request, hostLimits, error).ConfigureAwait(false);
         IReadOnlyList<string> imported = [];
         if (kind == LifecycleOperationKind.Upgrade && signedImage is { ArchivedImage: null } && !request.DryRun)
         {
             imported = await PullReleaseCandidateAsync(request, manifest, docker, signedImage, cancellationToken).ConfigureAwait(false);
         }
-        return (signedImage, imported);
+        return (signedImage, imported, hostLimits);
     }
+
+    /// <summary>
+    /// The host's container limits an image change is held to before it changes anything (#1357, install contract
+    /// section 7, as HVO.RoofController#151). An upgrade, its plan and its <c>--resume</c> refuse a host whose Docker
+    /// cannot enforce the CameraAgent limits, or has fewer CPUs than the CPU limit, with every finding and its remedy, as
+    /// an install does; there is no override. A rollback and a restore-only recovery are the recovery path: they go
+    /// ahead, with <see cref="WarnOfUnenforcedLimitsAsync"/>'s warning. A rollback is still refused for a CPU limit
+    /// Docker enforces on a host with fewer CPUs, a container Docker refuses to create. A restore-only recovery is never
+    /// refused here: it puts back the image the instance ran, from its exact retained Compose files. Returns the report
+    /// a recovery goes ahead with.
+    /// </summary>
+    private static HostPrerequisiteReport AdmitHostLimits(
+        LifecycleRequest request,
+        InstallationPaths paths,
+        InstanceManifest manifest,
+        DockerHostCapabilities capabilities)
+    {
+        var upgrade = request.Operation == LifecycleOperationKind.Upgrade && !request.RestoreOnly;
+        var report = HostPrerequisites.EvaluateContainerLimits(
+            capabilities,
+            paths.ProductRoot,
+            LinuxHostEnvironment.Instance,
+            upgrade
+                ? CameraAgentContainerResources.UpgradeTarget(manifest.Resources)
+                : manifest.Resources ?? CameraAgentContainerResources.Legacy,
+            rollback: !upgrade);
+        if (!report.Satisfied && !request.RestoreOnly)
+        {
+            throw new HostPrerequisiteException(report);
+        }
+        return report;
+    }
+
+    /// <summary>
+    /// The loud warning of each limit a recovery goes ahead without (#1357), on standard error once the recovery is
+    /// admitted and before it changes anything. A <c>--json</c> invocation reserves standard error for one-line JSON
+    /// objects, so its result carries the warnings instead (<see cref="WithHostLimitWarnings"/>).
+    /// </summary>
+    private static async Task WarnOfUnenforcedLimitsAsync(LifecycleRequest request, HostPrerequisiteReport? hostLimits, TextWriter error)
+    {
+        if (!request.Json && hostLimits is not null && HostPrerequisites.RollbackWarning(hostLimits, RecoveryName(request)) is { } warning)
+        {
+            await error.WriteLineAsync(warning).ConfigureAwait(false);
+        }
+    }
+
+    private static string RecoveryName(LifecycleRequest request) => request.RestoreOnly ? "restore-only recovery" : "rollback";
+
+    /// <summary>The result with the warnings of each limit the recovery went ahead without (#1357).</summary>
+    private static LifecycleResult WithHostLimitWarnings(LifecycleResult result, HostPrerequisiteReport? hostLimits)
+        => hostLimits is null || HostPrerequisites.RollbackWarnings(hostLimits) is not { Count: > 0 } warnings
+            ? result
+            : result with { Warnings = [.. result.Warnings ?? [], .. warnings] };
+
+    /// <summary>
+    /// Writes the warning of each limit a recovery goes ahead without (#1357) to the operation's install log,
+    /// <c>operations/lifecycle/&lt;operation&gt;/install.log</c>, beside its other retained records, stamped with the
+    /// time. Each run that goes ahead adds its entry. Nothing is written for a host that enforces every limit.
+    /// </summary>
+    private static async Task WriteHostLimitsToInstallLogAsync(
+        LifecycleRequest request,
+        InstallationPaths paths,
+        Guid operationId,
+        HostPrerequisiteReport? hostLimits,
+        CancellationToken cancellationToken)
+    {
+        if (hostLimits is null || HostPrerequisites.RollbackWarning(hostLimits, RecoveryName(request)) is not { } warning)
+        {
+            return;
+        }
+        var lifecycleRoot = Path.Combine(paths.OperationsRoot, "lifecycle");
+        var operationRoot = Path.Combine(lifecycleRoot, operationId.ToString("D"));
+        SafeFileSystem.CreateOwnerDirectory(lifecycleRoot);
+        SafeFileSystem.CreateOwnerDirectory(operationRoot);
+        var path = Path.Combine(operationRoot, InstallLogName);
+        var existing = string.Empty;
+        if (File.Exists(path))
+        {
+            await using var stream = SafeFileSystem.OpenOwnerFileRead(path);
+            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false);
+            existing = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+        }
+        SafeFileSystem.WriteTextAtomic(path, existing + FormattableString.Invariant($"{DateTimeOffset.UtcNow:O} {warning}\n"));
+    }
+
+    /// <summary>The operation's install log, which a recovery that goes ahead without some limits writes (#1357).</summary>
+    internal const string InstallLogName = "install.log";
 
     /// <summary>
     /// The checks of an upgrade's or a rollback's candidate that only read: the already-active and state-contract checks

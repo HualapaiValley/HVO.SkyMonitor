@@ -220,7 +220,8 @@ public sealed class PreflightJournalTests
                 case ["info", ..]:
                     Commands.Add("info");
                     return Success(
-                        $"{{\"OSType\":\"linux\",\"Architecture\":\"{architecture}\",\"ID\":\"daemon\",\"Name\":\"host\",\"ServerVersion\":\"29.7.2\"}}");
+                        $"{{\"OSType\":\"linux\",\"Architecture\":\"{architecture}\",\"ID\":\"daemon\",\"Name\":\"host\",\"ServerVersion\":\"29.7.2\"," +
+                        "\"MemoryLimit\":true,\"CpuCfsQuota\":true,\"PidsLimit\":true,\"NCPU\":64}");
                 case ["compose", "version", ..]:
                     Commands.Add("compose");
                     return Success("2.40.0");
