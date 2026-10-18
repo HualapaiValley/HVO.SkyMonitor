@@ -121,8 +121,10 @@ internal sealed class DockerClient(IProcessRunner processRunner)
     /// changed for it. Whatever this import added is removed again when the image is refused, when Docker fails, or when
     /// the operation is cancelled, so it leaves Docker holding what it held. A registry image's metadata must have been
     /// read and checked first (<see cref="ReadRegistryReleaseImageAsync"/>); these checks after the import are the second.
+    /// Returns the image and the names this import added, which <see cref="RemoveImportedImagesAsync"/> removes again
+    /// when a later refusal undoes the import.
     /// </summary>
-    public async Task<ImageInstallationIdentity> ImportReleaseImageAsync(
+    public async Task<(ImageInstallationIdentity Image, IReadOnlyList<string> Added)> ImportReleaseImageAsync(
         InstallRequest request,
         ReleaseImageSelection release,
         Action<ImageInstallationIdentity> validate,
@@ -136,13 +138,23 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             var (_, image) = await PrepareImageCoreAsync(request, allowMutation: true, release, cancellationToken)
                 .ConfigureAwait(false);
             validate(image);
-            return image;
+            return (image, added);
         }
         catch (Exception) when (added.Count > 0)
         {
             await RemoveImagesAsync(added).ConfigureAwait(false);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Removes the names an import added (<see cref="ImportReleaseImageAsync"/>), the same way the import removes them when
+    /// it is refused: best effort, without force, and never cancelled.
+    /// </summary>
+    public Task RemoveImportedImagesAsync(IReadOnlyList<string> added)
+    {
+        ArgumentNullException.ThrowIfNull(added);
+        return RemoveImagesAsync(added);
     }
 
     /// <summary>

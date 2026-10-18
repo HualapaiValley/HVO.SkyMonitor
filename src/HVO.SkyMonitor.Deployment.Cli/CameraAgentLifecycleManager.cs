@@ -129,9 +129,10 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         // Every refusal that can be decided before the first write is decided here, for the command and its plan alike,
         // so a refusal says truthfully that nothing changed (#1315).
+        IReadOnlyList<string> imported = [];
         if (!request.RestoreOnly)
         {
-            signedImage = await AdmitBeforeWritingAsync(request, paths, manifest, compose, docker, signedImage, cancellationToken)
+            (signedImage, imported) = await AdmitBeforeWritingAsync(request, paths, manifest, compose, docker, signedImage, cancellationToken)
                 .ConfigureAwait(false);
         }
         var written = ReadWrittenState(paths);
@@ -139,11 +140,15 @@ internal sealed partial class CameraAgentLifecycleManager
         {
             return await LockedAsync().ConfigureAwait(false);
         }
-        catch (InstallerException exception) when (exception.IsRefusal && !request.DryRun && ReadWrittenState(paths) != written)
+        catch (InstallerException exception) when (exception.IsRefusal && !request.DryRun)
         {
             // Once this run has written, a lock file or the journal, a gate that decides not to go ahead can no longer say
             // nothing changed: it is a failure, journaled where an operation began (#1315).
-            throw new InstallerException(exception.Message, exception);
+            if (ReadWrittenState(paths) != written) throw new InstallerException(exception.Message, exception);
+            // Nothing is written yet, so the refusal still says nothing changed: an image this run pulled is removed again,
+            // as its pull's own refusal would remove it (#1315 PR-1355-R3 R3-1).
+            await docker.RemoveImportedImagesAsync(imported).ConfigureAwait(false);
+            throw;
         }
 
         async Task<LifecycleResult> LockedAsync()
@@ -1641,64 +1646,72 @@ internal sealed partial class CameraAgentLifecycleManager
     /// so a refused release leaves the instance, its journal and Docker as they were. An offline archive's image, layers
     /// included, was read from the archive at acquisition; a load Docker still rejects after the journal entry is settled
     /// as a terminal refusal, which blocks no later upgrade. A registry image's metadata is read from the registry by the
-    /// digest release.json names, and checked, before anything is pulled
-    /// (<see cref="DockerClient.ReadRegistryReleaseImageAsync"/>); it is then pulled, checked again, and removed if it is
-    /// refused, if the pull fails or if the upgrade is cancelled. A plan reads and checks the registry the same way and
-    /// pulls nothing. The same checks run again on the image Docker resolves once the upgrade has begun. Returns the
-    /// release, with the identities its registry gave and the image it read there.
+    /// digest release.json names, and checked, and nothing is pulled (<see cref="DockerClient.ReadRegistryReleaseImageAsync"/>);
+    /// a plan reads and checks it the same way. The pull comes once every other check that only reads has passed
+    /// (<see cref="PullReleaseCandidateAsync"/>), and the same checks run again on the image Docker resolves once the
+    /// upgrade has begun. Returns the release, with the identities its registry gave and the image it read there.
     /// </summary>
-    private static async Task<AcquiredImage> EnsureReleaseCandidateAsync(
-        LifecycleRequest request,
+    private static async Task<AcquiredImage> CheckReleaseCandidateAsync(
         InstanceManifest manifest,
         DockerClient docker,
         AcquiredImage release,
         CancellationToken cancellationToken)
     {
-        // Whatever this refuses has changed nothing: the candidate is not imported yet, or the import that added it is
-        // removed again, so it is a refusal (exit 3, #1315).
-        void Validate(ImageInstallationIdentity candidate)
-        {
-            try
-            {
-                if (!IsCanonicalImage(
-                        candidate,
-                        manifest.ComponentSchemaVersion,
-                        manifest.DockerDaemon.Architecture,
-                        manifest.ReplayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner))
-                {
-                    throw new InstallerException("The candidate image does not declare the required CameraAgent configuration and catalog contracts.");
-                }
-                CameraAgentInstaller.EnsureImageSupportsCatalog(candidate, manifest.Catalog.CatalogId);
-                if (!CameraAgentStateContract.IsCurrent(candidate.UpgradeCompatibility))
-                {
-                    throw new InstallerException(
-                        $"The candidate image declares state compatibility '{CameraAgentStateContract.Describe(candidate.UpgradeCompatibility)}' instead of the supported '{CameraAgentStateContract.Current}' contract; an explicit state-disposition procedure is required.");
-                }
-            }
-            catch (InstallerException exception) when (!exception.IsRefusal)
-            {
-                throw InstallerException.Refused(exception.Message, exception);
-            }
-        }
         if (release.ArchivedImage is { } archived)
         {
-            Validate(archived);
+            ValidateReleaseCandidate(manifest, archived);
             return release;
         }
         // Reading the registry pulls nothing, so a plan reads and checks it too, as the command does (#1315).
         var (registryImage, selection) = await docker.ReadRegistryReleaseImageAsync(release.Image, cancellationToken)
             .ConfigureAwait(false);
-        Validate(registryImage);
-        release = release with { Image = selection, RegistryImage = registryImage };
-        if (request.DryRun)
+        ValidateReleaseCandidate(manifest, registryImage);
+        return release with { Image = selection, RegistryImage = registryImage };
+    }
+
+    /// <summary>
+    /// Pulls a registry release's image, checked by <see cref="CheckReleaseCandidateAsync"/>, and checks what Docker then
+    /// holds again. The pull is removed again if it is refused, if it fails or if the upgrade is cancelled. Returns the
+    /// names it added, so a later refusal that still changes nothing can remove them too.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> PullReleaseCandidateAsync(
+        LifecycleRequest request,
+        InstanceManifest manifest,
+        DockerClient docker,
+        AcquiredImage release,
+        CancellationToken cancellationToken)
+        => (await docker.ImportReleaseImageAsync(
+                    ImageRequest(manifest, release.ImageReference, null, null, request.NoDownload), release.Image,
+                    candidate => ValidateReleaseCandidate(manifest, candidate), cancellationToken)
+                .ConfigureAwait(false)).Added;
+
+    /// <summary>
+    /// Whatever this refuses has changed nothing: the candidate is not imported yet, or the import that added it is
+    /// removed again, so it is a refusal (exit 3, #1315).
+    /// </summary>
+    private static void ValidateReleaseCandidate(InstanceManifest manifest, ImageInstallationIdentity candidate)
+    {
+        try
         {
-            return release;
+            if (!IsCanonicalImage(
+                    candidate,
+                    manifest.ComponentSchemaVersion,
+                    manifest.DockerDaemon.Architecture,
+                    manifest.ReplayProfile == HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner))
+            {
+                throw new InstallerException("The candidate image does not declare the required CameraAgent configuration and catalog contracts.");
+            }
+            CameraAgentInstaller.EnsureImageSupportsCatalog(candidate, manifest.Catalog.CatalogId);
+            if (!CameraAgentStateContract.IsCurrent(candidate.UpgradeCompatibility))
+            {
+                throw new InstallerException(
+                    $"The candidate image declares state compatibility '{CameraAgentStateContract.Describe(candidate.UpgradeCompatibility)}' instead of the supported '{CameraAgentStateContract.Current}' contract; an explicit state-disposition procedure is required.");
+            }
         }
-        _ = await docker.ImportReleaseImageAsync(
-                ImageRequest(manifest, release.ImageReference, null, null, request.NoDownload), selection, Validate,
-                cancellationToken)
-            .ConfigureAwait(false);
-        return release;
+        catch (InstallerException exception) when (!exception.IsRefusal)
+        {
+            throw InstallerException.Refused(exception.Message, exception);
+        }
     }
 
     private static InstallRequest ImageRequest(

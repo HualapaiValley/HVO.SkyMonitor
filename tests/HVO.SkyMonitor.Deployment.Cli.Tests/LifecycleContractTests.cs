@@ -3244,6 +3244,9 @@ public sealed partial class LifecycleContractTests
         /// <summary>Cancels this source while a pull runs, after Docker has the image, as a Ctrl+C mid-pull does.</summary>
         public CancellationTokenSource? CancelDuringPull { get; set; }
 
+        /// <summary>Runs while a pull runs, after Docker has the image, as another run changing the instance meanwhile does.</summary>
+        public Action? OnPull { get; set; }
+
         public void ConfigureRuntime(
             InstallationPaths installationPaths,
             string immutableInitialReference,
@@ -3313,6 +3316,7 @@ public sealed partial class LifecycleContractTests
             {
                 PullCount++;
                 if (candidateImageId is not null) CandidateHeld?.UnionWith([pulled, candidateImageId]);
+                OnPull?.Invoke();
                 if (CancelDuringPull is { } cancellation)
                 {
                     cancellation.Cancel();

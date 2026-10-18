@@ -739,8 +739,10 @@ A new installation then imports the release's image, by loading its archive or p
 no product root, state, application identity, catalog, staged archive or journal entry exists yet. A load or pull that
 Docker rejects, or that is cancelled, therefore leaves nothing for `--resume` or purge to recover, and running the same
 install again completes it. A resumed or repeated installation, which already has state, imports in its image step
-from the same verified inputs. An upgrade pulls a registry image before its journal entry; it loads an archive after
-it, and a load Docker still rejects there is settled as a terminal refusal that blocks no later operation.
+from the same verified inputs. An upgrade pulls a registry image before its journal entry, once every check that
+only reads has passed, the state preflight included, so no refusal follows the pull; a refusal under the instance lock
+that still changes nothing removes the pulled image again. It loads an archive after its journal entry, and a load
+Docker still rejects there is settled as a terminal refusal that blocks no later operation.
 
 Before it claims anything, the installer also requires the release's image, from the archive or the pull, to declare
 the configuration and catalog contracts this instance needs (an upgrade also requires the current state contract).

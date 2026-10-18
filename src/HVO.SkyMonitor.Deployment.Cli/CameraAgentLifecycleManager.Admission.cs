@@ -13,13 +13,15 @@ internal sealed partial class CameraAgentLifecycleManager
 
     /// <summary>
     /// Every refusal a lifecycle command can decide without changing anything: the instance's condition, a rollback with
-    /// no previous image, an older release, the journal gates, the purge gates, and for an image change whose candidate
-    /// is known without importing it, the already-active and state-contract checks and the state preflight. A release
-    /// candidate is checked here too, from its archive or its registry, and a registry image is pulled here, before any
-    /// lock is taken: a refused or failed pull is removed again, so its refusal still leaves Docker as it was. The command
-    /// and its plan both pass here first. Returns the release, with what its registry gave.
+    /// no previous image, an older release, the journal gates, the purge gates, a release candidate as read from its
+    /// archive or its registry, and for an image change whose candidate is known without importing it, the already-active
+    /// and state-contract checks and the state preflight. A registry image is pulled last, once every check that only
+    /// reads has passed, so no refusal here follows the pull; a refused or failed pull is removed again, so its refusal
+    /// still leaves Docker as it was. The command and its plan both pass here first, and a plan pulls nothing. Returns
+    /// the release, with what its registry gave, and the names the pull added, which a refusal under the locks removes
+    /// again while nothing is written (#1315 PR-1355-R3 R3-1).
     /// </summary>
-    private static async Task<AcquiredImage?> AdmitBeforeWritingAsync(
+    private static async Task<(AcquiredImage? Release, IReadOnlyList<string> Imported)> AdmitBeforeWritingAsync(
         LifecycleRequest request,
         InstallationPaths paths,
         InstanceManifest manifest,
@@ -62,14 +64,33 @@ internal sealed partial class CameraAgentLifecycleManager
         var resumed = await AdmitAsync(request, paths, kind, manifest, cancellationToken).ConfigureAwait(false);
         if (kind == LifecycleOperationKind.Upgrade && signedImage is not null)
         {
-            signedImage = await EnsureReleaseCandidateAsync(request, manifest, docker, signedImage, cancellationToken)
-                .ConfigureAwait(false);
+            signedImage = await CheckReleaseCandidateAsync(manifest, docker, signedImage, cancellationToken).ConfigureAwait(false);
         }
-        if (!imageChange || resumed is not null)
+        if (imageChange && resumed is null)
         {
-            return signedImage;
+            await AdmitCandidateAsync(request, paths, manifest, docker, signedImage, cancellationToken).ConfigureAwait(false);
         }
-        if (kind == LifecycleOperationKind.Rollback)
+        IReadOnlyList<string> imported = [];
+        if (kind == LifecycleOperationKind.Upgrade && signedImage is { ArchivedImage: null } && !request.DryRun)
+        {
+            imported = await PullReleaseCandidateAsync(request, manifest, docker, signedImage, cancellationToken).ConfigureAwait(false);
+        }
+        return (signedImage, imported);
+    }
+
+    /// <summary>
+    /// The checks of an upgrade's or a rollback's candidate that only read: the already-active and state-contract checks
+    /// and, for a candidate known without importing it, the state preflight.
+    /// </summary>
+    private static async Task AdmitCandidateAsync(
+        LifecycleRequest request,
+        InstallationPaths paths,
+        InstanceManifest manifest,
+        DockerClient docker,
+        AcquiredImage? signedImage,
+        CancellationToken cancellationToken)
+    {
+        if (request.Operation == LifecycleOperationKind.Rollback)
         {
             if (manifest.PreviousImage!.ImageId == manifest.Image.ImageId) throw InstallerException.Refused(AlreadyActive);
             if (!CameraAgentStateContract.IsKnown(manifest.Image.UpgradeCompatibility) &&
@@ -77,7 +98,7 @@ internal sealed partial class CameraAgentLifecycleManager
             {
                 throw InstallerException.Refused("Automatic rollback is forbidden because the active image did not declare a supported state contract.");
             }
-            return signedImage;
+            return;
         }
         // A release names every identity Docker can give its image, so a release whose image is the active one is
         // known to be active before anything is imported.
@@ -89,7 +110,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (candidate is null)
         {
             // The candidate is known only once it is imported, after the journal entry; its checks run there.
-            return signedImage;
+            return;
         }
         if (candidate.ImageId == manifest.Image.ImageId) throw InstallerException.Refused(AlreadyActive);
         if (!CameraAgentStateContract.IsCurrent(candidate.UpgradeCompatibility))
@@ -118,7 +139,6 @@ internal sealed partial class CameraAgentLifecycleManager
                 signedImage?.Release.Tag,
                 preparedSources: preparedSources)
             .ConfigureAwait(false);
-        return signedImage;
     }
 
     /// <summary>

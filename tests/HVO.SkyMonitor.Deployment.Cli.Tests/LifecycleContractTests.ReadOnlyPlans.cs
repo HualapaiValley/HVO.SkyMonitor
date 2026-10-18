@@ -1,3 +1,4 @@
+using System.Text.Json;
 using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
 
@@ -155,6 +156,98 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(InstallationStatus.Failed, journal!.Status);
         Assert.AreEqual(CameraAgentLifecycleManager.RefusedFailureCode, journal.FailureCode);
         Assert.IsFalse(journal.MutationStarted);
+    }
+
+    /// <summary>
+    /// An upgrade from a registry release Docker does not hold yet, which its state preflight refuses (here an unreadable
+    /// Identity database), is refused before anything is pulled, like its plan (#1315 PR-1355-R3 R3-1): every check that
+    /// only reads comes before the pull, so the refusal leaves Docker holding what it held and the tree unchanged.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_RegistryReleaseTheStatePreflightRefuses_IsRefusedBeforeAnythingIsPulled()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        using var release = CandidateRelease(fixture, out var candidateImageId);
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            release.DigestReference, candidateImageId, fixture.Uid, fixture.Gid);
+        fixture.Runner.Registry = new FakeRegistry(release.RegistryContent);
+        fixture.Runner.CandidateHeld = [];
+        var identityRoot = Path.Combine(fixture.Paths.StateRoot, "identity");
+        Directory.CreateDirectory(identityRoot);
+        File.SetUnixFileMode(identityRoot, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var identity = Path.Combine(identityRoot, "cameraagent_identity.db");
+        await File.WriteAllBytesAsync(identity, new byte[4096]);
+        File.SetUnixFileMode(identity, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var request = fixture.Request(LifecycleOperationKind.Upgrade) with
+        {
+            Release = release.Folder,
+            ImageSource = ReleaseImageSource.Registry,
+            MigrationBackwardCompatible = true
+        };
+        var before = FileSystemActivity.Snapshot(fixture.Root);
+
+        foreach (var dryRun in new[] { true, false })
+        {
+            var name = dryRun ? "the plan" : "the upgrade";
+            var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+                request with { DryRun = dryRun }, fixture.Runner, _ => new FakeLifecycleClient(),
+                _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None));
+
+            Assert.IsTrue(refused.IsRefusal, $"{name}: {refused.Message}");
+            StringAssert.StartsWith(refused.Message, "CameraAgent state preflight rejected", StringComparison.Ordinal, name);
+            Assert.AreEqual(0, fixture.Runner.PullCount, $"{name} pulled before its state preflight refused");
+            Assert.IsEmpty(fixture.Runner.CandidateHeld!, $"{name} left Docker holding what it pulled");
+            Assert.IsEmpty(fixture.Runner.RemovedImages, name);
+            FileSystemActivity.AssertUnchanged(before, FileSystemActivity.Snapshot(fixture.Root), $"{name} changed the product root");
+        }
+    }
+
+    /// <summary>
+    /// A refusal that comes after the registry pull, under the instance lock and before anything is written, still says
+    /// nothing changed, so the pulled image is removed again (#1315 PR-1355-R3 R3-1). Here another run uninstalls the
+    /// instance while this upgrade pulls, and the upgrade's check under the lock refuses it. An installed instance has
+    /// both lock files from its install, so taking them writes nothing.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_RefusalUnderTheLockAfterTheRegistryPull_RemovesThePulledImage()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        using var release = CandidateRelease(fixture, out var candidateImageId);
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            release.DigestReference, candidateImageId, fixture.Uid, fixture.Gid);
+        fixture.Runner.Registry = new FakeRegistry(release.RegistryContent);
+        fixture.Runner.CandidateHeld = [];
+        SafeFileSystem.CreateOwnerDirectory(fixture.Paths.OperationsRoot);
+        using (OperationLock.Acquire(Path.Combine(fixture.Paths.OperationsRoot, "deployment.lock"), cancellationToken: CancellationToken.None))
+        using (OperationLock.Acquire(Path.Combine(fixture.Paths.InstanceRoot, ".deployment.lock"), cancellationToken: CancellationToken.None))
+        {
+        }
+        var uninstalled = fixture.Manifest with { LifecycleCondition = InstanceLifecycleCondition.Uninstalled };
+        fixture.Runner.OnPull = () => SafeFileSystem.WriteTextAtomic(
+            fixture.Paths.ManifestPath, JsonSerializer.Serialize(uninstalled, DeploymentJsonContext.Default.InstanceManifest));
+
+        var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                Release = release.Folder,
+                ImageSource = ReleaseImageSource.Registry,
+                MigrationBackwardCompatible = true
+            },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        Assert.IsTrue(refused.IsRefusal, refused.Message);
+        Assert.AreEqual("An uninstalled instance must be reinstalled before image lifecycle operations.", refused.Message);
+        Assert.AreEqual(1, fixture.Runner.PullCount);
+        CollectionAssert.Contains(fixture.Runner.RemovedImages, release.DigestReference);
+        Assert.IsEmpty(fixture.Runner.CandidateHeld!, "the refusal left Docker holding what the upgrade pulled");
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath), "the refusal opened the journal");
     }
 
     [TestMethod]
