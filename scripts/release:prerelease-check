@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# The GitHub checks the pre-release workflow's draft and publish jobs make before they write (install contract section
+# 3, #1309). It needs gh, signed in or with GH_TOKEN, and jq.
+#
+#   scripts/release:prerelease-check unreleased <tag>   no release or draft has the tag yet; with a token that can write
+#                                                       (contents: write) the list includes drafts
+#   scripts/release:prerelease-check draft <tag>        exactly one release has the tag, and it is a draft pre-release
+#   scripts/release:prerelease-check attested <digest>  the image digest has at least one attestation on record
+#                                                       (attestations: read)
+#
+# Every read is strict (scripts/lib/github-api.sh): a read that fails, is cut short, or answers anything but one JSON
+# document of the expected shape fails the check naming what it could not read. It never counts as an answer, so a
+# list that cannot be read is never taken for there being no release.
+set -euo pipefail
+
+fail() {
+    printf '::error::%s\n' "$*" >&2
+    exit 1
+}
+
+usage() {
+    fail "usage: scripts/release:prerelease-check unreleased <tag> | draft <tag> | attested <digest>"
+}
+
+[[ $# -eq 2 ]] || usage
+check="$1"
+repository="${GITHUB_REPOSITORY:-HualapaiValley/HVO.SkyMonitor}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/github-api.sh
+source "$repo_root/scripts/lib/github-api.sh"
+
+require_tag() {
+    [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-dev\.(0|[1-9][0-9]*)$ ]] ||
+        fail "$1 is not an integration pre-release tag, vX.Y.Z-dev.N."
+}
+
+# The releases with the tag, from every page of the list.
+releases_tagged() {
+    local releases
+    releases="$(github_api_read_releases "$repository")" || return 1
+    jq -c --arg tag "$1" '[.[] | select(.tag_name == $tag)]' <<<"$releases"
+}
+
+case "$check" in
+    unreleased)
+        tag="$2"
+        require_tag "$tag"
+        tagged="$(releases_tagged "$tag")" || exit 1
+        [[ "$(jq 'length' <<<"$tagged")" == 0 ]] ||
+            fail "A release or draft for $tag already exists; a release is never replaced."
+        printf 'No release or draft has %s yet.\n' "$tag"
+        ;;
+    draft)
+        tag="$2"
+        require_tag "$tag"
+        tagged="$(releases_tagged "$tag")" || exit 1
+        count="$(jq 'length' <<<"$tagged")"
+        [[ "$count" != 0 ]] || fail "No release or draft has $tag; the tested draft is gone."
+        [[ "$count" == 1 ]] || fail "$count releases have the tag $tag; only one draft can be published."
+        state="$(jq -r '.[0] | "draft=\(.draft) prerelease=\(.prerelease)"' <<<"$tagged")"
+        [[ "$state" == "draft=true prerelease=true" ]] ||
+            fail "The release for $tag is not a draft pre-release ($state); it is not published again."
+        printf '%s is a draft pre-release.\n' "$tag"
+        ;;
+    attested)
+        digest="$2"
+        [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "$digest is not an image digest, sha256:<64 hex digits>."
+        attestations="$(github_api_read "the attestations for $digest" \
+            'type == "object" and (.attestations | type == "array" and all(.[]; type == "object"))' \
+            "repos/$repository/attestations/$digest")" || exit 1
+        count="$(jq '.attestations | length' <<<"$attestations")"
+        [[ "$count" -ge 1 ]] || fail "No attestation is on record for $digest."
+        printf '%s has %s attestation(s) on record.\n' "$digest" "$count"
+        ;;
+    *)
+        usage
+        ;;
+esac

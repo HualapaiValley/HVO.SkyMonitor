@@ -3,6 +3,12 @@
 # they are proved without GitHub, a registry, a build or a Docker daemon:
 #   scripts/release:prerelease-gate      admits a green, annotated vX.Y.Z-dev.N tag on development/v1 and refuses the
 #                                        rest, telling a missing tag from a failed read;
+#   scripts/release:prerelease-check     refuses a release or draft that already has the tag, a draft that is gone or
+#                                        no longer a draft pre-release, and an image with no attestation on record;
+#   scripts/lib/github-api.sh            every GitHub read those scripts and the publish script make: only a 200 that gh
+#                                        completed, with one JSON document of the expected shape, is an answer, and
+#                                        only GitHub's own 404 means absent; a failure, an answer cut short, an empty,
+#                                        repeated or malformed body never passes, before or after publishing;
 #   scripts/release:push-image           pushes a release version only, and fails unless the registry serves the
 #                                        archive's digest;
 #   scripts/release:publish-prerelease   publishes only when the latest release is read for certain before and after,
@@ -24,8 +30,8 @@ fail() {
 }
 
 # The workflow runs each script by its path, so each must be executable as committed.
-for script in release:assets release:push-image release:prerelease-gate release:publish-prerelease test:release-install \
-    test:release-scripts; do
+for script in release:assets release:push-image release:prerelease-gate release:prerelease-check release:publish-prerelease \
+    test:release-install test:release-scripts; do
     [[ -x "$repo_root/scripts/$script" ]] || fail "scripts/$script is not executable."
 done
 
@@ -33,10 +39,12 @@ commit=0123456789abcdef0123456789abcdef01234567
 other=fedcba9876543210fedcba9876543210fedcba98
 tag_object=1111111111111111111111111111111111111111
 
-# A fake gh that answers API reads from files the cases write under $FAKE_GH, keyed by path: <key>.json is the body of
-# a 200, <key>.status a status GitHub fails with, and <key>.<n>.http the n-th answer as gh --include prints it (status
-# line, headers, blank line, body; empty when GitHub cannot be reached). A path with no file is a 404. "release edit"
-# is recorded in edits.log and exits FAKE_GH_EDIT_STATUS.
+# A fake gh that answers API reads from files the cases write under $FAKE_GH, keyed by path without its query:
+# <key>.json is the body of a 200, <key>.status a status GitHub fails with, and <key>.<n>.http the n-th answer as gh
+# --include prints it (status line, headers, blank line, body; empty when GitHub cannot be reached). <key>.<n>.exit,
+# when present, is the status gh then exits with: a transport failure after a complete-looking answer. A path with no
+# file is GitHub's own 404. With --include every answer starts with its status line and headers, as gh prints them.
+# Each path read is logged in reads.log. "release edit" is recorded in edits.log and exits FAKE_GH_EDIT_STATUS.
 cat >"$fake_bin/gh" <<'FAKE_GH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -58,7 +66,18 @@ while [[ $# -gt 0 ]]; do
         *) path="$1"; shift ;;
     esac
 done
+printf '%s\n' "$path" >>"$FAKE_GH/reads.log"
 key="$(printf '%s' "${path%%\?*}" | tr '/' '_')"
+# Prints an answer whose body is on stdin as gh does: with --include its status line and headers first, and without it
+# the body of a 200 alone, through --jq when it is given.
+answer() {
+    if [[ "$include" == 1 ]]; then
+        printf 'HTTP/2.0 %s %s\r\nContent-Type: application/json; charset=utf-8\r\n\r\n' "$1" "$2"
+        cat
+    elif [[ "$1" == 200 ]]; then
+        if [[ -n "$jq_filter" ]]; then jq -r "$jq_filter"; else cat; fi
+    fi
+}
 if compgen -G "$FAKE_GH/$key.*.http" >/dev/null; then
     calls=$(( $(cat "$FAKE_GH/$key.count" 2>/dev/null || printf 0) + 1 ))
     printf '%s' "$calls" >"$FAKE_GH/$key.count"
@@ -68,24 +87,59 @@ if compgen -G "$FAKE_GH/$key.*.http" >/dev/null; then
     if [[ "$include" == 1 ]]; then
         cat "$answer"
     elif [[ "$status" == 200 ]]; then
-        # Without --include, gh prints the body of a 200 alone, through --jq when it is given.
-        if [[ -n "$jq_filter" ]]; then sed '1,/^\r\{0,1\}$/d' "$answer" | jq -r "$jq_filter"; else sed '1,/^\r\{0,1\}$/d' "$answer"; fi
+        sed '1,/^\r\{0,1\}$/d' "$answer" | answer 200 OK
+    fi
+    if [[ -f "$FAKE_GH/$key.$calls.exit" ]]; then
+        printf 'gh: unexpected EOF\n' >&2
+        exit "$(cat "$FAKE_GH/$key.$calls.exit")"
     fi
     if [[ -z "$status" ]]; then printf 'gh: dial tcp: connection refused\n' >&2; exit 1; fi
     [[ "$status" == 200 ]] || { printf 'gh: HTTP %s (HTTP %s)\n' "$status" "$status" >&2; exit 1; }
     exit 0
 fi
 if [[ -f "$FAKE_GH/$key.status" ]]; then
-    printf 'gh: Service Unavailable (HTTP %s)\n' "$(cat "$FAKE_GH/$key.status")" >&2
+    status="$(cat "$FAKE_GH/$key.status")"
+    answer "$status" "Service Unavailable" <<<'{"message":"Service Unavailable"}'
+    printf 'gh: Service Unavailable (HTTP %s)\n' "$status" >&2
     exit 1
 fi
 file="$FAKE_GH/$key.json"
-[[ -f "$file" ]] || { printf 'gh: Not Found (HTTP 404)\n' >&2; exit 1; }
-if [[ -n "$jq_filter" ]]; then jq -r "$jq_filter" "$file"; else cat "$file"; fi
+if [[ ! -f "$file" ]]; then
+    answer 404 "Not Found" <<<'{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+    printf 'gh: Not Found (HTTP 404)\n' >&2
+    exit 1
+fi
+answer 200 OK <"$file"
 FAKE_GH
 chmod +x "$fake_bin/gh"
 
 repo=repos_HualapaiValley_HVO.SkyMonitor
+# Scripts the answers gh gives for one path, in order. Each is status[/exit]:body: gh --include prints the status, its
+# headers and the body, then exits with <exit> when it is given (a transport failure after a complete-looking answer).
+# "none" is GitHub not answering at all.
+script_answers() {
+    local key="$1" calls=0 answer head
+    shift
+    rm -f "$FAKE_GH/$key".*.http "$FAKE_GH/$key".*.exit "$FAKE_GH/$key.count"
+    for answer in "$@"; do
+        calls=$((calls + 1))
+        if [[ "$answer" == none ]]; then
+            : >"$FAKE_GH/$key.$calls.http"
+            continue
+        fi
+        head="${answer%%:*}"
+        printf 'HTTP/2.0 %s Answer\r\nContent-Type: application/json; charset=utf-8\r\n\r\n%s' \
+            "${head%%/*}" "${answer#*:}" >"$FAKE_GH/$key.$calls.http"
+        [[ "$head" != */* ]] || printf '%s' "${head#*/}" >"$FAKE_GH/$key.$calls.exit"
+    done
+}
+# A page of the releases list: the given releases first, then published pre-releases v0.0.1-dev.<n> to fill it to <size>.
+releases_page() {
+    local size="$1"
+    shift
+    jq -cn --argjson size "$size" '$ARGS.positional | map(fromjson)
+        | . + [range(length; $size) | {tag_name: "v0.0.1-dev.\(.)", draft: false, prerelease: true}]' --args "$@"
+}
 gate_case() {
     export FAKE_GH="$test_root/gh-$1"
     rm -rf "$FAKE_GH"
@@ -97,7 +151,7 @@ gate_case() {
         "$commit" "$commit" >"$FAKE_GH/${repo}_actions_workflows_development-v1.yml_runs.json"
     printf '{"jobs":[{"name":"Development v1 / Preflight","conclusion":"success"},{"name":"Development v1 / Build and Unit","conclusion":"success"}]}\n' \
         >"$FAKE_GH/${repo}_actions_runs_7_jobs.json"
-    printf '[{"tag_name":"v1.2.0-dev.2"}]\n' >"$FAKE_GH/${repo}_releases.json"
+    printf '[{"tag_name":"v1.2.0-dev.2","draft":false,"prerelease":true}]\n' >"$FAKE_GH/${repo}_releases.json"
     printf '{"commit":{"committer":{"date":"2026-10-17T18:00:00Z"}}}\n' >"$FAKE_GH/${repo}_commits_$commit.json"
 }
 
@@ -139,7 +193,7 @@ expect_gate_refusal "a deleted tag" "The tag v1.2.0-dev.3 does not exist."
 
 gate_case unreadable-tag
 printf '503' >"$FAKE_GH/${repo}_git_ref_tags_v1.2.0-dev.3.status"
-expect_gate_refusal "a tag GitHub failed to read" "cannot read the tag v1.2.0-dev.3: gh: Service Unavailable (HTTP 503)"
+expect_gate_refusal "a tag GitHub failed to read" "cannot read the tag v1.2.0-dev.3 (503): gh: Service Unavailable (HTTP 503)"
 
 gate_case off-branch
 printf '{"status":"diverged"}\n' >"$FAKE_GH/${repo}_compare_development_v1...$commit.json"
@@ -178,26 +232,83 @@ printf '{"jobs":[{"name":"Development v1 / Build and Unit","conclusion":"success
 expect_gate_refusal "a run without its Preflight job" "has Development v1 / Preflight missing, not success."
 
 gate_case released
-printf '[{"tag_name":"v1.2.0-dev.3"}]\n' >"$FAKE_GH/${repo}_releases.json"
+printf '[{"tag_name":"v1.2.0-dev.3","draft":false,"prerelease":true}]\n' >"$FAKE_GH/${repo}_releases.json"
 expect_gate_refusal "a tag already released" "A release for v1.2.0-dev.3 already exists"
 
+# The releases list is read page by page, 100 a page, until a short page: a release on the second page is found.
+gate_case released-page-2
+script_answers "${repo}_releases" "200:$(releases_page 100)" \
+    "200:$(releases_page 1 '{"tag_name":"v1.2.0-dev.3","draft":false,"prerelease":true}')"
+expect_gate_refusal "a tag released on the releases list's second page" "A release for v1.2.0-dev.3 already exists"
+grep -Fxq "repos/HualapaiValley/HVO.SkyMonitor/releases?per_page=100&page=2" "$FAKE_GH/reads.log" ||
+    fail "the gate did not read the releases list's second page."
+
+# Every gate read is strict. A read that fails, is cut short, or answers anything but one JSON document of the expected
+# shape refuses the tag naming the read, and never counts as an answer: above all, a releases list that cannot be read
+# never counts as there being no release.
+# Each case's folder is numbered, not named by its label: the fake's lookup is a glob, and a label holds brackets.
+read_cases=0
+expect_gate_read_refusal() {
+    local label="$1" key="$2" answer="$3" message="$4"
+    read_cases=$((read_cases + 1))
+    gate_case "read-$read_cases"
+    script_answers "$key" "$answer"
+    expect_gate_refusal "$label" "$message"
+}
+releases_read="cannot read the releases of HualapaiValley/HVO.SkyMonitor"
+expect_gate_read_refusal "a releases list answered {}" "${repo}_releases" '200:{}' "$releases_read (200, but not the expected answer)"
+expect_gate_read_refusal "a releases list answered [{}]" "${repo}_releases" '200:[{}]' "$releases_read (200, but not the expected answer)"
+expect_gate_read_refusal "a releases list answered as two arrays" "${repo}_releases" \
+    '200:[{"tag_name":"v1.2.0-dev.2","draft":false,"prerelease":true}][{"tag_name":"v1.2.0-dev.1","draft":false,"prerelease":true}]' \
+    "$releases_read (200, but not one JSON document)"
+expect_gate_read_refusal "a releases list cut short" "${repo}_releases" \
+    '200/1:[{"tag_name":"v1.2.0-dev.2","draft":false,"prerelease":true}]' "$releases_read (200, but gh failed): gh: unexpected EOF"
+expect_gate_read_refusal "a releases list GitHub does not have" "${repo}_releases" '404:{"message":"Not Found"}' "$releases_read (404)"
+expect_gate_read_refusal "a tag answered {}" "${repo}_git_ref_tags_v1.2.0-dev.3" '200:{}' \
+    "cannot read the tag v1.2.0-dev.3 (200, but not the expected answer)"
+expect_gate_read_refusal "a tag read cut short" "${repo}_git_ref_tags_v1.2.0-dev.3" \
+    "200/1:{\"object\":{\"type\":\"tag\",\"sha\":\"$tag_object\"}}" "cannot read the tag v1.2.0-dev.3 (200, but gh failed)"
+expect_gate_read_refusal "a tag read failing 404 without GitHub's answer" "${repo}_git_ref_tags_v1.2.0-dev.3" '404:' \
+    "cannot read the tag v1.2.0-dev.3 (404)"
+expect_gate_read_refusal "an annotated tag answered {}" "${repo}_git_tags_$tag_object" '200:{}' \
+    "cannot read the annotated tag v1.2.0-dev.3 (200, but not the expected answer)"
+expect_gate_read_refusal "an annotated tag read cut short" "${repo}_git_tags_$tag_object" \
+    "200/1:{\"object\":{\"type\":\"commit\",\"sha\":\"$commit\"}}" "cannot read the annotated tag v1.2.0-dev.3 (200, but gh failed)"
+expect_gate_read_refusal "a comparison answered {}" "${repo}_compare_development_v1...$commit" '200:{}' \
+    "cannot read the comparison of $commit with development/v1 (200, but not the expected answer)"
+expect_gate_read_refusal "a comparison cut short" "${repo}_compare_development_v1...$commit" '200/1:{"status":"behind"}' \
+    "cannot read the comparison of $commit with development/v1 (200, but gh failed)"
+green_run="{\"id\":7,\"run_number\":7,\"head_sha\":\"$commit\",\"event\":\"push\",\"head_branch\":\"development/v1\",\"status\":\"completed\",\"conclusion\":\"success\",\"html_url\":\"https://example.test/7\"}"
+expect_gate_read_refusal "runs answered {}" "${repo}_actions_workflows_development-v1.yml_runs" '200:{}' \
+    "cannot read the Development v1 push runs for $commit (200, but not the expected answer)"
+expect_gate_read_refusal "runs answered as an object of runs" "${repo}_actions_workflows_development-v1.yml_runs" \
+    "200:{\"workflow_runs\":{\"7\":$green_run}}" "cannot read the Development v1 push runs for $commit (200, but not the expected answer)"
+expect_gate_read_refusal "a runs read cut short" "${repo}_actions_workflows_development-v1.yml_runs" \
+    "200/1:{\"workflow_runs\":[$green_run]}" "cannot read the Development v1 push runs for $commit (200, but gh failed)"
+green_jobs='{"a":{"name":"Development v1 / Preflight","conclusion":"success"},"b":{"name":"Development v1 / Build and Unit","conclusion":"success"}}'
+expect_gate_read_refusal "jobs answered {}" "${repo}_actions_runs_7_jobs" '200:{}' \
+    "cannot read the jobs of Development v1 run 7 (200, but not the expected answer)"
+expect_gate_read_refusal "jobs answered as an object of jobs" "${repo}_actions_runs_7_jobs" "200:{\"jobs\":$green_jobs}" \
+    "cannot read the jobs of Development v1 run 7 (200, but not the expected answer)"
+expect_gate_read_refusal "a jobs read cut short" "${repo}_actions_runs_7_jobs" \
+    '200/1:{"jobs":[{"name":"Development v1 / Preflight","conclusion":"success"},{"name":"Development v1 / Build and Unit","conclusion":"success"}]}' \
+    "cannot read the jobs of Development v1 run 7 (200, but gh failed)"
+expect_gate_read_refusal "a commit answered {}" "${repo}_commits_$commit" '200:{}' \
+    "cannot read the commit $commit (200, but not the expected answer)"
+expect_gate_read_refusal "a commit read cut short" "${repo}_commits_$commit" \
+    '200/1:{"commit":{"committer":{"date":"2026-10-17T18:00:00Z"}}}' "cannot read the commit $commit (200, but gh failed)"
+expect_gate_read_refusal "a commit answered as two documents" "${repo}_commits_$commit" \
+    '200:{"commit":{"committer":{"date":"2026-10-17T18:00:00Z"}}}{"commit":{"committer":{"date":"2026-10-17T18:00:00Z"}}}' \
+    "cannot read the commit $commit (200, but not one JSON document)"
+
 # The publish script: the latest release must be read for certain before and after publishing, and must not move. Each
-# argument after the case's name is one read of releases/latest, as status:body; "none" is GitHub not answering.
+# argument after the case's name is one read of releases/latest, as script_answers takes them.
 publish_case() {
     export FAKE_GH="$test_root/gh-publish-$1"
     rm -rf "$FAKE_GH"
     mkdir -p "$FAKE_GH"
     shift
-    local calls=0 answer
-    for answer in "$@"; do
-        calls=$((calls + 1))
-        if [[ "$answer" == none ]]; then
-            : >"$FAKE_GH/${repo}_releases_latest.$calls.http"
-        else
-            printf 'HTTP/2.0 %s Answer\r\nContent-Type: application/json; charset=utf-8\r\n\r\n%s' \
-                "${answer%%:*}" "${answer#*:}" >"$FAKE_GH/${repo}_releases_latest.$calls.http"
-        fi
-    done
+    script_answers "${repo}_releases_latest" "$@"
 }
 run_publish() {
     GITHUB_REPOSITORY=HualapaiValley/HVO.SkyMonitor "$repo_root/scripts/release:publish-prerelease" "${1:-v1.2.0-dev.3}" \
@@ -241,6 +352,137 @@ publish_case edit-fails "$not_found"
 FAKE_GH_EDIT_STATUS=1 expect_publish_refusal "a failed edit" "cannot publish v1.2.0-dev.3" edited
 publish_case final-tag
 expect_publish_refusal "a final release's tag" "v1.2.0 is not an integration pre-release tag" unedited v1.2.0
+
+# Only a 200 that gh completed, with one JSON object naming a tag, is an answer, and only GitHub's own 404 means there
+# is no latest release. Before publishing anything else stops with nothing changed; after publishing it fails the job.
+published_unread="v1.2.0-dev.3 is published, but the latest release cannot be read back to show it did not move"
+publish_case cut-short-before '200/1:{"tag_name":"v1.0.0","name":"1.0.0"}' '200:{"tag_name":"v1.0.0","name":"1.0.0"}'
+expect_publish_refusal "a first read gh failed after a complete 200" \
+    "cannot read the latest release (200, but gh failed): gh: unexpected EOF" unedited
+publish_case cut-short-after '200:{"tag_name":"v1.0.0","name":"1.0.0"}' '200/1:{"tag_name":"v1.0.0","name":"1.0.0"}'
+expect_publish_refusal "a read after publishing gh failed after a complete 200" "$published_unread" edited
+grep -Fq "cannot read the latest release (200, but gh failed)" "$test_root/publish.err" ||
+    fail "the publish did not say why it could not read the latest release back."
+publish_case repeated-before '200:{"tag_name":"v1.0.0"}{"tag_name":"v1.0.0"}' '200:{"tag_name":"v1.0.0"}'
+expect_publish_refusal "a first read answering two documents" \
+    "cannot read the latest release (200, but not one JSON document)" unedited
+publish_case repeated-after '200:{"tag_name":"v1.0.0"}' '200:{"tag_name":"v1.0.0"}{"tag_name":"v1.0.0"}'
+expect_publish_refusal "a read after publishing answering two documents" "$published_unread" edited
+publish_case empty-object-before '200:{}'
+expect_publish_refusal "a first read answering {}" "GitHub's latest release names no tag." unedited
+publish_case empty-object-after "$not_found" '200:{}'
+expect_publish_refusal "a read after publishing answering {}" "$published_unread" edited
+publish_case no-tag-after "$not_found" '200:{"name":"1.0.0"}'
+expect_publish_refusal "a read after publishing naming no tag" "$published_unread" edited
+publish_case empty-before '200:'
+expect_publish_refusal "a first read answering an empty 200" \
+    "cannot read the latest release (200, but not one JSON document)" unedited
+publish_case foreign-404-before '404:<html>Not Found</html>'
+expect_publish_refusal "a first read failing 404 without GitHub's answer" "cannot read the latest release (404)" unedited
+publish_case foreign-404-after "$not_found" '404:<html>Not Found</html>'
+expect_publish_refusal "a read after publishing failing 404 without GitHub's answer" "$published_unread" edited
+
+# The draft and publish jobs' checks. Each reads strictly: a read that fails, is cut short, or answers anything but one
+# JSON document of the expected shape fails the check naming the read, and never counts as an answer.
+image_digest="sha256:$(printf 'image' | sha256sum | cut -d ' ' -f 1)"
+check_case() {
+    export FAKE_GH="$test_root/gh-check-$1"
+    rm -rf "$FAKE_GH"
+    mkdir -p "$FAKE_GH"
+    printf '[{"tag_name":"v1.2.0-dev.2","draft":false,"prerelease":true},{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true}]\n' \
+        >"$FAKE_GH/${repo}_releases.json"
+    printf '{"attestations":[{"bundle":{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"},"repository_id":1}]}\n' \
+        >"$FAKE_GH/${repo}_attestations_$image_digest.json"
+}
+run_check() {
+    GITHUB_REPOSITORY=HualapaiValley/HVO.SkyMonitor "$repo_root/scripts/release:prerelease-check" "$@" \
+        >"$test_root/check.out" 2>"$test_root/check.err"
+}
+expect_check() {
+    local label="$1"
+    shift
+    run_check "$@" || { cat "$test_root/check.err" >&2; fail "the check refused $label."; }
+}
+expect_check_refusal() {
+    local label="$1" message="$2"
+    shift 2
+    if run_check "$@"; then
+        fail "the check passed $label."
+    fi
+    grep -Fq -- "$message" "$test_root/check.err" || { cat "$test_root/check.err" >&2; fail "the check refused $label without saying: $message"; }
+}
+expect_check_read_refusal() {
+    local label="$1" key="$2" answer="$3" message="$4"
+    shift 4
+    read_cases=$((read_cases + 1))
+    check_case "read-$read_cases"
+    script_answers "$key" "$answer"
+    expect_check_refusal "$label" "$message" "$@"
+}
+
+check_case unreleased
+expect_check "a tag no release or draft has" unreleased v1.2.0-dev.4
+expect_check_refusal "a tag a draft already has" "A release or draft for v1.2.0-dev.3 already exists" unreleased v1.2.0-dev.3
+expect_check_refusal "a tag a published release already has" "A release or draft for v1.2.0-dev.2 already exists" unreleased v1.2.0-dev.2
+expect_check_refusal "a final release's tag" "v1.2.0 is not an integration pre-release tag" unreleased v1.2.0
+check_case unreleased-page-2
+script_answers "${repo}_releases" "200:$(releases_page 100)" \
+    "200:$(releases_page 1 '{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true}')"
+expect_check_refusal "a tag a draft on the second page has" "A release or draft for v1.2.0-dev.3 already exists" unreleased v1.2.0-dev.3
+for answer in '200:{}' '200:[{}]' '200:[{"tag_name":"v1.2.0-dev.2"}]'; do
+    expect_check_read_refusal "a releases list answered ${answer#200:}" "${repo}_releases" "$answer" \
+        "$releases_read (200, but not the expected answer)" unreleased v1.2.0-dev.4
+done
+expect_check_read_refusal "a releases list answered as two arrays" "${repo}_releases" \
+    '200:[{"tag_name":"v1.2.0-dev.2","draft":false,"prerelease":true}][{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true}]' \
+    "$releases_read (200, but not one JSON document)" unreleased v1.2.0-dev.4
+expect_check_read_refusal "a releases list cut short" "${repo}_releases" \
+    '200/1:[{"tag_name":"v1.2.0-dev.2","draft":false,"prerelease":true}]' "$releases_read (200, but gh failed)" unreleased v1.2.0-dev.4
+expect_check_read_refusal "a releases list GitHub cannot be reached for" "${repo}_releases" none \
+    "$releases_read (no answer from GitHub)" unreleased v1.2.0-dev.4
+expect_check_read_refusal "a releases list GitHub does not have" "${repo}_releases" '404:{"message":"Not Found"}' \
+    "$releases_read (404)" unreleased v1.2.0-dev.4
+
+check_case draft
+expect_check "a draft pre-release" draft v1.2.0-dev.3
+expect_check_refusal "a published release" "The release for v1.2.0-dev.2 is not a draft pre-release (draft=false prerelease=true)" \
+    draft v1.2.0-dev.2
+expect_check_refusal "a tag no draft has" "No release or draft has v1.2.0-dev.9; the tested draft is gone." draft v1.2.0-dev.9
+printf '[{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":false}]\n' >"$FAKE_GH/${repo}_releases.json"
+expect_check_refusal "a draft that is not a pre-release" "is not a draft pre-release (draft=true prerelease=false)" draft v1.2.0-dev.3
+printf '[{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true},{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true}]\n' \
+    >"$FAKE_GH/${repo}_releases.json"
+expect_check_refusal "two drafts with the tag" "2 releases have the tag v1.2.0-dev.3" draft v1.2.0-dev.3
+check_case draft-page-2
+script_answers "${repo}_releases" "200:$(releases_page 100)" \
+    "200:$(releases_page 1 '{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true}')"
+expect_check "a draft pre-release on the second page" draft v1.2.0-dev.3
+for answer in '200:{}' '200:[{}]'; do
+    expect_check_read_refusal "a draft's releases list answered ${answer#200:}" "${repo}_releases" "$answer" \
+        "$releases_read (200, but not the expected answer)" draft v1.2.0-dev.3
+done
+expect_check_read_refusal "a draft's releases list answered as two arrays" "${repo}_releases" \
+    '200:[{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true}][{"tag_name":"v1.2.0-dev.2","draft":false,"prerelease":true}]' \
+    "$releases_read (200, but not one JSON document)" draft v1.2.0-dev.3
+expect_check_read_refusal "a draft's releases list cut short" "${repo}_releases" \
+    '200/1:[{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true}]' "$releases_read (200, but gh failed)" draft v1.2.0-dev.3
+
+check_case attested
+expect_check "an image with an attestation on record" attested "$image_digest"
+expect_check_refusal "an image reference that is not a digest" "is not an image digest" attested "${image_digest#sha256:}"
+attestations_read="cannot read the attestations for $image_digest"
+for answer in '200:{}' '200:[{}]' '200:{"attestations":{"a":1}}' '200:{"attestations":[1]}'; do
+    expect_check_read_refusal "attestations answered ${answer#200:}" "${repo}_attestations_$image_digest" "$answer" \
+        "$attestations_read (200, but not the expected answer)" attested "$image_digest"
+done
+expect_check_read_refusal "attestations answered with none" "${repo}_attestations_$image_digest" '200:{"attestations":[]}' \
+    "No attestation is on record for $image_digest." attested "$image_digest"
+expect_check_read_refusal "attestations answered as two documents" "${repo}_attestations_$image_digest" \
+    '200:{"attestations":[{}]}{"attestations":[{}]}' "$attestations_read (200, but not one JSON document)" attested "$image_digest"
+expect_check_read_refusal "an attestations read cut short" "${repo}_attestations_$image_digest" \
+    '200/1:{"attestations":[{}]}' "$attestations_read (200, but gh failed)" attested "$image_digest"
+expect_check_read_refusal "attestations GitHub does not have" "${repo}_attestations_$image_digest" '404:{"message":"Not Found"}' \
+    "$attestations_read (404)" attested "$image_digest"
 
 # The push script: a release version alone, through skopeo, and the digest read back must be the archive's.
 index_digest="sha256:$(printf 'index' | sha256sum | cut -d ' ' -f 1)"

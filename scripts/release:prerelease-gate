@@ -10,7 +10,9 @@
 #   - the newest completed Development v1 push run for <commit> on development/v1 succeeded, with both its required jobs
 #     (Development v1 / Preflight and Development v1 / Build and Unit) successful, and no newer run for it is still going;
 #   - no published release has the tag yet (the drafting job checks drafts too, with a token that can see them).
-# It prints version=, tag=, commit= and created= lines, for $GITHUB_OUTPUT.
+# Every read is strict (scripts/lib/github-api.sh): only GitHub's own 404 for the tag means it does not exist, and a
+# read that fails, is cut short, or answers anything but one JSON document of the expected shape fails the gate naming
+# what it could not read. It prints version=, tag=, commit= and created= lines, for $GITHUB_OUTPUT.
 set -euo pipefail
 
 fail() {
@@ -23,9 +25,10 @@ tag="$1"
 commit="$2"
 repository="${GITHUB_REPOSITORY:-HualapaiValley/HVO.SkyMonitor}"
 branch=development/v1
-errors="$(mktemp)"
-trap 'rm -f "$errors"' EXIT
 workflow=development-v1.yml
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/github-api.sh
+source "$repo_root/scripts/lib/github-api.sh"
 
 [[ "$tag" =~ ^v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-dev\.(0|[1-9][0-9]*))$ ]] ||
     fail "$tag is not an integration pre-release tag, vX.Y.Z-dev.N."
@@ -33,24 +36,41 @@ version="${BASH_REMATCH[1]}"
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail "$commit is not a 40-character commit ID."
 
 # The tag as the repository holds it: annotated (install contract section 3), and naming this commit.
-# Only GitHub's 404 means the tag does not exist; any other failed read is reported as one.
-if ! reference="$(gh api "repos/$repository/git/ref/tags/$tag" 2>"$errors")"; then
-    grep -Fq '(HTTP 404)' "$errors" && fail "The tag $tag does not exist."
-    fail "cannot read the tag $tag: $(tr '\n' ' ' <"$errors")"
-fi
+# Only GitHub's own 404 means the tag does not exist; any other failed read is reported as one.
+read_status=0
+reference="$(github_api_read --absent-ok "the tag $tag" \
+    'type == "object" and (.object | type == "object") and (.object.type | type == "string")
+     and (.object.sha | type == "string" and test("^[0-9a-f]{40}$"))' \
+    "repos/$repository/git/ref/tags/$tag")" || read_status=$?
+case "$read_status" in
+    0) ;;
+    "$GITHUB_API_ABSENT") fail "The tag $tag does not exist." ;;
+    *) exit 1 ;;
+esac
 [[ "$(jq -r '.object.type' <<<"$reference")" == tag ]] ||
     fail "$tag is a lightweight tag; cut a pre-release with an annotated tag: git tag -a $tag -m 'SkyMonitor $version'."
-tagged="$(gh api "repos/$repository/git/tags/$(jq -r '.object.sha' <<<"$reference")" --jq '.object.sha + " " + .object.type')"
+annotated="$(github_api_read "the annotated tag $tag" \
+    'type == "object" and (.object | type == "object") and (.object.type | type == "string") and (.object.sha | type == "string")' \
+    "repos/$repository/git/tags/$(jq -r '.object.sha' <<<"$reference")")" || exit 1
+tagged="$(jq -r '.object.sha + " " + .object.type' <<<"$annotated")"
 [[ "$tagged" == "$commit commit" ]] || fail "$tag names ${tagged%% *}, not the commit $commit this run is for."
 
 # On development/v1: the branch's head, or behind it.
-status="$(gh api "repos/$repository/compare/$branch...$commit" --jq .status)"
+comparison="$(github_api_read "the comparison of $commit with $branch" \
+    'type == "object" and (.status | type == "string")' "repos/$repository/compare/$branch...$commit")" || exit 1
+status="$(jq -r '.status' <<<"$comparison")"
 [[ "$status" == identical || "$status" == behind ]] ||
     fail "$commit is not on $branch (compared with it, it is $status). Tag a commit on $branch."
 
 # The commit's own Development v1 push run, newest first. A run still going means the result is not known yet.
-runs="$(gh api --method GET "repos/$repository/actions/workflows/$workflow/runs" \
-    -f head_sha="$commit" -f event=push -f branch="$branch" -f per_page=20)"
+runs="$(github_api_read "the Development v1 push runs for $commit" \
+    'type == "object" and (.workflow_runs | type == "array") and all(.workflow_runs[]; type == "object"
+     and (.id | type == "number") and (.run_number | type == "number") and (.head_sha | type == "string")
+     and (.event | type == "string") and (.head_branch | type == "string" or type == "null")
+     and (.status | type == "string") and (.conclusion | type == "string" or type == "null")
+     and (.html_url | type == "string"))' \
+    "repos/$repository/actions/workflows/$workflow/runs" \
+    --method GET -f head_sha="$commit" -f event=push -f branch="$branch" -f per_page=20)" || exit 1
 runs="$(jq --arg sha "$commit" --arg branch "$branch" \
     '[.workflow_runs[] | select(.head_sha == $sha and .event == "push" and .head_branch == $branch)]
      | sort_by(.run_number) | reverse' <<<"$runs")"
@@ -60,19 +80,27 @@ newest="$(jq -c '.[0]' <<<"$runs")"
     fail "The Development v1 push run for $commit ($(jq -r '.html_url' <<<"$newest")) has not finished; tag again once it is green."
 [[ "$(jq -r '.conclusion' <<<"$newest")" == success ]] ||
     fail "The Development v1 push run for $commit ($(jq -r '.html_url' <<<"$newest")) is $(jq -r '.conclusion' <<<"$newest"), not green."
-jobs="$(gh api "repos/$repository/actions/runs/$(jq -r '.id' <<<"$newest")/jobs?per_page=100")"
+run_id="$(jq -r '.id' <<<"$newest")"
+jobs="$(github_api_read "the jobs of Development v1 run $run_id" \
+    'type == "object" and (.jobs | type == "array") and all(.jobs[]; type == "object"
+     and (.name | type == "string") and (.conclusion | type == "string" or type == "null"))' \
+    "repos/$repository/actions/runs/$run_id/jobs?per_page=100")" || exit 1
 for required in "Development v1 / Preflight" "Development v1 / Build and Unit"; do
     conclusion="$(jq -r --arg name "$required" '[.jobs[] | select(.name == $name)] | if length == 1 then .[0].conclusion else "missing" end' <<<"$jobs")"
     [[ "$conclusion" == success ]] ||
         fail "The Development v1 push run for $commit has $required $conclusion, not success."
 done
 
-# Nothing published under the tag yet: a release is never replaced.
-existing="$(gh api --paginate "repos/$repository/releases" --jq '.[] | .tag_name')"
-if grep -Fxq -- "$tag" <<<"$existing"; then
+# Nothing published under the tag yet: a release is never replaced. Every page is read; a list that cannot be read
+# for certain never counts as there being no release.
+releases="$(github_api_read_releases "$repository")" || exit 1
+[[ "$(jq --arg tag "$tag" '[.[] | select(.tag_name == $tag)] | length' <<<"$releases")" == 0 ]] ||
     fail "A release for $tag already exists; a release is never replaced."
-fi
 
-created="$(gh api "repos/$repository/commits/$commit" --jq .commit.committer.date)"
+created="$(github_api_read "the commit $commit" \
+    'type == "object" and (.commit | type == "object") and (.commit.committer | type == "object")
+     and (.commit.committer.date | type == "string")' \
+    "repos/$repository/commits/$commit")" || exit 1
+created="$(jq -r '.commit.committer.date' <<<"$created")"
 [[ "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || fail "$commit has no committer time."
 printf 'version=%s\ntag=%s\ncommit=%s\ncreated=%s\n' "$version" "$tag" "$commit" "$created"

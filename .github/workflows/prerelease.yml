@@ -54,6 +54,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
+          # A step with no shell: is bash -e without pipefail, which would let tee hide the gate's failure.
+          set -o pipefail
           [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF_TYPE" == tag ]]
           ./scripts/release:prerelease-gate "$TAG" "$GITHUB_SHA" | tee -a "$GITHUB_OUTPUT"
 
@@ -167,13 +169,9 @@ jobs:
           ' release.json >/dev/null
           digest="$(jq -er '.images["skymonitor-cameraagent"].digest' release.json)"
           [[ "$(tar -xOf "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar" index.json | jq -r '.manifests[0].digest')" == "$digest" ]]
-          # A release is never replaced; this token also lists drafts, which the gate's could not. A read that fails
-          # fails the job: it never counts as there being no release.
-          existing="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')"
-          if grep -Fxq -- "$TAG" <<<"$existing"; then
-            printf '::error::A release or draft for %s already exists; a release is never replaced.\n' "$TAG"
-            exit 1
-          fi
+          # A release is never replaced; this token also lists drafts, which the gate's could not. Every page is read
+          # strictly: a read that fails or is malformed fails the job, and never counts as there being no release.
+          "$GITHUB_WORKSPACE/scripts/release:prerelease-check" unreleased "$TAG"
           printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
       - name: Sign in to the image registry
         env:
@@ -296,6 +294,12 @@ jobs:
       contents: write
       attestations: read
     steps:
+      # The tagged commit's scripts make every check below and the publish itself.
+      - name: Checkout the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.commit }}
+          persist-credentials: false
       - name: Download the tested files
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
@@ -308,7 +312,9 @@ jobs:
           COMMIT: ${{ needs.gate.outputs.commit }}
           DIGEST: ${{ needs.draft.outputs.digest }}
         run: |
-          [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')" == "true true" ]]
+          # Drafts are not served by releases/tags/<tag>, so the whole list is read strictly: exactly one release has
+          # the tag, and it is still a draft pre-release.
+          ./scripts/release:prerelease-check draft "$TAG"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/draft"
           diff -r "$RUNNER_TEMP/tested" "$RUNNER_TEMP/draft"
           cd "$RUNNER_TEMP/draft"
@@ -320,12 +326,7 @@ jobs:
               --source-ref "$GITHUB_REF" --source-digest "$COMMIT" --deny-self-hosted-runners >/dev/null
           done
           # The draft job verified the image's attestation from the registry; it is still on record for the digest.
-          [[ "$(gh api "repos/$GITHUB_REPOSITORY/attestations/$DIGEST" --jq '.attestations | length')" -ge 1 ]]
-      - name: Checkout the publishing script
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.gate.outputs.commit }}
-          persist-credentials: false
+          "$GITHUB_WORKSPACE/scripts/release:prerelease-check" attested "$DIGEST"
       - name: Publish the pre-release without moving latest
         env:
           GH_TOKEN: ${{ github.token }}
