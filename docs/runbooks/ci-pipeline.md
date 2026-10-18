@@ -18,7 +18,7 @@ remains in Build. Both are intentionally absent from the short workflow.
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 7837 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
+| **Unit Tests** | 7756 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
 | **Integration Tests** | 842 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
 | **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 18 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
@@ -56,11 +56,14 @@ download of the release's small files, the verification of each file, the catalo
 parallel. It always runs in Full Quality. **Development v1 /
 Preflight** runs it after the secret scanner contract, reading the same classifier step, when the `release_scripts`
 output selects it. On a PR that output is `true` when the change touches `scripts/release:assets`,
-`scripts/release:push-image`, `scripts/release:prerelease-gate`, `scripts/release:prerelease-check`,
-`scripts/release:publish-prerelease`, `scripts/test:release-install`, `scripts/test:release-scripts`, the libraries
-those scripts source (`scripts/lib/deployment-installer-qualification.sh` and `scripts/lib/github-api.sh`),
-`src/HVO.SkyMonitor.Deployment.Cli/install.sh`, `scripts/test:install-sh`, anything under
-`tests/fixtures/install-sh/`, `.github/workflows/prerelease.yml`, anything under
+`scripts/release:check-image-labels`, `scripts/release:push-image`, `scripts/release:prerelease-gate`,
+`scripts/release:prerelease-check`, `scripts/release:publish-prerelease`, the final-release scripts
+(`scripts/release:version`, `scripts/release:notes`, `scripts/release:gate`, `scripts/release:check-environment`,
+`scripts/release:publish` and `scripts/release:tag-latest`, #1310), `scripts/test:release-install`,
+`scripts/test:release-scripts`, the libraries those scripts source (`scripts/lib/deployment-installer-qualification.sh`,
+`scripts/lib/github-api.sh` and `scripts/lib/releases.sh`), `src/HVO.SkyMonitor.Deployment.Cli/install.sh`,
+`scripts/test:install-sh`, anything under `tests/fixtures/install-sh/`, `.github/workflows/prerelease.yml`,
+`.github/workflows/release.yml`, the product version (`Directory.Build.props`), anything under
 `tools/HVO.SkyMonitor.Deployment.ReleaseTool/`, or the wiring that runs it (`.github/workflows/development-v1.yml`,
 `scripts/ci:classify`). Deleting one of those paths selects it too. Pushes, missing commits, empty ranges, failed or
 malformed diffs, missing or non-regular tree entries, missing outputs and classifier-step failures all run it: only a
@@ -404,7 +407,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=7837`, `Integration=842`, `Manual=253`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=7756`, `Integration=842`, `Manual=253`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
 
@@ -627,15 +630,15 @@ closed deployment path map is:
 
 - `.github/workflows/ci.yml`, `.dockerignore`, `.env.template`, `docker-compose.apps.yml`, and `global.json`
 - `scripts/ci:classify`, `scripts/ci:require`, `scripts/test:ci-classification`,
-  `scripts/release:cameraagent-image`, and `scripts/lib/**`
+  `scripts/release:*`, and `scripts/lib/**`
 - `scripts/deploy:environment` and `scripts/deploy/**`
 - `scripts/test:deploy-environment`, `scripts/test:deploy-environment-cli`, `scripts/test:deployment-installer`, `scripts/test:deployment-logichost-outage-contract`, and `scripts/test:deployment-normal-flow-contract`
 - `scripts/catalog:*`, `scripts/catalog/**`, and `scripts/infra:operation-lock`
 - `deploy/**`
 - `tests/fixtures/catalog/hyg-v42-bright-stars.sqlite`
 - `src/HVO.SkyMonitor.CameraAgent/Dockerfile` and `src/HVO.SkyMonitor.LogicHost/Dockerfile`
-- `src/HVO.SkyMonitor.Deployment.Cli/**`, `src/HVO.SkyMonitor.Deployment.Contracts/**`, `src/HVO.SkyMonitor.Deployment.Distribution/**`, `tests/HVO.SkyMonitor.Deployment.*.Tests/**`, and `tools/HVO.SkyMonitor.Deployment.ReleaseTool/**`
-- `.github/workflows/release.yml` and `scripts/install-hvo-sky-install.sh`
+- `src/HVO.SkyMonitor.Deployment.Cli/**`, `src/HVO.SkyMonitor.Deployment.Contracts/**`, `tests/HVO.SkyMonitor.Deployment.*.Tests/**`, and `tools/HVO.SkyMonitor.Deployment.ReleaseTool/**`
+- `.github/workflows/release.yml` and `.github/workflows/prerelease.yml`
 - `src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json`
 - `src/HVO.SkyMonitor.CameraAgent/virtual-asi174.full.json` and `src/HVO.SkyMonitor.CameraAgent/virtual-asi178mc.full.json`
 
@@ -690,7 +693,7 @@ sibling names such as `HVO.SkyMonitor.CameraAgent.Tests` and
 
 Deployment inputs that are not project directories — `deploy/**`,
 `docker-compose.apps.yml`, `.env.template`, `scripts/deploy*`,
-`scripts/catalog*`, `scripts/install-hvo-sky-install.sh`,
+`scripts/catalog*`,
 `scripts/infra:operation-lock`, `scripts/test:deploy*`,
 `scripts/test:deployment-*`, the HYG v42 attribution and license inputs, and
 `tests/fixtures/catalog/hyg-v42-bright-stars.sqlite` — are deliberately **not**

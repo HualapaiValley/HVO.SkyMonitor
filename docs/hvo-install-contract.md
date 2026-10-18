@@ -88,8 +88,10 @@ Reason: an integration pre-release exists to put a branch head on a real host qu
 deliberate act on a reviewed, green commit, and a second approval would add a wait without adding a check. A final
 release is what operators install from `latest`, so it keeps the approval and both platforms.
 
-**Today:** SkyMonitor cuts pre-releases this way (`.github/workflows/prerelease.yml`, #1309). Its final releases are
-#1310. RoofController cuts no integration pre-releases; its release candidates follow the final-release path.
+**Today:** SkyMonitor cuts pre-releases this way (`.github/workflows/prerelease.yml`, #1309), and its final releases
+and release candidates by the final-release path above (`.github/workflows/release.yml`, #1310), with the approval in
+its `production-release` environment. RoofController cuts no integration pre-releases; its release candidates follow
+the final-release path.
 
 ## 4. Release assets
 

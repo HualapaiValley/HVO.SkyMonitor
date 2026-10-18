@@ -28,8 +28,8 @@ onward; earlier development is recorded in its pull requests. A release renames 
 - CameraAgent serves an operator settings catalogue and versioned group writes through its operations API. The
   site owner can create and revoke Read or ReadWrite API keys for non-browser clients. (#1316)
 - `hvo-sky-install --version` prints the installer's version and the commit it was built from, as
-  `<version>+<commit>`. A development build prints `0.0.0-dev+<commit>`, or `0.0.0-dev+unknown` if built without a
-  checkout. (#1312)
+  `<version>+<commit>`. A development build prints the product version's development build, such as
+  `1.0.0-dev+<commit>`, or `1.0.0-dev+unknown` if built without a checkout. (#1312, #1310)
 - **Operations > Camera & rig** offers **Sky lighting** for a VirtualSky camera: uniform daylight (the default),
   realistic daylight, or no daylight. With no daylight, capture control treats every frame as night. (#1304)
 - Before an upgrade from a release, `hvo-sky-install cameraagent upgrade` prints the upgrade notes of every release
@@ -58,8 +58,20 @@ onward; earlier development is recorded in its pull requests. A release renames 
   `release.json` and `SHA256SUMS`, and pushes `ghcr.io/hualapaivalley/skymonitor-cameraagent:<version>`. Every file and
   the image have a build-provenance attestation. A dedicated arm64 runner installs and upgrades from the draft before it
   is published, and a pre-release never moves `latest`. (#1309)
+- Final releases and release candidates. An annotated `vX.Y.Z` or `vX.Y.Z-rc.<n>` tag that the owner pushes on `main`
+  runs the CI workflow on the tagged commit, builds the same files a pre-release carries, and creates a draft release.
+  A throwaway instance installs and upgrades from the draft on linux-x64 and on linux-arm64, and the draft is published
+  only after the owner approves it in the `production-release` environment; the workflow refuses to publish while that
+  environment requires no reviewer. A final release needs its `CHANGELOG.md` section and `docs/upgrade-notes/X.Y.Z.md`,
+  whose notes `release.json` carries. Only the newest final release, by version, becomes the latest release and moves
+  the image's `latest` tag; a release candidate or a fix to an older version never does. (#1310)
 
 ### Changed
+
+- One product version: `VersionPrefix` in `Directory.Build.props`, now `1.0.0`. A release's tag, files, installers and
+  image carry it or a pre-release of it, and a build given any other version is refused. A build given no version is
+  its development build, `1.0.0-dev`: `hvo-sky-install --version` prints `1.0.0-dev+<commit>` rather than
+  `0.0.0-dev+<commit>`, and a development CameraAgent image's version label is empty. (#1310)
 
 - Container builds and local development use .NET SDK 10.0.402, and .NET runtime base images use 10.0.13. (#1336, #1337)
 - OpenTelemetry 1.20.0 corrects HTTP 5xx error tags and reduces routine OTLP exporter HTTP log noise. (#1339)
@@ -76,9 +88,9 @@ onward; earlier development is recorded in its pull requests. A release renames 
   command (`hvo-sky-install cameraagent install --help`). A command-line mistake prints the reason and usage on standard
   error and exits 2, without the `Installation failed:` prefix. (#1302)
 - The installer is `hvo-sky-install` (it was `hvo-skymonitor`), and `hvo-sky` is reserved for the runtime client.
-  Release archives are `hvo-sky-install-v<version>-linux-<arch>.tar.gz`. Fixed locations use the flat `hvo-sky` style:
-  the host policy is `/etc/hvo-sky/host.json`, the default product root is `/var/lib/hvo-sky`, the host-policy lock is
-  `/run/hvo-sky-host-policy.lock`, per-user distribution state and cache are under `~/.local/state/hvo-sky` and
+  A release's installers are `hvo-sky-install-linux-x64` and `hvo-sky-install-linux-arm64`. Fixed locations use the
+  flat `hvo-sky` style: the host policy is `/etc/hvo-sky/host.json`, the default product root is `/var/lib/hvo-sky`, the
+  host-policy lock is `/run/hvo-sky-host-policy.lock`, per-user distribution state and cache are under `~/.local/state/hvo-sky` and
   `~/.cache/hvo-sky`, and the replay runner's default socket is `/run/hvo-sky/replay-runner.sock`. Nothing had been
   released, so there is no alias or migration: reinstall development hosts. (#1313)
 - A CameraAgent upgrade or rollback no longer archives the instance's configuration and state with `tar`, so its
@@ -112,6 +124,11 @@ onward; earlier development is recorded in its pull requests. A release renames 
   its use of `HVO_GITHUB_TOKEN`. Install from a release folder with `--release` instead. `cameraagent install` and
   `catalog install` require `--catalog-bundle`, and `cameraagent preflight` takes the candidate only as
   `--image-ref`. (#1309)
+- The key-signed release path, which the owner retired on 2026-10-16: the `Signed Distribution Release` workflow and
+  its Azure Key Vault signing job, the separate installer, catalog and image release trains with their signed manifests,
+  indexes, SBOM and provenance files, the embedded P-256 trust root, the bootstrap script
+  `scripts/install-hvo-sky-install.sh`, and the release tool's signing and train commands. A release is trusted by
+  `SHA256SUMS` and its build-provenance attestations. (#1310)
 
 ### Fixed
 

@@ -59,7 +59,7 @@ Restore and Release build occur in Build, Unit, Integration, Architecture, both 
 
 ## 2. Deployment Surface Inventory
 
-Typed deployment code is `HVO.SkyMonitor.Deployment.Contracts`, `HVO.SkyMonitor.Deployment.Distribution`, `HVO.SkyMonitor.Deployment.Cli`, and `tools/HVO.SkyMonitor.Deployment.ReleaseTool`. `Deployment.Cli` is the sole supported deployment authority.
+Typed deployment code is `HVO.SkyMonitor.Deployment.Contracts`, `HVO.SkyMonitor.Deployment.Cli`, and `tools/HVO.SkyMonitor.Deployment.ReleaseTool` (the signed `HVO.SkyMonitor.Deployment.Distribution` layer was removed with the signed releases, #1310). `Deployment.Cli` is the sole supported deployment authority.
 
 `scripts/test:deploy-environment` is a 5,998-line Bash harness that is simultaneously a test suite, a fixture factory, a process coordinator, and a fault injector. It defines ten shards: `preflight`, `prepare-images`, `partial-prepare`, `existing-catalog-up`, `bootstrap-authority`, `bootstrap-credentials`, `smoke`, `measure`, `existing-down`, `deploy-services`. It contains its own bounded worker pool with `setsid` process-group supervision, progress files, and injected failure, hang, progress, and descendant-failure modes.
 

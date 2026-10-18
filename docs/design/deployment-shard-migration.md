@@ -65,7 +65,7 @@ lines sit today.
 | Shard | Proves | Target owner | Retained shell |
 | --- | --- | --- | --- |
 | preflight | inventory schema, split-host preflight rejection matrix, tampered-registry rejection, legacy login shape, `bash -n` of production scripts | `Deployment.Contracts` inventory and preflight validators; MSTest in `Deployment.Cli.Tests` | `bash -n` syntax gate stays shell (it tests shell) |
-| prepare-images | image staging, registry digest binding, isolated/cross-case prepare failures, eight failpoints | `Deployment.Distribution` image staging; MSTest | none |
+| prepare-images | image staging, registry digest binding, isolated/cross-case prepare failures, eight failpoints | `Deployment.Cli` image staging (the signed `Deployment.Distribution` layer was removed, #1310); MSTest | none |
 | partial-prepare | no-container recovery after failed prepare, lock/state cleanup, quoted-path cases | `Deployment.Cli` recovery command; MSTest | none |
 | existing-catalog-up | production catalog bundle install, lock blocking, resume failure, legacy path case, fixture transport | `Catalog.Sqlite` install contract plus `Deployment.Cli` transport; MSTest | `scripts/catalog/*.sh` remain the installer under test; a thin adapter invokes them |
 | bootstrap-authority | registry publication as hard barrier, rendered/private bootstrap state, registry-failure recovery | `Deployment.Cli` bootstrap phase; MSTest | none |
