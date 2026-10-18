@@ -12,7 +12,8 @@ public sealed record CalibrationLibraryReconciliationSummary(
     int Inspected,
     int Adopted,
     int Quarantined,
-    int Failed);
+    int Failed,
+    int Held = 0);
 
 public sealed class CalibrationLibraryReconciler(
     SqliteCalibrationLibraryStore store,
@@ -32,10 +33,20 @@ public sealed class CalibrationLibraryReconciler(
         var adopted = 0;
         var quarantined = 0;
         var failed = 0;
+        // Moving a bundle into quarantine is a move a snapshot restore can depend on (restored calibration and
+        // processing rows name its artifacts), so it happens only while no durable pause is recorded. This runs at host
+        // start, before any pause can be acknowledged; a held move stays planned, or is found again, at a later start.
+        var movesAllowed = !await _store.HasDurablePauseAsync(cancellationToken).ConfigureAwait(false);
+        var held = 0;
         foreach (var planned in await _store.ReadPlannedReconciliationsAsync(cancellationToken).ConfigureAwait(false))
         {
             try
             {
+                if (planned.Outcome == "quarantined" && !movesAllowed)
+                {
+                    held++;
+                    continue;
+                }
                 if (planned.Outcome == "quarantined")
                 {
                     MovePlannedQuarantine(planned);
@@ -57,7 +68,7 @@ public sealed class CalibrationLibraryReconciler(
             if (!Directory.Exists(syntheticRoot))
             {
                 return await CompleteRunAsync(
-                    new CalibrationLibraryReconciliationSummary(0, adopted, quarantined, failed),
+                    new CalibrationLibraryReconciliationSummary(0, adopted, quarantined, failed, held),
                     activity,
                     cancellationToken).ConfigureAwait(false);
             }
@@ -68,7 +79,7 @@ public sealed class CalibrationLibraryReconciler(
         catch (Exception exception) when (IsExpectedReconciliationFailure(exception))
         {
             return await CompleteRunAsync(
-                new CalibrationLibraryReconciliationSummary(0, adopted, quarantined, failed + 1),
+                new CalibrationLibraryReconciliationSummary(0, adopted, quarantined, failed + 1, held),
                 activity,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -102,6 +113,11 @@ public sealed class CalibrationLibraryReconciler(
                             evidenceKey, failedOperation.Reason, cancellationToken).ConfigureAwait(false);
                         _telemetry?.RecordValidationFailure("reconcile", failedOperation.Reason);
                         failed++;
+                        continue;
+                    }
+                    if (!movesAllowed)
+                    {
+                        held++;
                         continue;
                     }
                     var quarantineRelativePath = Normalize(Path.Combine(
@@ -165,7 +181,7 @@ public sealed class CalibrationLibraryReconciler(
             }
         }
         return await CompleteRunAsync(
-            new CalibrationLibraryReconciliationSummary(directories.Length, adopted, quarantined, failed),
+            new CalibrationLibraryReconciliationSummary(directories.Length, adopted, quarantined, failed, held),
             activity,
             cancellationToken).ConfigureAwait(false);
     }

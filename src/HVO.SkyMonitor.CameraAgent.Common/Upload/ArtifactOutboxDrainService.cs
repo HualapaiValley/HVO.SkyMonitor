@@ -8,6 +8,7 @@ using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
+using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
@@ -24,7 +25,8 @@ public sealed class ArtifactOutboxDrainService(
     ArtifactOutboxState state,
     ArtifactOutboxTelemetry telemetry,
     FleetRuntimeState fleetRuntimeState,
-    CaptureScheduleRuntimeCoordinator? scheduleCoordinator = null) : BackgroundService
+    CaptureScheduleRuntimeCoordinator? scheduleCoordinator = null,
+    Capture.CaptureAdmissionCoordinator? admission = null) : BackgroundService
 {
     private static readonly System.Text.Json.JsonSerializerOptions SerializerOptions = new(System.Text.Json.JsonSerializerDefaults.Web)
     {
@@ -237,7 +239,7 @@ public sealed class ArtifactOutboxDrainService(
         }
     }
 
-    private async Task AcknowledgeAsync(
+    internal async Task AcknowledgeAsync(
         string storageRoot,
         ArtifactOutboxLease lease,
         ArtifactUploadResult result,
@@ -246,12 +248,21 @@ public sealed class ArtifactOutboxDrainService(
         var acknowledgement = result.Acknowledgement
             ?? throw new InvalidDataException("Successful upload result omitted acknowledgement evidence.");
         var delivery = ArtifactUploadClient.ResolveDelivery(lease.Record);
+        // Removing the uploaded payload is a deletion a snapshot restore can depend on: a restored outbox brings back
+        // the pending row that names it. So the decision, the lock wait and the removal all hold the capture
+        // maintenance barrier, and while capture is not running the acknowledgement is recorded but the payload stays;
+        // it is no longer pending, so retention removes it on its root's schedule.
+        using var maintenance = await Capture.CaptureMaintenanceHold.EnterAsync(admission, cancellationToken).ConfigureAwait(false);
         var lifecycleGate = StorageLifecycleLock.ForRoot(storageRoot);
         await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             await outbox.AcknowledgeAsync(storageRoot, lease, acknowledgement, cancellationToken).ConfigureAwait(false);
-            if (ShouldRemoveUploadedArtifact(storageRoot, hostOptions.Value.RawIngressRoot))
+            if (maintenance.HeldBy is { } heldBy && ShouldRemoveUploadedArtifact(storageRoot, hostOptions.Value.RawIngressRoot))
+            {
+                logger.MaintenanceHeld("Uploaded artifact removal", heldBy);
+            }
+            else if (ShouldRemoveUploadedArtifact(storageRoot, hostOptions.Value.RawIngressRoot))
             {
                 var path = Path.Combine(Path.GetFullPath(storageRoot), delivery.RelativeArtifactPath);
                 await frameStorageService.RemoveAsync(

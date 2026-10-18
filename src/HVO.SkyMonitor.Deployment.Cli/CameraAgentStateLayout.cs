@@ -105,6 +105,31 @@ internal static class CameraAgentStateLayout
     public static string RawIngressDatabasePath(string stateRoot)
         => Path.Combine(stateRoot, RawDirectoryName, "journal", "raw-ingress.db");
 
+    /// <summary>
+    /// Every SQLite store CameraAgent keeps, relative to the state root, with <c>/</c> separators. These are the small
+    /// databases a migrating upgrade snapshots. None lies inside a bulk frame, archive or derived tree, so the snapshot
+    /// never reads bulk data. The artifact outbox lives in each storage root the generated pipeline writes to.
+    /// </summary>
+    /// <summary>The local automation store's location under the state root.</summary>
+    public const string AutomationStore = RawDirectoryName + "/.automation/local-automations.db";
+
+    public static IReadOnlyList<string> SqliteStores { get; } =
+    [
+        $"{IdentityDirectoryName}/{IdentityDatabaseFileName}",
+        $"{RawDirectoryName}/journal/raw-ingress.db",
+        $"{RawDirectoryName}/outbox/artifact-outbox.db",
+        $"{ArchiveDirectoryName}/outbox/artifact-outbox.db",
+        $"{RawDirectoryName}/.fleet/fleet-status.db",
+        $"{RawDirectoryName}/.environment/environmental-observation-outbox.db",
+        $"{RawDirectoryName}/evidence/execution-evidence-outbox.db",
+        $"{RawDirectoryName}/.time-lapses/time-lapses.db",
+        $"{RawDirectoryName}/.nightly-products/nightly-products.db",
+        $"{RawDirectoryName}/.automation/local-automations.db"
+    ];
+
+    /// <summary>The files SQLite keeps beside a database while it has uncheckpointed or uncommitted content.</summary>
+    public static IReadOnlyList<string> SqliteSidecarSuffixes { get; } = ["-wal", "-shm", "-journal"];
+
     /// <summary>Every runtime state tree a CameraAgent-only reset deletes.</summary>
     public static IReadOnlyList<string> ResettableStateDirectories(string stateRoot) =>
     [

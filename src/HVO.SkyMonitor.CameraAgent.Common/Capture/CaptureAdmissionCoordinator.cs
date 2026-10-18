@@ -103,15 +103,19 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     private readonly SqliteCaptureControlStore _store;
     private readonly CaptureControlTelemetry _telemetry;
     private readonly FleetRuntimeState? _fleetRuntimeState;
+    private readonly CaptureMaintenanceGate? _maintenance;
     private readonly bool _pauseFreshOnStartup;
     private readonly SemaphoreSlim _initializeGate = new(1, 1);
     private readonly SemaphoreSlim _commandGate = new(1, 1);
     private readonly object _drainGate = new();
+    private readonly object _maintenanceGate = new();
     private TaskCompletionSource _runningSignal = NewSignal();
     private TaskCompletionSource? _drainedSignal;
     private CaptureAdmissionSnapshot _snapshot;
     private int _gateState;
     private int _inFlight;
+    private int _maintenanceInFlight;
+    private TaskCompletionSource? _maintenanceDrainedSignal;
     private int _failedPublicationDuringDrain;
     private int _failClosed;
     private bool _awaitingEvidenceRecovery;
@@ -122,7 +126,8 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         IOptions<CameraAgentHostOptions> options,
         TimeProvider timeProvider,
         CaptureControlTelemetry telemetry,
-        FleetRuntimeState? fleetRuntimeState = null)
+        FleetRuntimeState? fleetRuntimeState = null,
+        CaptureMaintenanceGate? maintenanceGate = null)
     {
         ArgumentNullException.ThrowIfNull(rawCaptureIngress);
         ArgumentNullException.ThrowIfNull(options);
@@ -131,6 +136,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         _rawCaptureIngress = rawCaptureIngress;
         _telemetry = telemetry;
         _fleetRuntimeState = fleetRuntimeState;
+        _maintenance = maintenanceGate;
         var configured = options.Value;
         _pauseFreshOnStartup = configured.ProvisioningStartupGate.Enabled;
         _store = new SqliteCaptureControlStore(
@@ -142,6 +148,8 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             0,
             timeProvider.GetUtcNow(),
             false);
+        // Last, once every field is set: code admission depends on reaches the barrier through the gate.
+        maintenanceGate?.Attach(this);
     }
 
     public CaptureAdmissionSnapshot Snapshot => Volatile.Read(ref _snapshot);
@@ -190,6 +198,75 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         finally
         {
             _initializeGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Enters one destructive maintenance pass (retention, derived-product or projected-scene stage cleanup), or
+    /// returns <see langword="null"/> when capture admission is not running and maintenance deletions are held.
+    /// </summary>
+    /// <remarks>
+    /// A pass holds the lease for everything it might delete, including any lock it waits for. A pause closes the
+    /// admission gate before it is made durable, so no new lease is granted after that, and it waits for every
+    /// outstanding lease before it reports itself complete. Acknowledging a pause is therefore a deletion barrier.
+    /// </remarks>
+    internal async ValueTask<CaptureMaintenanceLease?> TryEnterMaintenanceAsync(CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        lock (_maintenanceGate)
+        {
+            var snapshot = Snapshot;
+            if (!snapshot.IsInitialized || snapshot.State != CaptureAdmissionState.Running ||
+                Volatile.Read(ref _gateState) != GateRunning)
+            {
+                return null;
+            }
+            _maintenanceInFlight++;
+        }
+        return new CaptureMaintenanceLease(this);
+    }
+
+    /// <summary>
+    /// The non-initializing form of <see cref="TryEnterMaintenanceAsync"/>, for a deletion on a path admission
+    /// initialization itself waits for: before admission is initialized it grants nothing.
+    /// </summary>
+    internal CaptureMaintenanceLease? TryEnterMaintenanceIfInitialized()
+    {
+        lock (_maintenanceGate)
+        {
+            var snapshot = Snapshot;
+            if (!snapshot.IsInitialized || snapshot.State != CaptureAdmissionState.Running ||
+                Volatile.Read(ref _gateState) != GateRunning)
+            {
+                return null;
+            }
+            _maintenanceInFlight++;
+        }
+        return new CaptureMaintenanceLease(this);
+    }
+
+    private void ReleaseMaintenance()
+    {
+        lock (_maintenanceGate)
+        {
+            if (--_maintenanceInFlight == 0)
+            {
+                _maintenanceDrainedSignal?.TrySetResult();
+                _maintenanceDrainedSignal = null;
+            }
+        }
+    }
+
+    private Task WaitForMaintenanceDrainAsync()
+    {
+        lock (_maintenanceGate)
+        {
+            if (_maintenanceInFlight == 0)
+            {
+                return Task.CompletedTask;
+            }
+            _maintenanceDrainedSignal ??= NewSignal();
+            return _maintenanceDrainedSignal.Task;
         }
     }
 
@@ -346,6 +423,9 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
 
             // Once PauseRequested is durable, request cancellation must not leave capture admission half-drained.
             await WaitForDrainAsync(CancellationToken.None).ConfigureAwait(false);
+            // The pause is acknowledged only after every destructive maintenance pass that entered while admission was
+            // running has finished, and none can enter once the gate is closed, so no deletion follows the acknowledgement.
+            await WaitForMaintenanceDrainAsync().ConfigureAwait(false);
             if (Volatile.Read(ref _failedPublicationDuringDrain) != 0)
             {
                 FailClosed();
@@ -440,6 +520,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         // Callers open admission only after Running has committed durably.
         Volatile.Write(ref _gateState, GateRunning);
         Volatile.Read(ref _runningSignal).TrySetResult();
+        _maintenance?.NotifyRunning();
     }
 
     private Task WaitForDrainAsync(CancellationToken cancellationToken)
@@ -515,6 +596,20 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         _disposed = true;
         _initializeGate.Dispose();
         _commandGate.Dispose();
+    }
+
+    /// <summary>One destructive maintenance pass admitted while capture was running; disposing it releases the pass.</summary>
+    internal sealed class CaptureMaintenanceLease(CaptureAdmissionCoordinator owner) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                owner.ReleaseMaintenance();
+            }
+        }
     }
 
     [SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable", Justification = "The readonly lease implements IDisposable and delegates idempotent disposal to shared reference state so struct copies cannot double-release admission.")]

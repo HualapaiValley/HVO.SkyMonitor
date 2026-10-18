@@ -251,6 +251,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<EnvironmentalCaptureTriggerBridge>();
         services.AddSingleton<CaptureControlTelemetry>();
         services.AddSingleton<CapturePipelineTraceStore>();
+        services.AddSingleton<CaptureMaintenanceGate>();
         services.AddSingleton<CaptureAdmissionCoordinator>();
         services.AddSingleton<CaptureScheduleRuntimeCoordinator>();
         services.AddSingleton<CameraAgentStorageResolver>();

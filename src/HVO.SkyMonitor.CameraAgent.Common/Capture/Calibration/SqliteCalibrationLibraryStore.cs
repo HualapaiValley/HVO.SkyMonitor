@@ -3115,6 +3115,26 @@ public sealed class SqliteCalibrationLibraryStore(
     private DateTimeOffset Now()
         => DateTimeOffset.FromUnixTimeMilliseconds(_timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
 
+    /// <summary>
+    /// Whether the journal records a capture admission state other than running: a durable pause, or one being
+    /// acquired. Calibration reconciliation runs at host start, before any pause command can be acknowledged, so this
+    /// decides whether it may move evidence. A journal with no recorded state has never been paused.
+    /// </summary>
+    internal async Task<bool> HasDurablePauseAsync(CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using (var exists = connection.CreateCommand())
+        {
+            exists.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'capture_control_state';";
+            if (Convert.ToInt64(await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) == 0)
+                return false;
+        }
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT state FROM capture_control_state WHERE state_key = 1;";
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is string state &&
+               !string.Equals(state, "running", StringComparison.Ordinal);
+    }
+
     private async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
         EnsureDatabaseFilesArePhysical();
