@@ -335,8 +335,7 @@ its schema in today, and what is declared:
 | `nightlyProducts` | `raw/.nightly-products/nightly-products.db` | `PRAGMA user_version` | Not declared |
 | `localAutomations` | `raw/.automation/local-automations.db` | `PRAGMA user_version` | Not declared |
 
-- These are the stores the state snapshot of #1340 copies. The schema markers are the ones its migration rule
-  compares.
+- These are the stores the state snapshot of #1340 copies.
 - The star catalog is a data package (section 1), not a store. The catalog labels keep the versions CameraAgent
   accepts: `io.hvo.skymonitor.catalog-contract` and `catalog-manifest-version`.
 - Declaring every store's schema in `stateContracts`, from these markers, is outstanding conformance work (#1359).
