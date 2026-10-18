@@ -208,6 +208,19 @@ internal static partial class CameraAgentContainerResources
             false);
     }
 
+    /// <summary>
+    /// <paramref name="compose"/> as a start on a host whose Docker cannot enforce a CPU limit gives it (#1357). Docker
+    /// discards a memory or PIDs limit it cannot enforce, with a warning, but refuses to create a container with a CPU
+    /// limit there, so every service's CPU limit is withheld and each other limit kept. Each line stays as a comment that
+    /// keeps its value. Only the copy a start uses is changed, never the Compose files an instance records.
+    /// </summary>
+    public static string WithoutCpuLimits(string compose)
+    {
+        ArgumentNullException.ThrowIfNull(compose);
+        return CpuLimitPattern().Replace(
+            compose, "    # cpus: \"${cpus}\" withheld: Docker here cannot enforce a CPU limit (#1357)\n");
+    }
+
     /// <summary>Whether two limit sets impose the same limits, whoever set them.</summary>
     public static bool SameLimits(ContainerResourceLimits left, ContainerResourceLimits right)
     {
@@ -223,4 +236,7 @@ internal static partial class CameraAgentContainerResources
         "^    cpus: \"(?<cpus>[0-9]{1,4}(?:\\.[0-9]{1,2})?)\"\\n    mem_limit: (?<amount>[1-9][0-9]{0,6})(?<unit>[MG])\\n    pids_limit: (?<pids>[1-9][0-9]{0,6})\\n",
         RegexOptions.Multiline | RegexOptions.CultureInvariant)]
     private static partial Regex LimitsPattern();
+
+    [GeneratedRegex("^    cpus: \"(?<cpus>[0-9]{1,4}(?:\\.[0-9]{1,2})?)\"\\n", RegexOptions.Multiline | RegexOptions.CultureInvariant)]
+    private static partial Regex CpuLimitPattern();
 }
