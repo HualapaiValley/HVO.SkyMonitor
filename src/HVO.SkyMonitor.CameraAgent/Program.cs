@@ -435,6 +435,7 @@ public class Program
         app.MapCameraAgentTimeLapseSampleEndpoints();
         app.MapCameraAgentTimeLapseEndpoints();
         app.MapCameraAgentOperationsEndpoints();
+        app.MapCameraAgentSystemOperationsEndpoints();
         app.MapCameraAgentSkyMapEndpoints();
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
         app.MapCameraAgentAutomationOperationsEndpoints();

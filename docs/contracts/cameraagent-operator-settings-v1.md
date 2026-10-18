@@ -3,7 +3,9 @@
 CameraAgent describes each operator setting once, in a catalogue its operations API serves, so the web UI, the
 `hvo-sky` command line and its terminal UI build the same forms and apply the same rules. Non-browser clients reach
 the operations API with owner-created API keys. This implements section 8 of the
-[HVO installation contract](../hvo-install-contract.md) for CameraAgent; the command line itself is #1317.
+[HVO installation contract](../hvo-install-contract.md) for CameraAgent. The command line is `hvo-sky`
+([hvo-sky.md](../runbooks/hvo-sky.md), #1317), which also uses the operations routes `GET info` and `POST restart`
+that runbook describes.
 
 ## Catalogue
 

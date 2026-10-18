@@ -1,5 +1,6 @@
 <Solution>
     <Project Path="src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj" />
+    <Project Path="src/HVO.SkyMonitor.CameraAgent.Cli/HVO.SkyMonitor.CameraAgent.Cli.csproj" />
     <Project Path="src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj" />
     <Project Path="src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/HVO.SkyMonitor.CameraAgent.Modules.Zwo.csproj" />
     <Project Path="src/HVO.SkyMonitor.CameraAgent.Replay/HVO.SkyMonitor.CameraAgent.Replay.csproj" />

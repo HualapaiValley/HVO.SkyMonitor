@@ -319,6 +319,8 @@ verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Common/Gallery/Thumbnail.c
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/Module.cs"           full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Replay/Transport.cs"             full false false false true  false false false
 verify_component_plan "src/HVO.SkyMonitor.CameraAgent.ReplayRunner/Program.cs"         full false false false true  false false false
+# hvo-sky (#1317) is a separate executable that talks to CameraAgent only over HTTP; no combined suite compiles against it.
+verify_component_plan "src/HVO.SkyMonitor.CameraAgent.Cli/SkyCli.cs"                    full false false false true  false false false
 verify_component_plan "tests/HVO.SkyMonitor.CameraAgent.Tests/CaptureTests.cs"         full false false false true  false false false
 # A project's own category inventory is owned by that project (#853): a count
 # change selects the owning lane, not the complete matrix that editing the audit

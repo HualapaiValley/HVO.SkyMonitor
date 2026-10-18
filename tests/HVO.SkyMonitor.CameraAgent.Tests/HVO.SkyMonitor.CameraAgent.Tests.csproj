@@ -32,6 +32,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent\HVO.SkyMonitor.CameraAgent.csproj" />
+    <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Cli\HVO.SkyMonitor.CameraAgent.Cli.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Common\HVO.SkyMonitor.CameraAgent.Common.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.CameraAgent.Modules.Zwo\HVO.SkyMonitor.CameraAgent.Modules.Zwo.csproj" />
