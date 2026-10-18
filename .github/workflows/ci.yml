@@ -2,6 +2,9 @@ name: CI
 
 on:
   workflow_dispatch:
+  # The release workflow calls this workflow as the qualification of the commit a release tag names, before it builds
+  # anything from it (release.yml, #1310). A called run sees the caller's push of the tag, so it runs in full.
+  workflow_call:
   push:
     branches: [main, 'release/**']
   pull_request:
@@ -470,8 +473,9 @@ jobs:
           test -x TestResults/publish/installer/linux-x64/hvo-sky-install
           test -x TestResults/publish/installer/linux-arm64/hvo-sky-install
           file TestResults/publish/installer/linux-arm64/hvo-sky-install | grep -q 'ARM aarch64'
-          # Both installers name the version and commit they were built from (install contract section 1, #1312).
-          installer_version="0.0.0-dev+$(git rev-parse HEAD)"
+          # Both installers name the version and commit they were built from (install contract section 1, #1312): a
+          # publish given no version is the product version's development build (#1310).
+          installer_version="$(./scripts/release:version --dev)+$(git rev-parse HEAD)"
           test "$(TestResults/publish/installer/linux-x64/hvo-sky-install --version)" = "$installer_version"
           grep -aqF "$installer_version" TestResults/publish/installer/linux-arm64/hvo-sky-install
           test -x TestResults/publish/replay-runner/linux-x64/HVO.SkyMonitor.CameraAgent.ReplayRunner

@@ -1,0 +1,17 @@
+<Project>
+  <!--
+    A build names the product version in Directory.Build.props or a pre-release of it (install contract section 1,
+    #1310), so a release cannot ship a program that says another version: -p:Version must be X.Y.Z or X.Y.Z-<pre-release>,
+    and a build given an informational version must give that same version (the SDK sets it from the version, and appends
+    the commit, after this check). A VERSION environment variable sets the version too, because MSBuild reads
+    environment variables as properties, ignoring case.
+  -->
+  <Target Name="HvoCheckProductVersion" BeforeTargets="BeforeBuild">
+    <Error Code="HVO1310"
+           Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(Version)', '\A$([System.Text.RegularExpressions.Regex]::Escape('$(VersionPrefix)'))(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?\z'))"
+           Text="Version '$(Version)' is not the product version $(VersionPrefix) (Directory.Build.props) or a pre-release of it. If you did not pass -p:Version, a VERSION environment variable set it: unset it." />
+    <Error Code="HVO1310"
+           Condition="'$(InformationalVersion)' != '' and '$(InformationalVersion)' != '$(Version)'"
+           Text="The informational version '$(InformationalVersion)' is not the version '$(Version)': give a build its version as -p:Version, not -p:InformationalVersion." />
+  </Target>
+</Project>

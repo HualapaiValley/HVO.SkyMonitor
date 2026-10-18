@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Publishes a final release's or release candidate's tested draft (install contract section 3, #1310), as the release
+# workflow's publish job does once the owner has approved it. It needs gh, signed in or with GH_TOKEN (contents write),
+# and jq.
+#
+#   scripts/release:publish <tag>
+#
+# Publishing moves latest only for the newest final release: a final vX.Y.Z higher than every published final release
+# becomes the latest release; a release candidate, or a fix to an older version, leaves the latest release where it is.
+# The newest is decided from the versions of the published final releases, not from the release GitHub marks latest,
+# which GitHub would otherwise move to any release published without --latest=false. The release must be the one draft
+# with the tag, marked a pre-release exactly when it is a release candidate.
+#
+# Every read is strict (scripts/lib/github-api.sh). The latest release is read before and after the draft is published:
+# before publishing, a read that is not certain stops with nothing changed; after it, the latest release must be this
+# one when it moved and unchanged when it did not, or the job fails rather than report what it cannot show. It prints
+# moved=true or moved=false, for $GITHUB_OUTPUT.
+set -euo pipefail
+
+fail() {
+    printf '::error::%s\n' "$*" >&2
+    exit 1
+}
+
+[[ $# -eq 1 ]] || fail "usage: scripts/release:publish <tag>"
+tag="$1"
+repository="${GITHUB_REPOSITORY:-HualapaiValley/HVO.SkyMonitor}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/github-api.sh
+source "$repo_root/scripts/lib/github-api.sh"
+# shellcheck source=scripts/lib/releases.sh
+source "$repo_root/scripts/lib/releases.sh"
+version="$("$repo_root/scripts/release:version" --tag "$tag" 2>&1)" || fail "${version#release:version: }"
+prerelease=false
+[[ "$version" != *-* ]] || prerelease=true
+errors="$(mktemp)"
+trap 'rm -f "$errors"' EXIT
+
+# The latest release's tag, or "none" when GitHub answers its own 404.
+latest() {
+    local body read_status=0
+    body="$(github_api_read --absent-ok "the latest release" 'type == "object"' "repos/$repository/releases/latest")" ||
+        read_status=$?
+    case "$read_status" in
+        0) ;;
+        "$GITHUB_API_ABSENT")
+            printf 'none\n'
+            return 0
+            ;;
+        *) return 1 ;;
+    esac
+    jq -er '.tag_name | select(type == "string" and length > 0)' <<<"$body" 2>/dev/null ||
+        fail "GitHub's latest release names no tag."
+}
+
+releases="$(github_api_read_releases "$repository")" || exit 1
+tagged="$(jq -c --arg tag "$tag" '[.[] | select(.tag_name == $tag)]' <<<"$releases")"
+count="$(jq 'length' <<<"$tagged")"
+[[ "$count" != 0 ]] || fail "No release or draft has $tag; the tested draft is gone."
+[[ "$count" == 1 ]] || fail "$count releases have the tag $tag; only one draft can be published."
+state="$(jq -r '.[0] | "draft=\(.draft) prerelease=\(.prerelease)"' <<<"$tagged")"
+[[ "$state" == "draft=true prerelease=$prerelease" ]] ||
+    fail "The release for $tag is not the draft it should be ($state, not draft=true prerelease=$prerelease); it is not published again."
+newest="$(release_newest_final "$releases")"
+move=false
+if [[ "$prerelease" == false ]] && release_is_newer "$version" "$newest"; then
+    move=true
+fi
+
+before="$(latest)" || exit 1
+arguments=(--draft=false "--prerelease=$prerelease" "--latest=$move")
+gh release edit "$tag" --repo "$repository" "${arguments[@]}" >/dev/null 2>"$errors" ||
+    fail "cannot publish $tag: $(tr '\n' ' ' <"$errors")"
+after="$(latest)" ||
+    fail "$tag is published, but the latest release cannot be read back to show where it is; check it by hand."
+if [[ "$move" == true ]]; then
+    [[ "$after" == "$tag" ]] || fail "$tag is published as the newest final release, but the latest release is $after, not $tag."
+    printf 'Published %s; it is the newest final release (the newest before was %s), so it is the latest release.\n' \
+        "$tag" "${newest:-none}" >&2
+else
+    [[ "$after" == "$before" ]] || fail "Publishing $tag moved the latest release from $before to $after."
+    if [[ "$prerelease" == true ]]; then
+        printf 'Published %s as a release candidate; the latest release is still %s.\n' "$tag" "$after" >&2
+    else
+        printf 'Published %s; it is not the newest final release (%s is), so the latest release is still %s.\n' \
+            "$tag" "$newest" "$after" >&2
+    fi
+fi
+printf 'moved=%s\n' "$move"

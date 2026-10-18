@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Moves the CameraAgent image's latest tag to a published final release's image (install contract section 3, #1310),
+# as the release workflow's latest job does once the release is published. It needs gh, signed in or with GH_TOKEN
+# (contents read), jq, sha256sum and skopeo, which uses the login docker login stored (packages write).
+#
+#   scripts/release:tag-latest <repository> <tag> <digest>
+#
+# It moves latest only when the release for <tag> is published, final and the newest final release, decided as
+# scripts/release:publish decides it, and GitHub's latest release is that release; a release candidate, or a fix to an
+# older version, leaves latest alone and says so. The image must still be <digest> under its version tag, the digest
+# release.json names: latest is copied from that digest, with every platform and its digests (skopeo copy --all
+# --preserve-digests), and read back. Running it again moves nothing further. Every GitHub read is strict
+# (scripts/lib/github-api.sh), and a read that is not certain fails rather than move or keep latest by guess.
+set -euo pipefail
+
+fail() {
+    printf '::error::%s\n' "$*" >&2
+    exit 1
+}
+
+[[ $# -eq 3 ]] || fail "usage: scripts/release:tag-latest <repository> <tag> <digest>"
+repository="$1"
+tag="$2"
+digest="$3"
+[[ "$repository" =~ ^[a-z0-9][a-z0-9.-]*(:[0-9]{1,5})?(/[a-z0-9]+([._-][a-z0-9]+)*)+$ ]] ||
+    fail "'$repository' is not an image repository such as ghcr.io/hualapaivalley/skymonitor-cameraagent."
+[[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "'$digest' is not an image digest, sha256:<64 hex digits>."
+github_repository="${GITHUB_REPOSITORY:-HualapaiValley/HVO.SkyMonitor}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/github-api.sh
+source "$repo_root/scripts/lib/github-api.sh"
+# shellcheck source=scripts/lib/releases.sh
+source "$repo_root/scripts/lib/releases.sh"
+version="$("$repo_root/scripts/release:version" --tag "$tag" 2>&1)" || fail "${version#release:version: }"
+if [[ "$version" == *-* ]]; then
+    printf '%s is a release candidate: the image latest tag stays where it is.\n' "$tag"
+    exit 0
+fi
+
+releases="$(github_api_read_releases "$github_repository")" || exit 1
+state="$(jq -r --arg tag "$tag" '[.[] | select(.tag_name == $tag)]
+    | if length == 1 then .[0] | "draft=\(.draft) prerelease=\(.prerelease)" else "\(length) releases" end' <<<"$releases")"
+[[ "$state" == "draft=false prerelease=false" ]] ||
+    fail "The release for $tag is not one published final release ($state); the image latest tag is not moved."
+newest="$(release_newest_final "$releases")"
+if [[ "$newest" != "$version" ]]; then
+    printf '%s is not the newest final release (%s is): the image latest tag stays where it is.\n' "$tag" "$newest"
+    exit 0
+fi
+read_status=0
+latest="$(github_api_read --absent-ok "the latest release" 'type == "object" and (.tag_name | type == "string")' \
+    "repos/$github_repository/releases/latest")" || read_status=$?
+[[ "$read_status" == 0 ]] || fail "$tag is the newest final release, but GitHub has no latest release to match it."
+[[ "$(jq -r '.tag_name' <<<"$latest")" == "$tag" ]] ||
+    fail "$tag is the newest final release, but GitHub's latest release is $(jq -r '.tag_name' <<<"$latest"); the image latest tag is not moved."
+
+manifest="$(mktemp)"
+errors="$(mktemp)"
+trap 'rm -f "$manifest" "$errors"' EXIT
+# The digest the registry serves for <reference>, read from the manifest's own bytes.
+served() {
+    skopeo inspect --tls-verify=true --retry-times 3 --raw "docker://$1" >"$manifest" 2>"$errors" || {
+        cat "$errors" >&2
+        fail "cannot read $1 from the registry."
+    }
+    sha256sum "$manifest" | cut -d ' ' -f 1 | sed 's/^/sha256:/'
+}
+
+versioned="$(served "$repository:$version")" || exit 1
+[[ "$versioned" == "$digest" ]] ||
+    fail "$repository:$version is $versioned in the registry, not $digest, the image $tag names; the image latest tag is not moved."
+skopeo copy --dest-tls-verify=true --retry-times 3 --all --preserve-digests \
+    "docker://$repository@$digest" "docker://$repository:latest" >&2 || fail "cannot tag $repository:latest."
+tagged="$(served "$repository:latest")" || exit 1
+[[ "$tagged" == "$digest" ]] || fail "$repository:latest is $tagged in the registry, not $digest, after it was tagged."
+printf '%s:latest is %s, the image of %s, the newest final release.\n' "$repository" "$digest" "$tag"

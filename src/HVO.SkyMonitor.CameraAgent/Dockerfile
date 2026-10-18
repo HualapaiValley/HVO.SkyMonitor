@@ -7,9 +7,10 @@
 # resolved native image references through these arguments instead.
 ARG DOTNET_SDK_IMAGE=dotnet-sdk
 ARG DOTNET_ASPNET_IMAGE=dotnet-aspnet
-# Build identity. Development builds keep the declared 0.0.0-dev version; the release script passes the release
-# version. A build without a source revision stays marked "unknown", which the installer rejects.
-ARG HVO_VERSION=0.0.0-dev
+# Build identity. The release script passes the release's version, which Directory.Build.targets requires to be the
+# product version or a pre-release of it (#1310); a build given none is the product's development build, X.Y.Z-dev, and
+# carries an empty version label. A build without a source revision stays marked "unknown", which the installer rejects.
+ARG HVO_VERSION=""
 ARG HVO_SOURCE_REVISION=unknown
 FROM mcr.microsoft.com/dotnet/sdk:10.0.402@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa AS dotnet-sdk
 FROM mcr.microsoft.com/dotnet/aspnet:10.0.13@sha256:d5633778c754e89a386882eddf8dbee6942447a8a4b8267c19cf1e1158d0b0ac AS dotnet-aspnet
@@ -20,6 +21,7 @@ WORKDIR /src
 
 # Copy solution and project files needed for restore
 COPY Directory.Build.props ./
+COPY Directory.Build.targets ./
 COPY Directory.Packages.props ./
 COPY .editorconfig ./
 COPY global.json ./
@@ -63,19 +65,20 @@ RUN case "${HVO_SOURCE_REVISION}" in \
     esac \
     || { echo "HVO_SOURCE_REVISION must be a 40-character lowercase object ID or unknown." >&2; exit 64; } \
     && case "${HVO_VERSION}" in \
-        ""|[!0-9A-Za-z]*|*[!0-9A-Za-z]|*..*|*[!0-9A-Za-z.-]*) false ;; \
+        "") ;; \
+        [!0-9A-Za-z]*|*[!0-9A-Za-z]|*..*|*[!0-9A-Za-z.-]*) false ;; \
         *) [ "${#HVO_VERSION}" -le 128 ] ;; \
     esac \
-    || { echo "HVO_VERSION must be 1-128 ASCII letters, digits, periods, and hyphens." >&2; exit 64; } \
+    || { echo "HVO_VERSION must be empty or 1-128 ASCII letters, digits, periods, and hyphens." >&2; exit 64; } \
     && dotnet publish HVO.SkyMonitor.CameraAgent.csproj --no-restore -c Release -o /app/publish \
-        "-p:InformationalVersion=${HVO_VERSION}" "-p:SourceRevisionId=${HVO_SOURCE_REVISION}" \
+        ${HVO_VERSION:+"-p:Version=${HVO_VERSION}"} "-p:SourceRevisionId=${HVO_SOURCE_REVISION}" \
     && test "$(wc -c < /app/publish/wwwroot/_framework/blazor.web.js)" -gt 10000 \
     && grep -q 'window.Blazor' /app/publish/wwwroot/_framework/blazor.web.js
 ARG TARGETARCH
 RUN case "${TARGETARCH}" in amd64) rid=linux-x64 ;; arm64) rid=linux-arm64 ;; *) exit 64 ;; esac \
     && dotnet publish ../HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.CameraAgent.ReplayRunner.csproj \
         --no-restore -c Release -r "${rid}" -o /app/replay-runner \
-        "-p:InformationalVersion=${HVO_VERSION}" "-p:SourceRevisionId=${HVO_SOURCE_REVISION}"
+        ${HVO_VERSION:+"-p:Version=${HVO_VERSION}"} "-p:SourceRevisionId=${HVO_SOURCE_REVISION}"
 
 # Apply the runtime permissions here so the runtime stage copies them in. A recursive chmod after the copy forces
 # an overlay copy-up of the entire payload, which rewrites every published file a second time.
