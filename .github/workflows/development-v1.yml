@@ -86,6 +86,14 @@ jobs:
         run: |
           ./scripts/test:ci-secret-scan
 
+      # The same classification selects the pre-release scripts' tests: their
+      # scripts, the pre-release workflow, the release tool or this wiring. As
+      # above, only a successful, explicit false skips them.
+      - name: Test release scripts
+        if: ${{ !cancelled() && (steps.classify.outcome != 'success' || steps.classify.outputs.release_scripts != 'false') }}
+        run: |
+          ./scripts/test:release-scripts
+
   build-unit:
     name: Development v1 / Build and Unit
     needs: preflight

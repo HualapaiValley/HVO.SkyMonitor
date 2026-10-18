@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
 
@@ -102,12 +103,10 @@ public sealed class UpgradeNoteTerminalSafetyTests
 
     private static string RenderParsed(string text)
     {
-        var json = JsonSerializer.SerializeToUtf8Bytes(new
-        {
-            schemaVersion = 1,
-            version = Version,
-            upgradeNotes = new[] { new { version = Version, text } }
-        });
+        // The complete release.json fixture of 1.2.0, with this note as its only one.
+        var root = JsonNode.Parse(ReleaseManifestTests.Fixture())!.AsObject();
+        root["upgradeNotes"] = new JsonArray(new JsonObject { ["version"] = Version, ["text"] = text });
+        var json = JsonSerializer.SerializeToUtf8Bytes(root);
         return UpgradeNotes.Render(UpgradeNotes.Plan("1.0.0", ReleaseManifest.Parse(json), InstanceId));
     }
 

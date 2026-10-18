@@ -22,7 +22,9 @@
           "name": "skymonitor-cameraagent-1.2.0-linux-arm64.oci.tar",
           "platform": "linux/arm64",
           "size": 734003200,
-          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "manifestDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "configDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
         }
       ]
     }
@@ -61,6 +63,23 @@
       "platform": null,
       "size": 9000,
       "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "name": "skymonitor-cameraagent-1.2.0-linux-arm64.oci.tar",
+      "kind": "image-archive",
+      "platform": "linux-arm64",
+      "size": 734003200,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "name": "hyg-v4.2-p3-s2-r1.bundle.tar.gz",
+      "kind": "catalog",
+      "platform": null,
+      "size": 31000000,
+      "sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+      "files": {
+        "manifest.json": "8888888888888888888888888888888888888888888888888888888888888888"
+      }
     }
   ]
 }

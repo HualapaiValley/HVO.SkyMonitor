@@ -194,69 +194,184 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
-    public void Parse_SignedLocalCatalog_UsesLocalChannelWithoutNetwork()
+    [DataRow(null, null)]
+    [DataRow("archive", "Archive")]
+    [DataRow("registry", "Registry")]
+    public void Parse_Release_NamesTheReleaseFolderInsteadOfAnImage(string? source, string? expected)
     {
-        var arguments = ValidArguments
-            .Where(static value => value != "--catalog-bundle" && value != "/srv/hvo/catalog.bundle")
-            .Concat(["--catalog-manifest", "/srv/hvo/catalog-manifest.json", "--no-download"])
-            .ToArray();
+        string[] arguments =
+        [
+            .. ValidArguments.Take(8), "--release", "/srv/hvo/release-v1.2.0-dev.3",
+            .. source is null ? Array.Empty<string>() : ["--image-source", source]
+        ];
 
+        // No image is prompted for: the release names it.
         var request = CommandLine.Parse(arguments);
 
-        Assert.AreEqual(DistributionChannel.Local, request.Channel);
-        Assert.IsTrue(request.NoDownload);
-        Assert.IsNull(request.CatalogBundle);
+        Assert.AreEqual("/srv/hvo/release-v1.2.0-dev.3", request.Release);
+        Assert.AreEqual(expected, request.ImageSource?.ToString());
+        Assert.AreEqual(string.Empty, request.ImageReference);
     }
 
     [TestMethod]
-    public void Parse_StableCatalogManifest_RequiresHttpsLocator()
+    [DataRow("--image-ref", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--image-ref cannot be combined with --release.")]
+    [DataRow("--image-archive", "/srv/hvo/cameraagent.tar", "--image-archive and --image-archive-sha256 cannot be combined with --release.")]
+    public void Parse_ReleaseWithAnOperatorImage_IsRejected(string option, string value, string message)
     {
-        var arguments = ValidArguments
-            .Where(static value => value != "--catalog-bundle" && value != "/srv/hvo/catalog.bundle")
-            .Concat(["--channel", "stable", "--catalog-manifest", "https://downloads.example/catalog/catalog-manifest.json"])
-            .ToArray();
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse(
+            [.. ValidArguments.Take(8), "--release", "/srv/hvo/release", option, value,
+             .. option == "--image-archive" ? new[] { "--image-archive-sha256", new string('b', 64) } : []]));
 
-        var request = CommandLine.Parse(arguments);
-
-        Assert.AreEqual(DistributionChannel.Stable, request.Channel);
+        Assert.AreEqual(message, exception.Message);
     }
 
     [TestMethod]
-    public void Parse_NonLocalChannelWithLocalManifest_IsRejected()
+    [DataRow("relative/release", "--release must be an absolute normalized path.")]
+    [DataRow("/srv//release", "--release must be an absolute normalized path.")]
+    [DataRow("/srv/hvo/../release", "--release must be an absolute normalized path other than root.")]
+    [DataRow("/", "--release must be an absolute normalized path other than root.")]
+    public void Parse_ReleaseThatIsNotAnAbsoluteFolder_IsRejected(string release, string message)
     {
-        var arguments = ValidArguments
-            .Where(static value => value != "--catalog-bundle" && value != "/srv/hvo/catalog.bundle")
-            .Concat(["--channel", "stable", "--catalog-manifest", "/srv/hvo/catalog-manifest.json"])
-            .ToArray();
+        var exception = Assert.ThrowsExactly<InstallUsageException>(
+            () => CommandLine.Parse([.. ValidArguments.Take(8), "--release", release]));
 
-        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse(arguments));
+        Assert.AreEqual(message, exception.Message);
     }
 
     [TestMethod]
-    public void Parse_UnknownChannel_IsRejected()
+    public void Parse_ImageSourceWithoutARelease_IsRejected()
     {
-        var arguments = ValidArguments.Concat(["--channel", "latest"]).ToArray();
+        var exception = Assert.ThrowsExactly<InstallUsageException>(
+            () => CommandLine.Parse([.. ValidArguments, "--image-source", "registry"]));
 
-        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse(arguments));
+        Assert.AreEqual("--image-source requires --release.", exception.Message);
     }
 
     [TestMethod]
-    public void Parse_SignedIndex_AllowsExplicitOrDefaultCatalogVersion()
+    public void Parse_UnknownImageSource_IsRejected()
     {
-        var arguments = ValidArguments
-            .Where(static value => value != "--catalog-bundle" && value != "/srv/hvo/catalog.bundle")
-            .Concat([
-                "--channel", "prerelease",
-                "--catalog-index", "https://downloads.example/catalog-index.json",
-                "--catalog-version", "hyg-v4.2-p3-s2-r1",
-                "--asset-base-url", "https://mirror.example/releases"
-            ])
-            .ToArray();
+        var exception = Assert.ThrowsExactly<InstallUsageException>(
+            () => CommandLine.Parse([.. ValidArguments.Take(8), "--release", "/srv/hvo/release", "--image-source", "network"]));
 
-        var request = CommandLine.Parse(arguments);
+        Assert.AreEqual("--image-source must be archive or registry.", exception.Message);
+    }
 
-        Assert.AreEqual("hyg-v4.2-p3-s2-r1", request.CatalogVersion);
-        Assert.AreEqual(DistributionChannel.Prerelease, request.Channel);
+    [TestMethod]
+    [DataRow("--image-manifest", "/srv/hvo/image-manifest.json")]
+    [DataRow("--image-index", "https://downloads.example/image-index.json")]
+    [DataRow("--image-version", "1.2.0")]
+    [DataRow("--catalog-manifest", "/srv/hvo/catalog-manifest.json")]
+    [DataRow("--catalog-index", "https://downloads.example/catalog-index.json")]
+    [DataRow("--catalog-version", "hyg-v4.2-p3-s2-r1")]
+    [DataRow("--asset-base-url", "https://mirror.example/releases")]
+    [DataRow("--channel", "stable")]
+    public void Parse_RetiredSignedReleaseOption_IsUnknown(string option, string value)
+    {
+        // Signed manifests and indexes are retired (#1309): their options are no longer the installer's.
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse([.. ValidArguments, option, value]));
+
+        Assert.AreEqual($"Unknown option '{option}'.", exception.Message);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("imageManifest", "/srv/hvo/image-manifest.json")]
+    [DataRow("catalogIndex", "https://downloads.example/catalog-index.json")]
+    [DataRow("channel", "Stable")]
+    public void Parse_ConfigurationNamingARetiredSignedReleaseMember_IsRejected(string member, string value)
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            var json = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(
+                CommandLine.Parse(ValidArguments), InstallRequestJsonContext.Default.InstallRequest))!.AsObject();
+            json[member] = value;
+            File.WriteAllText(path, json.ToJsonString());
+
+            Assert.ThrowsExactly<JsonException>(() => CommandLine.Parse(["cameraagent", "install", "--config", path]));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Parse_ConfigurationNamingARelease_ReadsIt()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            var json = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(
+                CommandLine.Parse(ValidArguments), InstallRequestJsonContext.Default.InstallRequest))!.AsObject();
+            json["imageReference"] = string.Empty;
+            json["release"] = "/srv/hvo/release-v1.2.0-dev.3";
+            json["imageSource"] = "Registry";
+            File.WriteAllText(path, json.ToJsonString());
+
+            var request = CommandLine.Parse(["cameraagent", "install", "--config", path]);
+
+            Assert.AreEqual("/srv/hvo/release-v1.2.0-dev.3", request.Release);
+            Assert.AreEqual("Registry", request.ImageSource?.ToString());
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(null, null)]
+    [DataRow("registry", "Registry")]
+    public void ParseCommand_UpgradeFromARelease_NamesTheReleaseFolder(string? source, string? expected)
+    {
+        var request = (LifecycleRequest)CommandLine.ParseCommand([
+            "cameraagent", "upgrade", "--instance-id", Guid.NewGuid().ToString("D"),
+            "--release", "/srv/hvo/release-v1.2.0-dev.3",
+            .. source is null ? Array.Empty<string>() : ["--image-source", source]
+        ]);
+
+        Assert.AreEqual("/srv/hvo/release-v1.2.0-dev.3", request.Release);
+        Assert.AreEqual(expected, request.ImageSource?.ToString());
+        Assert.IsNull(request.ImageReference);
+    }
+
+    [TestMethod]
+    [DataRow("--image-ref", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--image-ref, --image-archive, and --image-archive-sha256 cannot be combined with --release.")]
+    [DataRow("--catalog-bundle", "/srv/hvo/catalog.bundle", "Image upgrade does not accept catalog or purge options.")]
+    public void ParseCommand_UpgradeFromAReleaseWithAnotherSource_IsRejected(string option, string value, string message)
+    {
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand([
+            "cameraagent", "upgrade", "--instance-id", Guid.NewGuid().ToString("D"),
+            "--release", "/srv/hvo/release", option, value
+        ]));
+
+        Assert.AreEqual(message, exception.Message);
+    }
+
+    [TestMethod]
+    public void ParseCommand_UpgradeImageSourceWithoutARelease_IsRejected()
+    {
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand([
+            "cameraagent", "upgrade", "--instance-id", Guid.NewGuid().ToString("D"),
+            "--image-ref", $"sha256:{new string('a', 64)}", "--image-source", "registry"
+        ]));
+
+        Assert.AreEqual("--image-source requires --release.", exception.Message);
+    }
+
+    [TestMethod]
+    [DataRow("cameraagent", "rollback")]
+    [DataRow("catalog", "install")]
+    [DataRow("cameraagent", "uninstall")]
+    public void ParseCommand_ReleaseOutsideAnUpgrade_IsRejected(string group, string command)
+    {
+        string[] arguments = group == "catalog"
+            ? [group, command, "--catalog-bundle", "/srv/hvo/catalog.bundle", "--release", "/srv/hvo/release"]
+            : [group, command, "--instance-id", Guid.NewGuid().ToString("D"), "--release", "/srv/hvo/release"];
+
+        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(arguments));
     }
 
     [TestMethod]
@@ -336,7 +451,7 @@ public sealed class CommandLineTests
             "missing-restore" => request with { RestoreOnly = false },
             "dry-run" => request with { DryRun = true },
             "rollback" => request with { Operation = LifecycleOperationKind.Rollback, ImageReference = null },
-            "signed" => request with { ImageReference = null, ImageManifest = "/srv/release/image-manifest.json" },
+            "signed" => request with { ImageReference = null, Release = "/srv/release" },
             _ => throw new InvalidOperationException()
         };
         Assert.ThrowsExactly<InstallUsageException>(request.Validate);
@@ -473,30 +588,30 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
-    public void ParseCommand_CatalogCheckIsInstanceFreeAndNamesASignedLocator()
+    public void ParseCommand_CatalogCheck_IsNoLongerACommand()
     {
-        var check = (LifecycleRequest)CommandLine.ParseCommand([
-            "catalog", "check", "--catalog-index", "https://mirror.example/indexes/catalog-stable-index.json"
-        ]);
+        // catalog check read only signed catalog releases, which are retired (#1309).
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(["catalog", "check"]));
 
-        Assert.AreEqual(LifecycleOperationKind.CatalogCheck, check.Operation);
-        Assert.IsNull(check.InstanceId);
-        Assert.IsFalse(check.DryRun);
+        Assert.AreEqual("Unknown command 'catalog check'.", exception.Message);
     }
 
     [TestMethod]
-    [DataRow("--instance-id", "00000000-0000-0000-0000-000000000001", DisplayName = "instance")]
-    [DataRow("--dry-run", null, DisplayName = "dry-run")]
-    [DataRow("--resume", null, DisplayName = "resume")]
-    [DataRow("--image-reference", "sha256:0000000000000000000000000000000000000000000000000000000000000000", DisplayName = "image")]
-    [DataRow(null, null, DisplayName = "no-locator")]
-    public void ParseCommand_CatalogCheckRefusesMutatingOrUnscopedOptions(string? option, string? value)
+    [DataRow(null, "catalog install requires --catalog-bundle.")]
+    [DataRow("--catalog-version", "Catalog install accepts only --catalog-bundle and common options.")]
+    [DataRow("relative", "--catalog-bundle must be an absolute normalized path other than root.")]
+    public void ParseCommand_CatalogInstallTakesOnlyABundle(string? fault, string message)
     {
-        string[] arguments = option is null
-            ? ["catalog", "check"]
-            : ["catalog", "check", "--catalog-manifest", "/srv/hvo/catalog-manifest.json", option, .. value is null ? Array.Empty<string>() : [value]];
+        string[] arguments = fault switch
+        {
+            null => ["catalog", "install"],
+            "relative" => ["catalog", "install", "--catalog-bundle", "relative/catalog.bundle"],
+            _ => ["catalog", "install", "--catalog-bundle", "/srv/hvo/catalog.bundle", fault, "hyg-v4.2-p3-s2-r1"]
+        };
 
-        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(arguments));
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(arguments));
+
+        Assert.AreEqual(message, exception.Message);
     }
 
     [TestMethod]

@@ -18,7 +18,7 @@ public sealed class DockerClientTests
             $"[{{\"Id\":\"sha256:{new string('b', 64)}\",\"Architecture\":\"amd64\",\"Os\":\"linux\",\"RepoDigests\":[\"{digest}\"]}}]");
         var request = CreateRequest(digest);
 
-        var result = await new DockerClient(runner).PrepareImageAsync(request, allowMutation: true, signedImage: null, CancellationToken.None);
+        var result = await new DockerClient(runner).PrepareImageAsync(request, allowMutation: true, release: null, CancellationToken.None);
 
         Assert.AreEqual("daemon-1", result.Daemon.Id);
         Assert.AreEqual(digest, result.Image.ImmutableReference);
@@ -37,7 +37,7 @@ public sealed class DockerClientTests
             $"[{{\"Id\":\"{imageId}\",\"Architecture\":\"arm64\",\"Os\":\"linux\",\"RepoDigests\":[]}}]");
 
         await Assert.ThrowsExactlyAsync<InstallerException>(
-            () => new DockerClient(runner).PrepareImageAsync(CreateRequest(imageId), allowMutation: true, signedImage: null, CancellationToken.None));
+            () => new DockerClient(runner).PrepareImageAsync(CreateRequest(imageId), allowMutation: true, release: null, CancellationToken.None));
     }
 
     [TestMethod]
@@ -50,7 +50,7 @@ public sealed class DockerClientTests
             $"[{{\"Id\":\"sha256:{new string('b', 64)}\",\"Architecture\":\"amd64\",\"Os\":\"linux\",\"RepoDigests\":[\"{digest}\"]}}]");
         var request = CreateRequest(digest) with { NoDownload = true };
 
-        await new DockerClient(runner).PrepareImageAsync(request, allowMutation: true, signedImage: null, CancellationToken.None);
+        await new DockerClient(runner).PrepareImageAsync(request, allowMutation: true, release: null, CancellationToken.None);
 
         Assert.IsFalse(runner.Commands.Any(static command => command.Contains(" image pull ", StringComparison.Ordinal)));
     }
@@ -78,7 +78,7 @@ public sealed class DockerClientTests
                 $"[{{\"Id\":\"{requested}\",\"Architecture\":\"amd64\",\"Os\":\"linux\",\"RepoDigests\":[]}}]");
 
             var exception = await Assert.ThrowsExactlyAsync<InstallerException>(
-                () => new DockerClient(runner).PrepareImageAsync(request, allowMutation: true, signedImage: null, CancellationToken.None));
+                () => new DockerClient(runner).PrepareImageAsync(request, allowMutation: true, release: null, CancellationToken.None));
 
             StringAssert.Contains(exception.Message, "did not contain", StringComparison.Ordinal);
             StringAssert.Contains(runner.Commands.Single(command => command.Contains(" image load ", StringComparison.Ordinal)), "/proc/", StringComparison.Ordinal);
@@ -194,6 +194,117 @@ public sealed class DockerClientTests
         Assert.IsEmpty(capabilities.Warnings);
         Assert.IsFalse(HostPrerequisites.Evaluate(capabilities, "/srv/data/hvo-skymonitor", 1, 1, new FakeHostEnvironment(),
             CameraAgentContainerResources.Default).Satisfied);
+    }
+
+    [TestMethod]
+    public async Task PrepareImageAsync_ContainerdStoreNamingTheReleaseIndex_ResolvesTheReleaseImage()
+    {
+        // The release's offline archive is loaded by its configuration digest, the classic store's image ID; Docker's
+        // containerd store names the loaded image by its index digest instead, which the release also names.
+        var release = ReleaseSelection();
+        var runner = new StoreScopedProcessRunner("amd64", release.ImageIds![0], ReleaseLabels(release));
+
+        var result = await new DockerClient(runner).PrepareImageAsync(
+            CreateRequest(release.ImageIds[2]) with { NoDownload = true }, allowMutation: false, release, CancellationToken.None);
+
+        Assert.AreEqual(release.ImageIds[0], result.Image.ImageId);
+        Assert.AreEqual(release.ImageIds[0], result.Image.ImmutableReference);
+    }
+
+    [TestMethod]
+    public async Task PrepareImageAsync_DaemonThatKnowsNoReleaseIdentity_IsRefused()
+    {
+        var release = ReleaseSelection();
+        var runner = new StoreScopedProcessRunner("amd64", $"sha256:{new string('f', 64)}", ReleaseLabels(release));
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => new DockerClient(runner).PrepareImageAsync(
+            CreateRequest(release.ImageIds![2]) with { NoDownload = true }, allowMutation: false, release, CancellationToken.None));
+
+        StringAssert.StartsWith(exception.Message, "Docker could not inspect the CameraAgent image", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow(null)]
+    [DataRow("org.opencontainers.image.version")]
+    [DataRow("org.opencontainers.image.revision")]
+    [DataRow("io.hvo.skymonitor.component")]
+    public async Task PrepareImageAsync_ReleaseImageWithoutTheReleasesLabel_IsRefusedWithoutEchoingTheLabel(string? missing)
+    {
+        var release = ReleaseSelection();
+        var labels = ReleaseLabels(release);
+        if (missing is null)
+        {
+            labels["org.opencontainers.image.version"] = "1.2.0-dev.3\u001b[2J";
+        }
+        else
+        {
+            labels.Remove(missing);
+        }
+        var runner = new StoreScopedProcessRunner("amd64", release.ImageIds![2], labels);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => new DockerClient(runner).PrepareImageAsync(
+            CreateRequest(release.ImageIds[2]) with { NoDownload = true }, allowMutation: false, release, CancellationToken.None));
+
+        Assert.AreEqual(
+            "The CameraAgent image Docker resolved is not labelled as CameraAgent 1.2.0-dev.3 from commit " +
+            "0123456789abcdef0123456789abcdef01234567, as release v1.2.0-dev.3 requires.",
+            exception.Message);
+    }
+
+    private static ReleaseImageSelection ReleaseSelection() => new(
+        "v1.2.0-dev.3", "1.2.0-dev.3", "0123456789abcdef0123456789abcdef01234567", "linux/amd64",
+        $"ghcr.io/hualapaivalley/skymonitor-cameraagent@sha256:{new string('1', 64)}",
+        [$"sha256:{new string('1', 64)}", $"sha256:{new string('2', 64)}", $"sha256:{new string('3', 64)}"]);
+
+    private static Dictionary<string, string> ReleaseLabels(ReleaseImageSelection release)
+        => new(ReleaseFixture.ContractLabels, StringComparer.Ordinal)
+        {
+            ["org.opencontainers.image.version"] = release.Version,
+            ["org.opencontainers.image.revision"] = release.Commit
+        };
+
+    /// <summary>A daemon that knows exactly one image reference, as one image store would name the image.</summary>
+    private sealed class StoreScopedProcessRunner(
+        string architecture,
+        string knownReference,
+        IReadOnlyDictionary<string, string> labels) : IProcessRunner
+    {
+        public Task<ProcessResult> RunAsync(
+            string fileName,
+            IReadOnlyList<string> arguments,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (arguments is ["context", "inspect", ..])
+            {
+                return Task.FromResult(new ProcessResult(0, "unix:///var/run/docker.sock", string.Empty));
+            }
+            var effective = arguments.Count >= 2 && arguments[0] == "--host" ? arguments.Skip(2).ToArray() : arguments;
+            return effective switch
+            {
+                ["info", ..] => Task.FromResult(new ProcessResult(
+                    0,
+                    $"{{\"OSType\":\"linux\",\"Architecture\":\"{architecture}\",\"ID\":\"daemon-1\",\"Name\":\"host\",\"ServerVersion\":\"29.0\"}}",
+                    string.Empty)),
+                ["compose", ..] => Task.FromResult(new ProcessResult(0, "2.40.0", string.Empty)),
+                ["image", "inspect", var reference] when reference == knownReference => Task.FromResult(new ProcessResult(
+                    0,
+                    System.Text.Json.JsonSerializer.Serialize(new[]
+                    {
+                        new
+                        {
+                            Id = knownReference,
+                            Architecture = architecture,
+                            Os = "linux",
+                            RepoDigests = Array.Empty<string>(),
+                            Config = new { Labels = labels }
+                        }
+                    }),
+                    string.Empty)),
+                ["image", "inspect", var reference] => Task.FromResult(new ProcessResult(1, string.Empty, $"No such image: {reference}")),
+                _ => Task.FromResult(new ProcessResult(1, string.Empty, "unexpected command"))
+            };
+        }
     }
 
     private sealed class FakeProcessRunner(params string[] outputs) : IProcessRunner

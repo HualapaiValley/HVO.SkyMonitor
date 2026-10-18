@@ -155,21 +155,3 @@ public sealed record DistributionReleaseIndex(
     string DefaultVersion,
     DistributionSigningIdentity Signing,
     IReadOnlyList<DistributionReleaseReference> Releases);
-
-public sealed record DistributionVerificationEvidence(
-    string ManifestKind,
-    string ReleaseTrain,
-    string ReleaseVersion,
-    string ReleaseTag,
-    string ManifestSha256,
-    long ManifestLength,
-    string SigningKeyId,
-    string AssetName,
-    string AssetSha256,
-    long AssetLength,
-    Uri SourceBaseUri,
-    Uri ResolvedPublicUri,
-    string VerificationResult,
-    DateTimeOffset VerifiedUtc,
-    string? ProvenanceAssetName,
-    string? ProvenanceSha256);

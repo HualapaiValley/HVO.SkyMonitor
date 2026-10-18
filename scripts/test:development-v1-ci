@@ -40,6 +40,12 @@ contract_condition = (
 )
 
 
+release_scripts_condition = (
+    "if: ${{ !cancelled() && (steps.classify.outcome != 'success' || "
+    "steps.classify.outputs.release_scripts != 'false') }}"
+)
+
+
 def step(section, name):
     match = re.search(
         rf"^      - name: {re.escape(name)}\n(.*?)(?=^      - |\Z)",
@@ -103,6 +109,15 @@ def violations(short, full):
             "history scan precedes fallible classification")
     require(contract_condition in contract and "./scripts/test:ci-secret-scan" in contract,
             "contract skips only successful explicit false, including after classification failure")
+    # Issue #1309: the pre-release scripts' tests share that classification and its fail-open rule.
+    release_scripts = step(preflight, "Test release scripts")
+    require(release_scripts_condition in release_scripts and
+            "          ./scripts/test:release-scripts\n" in release_scripts,
+            "release script tests skip only successful explicit false, including after classification failure")
+    require(0 <= preflight.find("Classify secret scanner contract inputs") <
+            preflight.find("- name: Test release scripts"),
+            "release script tests follow the classification they read")
+    require("          ./scripts/test:release-scripts\n" in quality, "full Quality retains test:release-scripts")
     require(
         re.findall(r"^\s+dotnet (restore|build|test)\b", build, re.M)
         == ["restore", "build", "test"],
@@ -201,6 +216,16 @@ mutations = (
         "secret_scan_contract != 'false'", "secret_scan_contract == 'true'"), full),
     ("v1 failed-step fallback suppressed", short.replace("!cancelled() && ", ""), full),
     ("full secret scan removed", short, full.replace("./scripts/ci:secret-scan", ":")),
+    ("v1 release script tests removed", short.replace("./scripts/test:release-scripts", ":"), full),
+    ("v1 classifier failure skips release script tests", short.replace(
+        "steps.classify.outcome != 'success' || steps.classify.outputs.release_scripts",
+        "steps.classify.outputs.release_scripts"), full),
+    ("v1 missing output skips release script tests", short.replace(
+        "release_scripts != 'false'", "release_scripts == 'true'"), full),
+    ("v1 release script tests suppressed after a failed step", short.replace(
+        "${{ !cancelled() && (steps.classify.outcome != 'success' || steps.classify.outputs.release_scripts",
+        "${{ (steps.classify.outcome != 'success' || steps.classify.outputs.release_scripts"), full),
+    ("full release script tests removed", short, full.replace("./scripts/test:release-scripts", ":")),
     ("v1 shallow checkout", short.replace("fetch-depth: 0", "fetch-depth: 1"), full),
     ("full shallow checkout", short, full.replace("fetch-depth: 0", "fetch-depth: 1")),
 )
