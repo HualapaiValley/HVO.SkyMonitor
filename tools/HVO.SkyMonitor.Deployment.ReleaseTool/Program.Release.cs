@@ -13,6 +13,7 @@ namespace HVO.SkyMonitor.Deployment.ReleaseTool;
 /// installers CI published, the approved catalog bundle and the upgrade notes:
 /// <list type="bullet">
 /// <item><c>hvo-sky-install-linux-x64</c> and <c>hvo-sky-install-linux-arm64</c>, the installers;</item>
+/// <item><c>hvo-sky-linux-x64</c> and <c>hvo-sky-linux-arm64</c>, the runtime client (#1317), when given: both or neither;</item>
 /// <item><c>skymonitor-cameraagent-&lt;version&gt;-linux-&lt;arch&gt;.oci.tar</c>, an offline image archive per platform;</item>
 /// <item><c>&lt;catalog version&gt;.bundle.tar.gz</c>, the catalog bundle, under its own version;</item>
 /// <item><c>install.sh</c>, when given, with the release's version written in (<see cref="StampInstallScript"/>);</item>
@@ -48,7 +49,8 @@ internal static partial class Program
     private static async Task CreateReleaseAsync(Dictionary<string, string> options, CancellationToken cancellationToken)
     {
         RejectUnknown(options, "--version", "--commit", "--created-utc", "--image-repository", "--image-archive", "--platforms",
-            "--installer-linux-x64", "--installer-linux-arm64", "--catalog-bundle", "--install-script", "--upgrade-notes", "--output");
+            "--installer-linux-x64", "--installer-linux-arm64", "--cli-linux-x64", "--cli-linux-arm64", "--catalog-bundle",
+            "--install-script", "--upgrade-notes", "--output");
         var version = RequireReleaseVersion(options, "--version");
         var commit = RequireGitOid(options, "--commit");
         var created = RequireUtc(options, "--created-utc");
@@ -60,6 +62,14 @@ internal static partial class Program
         var imageArchive = RequireExistingFile(options, "--image-archive");
         var x64 = RequireExistingFile(options, "--installer-linux-x64");
         var arm64 = RequireExistingFile(options, "--installer-linux-arm64");
+        // The runtime client (install contract section 4, kind cli) is given for both platforms or for neither.
+        if (options.ContainsKey("--cli-linux-x64") != options.ContainsKey("--cli-linux-arm64"))
+        {
+            throw new ReleaseToolException("--cli-linux-x64 and --cli-linux-arm64 are given together, or not at all.");
+        }
+        var clients = options.ContainsKey("--cli-linux-x64")
+            ? new[] { ("linux-arm64", RequireExistingFile(options, "--cli-linux-arm64")), ("linux-x64", RequireExistingFile(options, "--cli-linux-x64")) }
+            : [];
         var catalogBundle = options.ContainsKey("--catalog-bundle") ? RequireExistingDirectory(options, "--catalog-bundle") : null;
         var installScript = options.ContainsKey("--install-script")
             ? StampInstallScript(await ReadInstallScriptAsync(RequireExistingFile(options, "--install-script"), cancellationToken)
@@ -70,6 +80,10 @@ internal static partial class Program
             : [];
         ValidateElf(x64, expectedMachine: 0x3e, "linux-x64");
         ValidateElf(arm64, expectedMachine: 0xb7, "linux-arm64");
+        foreach (var (runtime, client) in clients)
+        {
+            ValidateElf(client, expectedMachine: runtime == "linux-x64" ? (ushort)0x3e : (ushort)0xb7, runtime, "hvo-sky client");
+        }
 
         // Every input has been read and checked; a failure from here on removes the half-written release.
         var output = PrepareOutput(options);
@@ -81,6 +95,12 @@ internal static partial class Program
                 var name = $"hvo-sky-install-{runtime}";
                 CopyExecutable(installer, Path.Combine(output, name));
                 assets.Add(await AssetAsync(output, name, "installer", runtime, null, cancellationToken).ConfigureAwait(false));
+            }
+            foreach (var (runtime, client) in clients)
+            {
+                var name = $"hvo-sky-{runtime}";
+                CopyExecutable(client, Path.Combine(output, name));
+                assets.Add(await AssetAsync(output, name, "cli", runtime, null, cancellationToken).ConfigureAwait(false));
             }
             var (digest, archives, stateContracts) = await OciImageArchive.SplitAsync(
                 imageArchive, CameraAgentImageName, repository, version, commit, platforms, output, created, cancellationToken)

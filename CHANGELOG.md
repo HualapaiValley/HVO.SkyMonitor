@@ -12,6 +12,13 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 ### Added
 
+- `hvo-sky`, the command line of a running CameraAgent, ships with each release as `hvo-sky-linux-arm64` and
+  `hvo-sky-linux-x64`. It shows the status and versions (`status [--watch]`, `info`), reads and changes the operator
+  settings from CameraAgent's settings catalogue (`config show|get|set|diff|apply`), stages and applies rig and schedule
+  revisions, and restarts CameraAgent, with `--json` and the installer's exit codes. It signs in with an owner API key
+  that `hvo-sky login` reads from the terminal and keeps in a `0600` file, or from `HVO_SKY_API_KEY`; it never takes a
+  key on the command line. CameraAgent's operations API gains `GET info` and `POST restart`, the Camera & rig page's
+  restart for API clients. (#1317)
 - `hvo-sky-install` follows the shared install contract's command surface. `--plan` (the new name of `--dry-run`)
   reports what install, a re-run of one, `upgrade`, `rollback`, `reinstall`, `uninstall` and `purge` would create,
   change, leave unchanged or remove, after the same checks the command makes, and writes nothing, not even a temporary

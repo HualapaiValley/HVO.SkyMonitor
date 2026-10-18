@@ -15,6 +15,7 @@ in the Build job, before anything is pushed.
 | File | Contents |
 | --- | --- |
 | `hvo-sky-install-linux-x64`, `hvo-sky-install-linux-arm64` | The self-contained installer. `--version` prints `<version>+<commit>` |
+| `hvo-sky-linux-x64`, `hvo-sky-linux-arm64` | The runtime client, `hvo-sky` (asset kind `cli`, [hvo-sky.md](hvo-sky.md), [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317)), self-contained. `--version` prints `<version>+<commit>`. A pre-release tagged before #1317 has none |
 | `skymonitor-cameraagent-<version>-linux-amd64.oci.tar`, `...-linux-arm64.oci.tar` | The CameraAgent image for one platform, as an OCI archive `docker image load` reads |
 | `<catalog version>.bundle.tar.gz` | The approved catalog bundle, under its own version: today `hyg-v4.2-p3-s2-r1.bundle.tar.gz` |
 | `install.sh` | The entry point, with the pre-release's version written in ([install.sh](deployment-installer.md#installsh), [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311)). A pre-release tagged before #1311 has none |

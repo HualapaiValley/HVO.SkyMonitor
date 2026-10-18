@@ -391,6 +391,65 @@ public sealed class ReleaseAssetsToolTests
         CollectionAssert.Contains(await File.ReadAllLinesAsync(Path.Combine(output, "SHA256SUMS")), $"{Sha256(written)}  install.sh");
     }
 
+    /// <summary>
+    /// The runtime client, hvo-sky (#1317, install contract section 4): one file per platform, named hvo-sky-&lt;rid&gt;,
+    /// listed with kind <c>cli</c> and covered by SHA256SUMS like every other asset.
+    /// </summary>
+    [TestMethod]
+    public async Task CreateRelease_WithTheRuntimeClient_WritesOneCliAssetPerPlatform()
+    {
+        using var fixture = OciReleaseFixture.Create();
+        var x64 = fixture.WriteClient("x64", 0x3e);
+        var arm64 = fixture.WriteClient("arm64", 0xb7);
+        var output = Path.Combine(fixture.Root, "release");
+
+        Assert.AreEqual(0, await Program.Main(fixture.Arguments(output, "--cli-linux-x64", x64, "--cli-linux-arm64", arm64)));
+
+        var release = JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(output, "release.json")))!;
+        var sums = await File.ReadAllLinesAsync(Path.Combine(output, "SHA256SUMS"));
+        foreach (var (runtime, source) in new[] { ("linux-x64", x64), ("linux-arm64", arm64) })
+        {
+            var name = $"hvo-sky-{runtime}";
+            var written = Path.Combine(output, name);
+            CollectionAssert.AreEqual(await File.ReadAllBytesAsync(source), await File.ReadAllBytesAsync(written));
+            Assert.IsTrue(File.GetUnixFileMode(written).HasFlag(UnixFileMode.UserExecute | UnixFileMode.OtherExecute));
+            var asset = release["assets"]!.AsArray().Single(node => (string)node!["name"]! == name)!;
+            Assert.AreEqual("cli", (string)asset["kind"]!);
+            Assert.AreEqual(runtime, (string)asset["platform"]!);
+            Assert.AreEqual(Sha256(written), (string)asset["sha256"]!);
+            Assert.AreEqual(new FileInfo(written).Length, (long)asset["size"]!);
+            CollectionAssert.Contains(sums, $"{Sha256(written)}  {name}");
+        }
+
+        Assert.HasCount(2, release["assets"]!.AsArray().Where(static node => (string)node!["kind"]! == "installer").ToArray());
+    }
+
+    [TestMethod]
+    [DataRow("--cli-linux-x64")]
+    [DataRow("--cli-linux-arm64")]
+    public async Task CreateRelease_OneClientWithoutTheOther_IsRefusedAndWritesNothing(string option)
+    {
+        using var fixture = OciReleaseFixture.Create();
+        var client = fixture.WriteClient("x64", option == "--cli-linux-x64" ? (ushort)0x3e : (ushort)0xb7);
+        var output = Path.Combine(fixture.Root, "release");
+
+        Assert.AreEqual(1, await Program.Main(fixture.Arguments(output, option, client)));
+
+        Assert.IsFalse(Directory.Exists(output), "a refused release must leave nothing behind");
+    }
+
+    [TestMethod]
+    public async Task CreateRelease_AClientForAnotherArchitecture_IsRefusedAndWritesNothing()
+    {
+        using var fixture = OciReleaseFixture.Create();
+        var arm64 = fixture.WriteClient("arm64", 0xb7);
+        var output = Path.Combine(fixture.Root, "release");
+
+        Assert.AreEqual(1, await Program.Main(fixture.Arguments(output, "--cli-linux-x64", arm64, "--cli-linux-arm64", arm64)));
+
+        Assert.IsFalse(Directory.Exists(output), "a refused release must leave nothing behind");
+    }
+
     [TestMethod]
     public async Task CreateRelease_TheRepositorysInstallScript_ChangesInItsVersionLineAlone()
     {

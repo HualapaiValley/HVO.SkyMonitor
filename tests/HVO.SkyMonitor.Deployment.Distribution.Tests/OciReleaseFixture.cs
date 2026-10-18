@@ -166,12 +166,16 @@ internal sealed class OciReleaseFixture : IDisposable
 
     public void Dispose() => Directory.Delete(Root, recursive: true);
 
-    private string WriteElf(string name, ushort machine)
+    /// <summary>A stand-in hvo-sky client for <paramref name="name"/>'s architecture (#1317), unlike either installer.</summary>
+    public string WriteClient(string name, ushort machine) => WriteElf(name, machine, "client", fill: 0x5a);
+
+    private string WriteElf(string name, ushort machine, string role = "installer", byte fill = 0)
     {
         var bytes = new byte[64];
+        bytes.AsSpan(20).Fill(fill);
         "\u007fELF"u8.CopyTo(bytes);
         BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(18, 2), machine);
-        var path = Path.Combine(Root, $"installer-{name}");
+        var path = Path.Combine(Root, $"{role}-{name}");
         File.WriteAllBytes(path, bytes);
         return path;
     }

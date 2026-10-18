@@ -2,6 +2,7 @@
 # Builds a release's files into one folder (install contract section 4), from the committed revision this checkout is at:
 #
 #   hvo-sky-install-linux-x64, hvo-sky-install-linux-arm64   the installers, stamped <version>+<commit>
+#   hvo-sky-linux-x64, hvo-sky-linux-arm64                   the runtime client (#1317), stamped the same way
 #   skymonitor-cameraagent-<version>-linux-<arch>.oci.tar     an offline image archive per platform
 #   <catalog version>.bundle.tar.gz                           the approved catalog bundle, under its own version
 #   install.sh                                                when --install-script names one (#1311)
@@ -128,6 +129,22 @@ for rid in linux-x64 linux-arm64; do
     fi
 done
 
+# The runtime client, hvo-sky (install contract section 4, kind cli), stamped as the installers are and shipped alone.
+for rid in linux-x64 linux-arm64; do
+    dotnet publish src/HVO.SkyMonitor.CameraAgent.Cli/HVO.SkyMonitor.CameraAgent.Cli.csproj --configuration Release \
+        --runtime "$rid" --output "$work/cli-$rid" \
+        "-p:Version=$version" "-p:SourceRevisionId=$commit" -nodeReuse:false -p:UseSharedCompilation=false >&2
+    client="$work/cli-$rid/HVO.SkyMonitor.CameraAgent.Cli"
+    beside="$(find "$work/cli-$rid" -mindepth 1 -maxdepth 1 ! -name HVO.SkyMonitor.CameraAgent.Cli ! -name '*.pdb' -printf '%f ')"
+    [[ -z "$beside" ]] || fail "the $rid hvo-sky publish left files beside the executable, which a release does not ship: $beside"
+    if [[ "$rid" == "$host_rid" ]]; then
+        actual="$(env -i HOME="$work" PATH=/usr/bin:/bin "$client" --version)"
+        [[ "$actual" == "$version+$commit" ]] || fail "the $rid hvo-sky reports '$actual', not '$version+$commit'."
+    else
+        grep -aqF "$version+$commit" "$client" || fail "the $rid hvo-sky does not carry '$version+$commit'."
+    fi
+done
+
 # The image, every platform at once, into the OCI archive that is pushed as it is. No BuildKit provenance or SBOM: the
 # release's build-provenance attestation covers the image, and BuildKit's would add an unknown/unknown platform.
 builder_arguments=()
@@ -161,6 +178,8 @@ tool_arguments=(
     --platforms "$platforms"
     --installer-linux-x64 "$work/installer-linux-x64/HVO.SkyMonitor.Deployment.Cli"
     --installer-linux-arm64 "$work/installer-linux-arm64/HVO.SkyMonitor.Deployment.Cli"
+    --cli-linux-x64 "$work/cli-linux-x64/HVO.SkyMonitor.CameraAgent.Cli"
+    --cli-linux-arm64 "$work/cli-linux-arm64/HVO.SkyMonitor.CameraAgent.Cli"
     --catalog-bundle "$catalog_bundle"
     --output "$output"
 )
@@ -176,7 +195,8 @@ digest="$(dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.S
 jq -e --arg version "$version" --arg commit "$commit" --arg created "$created" --arg digest "$digest" '
     .version == $version and .commit == $commit and .created == $created and .images.cameraAgent.digest == $digest
     and (($version | contains("-")) or any(.upgradeNotes[]; .version == $version))
-' "$output/release.json" >/dev/null || fail "release.json does not name the release that was built, with a final release's notes."
+    and ([.assets[] | select(.kind == "cli") | "\(.name) \(.platform)"] | sort == ["hvo-sky-linux-arm64 linux-arm64", "hvo-sky-linux-x64 linux-x64"])
+' "$output/release.json" >/dev/null || fail "release.json does not name the release that was built, with a final release's notes and both hvo-sky clients."
 index_digest="$(tar -xOf "$image_oci" index.json | jq -r '.manifests[0].digest')"
 [[ "$index_digest" == "$digest" ]] || fail "release.json names $digest, but the image archive holds $index_digest."
 ./scripts/release:check-image-labels "$image_oci" "$output/release.json" >&2 ||
