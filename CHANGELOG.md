@@ -12,6 +12,15 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 ### Added
 
+- `cameraagent upgrade` refuses a host whose Docker cannot enforce CameraAgent's memory, CPU and PID limits, or has
+  fewer CPUs than its CPU limit, as `cameraagent install` does: it lists every finding and the remedy
+  (`cgroup_enable=memory` and a reboot on a Raspberry Pi) and exits 3 with nothing changed, for its `--plan` and
+  `--resume` too. There is no override. A rollback, its `--resume` and `upgrade --restore-only` go ahead there, because
+  they are the recovery path: each prints a loud warning naming every limit Docker cannot enforce, writes it to the
+  operation's install log (`operations/lifecycle/<operation>/install.log`), and keeps every limit Docker can enforce.
+  On a host without CPU quota support, where Docker refuses a container with a CPU limit, a rollback withholds the CPU
+  limits; the next upgrade, or a rollback on a host that enforces them, gives them back. (#1357)
+
 - `hvo-sky-install` follows the shared install contract's command surface. `--plan` (the new name of `--dry-run`)
   reports what install, a re-run of one, `upgrade`, `rollback`, `reinstall`, `uninstall` and `purge` would create,
   change, leave unchanged or remove, after the same checks the command makes, and writes nothing, not even a temporary

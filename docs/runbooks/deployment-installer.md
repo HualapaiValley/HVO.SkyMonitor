@@ -32,7 +32,6 @@ runbook describes the installer as it behaves today.
 | `backup` and `restore FILE` | No `backup` or `restore` | [#1353](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1353) |
 | Command words `install`, `upgrade`, `rollback`, `uninstall`, `status` | Instance commands are grouped under `cameraagent` (`cameraagent install`, `cameraagent upgrade`, ...), because one host holds several instances and the catalogs beside them; `status` is top level | Recorded for contract draft 4 |
 | Settings catalogue served by the API | CameraAgent serves the [operator settings catalogue and group writes](../contracts/cameraagent-operator-settings-v1.md) through its operations API; the owner creates API keys for non-browser clients | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
-| Install and upgrade refuse a host that cannot enforce the container limits; a rollback proceeds with a loud warning (contract section 7) | Install refuses such a host ([Host Prerequisites](#host-prerequisites)); upgrade and rollback do not check | [#1357](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1357) |
 | Upgrade and rollback decide between a swap and a breaking change by comparing `stateContracts` (contract section 6, D1) | `release.json` and the image's `io.hvo.skymonitor.state-contracts` label declare `stateContracts`, but the installer still decides a state migration from the image's state boundary labels ([CameraAgent Lifecycle](#cameraagent-lifecycle)) | Epic [#1318](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1318); no issue yet |
 
 ## install.sh
@@ -159,7 +158,7 @@ Every command ends with one of these codes:
 | `0` | Done. With `--plan`, the plan can be carried out | An install, a re-run with nothing to change, `status`, `--help` |
 | `1` | A step failed. Re-running the same command continues, with `--resume` where the message says so | Docker or CameraAgent did not respond, a verification failed, an install record that could not be written |
 | `2` | The command line or the answers file is invalid, or a question had no one to answer it | An unknown option, an answers file with an unknown member, a missing `--friendly-name` without a terminal |
-| `3` | Refused, and nothing was changed | Unmet [host prerequisites](#host-prerequisites), a host policy that cannot be trusted, running as root, a re-run that describes a different instance, an incompatible preflight, a [release](#release-install) the installer will not use or whose image is not the release's, an upgrade to the image already active or to an older release, a rollback with no previous image |
+| `3` | Refused, and nothing was changed | Unmet [host prerequisites](#host-prerequisites), including an upgrade on a host that cannot enforce the container limits, a host policy that cannot be trusted, running as root, a re-run that describes a different instance, an incompatible preflight, a [release](#release-install) the installer will not use or whose image is not the release's, an upgrade to the image already active or to an older release, a rollback with no previous image |
 | `130` | Interrupted by Ctrl+C or SIGTERM | |
 
 With `--json`, a failure or refusal writes one JSON object to standard error:
@@ -183,11 +182,12 @@ there is never journaled:
   instance, the catalog bundle and the persisted state before it prepares anything.
 - A lifecycle command decides, before it takes a lock or writes its journal, the
   instance's condition, a rollback with no previous image, an older release, an
-  unfinished operation that demands `--resume`, the purge gates, and for an upgrade
-  whose candidate is known without importing it (the image Docker holds, or a
-  release's image read from its archive or registry), the already-active and
-  state-contract checks and the state preflight. A registry release image is pulled
-  at that point, before any lock, and removed again if it is refused.
+  unfinished operation that demands `--resume`, the purge gates, for an upgrade or
+  a rollback the [container limits the host can enforce](#upgrade-rollback-and-the-hosts-limits),
+  and for an upgrade whose candidate is known without importing it (the image Docker
+  holds, or a release's image read from its archive or registry), the already-active
+  and state-contract checks and the state preflight. A registry release image is
+  pulled at that point, before any lock, and removed again if it is refused.
 
 Once a command has written, it cannot say nothing changed: a check that stops it
 after that point is a failure (exit `1`), journaled so that a re-run or `--resume`
@@ -506,9 +506,57 @@ The human form renders every finding and its remedy on standard error. With
 `--json` the structured report is written to standard output and standard error
 carries one error object with `errorCode` `host-prerequisites`; the exit code is
 `3` (refused, nothing changed) either way. The CLI uses SQLite in-process and never runs `sqlite3` or `jq`,
-so neither is required. Uninstall, purge, and the other lifecycle commands do not
-evaluate these prerequisites, so a host that loses limit support can still be
-cleaned up.
+so neither is required. An upgrade and a rollback are held to the limit and CPU
+findings ([below](#upgrade-rollback-and-the-hosts-limits)). Uninstall, purge, and
+the other lifecycle commands do not evaluate these prerequisites, so a host that
+loses limit support can still be cleaned up.
+
+### Upgrade, rollback and the host's limits
+
+An upgrade and a rollback check the host's container limits before they change
+anything, with the same checks as an install: `docker-memory-limit-unsupported`,
+`docker-cpu-quota-unsupported`, `docker-pids-limit-unsupported` and
+`docker-host-cpus-insufficient`, against the limits the instance moves to. They are
+not held to `tar` or the install's room; an upgrade measures its own room. Swap is
+not one of CameraAgent's limits: Docker's own swap warning is quoted beside the
+limit findings, as at install. This is install contract section 7, and
+RoofController behaves the same way (HVO.RoofController#151).
+
+- **An upgrade is refused** on a host that cannot enforce the limits, or that has
+  fewer CPUs than the CPU limit. The refusal lists every finding, with its remedy
+  (`cgroup_enable=memory` and a reboot on a Raspberry Pi), and exits `3` with nothing
+  changed: it comes before any pull, import, lock or journal. Its `--plan` and its
+  `--resume` are refused the same way: resuming goes forward to the candidate, which
+  the host cannot bound. Recover an interrupted upgrade with
+  [`--restore-only`](#restore-only-after-an-interrupted-upgrade), or fix the host and
+  resume. There is no override.
+- **A rollback goes ahead**, because it is the recovery path. So does its
+  `--resume`, and `upgrade --restore-only`. Before anything changes, each one prints
+  a loud warning on standard error that starts
+  `WARNING: THE ROLLBACK GOES AHEAD, BUT DOCKER HERE CANNOT ENFORCE` (for
+  `--restore-only`, `WARNING: THE RESTORE-ONLY RECOVERY GOES AHEAD`) and names each
+  limit Docker cannot enforce, what that means for CameraAgent, and the remedy. It also
+  writes the warning, stamped with the time, to the operation's install log,
+  `<product-root>/operations/lifecycle/<operation>/install.log`, beside its other
+  retained records. A `--plan` prints the warning and writes nothing. With `--json`
+  the result's `warnings` carry it, one entry per limit, and standard error does not.
+- **A rollback keeps every limit Docker can enforce.** Docker drops a memory or
+  PIDs limit it cannot enforce, with its own warning, and applies the rest, so the
+  rollback gives it the Compose model with every limit. Docker refuses to create a
+  container with a CPU limit on a host without CPU quota support, so there the
+  rollback withholds the CPU limit of CameraAgent and of its replay runner: each
+  `cpus:` line becomes a comment that keeps its value
+  (`# cpus: "2" withheld: Docker here cannot enforce a CPU limit, so a rollback gave none (#1357)`),
+  and the host's CPU count no longer applies. The instance manifest keeps the
+  limits it records, and the next upgrade, or a rollback on a host that enforces
+  them, gives them all back.
+- **A rollback is still refused** for a CPU limit Docker enforces on a host with
+  fewer CPUs, because Docker refuses to create that container. Its other guards,
+  the instance's state, identity and journal, are unchanged.
+- `upgrade --restore-only` is never refused by the host's limits. It puts back
+  the image the instance ran, from its exact retained Compose files, so on a host
+  without CPU quota support Docker can refuse to start that image again when its
+  database snapshot must be put back first.
 
 **A private place to unpack the installer.** `hvo-sky-install` is one
 self-contained file. Each time it starts, the .NET host extracts the native SQLite
@@ -579,7 +627,8 @@ installer default:
 - **Rollback** runs the previous image with the Compose model retained from
   before the upgrade, authenticated against its recorded identity, and gives it
   the limits the instance records. A rollback never returns an instance to limits
-  it has left.
+  it has left. On a host that cannot enforce a CPU limit it withholds the CPU
+  limits and keeps the rest ([Upgrade, rollback and the host's limits](#upgrade-rollback-and-the-hosts-limits)).
 - **Reinstall** keeps the recorded limits.
 - **A re-run** of a completed install changes them (contract section 7). A limit
   given on the re-run replaces the recorded one and counts as set by the operator; a

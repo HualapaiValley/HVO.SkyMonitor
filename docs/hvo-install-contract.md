@@ -389,8 +389,11 @@ Decision D2. Before an upgrade can change a small store, a restorable copy of it
     warning on standard error and in the logs. Everything else that refuses an install still refuses a rollback.
   - Reason: an unbounded container can starve the host it shares, but refusing a rollback could leave an operator
     with no way back from a failed release.
-  - **Today:** RoofController behaves this way (HVO.RoofController#151). SkyMonitor's install refuses such a host (its
-    host prerequisites). Its upgrade refusal and rollback warning are #1357.
+  - **Today:** both products behave this way: RoofController (HVO.RoofController#151) and SkyMonitor (#1357), at
+    install, upgrade and rollback. SkyMonitor's rollback, its `--resume` and its `upgrade --restore-only` write the
+    warning to the operation's install log. Docker refuses a container with a CPU limit on a host without CPU quota
+    support, so a SkyMonitor rollback there withholds the CPU limits and keeps the others, as RoofController gives only
+    the limits Docker can enforce.
 - **Roof controller.** Its limits are on by default because its container's supervisor turns the drive relays off
   whenever the controller exits or crash-loops (HVO.RoofController#138):
   - It writes relay-off and verifies the register by reading it back.
@@ -444,8 +447,8 @@ Owner decisions of 2026-10-16:
 Owner decisions of 2026-10-18:
 
 6. **Hosts that cannot enforce the container limits:** match RoofController fully. Both products refuse install and
-   upgrade with no override, and a rollback proceeds with a loud warning (section 7). SkyMonitor's upgrade and rollback
-   part is #1357.
+   upgrade with no override, and a rollback proceeds with a loud warning (section 7). SkyMonitor met its upgrade and
+   rollback part in #1357.
 7. **Draft 4's decisions** D1, D2 and D5–D10, below, are accepted as written. SkyMonitor met the resulting rules (the
    `cameraAgent` image key, `stateContracts` and the `created` label) in #1359 (#1364). Its installer still decides a
    state migration from boundary labels rather than from `stateContracts` (section 6).
