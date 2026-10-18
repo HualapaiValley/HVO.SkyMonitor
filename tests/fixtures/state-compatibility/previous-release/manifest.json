@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "release": "development/v1 baseline",
+  "imageLabels": {
+    "io.hvo.skymonitor.catalog-contract": "hvo-approved-catalogs-v1",
+    "io.hvo.skymonitor.catalog-manifest-version": "2",
+    "io.hvo.skymonitor.component": "CameraAgent",
+    "io.hvo.skymonitor.configuration-contract": "cameraagent-install-v1",
+    "io.hvo.skymonitor.identity-migration": "20260827053715_InitialIdentity",
+    "io.hvo.skymonitor.minimum-compatible-revision": "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f",
+    "io.hvo.skymonitor.raw-ingress-migration": "canonical-v13-v14-to-v15",
+    "io.hvo.skymonitor.raw-ingress-schema": "15",
+    "io.hvo.skymonitor.replay-runner-contract": "local-replay-runner-v1",
+    "io.hvo.skymonitor.state-compatibility": "cameraagent-state-v2"
+  },
+  "note": "The previous CameraAgent release's SQLite stores, as images that rebuild each one. No release has shipped, so the current development/v1 stores stand in. Regenerate them only in the release pull request that cuts a version, with HVO_WRITE_PREVIOUS_RELEASE_FIXTURES set when running PreviousReleaseStoreReadabilityTests; an ordinary pull request that needs a different image is shipping a store the previous release cannot read.",
+  "storageRoots": [
+    "/app/data/raw",
+    "/app/data/archive",
+    "/app/data/archive/products"
+  ],
+  "stores": [
+    {
+      "location": "archive/outbox/artifact-outbox.db",
+      "dump": "archive__outbox__artifact-outbox.db.sql"
+    },
+    {
+      "location": "archive/products/outbox/artifact-outbox.db",
+      "dump": "archive__products__outbox__artifact-outbox.db.sql"
+    },
+    {
+      "location": "identity/cameraagent_identity.db",
+      "dump": "identity__cameraagent_identity.db.sql"
+    },
+    {
+      "location": "raw/.automation/local-automations.db",
+      "dump": "raw__.automation__local-automations.db.sql"
+    },
+    {
+      "location": "raw/.environment/environmental-observation-outbox.db",
+      "dump": "raw__.environment__environmental-observation-outbox.db.sql"
+    },
+    {
+      "location": "raw/.fleet/fleet-status.db",
+      "dump": "raw__.fleet__fleet-status.db.sql"
+    },
+    {
+      "location": "raw/.nightly-products/nightly-products.db",
+      "dump": "raw__.nightly-products__nightly-products.db.sql"
+    },
+    {
+      "location": "raw/.time-lapses/time-lapses.db",
+      "dump": "raw__.time-lapses__time-lapses.db.sql"
+    },
+    {
+      "location": "raw/evidence/execution-evidence-outbox.db",
+      "dump": "raw__evidence__execution-evidence-outbox.db.sql"
+    },
+    {
+      "location": "raw/journal/raw-ingress.db",
+      "dump": "raw__journal__raw-ingress.db.sql"
+    },
+    {
+      "location": "raw/outbox/artifact-outbox.db",
+      "dump": "raw__outbox__artifact-outbox.db.sql"
+    }
+  ],
+  "snapshotRollbackExceptions": []
+}

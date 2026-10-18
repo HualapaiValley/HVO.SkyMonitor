@@ -395,6 +395,12 @@ internal static partial class NativeLinux
         }
     }
 
+    /// <summary>
+    /// Runs after each directory is flushed to disk. Durability tests record the order of directory syncs here;
+    /// production leaves it empty.
+    /// </summary>
+    internal static Action<string> DirectoryFlushed { get; set; } = static _ => { };
+
     public static void FlushDirectory(string path)
     {
         using var descriptor = new SafeFileHandle(
@@ -404,6 +410,7 @@ internal static partial class NativeLinux
         {
             throw new InstallerException($"Directory '{path}' could not be flushed to disk.");
         }
+        DirectoryFlushed(path);
     }
 
     public static bool IsClockSynchronized()

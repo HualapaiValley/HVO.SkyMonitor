@@ -6,13 +6,12 @@ namespace HVO.SkyMonitor.Deployment;
 
 /// <summary>
 /// Decides whether an in-place upgrade candidate declares a migration of durable CameraAgent state, which is the
-/// one case that requires the operator's <c>--migration-backward-compatible</c> assertion.
+/// one case in which the upgrade snapshots the small databases before the candidate starts.
 /// </summary>
 /// <remarks>
-/// A candidate that fails after Compose starts it is restored by starting the prior image again on whatever state
-/// the candidate left behind; the backup taken before the mutation is not restored. A candidate that changes the
-/// state contract can therefore leave the prior image facing state it cannot read, and only the operator can assert
-/// that it will not. A candidate that declares exactly the installed state contract leaves nothing to assert.
+/// A candidate that changes the state contract can leave the prior image facing state it cannot read, so a failed
+/// candidate is restored onto that snapshot and a rollback of the committed upgrade puts it back. A candidate that
+/// declares exactly the installed state contract is a pure swap and takes no snapshot.
 /// </remarks>
 internal static class CameraAgentStateMigration
 {
@@ -28,7 +27,8 @@ internal static class CameraAgentStateMigration
         InstallationPaths paths,
         ImageInstallationIdentity installed,
         string? installedStateContract,
-        ImageInstallationIdentity candidate)
+        ImageInstallationIdentity candidate,
+        string? rawIngressDatabasePath = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(installed);
@@ -44,7 +44,8 @@ internal static class CameraAgentStateMigration
         {
             changes.Add(Change("raw-ingress-migration", installed.RawIngressMigration, candidate.RawIngressMigration));
         }
-        ComparePersistedRawIngress(changes, paths, candidate);
+        ComparePersistedRawIngress(
+            changes, rawIngressDatabasePath ?? CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot), candidate);
         return changes;
     }
 
@@ -63,9 +64,8 @@ internal static class CameraAgentStateMigration
     /// the candidate on startup even when both images declare the same schema.
     /// </summary>
     private static void ComparePersistedRawIngress(
-        List<string> changes, InstallationPaths paths, ImageInstallationIdentity candidate)
+        List<string> changes, string databasePath, ImageInstallationIdentity candidate)
     {
-        var databasePath = CameraAgentStateLayout.RawIngressDatabasePath(paths.StateRoot);
         if (!File.Exists(databasePath))
         {
             return;

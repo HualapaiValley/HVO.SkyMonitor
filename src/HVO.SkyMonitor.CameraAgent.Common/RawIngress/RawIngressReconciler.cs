@@ -18,8 +18,29 @@ internal sealed class RawIngressReconciler(
     private readonly Action? _fileFlushRecorder = fileFlushRecorder;
     private readonly Action? _directorySyncRecorder = directorySyncRecorder;
 
-    internal async Task<RawIngressReconciliationSummary> RunAsync(CancellationToken cancellationToken)
+    /// <summary>A quarantine move found by inspection and made only under the maintenance barrier.</summary>
+    private sealed record PendingQuarantine(string? PayloadPath, string? SidecarPath, string Reason, Guid? CaptureId);
+
+    /// <summary>
+    /// Inspects the journal and the raw tree, recovers valid orphan evidence and removes temporary files, and then
+    /// makes every quarantine move it found, and resumes every planned one, only while
+    /// <paramref name="enterMaintenance"/> grants the capture maintenance barrier. A snapshot restore can bring back the
+    /// rows that name those files, so while capture admission is not running no evidence is moved: the moves are
+    /// counted as deferred and nothing is marked for them, and the next reconciliation makes them.
+    /// </summary>
+    internal async Task<RawIngressReconciliationSummary> RunAsync(
+        Func<CancellationToken, ValueTask<IDisposable?>> enterMaintenance,
+        CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(enterMaintenance);
+        var planned = new List<RawIngressPlannedQuarantine>();
+        var pending = new List<PendingQuarantine>();
+        var pendingSidecars = new HashSet<string>(StringComparer.Ordinal);
+        void Defer(string? payloadPath, string? sidecarPath, string reason, Guid? captureId = null)
+        {
+            pending.Add(new PendingQuarantine(payloadPath, sidecarPath, reason, captureId));
+            if (sidecarPath is not null) pendingSidecars.Add(sidecarPath);
+        }
         var inspected = 0;
         var recovered = 0;
         var cleaned = 0;
@@ -43,12 +64,7 @@ internal sealed class RawIngressReconciler(
             cleaned++;
         }
 
-        foreach (var operation in await _journal.ReadPlannedQuarantinesAsync(cancellationToken).ConfigureAwait(false))
-        {
-            await ResumeQuarantineAsync(operation, cancellationToken).ConfigureAwait(false);
-            quarantined++;
-            quarantineBytes += operation.ObservedBytes;
-        }
+        planned.AddRange(await _journal.ReadPlannedQuarantinesAsync(cancellationToken).ConfigureAwait(false));
 
         foreach (var temporaryPath in EnumerateFiles(framesRoot, "*.tmp", recurse: true))
         {
@@ -93,12 +109,7 @@ internal sealed class RawIngressReconciler(
             if (!string.Equals(entry.PayloadRelativePath, expectedPaths.PayloadRelativePath, StringComparison.Ordinal) ||
                 !string.Equals(entry.SidecarRelativePath, expectedPaths.SidecarRelativePath, StringComparison.Ordinal))
             {
-                var moved = await QuarantinePairAsync(
-                    payloadPath, sidecarPath, "committed-path-mismatch", cancellationToken).ConfigureAwait(false);
-                await _journal.MarkEvidenceFailureAsync(
-                    entry.CaptureId, "quarantined", "committed-path-mismatch", cancellationToken).ConfigureAwait(false);
-                quarantined++;
-                quarantineBytes += moved;
+                Defer(payloadPath, sidecarPath, "committed-path-mismatch", entry.CaptureId);
                 continue;
             }
             if (!File.Exists(payloadPath) || !File.Exists(sidecarPath))
@@ -114,12 +125,7 @@ internal sealed class RawIngressReconciler(
             }
             if (!await MatchesCommittedEntryAsync(entry, payloadPath, sidecarPath, cancellationToken).ConfigureAwait(false))
             {
-                var moved = await QuarantinePairAsync(
-                    payloadPath, sidecarPath, "committed-evidence-mismatch", cancellationToken).ConfigureAwait(false);
-                await _journal.MarkEvidenceFailureAsync(
-                    entry.CaptureId, "quarantined", "committed-evidence-mismatch", cancellationToken).ConfigureAwait(false);
-                quarantined++;
-                quarantineBytes += moved;
+                Defer(payloadPath, sidecarPath, "committed-evidence-mismatch", entry.CaptureId);
                 continue;
             }
             // Recovered bytes do not discharge an evidence quarantine without an audited operator release.
@@ -148,31 +154,19 @@ internal sealed class RawIngressReconciler(
             if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
             {
                 var siblingPayload = Path.ChangeExtension(sidecarPath, ".bin");
-                var moved = await QuarantinePairAsync(
-                    claimedPayloads.Contains(Relative(siblingPayload)) ? null : siblingPayload,
-                    sidecarPath,
-                    "invalid-v2-sidecar",
-                    cancellationToken).ConfigureAwait(false);
-                quarantined++;
-                quarantineBytes += moved;
+                Defer(claimedPayloads.Contains(Relative(siblingPayload)) ? null : siblingPayload, sidecarPath, "invalid-v2-sidecar");
                 continue;
             }
             if (claimedPayloads.Contains(manifest.RelativeArtifactPath))
             {
-                var moved = await QuarantinePairAsync(
-                    null, sidecarPath, "payload-already-claimed", cancellationToken).ConfigureAwait(false);
-                quarantined++;
-                quarantineBytes += moved;
+                Defer(null, sidecarPath, "payload-already-claimed");
                 continue;
             }
             var payloadPath = Resolve(manifest.RelativeArtifactPath);
             if (!File.Exists(payloadPath) || !PathsEqual(Path.ChangeExtension(sidecarPath, ".bin"), payloadPath) ||
                 !await PayloadMatchesAsync(payloadPath, manifest.Descriptor, cancellationToken).ConfigureAwait(false))
             {
-                var moved = await QuarantinePairAsync(
-                    payloadPath, sidecarPath, "orphan-evidence-mismatch", cancellationToken).ConfigureAwait(false);
-                quarantined++;
-                quarantineBytes += moved;
+                Defer(payloadPath, sidecarPath, "orphan-evidence-mismatch");
                 continue;
             }
 
@@ -184,10 +178,7 @@ internal sealed class RawIngressReconciler(
             if (!string.Equals(manifest.RelativeArtifactPath, expectedPaths.PayloadRelativePath, StringComparison.Ordinal) ||
                 !string.Equals(sidecarRelative, expectedPaths.SidecarRelativePath, StringComparison.Ordinal))
             {
-                var moved = await QuarantinePairAsync(
-                    payloadPath, sidecarPath, "orphan-path-mismatch", cancellationToken).ConfigureAwait(false);
-                quarantined++;
-                quarantineBytes += moved;
+                Defer(payloadPath, sidecarPath, "orphan-path-mismatch");
                 continue;
             }
             var entry = new RawIngressJournalEntry(
@@ -216,10 +207,7 @@ internal sealed class RawIngressReconciler(
             }
             catch (RawIngressConflictException)
             {
-                var moved = await QuarantinePairAsync(
-                    payloadPath, sidecarPath, "orphan-identity-conflict", cancellationToken).ConfigureAwait(false);
-                quarantined++;
-                quarantineBytes += moved;
+                Defer(payloadPath, sidecarPath, "orphan-identity-conflict");
                 continue;
             }
             if (!await TryEnsureCompatibilityIndexAsync(sidecar, indexedArtifacts, cancellationToken).ConfigureAwait(false))
@@ -233,20 +221,51 @@ internal sealed class RawIngressReconciler(
         foreach (var payloadPath in EnumerateRawFiles("*.bin"))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (claimedPayloads.Contains(Relative(payloadPath)) || File.Exists(Path.ChangeExtension(payloadPath, ".json")))
+            // A sidecar already due for quarantine no longer pairs with the payload beside it, as when it had been moved.
+            var sibling = Path.ChangeExtension(payloadPath, ".json");
+            if (claimedPayloads.Contains(Relative(payloadPath)) || File.Exists(sibling) && !pendingSidecars.Contains(sibling))
             {
                 continue;
             }
+            if (pending.Any(move => move.PayloadPath == payloadPath)) continue;
             inspected++;
-            var moved = await QuarantinePairAsync(
-                payloadPath, null, "payload-without-sidecar", cancellationToken).ConfigureAwait(false);
-            quarantined++;
-            quarantineBytes += moved;
+            Defer(payloadPath, null, "payload-without-sidecar");
         }
 
         await _journal.CheckpointAsync(cancellationToken).ConfigureAwait(false);
+        var deferred = 0;
+        if (planned.Count + pending.Count > 0)
+        {
+            using var maintenance = await enterMaintenance(cancellationToken).ConfigureAwait(false);
+            if (maintenance is null)
+            {
+                deferred = planned.Count + pending.Count;
+            }
+            else
+            {
+                foreach (var operation in planned)
+                {
+                    await ResumeQuarantineAsync(operation, cancellationToken).ConfigureAwait(false);
+                    quarantined++;
+                    quarantineBytes += operation.ObservedBytes;
+                }
+                foreach (var move in pending)
+                {
+                    quarantineBytes += await QuarantinePairAsync(
+                        move.PayloadPath, move.SidecarPath, move.Reason, cancellationToken).ConfigureAwait(false);
+                    if (move.CaptureId is { } captureId)
+                    {
+                        await _journal.MarkEvidenceFailureAsync(
+                            captureId, "quarantined", move.Reason, cancellationToken).ConfigureAwait(false);
+                    }
+                    quarantined++;
+                }
+                await _journal.CheckpointAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
         return new RawIngressReconciliationSummary(
-            inspected, recovered, cleaned, quarantined, missingEvidence, quarantineBytes, indexProjectionFailures);
+            inspected, recovered, cleaned, quarantined, missingEvidence, quarantineBytes, indexProjectionFailures,
+            MaintenanceDeferred: deferred);
     }
 
     private IEnumerable<string> EnumerateRawFiles(string pattern)

@@ -38,6 +38,27 @@ internal static class SafeFileSystem
         }
     }
 
+    /// <summary>
+    /// Flushes every directory from <paramref name="directory"/> up to and including <paramref name="stopAt"/>, so each
+    /// one's entry in its parent is durable, including directories an earlier step created without syncing.
+    /// </summary>
+    public static void FlushDirectoryChain(string directory, string stopAt)
+    {
+        var stop = Path.TrimEndingDirectorySeparator(Path.GetFullPath(stopAt));
+        var current = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+        if (!string.Equals(current, stop, StringComparison.Ordinal) &&
+            !current.StartsWith(stop + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+        {
+            throw new InstallerException($"Directory '{directory}' is not beneath '{stopAt}'.");
+        }
+        while (true)
+        {
+            NativeLinux.FlushDirectory(current);
+            if (string.Equals(current, stop, StringComparison.Ordinal)) return;
+            current = Path.GetDirectoryName(current)!;
+        }
+    }
+
     public static void CreateOwnerDirectory(string path)
     {
         EnsureSafeExistingAncestors(path);
