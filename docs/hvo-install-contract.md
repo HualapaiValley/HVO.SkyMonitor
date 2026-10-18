@@ -182,7 +182,8 @@ Every release carries assets with these names and kinds:
 curl -fsSL https://github.com/HualapaiValley/<repo>/releases/latest/download/install.sh | bash -s -- [installer arguments]
 ```
 
-`install.sh` does the following. RoofController's implements all of it except installing from offline image archives, which HVO.RoofController#127 adds:
+`install.sh` does the following. RoofController's implements all of it, offline image archives included (`--from DIR`,
+HVO.RoofController#127):
 - is wrapped in a function, so a truncated download runs nothing;
 - refuses to run without a baked-in version;
 - checks everything before changing anything:
@@ -197,8 +198,8 @@ curl -fsSL https://github.com/HualapaiValley/<repo>/releases/latest/download/ins
 - can install Docker or enable a prerequisite only when asked (`--install-docker` and the like);
 - with `--check`, stops after the checks;
 - with `--from DIR`, takes the release files, offline image archives included, from a folder instead of GitHub. It must
-  not contact the registry in that mode. This is new for both products; RoofController's `--from` still pulls images from
-  GHCR until HVO.RoofController#127;
+  not contact the registry in that mode. RoofController's `--from` loads the offline archives and pulls nothing from
+  GHCR (HVO.RoofController#127); SkyMonitor's `install.sh` is #1311;
 - verifies the downloaded installer against `SHA256SUMS`, against the attestation when `gh` is signed in, and against
   its own `--version`;
 - hands its remaining arguments to the installer.
@@ -270,10 +271,11 @@ curl -fsSL https://github.com/HualapaiValley/<repo>/releases/latest/download/ins
 - **State:**
   - Each component declares a state contract in its image labels and in `release.json`'s `stateContracts`. Its shape
     is given below.
-  - If the contract is unchanged, upgrade and rollback are a pure swap. Nothing is copied and no operator assertion is
-    needed.
+  - If the contract is unchanged, upgrade and rollback are a swap: no operator assertion is needed, and a rollback
+    needs no restore. A product may still copy its small stores on every upgrade, and restore them, as the copies
+    below allow (D2).
   - A schema change must stay readable by the previous release for one release: add first, remove in a later
-    release. Rollback is then still a swap.
+    release. A rollback then still needs no restore.
   - When a release cannot meet that, it declares a breaking contract change. The installer then snapshots only the
     small databases before migrating (SQLite online backup, or a native database backup), and rollback restores that
     snapshot. The installer says plainly that changes made after the upgrade are lost.
@@ -318,28 +320,31 @@ it gives the newest schema a release may write, and every schema it reads:
 
 **The SkyMonitor mapping.** Component `cameraAgent`, with one store for each SQLite database an instance keeps:
 
-| Store | Database (under the instance's state root) | Its schema | Declared today |
+D1's target is a whole-number schema for each store in `stateContracts`. The table gives the marker each store keeps
+its schema in today, and what is declared:
+
+| Store | Database (under the instance's state root) | Schema marker today | Declared today |
 | --- | --- | --- | --- |
-| `identity` | `identity/cameraagent_identity.db` | The number of applied EF Core migrations in `__EFMigrationsHistory` | `io.hvo.skymonitor.identity-migration` names the newest, `20260827053715_InitialIdentity`: writes 1, reads 1 to 1 |
+| `identity` | `identity/cameraagent_identity.db` | The applied EF Core migrations in `__EFMigrationsHistory` (their number is the store's schema) | `io.hvo.skymonitor.identity-migration` names the newest, `20260827053715_InitialIdentity`: writes 1, reads 1 to 1 |
 | `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | `io.hvo.skymonitor.raw-ingress-schema` 15 and `raw-ingress-migration` `canonical-v13-v14-to-v15`: writes 15, reads 13 to 15 |
-| `artifactOutbox` | `outbox/artifact-outbox.db` in each storage root (`raw`, `archive`, and every FileStorage root) | `PRAGMA user_version` | Not declared |
-| `fleetStatus` | `raw/.fleet/fleet-status.db` | `PRAGMA user_version` | Not declared |
+| `artifactOutbox` | `outbox/artifact-outbox.db` in each storage root (`raw`, `archive`, and every FileStorage root) | The `artifact_outbox_schema.version` column | Not declared |
+| `fleetStatus` | `raw/.fleet/fleet-status.db` | The `fleet_status_metadata.schema_version` column | Not declared |
 | `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Not declared |
-| `executionEvidenceOutbox` | `raw/evidence/execution-evidence-outbox.db` | `PRAGMA user_version` | Not declared |
+| `executionEvidenceOutbox` | `raw/evidence/execution-evidence-outbox.db` | The `execution_evidence_schema.version` column | Not declared |
 | `timeLapses` | `raw/.time-lapses/time-lapses.db` | `PRAGMA user_version` | Not declared |
 | `nightlyProducts` | `raw/.nightly-products/nightly-products.db` | `PRAGMA user_version` | Not declared |
 | `localAutomations` | `raw/.automation/local-automations.db` | `PRAGMA user_version` | Not declared |
 
-- These are the stores the state snapshot of #1340 copies.
+- These are the stores the state snapshot of #1340 copies. The schema markers are the ones its migration rule
+  compares.
 - The star catalog is a data package (section 1), not a store. The catalog labels keep the versions CameraAgent
   accepts: `io.hvo.skymonitor.catalog-contract` and `catalog-manifest-version`.
-- #1359 declares every store's numbers.
+- Declaring every store's schema in `stateContracts`, from these markers, is outstanding conformance work (#1359).
 
 ### Copies of the small stores
 
-Decision D2. Before an upgrade can change a small store, the installer keeps a copy it can put back.
+Decision D2. Before an upgrade can change a small store, a restorable copy of it exists.
 - **When to copy.** A product copies at least when the target declares a state change. It may copy on every upgrade.
-  The copy is taken while nothing writes, after the product's safety gate, and is checked before the upgrade goes on.
 - **Rollback.** A rollback restores the copy of every store the release it returns to cannot read. It may restore
   every copied store. It says which changes made since the upgrade are lost, before it changes anything.
 - **What is copied.** Only the small stores of section 6's state contracts. Bulk data is never copied (above).
@@ -347,11 +352,12 @@ Decision D2. Before an upgrade can change a small store, the installer keeps a c
 - Reason: a copy is what makes a breaking change recoverable. Copying only small stores keeps an upgrade's time and
   disk independent of how much the product has captured.
 - **Today:**
-  - RoofController takes a backup of its own data before every upgrade, as its `backup` command does, because that
-    data is a few small files. Its `rollback --restore-backup` puts back the stores the release before cannot read,
-    after asking (or with `--yes`).
-  - SkyMonitor snapshots its SQLite stores only when the candidate declares a state migration (#1340). Its rollback
-    restores the snapshot the upgrade it undoes took, and says what is lost.
+  - RoofController takes a backup of its own data, as its `backup` command does, as the first step of every
+    upgrade, before it puts the release's installer in place; that data is a few small files. Its
+    `rollback --restore-backup` puts back the stores the release before cannot read, after asking (or with `--yes`).
+  - SkyMonitor snapshots its SQLite stores only when the candidate declares a state migration (#1340). It pauses and
+    drains capture and stops the instance first, then takes the snapshot. Its rollback restores the snapshot the
+    upgrade it undoes took, and says what is lost.
   - SkyMonitor's `backup` command is #1353; RoofController has one.
 
 ## 7. Container resources
@@ -380,8 +386,12 @@ Decision D2. Before an upgrade can change a small store, the installer keeps a c
     with no way back from a failed release.
   - **Today:** RoofController behaves this way (HVO.RoofController#151). SkyMonitor's install refuses such a host (its
     host prerequisites). Its upgrade refusal and rollback warning are #1357.
-- **Roof controller.** Its limits are on by default because its supervisor de-energises the drive relays whenever the
-  controller exits or crash-loops (HVO.RoofController#138). A killed controller therefore leaves the motor drive safe.
+- **Roof controller.** Its limits are on by default because its container's supervisor turns the drive relays off
+  whenever the controller exits or crash-loops (HVO.RoofController#138):
+  - It writes relay-off and verifies the register by reading it back.
+  - If the read-back fails, it reports the relays as unverified and warns that the drive may still be running. It then
+    retries, and holds the controller stopped until a read-back shows every relay off.
+  - A kill of the whole container, which ends the supervisor too, is outside this protection.
 
 ## 8. Runtime client and settings
 

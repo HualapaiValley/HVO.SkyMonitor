@@ -104,7 +104,7 @@ HTTP:
 
 ```bash
 hvo-sky-install cameraagent install ... \
-  --bind-address 192.168.2.138 --port 5130 --acknowledge-plaintext-http
+  --bind-address <host-lan-address> --port 5130 --acknowledge-plaintext-http
 ```
 
 After `compose up`, the installer waits for health and bootstraps the owner at
