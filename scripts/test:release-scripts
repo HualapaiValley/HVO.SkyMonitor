@@ -14,7 +14,9 @@
 #   scripts/release:publish-prerelease   publishes only when the latest release is read for certain before and after,
 #                                        and fails when it moved;
 #   scripts/release:assets               refuses bad arguments before it builds anything;
-#   scripts/test:release-install         leaves no container, image or temporary root behind, however far it gets.
+#   scripts/test:release-install         leaves no container, image or temporary root behind, however far it gets;
+#   install.sh                           the release's entry point (src/HVO.SkyMonitor.Deployment.Cli/install.sh, #1311):
+#                                        scripts/test:install-sh runs it as curl | bash does, with fake commands.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,7 +33,7 @@ fail() {
 
 # The workflow runs each script by its path, so each must be executable as committed.
 for script in release:assets release:push-image release:prerelease-gate release:prerelease-check release:publish-prerelease \
-    test:release-install test:release-scripts; do
+    test:release-install test:release-scripts test:install-sh; do
     [[ -x "$repo_root/scripts/$script" ]] || fail "scripts/$script is not executable."
 done
 
@@ -790,5 +792,8 @@ FAKE_DOCKER_FAIL=commit expect_install_cleanup "the stand-in image could not be 
 FAKE_INSTALL=fail expect_install_cleanup "the install failed with the image already held" held
 grep -Fq -- "${config_id}" "$test_root/docker-the install failed with the image already held/images/${config_id#sha256:}" ||
     fail "test:release-install removed an image Docker held before it began."
+
+# install.sh's tests bring their own fake commands, so they run on the PATH this script was given.
+PATH="${PATH#"$fake_bin:"}" "$repo_root/scripts/test:install-sh" || fail "the install.sh tests failed."
 
 printf 'Release script tests passed.\n'
