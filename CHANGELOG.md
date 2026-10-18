@@ -87,8 +87,9 @@ onward; earlier development is recorded in its pull requests. A release renames 
   `--resume` too. There is no override. A rollback, its `--resume` and `upgrade --restore-only` go ahead there, because
   they are the recovery path: each prints a loud warning naming every limit Docker cannot enforce, writes it to the
   operation's install log (`operations/lifecycle/<operation>/install.log`), and keeps every limit Docker can enforce.
-  On a host without CPU quota support, where Docker refuses a container with a CPU limit, a rollback withholds the CPU
-  limits; the next upgrade, or a rollback on a host that enforces them, gives them back. (#1357)
+  On a host without CPU quota support, where Docker refuses a container with a CPU limit, every rollback and recovery
+  start withholds the CPU limits; the instance keeps them recorded, and the next start on a host that enforces them
+  gives them again. (#1357)
 - Installer exit codes follow the install contract on every command: `0` done, `1` a step failed, `2` invalid command
   line or answers, `3` refused with nothing changed, `130` interrupted. Refusals that used to exit `1` now exit `3`,
   among them unmet host prerequisites, an incompatible `cameraagent preflight`, running as root, an upgrade to the image

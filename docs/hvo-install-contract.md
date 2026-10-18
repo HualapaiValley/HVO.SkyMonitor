@@ -392,8 +392,8 @@ Decision D2. Before an upgrade can change a small store, a restorable copy of it
   - **Today:** both products behave this way: RoofController (HVO.RoofController#151) and SkyMonitor (#1357), at
     install, upgrade and rollback. SkyMonitor's rollback, its `--resume` and its `upgrade --restore-only` write the
     warning to the operation's install log. Docker refuses a container with a CPU limit on a host without CPU quota
-    support, so a SkyMonitor rollback there withholds the CPU limits and keeps the others, as RoofController gives only
-    the limits Docker can enforce.
+    support, so every SkyMonitor rollback and recovery start there withholds the CPU limits and keeps the others, as
+    RoofController gives only the limits Docker can enforce; the limits stay recorded.
 - **Roof controller.** Its limits are on by default because its container's supervisor turns the drive relays off
   whenever the controller exits or crash-loops (HVO.RoofController#138):
   - It writes relay-off and verifies the register by reading it back.

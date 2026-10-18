@@ -540,23 +540,25 @@ RoofController behaves the same way (HVO.RoofController#151).
   `<product-root>/operations/lifecycle/<operation>/install.log`, beside its other
   retained records. A `--plan` prints the warning and writes nothing. With `--json`
   the result's `warnings` carry it, one entry per limit, and standard error does not.
-- **A rollback keeps every limit Docker can enforce.** Docker drops a memory or
-  PIDs limit it cannot enforce, with its own warning, and applies the rest, so the
-  rollback gives it the Compose model with every limit. Docker refuses to create a
-  container with a CPU limit on a host without CPU quota support, so there the
-  rollback withholds the CPU limit of CameraAgent and of its replay runner: each
-  `cpus:` line becomes a comment that keeps its value
-  (`# cpus: "2" withheld: Docker here cannot enforce a CPU limit, so a rollback gave none (#1357)`),
-  and the host's CPU count no longer applies. The instance manifest keeps the
-  limits it records, and the next upgrade, or a rollback on a host that enforces
-  them, gives them all back.
+- **Every limit Docker can enforce is kept, at every start.** Each container
+  start of a rollback, of its `--resume` (including the restart of the image an
+  interrupted rollback was leaving), of a failed candidate's recovery and of
+  `upgrade --restore-only` gives Docker the model as Docker here can run it. Docker
+  drops a memory or PIDs limit it cannot enforce, with its own warning, and applies
+  the rest, so those are given as recorded. Docker refuses to create a container
+  with a CPU limit on a host without CPU quota support, so there the start uses a
+  copy of the model without the CPU limits of CameraAgent and its replay runner,
+  `<product-root>/operations/lifecycle/<operation>/host-compose.yml`, in which each
+  `cpus:` line is a comment that keeps its value
+  (`# cpus: "2" withheld: Docker here cannot enforce a CPU limit (#1357)`). The host's
+  CPU count no longer applies then. The instance's own Compose files and manifest
+  are never changed this way: they keep every limit the instance records, under the
+  identity the manifest authenticates, so the next start on a host that enforces
+  them, such as the next upgrade, gives them all.
 - **A rollback is still refused** for a CPU limit Docker enforces on a host with
   fewer CPUs, because Docker refuses to create that container. Its other guards,
-  the instance's state, identity and journal, are unchanged.
-- `upgrade --restore-only` is never refused by the host's limits. It puts back
-  the image the instance ran, from its exact retained Compose files, so on a host
-  without CPU quota support Docker can refuse to start that image again when its
-  database snapshot must be put back first.
+  the instance's state, identity and journal, are unchanged. `upgrade --restore-only`
+  is never refused by the host's limits; its own guards are unchanged too.
 
 **A private place to unpack the installer.** `hvo-sky-install` is one
 self-contained file. Each time it starts, the .NET host extracts the native SQLite
@@ -627,8 +629,9 @@ installer default:
 - **Rollback** runs the previous image with the Compose model retained from
   before the upgrade, authenticated against its recorded identity, and gives it
   the limits the instance records. A rollback never returns an instance to limits
-  it has left. On a host that cannot enforce a CPU limit it withholds the CPU
-  limits and keeps the rest ([Upgrade, rollback and the host's limits](#upgrade-rollback-and-the-hosts-limits)).
+  it has left. On a host that cannot enforce a CPU limit it starts the image
+  without the CPU limits and with the rest, and keeps them all recorded
+  ([Upgrade, rollback and the host's limits](#upgrade-rollback-and-the-hosts-limits)).
 - **Reinstall** keeps the recorded limits.
 - **A re-run** of a completed install changes them (contract section 7). A limit
   given on the re-run replaces the recorded one and counts as set by the operator; a
