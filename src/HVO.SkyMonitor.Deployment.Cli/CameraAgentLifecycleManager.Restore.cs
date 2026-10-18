@@ -44,7 +44,7 @@ internal sealed partial class CameraAgentLifecycleManager
     {
         var instanceId = request.InstanceId!.Value;
         var name = request.Archive!;
-        var vault = BackupVault.For(request.ProductRoot, request.ProductionProductRoot);
+        var vault = BackupVault.For(request);
         var docker = new DockerClient(processRunner);
         var paths = InstallationPaths.Create(request.ProductRoot, instanceId, ProductionCatalog.DefaultCatalogId);
         var archived = await AdmitRestoreAsync(request, vault, docker, paths, uid, gid, error, cancellationToken).ConfigureAwait(false);
@@ -116,6 +116,7 @@ internal sealed partial class CameraAgentLifecycleManager
             {
                 await StageRestoreAsync(paths, vault, name, archived, staging, staged, error, request.Json, cancellationToken)
                     .ConfigureAwait(false);
+                await EnsureFloorsCarryAsync(paths, manifest, operation, archived.Archive.StateSnapshot, cancellationToken).ConfigureAwait(false);
                 operation = await RecordAsync(paths, operation with { Phase = LifecycleOperationPhase.CandidateValidated }, cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -143,8 +144,8 @@ internal sealed partial class CameraAgentLifecycleManager
                 SwapRestoredFiles(paths, staging, staged, previous);
                 if (operation.StateSnapshotRestoredUtc is null)
                 {
-                    operation = await RestoreStateSnapshotAsync(
-                            paths, manifest, operation, archived.Archive.StateSnapshot, request.Json, error, cancellationToken)
+                    operation = await RestoreBackupStoresAsync(
+                            paths, manifest, operation, archived.Archive.StateSnapshot, previous, request.Json, error, cancellationToken)
                         .ConfigureAwait(false);
                 }
                 var outcome = await RevokeAgainAsync(paths, previous, archived.Archive, request.Json, error).ConfigureAwait(false);
@@ -186,7 +187,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 // reports nothing rather than guess.
                 Restore = new LifecycleRestore(
                     name, archived.Archive.CreatedUtc, archived.Archive.OperationId,
-                    archived.Credentials?.ApiKeysRevoked, archived.Credentials?.AccountsReset,
+                    archived.Credentials?.ApiKeysRevoked, archived.Credentials?.AccountsReset, archived.Credentials?.AuthorityRevoked,
                     archived.CredentialsCompared ? archived.Credentials is null : null),
                 Warnings = warnings.Count == 0 ? null : warnings
             };
@@ -197,6 +198,122 @@ internal sealed partial class CameraAgentLifecycleManager
             throw new InstallerException(
                 $"The restore stopped after it began replacing the instance: {SafeMessage(exception)} Rerun the same command with --resume to finish it.",
                 exception);
+        }
+    }
+
+    /// <summary>
+    /// Refuses, before anything is replaced, a restore that would hand out again a counter the live instance issued
+    /// (#1353 PR-1369-R1 F1): every recorded floor must be one the backup's snapshot can carry, or belong to a store the
+    /// snapshot does not have, which the restore carries over from the live instance whole.
+    /// </summary>
+    private static async Task EnsureFloorsCarryAsync(
+        InstallationPaths paths,
+        InstanceManifest manifest,
+        LifecycleOperationState operation,
+        LifecycleStateSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        var target = await CameraAgentStateSnapshot.VerifyAsync(paths, manifest.InstanceId, snapshot, cancellationToken).ConfigureAwait(false);
+        var floors = CameraAgentStateCounters.TrimCarries(
+            operation.StateCounterFloors ?? [],
+            CameraAgentStateSnapshot.StoreFile(paths, snapshot, target, CameraAgentStateLayout.AutomationStore));
+        var plan = CameraAgentStateCounters.PlanCarry(
+            floors,
+            relative => CameraAgentStateSnapshot.StoreFile(paths, snapshot, target, relative),
+            Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"), "carry-check"));
+        if (plan.Uncarried.Count > 0)
+        {
+            throw new InstallerException(
+                $"The restore would hand out again counters the live instance issued after the backup: {string.Join("; ", plan.Uncarried.Select(static entry => $"{entry.What} ({Redaction.SafeDiagnostic(entry.Reason)})"))}. Nothing was replaced.");
+        }
+    }
+
+    /// <summary>
+    /// Puts the databases back through #1340's snapshot restore. A counter-bearing store the backup's snapshot does not
+    /// have is first carried over from the live instance, which the swap kept aside, so the snapshot restore keeps it as it
+    /// keeps a live store at its target; every floor is then carried, and the restore is recorded done only once every
+    /// floor holds in the restored stores (#1353 PR-1369-R1 F1).
+    /// </summary>
+    private static async Task<LifecycleOperationState> RestoreBackupStoresAsync(
+        InstallationPaths paths,
+        InstanceManifest manifest,
+        LifecycleOperationState operation,
+        LifecycleStateSnapshot snapshot,
+        string previous,
+        bool json,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        var target = await CameraAgentStateSnapshot.VerifyAsync(paths, manifest.InstanceId, snapshot, cancellationToken).ConfigureAwait(false);
+        CarryLiveStores(paths, manifest, target, operation.StateCounterFloors ?? [], previous);
+        await CameraAgentStateSnapshot.ShowWarningAsync(snapshot, json, error).ConfigureAwait(false);
+        (operation, var carry) = await RecordRestorePlanAsync(paths, manifest, operation, snapshot, json, error, cancellationToken)
+            .ConfigureAwait(false);
+        var uncarried = carry.Uncarried.Count > 0
+            ? carry.Uncarried
+            : await CameraAgentStateSnapshot.RestoreAsync(
+                    paths, manifest.InstanceId, snapshot, manifest.RuntimeUid, manifest.RuntimeGid, carry.Floors,
+                    operation.StateRestorePlan!, cancellationToken)
+                .ConfigureAwait(false);
+        if (uncarried.Count > 0)
+        {
+            throw new InstallerException(
+                $"The restore could not carry {string.Join("; ", uncarried.Select(static entry => $"{entry.What} ({Redaction.SafeDiagnostic(entry.Reason)})"))}, so it is not done.");
+        }
+        EnsureFloorsHold(paths, operation.StateCounterFloors ?? []);
+        return await RecordAsync(paths, operation with { StateSnapshotRestoredUtc = DateTimeOffset.UtcNow }, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Moves back, from the files the swap kept aside, each store that holds a recorded floor and that the backup's snapshot
+    /// records as absent, with its recovery files, and syncs both directories of each move. A store already back is left.
+    /// </summary>
+    private static void CarryLiveStores(
+        InstallationPaths paths, InstanceManifest manifest, StateSnapshotManifest snapshot, IReadOnlyList<StateCounterFloor> floors, string previous)
+    {
+        foreach (var store in floors.Select(static floor => floor.Store).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+        {
+            if (snapshot.Databases.Any(database => database.RelativePath == store && database.Present)) continue;
+            var target = CameraAgentStateSnapshot.StorePath(paths.StateRoot, store);
+            var source = CameraAgentStateSnapshot.StorePath(Path.Combine(previous, "state"), store);
+            if (File.Exists(target) || !File.Exists(source)) continue;
+            var directory = Path.GetDirectoryName(target)!;
+            var missing = new Stack<string>();
+            for (var ancestor = directory; !Directory.Exists(ancestor); ancestor = Path.GetDirectoryName(ancestor)!) missing.Push(ancestor);
+            while (missing.TryPop(out var created))
+            {
+                SafeFileSystem.CreateRuntimeDirectory(created, manifest.RuntimeUid, manifest.RuntimeGid);
+                NativeLinux.FlushDirectory(Path.GetDirectoryName(created)!);
+            }
+            foreach (var suffix in CameraAgentStateLayout.SqliteSidecarSuffixes.Prepend(string.Empty))
+            {
+                if (File.Exists(source + suffix)) Move(source + suffix, target + suffix, Path.GetDirectoryName(source)!, directory);
+            }
+            BackupStepCompleted($"restore-carried:{store}");
+        }
+    }
+
+    /// <summary>
+    /// Requires every recorded floor to hold in the restored stores: each counter at least as high as the live instance
+    /// took it, or absent only where the counter allows a missing row at that floor.
+    /// </summary>
+    private static void EnsureFloorsHold(InstallationPaths paths, IReadOnlyList<StateCounterFloor> floors)
+    {
+        var (observed, unreadable) = CameraAgentStateCounters.ReadReadable(paths.StateRoot);
+        var lowered = new List<string>();
+        foreach (var floor in floors)
+        {
+            var counter = CameraAgentStateCounters.All.SingleOrDefault(counter => counter.Store == floor.Store && counter.Name == floor.Counter);
+            var value = observed.FirstOrDefault(entry => entry.Store == floor.Store && entry.Counter == floor.Counter && entry.Key == floor.Key);
+            if (value is not null ? value.Value >= floor.Value : counter is not null && floor.Value <= counter.MissingRowAllowance) continue;
+            lowered.Add(string.Create(CultureInfo.InvariantCulture,
+                $"the {floor.Counter} counter of '{floor.Store}' ({floor.Key}) is {value?.Value.ToString(CultureInfo.InvariantCulture) ?? "missing"}, below {floor.Value}"));
+        }
+        lowered.AddRange(unreadable.Where(entry => floors.Any(floor => floor.Store == entry.Store)).Select(static entry => $"'{entry.Store}' cannot be read"));
+        if (lowered.Count > 0)
+        {
+            throw new InstallerException($"The restore would hand out again counters the live instance issued: {string.Join("; ", lowered)}.");
         }
     }
 
@@ -310,8 +427,8 @@ internal sealed partial class CameraAgentLifecycleManager
         {
             EnsureRestorableTarget(catalogPaths, instanceId);
         }
-        _ = await AdmitAsync(request, catalogPaths, LifecycleOperationKind.Restore, manifest, cancellationToken).ConfigureAwait(false);
-        EnsureRestoreCapacity(catalogPaths, archive);
+        var resumed = await AdmitAsync(request, catalogPaths, LifecycleOperationKind.Restore, manifest, cancellationToken).ConfigureAwait(false);
+        EnsureRestoreCapacity(catalogPaths, archive, resumed);
         return new ArchivedInstance(manifest, archive, [], null);
     }
 
@@ -346,18 +463,36 @@ internal sealed partial class CameraAgentLifecycleManager
                .Select(Path.GetFileName)
                .All(static entry => entry is ".deployment.lock" or BackupInventory.RestoreFolderName);
 
-    /// <summary>Requires room to stage every file of the archive beside the instance, with headroom.</summary>
-    private static void EnsureRestoreCapacity(InstallationPaths paths, BackupArchiveManifest archive)
+    /// <summary>
+    /// Requires room for what is left to do, with headroom: staging every file of the archive beside the instance, unless
+    /// a resumed restore has staged it already, and the copy the database restore writes beside each store it replaces
+    /// (#1353 PR-1369-R1 F8). A restore resumed before its staging finished removes what it had staged first, so those
+    /// bytes count as free.
+    /// </summary>
+    private static void EnsureRestoreCapacity(InstallationPaths paths, BackupArchiveManifest archive, LifecycleOperationState? resumed)
     {
-        var required = checked(archive.TotalBytes + (long)archive.Entries.Count * 4096 + BackupHeadroomBytes);
+        var snapshotBytes = archive.Entries.Where(static entry => entry.Path.StartsWith(BackupArchive.SnapshotPrefix, StringComparison.Ordinal))
+            .Sum(static entry => entry.Size);
+        var staged = resumed is not null && resumed.Phase != LifecycleOperationPhase.Prepared;
+        var required = staged
+            ? checked(snapshotBytes + BackupHeadroomBytes)
+            : checked(archive.TotalBytes + (long)archive.Entries.Count * 4096 + snapshotBytes + BackupHeadroomBytes);
+        var reclaimed = resumed is { Phase: LifecycleOperationPhase.Prepared }
+            ? DirectoryBytes(Path.Combine(paths.InstanceRoot, BackupInventory.RestoreFolderName, resumed.OperationId.ToString("D")))
+            : 0;
         var measured = BackupHost.MeasureFileSystem(paths.InstanceRoot);
-        if (measured.AvailableBytes < required)
+        if (checked(measured.AvailableBytes + reclaimed) < required)
         {
             throw InstallerException.Refused(string.Create(
                 CultureInfo.InvariantCulture,
-                $"There is not enough free space to restore the backup on the filesystem holding {measured.MeasuredPath}: {FormatBytes(required)} is needed and {FormatBytes(measured.AvailableBytes)} is free."));
+                $"There is not enough free space to restore the backup on the filesystem holding {measured.MeasuredPath}: {FormatBytes(required)} is needed and {FormatBytes(measured.AvailableBytes + reclaimed)} is free."));
         }
     }
+
+    private static long DirectoryBytes(string root)
+        => Directory.Exists(root)
+            ? new DirectoryInfo(root).EnumerateFiles("*", SearchOption.AllDirectories).Where(static file => file.LinkTarget is null).Sum(static file => file.Length)
+            : 0;
 
     private static async Task<T> ArchivedRecordAsync<T>(
         Dictionary<string, byte[]> captured,
@@ -496,6 +631,7 @@ internal sealed partial class CameraAgentLifecycleManager
             // The staging folder is under the instance root and the snapshots under the operations root; both are under
             // the product root, but they may be different filesystems, so a move that cannot rename copies.
             MoveTree(source, target);
+            NativeLinux.FlushDirectory(Path.GetDirectoryName(source)!);
             SafeFileSystem.FlushDirectoryChain(target, paths.ProductRoot);
         }
         await CameraAgentStateSnapshot.VerifyAsync(paths, archived.Manifest.InstanceId, archived.Archive.StateSnapshot, cancellationToken)
@@ -524,6 +660,8 @@ internal sealed partial class CameraAgentLifecycleManager
             SafeFileSystem.WriteTextAtomic(planPath, JsonSerializer.Serialize(plan, BackupVaultJsonContext.Default.StringArray));
         }
         SafeFileSystem.CreateOwnerDirectory(previous);
+        // The folder that keeps the replaced entries is durable in its parent before anything moves into it.
+        NativeLinux.FlushDirectory(staging);
         foreach (var entry in plan)
         {
             var source = Path.Combine(staged, entry);
@@ -533,29 +671,31 @@ internal sealed partial class CameraAgentLifecycleManager
             if (Exists(live))
             {
                 if (Exists(kept)) throw new InstallerException($"The restore cannot keep the replaced '{entry}': it was kept already.");
-                Move(live, kept);
-                NativeLinux.FlushDirectory(previous);
+                Move(live, kept, paths.InstanceRoot, previous);
             }
-            Move(source, live);
-            NativeLinux.FlushDirectory(paths.InstanceRoot);
+            Move(source, live, staged, paths.InstanceRoot);
             BackupStepCompleted($"restore-swapped:{entry}");
         }
         foreach (var live in Directory.EnumerateFileSystemEntries(paths.InstanceRoot).Order(StringComparer.Ordinal))
         {
             var entry = Path.GetFileName(live)!;
             if (entry is ".deployment.lock" or BackupInventory.RestoreFolderName || plan.Contains(entry, StringComparer.Ordinal)) continue;
-            Move(live, Path.Combine(previous, entry));
+            Move(live, Path.Combine(previous, entry), paths.InstanceRoot, previous);
         }
-        NativeLinux.FlushDirectory(previous);
-        NativeLinux.FlushDirectory(paths.InstanceRoot);
 
         static bool Exists(string path) => File.Exists(path) || Directory.Exists(path);
+    }
 
-        static void Move(string from, string to)
-        {
-            if (Directory.Exists(from)) Directory.Move(from, to);
-            else File.Move(from, to, overwrite: false);
-        }
+    /// <summary>
+    /// Renames <paramref name="from"/> to <paramref name="to"/> on one filesystem and syncs both directories, so the move is
+    /// durable in each before the restore relies on it (#1353 PR-1369-R1 F7).
+    /// </summary>
+    private static void Move(string from, string to, string fromDirectory, string toDirectory)
+    {
+        if (Directory.Exists(from)) Directory.Move(from, to);
+        else File.Move(from, to, overwrite: false);
+        NativeLinux.FlushDirectory(fromDirectory);
+        NativeLinux.FlushDirectory(toDirectory);
     }
 
     /// <summary>
@@ -569,7 +709,7 @@ internal sealed partial class CameraAgentLifecycleManager
         var relative = Path.Combine(CameraAgentStateLayout.IdentityDirectoryName, CameraAgentStateLayout.IdentityDatabaseFileName);
         var restored = Path.Combine(paths.StateRoot, relative);
         var live = Path.Combine(previous, "state", relative);
-        if (!File.Exists(restored)) return new RestoredCredentials.Outcome(0, 0, 0);
+        if (!File.Exists(restored)) return new RestoredCredentials.Outcome(0, 0, 0, []);
         if (!File.Exists(live))
         {
             await ShowCredentialWarningAsync(
@@ -581,12 +721,12 @@ internal sealed partial class CameraAgentLifecycleManager
             return null;
         }
         var outcome = RestoredCredentials.Revoke(restored, live);
-        if (outcome.ApiKeysRevoked > 0 || outcome.AccountsReset > 0 || outcome.AccountsNotLive > 0)
+        if (outcome.Changes.Count > 0)
         {
             await ShowCredentialWarningAsync(
                     archive,
                     string.Create(CultureInfo.InvariantCulture,
-                        $"Warning: the backup ({archive.CreatedUtc:yyyy-MM-ddTHH:mm:ssZ}) held credentials the instance revoked since; the restore revoked them again: {outcome.ApiKeysRevoked} API key(s), and {outcome.AccountsReset} account password(s) kept as the live instance had them.{(outcome.AccountsNotLive > 0 ? $" {outcome.AccountsNotLive} account(s) the live instance no longer had were restored with their old passwords; review them." : string.Empty)}"),
+                        $"Warning: the backup ({archive.CreatedUtc:yyyy-MM-ddTHH:mm:ssZ}) held credentials or authority the live instance revoked since; the restore revoked them again: {string.Join("; ", outcome.Changes)}."),
                     json, error)
                 .ConfigureAwait(false);
         }

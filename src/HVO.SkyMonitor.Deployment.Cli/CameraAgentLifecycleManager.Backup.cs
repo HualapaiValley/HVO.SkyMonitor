@@ -48,9 +48,9 @@ internal sealed partial class CameraAgentLifecycleManager
     {
         var stores = BackupStores(paths, manifest);
         var (items, _) = BackupInventory.CollectInstance(paths, stores);
-        var vault = BackupVault.For(request.ProductRoot, request.ProductionProductRoot);
+        var vault = BackupVault.For(request);
         var partials = await vault.ListPartialsAsync(manifest.InstanceId, cancellationToken).ConfigureAwait(false);
-        EnsureBackupCapacity(paths, vault, items, stores, partials);
+        EnsureBackupCapacity(paths, manifest, vault, items, stores, partials);
     }
 
     /// <summary>
@@ -70,19 +70,22 @@ internal sealed partial class CameraAgentLifecycleManager
     }
 
     /// <summary>
-    /// Requires room for the compressed archive at its worst case (no compression) and for the snapshot, which is also
-    /// what the read-back verifies against, each with headroom, summed when they share a filesystem. A partial an
-    /// interrupted backup of this instance left is discarded before the archive is written, so its bytes count as free.
+    /// Requires room for the compressed archive at its worst case (no compression, every entry's tar overhead) and for the
+    /// snapshot, which is also what the read-back verifies against, each with headroom, summed when they share a
+    /// filesystem. The archive holds every snapshot it will contain: the one this backup takes, bounded by the stores'
+    /// size, and the rollback snapshot the manifest keeps (#1353 PR-1369-R1 F9). A partial an interrupted backup of this
+    /// instance left is discarded before the archive is written, so its bytes count as free.
     /// </summary>
     private static void EnsureBackupCapacity(
         InstallationPaths paths,
+        InstanceManifest manifest,
         IBackupVault vault,
         IReadOnlyList<BackupItem> items,
         IReadOnlyList<string> stores,
         IReadOnlyList<BackupPartial> partials)
     {
         var snapshotBytes = CameraAgentStateSnapshot.StoreBytes(paths.StateRoot, stores);
-        var archiveBytes = checked(BackupArchive.EstimateArchiveBytes(items) + snapshotBytes + BackupHeadroomBytes);
+        var archiveBytes = checked(BackupArchive.EstimateArchiveBytes([.. items, .. SnapshotItemsBound(paths, manifest, stores)]) + BackupHeadroomBytes);
         var snapshotRequired = checked(snapshotBytes + BackupHeadroomBytes);
         var archiveFileSystem = BackupHost.MeasureFileSystem(vault.Root);
         var snapshotFileSystem = BackupHost.MeasureFileSystem(paths.OperationsRoot);
@@ -106,6 +109,28 @@ internal sealed partial class CameraAgentLifecycleManager
         }
     }
 
+    /// <summary>
+    /// The snapshot entries an archive can hold at most: one per store, as large as the store and its recovery files are
+    /// now, a manifest, and every file of the rollback snapshot the manifest keeps.
+    /// </summary>
+    private static IEnumerable<BackupItem> SnapshotItemsBound(InstallationPaths paths, InstanceManifest manifest, IReadOnlyList<string> stores)
+    {
+        const long ManifestBound = 1024 * 1024;
+        yield return new BackupItem(BackupArchive.SnapshotPrefix + "manifest.json", null, Directory: false, UnixFileMode.UserRead, ManifestBound);
+        foreach (var store in stores)
+        {
+            yield return new BackupItem(BackupArchive.SnapshotPrefix + store, null, Directory: false, UnixFileMode.UserRead,
+                CameraAgentStateSnapshot.StoreBytes(paths.StateRoot, [store]));
+        }
+        if (manifest.PreviousStateSnapshot is not { } previous) yield break;
+        var root = CameraAgentStateSnapshot.SnapshotRoot(paths, previous.OperationId, previous.SnapshotId);
+        if (!Directory.Exists(root)) yield break;
+        foreach (var file in new DirectoryInfo(root).EnumerateFiles())
+        {
+            yield return new BackupItem(BackupInventory.SnapshotPrefix(previous) + file.Name, null, Directory: false, UnixFileMode.UserRead, file.Length);
+        }
+    }
+
     private static async Task<LifecycleResult> BackupAsync(
         LifecycleRequest request,
         InstallationPaths paths,
@@ -121,7 +146,7 @@ internal sealed partial class CameraAgentLifecycleManager
         TextWriter error,
         CancellationToken cancellationToken)
     {
-        var vault = BackupVault.For(request.ProductRoot, request.ProductionProductRoot);
+        var vault = BackupVault.For(request);
         var stores = BackupStores(paths, manifest);
         var running = manifest.LifecycleCondition == InstanceLifecycleCondition.Installed &&
                       (await docker.InspectContainerAsync(compose.ContainerName, cancellationToken).ConfigureAwait(false)).Running;
@@ -232,21 +257,18 @@ internal sealed partial class CameraAgentLifecycleManager
                     "The backup is committed, but its completion was not recorded; rerun the same command with --resume.", exception);
             }
             using var recovery = new CancellationTokenSource(BackupRecoveryTimeout);
-            try
+            var (cleanupFailure, restartFailure) = await RecoverBackupAsync(
+                    vault, name, service, operation, drainAttempted || operation.PreMutationContinuity is not null, recovery.Token)
+                .ConfigureAwait(false);
+            if (cleanupFailure is not null || restartFailure is not null)
             {
-                await vault.DiscardAsync(name, recovery.Token).ConfigureAwait(false);
-                if (drainAttempted || operation.PreMutationContinuity is not null)
-                {
-                    await service.RestartAsync(operation.OperationId, recovery.Token).ConfigureAwait(false);
-                }
-                operation = operation with { Phase = LifecycleOperationPhase.Prepared, MutationStarted = false };
-            }
-            catch (Exception recoveryException)
-            {
+                // What is left stays journaled as mutated, so --resume finishes it.
                 throw new InstallerException(
-                    $"The backup failed, and putting the instance back as it was also failed: {Redaction.SafeDiagnostic(recoveryException.Message)} Rerun the same command with --resume.",
+                    RecoveryFailureMessage($"The backup failed ({Redaction.SafeDiagnostic(exception.Message)})", cleanupFailure, restartFailure,
+                        drainAttempted || operation.PreMutationContinuity is not null),
                     exception);
             }
+            operation = operation with { Phase = LifecycleOperationPhase.Prepared, MutationStarted = false };
             await FailAsync(paths, operation, exception, CancellationToken.None).ConfigureAwait(false);
             if (exception is OperationCanceledException) throw;
             throw new InstallerException(
@@ -288,16 +310,67 @@ internal sealed partial class CameraAgentLifecycleManager
                     paths, manifest, vault, record, operation, daemon, operation.PreMutationContinuity is not null, request.Json, error)
                 .ConfigureAwait(false);
         }
-        await vault.DiscardAsync(name, cancellationToken).ConfigureAwait(false);
-        if (operation.PreMutationContinuity is not null)
+        var (cleanupFailure, restartFailure) = await RecoverBackupAsync(
+                vault, name, service, operation, operation.PreMutationContinuity is not null, cancellationToken)
+            .ConfigureAwait(false);
+        if (cleanupFailure is not null || restartFailure is not null)
         {
-            await service.RestartAsync(operation.OperationId, cancellationToken).ConfigureAwait(false);
+            throw new InstallerException(RecoveryFailureMessage(
+                "The backup was interrupted before its archive was complete", cleanupFailure, restartFailure, operation.PreMutationContinuity is not null));
         }
         var interrupted = new InstallerException(
             "The backup was interrupted before its archive was complete, so nothing was kept; the instance is as it was. Run the backup again.");
         await FailAsync(paths, operation with { Phase = LifecycleOperationPhase.Prepared, MutationStarted = false }, interrupted, cancellationToken)
             .ConfigureAwait(false);
         throw interrupted;
+    }
+
+    /// <summary>
+    /// Discards the partial and, in its own <c>finally</c>, restarts and resumes the instance when the backup stopped it,
+    /// so a cleanup that fails never leaves the instance stopped (#1353 PR-1369-R1 F4). Returns each failure.
+    /// </summary>
+    private static async Task<(Exception? Cleanup, Exception? Restart)> RecoverBackupAsync(
+        IBackupVault vault,
+        string name,
+        BackupService service,
+        LifecycleOperationState operation,
+        bool restart,
+        CancellationToken cancellationToken)
+    {
+        Exception? cleanupFailure = null;
+        Exception? restartFailure = null;
+        try
+        {
+            await vault.DiscardAsync(name, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception cleanup) when (cleanup is not OutOfMemoryException)
+        {
+            cleanupFailure = cleanup;
+        }
+        finally
+        {
+            if (restart)
+            {
+                try
+                {
+                    await service.RestartAsync(operation.OperationId, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception failure) when (failure is not OutOfMemoryException)
+                {
+                    restartFailure = failure;
+                }
+            }
+        }
+        return (cleanupFailure, restartFailure);
+    }
+
+    private static string RecoveryFailureMessage(string cause, Exception? cleanupFailure, Exception? restartFailure, bool restarted)
+    {
+        var parts = new List<string> { cause };
+        if (cleanupFailure is not null) parts.Add($"discarding its partial archive also failed ({Redaction.SafeDiagnostic(cleanupFailure.Message)})");
+        if (restartFailure is not null) parts.Add($"restarting the instance also failed ({Redaction.SafeDiagnostic(restartFailure.Message)})");
+        else if (restarted) parts.Add("the instance was restarted and resumed");
+        return $"{string.Join("; ", parts)}. Rerun the same command with --resume to finish.";
     }
 
     /// <summary>
@@ -328,7 +401,7 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         var record = new BackupRecord(
             BackupRecord.CurrentSchemaVersion, name, manifest.InstanceId, manifest.OperationId, manifest.CreatedUtc, length, sha256,
-            manifest.TotalBytes, manifest.Entries.Count);
+            manifest.TotalBytes, manifest.Entries.Count, manifest.RuntimeUid, manifest.RuntimeGid);
         await vault.CommitAsync(record, cancellationToken).ConfigureAwait(false);
         BackupStepCompleted("backup-committed");
         return record;

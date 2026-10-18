@@ -1714,7 +1714,8 @@ instance identity back to healthy. Take an instance backup first if the deleted 
 
 ## CameraAgent Lifecycle
 
-Run lifecycle commands as the Docker-capable deployment user, never as root.
+Run lifecycle commands as the Docker-capable deployment user, never as root. The exceptions are `backup` and
+`restore`, which run with `sudo` and work as that user (see [Backup and restore](#backup-and-restore)).
 Image and catalog transitions authenticate through the lifecycle-control credential
 provisioned during installation and bound to the instance manifest. Candidate
 health, installation identity, owner identity, and runtime ownership are verified
@@ -1727,8 +1728,8 @@ hvo-sky-install cameraagent upgrade --instance-id <uuid> \
 hvo-sky-install cameraagent rollback --instance-id <uuid>
 hvo-sky-install cameraagent uninstall --instance-id <uuid>
 hvo-sky-install cameraagent reinstall --instance-id <uuid>
-hvo-sky-install cameraagent backup --instance-id <uuid>
-hvo-sky-install cameraagent restore <archive> --instance-id <uuid>
+sudo hvo-sky-install cameraagent backup --instance-id <uuid>
+sudo hvo-sky-install cameraagent restore <archive> --instance-id <uuid>
 ```
 
 An upgrade whose candidate declares the installed state contract is a pure swap. The candidate declares a state
@@ -1769,18 +1770,31 @@ rollback models are rejected before runtime mutation.
 never copies bulk data (install contract draft 4).
 
 ```bash
-hvo-sky-install cameraagent backup --instance-id <uuid> [--plan] [--json] [--resume]
-hvo-sky-install cameraagent restore <archive> --instance-id <uuid> [--plan] [--json] [--resume]
+sudo hvo-sky-install cameraagent backup --instance-id <uuid> [--plan] [--json] [--resume]
+sudo hvo-sky-install cameraagent restore <archive> --instance-id <uuid> [--plan] [--json] [--resume]
 ```
 
-**Where backups are kept.** Each backup is one file in `<product-root>/backups`, named
-`hvo-sky-<instance>-<yyyyMMddTHHmmssZ>-<operation>.tar.gz`, with its record `<archive>.json` beside it. Under the
-production product root, the folder and both files are `root:root` and owner-only, because a backup holds the
-instance's secrets: its Identity database, Data Protection keys and tokens. The installer reaches them through one
-narrow `sudo` helper, `internal-backup-vault`. That helper re-reads the host policy itself, accepts only archive names
-the installer gives, and streams one archive through its standard input or output. Under a test product root, the
-folder and files belong to the runtime user. Copy a backup off the host as root, both files together. Backups are kept
-until you remove them.
+**Run them with `sudo`.** A backup holds the instance's secrets: its Identity database, Data Protection keys and
+tokens. So under the production product root both commands run as root, as RoofController's do, and anything else is
+refused (exit `3`) naming the command to run. As root they work as the instance's runtime user at once. They join its
+groups, so Docker answers as it does for that user, and take its user and group IDs, keeping root only to become root
+again for the few steps that need it:
+- the backup folder's own operations;
+- the machine install record;
+- creating an absent instance root.
+
+Every other file they write belongs to the runtime user, as when that user runs any lifecycle command. Under a test
+product root they also run as that root's own user.
+
+**Where backups are kept.** Each backup is one file in `/var/backups/hvo-sky`, named
+`hvo-sky-<instance>-<yyyyMMddTHHmmssZ>-<operation>.tar.gz`, with its record `<archive>.json` beside it.
+- The folder and both files are `root:root` and owner-only.
+- The folder and every folder above it, up to `/`, must be root's and writable by root alone, or the command refuses
+  before it writes anything, naming the folder. Otherwise someone else could put another file in a backup's place
+  between the moment it is named and the moment it is read.
+- Under a test product root the folder is `<product-root>/backups`, owned by that root's user. Run as root, a test
+  takes the folder from `HVO_INSTALLER_BACKUP_FOLDER`.
+- Copy a backup off the host as root, both files together. Backups are kept until you remove them.
 
 **What a backup holds.** It is a gzip-compressed PAX tar:
 - under `instance/`, every folder and regular file of the instance root, except the instance lock and the owner
@@ -1794,46 +1808,67 @@ until you remove them.
 
 A link, device or other special file in the instance refuses the backup before anything changes.
 
+**What proves an archive.** The record binds the archive's bytes: restore reads only an archive whose SHA-256 and length
+are the ones its root-written record names. Within those bytes, the restore also requires:
+- every entry is named by the manifest, with the same type, mode, size and SHA-256;
+- the manifest is the last entry and names nothing else;
+- the decompressed stream holds nothing after the tar's end but zero padding.
+
+This is a check of the archive the backup wrote, not a proof of the gzip format.
+
 **How a backup runs.**
-1. Before anything changes, it checks that there is room on each filesystem it writes: the archive at its worst case
-   (no compression), the snapshot, and 256 MiB of headroom on each, with the bytes of any partial archive an earlier
-   interrupted backup of the instance left counted as free. Too little room refuses it (exit `3`).
+1. Before anything changes, it checks that there is room on each filesystem it writes. That is the archive at its worst
+   case (no compression, every entry's tar overhead, the snapshot it takes and the rollback snapshot the manifest
+   keeps), the snapshot itself, and 256 MiB of headroom on each. Any partial archive an earlier interrupted backup of
+   the instance left counts as free. Too little room refuses it (exit `3`).
 2. A running instance's capture is paused and drained, and its container stopped, only while the snapshot and the
    archive are written. The container is then started, verified and resumed before the archive is read back.
 3. The archive is written as `<archive>.partial`, made durable, read back in full, and proved whole against its
-   manifest and the hash taken as it was written. Only then does the backup commit it: the record is written first,
-   then the partial gets its name.
+   manifest and the hash taken as it was written. Only then does the backup commit it, under the folder's lock: the
+   record is written first, then the partial gets its name. A name that is already committed is refused before any
+   record is touched.
 4. Standard error reports progress at most every two seconds. With `--json` each report is a `backup-progress` event.
    The backup has no fixed deadline, so a large instance is never cut off part of the way.
 5. Once complete, it removes every database snapshot of the instance that nothing refers to (see below).
 
-A failure or Ctrl+C discards the partial and puts the instance back as it was (exit `1` or `130`). After an
-interruption, `--resume` keeps nothing written before the archive was complete. From then on, it reads the archive
-back, commits it and finishes. A partial or unrecorded archive is never restorable.
+A failure or Ctrl+C discards the partial and puts the instance back as it was (exit `1` or `130`). The instance is
+started and resumed whatever becomes of the discard. If the discard or the restart fails, both errors are reported and
+the operation stays resumable. After an interruption, `--resume` keeps nothing written before the archive was complete.
+From then on, it reads the archive back, commits it and finishes. A partial or unrecorded archive is never restorable.
 
 **How a restore runs.** `restore` puts back an instance that is uninstalled and preserved, or absent (after `purge`,
 or on a rebuilt host with the same product root and Docker daemon). It never replaces an installed instance: uninstall
-it first. `<archive>` is the backup's name, or its path in `<product-root>/backups`. Before anything changes, the
+it first. `<archive>` is the backup's name, or its path in `/var/backups/hvo-sky`. Before anything changes, the
 restore reads the whole archive and refuses it (exit `3`) when:
 - it is partial, has no record, or its bytes are not the ones the record names;
 - an entry is not the one its manifest names, the manifest is not last, or the archive cannot be read to its end;
 - it belongs to another instance, product root or runtime user;
-- the catalog it needs is not installed, Docker is another daemon, the instance's container exists, or there is not
-  enough room to stage it.
+- the catalog it needs is not installed, Docker is another daemon, or the instance's container exists;
+- there is not enough room for what is left to do. A fresh restore needs room to stage the archive and to copy each
+  database it puts back; a resumed one that already staged the archive needs only the second.
 
 A `--plan` makes the same checks and writes nothing.
 
 The restore then:
 1. records the counters the replaced instance handed out;
 2. reads the archive a second time, staging its files in `<instance-root>/.hvo-restore/<operation>` and verifying
-   every byte again;
-3. swaps the staged files in, keeping what they replace until it completes;
+   every byte again. If any counter the replaced instance handed out could not be carried into the backup's
+   databases, it stops here, with nothing replaced;
+3. swaps the staged files in, keeping what they replace until it completes. Each move is a rename on one filesystem,
+   durable in both folders before the next step;
 4. puts the databases back through the same staged, durable and verified snapshot restore an upgrade's recovery uses,
-   carrying every counter past what the replaced instance handed out;
-5. revokes again the credentials the live instance revoked after the backup: an API key the backup holds and the live
-   store does not is deleted, and an account whose password or security stamp changed keeps the live password and
-   stamp. With no live credential store to compare (an absent instance), it warns loudly that every key and password
-   valid at the backup is valid again. With `--json`, both are a `credentials-restored` event.
+   carrying every counter past what the replaced instance handed out. A database that hands out identities, and that
+   the backup does not have because the instance created it later, is carried over from the replaced instance whole.
+   The restore is not done until every counter is at least as high as the replaced instance took it;
+5. revokes again the credentials and authority the live instance revoked after the backup, and reports each change:
+   - an API key the backup holds and the live store does not is deleted;
+   - an account whose password or security stamp changed keeps the live password and stamp;
+   - an account the live store demoted is not the site owner;
+   - a role or claim the live store removed is removed;
+   - an account the live store no longer has loses its password, roles, claims and site ownership, and is locked out.
+
+   With no live credential store to compare (an absent instance), it warns loudly that every key and password valid at
+   the backup is valid again. With `--json`, both are a `credentials-restored` event.
 
 The instance is restored uninstalled, with its release records and install record settled from the restored manifest.
 Start it with `hvo-sky-install cameraagent reinstall --instance-id <uuid>`, which brings it up through the verified
@@ -2538,7 +2573,9 @@ step, because its baseline image may predate the boundary labels, and keeps the 
 upgrade.
 
 Run the disposable installer contract against the current image with
-`./scripts/test:deployment-installer`. To validate an owner-recovery image
+`./scripts/test:deployment-installer`. It needs passwordless `sudo`: it runs `backup` and `restore` as root, as the
+production product root requires, keeps their archives in a root-owned folder of its own under `/var/backups`, and
+removes that folder when it ends. To validate an owner-recovery image
 transition, use a clean committed worktree with an ancestor pre-support commit
 available locally:
 

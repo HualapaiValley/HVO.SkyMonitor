@@ -1,6 +1,5 @@
 using System.Formats.Tar;
 using System.IO.Compression;
-using System.IO.Pipes;
 using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
 
@@ -74,6 +73,60 @@ public sealed class BackupVaultTests
         StringAssert.Contains(refused.Message, reason, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// F6: a commit under a name that is already committed is refused before any record is touched, so the backup that has
+    /// the name keeps its record; committing that same archive again changes nothing.
+    /// </summary>
+    [TestMethod]
+    public async Task OwnerVault_CommitUnderANameAlreadyCommitted_IsRefusedAndLeavesTheCommittedRecord()
+    {
+        using var root = new Scratch();
+        var vault = new OwnerBackupVault(new BackupVaultFiles(Path.Combine(root.Path, BackupVault.FolderName)));
+        await WritePartialAsync(vault, "archive"u8.ToArray());
+        await vault.CommitAsync(Record(7), CancellationToken.None);
+        await WritePartialAsync(vault, "another"u8.ToArray());
+        var other = Record(7) with { ArchiveSha256 = new string('b', 64) };
+
+        var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => vault.CommitAsync(other, CancellationToken.None));
+        await vault.CommitAsync(Record(7), CancellationToken.None);
+
+        Assert.IsTrue(refused.IsRefusal, refused.Message);
+        Assert.AreEqual(Record(7), await vault.ReadRecordAsync(Name, CancellationToken.None), "the committed backup's record was replaced");
+        await using var transfer = await vault.ReadAsync(Name, partial: false, CancellationToken.None);
+        using var reader = new StreamReader(transfer.Stream);
+        Assert.AreEqual("archive", await reader.ReadToEndAsync());
+    }
+
+    /// <summary>
+    /// F10: after the tar end marker the decompressed stream must hold nothing but zero padding to its end, so a second
+    /// gzip member with data refuses the archive. The archive's bytes as a whole, any after the gzip stream included, are
+    /// bound by its record's SHA-256 and length instead (<c>RestoreAsync_PartialOrDamagedArchive_...</c>).
+    /// </summary>
+    [TestMethod]
+    public async Task ReadAsync_DataAfterTheTarEnd_IsRefused()
+    {
+        using var root = new Scratch();
+        using var archive = new MemoryStream();
+        await WriteAsync(archive, Items(root.Path));
+        await using (var gzip = new GZipStream(archive, CompressionLevel.Fastest, leaveOpen: true))
+        {
+            await gzip.WriteAsync("smuggled after the end"u8.ToArray());
+        }
+        archive.Position = 0;
+
+        var refused = await Assert.ThrowsExactlyAsync<InstallerException>(
+            () => BackupArchive.ReadAsync(archive, null, null, CancellationToken.None));
+
+        Assert.IsTrue(refused.IsRefusal, refused.Message);
+    }
+
+    /// <summary>F11: exactly one trailing '/' marks a folder; any other empty segment is not a canonical name.</summary>
+    [TestMethod]
+    [DataRow("instance/state//")]
+    [DataRow("instance//")]
+    public void NameProblem_FolderNameEndingInMoreThanOneSlash_IsRefused(string name)
+        => Assert.IsNotNull(BackupArchive.NameProblem(name, TarEntryType.Directory), name);
+
     [TestMethod]
     public async Task OwnerVault_CommitsOnlyARecordedWholeArchiveAndNeverDiscardsOne()
     {
@@ -97,82 +150,73 @@ public sealed class BackupVaultTests
         Assert.IsEmpty(await vault.ListPartialsAsync(Instance, CancellationToken.None));
     }
 
+    /// <summary>
+    /// Root's vault runs every operation on its folder in its root window, and nothing else: the archive itself streams
+    /// outside it (#1353 PR-1369-R1 F2/F3).
+    /// </summary>
     [TestMethod]
-    public async Task PrivilegedVault_StreamsEveryOperationThroughTheHelper()
+    public async Task RootVault_RunsEveryFolderOperationInItsWindowAndStreamsOutsideIt()
     {
         using var root = new Scratch();
-        var files = new BackupVaultFiles(Path.Combine(root.Path, BackupVault.FolderName));
-        var launcher = new InProcessHelper(files);
-        var vault = new PrivilegedBackupVault(root.Path, launcher);
+        var window = new CountingWindow();
+        var vault = new RootBackupVault(new BackupVaultFiles(Path.Combine(root.Path, BackupVault.FolderName)), window);
         await using (var transfer = await vault.WriteAsync(Name, CancellationToken.None))
         {
+            Assert.AreEqual(1, window.Steps, "creating the partial");
             await transfer.Stream.WriteAsync("archive"u8.ToArray());
+            Assert.AreEqual(1, window.Steps, "the archive streams outside the window");
             await transfer.CompleteAsync(CancellationToken.None);
+            Assert.AreEqual(2, window.Steps, "syncing the folder");
         }
         Assert.AreEqual(Name, (await vault.ListPartialsAsync(Instance, CancellationToken.None)).Single().Name);
         await vault.CommitAsync(Record(7), CancellationToken.None);
-        string content;
-        await using (var transfer = await vault.ReadAsync(Name, partial: false, CancellationToken.None))
-        {
-            using var reader = new StreamReader(transfer.Stream);
-            content = await reader.ReadToEndAsync();
-            await transfer.CompleteAsync(CancellationToken.None);
-        }
-
-        Assert.AreEqual("archive", content);
         Assert.AreEqual(Record(7), await vault.ReadRecordAsync(Name, CancellationToken.None));
-        string[] read = ["--", $"/proc/{Environment.ProcessId}/exe", BackupVaultHelper.CommandName, "--product-root", root.Path, "--read", Name];
-        Assert.IsTrue(
-            launcher.Invocations.Any(arguments => arguments.SequenceEqual(read, StringComparer.Ordinal)),
-            string.Join(Environment.NewLine, launcher.Invocations.Select(static arguments => string.Join(' ', arguments))));
+        await vault.DiscardAsync(Name, CancellationToken.None);
+
+        Assert.AreEqual(6, window.Steps);
     }
 
+    /// <summary>
+    /// F2: root's vault is used only when it and every folder above it to <c>/</c> is root's and writable by root alone.
+    /// </summary>
     [TestMethod]
-    public async Task PrivilegedVault_HelperRefusal_IsARefusal()
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void RootAncestry_RefusesAnyFolderSomeoneButRootCanChange()
     {
         using var root = new Scratch();
-        var vault = new PrivilegedBackupVault(root.Path, new InProcessHelper(new BackupVaultFiles(Path.Combine(root.Path, BackupVault.FolderName))));
 
-        var refused = await Assert.ThrowsExactlyAsync<InstallerException>(async () =>
+        Assert.IsNull(RootPrivilege.RootAncestryProblem("/usr/share"), "a folder whose ancestry is root's alone");
+        Assert.IsNull(RootPrivilege.RootAncestryProblem("/usr/share/hvo-sky-not-made-yet"), "a folder not made yet, under one that is");
+        if (NativeLinux.getuid() != 0)
         {
-            await using var transfer = await vault.ReadAsync(Name, partial: false, CancellationToken.None);
-            await transfer.CompleteAsync(CancellationToken.None);
-        });
-
-        Assert.IsTrue(refused.IsRefusal, refused.Message);
-    }
-
-    [TestMethod]
-    public void HelperArguments_AreParsedExactly()
-    {
-        Assert.IsTrue(BackupVaultHelper.TryParse(
-            [BackupVaultHelper.CommandName, "--product-root", "/var/lib/hvo-sky", "--write", Name], out var productRoot, out var mode, out var value));
-        Assert.AreEqual(("/var/lib/hvo-sky", "--write", Name), (productRoot, mode, value));
-        Assert.IsTrue(BackupVaultHelper.TryParse(
-            [BackupVaultHelper.CommandName, "--product-root", "/var/lib/hvo-sky", "--partials", Instance.ToString("D")], out _, out _, out _));
-        foreach (var args in new[]
-                 {
-                     new[] { BackupVaultHelper.CommandName, "--product-root", "/var/lib/hvo-sky", "--write", "../etc/shadow" },
-                     new[] { BackupVaultHelper.CommandName, "--product-root", "relative", "--write", Name },
-                     new[] { BackupVaultHelper.CommandName, "--product-root", "/var/lib/hvo-sky", "--delete", Name },
-                     new[] { BackupVaultHelper.CommandName, "--product-root", "/var/lib/hvo-sky", "--partials", Name },
-                     new[] { BackupVaultHelper.CommandName, "--product-root", "/var/lib/hvo-sky", "--write", Name, "extra" }
-                 })
-        {
-            Assert.IsFalse(BackupVaultHelper.TryParse(args, out _, out _, out _), string.Join(' ', args));
+            StringAssert.Contains(RootPrivilege.RootAncestryProblem(root.Path)!, "someone other than root", StringComparison.Ordinal);
         }
+        StringAssert.Contains(RootPrivilege.RootAncestryProblem("/tmp/hvo-sky-backups")!, "/tmp", StringComparison.Ordinal);
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public void RunInternal_WithoutRoot_IsRefused()
+    public async Task RootVault_InAFolderSomeoneButRootCanChange_IsRefusedBeforeAnythingIsWritten()
     {
-        if (NativeLinux.getuid() == 0) Assert.Inconclusive("The test runs as the runtime user.");
-        Assert.AreEqual(2, BackupVaultHelper.RunInternal([BackupVaultHelper.CommandName, "--product-root", "/var/lib/hvo-sky", "--record", Name]));
+        using var root = new Scratch();
+        var folder = Path.Combine(root.Path, BackupVault.FolderName);
+        var vault = new RootBackupVault(new BackupVaultFiles(folder, requireRootAncestry: true), new CountingWindow());
+
+        var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => vault.WriteAsync(Name, CancellationToken.None));
+
+        Assert.IsTrue(refused.IsRefusal, refused.Message);
+        Assert.IsFalse(Directory.Exists(folder));
+    }
+
+    private static async Task WritePartialAsync(OwnerBackupVault vault, byte[] content)
+    {
+        await using var transfer = await vault.WriteAsync(Name, CancellationToken.None);
+        await transfer.Stream.WriteAsync(content);
+        await transfer.CompleteAsync(CancellationToken.None);
     }
 
     private static BackupRecord Record(long length)
-        => new(BackupRecord.CurrentSchemaVersion, Name, Instance, Operation, Started, length, new string('a', 64), 7, 1);
+        => new(BackupRecord.CurrentSchemaVersion, Name, Instance, Operation, Started, length, new string('a', 64), 7, 1, 1000, 1000);
 
     private static List<BackupItem> Items(string root)
     {
@@ -192,62 +236,15 @@ public sealed class BackupVaultTests
             new LifecycleStateSnapshot(Guid.NewGuid(), Operation, new string('b', 64), Started), entries, [], total),
             null, CancellationToken.None);
 
-    /// <summary>Runs the vault helper in this process over pipes, as <c>sudo</c> would run it in another.</summary>
-    private sealed class InProcessHelper(BackupVaultFiles files) : IBackupHelperLauncher
+    /// <summary>Runs each step as the current user and counts them.</summary>
+    private sealed class CountingWindow : IRootWindow
     {
-        public List<IReadOnlyList<string>> Invocations { get; } = [];
+        public int Steps { get; private set; }
 
-        public IBackupHelperProcess Start(IReadOnlyList<string> sudoArguments)
+        public T Run<T>(Func<T> step)
         {
-            Invocations.Add(sudoArguments);
-            Assert.IsTrue(BackupVaultHelper.TryParse([.. sudoArguments.Skip(2)], out _, out var mode, out var value));
-            return new Helper(files, mode, value);
-        }
-
-        private sealed class Helper : IBackupHelperProcess
-        {
-            private readonly AnonymousPipeServerStream input = new(PipeDirection.Out);
-            private readonly AnonymousPipeServerStream output = new(PipeDirection.In);
-            private readonly Task<(int, string)> run;
-
-            [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The helper's task disposes its ends of the pipes when it returns.")]
-            public Helper(BackupVaultFiles files, string mode, string value)
-            {
-                var helperInput = new AnonymousPipeClientStream(PipeDirection.In, input.ClientSafePipeHandle);
-                var helperOutput = new AnonymousPipeClientStream(PipeDirection.Out, output.ClientSafePipeHandle);
-                run = Task.Run(() =>
-                {
-                    try
-                    {
-                        return (BackupVaultHelper.Run(files, mode, value, helperInput, helperOutput), string.Empty);
-                    }
-                    catch (InstallerException exception) when (exception.IsRefusal)
-                    {
-                        return (2, exception.Message);
-                    }
-                    finally
-                    {
-                        helperInput.Dispose();
-                        helperOutput.Dispose();
-                    }
-                });
-            }
-
-            public Stream Input => input;
-            public Stream Output => output;
-
-            public async Task<(int ExitCode, string Error)> WaitAsync(CancellationToken cancellationToken) => await run;
-
-            public void Kill()
-            {
-            }
-
-            public async ValueTask DisposeAsync()
-            {
-                await input.DisposeAsync();
-                await output.DisposeAsync();
-                await run;
-            }
+            Steps++;
+            return step();
         }
     }
 

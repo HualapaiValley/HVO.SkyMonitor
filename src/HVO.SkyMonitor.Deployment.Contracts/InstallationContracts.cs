@@ -416,10 +416,10 @@ public sealed record LifecycleBackup(
     int Entries);
 
 /// <summary>
-/// What a restore put back (#1353): the archive, when its backup was taken and by which operation, and the credentials it
-/// revoked again. <see cref="NoLiveCredentialStore"/> is true when there was no live store to compare, so credentials
-/// revoked after the backup are valid again; the credential fields are null when a resumed restore did not make the
-/// comparison itself.
+/// What a restore put back (#1353): the archive, when its backup was taken and by which operation, and the credentials
+/// and authority it revoked again. <see cref="NoLiveCredentialStore"/> is true when there was no live store to compare, so
+/// credentials revoked after the backup are valid again; the credential fields are null when a resumed restore did not
+/// make the comparison itself.
 /// </summary>
 public sealed record LifecycleRestore(
     string Archive,
@@ -427,6 +427,7 @@ public sealed record LifecycleRestore(
     Guid BackupOperationId,
     int? ApiKeysRevoked,
     int? AccountsReset,
+    int? AuthorityRevoked,
     bool? NoLiveCredentialStore);
 
 /// <summary>

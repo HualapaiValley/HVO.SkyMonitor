@@ -1,6 +1,4 @@
-using System.Diagnostics;
 using System.Globalization;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -10,7 +8,8 @@ namespace HVO.SkyMonitor.Deployment;
 /// <summary>
 /// The record a backup writes beside its archive when it commits it, once the archive has been read back and proved
 /// whole (#1353). Restore reads only an archive with its record, and requires the archive's bytes to be the ones the
-/// record names, so a partial or unrecorded archive is never usable.
+/// record names, so a partial or unrecorded archive is never usable. It names the instance's runtime user, whose files a
+/// restore writes.
 /// </summary>
 internal sealed record BackupRecord(
     int SchemaVersion,
@@ -21,7 +20,9 @@ internal sealed record BackupRecord(
     long ArchiveLength,
     string ArchiveSha256,
     long TotalBytes,
-    int Entries)
+    int Entries,
+    uint RuntimeUid,
+    uint RuntimeGid)
 {
     public const int CurrentSchemaVersion = 1;
 
@@ -29,7 +30,7 @@ internal sealed record BackupRecord(
     public bool IsValid(string name)
         => SchemaVersion == CurrentSchemaVersion && string.Equals(Name, name, StringComparison.Ordinal) &&
            BackupVaultFiles.IsName(name) && InstanceId != Guid.Empty && OperationId != Guid.Empty &&
-           ArchiveLength > 0 && TotalBytes >= 0 && Entries >= 0 &&
+           ArchiveLength > 0 && TotalBytes >= 0 && Entries >= 0 && RuntimeUid != 0 &&
            ArchiveSha256 is { Length: 64 } && ArchiveSha256.All(static character => character is (>= '0' and <= '9') or (>= 'a' and <= 'f')) &&
            string.Equals(Name, BackupVaultFiles.NameFor(InstanceId, CreatedUtc, OperationId), StringComparison.Ordinal);
 }
@@ -43,17 +44,17 @@ internal interface IBackupTransfer : IAsyncDisposable
     Stream Stream { get; }
 
     /// <summary>
-    /// For a write, makes everything written durable; for a read, reads what is left and proves the read ended cleanly.
-    /// A transfer disposed without completing is abandoned, and a partial it wrote stays until it is discarded.
+    /// For a write, makes everything written durable; for a read, nothing more. A transfer disposed without completing is
+    /// abandoned, and a partial it wrote stays until it is discarded.
     /// </summary>
     Task CompleteAsync(CancellationToken cancellationToken);
 }
 
 /// <summary>
-/// Where instance backups are kept: <c>&lt;product-root&gt;/backups</c>, one owner-only folder holding each committed archive,
-/// its record, and any partial a backup began. Under the production product root the folder and every file in it are
-/// <c>root:root</c> and owner-only, so only root can read a backup: the runtime user reaches them through one narrow
-/// <c>sudo</c> helper (<see cref="BackupVaultHelper"/>). Under a test product root they belong to the runtime user.
+/// Where instance backups are kept: one owner-only folder holding each committed archive, its record, and any partial a
+/// backup began. Under the production product root it is <c>/var/backups/hvo-sky</c>, and it and every file in it are
+/// root's (<see cref="RootBackupVault"/>). Under a test product root it is <c>&lt;product-root&gt;/backups</c>, and belongs
+/// to the user who runs the tests (<see cref="OwnerBackupVault"/>).
 /// </summary>
 internal interface IBackupVault
 {
@@ -67,8 +68,8 @@ internal interface IBackupVault
     Task<IBackupTransfer> ReadAsync(string name, bool partial, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Commits a partial: records <paramref name="record"/> durably, then gives the partial its archive name. Committing
-    /// again is a no-op once it is done, and finishes it when an interruption stopped it between the two.
+    /// Commits a partial: records <paramref name="record"/> durably, then gives the partial its archive name. A name that
+    /// is already committed is refused before any record is touched, unless it is this same archive, which is a no-op.
     /// </summary>
     Task CommitAsync(BackupRecord record, CancellationToken cancellationToken);
 
@@ -84,33 +85,81 @@ internal interface IBackupVault
 
 internal static class BackupVault
 {
-    /// <summary>The vault's folder under a product root.</summary>
+    /// <summary>The vault's folder under a test product root.</summary>
     public const string FolderName = "backups";
+
+    /// <summary>The vault of the production product root, root's, as RoofController keeps its own in <c>/var/backups/hvo-roof</c>.</summary>
+    public const string ProductionFolder = "/var/backups/hvo-sky";
 
     /// <summary>Replaces the vault a lifecycle command uses. Tests set it; production leaves it unset.</summary>
     internal static Func<string, string, IBackupVault>? Override { get; set; }
 
     /// <summary>
-    /// The vault of <paramref name="productRoot"/>: the root-only one through <c>sudo</c> under the production product
-    /// root, and an owner-only folder under a test product root.
+    /// The vault of <paramref name="request"/>'s product root. A command that runs as root through <c>sudo</c>
+    /// (<see cref="RootPrivilege"/>) keeps root's vault: <see cref="ProductionFolder"/> under the production product root,
+    /// and under a test product root the folder the request names, or <c>&lt;product-root&gt;/backups</c>. A command run by
+    /// the test product root's own user keeps its vault in <c>&lt;product-root&gt;/backups</c>.
     /// </summary>
-    public static IBackupVault For(string productRoot, string productionProductRoot)
-        => Override?.Invoke(productRoot, productionProductRoot) ??
-           (string.Equals(productRoot, productionProductRoot, StringComparison.Ordinal)
-               ? new PrivilegedBackupVault(productRoot, new SudoBackupHelperLauncher())
-               : new OwnerBackupVault(new BackupVaultFiles(Path.Combine(productRoot, FolderName))));
+    public static IBackupVault For(LifecycleRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (Override?.Invoke(request.ProductRoot, request.ProductionProductRoot) is { } replaced) return replaced;
+        if (RootPrivilege.Held)
+        {
+            return new RootBackupVault(
+                new BackupVaultFiles(RootFolder(request), requireRootAncestry: true), RootWindow.Instance);
+        }
+        return new OwnerBackupVault(new BackupVaultFiles(Path.Combine(request.ProductRoot, FolderName)));
+    }
+
+    /// <summary>The folder root's vault uses for <paramref name="request"/>.</summary>
+    public static string RootFolder(LifecycleRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return string.Equals(request.ProductRoot, request.ProductionProductRoot, StringComparison.Ordinal)
+            ? ProductionFolder
+            : request.TestBackupFolder ?? Path.Combine(request.ProductRoot, FolderName);
+    }
+}
+
+/// <summary>Runs one step of a vault operation with the authority the vault's files need.</summary>
+internal interface IRootWindow
+{
+    T Run<T>(Func<T> step);
+}
+
+/// <summary>Runs each step as root (<see cref="RootPrivilege.AsRoot{T}"/>).</summary>
+internal sealed class RootWindow : IRootWindow
+{
+    public static RootWindow Instance { get; } = new();
+
+    public T Run<T>(Func<T> step) => RootPrivilege.AsRoot(step);
+}
+
+/// <summary>Runs each step as the current user.</summary>
+internal sealed class CurrentUserWindow : IRootWindow
+{
+    public static CurrentUserWindow Instance { get; } = new();
+
+    public T Run<T>(Func<T> step)
+    {
+        ArgumentNullException.ThrowIfNull(step);
+        return step();
+    }
 }
 
 /// <summary>
-/// The vault's files, read and written by the vault's owner: root through the helper, or the runtime user under a test
-/// product root. Every name is one this installer gives an archive, every file is opened without following a link and
-/// must be a single-link regular file owned by the caller with mode 0600, and every step a later one depends on is
-/// durable before it returns.
+/// The vault's files, read and written by the vault's owner: root, or the test product root's user. Every name is one
+/// this installer gives an archive, every file is opened without following a link and must be a single-link regular file
+/// owned by the caller with mode 0600, every change happens under the vault's lock, and every step a later one depends on
+/// is durable before it returns. Root's vault also requires its folder and every folder above it to be root's and
+/// writable by root alone (<see cref="RootPrivilege.RootAncestryProblem"/>).
 /// </summary>
-internal sealed partial class BackupVaultFiles(string root)
+internal sealed partial class BackupVaultFiles(string root, bool requireRootAncestry = false)
 {
     public const string PartialSuffix = ".partial";
     public const string RecordSuffix = ".json";
+    private const string LockName = ".lock";
 
     /// <summary>The largest record the vault reads.</summary>
     private const int MaximumRecordBytes = 64 * 1024;
@@ -129,6 +178,7 @@ internal sealed partial class BackupVaultFiles(string root)
     {
         var path = PathOf(name) + PartialSuffix;
         EnsureFolder(create: true);
+        using var gate = Lock();
         var stream = new FileStream(path, new FileStreamOptions
         {
             Mode = FileMode.CreateNew,
@@ -156,6 +206,9 @@ internal sealed partial class BackupVaultFiles(string root)
         stream.Flush(flushToDisk: true);
     }
 
+    /// <summary>Makes the folder's entries durable.</summary>
+    public void SyncFolder() => NativeLinux.FlushDirectory(Root);
+
     public FileStream OpenRead(string name, bool partial)
     {
         EnsureFolder(create: false);
@@ -178,9 +231,15 @@ internal sealed partial class BackupVaultFiles(string root)
         EnsureFolder(create: false);
         var archive = PathOf(record.Name);
         var partial = archive + PartialSuffix;
+        using var gate = Lock();
+        // A committed name is never committed again: refused before its record is touched, unless this is that archive.
+        if (File.Exists(archive))
+        {
+            if (ReadRecord(record.Name) == record) return;
+            throw InstallerException.Refused($"'{record.Name}' is already a committed backup in {Root}; a backup never replaces another.");
+        }
         if (!File.Exists(partial))
         {
-            if (File.Exists(archive) && ReadRecord(record.Name) == record) return;
             throw new InstallerException($"The partial backup '{record.Name}' is missing, so it cannot be committed.");
         }
         SafeFileSystem.ValidateOwnerFile(partial);
@@ -200,6 +259,8 @@ internal sealed partial class BackupVaultFiles(string root)
         var partial = PathOf(name) + PartialSuffix;
         if (!Directory.Exists(Root) || !File.Exists(partial)) return;
         EnsureFolder(create: false);
+        using var gate = Lock();
+        if (!File.Exists(partial)) return;
         SafeFileSystem.ValidateOwnerFile(partial);
         File.Delete(partial);
         NativeLinux.FlushDirectory(Root);
@@ -246,12 +307,21 @@ internal sealed partial class BackupVaultFiles(string root)
         return Path.Combine(Root, name);
     }
 
+    /// <summary>Serializes every change to the folder, across processes.</summary>
+    private OperationLock Lock() => OperationLock.Acquire(Path.Combine(Root, LockName));
+
     /// <summary>
-    /// Requires the folder to be the caller's own, owner-only and not a link, creating it when asked. Its entry in the
-    /// product root is durable before anything is written in it.
+    /// Requires the folder to be the caller's own, owner-only and not a link, and for root's vault every folder above it to
+    /// be root's and writable by root alone, creating it when asked. Its entry in its parent is durable before anything
+    /// is written in it.
     /// </summary>
     private void EnsureFolder(bool create)
     {
+        if (requireRootAncestry && RootPrivilege.RootAncestryProblem(Root) is { } problem)
+        {
+            throw InstallerException.Refused(
+                $"Backups are kept only in a folder no one but root can change, and {problem}. Give it to root, writable by root alone (sudo chown root:root <folder>; sudo chmod go-w <folder>), then run it again.");
+        }
         SafeFileSystem.EnsureSafeExistingAncestors(Root);
         if (!Directory.Exists(Root))
         {
@@ -272,38 +342,49 @@ internal sealed partial class BackupVaultFiles(string root)
     private static partial Regex ArchiveName();
 }
 
-/// <summary>The vault of a test product root, read and written directly by the runtime user.</summary>
-internal sealed class OwnerBackupVault(BackupVaultFiles files) : IBackupVault
+/// <summary>
+/// A vault in one folder, each operation run through <see cref="IRootWindow"/>. A stream it opens stays usable after the
+/// window closes, so an archive streams as the runtime user while only the folder's operations run as root.
+/// </summary>
+internal class FolderBackupVault(BackupVaultFiles files, IRootWindow window) : IBackupVault
 {
     public string Root => files.Root;
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned transfer owns the stream and disposes it.")]
     public Task<IBackupTransfer> WriteAsync(string name, CancellationToken cancellationToken)
-        => Task.FromResult<IBackupTransfer>(new FileTransfer(files.CreatePartial(name), write: true, files.Root));
+        => Task.FromResult<IBackupTransfer>(new FileTransfer(window.Run(() => files.CreatePartial(name)), write: true, files, window));
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned transfer owns the stream and disposes it.")]
     public Task<IBackupTransfer> ReadAsync(string name, bool partial, CancellationToken cancellationToken)
-        => Task.FromResult<IBackupTransfer>(new FileTransfer(files.OpenRead(name, partial), write: false, files.Root));
+        => Task.FromResult<IBackupTransfer>(new FileTransfer(window.Run(() => files.OpenRead(name, partial)), write: false, files, window));
 
     public Task CommitAsync(BackupRecord record, CancellationToken cancellationToken)
     {
-        files.Commit(record);
+        window.Run(() =>
+        {
+            files.Commit(record);
+            return true;
+        });
         return Task.CompletedTask;
     }
 
     public Task DiscardAsync(string name, CancellationToken cancellationToken)
     {
-        files.Discard(name);
+        window.Run(() =>
+        {
+            files.Discard(name);
+            return true;
+        });
         return Task.CompletedTask;
     }
 
     public Task<BackupRecord?> ReadRecordAsync(string name, CancellationToken cancellationToken)
-        => Task.FromResult(files.ReadRecord(name));
+        => Task.FromResult(window.Run(() => files.ReadRecord(name)));
 
     public Task<IReadOnlyList<BackupPartial>> ListPartialsAsync(Guid instanceId, CancellationToken cancellationToken)
-        => Task.FromResult(files.Partials(instanceId));
+        => Task.FromResult(window.Run(() => files.Partials(instanceId)));
 
-    private sealed class FileTransfer(FileStream stream, bool write, string root) : IBackupTransfer
+    private sealed class FileTransfer(FileStream stream, bool write, BackupVaultFiles files, IRootWindow window) : IBackupTransfer
     {
         public Stream Stream => stream;
 
@@ -313,7 +394,11 @@ internal sealed class OwnerBackupVault(BackupVaultFiles files) : IBackupVault
             {
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 BackupVaultFiles.Sync(stream);
-                NativeLinux.FlushDirectory(root);
+                window.Run(() =>
+                {
+                    files.SyncFolder();
+                    return true;
+                });
             }
         }
 
@@ -321,345 +406,16 @@ internal sealed class OwnerBackupVault(BackupVaultFiles files) : IBackupVault
     }
 }
 
-/// <summary>
-/// The root-only vault of the production product root. Each operation runs the helper as
-/// <c>sudo -- /proc/&lt;pid&gt;/exe internal-backup-vault --product-root &lt;root&gt; &lt;--mode&gt; &lt;value&gt;</c>; an archive
-/// streams through the helper's standard input or output, and the helper re-reads the host policy itself.
-/// </summary>
-internal sealed class PrivilegedBackupVault(string productRoot, IBackupHelperLauncher launcher) : IBackupVault
-{
-    public string Root { get; } = Path.Combine(productRoot, BackupVault.FolderName);
+/// <summary>The vault of a test product root, read and written by the user who runs the tests.</summary>
+internal sealed class OwnerBackupVault(BackupVaultFiles files) : FolderBackupVault(files, CurrentUserWindow.Instance);
 
-    public async Task<IBackupTransfer> WriteAsync(string name, CancellationToken cancellationToken)
-        => new HelperTransfer(await StartAsync("--write", name, cancellationToken).ConfigureAwait(false), write: true, Root);
-
-    public async Task<IBackupTransfer> ReadAsync(string name, bool partial, CancellationToken cancellationToken)
-        => new HelperTransfer(
-            await StartAsync(partial ? "--read-partial" : "--read", name, cancellationToken).ConfigureAwait(false), write: false, Root);
-
-    public async Task CommitAsync(BackupRecord record, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(record);
-        await using var helper = await StartAsync("--commit", record.Name, cancellationToken).ConfigureAwait(false);
-        await helper.Input.WriteAsync(
-            JsonSerializer.SerializeToUtf8Bytes(record, BackupVaultJsonContext.Default.BackupRecord), cancellationToken).ConfigureAwait(false);
-        await helper.Input.DisposeAsync().ConfigureAwait(false);
-        await EnsureSucceededAsync(helper, Root, cancellationToken).ConfigureAwait(false);
-    }
-
-    public async Task DiscardAsync(string name, CancellationToken cancellationToken)
-    {
-        await using var helper = await StartAsync("--discard", name, cancellationToken).ConfigureAwait(false);
-        await helper.Input.DisposeAsync().ConfigureAwait(false);
-        await EnsureSucceededAsync(helper, Root, cancellationToken).ConfigureAwait(false);
-    }
-
-    public async Task<BackupRecord?> ReadRecordAsync(string name, CancellationToken cancellationToken)
-    {
-        var output = await RunForOutputAsync("--record", name, cancellationToken).ConfigureAwait(false);
-        return JsonSerializer.Deserialize(output, BackupVaultJsonContext.Default.BackupRecord) is { } record && record.IsValid(name)
-            ? record
-            : null;
-    }
-
-    public async Task<IReadOnlyList<BackupPartial>> ListPartialsAsync(Guid instanceId, CancellationToken cancellationToken)
-    {
-        var output = await RunForOutputAsync("--partials", instanceId.ToString("D"), cancellationToken).ConfigureAwait(false);
-        var partials = JsonSerializer.Deserialize(output, BackupVaultJsonContext.Default.BackupPartialArray) ?? [];
-        return partials.All(partial => BackupVaultFiles.IsName(partial.Name) && partial.Length >= 0 &&
-                                       partial.Name.StartsWith($"hvo-sky-{instanceId:N}-", StringComparison.Ordinal))
-            ? partials
-            : throw new InstallerException("The backup helper listed partials that are not this instance's.");
-    }
-
-    private Task<IBackupHelperProcess> StartAsync(string mode, string value, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(launcher.Start(BackupVaultHelper.HelperArguments(productRoot, mode, value)));
-    }
-
-    private async Task<byte[]> RunForOutputAsync(string mode, string value, CancellationToken cancellationToken)
-    {
-        await using var helper = await StartAsync(mode, value, cancellationToken).ConfigureAwait(false);
-        await helper.Input.DisposeAsync().ConfigureAwait(false);
-        using var buffer = new MemoryStream();
-        var chunk = new byte[16 * 1024];
-        int read;
-        while ((read = await helper.Output.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
-        {
-            if (buffer.Length + read > BackupVaultHelper.MaximumListingBytes)
-                throw new InstallerException("The backup helper answered with more than a listing holds.");
-            await buffer.WriteAsync(chunk.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-        }
-        await EnsureSucceededAsync(helper, Root, cancellationToken).ConfigureAwait(false);
-        return buffer.ToArray();
-    }
-
-    private static async Task EnsureSucceededAsync(IBackupHelperProcess helper, string root, CancellationToken cancellationToken)
-    {
-        var (exitCode, error) = await helper.WaitAsync(cancellationToken).ConfigureAwait(false);
-        if (exitCode == 0) return;
-        var message = $"The backup folder {root} could not be used: {Redaction.SafeDiagnostic(error.Trim())}";
-        throw exitCode == 2 ? InstallerException.Refused(message) : new InstallerException(message);
-    }
-
-    private sealed class HelperTransfer(IBackupHelperProcess helper, bool write, string root) : IBackupTransfer
-    {
-        private bool completed;
-
-        public Stream Stream => write ? helper.Input : helper.Output;
-
-        public async Task CompleteAsync(CancellationToken cancellationToken)
-        {
-            if (write)
-            {
-                await helper.Input.FlushAsync(cancellationToken).ConfigureAwait(false);
-                await helper.Input.DisposeAsync().ConfigureAwait(false);
-            }
-            else
-            {
-                // What the reader left unread is drained, so the helper is never left blocked on a full pipe.
-                await helper.Output.CopyToAsync(Stream.Null, cancellationToken).ConfigureAwait(false);
-            }
-            await EnsureSucceededAsync(helper, root, cancellationToken).ConfigureAwait(false);
-            completed = true;
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            if (!completed) helper.Kill();
-            await helper.DisposeAsync().ConfigureAwait(false);
-        }
-    }
-}
-
-/// <summary>Starts the vault helper; tests run it in process.</summary>
-internal interface IBackupHelperLauncher
-{
-    IBackupHelperProcess Start(IReadOnlyList<string> sudoArguments);
-}
-
-/// <summary>A running vault helper: its standard input and output, and how it ended.</summary>
-internal interface IBackupHelperProcess : IAsyncDisposable
-{
-    Stream Input { get; }
-    Stream Output { get; }
-
-    /// <summary>Waits for the helper to end, returning its exit code and what it wrote to standard error.</summary>
-    Task<(int ExitCode, string Error)> WaitAsync(CancellationToken cancellationToken);
-
-    /// <summary>Ends the helper; what it was writing stays a partial for <see cref="IBackupVault.DiscardAsync"/>.</summary>
-    void Kill();
-}
-
-/// <summary>Runs the vault helper through <c>sudo</c>; the terminal stays the caller's, so <c>sudo</c> can ask for a password.</summary>
-internal sealed class SudoBackupHelperLauncher : IBackupHelperLauncher
-{
-    public IBackupHelperProcess Start(IReadOnlyList<string> sudoArguments)
-    {
-        ArgumentNullException.ThrowIfNull(sudoArguments);
-        var start = new ProcessStartInfo("sudo")
-        {
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false
-        };
-        foreach (var argument in sudoArguments) start.ArgumentList.Add(argument);
-        var process = Process.Start(start) ?? throw new InstallerException("The backup helper could not be started.");
-        return new SudoProcess(process);
-    }
-
-    private sealed class SudoProcess : IBackupHelperProcess
-    {
-        private const int MaximumErrorCharacters = 16 * 1024;
-        private readonly Process process;
-        private readonly Task<string> error;
-
-        public SudoProcess(Process process)
-        {
-            this.process = process;
-            error = ReadBoundedAsync(process.StandardError);
-        }
-
-        public Stream Input => process.StandardInput.BaseStream;
-        public Stream Output => process.StandardOutput.BaseStream;
-
-        public async Task<(int ExitCode, string Error)> WaitAsync(CancellationToken cancellationToken)
-        {
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            return (process.ExitCode, await error.ConfigureAwait(false));
-        }
-
-        public void Kill()
-        {
-            try
-            {
-                if (!process.HasExited) process.Kill(entireProcessTree: true);
-            }
-            catch (InvalidOperationException)
-            {
-                // It has already ended.
-            }
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            Kill();
-            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-            process.Dispose();
-        }
-
-        private static async Task<string> ReadBoundedAsync(StreamReader reader)
-        {
-            var text = new StringBuilder();
-            var buffer = new char[4096];
-            int read;
-            while ((read = await reader.ReadAsync(buffer, CancellationToken.None).ConfigureAwait(false)) > 0)
-            {
-                if (text.Length < MaximumErrorCharacters) text.Append(buffer, 0, Math.Min(read, MaximumErrorCharacters - text.Length));
-            }
-            return text.ToString();
-        }
-    }
-}
-
-/// <summary>
-/// The <c>sudo</c>-executed vault helper, <c>internal-backup-vault --product-root &lt;root&gt; &lt;mode&gt; &lt;value&gt;</c>. It
-/// accepts only the production product root the host policy resolves, which it re-reads itself, and only archive names
-/// this installer gives; it streams one archive through its standard input or output and never takes a path.
-/// </summary>
-internal static class BackupVaultHelper
-{
-    public const string CommandName = "internal-backup-vault";
-
-    /// <summary>The most a record or listing answer holds.</summary>
-    public const int MaximumListingBytes = 4 * 1024 * 1024;
-
-    private static readonly string[] Modes = ["--write", "--read", "--read-partial", "--commit", "--discard", "--record", "--partials"];
-
-    public static IReadOnlyList<string> HelperArguments(string productRoot, string mode, string value)
-        => ["--", $"/proc/{Environment.ProcessId}/exe", CommandName, "--product-root", productRoot, mode, value];
-
-    /// <summary>Parses exactly <c>internal-backup-vault --product-root &lt;root&gt; &lt;mode&gt; &lt;value&gt;</c>.</summary>
-    internal static bool TryParse(string[] args, out string productRoot, out string mode, out string value)
-    {
-        ArgumentNullException.ThrowIfNull(args);
-        productRoot = mode = value = string.Empty;
-        if (args.Length != 5 || args[0] != CommandName || args[1] != "--product-root" || !Modes.Contains(args[3], StringComparer.Ordinal))
-        {
-            return false;
-        }
-        var valid = args[3] == "--partials"
-            ? Guid.TryParseExact(args[4], "D", out _)
-            : BackupVaultFiles.IsName(args[4]);
-        if (!valid || !Path.IsPathFullyQualified(args[2])) return false;
-        (productRoot, mode, value) = (args[2], args[3], args[4]);
-        return true;
-    }
-
-    /// <summary>
-    /// Runs as root through <c>sudo</c> for the runtime user that invoked it. Refusals exit 2; a failed step exits 1.
-    /// </summary>
-    public static int RunInternal(string[] args)
-    {
-        if (NativeLinux.getuid() != 0 || !TryParse(args, out var productRoot, out var mode, out var value) ||
-            !uint.TryParse(Environment.GetEnvironmentVariable("SUDO_UID"), out var sudoUid) || sudoUid == 0)
-        {
-            Console.Error.WriteLine("The backup helper runs only through sudo, for the runtime user, with one archive name.");
-            return 2;
-        }
-        using var input = Console.OpenStandardInput();
-        using var output = Console.OpenStandardOutput();
-        try
-        {
-            using var policyLock = HostProductRootPolicy.AcquireLock(HostPolicyLocation.Production);
-            var production = HostProductRootPolicy.Resolve(HostPolicyLocation.Production);
-            if (!string.Equals(productRoot, production.Path, StringComparison.Ordinal))
-            {
-                Console.Error.WriteLine("The backup helper serves only the production product root.");
-                return 2;
-            }
-            return Run(new BackupVaultFiles(Path.Combine(production.Path, BackupVault.FolderName)), mode, value, input, output);
-        }
-        catch (InstallerException exception) when (exception.IsRefusal)
-        {
-            Console.Error.WriteLine(exception.Message);
-            return 2;
-        }
-        catch (Exception exception) when (exception is InstallerException or IOException or UnauthorizedAccessException or JsonException)
-        {
-            Console.Error.WriteLine(Redaction.SafeDiagnostic(exception.Message));
-            return 1;
-        }
-    }
-
-    /// <summary>One vault operation on <paramref name="files"/>, streaming through <paramref name="input"/> and <paramref name="output"/>.</summary>
-    internal static int Run(BackupVaultFiles files, string mode, string value, Stream input, Stream output)
-    {
-        ArgumentNullException.ThrowIfNull(files);
-        ArgumentNullException.ThrowIfNull(input);
-        ArgumentNullException.ThrowIfNull(output);
-        switch (mode)
-        {
-            case "--write":
-                {
-                    using var partial = files.CreatePartial(value);
-                    input.CopyTo(partial, 1024 * 1024);
-                    BackupVaultFiles.Sync(partial);
-                    NativeLinux.FlushDirectory(files.Root);
-                    return 0;
-                }
-            case "--read" or "--read-partial":
-                {
-                    using var archive = files.OpenRead(value, partial: mode == "--read-partial");
-                    archive.CopyTo(output, 1024 * 1024);
-                    output.Flush();
-                    return 0;
-                }
-            case "--commit":
-                {
-                    using var buffer = new MemoryStream();
-                    CopyBounded(input, buffer);
-                    var record = JsonSerializer.Deserialize(buffer.ToArray(), BackupVaultJsonContext.Default.BackupRecord);
-                    if (record is null || !record.IsValid(value)) throw InstallerException.Refused("The backup record does not name this archive.");
-                    files.Commit(record);
-                    return 0;
-                }
-            case "--discard":
-                files.Discard(value);
-                return 0;
-            case "--record":
-                output.Write(JsonSerializer.SerializeToUtf8Bytes(files.ReadRecord(value), BackupVaultJsonContext.Default.BackupRecord));
-                output.Flush();
-                return 0;
-            case "--partials":
-                output.Write(JsonSerializer.SerializeToUtf8Bytes(
-                    [.. files.Partials(Guid.ParseExact(value, "D"))], BackupVaultJsonContext.Default.BackupPartialArray));
-                output.Flush();
-                return 0;
-            default:
-                throw InstallerException.Refused($"Unknown backup helper mode '{mode}'.");
-        }
-    }
-
-    private static void CopyBounded(Stream input, MemoryStream buffer)
-    {
-        var chunk = new byte[16 * 1024];
-        int read;
-        while ((read = input.Read(chunk)) > 0)
-        {
-            if (buffer.Length + read > MaximumListingBytes) throw InstallerException.Refused("The backup record is too large.");
-            buffer.Write(chunk, 0, read);
-        }
-    }
-}
+/// <summary>Root's vault, each of its operations run as root while the command otherwise runs as the runtime user.</summary>
+internal sealed class RootBackupVault(BackupVaultFiles files, IRootWindow window) : FolderBackupVault(files, window);
 
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
     AllowDuplicateProperties = false)]
 [JsonSerializable(typeof(BackupRecord))]
-[JsonSerializable(typeof(BackupPartial[]))]
 [JsonSerializable(typeof(string[]))]
 internal sealed partial class BackupVaultJsonContext : JsonSerializerContext;

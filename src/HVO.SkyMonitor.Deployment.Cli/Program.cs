@@ -47,10 +47,6 @@ internal static class Program
         {
             return InstallRecordStore.RunInternal(args);
         }
-        if (args.Length > 0 && args[0] == BackupVaultHelper.CommandName)
-        {
-            return BackupVaultHelper.RunInternal(args);
-        }
 
         using var cancellation = new CancellationTokenSource();
         Console.CancelKeyPress += (_, eventArgs) =>

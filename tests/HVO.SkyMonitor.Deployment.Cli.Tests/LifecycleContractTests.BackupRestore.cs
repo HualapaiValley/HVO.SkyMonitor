@@ -145,7 +145,7 @@ public sealed partial class LifecycleContractTests
         {
             BackupVault.Override = null;
         }
-        Assert.IsEmpty(Directory.GetFiles(Path.Combine(fixture.Root, BackupVault.FolderName)), "the partial is discarded");
+        Assert.IsEmpty(Directory.GetFiles(Path.Combine(fixture.Root, BackupVault.FolderName), "hvo-sky-*"), "the partial is discarded");
         Assert.IsTrue(fixture.Runner.Running, "the instance runs again");
         Assert.AreEqual(lifecycle.PauseCount, lifecycle.ResumeCount);
         var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
@@ -194,7 +194,7 @@ public sealed partial class LifecycleContractTests
                 if (!exception.Message.StartsWith("The backup was interrupted before its archive was complete", StringComparison.Ordinal))
                     violations.Add($"{image.Step}: {exception.Message}");
                 var vaultFolder = Path.Combine(fixture.Root, BackupVault.FolderName);
-                if (Directory.Exists(vaultFolder) && Directory.EnumerateFiles(vaultFolder).Any())
+                if (Directory.Exists(vaultFolder) && Directory.EnumerateFiles(vaultFolder, "hvo-sky-*").Any())
                     violations.Add($"{image.Step}: an incomplete archive was left in the backup folder");
             }
             catch (InstallerException exception)
@@ -447,8 +447,14 @@ public sealed partial class LifecycleContractTests
     private static void SeedCredentials(InstallationPaths paths)
         => Execute(CameraAgentStateLayout.IdentityDatabasePath(paths.StateRoot),
             "DROP TABLE AspNetUsers;" +
-            "CREATE TABLE AspNetUsers(Id TEXT PRIMARY KEY, Email TEXT, PasswordHash TEXT, SecurityStamp TEXT, ConcurrencyStamp TEXT, PasswordChangeRequired INTEGER NOT NULL);" +
-            "INSERT INTO AspNetUsers VALUES('owner', 'owner@example.test', 'hash-before', 'stamp-before', 'c1', 0);" +
+            "CREATE TABLE AspNetUsers(Id TEXT PRIMARY KEY, Email TEXT, PasswordHash TEXT, SecurityStamp TEXT, ConcurrencyStamp TEXT, PasswordChangeRequired INTEGER NOT NULL, IsSiteOwner INTEGER NOT NULL);" +
+            "INSERT INTO AspNetUsers VALUES('owner', 'owner@example.test', 'hash-before', 'stamp-before', 'c1', 0, 1);" +
+            "CREATE TABLE AspNetRoles(Id TEXT PRIMARY KEY, Name TEXT);" +
+            "INSERT INTO AspNetRoles VALUES('role-operator', 'Operator');" +
+            "CREATE TABLE AspNetUserRoles(UserId TEXT NOT NULL, RoleId TEXT NOT NULL, PRIMARY KEY(UserId, RoleId));" +
+            "INSERT INTO AspNetUserRoles VALUES('owner', 'role-operator');" +
+            "CREATE TABLE AspNetUserClaims(Id INTEGER PRIMARY KEY AUTOINCREMENT, UserId TEXT NOT NULL, ClaimType TEXT, ClaimValue TEXT);" +
+            "INSERT INTO AspNetUserClaims(UserId, ClaimType, ClaimValue) VALUES('owner', 'hvo:authority', 'calibration-admin');" +
             "CREATE TABLE AspNetUserTokens(UserId TEXT NOT NULL, LoginProvider TEXT NOT NULL, Name TEXT NOT NULL, Value TEXT, PRIMARY KEY(UserId, LoginProvider, Name));" +
             $"INSERT INTO AspNetUserTokens VALUES('owner', '{RestoredCredentials.ApiKeyProvider}', '{LiveKey}', 'v1'), ('owner', '{RestoredCredentials.ApiKeyProvider}', '{RevokedKey}', 'v2');");
 
@@ -657,6 +663,8 @@ public sealed partial class LifecycleContractTests
         public long FailReadAfter { get; init; } = long.MaxValue;
         public Action? ReadFault { get; init; }
 
+        public Action? DiscardFault { get; init; }
+
         public string Root => inner.Root;
 
         public async Task<IBackupTransfer> WriteAsync(string name, CancellationToken cancellationToken)
@@ -670,7 +678,11 @@ public sealed partial class LifecycleContractTests
         }
 
         public Task CommitAsync(BackupRecord record, CancellationToken cancellationToken) => inner.CommitAsync(record, cancellationToken);
-        public Task DiscardAsync(string name, CancellationToken cancellationToken) => inner.DiscardAsync(name, cancellationToken);
+        public Task DiscardAsync(string name, CancellationToken cancellationToken)
+        {
+            DiscardFault?.Invoke();
+            return inner.DiscardAsync(name, cancellationToken);
+        }
         public Task<BackupRecord?> ReadRecordAsync(string name, CancellationToken cancellationToken) => inner.ReadRecordAsync(name, cancellationToken);
         public Task<IReadOnlyList<BackupPartial>> ListPartialsAsync(Guid instanceId, CancellationToken cancellationToken)
             => inner.ListPartialsAsync(instanceId, cancellationToken);

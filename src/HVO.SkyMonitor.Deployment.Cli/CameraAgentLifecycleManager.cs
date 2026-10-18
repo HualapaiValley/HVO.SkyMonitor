@@ -27,6 +27,10 @@ internal sealed partial class CameraAgentLifecycleManager
         request.Validate();
         output ??= Console.Out;
         error ??= Console.Error;
+        if (request.Operation is LifecycleOperationKind.Backup or LifecycleOperationKind.Restore)
+        {
+            (uid, gid) = await EnterBackupPrivilegeAsync(request, processRunner, uid, gid, cancellationToken).ConfigureAwait(false);
+        }
         if (request.Operation is LifecycleOperationKind.CatalogInstall or LifecycleOperationKind.CatalogGarbageCollect)
         {
             return await CatalogLifecycleManager.ExecuteAsync(request, processRunner, uid, gid, cancellationToken)

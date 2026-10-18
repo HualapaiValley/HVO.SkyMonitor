@@ -183,6 +183,13 @@ internal sealed record LifecycleRequest : DeploymentCommand
     public string? Archive { get; init; }
 
     /// <summary>
+    /// The folder a backup or restore run as root keeps its archives in under an admitted test product root, from
+    /// <c>HVO_INSTALLER_BACKUP_FOLDER</c>, so a test can exercise root's vault without the production folder. It is not an
+    /// input of the operation, so it is not part of the request hash.
+    /// </summary>
+    public string? TestBackupFolder { get; init; }
+
+    /// <summary>
     /// The release.json of the release an upgrade installs. The upgrade shows its notes and refuses an older target
     /// before anything changes. It is set only from the verified release.json that also selects the candidate image
     /// (<see cref="Release"/>), so a document is never paired with an image it does not describe. It is not part of the
@@ -213,6 +220,15 @@ internal sealed record LifecycleRequest : DeploymentCommand
         if (Operation != LifecycleOperationKind.Restore && Archive is not null)
         {
             throw new InstallUsageException("Only restore takes a backup archive.");
+        }
+        if (TestBackupFolder is not null)
+        {
+            if (Operation is not (LifecycleOperationKind.Backup or LifecycleOperationKind.Restore) ||
+                string.Equals(ProductRoot, ProductionProductRoot, StringComparison.Ordinal))
+            {
+                throw new InstallUsageException("HVO_INSTALLER_BACKUP_FOLDER applies only to a backup or restore under a test product root.");
+            }
+            ValidateAbsolutePath(TestBackupFolder, "HVO_INSTALLER_BACKUP_FOLDER");
         }
         if (Operation == LifecycleOperationKind.Purge && ConfirmationInstanceId != InstanceId)
         {

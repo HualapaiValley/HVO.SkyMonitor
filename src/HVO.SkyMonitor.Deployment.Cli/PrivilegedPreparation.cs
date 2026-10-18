@@ -32,10 +32,22 @@ internal static class PrivilegedPreparation
         {
         }
 
-        await RunHelperAsync(
-            new Invocation(paths.ProductRoot, Guid.ParseExact(Path.GetFileName(paths.InstanceRoot), "D"), uid, gid),
-            processRunner,
-            cancellationToken).ConfigureAwait(false);
+        var instanceId = Guid.ParseExact(Path.GetFileName(paths.InstanceRoot), "D");
+        if (RootPrivilege.Held)
+        {
+            // A restore started through sudo can be root again for one step, so it prepares the root itself, under the host
+            // policy and its lock as the helper does (#1353).
+            var code = RootPrivilege.AsRoot(() => PrepareUnderHostPolicy(HostPolicyLocation.Production, paths.ProductRoot, production => Prepare(
+                InstallationPaths.Create(production.Path, instanceId, ProductionCatalog.DefaultCatalogId), uid, gid, requireRoot: true)));
+            if (code != 0)
+            {
+                throw new InstallerException("Privileged product-root preparation failed: the product root is not the one the host policy names.");
+            }
+        }
+        else
+        {
+            await RunHelperAsync(new Invocation(paths.ProductRoot, instanceId, uid, gid), processRunner, cancellationToken).ConfigureAwait(false);
+        }
         SafeFileSystem.EnsureSafeExistingAncestors(paths.InstanceRoot);
     }
 

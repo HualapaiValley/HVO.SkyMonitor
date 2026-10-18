@@ -197,6 +197,18 @@ internal static class BackupArchive
                 read += entry.Length;
                 progress?.Invoke(read);
             }
+            // After the end marker the decompressed stream may hold only the zero padding a tar writer adds, to its end:
+            // anything else, a further gzip member included, or a decompressor error, means the archive is not one whole
+            // backup. The bytes themselves are bound by the record's SHA-256 and length; this proves nothing more about them.
+            var tail = new byte[64 * 1024];
+            int count;
+            while ((count = await gzip.ReadAsync(tail, cancellationToken).ConfigureAwait(false)) > 0)
+            {
+                if (tail.AsSpan(0, count).ContainsAnyExcept((byte)0))
+                {
+                    throw Invalid("it holds data after its end");
+                }
+            }
         }
         catch (Exception exception) when (exception is InvalidDataException or EndOfStreamException or FormatException or IOException)
         {
@@ -266,7 +278,8 @@ internal static class BackupArchive
         {
             return $"it holds {name}, outside the instance and its snapshot";
         }
-        var trimmed = directory ? name.TrimEnd('/') : name;
+        // A folder's name ends in exactly one '/'; with it removed, no segment may be empty.
+        var trimmed = directory ? name[..^1] : name;
         if (directory != name.EndsWith('/') || name.Length > 4096 || name.Any(char.IsControl) || name.Contains('\\', StringComparison.Ordinal) ||
             trimmed.Split('/').Any(static segment => segment is "" or "." or ".."))
         {

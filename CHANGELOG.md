@@ -12,14 +12,16 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 ### Added
 
-- `hvo-sky-install cameraagent backup` copies an instance, bulk captures and a verified snapshot of its databases
-  included, into one root-only archive in `<product-root>/backups`. The archive is proved whole and recorded before it
+- `sudo hvo-sky-install cameraagent backup` copies an instance, bulk captures and a verified snapshot of its databases
+  included, into one root-only archive in `/var/backups/hvo-sky`. The archive is proved whole and recorded before it
   is kept; it is written with capture paused and the container stopped, after a free-space check, with progress
   reports and no fixed deadline. A failure or Ctrl+C discards the partial archive and restarts the instance.
-  `hvo-sky-install cameraagent restore <archive>` puts an uninstalled or absent instance back from a backup, after
-  refusing a partial, unrecorded or damaged archive with nothing changed. It revokes again the API keys and passwords
-  revoked since the backup, or warns loudly when there is nothing to compare. Both support `--plan` and `--resume`, and
-  a completed backup or restore removes the database snapshots nothing refers to any more. (#1353)
+  `sudo hvo-sky-install cameraagent restore <archive>` puts an uninstalled or absent instance back from a backup, after
+  refusing a partial, unrecorded or damaged archive with nothing changed. It never lowers a counter the replaced
+  instance handed out. It revokes again the API keys, passwords and authority revoked since the backup, or warns loudly
+  when there is nothing to compare. Both run as root, as RoofController's do, and write the instance's files as its
+  runtime user. Both support `--plan` and `--resume`, and a completed backup or restore removes the database snapshots
+  nothing refers to any more. (#1353)
 - `hvo-sky-install` follows the shared install contract's command surface. `--plan` (the new name of `--dry-run`)
   reports what install, a re-run of one, `upgrade`, `rollback`, `reinstall`, `uninstall` and `purge` would create,
   change, leave unchanged or remove, after the same checks the command makes, and writes nothing, not even a temporary

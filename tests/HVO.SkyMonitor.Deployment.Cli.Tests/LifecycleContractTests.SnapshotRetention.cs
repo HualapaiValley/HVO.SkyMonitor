@@ -86,8 +86,9 @@ public sealed partial class LifecycleContractTests
             var first = RestoredCredentials.Revoke(restored, live);
             var second = RestoredCredentials.Revoke(restored, live);
 
-            Assert.AreEqual(new RestoredCredentials.Outcome(1, 1, 1), first);
-            Assert.AreEqual(new RestoredCredentials.Outcome(0, 0, 1), second, "running it again changes nothing more");
+            Assert.AreEqual((1, 1, 1, 3), (first.ApiKeysRevoked, first.AccountsReset, first.AuthorityRevoked, first.Changes.Count));
+            Assert.AreEqual((0, 0, 0, 0), (second.ApiKeysRevoked, second.AccountsReset, second.AuthorityRevoked, second.Changes.Count),
+                "running it again changes nothing more");
             using var connection = new SqliteConnection($"Data Source={restored};Pooling=False");
             connection.Open();
             using var tokens = connection.CreateCommand();
