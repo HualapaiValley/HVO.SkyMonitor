@@ -319,6 +319,10 @@ public sealed class SkyCliConfigTests
     [TestMethod]
     [DataRow("""{"schemaVersion": 1, "settings": {}, "extra": 1}""", "unknown member 'extra'")]
     [DataRow("""{"schemaVersion": 2, "settings": {}}""", "\"schemaVersion\": 1")]
+    [DataRow("""{"schemaVersion": "1", "settings": {}}""", "\"schemaVersion\": 1")]
+    [DataRow("""{"schemaVersion": true, "settings": {}}""", "\"schemaVersion\": 1")]
+    [DataRow("""{"schemaVersion": null, "settings": {}}""", "\"schemaVersion\": 1")]
+    [DataRow("""{"schemaVersion": 1.5, "settings": {}}""", "\"schemaVersion\": 1")]
     [DataRow("""{"schemaVersion": 1}""", "\"settings\" object")]
     [DataRow("""{"schemaVersion": 1, "settings": {"maximumObjects": 500}}""", "There is no setting 'maximumObjects'")]
     [DataRow("""{"schemaVersion": 1, "settings": {"skyMap.maximumobjects": 500}}""", "the setting is skyMap.maximumObjects, as written")]
@@ -395,6 +399,59 @@ public sealed class SkyCliConfigTests
 
         Assert.AreEqual(3, result.ExitCode, result.ToString());
         Assert.HasCount(1, harness.Api.Requests.Where(static request => request.Method == "PUT").ToArray());
+    }
+
+    [TestMethod]
+    public async Task Apply_AnUnchangedGroupThenARefusal_ExitsThreeBecauseNothingChangedAsync()
+    {
+        using var harness = new CliHarness();
+        harness.Api.Handle("PUT", Fake.SettingsRoute + "/site", _ => FakeCameraAgent.Response(HttpStatusCode.OK, new
+        {
+            status = "Unchanged",
+            group = Fake.GroupState("site", version: "site-v1"),
+            recorded = Array.Empty<string>()
+        }));
+        harness.Api.Problem("PUT", Fake.SettingsRoute + "/skyMap", HttpStatusCode.Conflict, "The settings group changed since it was read.", "settings.conflict");
+        var file = harness.WriteFile("s.json", """{"schemaVersion": 1, "settings": {"skyMap.maximumObjects": 500, "site.observatoryName": "HVO"}}""");
+
+        var result = await harness.RunAsync("config", "apply", file).ConfigureAwait(false);
+
+        Assert.AreEqual(3, result.ExitCode, result.ToString());
+        StringAssert.Contains(result.Error, "The settings group changed since it was read.", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task Apply_InterruptedAfterAGroupWasSaved_Exits130AndSaysItWasAcceptedAsync()
+    {
+        using var harness = new CliHarness();
+        using var stop = new CancellationTokenSource();
+        harness.Api.OnRequest = request =>
+        {
+            if (request.Method == "PUT" && request.PathAndQuery == Fake.SettingsRoute + "/skyMap")
+            {
+                harness.Api.Hang = true;
+                stop.Cancel();
+            }
+        };
+        var file = harness.WriteFile("s.json", """{"schemaVersion": 1, "settings": {"skyMap.maximumObjects": 500, "site.observatoryName": "HVO"}}""");
+
+        var result = await harness.RunAsync(stop.Token, "config", "apply", file).ConfigureAwait(false);
+
+        Assert.AreEqual(130, result.ExitCode, result.ToString());
+        StringAssert.Contains(result.Error, "after CameraAgent accepted the site settings", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task Apply_AKeyRefusedAfterAGroupWasSaved_ExitsOneAsync()
+    {
+        using var harness = new CliHarness();
+        harness.Api.Problem("PUT", Fake.SettingsRoute + "/skyMap", HttpStatusCode.Unauthorized, "Unauthorized");
+        var file = harness.WriteFile("s.json", """{"schemaVersion": 1, "settings": {"skyMap.maximumObjects": 500, "site.observatoryName": "HVO"}}""");
+
+        var result = await harness.RunAsync("config", "apply", file, "--json").ConfigureAwait(false);
+
+        Assert.AreEqual(1, result.ExitCode, result.ToString());
+        Assert.AreEqual(1, result.Json().GetProperty("error").GetProperty("exitCode").GetInt32());
     }
 
     [TestMethod]

@@ -1,6 +1,7 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Cli.Client;
 
 namespace HVO.SkyMonitor.CameraAgent.Cli;
@@ -23,6 +24,12 @@ internal static class SkyCliProgram
 internal static partial class SkyCli
 {
     internal const string CommandName = "hvo-sky";
+
+    /// <summary>How long a command may wait for CameraAgent by default (<c>--timeout</c>), in seconds.</summary>
+    internal const int DefaultTimeoutSeconds = 30;
+
+    /// <summary>The longest <c>--timeout</c>, in seconds.</summary>
+    internal const int MaximumTimeoutSeconds = 3600;
 
     /// <summary>Options that would put a credential on the command line. None exists; each is refused by name.</summary>
     private static readonly string[] CredentialOptions =
@@ -121,8 +128,33 @@ internal static partial class SkyCli
             Recursive = true
         };
 
+        public Option<int> Timeout { get; } = CreateTimeout();
+
         public SkyCliContext CreateContext(SkyCliHost host, ParseResult parseResult)
             => new(host, parseResult.GetValue(Json), parseResult.GetValue(Url), parseResult.GetValue(CredentialsFile));
+
+        public TimeSpan ReadTimeout(ParseResult parseResult) => TimeSpan.FromSeconds(parseResult.GetValue(Timeout));
+
+        private static Option<int> CreateTimeout()
+        {
+            var option = new Option<int>("--timeout")
+            {
+                Description = $"Seconds the command may wait for CameraAgent, 1 to {MaximumTimeoutSeconds} (default {DefaultTimeoutSeconds}): every request and answer, and the wait for a restart or a rig to take effect. Time spent answering a prompt does not count.",
+                Recursive = true,
+                DefaultValueFactory = static _ => DefaultTimeoutSeconds
+            };
+            // A value that is not a number is the parser's own error; one out of range is refused here.
+            option.Validators.Add(static result =>
+            {
+                if (result.Tokens.Count > 0
+                    && int.TryParse(result.Tokens[^1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds)
+                    && seconds is < 1 or > MaximumTimeoutSeconds)
+                {
+                    result.AddError($"--timeout takes 1 to {MaximumTimeoutSeconds} seconds.");
+                }
+            });
+            return option;
+        }
     }
 
     internal static RootCommand CreateRootCommand(SkyCliHost host)
@@ -133,7 +165,8 @@ internal static partial class SkyCli
         {
             options.Json,
             options.Url,
-            options.CredentialsFile
+            options.CredentialsFile,
+            options.Timeout
         };
 
         foreach (var command in new CommandBuilder(host, options).CreateCommands())
@@ -180,15 +213,22 @@ internal static partial class SkyCli
                 return (int)SkyExitCode.Usage;
             }
 
+            // One deadline for the whole command: every request, answer and wait gets its token, so none outlasts it.
+            using var deadline = new SkyCliDeadline(host.Time, options.ReadTimeout(parseResult), cancellationToken);
+            context.Deadline = deadline;
             try
             {
-                return await action(context, parseResult, cancellationToken).ConfigureAwait(false);
+                return await action(context, parseResult, deadline.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 // Reported as any refusal is, so --json still writes its error document.
                 return context.Fail(new SkyCliOutcomeException(
                     "Interrupted. What was already sent may still take effect.", SkyExitCode.Interrupted, "Interrupted"));
+            }
+            catch (OperationCanceledException) when (deadline.Expired)
+            {
+                return context.Fail(new SkyCliOutcomeException(deadline.Describe(), SkyExitCode.Failed, "TimedOut"));
             }
             catch (Exception error)
             {

@@ -9,9 +9,6 @@ internal sealed record SkyRestartOutcome(SkyInfo Before, SkyRestartResponse Resp
 
 internal static partial class SkyCli
 {
-    /// <summary>How long a restart waits for CameraAgent to answer again by default.</summary>
-    internal static readonly TimeSpan DefaultRestartTimeout = TimeSpan.FromSeconds(180);
-
     internal sealed partial class CommandBuilder
     {
         private static Option<bool> NoWaitOption() => new("--no-wait")
@@ -19,35 +16,19 @@ internal static partial class SkyCli
             Description = "Return once CameraAgent has accepted the restart, without waiting for it to come back."
         };
 
-        private static Option<int?> TimeoutOption() => new("--timeout")
-        {
-            Description = $"Seconds to wait for CameraAgent to come back, 1 to 3600 (default {(int)DefaultRestartTimeout.TotalSeconds})."
-        };
-
-        private static TimeSpan ReadTimeout(System.CommandLine.ParseResult parseResult, Option<int?> option)
-            => parseResult.GetValue(option) switch
-            {
-                null => DefaultRestartTimeout,
-                < 1 or > 3600 => throw new SkyCliUsageException("--timeout takes 1 to 3600 seconds."),
-                { } seconds => TimeSpan.FromSeconds(seconds)
-            };
-
         private Command CreateRestartCommand()
         {
             var force = ForceOption("Restart without asking. Needed without a terminal, and with --json.");
             var noWait = NoWaitOption();
-            var timeout = TimeoutOption();
             var command = new Command(
                 "restart",
-                "Restart CameraAgent, so settings and a staged rig that apply at its next start take effect. Capture stops until it is back. It restarts itself only where something starts it again (its container's restart policy); otherwise CameraAgent refuses.")
+                "Restart CameraAgent, so settings and a staged rig that apply at its next start take effect, and wait (within --timeout) until it is back. Capture stops until it is back. It restarts itself only where something starts it again (its container's restart policy); otherwise CameraAgent refuses.")
             {
                 force,
-                noWait,
-                timeout
+                noWait
             };
             SetAction(command, async (context, parseResult, cancellationToken) =>
             {
-                var wait = ReadTimeout(parseResult, timeout);
                 var connection = context.ResolveConnection();
                 if (!parseResult.GetValue(force)
                     && !context.Confirm($"Restart CameraAgent at {connection.Url}? Capture stops until it is back.", "--force"))
@@ -56,7 +37,7 @@ internal static partial class SkyCli
                 }
 
                 using var client = context.CreateClient(connection);
-                var outcome = await RestartAsync(context, client, !parseResult.GetValue(noWait), wait, cancellationToken).ConfigureAwait(false);
+                var outcome = await RestartAsync(context, client, !parseResult.GetValue(noWait), "the restart", cancellationToken).ConfigureAwait(false);
                 return ReportRestart(context, outcome);
             });
             return command;
@@ -93,19 +74,23 @@ internal static partial class SkyCli
     /// <summary>
     /// Asks CameraAgent to restart, and when <paramref name="wait"/> is set, waits until a new process answers: one with
     /// another start time than the process that took the request. A CameraAgent that nothing would start again refuses
-    /// before anything is sent (exit 3). <paramref name="progress"/>, when given, is told what it waits for instead of
-    /// standard error (the terminal interface's).
+    /// before anything is sent (exit 3). <paramref name="change"/> names the restart in what the command reports once
+    /// CameraAgent has accepted it. The wait ends at the command's deadline, <paramref name="deadline"/>.
+    /// <paramref name="progress"/>, when given, is told what it waits for instead of standard error (the terminal
+    /// interface's).
     /// </summary>
     internal static async Task<SkyRestartOutcome> RestartAsync(
         SkyCliContext context,
         SkyApiClient client,
         bool wait,
-        TimeSpan timeout,
+        string change,
         CancellationToken cancellationToken,
+        SkyCliDeadline? deadline = null,
         Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(client);
+        deadline ??= context.Deadline;
         var before = await client.GetAsync<SkyInfo>(SkyRoutes.Info, cancellationToken).ConfigureAwait(false);
         if (!before.Restart.Supervised)
         {
@@ -117,53 +102,83 @@ internal static partial class SkyCli
 
         var started = context.Host.Time.GetUtcNow();
         var response = SkyApiClient.Read<SkyRestartResponse>(
-            await client.SendAsync(HttpMethod.Post, SkyRoutes.Restart, new { }, cancellationToken).ConfigureAwait(false));
+            await context.SendChangeAsync(client, HttpMethod.Post, SkyRoutes.Restart, new { }, change, cancellationToken).ConfigureAwait(false));
         if (!wait)
         {
             return new SkyRestartOutcome(before, response, null, TimeSpan.Zero);
         }
 
-        var waiting = $"Restart requested; waiting up to {(int)timeout.TotalSeconds} s for CameraAgent to come back.";
-        if (progress is not null)
+        if (deadline is not null)
         {
-            // The terminal interface says it on its own screen; standard error belongs to Terminal.Gui there.
-            progress(waiting);
-        }
-        else if (!context.Json)
-        {
-            await context.Error.WriteLineAsync(waiting);
+            var waiting = $"Restart requested; waiting up to {SkyCliDeadline.Seconds(deadline.Remaining)} s for CameraAgent to come back.";
+            if (progress is not null)
+            {
+                // The terminal interface says it on its own screen; standard error belongs to Terminal.Gui there.
+                progress(waiting);
+            }
+            else if (!context.Json)
+            {
+                await context.Error.WriteLineAsync(waiting);
+            }
         }
 
-        var deadline = started + timeout;
-        while (true)
-        {
-            try
+        var after = await PollAsync(
+            context,
+            deadline,
+            $"waiting for CameraAgent to come back. It may still be starting: check with '{CommandName} status'",
+            async token =>
             {
-                var now = await client.GetAsync<SkyInfo>(SkyRoutes.Info, cancellationToken).ConfigureAwait(false);
-                if (now.Host.ProcessStartedUtc != before.Host.ProcessStartedUtc)
+                var now = await client.GetAsync<SkyInfo>(SkyRoutes.Info, token).ConfigureAwait(false);
+                return now.Host.ProcessStartedUtc != before.Host.ProcessStartedUtc ? now : null;
+            },
+            cancellationToken).ConfigureAwait(false);
+        return new SkyRestartOutcome(before, response, after, context.Host.Time.GetUtcNow() - started);
+    }
+
+    /// <summary>
+    /// Reads CameraAgent every poll interval until <paramref name="read"/> returns a result, within the command's
+    /// deadline. A read that fails while CameraAgent is not answering, or not answering properly yet (as while it
+    /// restarts), is read again; a key it refuses (HTTP 401 or 403) ends the wait at once, since reading again cannot
+    /// change that, and so does any outcome <paramref name="read"/> throws. When the deadline passes, the wait ends with
+    /// exit 1, saying what it was <paramref name="waitingFor"/>.
+    /// </summary>
+    internal static async Task<T> PollAsync<T>(
+        SkyCliContext context,
+        SkyCliDeadline? deadline,
+        string waitingFor,
+        Func<CancellationToken, Task<T?>> read,
+        CancellationToken cancellationToken)
+        where T : class
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(read);
+        try
+        {
+            while (true)
+            {
+                try
                 {
-                    return new SkyRestartOutcome(before, response, now, context.Host.Time.GetUtcNow() - started);
+                    if (await read(cancellationToken).ConfigureAwait(false) is { } result)
+                    {
+                        return result;
+                    }
                 }
-            }
-            catch (SkyApiException refused) when (refused.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-            {
-                throw;
-            }
-            catch (Exception error) when (!cancellationToken.IsCancellationRequested && error is HttpRequestException
-                or SkyApiException or SkyProtocolException or TimeoutException or TaskCanceledException)
-            {
-                // Expected while the old process stops and the new one starts.
-            }
+                catch (SkyApiException refused) when (refused.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                {
+                    throw;
+                }
+                catch (Exception error) when (!cancellationToken.IsCancellationRequested
+                    && error is HttpRequestException or SkyApiException or SkyProtocolException)
+                {
+                    // Expected while the old process stops and the new one starts.
+                }
 
-            if (context.Host.Time.GetUtcNow() >= deadline)
-            {
-                throw new SkyCliOutcomeException(
-                    $"CameraAgent did not come back within {(int)timeout.TotalSeconds} s of the restart. It may still be starting: check with '{CommandName} status'.",
-                    SkyExitCode.Failed,
-                    "Failed");
+                await Task.Delay(context.Host.PollInterval, context.Host.Time, cancellationToken).ConfigureAwait(false);
             }
-
-            await Task.Delay(context.Host.PollInterval, context.Host.Time, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (deadline is { Expired: true })
+        {
+            throw new SkyCliOutcomeException(deadline.Describe(waitingFor), SkyExitCode.Failed, "TimedOut");
         }
     }
 }

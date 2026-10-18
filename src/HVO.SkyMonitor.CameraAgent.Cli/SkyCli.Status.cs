@@ -64,10 +64,15 @@ internal static partial class SkyCli
         /// Follows the status by reading it every <paramref name="interval"/>. A line is written when the state changes,
         /// and when CameraAgent stops or starts answering. Ctrl+C ends the watch: it exits 0 when the last read
         /// succeeded and 1 when it did not (or none did), as a read that fails says nothing about CameraAgent's state.
-        /// A key CameraAgent refuses ends it at once (exit 3), since reading again cannot change that.
+        /// A key CameraAgent refuses ends it at once (exit 3), since reading again cannot change that. The watch runs until
+        /// it is interrupted, so <c>--timeout</c> bounds each read rather than the whole; a read that runs out of time is a
+        /// failed read. With <c>--json</c>, every line is one compact JSON document, the final error's too.
         /// </summary>
         private static async Task<int> WatchStatusAsync(SkyCliContext context, TimeSpan interval, CancellationToken cancellationToken)
         {
+            context.JsonLines = true;
+            var limit = context.Deadline?.Limit ?? TimeSpan.FromSeconds(DefaultTimeoutSeconds);
+            context.Deadline?.Stop();
             var connection = context.ResolveConnection();
             using var client = context.CreateClient(connection);
             string? lastState = null;
@@ -77,7 +82,7 @@ internal static partial class SkyCli
             {
                 try
                 {
-                    var summary = await client.GetAsync(SkyRoutes.Summary, cancellationToken).ConfigureAwait(false);
+                    var summary = await ReadSummaryAsync(context, client, limit, cancellationToken).ConfigureAwait(false);
                     var state = SkyStatusText.DescribeState(summary);
                     if (state != lastState || lastFailure is not null)
                     {
@@ -104,7 +109,7 @@ internal static partial class SkyCli
                     throw;
                 }
                 catch (Exception error) when (error is HttpRequestException or SkyApiException or SkyProtocolException
-                    or TimeoutException or TaskCanceledException)
+                    or SkyCliOutcomeException { Kind: "TimedOut" })
                 {
                     var (_, kind, message) = SkyCliContext.Classify(error);
                     if (message != lastFailure)
@@ -135,6 +140,20 @@ internal static partial class SkyCli
             }
 
             return (int)(lastReadSucceeded ? SkyExitCode.Success : SkyExitCode.Failed);
+        }
+
+        /// <summary>One read of the watch, within a deadline of its own: one that runs out of time is a failed read.</summary>
+        private static async Task<JsonElement> ReadSummaryAsync(SkyCliContext context, SkyApiClient client, TimeSpan limit, CancellationToken cancellationToken)
+        {
+            using var read = new SkyCliDeadline(context.Host.Time, limit, cancellationToken);
+            try
+            {
+                return await client.GetAsync(SkyRoutes.Summary, read.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (read.Expired && !cancellationToken.IsCancellationRequested)
+            {
+                throw new SkyCliOutcomeException(read.Describe(), SkyExitCode.Failed, "TimedOut");
+            }
         }
 
         private Command CreateInfoCommand()

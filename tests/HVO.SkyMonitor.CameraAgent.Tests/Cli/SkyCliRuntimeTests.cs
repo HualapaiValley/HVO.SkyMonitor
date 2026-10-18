@@ -21,7 +21,7 @@ public sealed class SkyCliRuntimeTests
         Assert.HasCount(1, harness.Api.RequestsTo("POST", Fake.RestartRoute));
         Assert.AreNotEqual(before, harness.StartedUtc);
         StringAssert.Contains(result.Out, "CameraAgent is back: started 2026-10-18T18:05:00Z", StringComparison.Ordinal);
-        StringAssert.Contains(result.Error, "Restart requested; waiting up to 180 s", StringComparison.Ordinal);
+        StringAssert.Contains(result.Error, "Restart requested; waiting up to 30 s", StringComparison.Ordinal);
         Assert.IsGreaterThanOrEqualTo(3, harness.Api.RequestsTo("GET", Fake.InfoRoute).Count, "It read the old process, then the new one.");
     }
 
@@ -108,14 +108,82 @@ public sealed class SkyCliRuntimeTests
     }
 
     [TestMethod]
-    public async Task Restart_ThatNeverComesBack_ExitsOneAfterItsTimeoutAsync()
+    [DataRow(HttpStatusCode.Unauthorized)]
+    [DataRow(HttpStatusCode.Forbidden)]
+    public async Task Restart_AVerificationReadRefusedAfterCameraAgentAcceptedIt_ExitsOneAndSaysItWasAcceptedAsync(HttpStatusCode status)
     {
-        using var harness = new CliHarness { RestartReadsBeforeNewProcess = -1 };
+        using var harness = new CliHarness();
+        harness.Api.OnRequest = request =>
+        {
+            if (request.PathAndQuery == Fake.InfoRoute && harness.Api.RequestsTo("POST", Fake.RestartRoute).Count > 0)
+            {
+                harness.Api.RefuseAll = status;
+            }
+        };
 
-        var result = await harness.RunAsync("restart", "--force", "--timeout", "1").ConfigureAwait(false);
+        var result = await harness.RunAsync("restart", "--force").ConfigureAwait(false);
 
         Assert.AreEqual(1, result.ExitCode, result.ToString());
-        StringAssert.Contains(result.Error, "did not come back within 1 s", StringComparison.Ordinal);
+        StringAssert.Contains(result.Error, "CameraAgent accepted the restart, but it could not be verified", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task Restart_AVerificationReadRefusedAfterItWasAccepted_IsUnverifiedInJsonAsync()
+    {
+        using var harness = new CliHarness();
+        harness.Api.OnRequest = request =>
+        {
+            if (request.PathAndQuery == Fake.InfoRoute && harness.Api.RequestsTo("POST", Fake.RestartRoute).Count > 0)
+            {
+                harness.Api.RefuseAll = HttpStatusCode.Unauthorized;
+            }
+        };
+
+        var result = await harness.RunAsync("restart", "--force", "--json").ConfigureAwait(false);
+
+        Assert.AreEqual(1, result.ExitCode, result.ToString());
+        var error = result.Json().GetProperty("error");
+        Assert.AreEqual(1, error.GetProperty("exitCode").GetInt32());
+        Assert.AreEqual("Unverified", error.GetProperty("kind").GetString());
+        Assert.AreEqual("SignedOut", error.GetProperty("cause").GetString());
+    }
+
+    [TestMethod]
+    public async Task Restart_InterruptedAfterCameraAgentAcceptedIt_Exits130AndSaysItWasAcceptedAsync()
+    {
+        using var harness = new CliHarness();
+        using var stop = new CancellationTokenSource();
+        harness.Api.OnRequest = request =>
+        {
+            if (request.PathAndQuery == Fake.InfoRoute && harness.Api.RequestsTo("POST", Fake.RestartRoute).Count > 0)
+            {
+                harness.Api.Hang = true;
+                stop.Cancel();
+            }
+        };
+
+        var result = await harness.RunAsync(stop.Token, "restart", "--force").ConfigureAwait(false);
+
+        Assert.AreEqual(130, result.ExitCode, result.ToString());
+        StringAssert.Contains(result.Error, "after CameraAgent accepted the restart", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task Restart_ARequestCameraAgentMayHaveReceived_SaysItIsNotKnownAsync()
+    {
+        using var harness = new CliHarness();
+        harness.Api.OnRequest = request =>
+        {
+            if (request.PathAndQuery == Fake.RestartRoute)
+            {
+                harness.Api.Unreachable = true;
+            }
+        };
+
+        var result = await harness.RunAsync("restart", "--force").ConfigureAwait(false);
+
+        Assert.AreEqual(1, result.ExitCode, result.ToString());
+        StringAssert.Contains(result.Error, "Whether CameraAgent received the restart is not known", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -256,6 +324,91 @@ public sealed class SkyCliRuntimeTests
     }
 
     [TestMethod]
+    public async Task RigApply_WaitsUntilTheStagedRevisionBecomesActiveAsync()
+    {
+        using var harness = new CliHarness();
+        var readsAfterRestart = 0;
+        harness.Api.Handle("GET", Fake.RigRoute, _ => FakeCameraAgent.Response(HttpStatusCode.OK,
+            harness.Api.RequestsTo("POST", Fake.RestartRoute).Count == 0
+                ? Fake.Rigs(active: "rig-1", pending: "rig-2")
+                : ++readsAfterRestart <= 2
+                    ? Fake.Rigs(active: "rig-1", pending: "rig-2")
+                    : Fake.Rigs(active: "rig-2", pending: null)));
+
+        var result = await harness.RunAsync("rig", "apply", "--force").ConfigureAwait(false);
+
+        Assert.AreEqual(0, result.ExitCode, result.ToString());
+        StringAssert.Contains(result.Out, "Rig revision rig-2 is active.", StringComparison.Ordinal);
+        Assert.AreEqual(3, readsAfterRestart, "It read the rig until the staged revision was active.");
+    }
+
+    [TestMethod]
+    [DataRow("pending")]
+    [DataRow("active")]
+    public async Task RigApply_AnInitializationFailureThatAppearsLater_EndsTheWaitWithExitOneAsync(string which)
+    {
+        using var harness = new CliHarness();
+        var readsAfterRestart = 0;
+        harness.Api.Handle("GET", Fake.RigRoute, _ => FakeCameraAgent.Response(HttpStatusCode.OK,
+            harness.Api.RequestsTo("POST", Fake.RestartRoute).Count == 0 || ++readsAfterRestart == 1
+                ? Fake.Rigs(active: "rig-1", pending: "rig-2")
+                : which == "pending"
+                    ? Fake.Rigs(active: "rig-1", pending: "rig-2", pendingFailure: "The camera did not initialize.")
+                    : Fake.Rigs(active: "rig-1", pending: "rig-2", activeFailure: "The camera did not initialize.")));
+
+        var result = await harness.RunAsync("rig", "apply", "--force").ConfigureAwait(false);
+
+        Assert.AreEqual(1, result.ExitCode, result.ToString());
+        StringAssert.Contains(result.Error, "rig revision rig-2 did not become active: The camera did not initialize.", StringComparison.Ordinal);
+        Assert.AreEqual(2, readsAfterRestart);
+    }
+
+    [TestMethod]
+    public async Task RigApply_ARevisionThatNeverBecomesActive_TimesOutAtTheDeadlineAsync()
+    {
+        using var harness = new CliHarness();
+        harness.Api.Json("GET", Fake.RigRoute, Fake.Rigs(active: "rig-1", pending: "rig-2"));
+
+        var result = await harness.RunAsync("rig", "apply", "--force", "--timeout", "1").ConfigureAwait(false);
+
+        Assert.AreEqual(1, result.ExitCode, result.ToString());
+        StringAssert.Contains(result.Error, "CameraAgent accepted the restart that applies rig revision rig-2, but it could not be verified", StringComparison.Ordinal);
+        StringAssert.Contains(result.Error, "Timed out after 1 s (--timeout) waiting for rig revision rig-2 to become active", StringComparison.Ordinal);
+        Assert.IsGreaterThan(1, harness.Api.RequestsTo("GET", Fake.RigRoute).Count - 1, "It read the rig more than once after the restart.");
+    }
+
+    [TestMethod]
+    public async Task RigApply_ARevisionNoLongerStaged_EndsTheWaitWithExitOneAsync()
+    {
+        using var harness = new CliHarness();
+        harness.Api.Handle("GET", Fake.RigRoute, _ => FakeCameraAgent.Response(HttpStatusCode.OK,
+            harness.Api.RequestsTo("POST", Fake.RestartRoute).Count == 0
+                ? Fake.Rigs(active: "rig-1", pending: "rig-2")
+                : Fake.Rigs(active: "rig-1", pending: null)));
+
+        var result = await harness.RunAsync("rig", "apply", "--force").ConfigureAwait(false);
+
+        Assert.AreEqual(1, result.ExitCode, result.ToString());
+        StringAssert.Contains(result.Error, "rig revision rig-2 is no longer staged and did not become active", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow(HttpStatusCode.Unauthorized)]
+    [DataRow(HttpStatusCode.Forbidden)]
+    public async Task RigApply_ARigReadRefusedAfterTheRestartWasAccepted_ExitsOneAsync(HttpStatusCode status)
+    {
+        using var harness = new CliHarness();
+        harness.Api.Handle("GET", Fake.RigRoute, _ => harness.Api.RequestsTo("POST", Fake.RestartRoute).Count == 0
+            ? FakeCameraAgent.Response(HttpStatusCode.OK, Fake.Rigs(active: "rig-1", pending: "rig-2"))
+            : FakeCameraAgent.ProblemResponse(status, "Refused"));
+
+        var result = await harness.RunAsync("rig", "apply", "--force").ConfigureAwait(false);
+
+        Assert.AreEqual(1, result.ExitCode, result.ToString());
+        StringAssert.Contains(result.Error, "CameraAgent accepted the restart that applies rig revision rig-2, but it could not be verified", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task RigApply_NothingStaged_SaysSoAndRestartsNothingAsync()
     {
         using var harness = new CliHarness();
@@ -350,6 +503,65 @@ public sealed class SkyCliRuntimeTests
         Assert.AreEqual(0, result.ExitCode, result.ToString());
         Assert.HasCount(1, harness.Api.RequestsTo("POST", Fake.ScheduleRoute + "/rollback"));
         Assert.IsEmpty(harness.Api.RequestsTo("POST", Fake.ScheduleRoute + "/activate"));
+    }
+
+    [TestMethod]
+    public async Task ScheduleApply_ARevisionCameraAgentDoesNotList_IsRefusedRatherThanGuessedAsync()
+    {
+        using var harness = new CliHarness();
+
+        var result = await harness.RunAsync("schedule", "apply", "schedule-0").ConfigureAwait(false);
+
+        Assert.AreEqual(3, result.ExitCode, result.ToString());
+        StringAssert.Contains(result.Error, "whether schedule revision schedule-0 is older or newer than the active revision cannot be established", StringComparison.Ordinal);
+        StringAssert.Contains(result.Error, "Nothing was sent.", StringComparison.Ordinal);
+        Assert.IsFalse(harness.Api.Requests.Any(static request => request.Method == "POST"));
+    }
+
+    [TestMethod]
+    [DataRow("target")]
+    [DataRow("active")]
+    public async Task ScheduleApply_ARevisionNumberCameraAgentDidNotGive_IsRefusedRatherThanGuessedAsync(string missing)
+    {
+        using var harness = new CliHarness();
+        harness.Api.Json("GET", Fake.ScheduleRoute, new
+        {
+            stateVersion = 11,
+            activeRevision = missing == "active" ? (object)new { revisionId = "schedule-3" } : Fake.ScheduleRevision("schedule-3", 3),
+            pendingRevision = (object?)null,
+            history = new[] { missing == "target" ? (object)new { revisionId = "schedule-2" } : Fake.ScheduleRevision("schedule-2", 2) }
+        });
+
+        var result = await harness.RunAsync("schedule", "apply", "schedule-2", "--json").ConfigureAwait(false);
+
+        Assert.AreEqual(3, result.ExitCode, result.ToString());
+        Assert.AreEqual("Refused", result.Json().GetProperty("error").GetProperty("kind").GetString());
+        Assert.IsFalse(harness.Api.Requests.Any(static request => request.Method == "POST"));
+    }
+
+    [TestMethod]
+    public async Task ScheduleApply_ANewerListedRevision_IsActivatedAsync()
+    {
+        using var harness = new CliHarness();
+        harness.Api.Json("GET", Fake.ScheduleRoute, Fake.Schedule(pending: "schedule-4"));
+
+        var result = await harness.RunAsync("schedule", "apply", "schedule-4").ConfigureAwait(false);
+
+        Assert.AreEqual(0, result.ExitCode, result.ToString());
+        Assert.HasCount(1, harness.Api.RequestsTo("POST", Fake.ScheduleRoute + "/activate"));
+        Assert.IsEmpty(harness.Api.RequestsTo("POST", Fake.ScheduleRoute + "/rollback"));
+    }
+
+    [TestMethod]
+    public async Task ScheduleApply_AnActivationCameraAgentMayHaveReceived_ExitsOneAndSaysItIsNotKnownAsync()
+    {
+        using var harness = new CliHarness();
+        harness.Api.Handle("POST", Fake.ScheduleRoute + "/rollback", _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StalledContent() });
+
+        var result = await harness.RunAsync("schedule", "apply", "schedule-2", "--timeout", "1").ConfigureAwait(false);
+
+        Assert.AreEqual(1, result.ExitCode, result.ToString());
+        StringAssert.Contains(result.Error, "Whether CameraAgent received the rollback to schedule revision schedule-2 is not known", StringComparison.Ordinal);
     }
 
     [TestMethod]

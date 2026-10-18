@@ -455,7 +455,7 @@ internal sealed class SkyTerminalUi : IDisposable
 
         Say(HvoNotice.Info, "Restart requested: waiting for CameraAgent to come back.", "[RESTARTING]");
         Run(
-            token => SkyCli.RestartAsync(Context, client, wait: true, SkyCli.DefaultRestartTimeout, token, progress: _ => { }),
+            token => SkyCli.RestartAsync(Context, client, wait: true, "the restart", token, progress: _ => { }),
             (outcome, error) =>
             {
                 // A new process: everything is read again from it, then the caller checks what it asked for.

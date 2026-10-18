@@ -16,9 +16,6 @@ internal sealed record SkyConnectionOptions
     /// <summary>The owner API key sent as <c>Authorization: Bearer</c>; null for anonymous reads such as <c>/alive</c>.</summary>
     public string? ApiKey { get; init; }
 
-    /// <summary>How long one request may take.</summary>
-    public TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(30);
-
     /// <summary>The client's own version, sent as its user agent.</summary>
     public string? ClientVersion { get; init; }
 
@@ -31,7 +28,8 @@ internal sealed record SkyConnectionOptions
 /// <c>Authorization</c> header, never in a URL, and redirects are not followed, so it is never sent anywhere but the
 /// address given. A refusal or failure becomes <see cref="SkyApiException"/> (CameraAgent answered),
 /// <see cref="SkyProtocolException"/> (its answer could not be read), or the transport's own exception (it did not
-/// answer).
+/// answer). The client has no timeout of its own: the caller's token, the command's deadline, bounds each request and
+/// the reading of its answer's body alike.
 /// </summary>
 internal sealed class SkyApiClient : IDisposable
 {
@@ -53,7 +51,7 @@ internal sealed class SkyApiClient : IDisposable
         _http = new HttpClient(options.CreateHandler?.Invoke() ?? CreateHandler(), disposeHandler: true)
         {
             BaseAddress = options.BaseAddress,
-            Timeout = options.Timeout
+            Timeout = Timeout.InfiniteTimeSpan
         };
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         _http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("hvo-sky", UserAgentVersion(options.ClientVersion)));

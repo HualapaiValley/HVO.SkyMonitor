@@ -131,13 +131,13 @@ internal static partial class SkyCli
                     ? given
                     : SkyJson.Text(schedule, "activeRevision", "revisionId")
                         ?? throw new SkyProtocolException("CameraAgent did not return the active schedule revision.");
-                var staged = await client.SendAsync(HttpMethod.Post, SkyRoutes.ScheduleStage, new
+                var staged = await context.SendChangeAsync(client, HttpMethod.Post, SkyRoutes.ScheduleStage, new
                 {
                     profile,
                     basisRevisionId = basisId,
                     expectedVersion = version,
                     reason = why
-                }, cancellationToken).ConfigureAwait(false);
+                }, "the staged schedule revision", cancellationToken).ConfigureAwait(false);
                 var id = SkyJson.Text(staged, "pendingRevision", "revisionId") ?? "unknown";
                 return Report(context, staged,
                     $"Staged schedule revision {id}, based on {basisId}. '{CommandName} schedule apply' activates it at the next capture boundary.");
@@ -153,7 +153,7 @@ internal static partial class SkyCli
                 text = path == "-"
                     ? context.Host.IsInteractive
                         ? throw new SkyCliUsageException("'-' reads the capture profile from standard input, which is a terminal here.")
-                        : context.Host.ReadAllInput()
+                        : context.ReadAllInput()
                     : new FileInfo(path).Length > MaximumProfileBytes
                         ? throw new SkyCliUsageException($"The capture profile is larger than {MaximumProfileBytes / 1024} KiB.")
                         : File.ReadAllText(path);
@@ -180,7 +180,7 @@ internal static partial class SkyCli
         {
             var revision = new Argument<string?>("revision")
             {
-                Description = "The revision to activate (default: the staged one). A previous revision activates it again.",
+                Description = "The revision to activate (default: the staged one). An older revision goes back to it by rollback; one CameraAgent does not list among its revisions is refused, as whether it is older cannot be known.",
                 Arity = ArgumentArity.ZeroOrOne
             };
             RejectOption(revision);
@@ -212,20 +212,55 @@ internal static partial class SkyCli
                         $"Schedule revision {id} is already active; nothing to apply.");
                 }
 
-                // An older revision goes back by rollback, as the settings API's schedule group decides it.
-                var target = SkyJson.Items(schedule, "history").Append(SkyJson.Member(schedule, "pendingRevision") ?? default)
-                    .FirstOrDefault(candidate => candidate.ValueKind == JsonValueKind.Object && SkyJson.Text(candidate, "revisionId") == id);
-                var rollback = target.ValueKind == JsonValueKind.Object
-                    && SkyJson.Integer(target, "revisionNumber") < SkyJson.Integer(schedule, "activeRevision", "revisionNumber");
-                var applied = await client.SendAsync(HttpMethod.Post, rollback ? SkyRoutes.ScheduleRollback : SkyRoutes.ScheduleActivate, new
+                var rollback = SkyScheduleDirection.IsRollback(schedule, id);
+                var applied = await context.SendChangeAsync(client, HttpMethod.Post, rollback ? SkyRoutes.ScheduleRollback : SkyRoutes.ScheduleActivate, new
                 {
                     revisionId = id,
                     expectedVersion = version,
                     reason = why
-                }, cancellationToken).ConfigureAwait(false);
+                }, SkyScheduleDirection.Describe(id, rollback), cancellationToken).ConfigureAwait(false);
                 return Report(context, applied, $"Schedule revision {id} is active from the next capture boundary.");
             });
             return command;
         }
     }
+}
+
+/// <summary>
+/// Whether activating a schedule revision goes forward (activate) or back (rollback), which CameraAgent's schedule API
+/// takes as separate commands and refuses in the wrong direction. It is decided from the revision numbers CameraAgent
+/// reports, never guessed: a revision it does not list (the schedule lists the active, the staged and the most recent
+/// revisions), or one listed without a number, is refused before anything is sent.
+/// </summary>
+internal static class SkyScheduleDirection
+{
+    /// <summary>True when <paramref name="id"/> is older than the active revision, false when it is newer.</summary>
+    /// <exception cref="SkyCliOutcomeException">The order cannot be established from what CameraAgent reported (exit 3).</exception>
+    public static bool IsRollback(JsonElement schedule, string id)
+    {
+        var target = SkyJson.Items(schedule, "history").Append(SkyJson.Member(schedule, "pendingRevision") ?? default)
+            .FirstOrDefault(candidate => candidate.ValueKind == JsonValueKind.Object && SkyJson.Text(candidate, "revisionId") == id);
+        if (target.ValueKind != JsonValueKind.Object)
+        {
+            throw Unknown(id, "CameraAgent does not list it among its revisions (the active, the staged and the most recent ones). Check the name with 'hvo-sky schedule show --json'.");
+        }
+
+        var number = SkyJson.Integer(target, "revisionNumber");
+        var active = SkyJson.Integer(schedule, "activeRevision", "revisionNumber");
+        if (number is null || active is null)
+        {
+            throw Unknown(id, $"CameraAgent did not give the revision number of {(number is null ? "that revision" : "the active revision")}.");
+        }
+
+        return number < active;
+    }
+
+    /// <summary>What the command reports CameraAgent accepted: "the rollback to schedule revision X", or its activation.</summary>
+    public static string Describe(string id, bool rollback)
+        => rollback ? $"the rollback to schedule revision {id}" : $"the activation of schedule revision {id}";
+
+    private static SkyCliOutcomeException Unknown(string id, string why) => new(
+        $"Schedule revision {id} was not applied: whether schedule revision {id} is older or newer than the active revision cannot be established, because {why} Nothing was sent.",
+        SkyExitCode.Refused,
+        "Refused");
 }

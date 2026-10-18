@@ -17,7 +17,7 @@ internal static partial class SkyCli
                 "Save CameraAgent's address and an owner API key in the credentials file, after checking that CameraAgent accepts the key. The key is read from the terminal without echo, or as one line of standard input; never from the command line. The site owner creates keys in CameraAgent (Account, API keys).");
             SetAction(command, async (context, _, cancellationToken) =>
             {
-                var file = SkyCredentialStore.Load(context.CredentialsPath);
+                var file = context.LoadCredentials();
                 var url = context.UrlOverride
                     ?? SkyCredentialStore.FromEnvironment(context.Host.GetEnvironmentVariable).Url
                     ?? file?.Url
@@ -37,7 +37,15 @@ internal static partial class SkyCli
                     info = await client.GetAsync<SkyInfo>(SkyRoutes.Info, cancellationToken).ConfigureAwait(false);
                 }
 
-                SkyCredentialStore.Save(context.CredentialsPath, (file ?? new SkyStoredCredentials()) with { Url = url, ApiKey = key });
+                try
+                {
+                    context.SaveCredentials((file ?? new SkyStoredCredentials()) with { Url = url, ApiKey = key });
+                }
+                catch (SkyCredentialFileException problem)
+                {
+                    throw new SkyCredentialFileException($"CameraAgent accepted the key, but it was not saved: {problem.Message}", problem);
+                }
+
                 var keyId = SkyApiKey.IdOf(key);
                 if (context.Json)
                 {
@@ -73,7 +81,7 @@ internal static partial class SkyCli
                 throw new SkyCliUsageException($"No CameraAgent address: give it with --url, or set {SkyCredentialStore.UrlVariable}.");
             }
 
-            var text = context.Host.ReadLine($"CameraAgent address [{DefaultUrl}]: ", false)?.Trim();
+            var text = context.Ask($"CameraAgent address [{DefaultUrl}]: ", false)?.Trim();
             if (!SkyAddress.TryParse(string.IsNullOrEmpty(text) ? DefaultUrl : text, out var address, out var error))
             {
                 throw new SkyCliUsageException($"The address: {error}");
@@ -86,17 +94,32 @@ internal static partial class SkyCli
         {
             var command = new Command(
                 "logout",
-                "Remove the saved API key from the credentials file; the address is kept. The key itself works until the site owner revokes it in CameraAgent.");
+                "Remove the saved API key from the credentials file; the address is kept. The key itself works until the site owner revokes it in CameraAgent. A credentials file that exists but cannot be used is refused (exit 3), as the key may still be in it.");
             SetAction(command, async (context, _, _) =>
             {
-                var file = SkyCredentialStore.Load(context.CredentialsPath);
-                if (file?.ApiKey is not { } key)
+                // A file that exists but cannot be used is not "no key": the key may still be in it (exit 3).
+                SkyStoredCredentials? file;
+                string? key;
+                try
+                {
+                    file = context.LoadCredentials();
+                    key = file?.ApiKey;
+                    if (key is not null)
+                    {
+                        context.SaveCredentials(file! with { ApiKey = null });
+                    }
+                }
+                catch (SkyCredentialFileException problem)
+                {
+                    throw new SkyCredentialFileException($"The API key could not be removed: {problem.Message}", problem);
+                }
+
+                if (key is null)
                 {
                     return Report(context, new { signedOut = false, keyId = (string?)null, credentialsFile = context.CredentialsPath },
                         "No API key is saved.");
                 }
 
-                SkyCredentialStore.Save(context.CredentialsPath, file with { ApiKey = null });
                 var keyId = SkyApiKey.IdOf(key);
                 var result = Report(context, new { signedOut = true, keyId, credentialsFile = context.CredentialsPath },
                     $"Removed API key {keyId} from {context.CredentialsPath}. The key still works until the site owner revokes it in CameraAgent (Account, API keys).");

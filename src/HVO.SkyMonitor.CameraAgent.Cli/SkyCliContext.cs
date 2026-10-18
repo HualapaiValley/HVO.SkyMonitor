@@ -80,12 +80,16 @@ internal sealed class SkyCliOutcomeException : Exception
     public SkyExitCode Code { get; init; } = SkyExitCode.Refused;
 
     public string Kind { get; init; } = "Refused";
+
+    /// <summary>True when the message already says what CameraAgent accepted before this failure, so it is reported as it is.</summary>
+    public bool SaysWhatWasAccepted { get; init; }
 }
 
 /// <summary>One run of a command: its global options, its output, and the connection to CameraAgent.</summary>
 internal sealed class SkyCliContext
 {
     private bool _warnedClearText;
+    private string? _sending;
 
     public SkyCliContext(SkyCliHost host, bool json, Uri? url, string? credentialsFile)
     {
@@ -110,12 +114,70 @@ internal sealed class SkyCliContext
 
     public TextWriter Error => Host.Error;
 
-    /// <summary>The address in use: <c>--url</c>, then <c>HVO_SKY_URL</c>, then the credentials file; null when none.</summary>
-    /// <exception cref="SkyCredentialFileException">The environment or the file cannot be used.</exception>
-    public Uri? ResolveUrl()
+    /// <summary>The command's deadline (<c>--timeout</c>), from when the command starts.</summary>
+    public SkyCliDeadline? Deadline { get; internal set; }
+
+    /// <summary>
+    /// True for <c>status --watch --json</c>: every document, the final error's too, is one compact line, so the output
+    /// stays one JSON object per line.
+    /// </summary>
+    public bool JsonLines { get; set; }
+
+    /// <summary>
+    /// What CameraAgent has accepted in this command, such as "the restart", once it has. From then on the command has
+    /// changed something, so no failure may say that nothing changed (exit 3): it exits 1 and says what was accepted.
+    /// </summary>
+    public string? AcceptedChange { get; private set; }
+
+    /// <summary>Reads the credentials file: null when there is none.</summary>
+    /// <exception cref="SkyCredentialFileException">The file, or its folder, exists but cannot be used.</exception>
+    public SkyStoredCredentials? LoadCredentials() => SkyCredentialStore.Load(CredentialsPath, Host.UserId);
+
+    /// <summary>Writes the credentials file.</summary>
+    /// <exception cref="SkyCredentialFileException">The file, or its folder, cannot be written or cannot be trusted.</exception>
+    public void SaveCredentials(SkyStoredCredentials credentials) => SkyCredentialStore.Save(CredentialsPath, credentials, Host.UserId);
+
+    /// <summary>
+    /// Sends a change, described as <paramref name="change"/> ("the restart"). Once CameraAgent answers it with success
+    /// (and <paramref name="changed"/>, when given, says the answer changed something), <see cref="AcceptedChange"/> is set.
+    /// </summary>
+    public async Task<JsonElement> SendChangeAsync(
+        SkyApiClient client,
+        HttpMethod method,
+        string route,
+        object body,
+        string change,
+        CancellationToken cancellationToken,
+        Func<JsonElement, bool>? changed = null)
     {
-        var environment = SkyCredentialStore.FromEnvironment(Host.GetEnvironmentVariable);
-        return UrlOverride ?? environment.Url ?? SkyCredentialStore.Load(CredentialsPath)?.Url;
+        ArgumentNullException.ThrowIfNull(client);
+        _sending = change;
+        var answer = await client.SendAsync(method, route, body, cancellationToken).ConfigureAwait(false);
+        _sending = null;
+        if (changed is null || changed(answer))
+        {
+            AcceptedChange ??= change;
+        }
+
+        return answer;
+    }
+
+    /// <summary>Reads the whole of standard input, for a file given as <c>-</c>; the deadline does not run meanwhile.</summary>
+    public string ReadAllInput()
+    {
+        using (Deadline?.Pause())
+        {
+            return Host.ReadAllInput();
+        }
+    }
+
+    /// <summary>Asks for one line at the terminal; the deadline does not run while the person answers.</summary>
+    public string? Ask(string prompt, bool secret)
+    {
+        using (Deadline?.Pause())
+        {
+            return Host.ReadLine(prompt, secret);
+        }
     }
 
     /// <summary>
@@ -125,7 +187,7 @@ internal sealed class SkyCliContext
     public SkyCliConnection ResolveConnection()
     {
         var environment = SkyCredentialStore.FromEnvironment(Host.GetEnvironmentVariable);
-        var file = SkyCredentialStore.Load(CredentialsPath);
+        var file = LoadCredentials();
         var url = UrlOverride ?? environment.Url ?? file?.Url
             ?? throw new SkyCliNotConfiguredException(
                 $"No CameraAgent address. Run '{SkyCli.CommandName} login --url URL', set {SkyCredentialStore.UrlVariable}, or pass --url.");
@@ -154,11 +216,11 @@ internal sealed class SkyCliContext
         return CreateClient(connection.Url, connection.ApiKey);
     }
 
+    // No timeout of its own: every request carries the command's deadline (SkyCliDeadline), which bounds the answer's body too.
     public SkyApiClient CreateClient(Uri url, string? apiKey) => new(new SkyConnectionOptions
     {
         BaseAddress = url,
         ApiKey = apiKey,
-        Timeout = Host.RequestTimeout,
         ClientVersion = Host.ClientVersion,
         CreateHandler = Host.CreateHandler
     });
@@ -176,8 +238,8 @@ internal sealed class SkyCliContext
         }
     }
 
-    /// <summary>Writes <paramref name="value"/> as one indented JSON document.</summary>
-    public void WriteJson<T>(T value) => Out.WriteLine(JsonSerializer.Serialize(value, SkyCliJson.Indented));
+    /// <summary>Writes <paramref name="value"/> as one indented JSON document, or as one line with <see cref="JsonLines"/>.</summary>
+    public void WriteJson<T>(T value) => Out.WriteLine(JsonSerializer.Serialize(value, JsonLines ? SkyCliJson.Compact : SkyCliJson.Indented));
 
     /// <summary>Writes <paramref name="value"/> as one line of JSON (for <c>--watch</c>).</summary>
     public void WriteJsonLine<T>(T value) => Out.WriteLine(JsonSerializer.Serialize(value, SkyCliJson.Compact));
@@ -187,7 +249,7 @@ internal sealed class SkyCliContext
     /// </summary>
     /// <exception cref="SkyCliUsageException">No value was given.</exception>
     public string ReadSecret(string prompt)
-        => Host.ReadLine(prompt, true)?.Trim() is { Length: > 0 } secret
+        => Ask(prompt, true)?.Trim() is { Length: > 0 } secret
             ? secret
             : throw new SkyCliUsageException($"No value was given for: {prompt.TrimEnd(' ', ':')}.");
 
@@ -204,7 +266,7 @@ internal sealed class SkyCliContext
             throw new SkyCliUsageException($"{question} Nothing was sent: confirm it with {option}.") { Kind = "ConfirmationRequired" };
         }
 
-        var answer = Host.ReadLine($"{question} [y/N] ", false)?.Trim();
+        var answer = Ask($"{question} [y/N] ", false)?.Trim();
         if (string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) || string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
         {
             return true;
@@ -214,11 +276,34 @@ internal sealed class SkyCliContext
         return false;
     }
 
-    /// <summary>Reports <paramref name="error"/> and returns its exit code.</summary>
+    /// <summary>
+    /// Reports <paramref name="error"/> and returns its exit code. After CameraAgent accepted a change, the failure exits 1
+    /// (kind <c>Unverified</c>) and says the change was accepted but could not be verified; an interruption still exits 130,
+    /// saying the same. A failure of the change's own request that leaves its fate unknown says so.
+    /// </summary>
     public int Fail(Exception error)
     {
         ArgumentNullException.ThrowIfNull(error);
         var (code, kind, message) = Classify(error);
+        string? cause = null;
+        if (AcceptedChange is { } accepted && error is not SkyCliOutcomeException { SaysWhatWasAccepted: true })
+        {
+            if (code == SkyExitCode.Interrupted)
+            {
+                message = $"Interrupted after CameraAgent accepted {accepted}; it was not verified.";
+            }
+            else
+            {
+                cause = kind;
+                (code, kind, message) = (SkyExitCode.Failed, "Unverified", $"CameraAgent accepted {accepted}, but it could not be verified: {message}");
+            }
+        }
+        else if (_sending is { } sending && code != SkyExitCode.Interrupted && error is not SkyApiException { StatusCode: > 0 })
+        {
+            // The change was sent, and CameraAgent's answer, if any, was not read.
+            message = $"{message} Whether CameraAgent received {sending} is not known: check before sending it again.";
+        }
+
         var refusal = error as SkyApiException;
         if (Json)
         {
@@ -228,6 +313,7 @@ internal sealed class SkyCliContext
                 {
                     exitCode = (int)code,
                     kind,
+                    cause,
                     message,
                     status = refusal is null || refusal.StatusCode == 0 ? (int?)null : (int)refusal.StatusCode,
                     code = refusal?.Code,
@@ -270,7 +356,7 @@ internal sealed class SkyCliContext
         SkySettingValueException value => (SkyExitCode.Usage, "Usage", value.Message),
         SkyCliOutcomeException outcome => (outcome.Code, outcome.Kind, outcome.Message),
         SkyCliNotConfiguredException missing => (SkyExitCode.Refused, "NotConfigured", missing.Message),
-        SkyCredentialFileException file => (SkyExitCode.Refused, "NotConfigured", file.Message),
+        SkyCredentialFileException file => (SkyExitCode.Refused, "UnusableCredentials", file.Message),
         SkyApiException { StatusCode: HttpStatusCode.Unauthorized } => (SkyExitCode.Refused, "SignedOut",
             $"CameraAgent did not accept the API key (HTTP 401): it is wrong, was revoked, or the owner must replace a temporary password. Run '{SkyCli.CommandName} login' with a current key."),
         SkyApiException { StatusCode: HttpStatusCode.Forbidden } refusal => (SkyExitCode.Refused, "Forbidden",

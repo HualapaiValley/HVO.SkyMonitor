@@ -45,8 +45,8 @@ internal sealed class SkyCredentialFileException : Exception
 /// <summary>
 /// Credentials for <c>hvo-sky</c> (install contract section 8): from the environment (<c>HVO_SKY_URL</c>,
 /// <c>HVO_SKY_API_KEY</c>), or from a JSON file that only its owner may read (<c>0600</c>, in a <c>0700</c> directory).
-/// A file that other users can read or write, or one in a directory they can change, is refused rather than used,
-/// because it holds a key.
+/// A file that other users can read or write, own, or replace by changing its folder is refused rather than used, because
+/// it holds a key; so is one that exists but cannot be reached or read. Only a file that does not exist is "absent".
 /// </summary>
 internal static class SkyCredentialStore
 {
@@ -64,6 +64,8 @@ internal static class SkyCredentialStore
 
     private const UnixFileMode OthersMask = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute
         | UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+
+    private const int PermissionDenied = 13;
 
     /// <summary>The largest credentials file read; a real one is a few hundred bytes.</summary>
     private const int MaximumFileBytes = 64 * 1024;
@@ -116,96 +118,143 @@ internal static class SkyCredentialStore
         return (address, apiKey);
     }
 
-    /// <summary>Reads the file, or returns null when there is none.</summary>
-    /// <exception cref="SkyCredentialFileException">
-    /// Other users can read or write the file, or change its directory; or it is not a valid credentials file.
-    /// </exception>
-    public static SkyStoredCredentials? Load(string path)
+    /// <summary>Reads the file as the user this process runs as; null when there is none.</summary>
+    /// <exception cref="SkyCredentialFileException">The file, or its folder, exists but cannot be used.</exception>
+    public static SkyStoredCredentials? Load(string path) => Load(path, SkyFileSystem.CurrentUserId);
+
+    /// <summary>
+    /// Reads the file, or returns null when there is none: only when it, or a folder on its path, does not exist
+    /// (<c>ENOENT</c>). A file that exists but cannot be used is refused, never taken for an absent one: one that cannot
+    /// be reached or read, that belongs to another user than <paramref name="owner"/>, that other users can read or
+    /// write, or whose folder they can change, and one that is not a valid credentials file.
+    /// </summary>
+    /// <exception cref="SkyCredentialFileException">The file, or its folder, exists but cannot be used.</exception>
+    public static SkyStoredCredentials? Load(string path, uint owner)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        if (!File.Exists(path))
+        var fullPath = Path.GetFullPath(path);
+        var file = SkyFileSystem.Inspect(fullPath);
+        if (file.Missing)
         {
             return null;
         }
 
-        if (!OperatingSystem.IsWindows())
+        var directory = Path.GetDirectoryName(fullPath)!;
+        if (!file.Exists)
         {
-            CheckDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-            if ((File.GetUnixFileMode(path) & OthersMask) != 0)
-            {
-                throw new SkyCredentialFileException(
-                    $"{path} can be read or changed by other users. Run 'chmod 600 {path}', then try again.");
-            }
+            throw Unusable(fullPath, file.Error == PermissionDenied
+                ? $"it cannot be reached ({file.Reason}): a folder on its path cannot be searched. Run 'chmod 700 {directory}', then try again."
+                : $"it cannot be reached ({file.Reason}).");
+        }
+
+        if (!file.IsRegularFile)
+        {
+            throw Unusable(fullPath, "it is not a file.");
+        }
+
+        if (file.Owner is { } fileOwner && fileOwner != owner)
+        {
+            throw Unusable(fullPath, $"it belongs to another user (user ID {fileOwner}). Only your own credentials file is used: run 'hvo-sky login' to save one.");
+        }
+
+        CheckDirectory(directory, SkyFileSystem.Inspect(directory), owner);
+        if ((file.Mode & OthersMask) != 0)
+        {
+            throw new SkyCredentialFileException(
+                $"{fullPath} can be read or changed by other users. Run 'chmod 600 {fullPath}', then try again.");
         }
 
         SkyStoredCredentials? stored;
         try
         {
-            using var stream = File.OpenRead(path);
+            using var stream = File.OpenRead(fullPath);
             if (stream.Length > MaximumFileBytes)
             {
-                throw new SkyCredentialFileException($"{path} is not a valid credentials file: it is too large.");
+                throw new SkyCredentialFileException($"{fullPath} is not a valid credentials file: it is too large.");
             }
 
             stored = JsonSerializer.Deserialize<SkyStoredCredentials>(stream, FileJson);
         }
         catch (JsonException ex)
         {
-            throw new SkyCredentialFileException($"{path} is not a valid credentials file.", ex);
+            throw new SkyCredentialFileException($"{fullPath} is not a valid credentials file.", ex);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            throw Unusable(fullPath, $"it cannot be read ({ex.Message}). Run 'chmod 600 {fullPath}', then try again.", ex);
+        }
+        catch (IOException ex)
+        {
+            throw Unusable(fullPath, $"it cannot be read ({ex.Message}).", ex);
         }
 
         if (stored is null)
         {
-            throw new SkyCredentialFileException($"{path} is not a valid credentials file.");
+            throw new SkyCredentialFileException($"{fullPath} is not a valid credentials file.");
         }
 
         if (stored.SchemaVersion != SchemaVersion)
         {
             throw new SkyCredentialFileException(
-                $"{path} has credentials schema {stored.SchemaVersion}, which this hvo-sky does not read. Run 'hvo-sky login' to save them again.");
+                $"{fullPath} has credentials schema {stored.SchemaVersion}, which this hvo-sky does not read. Run 'hvo-sky login' to save them again.");
         }
 
         if (stored.Url is not null && !SkyAddress.TryParse(stored.Url.OriginalString, out _, out var error))
         {
-            throw new SkyCredentialFileException($"The address in {path} cannot be used: {error}");
+            throw new SkyCredentialFileException($"The address in {fullPath} cannot be used: {error}");
         }
 
         if (stored.ApiKey is not null && !SkyApiKey.IsWellFormed(stored.ApiKey))
         {
             throw new SkyCredentialFileException(
-                $"The API key in {path} is not a CameraAgent API key. Run 'hvo-sky login' to save a key again.");
+                $"The API key in {fullPath} is not a CameraAgent API key. Run 'hvo-sky login' to save a key again.");
         }
 
         return stored;
     }
 
+    /// <summary>Writes the file as the user this process runs as.</summary>
+    /// <exception cref="SkyCredentialFileException">The folder cannot be trusted, or the file cannot be written.</exception>
+    public static void Save(string path, SkyStoredCredentials credentials) => Save(path, credentials, SkyFileSystem.CurrentUserId);
+
     /// <summary>
-    /// Writes the file atomically with mode <c>0600</c>, creating its directory with mode <c>0700</c> when missing.
+    /// Writes the file atomically with mode <c>0600</c>, creating its folder with mode <c>0700</c> when missing.
     /// </summary>
-    /// <exception cref="SkyCredentialFileException">Other users can change the directory.</exception>
-    public static void Save(string path, SkyStoredCredentials credentials)
+    /// <exception cref="SkyCredentialFileException">
+    /// The folder belongs to another user than <paramref name="owner"/> or other users can change it, or the file cannot
+    /// be written.
+    /// </exception>
+    public static void Save(string path, SkyStoredCredentials credentials, uint owner)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(credentials);
 
         var fullPath = Path.GetFullPath(path);
         var directory = Path.GetDirectoryName(fullPath)!;
-        if (Directory.Exists(directory))
-        {
-            CheckDirectory(directory);
-        }
-        else if (OperatingSystem.IsWindows())
-        {
-            Directory.CreateDirectory(directory);
-        }
-        else
-        {
-            Directory.CreateDirectory(directory, OwnerDirectoryMode);
-        }
-
         var temporary = Path.Combine(directory, $".{Path.GetFileName(fullPath)}.{Guid.NewGuid():N}.tmp");
         try
         {
+            var folder = SkyFileSystem.Inspect(directory);
+            if (folder.Missing)
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    Directory.CreateDirectory(directory);
+                }
+                else
+                {
+                    Directory.CreateDirectory(directory, OwnerDirectoryMode);
+                }
+            }
+            else if (!folder.Exists)
+            {
+                throw Unusable(fullPath, $"its folder {directory} cannot be reached ({folder.Reason}).");
+            }
+            else
+            {
+                CheckDirectory(directory, folder, owner);
+            }
+
             var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
             if (!OperatingSystem.IsWindows())
             {
@@ -220,16 +269,48 @@ internal static class SkyCredentialStore
 
             File.Move(temporary, fullPath, overwrite: true);
         }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw Unusable(fullPath, $"it cannot be written ({ex.Message}).", ex);
+        }
         finally
         {
-            File.Delete(temporary);
+            try
+            {
+                File.Delete(temporary);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Nothing was written there, or the folder cannot be reached; there is nothing more to remove.
+            }
         }
     }
 
-    // Another user who can change the directory can replace the file, whatever the file's own mode.
-    private static void CheckDirectory(string directory)
+    private static SkyCredentialFileException Unusable(string path, string problem, Exception? innerException = null)
+        => innerException is null
+            ? new($"The credentials file {path} cannot be used: {problem}")
+            : new($"The credentials file {path} cannot be used: {problem}", innerException);
+
+    // Another user who owns or can change the folder can replace the file, whatever the file's own mode.
+    private static void CheckDirectory(string directory, SkyPathStatus folder, uint owner)
     {
-        if (!OperatingSystem.IsWindows() && (File.GetUnixFileMode(directory) & OthersWriteMask) != 0)
+        if (!folder.Exists)
+        {
+            throw new SkyCredentialFileException($"The credentials folder {directory} cannot be used: it cannot be reached ({folder.Reason}).");
+        }
+
+        if (!folder.IsDirectory)
+        {
+            throw new SkyCredentialFileException($"The credentials folder {directory} cannot be used: it is not a folder.");
+        }
+
+        if (folder.Owner is { } folderOwner && folderOwner != owner && folderOwner != 0)
+        {
+            throw new SkyCredentialFileException(
+                $"The credentials folder {directory} cannot be used: it belongs to another user (user ID {folderOwner}), who could replace the credentials file.");
+        }
+
+        if ((folder.Mode & OthersWriteMask) != 0)
         {
             throw new SkyCredentialFileException(
                 $"{directory} can be changed by other users, who could replace the credentials file. Run 'chmod 700 {directory}', then try again.");

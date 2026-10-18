@@ -6,6 +6,8 @@
     <RootNamespace>HVO.SkyMonitor.CameraAgent.Cli</RootNamespace>
     <Description>hvo-sky: the command-line client and terminal interface of a running CameraAgent, over its operations API (install contract section 8).</Description>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- The generated marshalling of statx, which checks who owns the credentials file (Client/SkyFileSystem.cs). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RuntimeIdentifiers>linux-x64;linux-arm64</RuntimeIdentifiers>
   </PropertyGroup>
   <!--
