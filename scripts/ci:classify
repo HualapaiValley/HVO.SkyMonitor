@@ -65,13 +65,15 @@ is_secret_scan_contract_path() {
 }
 
 is_release_scripts_path() {
-  # scripts/test:release-scripts proves the pre-release scripts with fake gh, skopeo and docker commands. It runs when
-  # those scripts, the libraries they source (test:release-install's, and the strict GitHub reads), the pre-release
-  # workflow or the release tool change, or the Preflight wiring that runs it.
+  # scripts/test:release-scripts proves the pre-release scripts with fake gh, skopeo and docker commands, and runs
+  # scripts/test:install-sh, which proves the release's install.sh with fake commands of its own. It runs when those
+  # scripts, the libraries they source (test:release-install's, and the strict GitHub reads), install.sh or its fakes,
+  # the pre-release workflow or the release tool change, or the Preflight wiring that runs it.
   case "$1" in
     scripts/release:assets | scripts/release:push-image | scripts/release:prerelease-gate | \
       scripts/release:prerelease-check | scripts/release:publish-prerelease | scripts/test:release-install | \
       scripts/test:release-scripts | scripts/lib/deployment-installer-qualification.sh | scripts/lib/github-api.sh | \
+      src/HVO.SkyMonitor.Deployment.Cli/install.sh | scripts/test:install-sh | tests/fixtures/install-sh/* | \
       .github/workflows/prerelease.yml | \
       tools/HVO.SkyMonitor.Deployment.ReleaseTool/* | .github/workflows/development-v1.yml | scripts/ci:classify)
       return 0
