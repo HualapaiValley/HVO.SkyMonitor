@@ -372,6 +372,19 @@ public sealed record LifecycleResult(
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public LifecycleUpgradeNotes? UpgradeNotes { get; init; }
+
+    /// <summary>
+    /// What the operation did, or with <c>--plan</c> would do, item by item. Omitted by commands that report no plan.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DeploymentPlan? Plan { get; init; }
+
+    /// <summary>
+    /// Advisories the command reported without refusing, such as a deprecated option it accepted and ignored. Omitted
+    /// when there are none. Without <c>--json</c> they are written to standard error instead.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<InstallationWarning>? Warnings { get; init; }
 }
 
 /// <summary>One release's upgrade notes, from its <c>docs/upgrade-notes/X.Y.Z.md</c> as release.json carries them.</summary>
@@ -475,4 +488,13 @@ public sealed record InstallationResult(
     CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess,
     bool OwnerPasswordIsDefault = false,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<InstallationWarning>? Warnings = null);
+    IReadOnlyList<InstallationWarning>? Warnings = null)
+{
+    /// <summary>
+    /// What this invocation created, changed or left unchanged, or with <c>--plan</c> would. Like
+    /// <see cref="Warnings"/> it describes one invocation, so the retained result never carries it. A second run with the
+    /// same answers reports every item unchanged and the summary <see cref="DeploymentPlan.NothingToChange"/>.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DeploymentPlan? Plan { get; init; }
+}

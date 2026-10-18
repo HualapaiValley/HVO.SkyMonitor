@@ -57,6 +57,28 @@ internal static partial class CameraAgentContainerResources
             recorded?.MemorySetByOperator ?? false);
 
     /// <summary>
+    /// The limits a re-run of a completed install asks for (install contract section 7: limits change with a re-run).
+    /// A limit given on the re-run replaces the recorded one and counts as set by the operator; a limit not given keeps
+    /// what the instance records. With neither given the instance keeps exactly what it records, which is
+    /// <see langword="null"/> for an instance installed before limits were recorded. Giving either limit to such an
+    /// instance moves the other from the original 1 CPU and 1 GiB, which are below the floor, to the default.
+    /// </summary>
+    public static ContainerResourceLimits? ReRunTarget(ContainerResourceLimits? recorded, decimal? cpus, string? memory)
+    {
+        if (cpus is null && memory is null)
+        {
+            return recorded;
+        }
+        var basis = recorded ?? Default;
+        return new ContainerResourceLimits(
+            cpus is { } requestedCpus ? ValidateCpus(requestedCpus) : basis.Cpus,
+            memory is null ? basis.MemoryBytes : ParseMemory(memory),
+            PidsLimit,
+            CpusSetByOperator: cpus is not null || recorded is { CpusSetByOperator: true },
+            MemorySetByOperator: memory is not null || recorded is { MemorySetByOperator: true });
+    }
+
+    /// <summary>
     /// Returns a CPU limit from 2 to 1,024 with at most two decimal places, normalized so equal limits compare, hash and
     /// render alike. A limit below the minimum is refused rather than acknowledged: the contract makes 2 CPUs a floor.
     /// </summary>
@@ -161,6 +183,29 @@ internal static partial class CameraAgentContainerResources
         return SameLimits(current, target)
             ? compose
             : string.Concat(compose.AsSpan(0, match.Index), RenderLimits(target), compose.AsSpan(match.Index + match.Length));
+    }
+
+    /// <summary>
+    /// The CameraAgent limits a Compose file carries, or <see langword="null"/> when it does not carry exactly one
+    /// recognisable limit block. Who set them is not in the file, so both flags are <see langword="false"/>.
+    /// </summary>
+    public static ContainerResourceLimits? TryReadLimits(string compose)
+    {
+        ArgumentNullException.ThrowIfNull(compose);
+        var runner = compose.IndexOf(ReplayRunnerService, StringComparison.Ordinal);
+        var matches = LimitsPattern().Matches(runner < 0 ? compose : compose[..runner]);
+        if (matches.Count != 1)
+        {
+            return null;
+        }
+        var match = matches[0];
+        return new ContainerResourceLimits(
+            decimal.Parse(match.Groups["cpus"].Value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture),
+            long.Parse(match.Groups["amount"].ValueSpan, NumberStyles.None, CultureInfo.InvariantCulture) *
+            (match.Groups["unit"].Value == "G" ? Gibibyte : Mebibyte),
+            int.Parse(match.Groups["pids"].ValueSpan, NumberStyles.None, CultureInfo.InvariantCulture),
+            false,
+            false);
     }
 
     /// <summary>Whether two limit sets impose the same limits, whoever set them.</summary>

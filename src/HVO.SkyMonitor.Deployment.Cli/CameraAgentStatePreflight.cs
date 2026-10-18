@@ -289,7 +289,7 @@ internal static class CameraAgentStatePreflight
         }
         var codes = string.Join(", ", report.Findings.Where(static finding => finding.Blocking)
             .Select(static finding => finding.Code).Distinct(StringComparer.Ordinal));
-        throw new InstallerException(
+        throw InstallerException.Refused(
             $"CameraAgent state preflight rejected this deployment before startup ({codes}). Minimum compatible revision {report.MinimumCompatibleRevision ?? "unknown"}; complete the CameraAgent-only reset or state-disposition procedure{(persist ? $" and see {reportPath}" : string.Empty)}.");
     }
 

@@ -925,6 +925,12 @@ public sealed partial class InstallerFlowTests
 
         public string DockerInfo { get; init; } = SupportedDockerInfo;
 
+        /// <summary>
+        /// When set, <c>compose config</c> renders the Compose file it was given, so the rendered model follows the
+        /// limits the file carries, as Docker's does; otherwise it renders one fixed model.
+        /// </summary>
+        public bool RenderComposeFile { get; init; }
+
         public Task<ProcessResult> RunAsync(
             string fileName,
             IReadOnlyList<string> arguments,
@@ -1010,7 +1016,10 @@ public sealed partial class InstallerFlowTests
             }
             if (arguments.Contains("config", StringComparer.Ordinal))
             {
-                return Success("services:\n  cameraagent:\n    image: immutable\n");
+                var file = arguments.ToList().IndexOf("--file");
+                return RenderComposeFile && file >= 0
+                    ? RenderAsync(arguments[file + 1], cancellationToken)
+                    : Success("services:\n  cameraagent:\n    image: immutable\n");
             }
             if (arguments.Contains("up", StringComparer.Ordinal))
             {
@@ -1023,6 +1032,9 @@ public sealed partial class InstallerFlowTests
 
         private static Task<ProcessResult> Success(string output)
             => Task.FromResult(new ProcessResult(0, output, string.Empty));
+
+        private static async Task<ProcessResult> RenderAsync(string composeFile, CancellationToken cancellationToken)
+            => new(0, await File.ReadAllTextAsync(composeFile, cancellationToken), string.Empty);
     }
 
     private sealed class FailingOnceOwnerClient : IOwnerBootstrapClient

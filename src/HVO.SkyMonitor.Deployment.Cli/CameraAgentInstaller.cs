@@ -10,7 +10,7 @@ using System.Diagnostics.CodeAnalysis;
 
 namespace HVO.SkyMonitor.Deployment;
 
-internal sealed class CameraAgentInstaller
+internal sealed partial class CameraAgentInstaller
 {
     public static async Task<InstallationResult> InstallAsync(InstallRequest request, CancellationToken cancellationToken)
     {
@@ -55,10 +55,23 @@ internal sealed class CameraAgentInstaller
             using var dryRunCatalog = await dryRunAcquirer.AcquireAsync(request, cancellationToken).ConfigureAwait(false);
             var dryRunImage = await dryRunAcquirer.AcquireImageAsync(request, cancellationToken).ConfigureAwait(false);
             var plannedRequest = ApplySignedImage(request with { CatalogBundle = dryRunCatalog.BundlePath }, dryRunImage);
+            var retained = await ReadRetainedAsync(paths, cancellationToken).ConfigureAwait(false);
             // A dry run evaluates the same host prerequisites an install does, so a host that cannot run the instance
             // as deployed is refused by the plan rather than discovered after the product root exists.
-            var (_, plannedWarnings) = await EnsureHostPrerequisitesAsync(plannedRequest, docker, hostEnvironment, cancellationToken)
+            var (_, plannedWarnings) = await EnsureHostPrerequisitesAsync(
+                    plannedRequest, docker, hostEnvironment, HostCheckLimits(plannedRequest, retained), cancellationToken)
                 .ConfigureAwait(false);
+            if (retained is { Completed: true })
+            {
+                var reRun = await PlanReRunAsync(
+                        plannedRequest, retained, paths, instanceId, docker, dryRunImage?.Image, uid, gid, cancellationToken)
+                    .ConfigureAwait(false);
+                return reRun with { Warnings = plannedWarnings };
+            }
+            if (retained is not null && !RequestIdentityMatches(retained.State.RequestSha256, identityRequest, instanceId, dryRunCatalog.Evidence))
+            {
+                throw InstallerException.Refused("The retained installation state belongs to different immutable inputs.");
+            }
             var plan = await PlanAsync(
                     plannedRequest,
                     dryRunCatalog.Evidence,
@@ -68,18 +81,34 @@ internal sealed class CameraAgentInstaller
                     dryRunImage?.Image,
                     cancellationToken)
                 .ConfigureAwait(false);
-            return plan with { Warnings = plannedWarnings };
+            var plannedPaths = paths.WithCatalog(Path.GetFileName(plan.Catalog.InstallRoot));
+            var plannedRecord = InstallRecordLocation.For(plannedPaths.ProductRoot, request.ProductionProductRoot);
+            return plan with
+            {
+                Warnings = plannedWarnings,
+                Plan = InstalledPlan(
+                    plannedPaths,
+                    instanceId,
+                    plan.Image.ImageId,
+                    plannedRequest.ContainerResources(),
+                    FreshInstallFacts.Observe(plannedPaths),
+                    await FreshRecordActionAsync(plannedRecord, instanceId, cancellationToken).ConfigureAwait(false),
+                    plannedRecord)
+            };
         }
 
         if (uid == 0)
         {
-            throw new InstallerException("Run the installer as the Docker-capable runtime user, not as root or through sudo.");
+            throw InstallerException.Refused("Run the installer as the Docker-capable runtime user, not as root or through sudo.");
         }
 
         if (File.Exists(paths.ManifestPath))
             _ = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
         if (File.Exists(paths.ResultPath))
             _ = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
+        // Read before anything is prepared, so the host is checked against the limits this run would apply. Everything
+        // is read again under the instance lock before it decides anything else.
+        var hostCheckLimits = HostCheckLimits(request, await ReadRetainedAsync(paths, cancellationToken).ConfigureAwait(false));
 
         using var catalogAcquirer = distributionFactory();
         using var acquiredCatalog = await catalogAcquirer.AcquireAsync(request, cancellationToken).ConfigureAwait(false);
@@ -90,12 +119,14 @@ internal sealed class CameraAgentInstaller
 
         // Every host prerequisite is evaluated, and every finding reported together, before the product root is
         // prepared or anything else is created.
-        var (preflightDaemon, warnings) = await EnsureHostPrerequisitesAsync(request, docker, hostEnvironment, cancellationToken)
+        var (preflightDaemon, warnings) = await EnsureHostPrerequisitesAsync(
+                request, docker, hostEnvironment, hostCheckLimits, cancellationToken)
             .ConfigureAwait(false);
         ValidateCatalogInput(request.CatalogBundle!);
         // The bundle's approved specification selects the side-by-side catalog root this instance installs into.
         paths = paths.WithCatalog(ProductionCatalog.ReadBundleSpecification(request.CatalogBundle!).CatalogId);
 
+        var freshFacts = FreshInstallFacts.Observe(paths);
         await PrivilegedPreparation.PrepareAsync(paths, uid, gid, processRunner, cancellationToken).ConfigureAwait(false);
         using var productLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
         using var instanceLock = OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
@@ -113,13 +144,16 @@ internal sealed class CameraAgentInstaller
         var requestSha256 = ComputeRequestSha256(identityRequest, instanceId, acquiredCatalog.Evidence);
         var existingState = await ReadStateAsync(paths.StatePath, cancellationToken).ConfigureAwait(false);
         EnsureInstanceRootCanBeOwned(paths, existingState is not null);
-        if (existingState is not null && !RequestIdentityMatches(
+        // An unfinished installation resumes only with exactly the inputs it began with. A completed one is held to the
+        // instance its records describe instead (below), so a re-run may change its container limits (install contract
+        // section 7) and nothing else.
+        if (existingState is { Status: not InstallationStatus.Completed } && !RequestIdentityMatches(
                 existingState.RequestSha256,
                 identityRequest,
                 instanceId,
                 acquiredCatalog.Evidence))
         {
-            throw new InstallerException("The retained installation state belongs to different immutable inputs.");
+            throw InstallerException.Refused("The retained installation state belongs to different immutable inputs.");
         }
         InstallationResult? retainedCompletedResult = null;
         if (existingState?.Status == InstallationStatus.Completed)
@@ -141,6 +175,7 @@ internal sealed class CameraAgentInstaller
             InstallationStatus.Pending,
             DateTimeOffset.UtcNow);
         var completedCandidateValidated = false;
+        var limitsChange = false;
         if (retainedCompletedResult is null)
         {
             state = await RecordPhaseAsync(paths, state, InstallationPhase.Preflight, cancellationToken).ConfigureAwait(false);
@@ -177,7 +212,11 @@ internal sealed class CameraAgentInstaller
             }
             if (retainedCompletedResult is not null && existingManifest!.LifecycleCondition == InstanceLifecycleCondition.Uninstalled)
             {
-                throw new InstallerException("A preserved uninstalled instance must be restored with cameraagent reinstall.");
+                throw InstallerException.Refused("A preserved uninstalled instance must be restored with cameraagent reinstall.");
+            }
+            if (retainedCompletedResult is not null && InstalledDifference(request, paths, existingManifest!) is { } difference)
+            {
+                throw InstallerException.Refused(difference);
             }
             if (retainedCompletedResult is null)
             {
@@ -226,6 +265,16 @@ internal sealed class CameraAgentInstaller
             {
                 throw new InstallerException("The Docker daemon identity changed after preflight.");
             }
+            if (retainedCompletedResult is not null && image.ImageId != existingManifest!.Image.ImageId)
+            {
+                throw InstallerException.Refused(DifferentImage(existingManifest, image));
+            }
+            if (retainedCompletedResult is not null &&
+                (catalog.CatalogId != existingManifest!.Catalog.CatalogId || catalog.PackageVersion != existingManifest.Catalog.PackageVersion))
+            {
+                throw InstallerException.Refused(
+                    $"The instance uses catalog {existingManifest.Catalog.CatalogId} {existingManifest.Catalog.PackageVersion}, not the requested {catalog.CatalogId} {catalog.PackageVersion}; change it with catalog select.");
+            }
             if (retainedCompletedResult is not null && request.ReplayProfile == CameraAgentReplayProfile.InProcess &&
                 existingManifest!.Image.ReplayRunnerContract is null && retainedCompletedResult.Image.ReplayRunnerContract is null)
             {
@@ -261,13 +310,21 @@ internal sealed class CameraAgentInstaller
             var lifecycleControlToken = await ReadOwnerSecretAsync(lifecycleControlTokenPath, cancellationToken).ConfigureAwait(false);
             var passwordAuthorityEnabled = retainedCompletedResult is null &&
                                             (existingState is null || existingState.Phase < InstallationPhase.OwnerSeeded);
-            // A re-run of a completed installation keeps the limits it recorded, which the request identity has already
-            // matched. An instance an earlier installer completed records none and keeps its original limits until its
-            // next upgrade.
+            // A re-run of a completed installation is first validated against the limits it recorded. It then applies the
+            // limits this run asks for: a limit given replaces the recorded one and a limit left out is kept (install
+            // contract section 7). An instance an earlier installer completed records none and keeps its original limits
+            // until a re-run gives one or its next upgrade.
             var resources = retainedCompletedResult is null ? request.ContainerResources() : existingManifest!.Resources;
+            var targetResources = retainedCompletedResult is null
+                ? resources
+                : CameraAgentContainerResources.ReRunTarget(existingManifest!.Resources, request.Cpus, request.Memory);
+            limitsChange = retainedCompletedResult is not null && targetResources != existingManifest!.Resources;
+            var resultModelStale = false;
+            string? composeBefore = null;
             if (retainedCompletedResult is not null)
             {
-                await ValidateCompletedCandidateAsync(
+                composeBefore = await ReadComposeIfPresentAsync(paths, cancellationToken).ConfigureAwait(false);
+                resultModelStale = await ValidateCompletedCandidateAsync(
                     request,
                     paths,
                     instanceId,
@@ -324,7 +381,12 @@ internal sealed class CameraAgentInstaller
                 CameraAgentStateContractPolicy.AllowLegacy,
                 acquiredImage?.Release.Tag).ConfigureAwait(false);
 
-            state = await RecordPhaseAsync(paths, state, InstallationPhase.Compose, cancellationToken).ConfigureAwait(false);
+            // A re-run of a completed installation never moves its retained state back to an earlier phase: an
+            // interruption leaves it completed, so the next run validates it as completed again.
+            if (retainedCompletedResult is null)
+            {
+                state = await RecordPhaseAsync(paths, state, InstallationPhase.Compose, cancellationToken).ConfigureAwait(false);
+            }
             var rendered = await docker.ComposeAsync(
                 compose.ComposeFile,
                 compose.EnvironmentFile,
@@ -345,7 +407,10 @@ internal sealed class CameraAgentInstaller
                     cancellationToken).ConfigureAwait(false);
             }
 
-            state = await RecordPhaseAsync(paths, state, InstallationPhase.Startup, cancellationToken).ConfigureAwait(false);
+            if (retainedCompletedResult is null)
+            {
+                state = await RecordPhaseAsync(paths, state, InstallationPhase.Startup, cancellationToken).ConfigureAwait(false);
+            }
             await docker.ComposeAsync(
                 compose.ComposeFile,
                 compose.EnvironmentFile,
@@ -439,7 +504,24 @@ internal sealed class CameraAgentInstaller
             {
                 throw new InstallerException("The completed installation differs from its retained immutable manifest.");
             }
-            if (retainedCompletedResult is null)
+            if (limitsChange)
+            {
+                // The instance was just verified at the limits it records. It moves to the new limits, and only once it
+                // is verified there are the manifest, then the result, rewritten; a failed change restores the recorded
+                // limits first.
+                (compose, composeModelSha256) = await ChangeLimitsAsync(
+                        request, paths, instanceId, applicationIdentity, uid, gid, image, catalog, passwordPath,
+                        verificationToken, lifecycleControlToken, resources, targetResources!, existingManifest!,
+                        ownerClient, docker, cancellationToken)
+                    .ConfigureAwait(false);
+                manifest = manifest with
+                {
+                    Resources = targetResources,
+                    ComposeModelSha256 = composeModelSha256,
+                    UpdatedUtc = DateTimeOffset.UtcNow
+                };
+            }
+            if (retainedCompletedResult is null || limitsChange)
             {
                 await SafeFileSystem.WriteJsonAtomicAsync(
                     paths.ManifestPath,
@@ -448,7 +530,10 @@ internal sealed class CameraAgentInstaller
                     cancellationToken).ConfigureAwait(false);
             }
 
-            state = await RecordPhaseAsync(paths, state, InstallationPhase.Verification, cancellationToken).ConfigureAwait(false);
+            if (retainedCompletedResult is null)
+            {
+                state = await RecordPhaseAsync(paths, state, InstallationPhase.Verification, cancellationToken).ConfigureAwait(false);
+            }
             var result = CreateInstalledResult(
                 request,
                 paths,
@@ -468,12 +553,28 @@ internal sealed class CameraAgentInstaller
                 DateTimeOffset.UtcNow);
             if (retainedCompletedResult is not null)
             {
-                var comparableResult = result with { CompletedUtc = retainedCompletedResult.CompletedUtc };
+                // The Compose model follows the limits, so a limits change, or the repair of a result an interrupted one
+                // left behind its manifest, is the only difference a re-run may leave in the retained result.
+                var comparableResult = result with
+                {
+                    CompletedUtc = retainedCompletedResult.CompletedUtc,
+                    ComposeModelSha256 = limitsChange || resultModelStale
+                        ? retainedCompletedResult.ComposeModelSha256
+                        : result.ComposeModelSha256
+                };
                 if (comparableResult != retainedCompletedResult)
                 {
                     throw new InstallerException("The completed installation differs from its retained result.");
                 }
-                result = retainedCompletedResult;
+                result = retainedCompletedResult with { ComposeModelSha256 = composeModelSha256 };
+                if (limitsChange || resultModelStale)
+                {
+                    await SafeFileSystem.WriteJsonAtomicAsync(
+                        paths.ResultPath,
+                        result,
+                        DeploymentJsonContext.Default.InstallationResult,
+                        cancellationToken).ConfigureAwait(false);
+                }
             }
             else
             {
@@ -489,19 +590,38 @@ internal sealed class CameraAgentInstaller
             {
                 await acquiredImage.WriteEvidenceAsync(paths, cancellationToken).ConfigureAwait(false);
             }
-            _ = await RecordPhaseAsync(
-                paths,
-                state,
-                InstallationPhase.Completed,
-                cancellationToken,
-                InstallationStatus.Completed).ConfigureAwait(false);
-            // The warnings describe the host this invocation evaluated, so only the reported result carries them: the
+            // The install record follows the instance's own records, so it is settled once they are complete and before
+            // the installation is recorded as completed: an interruption between the two is finished by a re-run.
+            var recordLocation = InstallRecordLocation.For(paths.ProductRoot, request.ProductionProductRoot);
+            var recordAction = await InstallRecordStore.SettleInstanceAsync(
+                    recordLocation,
+                    paths,
+                    manifest,
+                    InstallRecordEvent.Install,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (retainedCompletedResult is null)
+            {
+                _ = await RecordPhaseAsync(
+                    paths,
+                    state,
+                    InstallationPhase.Completed,
+                    cancellationToken,
+                    InstallationStatus.Completed).ConfigureAwait(false);
+            }
+            // The warnings and the plan describe this invocation, so only the reported result carries them: the
             // retained result was written, and a completed re-run compared with it, without them.
-            return result with { Warnings = warnings };
+            return result with
+            {
+                Warnings = warnings,
+                Plan = retainedCompletedResult is null
+                    ? InstalledPlan(paths, instanceId, image.ImageId, targetResources, freshFacts, recordAction, recordLocation)
+                    : ReRunPlan(paths, existingManifest!, targetResources, composeBefore, limitsChange || resultModelStale, recordAction, recordLocation)
+            };
         }
         catch (OperationCanceledException exception)
         {
-            if (retainedCompletedResult is null || completedCandidateValidated)
+            if (retainedCompletedResult is null || completedCandidateValidated && !limitsChange)
             {
                 await RecordFailureAsync(paths, state, exception, CancellationToken.None).ConfigureAwait(false);
             }
@@ -509,7 +629,9 @@ internal sealed class CameraAgentInstaller
         }
         catch (Exception exception)
         {
-            if (retainedCompletedResult is null || completedCandidateValidated)
+            // A failed limits change restored the recorded limits, or leaves a change the next re-run finishes, so the
+            // installation stays completed and is validated as completed again.
+            if (retainedCompletedResult is null || completedCandidateValidated && !limitsChange)
             {
                 await RecordFailureAsync(paths, state, exception, CancellationToken.None).ConfigureAwait(false);
             }
@@ -662,7 +784,13 @@ internal sealed class CameraAgentInstaller
         return identity;
     }
 
-    private static async Task ValidateCompletedCandidateAsync(
+    /// <summary>
+    /// Proves a completed installation is exactly what its retained manifest and result say, by rendering it again from
+    /// the request into a temporary root. Returns <see langword="true"/> when the result differs from the manifest only
+    /// in its Compose model: a limits change interrupted after its manifest commit, which the caller repairs. The manifest
+    /// was just proved against a fresh render, so the result follows it.
+    /// </summary>
+    private static async Task<bool> ValidateCompletedCandidateAsync(
         InstallRequest request,
         InstallationPaths paths,
         Guid instanceId,
@@ -747,8 +875,13 @@ internal sealed class CameraAgentInstaller
                 retainedResult.CompletedUtc);
             if (candidateResult != retainedResult)
             {
+                if (candidateResult with { ComposeModelSha256 = retainedResult.ComposeModelSha256 } == retainedResult)
+                {
+                    return true;
+                }
                 throw new InstallerException("The completed installation differs from its retained result.");
             }
+            return false;
         }
         finally
         {
@@ -836,7 +969,8 @@ internal sealed class CameraAgentInstaller
             ComposeDeployment.ComputeSha256(lifecycleControlToken),
             previous?.PreviousComposeModelSha256,
             (ContractReplayProfile)request.ReplayProfile,
-            resources);
+            resources,
+            previous?.PreviousStateSnapshot);
     }
 
     private static InstallationResult CreateInstalledResult(
@@ -1151,6 +1285,7 @@ internal sealed class CameraAgentInstaller
         InstallRequest request,
         DockerClient docker,
         IHostEnvironment hostEnvironment,
+        ContainerResourceLimits limits,
         CancellationToken cancellationToken)
     {
         var capabilities = await docker.ReadHostCapabilitiesAsync(cancellationToken).ConfigureAwait(false);
@@ -1161,7 +1296,7 @@ internal sealed class CameraAgentInstaller
             productRootBytes,
             dockerRootBytes,
             hostEnvironment,
-            request.ContainerResources());
+            limits);
         if (!report.Satisfied)
         {
             throw new HostPrerequisiteException(report);

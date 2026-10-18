@@ -6,9 +6,9 @@ using HVO.SkyMonitor.Deployment;
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
-/// What the installer prints, where, and with which exit code: help and the version on standard output with success, a
-/// command-line mistake as its reason and the usage on standard error with exit code 2, and an ordinary failure
-/// unchanged. Each case runs the real entry point with the console streams captured, so the class does not run in
+/// What the installer prints, where, and with which exit code: help and the version on standard output with success, and
+/// a command-line mistake, an unreadable answers or configuration file included, as its reason and the usage on standard
+/// error with exit code 2. Every command's exit codes are pinned in <see cref="ExitCodeContractTests"/>. Each case runs the real entry point with the console streams captured, so the class does not run in
 /// parallel.
 /// </summary>
 [TestClass]
@@ -45,6 +45,7 @@ public sealed class ProgramOutputTests
         Usage: hvo-sky-install cameraagent install [options]
 
         Options:
+          --answers <value>
           --config <value>
           --instance-id <value>
           --friendly-name <value>
@@ -72,6 +73,7 @@ public sealed class ProgramOutputTests
           --replay-profile <value>
           --cpus <value>
           --memory <value>
+          --plan
           --dry-run
           --resume
           --json
@@ -80,7 +82,7 @@ public sealed class ProgramOutputTests
           --no-download
           -h, --help
 
-        --config reads the request from a JSON file and cannot be combined with the other value options.
+        --answers reads the install from a JSON answers file with "schemaVersion": 1; only --cpus and --memory may accompany it. --config is its deprecated predecessor and cannot be combined with the other value options. --plan is --dry-run.
         """;
 
     private const string HostSetProductRootUsage = """
@@ -204,17 +206,31 @@ public sealed class ProgramOutputTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task Main_OrdinaryFailure_KeepsTheInstallationFailedMessageAndExitCode()
+    public async Task Main_ConfigOrAnswersFileThatCannotBeRead_IsInvalidInputWithExitCodeTwo()
     {
         var missing = Path.Combine(Path.GetTempPath(), $"hvo-installer-output-{Guid.NewGuid():N}", "install.json");
 
-        var (exitCode, output, error) = await RunAsync("cameraagent", "install", "--config", missing);
+        var config = await RunAsync("cameraagent", "install", "--config", missing);
+        var answers = await RunAsync("cameraagent", "install", "--answers", missing);
 
-        Assert.AreEqual(1, exitCode);
-        Assert.AreEqual(string.Empty, output);
+        Assert.AreEqual(2, config.ExitCode);
+        Assert.AreEqual(string.Empty, config.Output);
         Assert.AreEqual(
-            $"Installation failed: Protected file '{missing}' could not be opened without following links.{Environment.NewLine}",
-            error);
+            $"The installer configuration '{missing}' could not be read: Protected file '{missing}' could not be opened without following links.{Environment.NewLine}" +
+            Text(InstallUsage),
+            config.Error);
+        Assert.AreEqual(2, answers.ExitCode);
+        StringAssert.StartsWith(answers.Error, $"The answers file '{missing}' could not be read: ", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task Main_LifecycleUsage_NamesThePlanAndTheDeprecatedMigrationAssertion()
+    {
+        var (exitCode, output, _) = await RunCommandLineAsync("cameraagent upgrade --help");
+
+        Assert.AreEqual(0, exitCode);
+        StringAssert.Contains(output, "  --plan" + Environment.NewLine, StringComparison.Ordinal);
+        StringAssert.Contains(output, "--migration-backward-compatible is deprecated and has no effect.", StringComparison.Ordinal);
     }
 
     private static string Text(string usage) => usage.ReplaceLineEndings() + Environment.NewLine;

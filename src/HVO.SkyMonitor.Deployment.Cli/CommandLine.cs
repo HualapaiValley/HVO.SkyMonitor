@@ -22,7 +22,20 @@ internal static class CommandLine
     ];
 
     private static readonly string[] InstallFlags =
-        ["--dry-run", "--resume", "--json", "--generate-password", "--acknowledge-plaintext-http", "--no-download"];
+        ["--plan", "--dry-run", "--resume", "--json", "--generate-password", "--acknowledge-plaintext-http", "--no-download"];
+
+    /// <summary>The answers file (install contract section 5), which only <c>--cpus</c> and <c>--memory</c> may accompany.</summary>
+    internal const string AnswersOption = "--answers";
+
+    private static readonly string[] AnswersValueOptions = [AnswersOption];
+
+    /// <summary>The value options an answers file leaves on the command line: the container limits a re-run changes.</summary>
+    private static readonly string[] AnswersOverrideOptions = ["--cpus", "--memory"];
+
+    /// <summary>The flag every command with a read-only plan accepts; <c>--dry-run</c> is its older name.</summary>
+    internal const string PlanOption = "--plan";
+
+    private const string DeprecatedMigrationOption = "--migration-backward-compatible";
 
     private static readonly string[] OwnerRecoveryValueOptions = ["--instance-id", "--product-root", "--password-file"];
 
@@ -38,7 +51,7 @@ internal static class CommandLine
 
     private static readonly string[] StateResetValueOptions = ["--instance-id", "--confirm-instance-id", "--product-root"];
 
-    private static readonly string[] StateResetFlags = ["--json", "--dry-run"];
+    private static readonly string[] StateResetFlags = ["--json", "--plan", "--dry-run"];
 
     private static readonly string[] LifecycleValueOptions =
     [
@@ -49,7 +62,7 @@ internal static class CommandLine
     ];
 
     private static readonly string[] LifecycleFlags =
-        ["--dry-run", "--resume", "--restore-only", "--json", "--no-download", "--migration-backward-compatible"];
+        ["--plan", "--dry-run", "--resume", "--restore-only", "--json", "--no-download", DeprecatedMigrationOption];
 
     private static readonly CommandDefinition HostSetProductRoot =
         new(["host", "set-product-root"], "<absolute-path>", [], ["--json"]);
@@ -61,8 +74,9 @@ internal static class CommandLine
     internal static readonly IReadOnlyList<CommandDefinition> Commands =
     [
         Lifecycle("status"),
-        new(["cameraagent", "install"], null, InstallValueOptions, InstallFlags,
-            "--config reads the request from a JSON file and cannot be combined with the other value options."),
+        new(["cameraagent", "install"], null, [.. AnswersValueOptions, .. InstallValueOptions], InstallFlags,
+            "--answers reads the install from a JSON answers file with \"schemaVersion\": 1; only --cpus and --memory may accompany it. " +
+            "--config is its deprecated predecessor and cannot be combined with the other value options. --plan is --dry-run."),
         new(["cameraagent", "recover-owner"], null, OwnerRecoveryValueOptions, OwnerRecoveryFlags),
         new(["cameraagent", "preflight"], null, StatePreflightValueOptions, StatePreflightFlags),
         new(["cameraagent", "reset-state"], null, StateResetValueOptions, StateResetFlags),
@@ -81,7 +95,8 @@ internal static class CommandLine
 
     private static CommandDefinition Lifecycle(params string[] path)
         => new(path, null, LifecycleValueOptions, LifecycleFlags,
-            "These options are shared with the other lifecycle commands; not every one applies to this command.");
+            "These options are shared with the other lifecycle commands; not every one applies to this command. " +
+            "--plan is --dry-run. --migration-backward-compatible is deprecated and has no effect.");
 
     /// <summary>
     /// The one place a non-production product root can be admitted. The variable is read here, where the
@@ -239,14 +254,24 @@ internal static class CommandLine
 
     private static DeploymentCommand ParseOperation(string[] args, CommandLineContext context)
     {
-        var production = HostProductRootPolicy.Resolve(context.HostPolicy).Path;
+        string production;
+        try
+        {
+            production = HostProductRootPolicy.Resolve(context.HostPolicy).Path;
+        }
+        catch (InstallerException exception) when (!exception.IsRefusal)
+        {
+            // No command runs under a host policy that cannot be trusted, and resolving it changed nothing.
+            throw InstallerException.Refused(exception.Message, exception);
+        }
         var allowTestProductRoot = context.AllowTestProductRoot;
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "install")
         {
             return new InstallDeploymentCommand(Parse(args, allowTestProductRoot, production))
             {
                 AllowTestProductRoot = allowTestProductRoot,
-                ProductionProductRoot = production
+                ProductionProductRoot = production,
+                ParseWarnings = args.Skip(2).Contains("--config", StringComparer.Ordinal) ? [ConfigDeprecation] : []
             };
         }
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "recover-owner")
@@ -265,8 +290,26 @@ internal static class CommandLine
         {
             return ParseHost(args, context, production);
         }
-        return ParseLifecycle(args, allowTestProductRoot, production);
+        var lifecycle = ParseLifecycle(args, allowTestProductRoot, production);
+        return lifecycle.MigrationBackwardCompatible ? lifecycle with { ParseWarnings = [MigrationAssertionDeprecation] } : lifecycle;
     }
+
+    /// <summary>
+    /// <c>--config</c> still installs exactly as before; <c>--answers</c> replaces it with a versioned, strict file of the
+    /// same members (#1315).
+    /// </summary>
+    internal static readonly InstallationWarning ConfigDeprecation = new(
+        "option-deprecated",
+        "--config is deprecated: use --answers FILE, which reads the same members with \"schemaVersion\": 1 and without dryRun, resume and json.");
+
+    /// <summary>
+    /// <c>--migration-backward-compatible</c> has had no effect since the swap-based upgrade (#1340): the upgrade
+    /// decides from the candidate's declared state contract. It stays accepted, and part of the journaled request
+    /// identity, so an interrupted upgrade begun with it still resumes.
+    /// </summary>
+    internal static readonly InstallationWarning MigrationAssertionDeprecation = new(
+        "option-deprecated",
+        "--migration-backward-compatible is deprecated and has no effect: the upgrade decides from the candidate's declared state contract and snapshots the small databases when it declares a migration. Leave it out; it is still accepted so an interrupted upgrade begun with it resumes.");
 
     public static InstallRequest Parse(string[] args)
         => Parse(args, TestProductRootAdmittedByEnvironment());
@@ -314,20 +357,50 @@ internal static class CommandLine
             }
         }
 
+        if (values.Remove(AnswersOption, out var answersPath))
+        {
+            if (values.ContainsKey("--config"))
+            {
+                throw new InstallUsageException("--answers cannot be combined with --config.");
+            }
+            if (values.Keys.FirstOrDefault(option => !AnswersOverrideOptions.Contains(option, StringComparer.Ordinal)) is { } other)
+            {
+                throw new InstallUsageException($"--answers can be combined only with --cpus and --memory, not '{other}'.");
+            }
+        }
         if (values.Remove("--config", out configPath) && values.Count > 0)
         {
             throw new InstallUsageException("--config cannot be combined with value options.");
         }
 
         InstallRequest request;
-        if (configPath is not null)
+        if (answersPath is not null)
+        {
+            // The limits given beside the answers replace theirs, so a re-run changes an installed instance's limits.
+            request = InstallAnswers.Read(answersPath).ToRequest(productionProductRoot);
+            if (values.TryGetValue("--cpus", out var cpus))
+            {
+                request = request with { Cpus = ParseCpus(cpus) };
+            }
+            if (values.TryGetValue("--memory", out var memory))
+            {
+                request = request with { Memory = memory };
+            }
+        }
+        else if (configPath is not null)
         {
             byte[] configuration;
-            using (var stream = SafeFileSystem.OpenRegularFileRead(configPath))
-            using (var buffer = new MemoryStream())
+            try
             {
+                using var stream = SafeFileSystem.OpenRegularFileRead(configPath);
+                using var buffer = new MemoryStream();
                 stream.CopyTo(buffer);
                 configuration = buffer.ToArray();
+            }
+            catch (Exception exception) when (exception is InstallerException or IOException or UnauthorizedAccessException)
+            {
+                // The file is the operator's input, so one that cannot be read is invalid input, as an answers file is.
+                throw new InstallUsageException($"The installer configuration '{configPath}' could not be read: {exception.Message}", exception);
             }
             request = JsonSerializer.Deserialize(configuration, InstallRequestJsonContext.Default.InstallRequest)
                 ?? throw new InstallUsageException("The installer configuration is empty.");
@@ -378,7 +451,7 @@ internal static class CommandLine
         {
             AllowTestProductRoot = allowTestProductRoot,
             ProductionProductRoot = productionProductRoot,
-            DryRun = flags.Contains("--dry-run") || request.DryRun,
+            DryRun = flags.Contains(PlanOption) || flags.Contains("--dry-run") || request.DryRun,
             Resume = flags.Contains("--resume") || request.Resume,
             Json = flags.Contains("--json") || request.Json,
             AcknowledgePlaintextHttp = flags.Contains("--acknowledge-plaintext-http") || request.AcknowledgePlaintextHttp,
@@ -405,7 +478,8 @@ internal static class CommandLine
 
     private static void RejectUnknown(IEnumerable<string> options)
     {
-        // --config never reaches this check: it is removed first and admits no other value option.
+        // --config and --answers never reach this check: each is removed first, and --config admits no other value
+        // option while --answers admits only the limits.
         var unknown = options.FirstOrDefault(option => !InstallValueOptions.Contains(option, StringComparer.Ordinal));
         if (unknown is not null)
         {
@@ -538,7 +612,7 @@ internal static class CommandLine
             operation,
             ParseGuid(Get(values, "--instance-id"), "--instance-id"),
             Get(values, "--product-root") ?? productionProductRoot,
-            flags.Contains("--dry-run"),
+            flags.Contains(PlanOption) || flags.Contains("--dry-run"),
             flags.Contains("--resume"),
             flags.Contains("--json"))
         {
@@ -607,7 +681,7 @@ internal static class CommandLine
             ParseGuid(Get(values, "--instance-id"), "--instance-id"),
             ParseGuid(Get(values, "--confirm-instance-id"), "--confirm-instance-id"),
             Get(values, "--product-root") ?? productionProductRoot,
-            flags.Contains("--dry-run"),
+            flags.Contains(PlanOption) || flags.Contains("--dry-run"),
             flags.Contains("--json"))
         {
             AllowTestProductRoot = allowTestProductRoot,
