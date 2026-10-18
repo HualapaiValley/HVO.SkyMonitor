@@ -74,7 +74,7 @@ public sealed class CameraAgentStateCompatibilityLabelTests
             labels["io.hvo.skymonitor.catalog-manifest-version"]);
     }
 
-    private static Dictionary<string, string> ReadImageLabels()
+    internal static Dictionary<string, string> ReadImageLabels()
     {
         var dockerfile = File.ReadAllText(
             Path.Combine(RepositoryRoot(), "src", "HVO.SkyMonitor.CameraAgent", "Dockerfile"));
@@ -91,7 +91,7 @@ public sealed class CameraAgentStateCompatibilityLabelTests
         return labels;
     }
 
-    private static string RepositoryRoot()
+    internal static string RepositoryRoot()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "HVO.SkyMonitor.v9.slnx")))

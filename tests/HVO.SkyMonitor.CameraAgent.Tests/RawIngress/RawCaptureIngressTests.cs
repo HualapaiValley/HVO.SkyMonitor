@@ -3401,7 +3401,9 @@ public sealed partial class RawCaptureIngressTests
         RawIngressState state,
         IRawIngressFaultInjector? faultInjector = null,
         TimeProvider? timeProvider = null,
-        ILogger<RawCaptureIngress>? logger = null)
+        ILogger<RawCaptureIngress>? logger = null,
+        CaptureMaintenanceGate? maintenanceGate = null,
+        HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky.IProjectedSceneStagingReconciler? projectedSceneStaging = null)
     {
         return new RawCaptureIngress(
             Options.Create(new CameraAgentHostOptions
@@ -3415,7 +3417,9 @@ public sealed partial class RawCaptureIngressTests
             timeProvider ?? TimeProvider.System,
             new RawIngressTelemetry(state),
             logger ?? NullLogger<RawCaptureIngress>.Instance,
-            faultInjector ?? new NullRawIngressFaultInjector());
+            faultInjector ?? new NullRawIngressFaultInjector(),
+            projectedSceneStaging: projectedSceneStaging,
+            maintenanceGate: maintenanceGate);
     }
 
     private static CameraModuleConfig CreateConfiguration()

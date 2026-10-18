@@ -39,6 +39,32 @@ public sealed class FileSystemFrameStorageServiceTests
     }
 
     [TestMethod]
+    public async Task SaveAsync_ProducerSidecarUpgradeWhileCaptureIsPaused_FailsRetryablyWithoutRewritingTheSidecar()
+    {
+        // Upgrading a sidecar in place rewrites durable bytes a restored processing row may have recorded, so a
+        // candidate started under the installer's pause leaves the sidecar alone and retries once capture runs
+        // (#1314 R10).
+        using var hold = new Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: true).ConfigureAwait(false);
+        using var root = new TemporaryRoot();
+        var (artifact, descriptor) = CreateArtifact([1, 2, 3, 4]);
+        using var service = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance, hold.Gate);
+        var stored = await service.SaveAsync(root.Path, artifact, descriptor, CancellationToken.None).ConfigureAwait(false);
+        var sidecarPath = Path.ChangeExtension(stored.AbsolutePath, ".json");
+        var withoutProducer = await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureMaintenanceHeldException>(async () =>
+            await service.SaveAsync(root.Path, artifact, descriptor, "projected-scene", CancellationToken.None).ConfigureAwait(false))
+            .ConfigureAwait(false);
+        CollectionAssert.AreEqual(withoutProducer, await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false));
+
+        await admission.ResumeAsync("sidecar-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        await service.SaveAsync(root.Path, artifact, descriptor, "projected-scene", CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual("projected-scene", CaptureContractJson.ParseManifest(
+            await File.ReadAllBytesAsync(sidecarPath).ConfigureAwait(false)).Document!.Manifest.ProducerStepId);
+    }
+
+    [TestMethod]
     public async Task SaveAsync_ConflictingPayloadFailsClosedWithoutRewritingSidecar()
     {
         using var root = new TemporaryRoot();

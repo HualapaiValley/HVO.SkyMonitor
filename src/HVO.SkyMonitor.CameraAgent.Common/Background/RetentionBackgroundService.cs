@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Linq;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
@@ -34,7 +35,8 @@ public sealed class RetentionBackgroundService(
     ILogger<RetentionBackgroundService> logger,
     IRawIngressRetentionHolds? rawIngressHolds = null,
     IProcessingRetentionHolds? processingHolds = null,
-    CaptureScheduleRuntimeCoordinator? scheduleCoordinator = null) : BackgroundService
+    CaptureScheduleRuntimeCoordinator? scheduleCoordinator = null,
+    CaptureAdmissionCoordinator? admission = null) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
     private readonly CameraAgentHostOptions _hostOptions = hostOptions.Value;
@@ -49,6 +51,9 @@ public sealed class RetentionBackgroundService(
         Justification = "The dependency injection container owns the schedule coordinator.")]
     private readonly CaptureScheduleRuntimeCoordinator? _scheduleCoordinator = scheduleCoordinator;
     private readonly IRawIngressPressureReporter? _rawIngressPressureReporter = rawIngressHolds as IRawIngressPressureReporter;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
+        Justification = "The dependency injection container owns the capture admission coordinator.")]
+    private readonly CaptureAdmissionCoordinator? _admission = admission;
     private static readonly JsonSerializerOptions StepSerializerOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -89,6 +94,14 @@ public sealed class RetentionBackgroundService(
         if (plans.Count == 0)
         {
             return;
+        }
+        // Capacity and disk pressure are still measured and published while the hold is in force; only the deletions
+        // wait, because the operations summary and capture back-pressure read the pressure state. An admitted pass keeps
+        // its maintenance lease through every lock wait and deletion below, so a pause cannot be acknowledged under it.
+        using var maintenance = await CaptureMaintenanceHold.EnterAsync(_admission, cancellationToken).ConfigureAwait(false);
+        if (maintenance.HeldBy is { } holdingState)
+        {
+            _logger.MaintenanceHeld("Retention", holdingState);
         }
 
         Exception? firstFailure = null;
@@ -157,6 +170,11 @@ public sealed class RetentionBackgroundService(
                 else if (!underPressure && previous?.IsUnderPressure == true)
                 {
                     _logger.DiskPressureRecovered(plan.StorageRoot, capacity.AvailablePercent);
+                }
+
+                if (maintenance.Held)
+                {
+                    continue;
                 }
 
                 var cutoffDate = evaluatedUtc.UtcDateTime.Date.AddDays(-effectiveRetentionDays);
