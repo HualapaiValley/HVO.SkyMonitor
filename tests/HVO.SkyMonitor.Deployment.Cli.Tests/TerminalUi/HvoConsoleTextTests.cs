@@ -74,26 +74,27 @@ public sealed partial class HvoConsoleTextTests
     }
 
     [TestMethod]
-    public void Renders_AreSavedAsAnsiByName()
+    public void Renders_AreSavedAsAnsiByName_InTheirOwnFolder()
     {
         var folder = Path.Combine(Path.GetTempPath(), $"hvo-renders-{Guid.NewGuid():N}");
+        var name = $"unit-test-{Guid.NewGuid():N}";
         try
         {
-            var path = TerminalRenders.SaveText("\u001b[1mx\u001b[0m", "install-80x24-1-camera", folder);
+            // HVO_TERMINAL_RENDERS_DIR is never read here, so this test cannot write, or remove, a screenshot of a run.
+            var path = TerminalRenders.SaveText("\u001b[1mx\u001b[0m", name, folder, static _ => null);
 
-            Assert.AreEqual(Path.Combine(TerminalRenders.Folder(folder), "install-80x24-1-camera.ans"), path);
+            Assert.AreEqual(Path.Combine(folder, $"{name}.ans"), path);
             Assert.AreEqual("\u001b[1mx\u001b[0m", File.ReadAllText(path));
-            File.Delete(path);
-            Assert.ThrowsExactly<ArgumentException>(() => TerminalRenders.SaveText("x", "../escape", folder));
-            Assert.ThrowsExactly<ArgumentException>(() => TerminalRenders.SaveText("x", "Upper", folder));
-            Assert.AreEqual(Environment.GetEnvironmentVariable(TerminalRenders.DirectoryVariable) is { Length: > 0 } configured ? configured : folder, TerminalRenders.Folder(folder));
+            Assert.ThrowsExactly<ArgumentException>(() => TerminalRenders.SaveText("x", "../escape", folder, static _ => null));
+            Assert.ThrowsExactly<ArgumentException>(() => TerminalRenders.SaveText("x", "Upper", folder, static _ => null));
+            Assert.AreEqual(folder, TerminalRenders.Folder(folder, static _ => null));
+            Assert.AreEqual("/configured", TerminalRenders.Folder(folder, variable => variable == TerminalRenders.DirectoryVariable ? "/configured" : null));
+            Assert.AreEqual(folder, TerminalRenders.Folder(folder, static _ => string.Empty));
         }
         finally
         {
-            if (Directory.Exists(folder))
-            {
-                Directory.Delete(folder, recursive: true);
-            }
+            // Only this test's own folder, which holds only its own file.
+            Directory.Delete(folder, recursive: true);
         }
     }
 

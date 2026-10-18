@@ -62,8 +62,9 @@ jobs:
           ./scripts/test:pr-review-tools
           ./scripts/test:development-v1-ci
 
-      # tests/cli/ansi-to-svg.py, which draws the terminal programs' screens for docs/images/terminal (#1317).
-      - name: Test the terminal screenshot converter
+      # tests/cli/ansi-to-svg.py, which draws the terminal programs' screens, and scripts/docs:terminal-screenshots, which
+      # replaces docs/images/terminal with them (#1317).
+      - name: Test the terminal screenshot converter and script
         run: python3 -m unittest discover -s tests/cli -p 'test_*.py' -v
 
       # The full-history checkout above is what the scan reads (#1321).
