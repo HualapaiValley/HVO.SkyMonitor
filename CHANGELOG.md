@@ -12,6 +12,13 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 ### Added
 
+- On a terminal, `hvo-sky-install cameraagent install` (and `install.sh` with no arguments) opens a wizard for what
+  the command line left unanswered: the camera's name, its release and catalog, network, location, container limits
+  and the owner's sign-in, each page passed over when the command line answered it. It shows the plan, checked as
+  `--plan` checks it, then saves the answers to `~/.config/hvo-sky/install-answers.json` and installs with
+  `--answers`, exactly as that command would. Esc or Ctrl+C leaves it with nothing changed (exit 130). It never asks
+  for a password, and it is drawn in HVO Dark with 16-colour, `NO_COLOR` and ASCII fallbacks. (#1317)
+
 - `hvo-sky-install` follows the shared install contract's command surface. `--plan` (the new name of `--dry-run`)
   reports what install, a re-run of one, `upgrade`, `rollback`, `reinstall`, `uninstall` and `purge` would create,
   change, leave unchanged or remove, after the same checks the command makes, and writes nothing, not even a temporary
@@ -81,6 +88,9 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 ### Changed
 
+- `cameraagent install` no longer asks for a missing `--friendly-name` or `--image-ref` on a line of its input. On a
+  terminal the wizard asks; anywhere else nothing is asked, and a missing value is a usage error (exit 2) that names it,
+  such as `--release or --image-ref is required.` (#1317)
 - `cameraagent upgrade` refuses a host whose Docker cannot enforce CameraAgent's memory, CPU and PID limits, or has
   fewer CPUs than its CPU limit, as `cameraagent install` does: it lists every finding and the remedy
   (`cgroup_enable=memory` and a reboot on a Raspberry Pi) and exits 3 with nothing changed, for its `--plan` and

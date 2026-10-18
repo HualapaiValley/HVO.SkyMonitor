@@ -27,7 +27,7 @@ runbook describes the installer as it behaves today.
 
 | Contract | Today | Issue |
 | --- | --- | --- |
-| Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | The `hvo-sky-install` CLI, configured by flags or an [answers file](#answers-file); no runtime client or wizard | [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
+| Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | The `hvo-sky-install` CLI, configured by flags or an [answers file](#answers-file), with the [installer wizard](#installer-wizard) on a terminal; no runtime client yet | [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
 | `install.sh` entry point with `--check`, `--from DIR`, and `--install-docker` and the like | [`install.sh`](#installsh) checks the host, then verifies the release's installer and small files and starts it, online or with `--from DIR`; it gives `cameraagent install` and `upgrade` the release and the catalog. With no arguments it runs `cameraagent install`. It installs no Docker and changes no boot setting; it names the remedy. The installer itself still needs a command | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
 | `backup` and `restore FILE` | No `backup` or `restore` | [#1353](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1353) |
 | Command words `install`, `upgrade`, `rollback`, `uninstall`, `status` | Instance commands are grouped under `cameraagent` (`cameraagent install`, `cameraagent upgrade`, ...), because one host holds several instances and the catalogs beside them; `status` is top level | Recorded for contract draft 4 |
@@ -287,6 +287,71 @@ schema version. The members are those `--config` reads, under the same names:
 error, or with `--json` as an `option-deprecated` entry in the result's `warnings`.
 To convert a configuration file, add `"schemaVersion": 1` and remove `dryRun`,
 `resume` and `json`.
+
+### Installer wizard
+
+On a terminal, an install whose command line leaves a question it cannot go without opens a wizard (install contract
+section 5, #1317): the camera's name (`--friendly-name`), its software (`--release`, or `--image-ref`), or the catalog
+(`--catalog-bundle`). `install.sh` with no arguments, and `hvo-sky-install` alone on a terminal, are such installs.
+Anywhere else nothing is asked, and nothing is read from the input: without a terminal (its input or output is not
+one, or `TERM=dumb`), with `--answers`, `--config`, `--plan`, `--dry-run`, `--json` or `--resume`, or with all three
+given, a missing value is a usage error (exit `2`) that names it, such as `--friendly-name is required.`
+
+![The wizard's first page at 80 x 24: the installer's name and STEP 1 OF 7 on the top bar, the Camera panel with the camera's name and the new instance ID, Back and Next, the steps and the keys](../images/terminal/install-80x24-1-camera.svg)
+
+The wizard asks only what the command line left. A page whose every question the command line answered is passed
+over, and a question it answered shows the answer and the option that gave it:
+
+| Page | Asks | Passed over when the command line gave |
+| --- | --- | --- |
+| Camera | The camera's name; it shows the instance ID, new or from the saved answers | `--friendly-name` |
+| Software | The release folder and where its image comes from, and the catalog bundle | `--release` (or `--image-ref`) and `--catalog-bundle`, as `install.sh` does |
+| Network | The address and port CameraAgent's pages listen on, and, for an address other computers reach, that they reach it over plain HTTP | `--bind-address` and `--port`, with `--acknowledge-plaintext-http` for such an address |
+| Location | Latitude, longitude, elevation and time zone | All four |
+| Limits | CPUs and memory (empty for the [default](#container-resources)) and where archived replays run | `--cpus`, `--memory` and `--replay-profile` |
+| Owner | The owner's email, and how the first password is set: the documented one, changed at the first sign-in; generated into a file only the owner can read; or read from a file | `--owner-email`, and `--password-file` or `--generate-password` |
+| Review | The plan, and where the answers are saved | Never |
+
+The wizard never asks for a password, and never shows or saves one. Each page refuses an answer the install would
+refuse, saying why in a band at the top, and the answers start from those saved by the last run of the wizard
+(`~/.config/hvo-sky/install-answers.json`, under `$XDG_CONFIG_HOME` when it is set), so running it again addresses the
+same instance and, with nothing different, changes nothing.
+
+The Review page checks the answers exactly as `hvo-sky-install cameraagent install --answers FILE --plan` does, through
+the same parser and installer, with a private copy of the answers that it removes; the check changes nothing. A plan
+the installer refuses says why and that nothing was changed, and Back changes the answers:
+
+![The Review page at 80 x 24: an OK band, the plan item by item, the save path, and Install](../images/terminal/install-80x24-7-review.svg)
+
+![The Review page when the plan is refused: a REFUSED band naming the port in use, and that nothing was changed](../images/terminal/install-80x24-7-review-refused.svg)
+
+**Install** saves the answers there (`0600`, the default folder `0700`) and closes the wizard. The installer then runs
+`hvo-sky-install cameraagent install --answers FILE`, with the release, its image source, the catalog and
+`--no-download` beside it when the command line handed them over (they are `install.sh`'s own paths, so they are not
+saved). That is the same install, with the same output and [exit codes](#exit-codes), as the command typed. It runs on
+the terminal rather than inside the wizard because the installer asks `sudo` for the steps that need root, and `sudo`
+may need the terminal for a password. A panel before it says what runs; one after it says the install finished, or why
+it stopped and that running the same command again carries on, with the command whole on the line under it:
+
+![What the terminal shows around the install: the Installing panel, the command, the installer's own result, an OK band and the Done panel](../images/terminal/install-80x24-8-done.svg)
+
+Keys: Enter is Next (on the Review page, Install), or presses the button that has the focus; Alt+N and Alt+B are Next
+and Back; Tab moves; Up and Down choose an option and scroll the plan; Space ticks a box. **Esc** or **Ctrl+C**, on any
+page, closes the wizard: it exits `130` and nothing was changed. A signal does the same.
+
+The wizard is drawn in HVO Dark, CameraAgent's own palette, as RoofController's terminal prototype draws it (#158), and
+uses only whole character cells: it is usable at 80 x 24, and from 110 columns it shows every answer so far beside the
+page. It never depends on colour alone. A terminal without true colour gets the 16 ANSI colours, `NO_COLOR` gets the
+terminal's own colours with bold, underline and reverse video, and a locale that is not UTF-8 gets ASCII frames; see
+[`src/HVO.SkyMonitor.TerminalUi`](../../src/HVO.SkyMonitor.TerminalUi/README.md), which also gives the colour tokens:
+
+![The Review page at 120 x 32, with every answer so far in a panel beside it](../images/terminal/install-120x32-7-review.svg)
+
+![The Review page with NO_COLOR: the terminal's own colours, the current step and Install in reverse video](../images/terminal/install-80x24-7-review-nocolor.svg)
+
+Every page's screenshot, at both sizes and in each fallback, is in [`docs/images/terminal`](../images/terminal). The
+wizard's tests draw them on Terminal.Gui's in-memory driver, Development v1 CI draws them as SVG in Build and Unit and
+keeps them with its evidence, and `scripts/docs:terminal-screenshots` refreshes the folder.
 
 ### Re-running an install
 
