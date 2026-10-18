@@ -859,6 +859,35 @@ printf '%s\n' '{"name":"production-release","protection_rules":[{"type":"require
     >"$FAKE_GH/$environment_key.json"
 run_environment && grep -Fq "requires a reviewer: release-owners." "$test_root/environment.out" ||
     fail "the environment check did not admit a team as the required reviewer."
+# The rule is read fail-safe: the answer names this environment, and each required_reviewers rule's reviewers are an
+# array of users and teams, each with a positive integer ID. The control is a user given by its ID alone.
+reviewers_answer() {
+    printf '{"name":"%s","protection_rules":[{"type":"required_reviewers","reviewers":%s}]}\n' "${2:-production-release}" "$1"
+}
+environment_case id-only
+reviewers_answer '[{"type":"User","reviewer":{"id":7}}]' >"$FAKE_GH/$environment_key.json"
+run_environment && grep -Fxq "The environment production-release requires a reviewer: user 7." "$test_root/environment.out" ||
+    { cat "$test_root/environment.err" >&2; fail "the environment check did not admit a user given by its ID."; }
+for reviewers in '[{"reviewer":{"name":"nobody"}}]' '{"type":"User","reviewer":{"login":"RoySalisbury","id":1}}' \
+    '[{"type":"Bot","reviewer":{"login":"RoySalisbury","id":null}}]' '[{"type":"Bot","reviewer":{"login":"RoySalisbury","id":1}}]' \
+    '[{"type":"User","reviewer":{"login":"RoySalisbury","id":null}}]' '[{"type":"User","reviewer":{"login":"RoySalisbury"}}]' \
+    '[{"type":"User","reviewer":{"login":"RoySalisbury","id":0}}]' '[{"type":"User","reviewer":{"login":"RoySalisbury","id":-1}}]' \
+    '[{"type":"User","reviewer":{"login":"RoySalisbury","id":1.5}}]' '[{"type":"User","reviewer":{"login":"RoySalisbury","id":"1"}}]' \
+    '[{"type":"User","reviewer":null}]' '[{"type":"User","reviewer":{"login":"RoySalisbury","id":1}},{"reviewer":{"name":"nobody"}}]' \
+    'null'; do
+    environment_case malformed-reviewers
+    reviewers_answer "$reviewers" >"$FAKE_GH/$environment_key.json"
+    expect_environment_refusal "an environment whose reviewers are $reviewers" \
+        "cannot read the environment production-release (200, but not the expected answer)"
+done
+environment_case no-reviewers
+printf '%s\n' '{"name":"production-release","protection_rules":[{"type":"required_reviewers"}]}' >"$FAKE_GH/$environment_key.json"
+expect_environment_refusal "a required_reviewers rule without reviewers" \
+    "cannot read the environment production-release (200, but not the expected answer)"
+environment_case other-name
+reviewers_answer '[{"type":"User","reviewer":{"login":"RoySalisbury","id":1}}]' staging >"$FAKE_GH/$environment_key.json"
+expect_environment_refusal "an answer for another environment" \
+    "cannot read the environment production-release (200, but not the expected answer)"
 for rules in '[]' '[{"type":"wait_timer","wait_timer":30}]' '[{"type":"required_reviewers","reviewers":[]}]' '[{"type":"branch_policy"}]'; do
     environment_case "unprotected"
     printf '{"name":"production-release","protection_rules":%s}\n' "$rules" >"$FAKE_GH/$environment_key.json"
@@ -1037,6 +1066,24 @@ FAKE_GH_EDIT_STATUS=1 expect_final_publish_refusal "a publish GitHub refuses" "c
 final_publish_case unreadable-releases
 printf '503' >"$FAKE_GH/${repo}_releases.status"
 expect_final_publish_refusal "a releases list that cannot be read" "cannot read the releases of HualapaiValley/HVO.SkyMonitor (503)" unedited
+# Two drafts, v2.5.0 and v2.10.0, and the newer is published first, after this run checked its draft: the releases are
+# read again immediately before the write, so v2.5.0 is published without taking latest back.
+newer_draft='{"tag_name":"v2.10.0","draft":true,"prerelease":false}'
+newer_final='{"tag_name":"v2.10.0","draft":false,"prerelease":false}'
+final_publish_case newer-first "[]" "$(latest_is v2.10.0)" "$(latest_is v2.10.0)"
+script_answers "${repo}_releases" "200:[$newer_draft,$draft_final]" "200:[$newer_final,$draft_final]" \
+    "200:[$newer_final,$published_final]"
+expect_final_published "an older release whose newer draft is published first" false "--draft=false --prerelease=false --latest=false"
+# Whatever was published meanwhile, the latest release is never left older than the newest final release.
+final_publish_case newer-meanwhile "[]" "$not_found" "$(latest_is v2.5.0)"
+script_answers "${repo}_releases" "200:[$newer_draft,$draft_final]" "200:[$newer_draft,$draft_final]" \
+    "200:[$newer_final,$published_final]"
+expect_final_publish_refusal "a latest release left older than the newest final release" \
+    "the latest release is v2.5.0, but v2.10.0 is the newest final release" edited
+final_publish_case unread-releases-after "[]" "$not_found" "$(latest_is v2.5.0)"
+script_answers "${repo}_releases" "200:[$draft_final]" "200:[$draft_final]" '503:{"message":"Service Unavailable"}'
+expect_final_publish_refusal "a releases list that cannot be read after" \
+    "v2.5.0 is published, but the releases cannot be read back" edited
 
 # The image's latest tag follows the newest final release, from the digest its version tag still names.
 latest_releases="[{\"tag_name\":\"v2.4.0\",\"draft\":false,\"prerelease\":false},$published_final]"
@@ -1090,6 +1137,18 @@ FAKE_SKOPEO_EXISTING=index FAKE_SKOPEO_SERVED=other expect_latest_refusal "a lat
 latest_case unreadable-releases
 printf '503' >"$FAKE_GH/${repo}_releases.status"
 expect_latest_refusal "a releases list that cannot be read" "cannot read the releases of HualapaiValley/HVO.SkyMonitor (503)"
+# A newer final release published before the copy: the releases are read again immediately before it, and latest stays.
+latest_case newer-first
+script_answers "${repo}_releases" "200:$latest_releases" "200:[$newer_final,$published_final]"
+FAKE_SKOPEO_EXISTING=index run_tag_latest ||
+    { cat "$test_root/tag-latest.err" >&2; fail "the latest tag failed when a newer release was published first."; }
+grep -Fq "v2.5.0 is not the newest final release (2.10.0 is): the image latest tag stays where it is." "$test_root/tag-latest.out" ||
+    fail "the latest tag did not say a newer release was published first."
+! grep -q '^copy' "$FAKE_SKOPEO_LOG" || fail "the latest tag moved to an older release's image."
+latest_case newer-meanwhile
+script_answers "${repo}_releases" "200:$latest_releases" "200:$latest_releases" "200:[$newer_final,$published_final]"
+FAKE_SKOPEO_EXISTING=index expect_latest_refusal "a newer release published while latest was moved" \
+    "but v2.10.0 is now the newest final release"
 
 # The asset script refuses bad arguments before it builds anything.
 cat >"$fake_bin/docker" <<'FAKE_DOCKER'
@@ -1320,7 +1379,8 @@ grep -Fq -- "${config_id}" "$test_root/docker-the install failed with the image 
 
 # The release workflow's shape (#1310), which actionlint does not check: CI qualifies the commit before anything is built,
 # both platforms install from the draft, publishing waits for production-release's approval and checks its rule first,
-# only the draft, publish and latest jobs can write, and latest moves only after publishing moved it.
+# only the draft, publish and latest jobs can write, latest moves only after publishing moved it, and publish and latest
+# alone share the release-wide release-promotion group.
 python3 - "$repo_root" <<'PY' || fail "the release workflow's shape is wrong."
 import pathlib
 import re
@@ -1371,6 +1431,10 @@ for name in jobs:
     writes = re.findall(r"^      ([\w-]+): write$", job(name), re.M)
     allowed = {"draft": ["contents", "packages", "id-token", "attestations"], "publish": ["contents"], "latest": ["packages"]}
     require(writes == allowed.get(name, []), f"the {name} job can write {writes}")
+    # Every promotion, of the latest release and of the image's latest tag, waits for every other release's.
+    concurrency = re.findall(r"^    concurrency:.*\n(?:      .*\n)*", job(name), re.M)
+    promotion = ["    concurrency:\n      group: release-promotion\n      cancel-in-progress: false\n"]
+    require(concurrency == (promotion if name in ("publish", "latest") else []), f"the {name} job's concurrency is {concurrency}")
 latest = job("latest")
 require("needs: [gate, draft, publish]" in latest and "if: needs.publish.outputs.moved == 'true'" in latest,
         "the latest job runs without publishing having moved the latest release")

@@ -10,7 +10,10 @@
 # older version, leaves latest alone and says so. The image must still be <digest> under its version tag, the digest
 # release.json names: latest is copied from that digest, with every platform and its digests (skopeo copy --all
 # --preserve-digests), and read back. Running it again moves nothing further. Every GitHub read is strict
-# (scripts/lib/github-api.sh), and a read that is not certain fails rather than move or keep latest by guess.
+# (scripts/lib/github-api.sh), and a read that is not certain fails rather than move or keep latest by guess. The
+# release workflow runs it in the release-wide concurrency group release-promotion, with every publish; even so, the
+# releases are read again immediately before the copy, and once more after it: a newer final release published by
+# then fails the job rather than leave latest on an older release's image unremarked.
 set -euo pipefail
 
 fail() {
@@ -37,22 +40,36 @@ if [[ "$version" == *-* ]]; then
     exit 0
 fi
 
-releases="$(github_api_read_releases "$github_repository")" || exit 1
-state="$(jq -r --arg tag "$tag" '[.[] | select(.tag_name == $tag)]
-    | if length == 1 then .[0] | "draft=\(.draft) prerelease=\(.prerelease)" else "\(length) releases" end' <<<"$releases")"
-[[ "$state" == "draft=false prerelease=false" ]] ||
-    fail "The release for $tag is not one published final release ($state); the image latest tag is not moved."
-newest="$(release_newest_final "$releases")"
-if [[ "$newest" != "$version" ]]; then
-    printf '%s is not the newest final release (%s is): the image latest tag stays where it is.\n' "$tag" "$newest"
+# Reads the releases and GitHub's latest release strictly. It prints "newest" when <tag> is the newest final release and
+# GitHub's latest release, or the newest final version when another is newer, and fails on anything else.
+promotion() {
+    local releases state newest latest read_status=0
+    releases="$(github_api_read_releases "$github_repository")" || return 1
+    state="$(jq -r --arg tag "$tag" '[.[] | select(.tag_name == $tag)]
+        | if length == 1 then .[0] | "draft=\(.draft) prerelease=\(.prerelease)" else "\(length) releases" end' <<<"$releases")"
+    [[ "$state" == "draft=false prerelease=false" ]] ||
+        fail "The release for $tag is not one published final release ($state); the image latest tag is not moved."
+    newest="$(release_newest_final "$releases")"
+    if [[ "$newest" != "$version" ]]; then
+        printf '%s\n' "$newest"
+        return 0
+    fi
+    latest="$(github_api_read --absent-ok "the latest release" 'type == "object" and (.tag_name | type == "string")' \
+        "repos/$github_repository/releases/latest")" || read_status=$?
+    [[ "$read_status" == 0 ]] || fail "$tag is the newest final release, but GitHub has no latest release to match it."
+    [[ "$(jq -r '.tag_name' <<<"$latest")" == "$tag" ]] ||
+        fail "$tag is the newest final release, but GitHub's latest release is $(jq -r '.tag_name' <<<"$latest"); the image latest tag is not moved."
+    printf 'newest\n'
+}
+# Stops, leaving latest where it is, when <promotion> names a newer final release than <tag>.
+stays_unless_newest() {
+    [[ "$1" == newest ]] && return 0
+    printf '%s is not the newest final release (%s is): the image latest tag stays where it is.\n' "$tag" "$1"
     exit 0
-fi
-read_status=0
-latest="$(github_api_read --absent-ok "the latest release" 'type == "object" and (.tag_name | type == "string")' \
-    "repos/$github_repository/releases/latest")" || read_status=$?
-[[ "$read_status" == 0 ]] || fail "$tag is the newest final release, but GitHub has no latest release to match it."
-[[ "$(jq -r '.tag_name' <<<"$latest")" == "$tag" ]] ||
-    fail "$tag is the newest final release, but GitHub's latest release is $(jq -r '.tag_name' <<<"$latest"); the image latest tag is not moved."
+}
+
+newest="$(promotion)" || exit 1
+stays_unless_newest "$newest"
 
 manifest="$(mktemp)"
 errors="$(mktemp)"
@@ -69,8 +86,18 @@ served() {
 versioned="$(served "$repository:$version")" || exit 1
 [[ "$versioned" == "$digest" ]] ||
     fail "$repository:$version is $versioned in the registry, not $digest, the image $tag names; the image latest tag is not moved."
+# Read again immediately before the write, so a release published since the first read counts.
+newest="$(promotion)" || exit 1
+stays_unless_newest "$newest"
 skopeo copy --dest-tls-verify=true --retry-times 3 --all --preserve-digests \
     "docker://$repository@$digest" "docker://$repository:latest" >&2 || fail "cannot tag $repository:latest."
 tagged="$(served "$repository:latest")" || exit 1
 [[ "$tagged" == "$digest" ]] || fail "$repository:latest is $tagged in the registry, not $digest, after it was tagged."
+# Whatever else was published meanwhile, latest is never left on an older release's image unremarked.
+published="$(github_api_read_releases "$github_repository")" ||
+    fail "$repository:latest is $digest, the image of $tag, but the releases cannot be read back to show it is still the newest final release; check it by hand."
+newest="$(release_newest_final "$published")"
+if [[ -n "$newest" ]] && release_is_newer "$newest" "$version"; then
+    fail "$repository:latest is $digest, the image of $tag, but v$newest is now the newest final release; re-run v$newest's Latest Image job."
+fi
 printf '%s:latest is %s, the image of %s, the newest final release.\n' "$repository" "$digest" "$tag"

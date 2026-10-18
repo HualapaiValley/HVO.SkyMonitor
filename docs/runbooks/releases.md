@@ -61,17 +61,22 @@ pre-release and never becomes the latest release.
 | Build | GitHub-hosted | `contents: read` | Only after CI passed: `scripts/release:assets` builds every file from the tagged commit with the release's version, as for a pre-release, and refuses a final release without its notes |
 | Draft | GitHub-hosted | `contents`, `packages`, `id-token` and `attestations: write` | As the pre-release draft job: checks the files name the tagged release (and a final release's `release.json` carries its notes), `scripts/release:check-image-labels`, `scripts/release:prerelease-check unreleased`, pushes the image under its version tag alone (`scripts/release:push-image`), attests the image and every file and verifies the image's attestation, creates a **draft** release with `--latest=false` (a pre-release for a release candidate), and reads its files back |
 | Install and Upgrade (linux-x64, linux-arm64) | `ubuntu-24.04`, and `[self-hosted, linux, ARM64, hvo-skymonitor-arm64]` (`github-runner-pi-01`) | `contents: read`, `packages: read` | Tag pushes only. `scripts/test:release-install` installs a throwaway instance from the draft's offline archive for the platform, moves it to a stand-in image, upgrades it by digest from the registry, checks that a second upgrade is refused, and uninstalls, leaving the runner as it found it ([prereleases.md](prereleases.md#what-the-workflow-does) describes the test). Both platforms must pass |
-| Publish | GitHub-hosted, in `production-release` | `contents: write`, `actions: read`, `attestations: read` | Held until a required reviewer approves. `scripts/release:check-environment` checks the environment still requires a reviewer. Then, as the pre-release publish job does, it checks the draft still holds exactly the tested files with this workflow's attestations, and the image's attestation on record. `scripts/release:publish` publishes the draft and decides latest (below) |
-| Latest Image | GitHub-hosted | `contents: read`, `packages: write` | Only when publishing made the release the latest release: `scripts/release:tag-latest` checks the image's version tag still names the release's digest and copies it to `latest` |
+| Publish | GitHub-hosted, in `production-release` | `contents: write`, `actions: read`, `attestations: read` | Held until a required reviewer approves. `scripts/release:check-environment` checks the environment still requires a reviewer. Then, as the pre-release publish job does, it checks the draft still holds exactly the tested files with this workflow's attestations, and the image's attestation on record. `scripts/release:publish` publishes the draft and decides latest (below), in the release-wide `release-promotion` concurrency group |
+| Latest Image | GitHub-hosted | `contents: read`, `packages: write` | Only when publishing made the release the latest release, in the `release-promotion` group too: `scripts/release:tag-latest` checks the image's version tag still names the release's digest and copies it to `latest` |
 
 ### latest
 
 Publishing makes a release the latest release, and moves the image's `latest` tag to its image, only when it is the
 newest final release: a final `vX.Y.Z` higher, by version number, than every published final release
 (`scripts/lib/releases.sh`). A release candidate, a pre-release, or a fix to an older version leaves both where they
-are. GitHub would otherwise make any release it publishes the latest, so `scripts/release:publish` always says which,
-and checks `releases/latest` before and after: where it moved, it must be this release, and where it did not, it must
-be unchanged.
+are. GitHub would otherwise make any release it publishes the latest, so `scripts/release:publish` always says which.
+
+Every run's Publish and Latest Image jobs share one release-wide concurrency group, `release-promotion`, so two
+releases never decide or move latest at once, whatever order their tags were pushed in. Inside it, each script reads
+the releases again immediately before it writes and decides from that read. Afterwards, the latest release must be
+this release where it moved and not this release where it did not, and neither the latest release nor the image's
+`latest` may be older than the newest published final release, read again: if one is, the job fails, naming the
+release that should be latest.
 
 ### When a run fails
 
@@ -86,6 +91,9 @@ be unchanged.
   version.
 - **Latest Image:** the release is published. **Re-run failed jobs** moves `latest` again; it checks the release is
   still the newest final release first.
+- **Cancelled while waiting for `release-promotion`:** GitHub keeps only one job waiting in a concurrency group, so a
+  Publish or Latest Image job queued behind a waiting one cancels it before it writes anything. Once the other
+  release's promotion finishes, **Re-run failed jobs** on the cancelled run.
 
 A full re-run stops at the draft job while the earlier attempt's draft exists: a release is never replaced.
 
@@ -151,4 +159,5 @@ scripts/test:release-install --release /tmp/hvo-release --upgrade-source archive
 
 `scripts/test:release-scripts` proves the gate's, the environment check's, the publish's and the latest tag's
 decisions with fake `gh` and `skopeo` commands, and the workflow's shape: CI before the build, both install tests
-before publishing, the environment only on the publish job, and write permission only where it is needed.
+before publishing, the environment only on the publish job, the `release-promotion` group on the publish and latest
+jobs alone, and write permission only where it is needed.

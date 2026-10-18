@@ -52,6 +52,7 @@ public sealed partial class ProductVersionBuildCheckTests
     [DataRow("-p:Version={prefix}-", "Version '{prefix}-' is not the product version")]
     [DataRow("-p:Version={prefix}.1", "Version '{prefix}.1' is not the product version")]
     [DataRow("-p:InformationalVersion=99.0.0", "The informational version '99.0.0' is not the version '{prefix}-dev'")]
+    [DataRow("-p:InformationalVersion={prefix}-DEV", "The informational version '{prefix}-DEV' is not the version '{prefix}-dev'")]
     public async Task Build_GivenAnotherVersion_IsRefused(string argument, string message)
     {
         ArgumentNullException.ThrowIfNull(argument);

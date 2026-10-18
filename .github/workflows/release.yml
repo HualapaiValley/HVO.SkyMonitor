@@ -17,7 +17,9 @@ name: Release
 #                 (scripts/release:tag-latest)
 #
 # A release candidate is published as a GitHub pre-release and never moves latest; neither does a fix to an older
-# version. Nothing here changes a repository or environment setting: the owner applies them (docs/runbooks/releases.md).
+# version. Each tag's run is its own concurrency group, but publish and latest also share one release-wide group,
+# release-promotion, so two releases never decide or move latest at once. Nothing here changes a repository or
+# environment setting: the owner applies them (docs/runbooks/releases.md).
 
 on:
   push:
@@ -335,6 +337,12 @@ jobs:
     # GitHub holds this job until a required reviewer of production-release approves it. The first step checks the
     # environment still requires one, so an environment without the rule never lets the job publish unapproved.
     environment: production-release
+    # Promotion is serialized across every release: every run's latest job shares this group. A running job is never
+    # cancelled, but GitHub keeps only one job waiting: one queued behind it cancels it before it writes anything, and
+    # that run is re-run (docs/runbooks/releases.md). Inside the group, release:publish reads again before it writes.
+    concurrency:
+      group: release-promotion
+      cancel-in-progress: false
     permissions:
       contents: write
       actions: read
@@ -395,6 +403,10 @@ jobs:
     if: needs.publish.outputs.moved == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # The publish job's group: another release is published or tagged latest before or after this, never meanwhile.
+    concurrency:
+      group: release-promotion
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
