@@ -168,13 +168,17 @@ operations manual's change-management rules for a live host. An upgrade pauses c
    ./hvo-sky-install-linux-arm64 cameraagent upgrade --instance-id <uuid> --release "$release"
    ```
 
-   Or let the release's `install.sh` check the host first, verify the installer again, and add `--release "$release"
-   --no-download` itself ([install.sh](deployment-installer.md#installsh)):
+   Or let the release's `install.sh` check the host first, verify the installer and the catalog again, and add
+   `--release "$release" --no-download` and `--catalog-bundle` itself ([install.sh](deployment-installer.md#installsh)):
 
    ```bash
    bash install.sh --from "$release" cameraagent install \
-     --catalog-bundle "$release/catalog/hyg-v4.2-p3-s2-r1.bundle" ...
+     --friendly-name "SkyMonitor 01" --bind-address 127.0.0.1 --port 5130 ...
    ```
+
+   Without a downloaded folder, `curl -fsSL https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v$version/install.sh
+   | bash -s -- cameraagent install ...` downloads the release's small files itself and pulls the image by digest, which
+   needs a `ghcr.io` sign-in while the package is private and `docker buildx` 0.8 or later.
 
    To pull the image by digest instead of loading the offline archive, add `--image-source registry`. The host then
    needs `docker buildx` 0.8 or later (`skymonitor01` has 0.38.0), which the installer uses to read the image from the

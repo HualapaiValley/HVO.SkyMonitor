@@ -51,8 +51,8 @@ formatting, and package audit only for full-mode changes.
 can fail after a complete-looking 200, so the tests prove every GitHub read (`scripts/lib/github-api.sh`) refuses a
 transport failure, a 404 that is not GitHub's, and an empty, repeated or malformed body, before and after publishing.
 It then runs `scripts/test:install-sh`, which pipes the release's `install.sh` into bash as `curl ... | bash` does,
-with fake commands (`tests/fixtures/install-sh/`), and proves its checks, `--check`, `--from DIR`, the installer's
-verification and the hand-over ([deployment-installer.md](deployment-installer.md#installsh), #1311). Its tests run in
+with fake commands (`tests/fixtures/install-sh/`), and proves its checks, `--check`, `--from DIR`, the online
+download of the release's small files, the verification of each file, the catalog, the exit codes and the hand-over ([deployment-installer.md](deployment-installer.md#installsh), #1311). Its tests run in
 parallel. It always runs in Full Quality. **Development v1 /
 Preflight** runs it after the secret scanner contract, reading the same classifier step, when the `release_scripts`
 output selects it. On a PR that output is `true` when the change touches `scripts/release:assets`,
