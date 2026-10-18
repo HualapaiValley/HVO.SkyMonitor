@@ -29,7 +29,7 @@ onward; earlier development is recorded in its pull requests. A release renames 
   site owner can create and revoke Read or ReadWrite API keys for non-browser clients. (#1316)
 - `hvo-sky-install --version` prints the installer's version and the commit it was built from, as
   `<version>+<commit>`. A development build prints the product version's development build, such as
-  `1.0.0-dev+<commit>`, or `1.0.0-dev+unknown` if built without a checkout. (#1312, #1310)
+  `0.9.0-dev+<commit>`, or `0.9.0-dev+unknown` if built without a checkout. (#1312, #1310)
 - **Operations > Camera & rig** offers **Sky lighting** for a VirtualSky camera: uniform daylight (the default),
   realistic daylight, or no daylight. With no daylight, capture control treats every frame as night. (#1304)
 - Before an upgrade from a release, `hvo-sky-install cameraagent upgrade` prints the upgrade notes of every release
@@ -68,11 +68,11 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 ### Changed
 
-- One product version: `VersionPrefix` in `Directory.Build.props`, now `1.0.0`. A release's tag, files, installers and
-  image carry it or a pre-release of it, and a build given any other version is refused. A build given no version is
-  its development build, `1.0.0-dev`: `hvo-sky-install --version` prints `1.0.0-dev+<commit>` rather than
-  `0.0.0-dev+<commit>`, and a development CameraAgent image's version label is empty. (#1310)
-
+- One product version: `VersionPrefix` in `Directory.Build.props`, now `0.9.0`, the first final release's (owner
+  decision 2026-10-18). A release's tag, files, installers and image carry it or a pre-release of it, and a build given
+  any other version is refused. A build given no version is its development build, `0.9.0-dev`:
+  `hvo-sky-install --version` prints `0.9.0-dev+<commit>` rather than `0.0.0-dev+<commit>`, and a development
+  CameraAgent image's version label is empty. (#1310)
 - Container builds and local development use .NET SDK 10.0.402, and .NET runtime base images use 10.0.13. (#1336, #1337)
 - OpenTelemetry 1.20.0 corrects HTTP 5xx error tags and reduces routine OTLP exporter HTTP log noise. (#1339)
 - A CameraAgent image names its version and commit, `<version>+<commit>`, in four places: the System > Software page,

@@ -27,14 +27,14 @@ fail() {
 mode="$1"
 version="$2"
 [[ "$version" =~ ^((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))(-[0-9A-Za-z.-]+)?$ ]] ||
-    fail "'$version' is not a release version such as 1.0.0 or 1.0.0-rc.1."
+    fail "'$version' is not a release version such as 0.9.0 or 0.9.0-rc.1."
 release="${BASH_REMATCH[1]}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 changelog="$repo_root/CHANGELOG.md"
 notes="$repo_root/docs/upgrade-notes/$release.md"
 
 # The release's CHANGELOG section: the lines after its "## [X.Y.Z]" heading, up to the next "## " heading, without
-# the link references (such as "[1.0.0]: https://...") Keep a Changelog ends the file with.
+# the link references (such as "[0.9.0]: https://...") Keep a Changelog ends the file with.
 section() {
     [[ -f "$changelog" ]] || return 0
     awk -v heading="## [$release]" '

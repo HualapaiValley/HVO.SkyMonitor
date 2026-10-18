@@ -38,8 +38,8 @@ Only the owner pushes `v*` tags; everything after the tag is the workflow's, unt
 
    ```bash
    git fetch origin main
-   git tag -a v1.0.0 <commit> -m 'SkyMonitor 1.0.0'
-   git push origin v1.0.0
+   git tag -a v0.9.0 <commit> -m 'SkyMonitor 0.9.0'
+   git push origin v0.9.0
    ```
 
 5. **Follow the Release run** in Actions. Once both install tests are green, review the draft release: its files, its
@@ -82,7 +82,7 @@ be unchanged.
   `release:push-image` never moves a tag to another image. Cut the next release candidate or patch version.
 - **Install and Upgrade, or Publish:** the draft exists and is unpublished. Retry a transient failure, such as the
   arm64 runner being offline, with **Re-run failed jobs**, which reuses the same files and draft. Otherwise delete the
-  draft, keeping its tag (`gh release delete v1.0.0 --repo HualapaiValley/HVO.SkyMonitor --yes`), and cut the next
+  draft, keeping its tag (`gh release delete v0.9.0 --repo HualapaiValley/HVO.SkyMonitor --yes`), and cut the next
   version.
 - **Latest Image:** the release is published. **Re-run failed jobs** moves `latest` again; it checks the release is
   still the newest final release first.
@@ -117,7 +117,7 @@ The workflow changes no repository or environment setting; these are the owner's
 ## Checking a release
 
 ```bash
-version=1.0.0
+version=0.9.0
 sha256sum --check --strict --ignore-missing SHA256SUMS
 gh attestation verify hvo-sky-install-linux-arm64 --repo HualapaiValley/HVO.SkyMonitor \
   --cert-identity "https://github.com/HualapaiValley/HVO.SkyMonitor/.github/workflows/release.yml@refs/tags/v$version" \

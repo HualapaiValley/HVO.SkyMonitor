@@ -2,12 +2,12 @@
 # The product version (install contract section 1, #1310): the VersionPrefix in Directory.Build.props, the one version
 # every program and image carries.
 #
-#   scripts/release:version                    1.0.0, the version the next release carries
-#   scripts/release:version --dev              1.0.0-dev, the version of a build given none
+#   scripts/release:version                    0.9.0, the version the next release carries
+#   scripts/release:version --dev              0.9.0-dev, the version of a build given none
 #   scripts/release:version --check <version>  succeeds when <version> is the product version or a pre-release of it,
-#                                              such as 1.0.0, 1.0.0-rc.1 or 1.0.0-dev.3, and fails naming why otherwise
+#                                              such as 0.9.0, 0.9.0-rc.1 or 0.9.0-dev.3, and fails naming why otherwise
 #   scripts/release:version --tag <tag>        the version a final release or release candidate tag names, checked:
-#                                              v1.0.0 gives 1.0.0 and v1.0.0-rc.1 gives 1.0.0-rc.1; any other tag, or
+#                                              v0.9.0 gives 0.9.0 and v0.9.0-rc.1 gives 0.9.0-rc.1; any other tag, or
 #                                              one for another version, fails
 #
 # A release's builds are given its version as -p:Version (scripts/release:assets, and the CameraAgent image through
@@ -30,7 +30,7 @@ prefix="$(sed -n 's:^[[:space:]]*<VersionPrefix>\([^<]*\)</VersionPrefix>[[:spac
 [[ "$(grep -c '<VersionPrefix>' "$props")" == 1 && -n "$prefix" ]] ||
     fail "Directory.Build.props must hold exactly one VersionPrefix, on a line of its own."
 [[ "$prefix" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
-    fail "the VersionPrefix '$prefix' is not a release version such as 1.0.0."
+    fail "the VersionPrefix '$prefix' is not a release version such as 0.9.0."
 
 # A SemVer pre-release identifier: a number without a leading zero, or letters, digits and hyphens with a non-digit.
 identifier='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
