@@ -31,7 +31,11 @@ class BaseImages(unittest.TestCase):
         subprocess.run(["git", "-C", self.root, "add", path], check=True)
 
     def check(self, error=None):
-        result = subprocess.run([CHECK, self.root], capture_output=True, text=True)
+        result = subprocess.run([CHECK, self.root], capture_output=True)
+        # Decode bytes directly: text=True would normalize raw CR to LF and
+        # conceal a terminal-control regression from assert_safe.
+        result.stdout = result.stdout.decode("utf-8")
+        result.stderr = result.stderr.decode("utf-8")
         if error is None:
             self.assertEqual(result.returncode, 0, result.stderr)
         else:
@@ -146,6 +150,7 @@ FROM build AS final
 
     def assert_safe(self, result):
         for stream in (result.stdout, result.stderr):
+            self.assertTrue(stream.isascii(), repr(stream))
             self.assertFalse(any(ord(c) < 32 and c != "\n" or 127 <= ord(c) <= 159 for c in stream), repr(stream))
             self.assertFalse(any(line.lstrip().startswith("::") for line in stream.splitlines()), repr(stream))
 
