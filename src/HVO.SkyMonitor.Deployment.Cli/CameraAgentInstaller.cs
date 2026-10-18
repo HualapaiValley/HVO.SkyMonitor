@@ -616,7 +616,9 @@ internal sealed partial class CameraAgentInstaller
                 Warnings = warnings,
                 Plan = retainedCompletedResult is null
                     ? InstalledPlan(paths, instanceId, image.ImageId, targetResources, freshFacts, recordAction, recordLocation)
-                    : ReRunPlan(paths, existingManifest!, targetResources, composeBefore, limitsChange || resultModelStale, recordAction, recordLocation)
+                    : ReRunPlan(
+                        paths, existingManifest!, targetResources, composeBefore, limitsChange, limitsChange || resultModelStale,
+                        recordAction, recordLocation)
             };
         }
         catch (OperationCanceledException exception)

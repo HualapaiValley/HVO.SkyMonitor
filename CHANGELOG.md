@@ -12,6 +12,18 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 ### Added
 
+- `hvo-sky-install` follows the shared install contract's command surface. `--plan` (the new name of `--dry-run`)
+  reports what install, a re-run of one, `upgrade`, `rollback`, `reinstall`, `uninstall` and `purge` would create,
+  change, leave unchanged or remove, and changes nothing. `cameraagent install --answers FILE` installs from a strict,
+  versioned JSON answers file in which an unknown member is an error. Running an install again with the same answers
+  prints `Nothing to change`. (#1315)
+- The installer keeps a machine install record, `/etc/hvo-sky/install.json`: each instance's release version, previous
+  version, the version a rollback left, its images, condition, URL and container limits, and no secret. Every completed
+  operation updates it, through a narrow `sudo` helper because the file is root-owned. (#1315)
+- Re-running an install with new `--cpus` or `--memory` changes an installed instance's container limits: the
+  container is recreated with them and must come back healthy, or the recorded limits are restored. The host check
+  and the 2 CPU and 4 GiB floor still apply. (#1315)
+
 - CameraAgent serves an operator settings catalogue and versioned group writes through its operations API. The
   site owner can create and revoke Read or ReadWrite API keys for non-browser clients. (#1316)
 - `hvo-sky-install --version` prints the installer's version and the commit it was built from, as
@@ -21,6 +33,14 @@ onward; earlier development is recorded in its pull requests. A release renames 
   realistic daylight, or no daylight. With no daylight, capture control treats every frame as night. (#1304)
 
 ### Changed
+
+- Installer exit codes follow the install contract on every command: `0` done, `1` a step failed, `2` invalid command
+  line or answers, `3` refused with nothing changed, `130` interrupted. Refusals that used to exit `1` now exit `3`,
+  among them unmet host prerequisites, an incompatible `cameraagent preflight`, running as root, an upgrade to the image
+  already active and an untrusted host policy; an unreadable `--config` file now exits `2`. A refusal says `Installation
+  refused: ... Nothing was changed.`, or with `--json` reports `errorCode` `refused`. (#1315)
+- A re-run of a completed install is checked against the instance its records describe rather than against the first
+  request's exact inputs: anything but the container limits that differs is refused and named. (#1315)
 
 - Container builds and local development use .NET SDK 10.0.402, and .NET runtime base images use 10.0.13. (#1336, #1337)
 - OpenTelemetry 1.20.0 corrects HTTP 5xx error tags and reduces routine OTLP exporter HTTP log noise. (#1339)
@@ -56,6 +76,12 @@ onward; earlier development is recorded in its pull requests. A release renames 
   acknowledges a pause only after every deletion already running has finished. (#1314)
 - Successful raw ingress SQLite commits and checkpoints are logged at Debug instead of Warning. A manual location
   override superseded by configuration is logged at Information. Warnings now mean something did not work. (#1303)
+
+### Deprecated
+
+- `--config FILE` is deprecated in favour of `--answers FILE` (the same members, plus `"schemaVersion": 1`, without
+  `dryRun`, `resume` and `json`). `--migration-backward-compatible` is deprecated: it has had no effect since #1314 and
+  now warns; it stays accepted so an interrupted upgrade begun with it still resumes. (#1315)
 
 ### Fixed
 

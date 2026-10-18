@@ -25,14 +25,186 @@ runbook describes the installer as it behaves today.
 
 | Contract | Today | Issue |
 | --- | --- | --- |
-| Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | The `hvo-sky-install` CLI, configured by flags or `--config`; no runtime client or wizard | [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
+| Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | The `hvo-sky-install` CLI, configured by flags or an [answers file](#answers-file); no runtime client or wizard | [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
 | `install.sh` entry point with `--check` and `--from DIR` | No `install.sh`; the self-contained CLI is run directly | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
 | Install and upgrade from a published release, by GHCR digest or offline archive | Nothing is published, so hosts install a locally built image by its loaded image ID | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309) |
 | `--version`, and upgrade notes printed before an upgrade | `--version` reports the installer build identity. The release.json reader and pre-upgrade notes are implemented; the release acquisition path that supplies them is pending #1309 (see [Upgrade notes and older targets](#upgrade-notes-and-older-targets)) | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312) |
-| `--plan`, `--answers FILE`, `backup` and `restore FILE`, exit codes 0/1/2/3/130 | `--dry-run` and `--config`; no `backup` or `restore`; a refusal such as failed host prerequisites exits `1` | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
-| Container limits kept in the install record and changed with a re-run | Limits are set at install and recorded in the instance's `instance-manifest.json`. A re-run with different `--cpus` or `--memory` is refused, and an installed instance's limits change only when an upgrade moves limits the operator did not set to the new default (see [Container Resources](#container-resources)) | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
+| `backup` and `restore FILE` | No `backup` or `restore` | [#1353](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1353) |
+| Command words `install`, `upgrade`, `rollback`, `uninstall`, `status` | Instance commands are grouped under `cameraagent` (`cameraagent install`, `cameraagent upgrade`, ...), because one host holds several instances and the catalogs beside them; `status` is top level | Recorded for contract draft 4 |
 | Settings catalogue served by the API | CameraAgent serves the [operator settings catalogue and group writes](../contracts/cameraagent-operator-settings-v1.md) through its operations API; the owner creates API keys for non-browser clients | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
-| Machine install record `/etc/hvo-sky/install.json` | Records live beneath each instance root (`instance-manifest.json`, `state/deployment/`); `/etc/hvo-sky/` holds only the host policy | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
+
+## Command Surface
+
+The command surface follows section 5 of the install contract (#1315). Instance
+commands are grouped under `cameraagent`; every command takes `--json` and
+`-h`/`--help`, and `--version` stands alone.
+
+### Exit codes
+
+Every command ends with one of these codes:
+
+| Code | Meaning | Examples |
+| --- | --- | --- |
+| `0` | Done. With `--plan`, the plan can be carried out | An install, a re-run with nothing to change, `status`, `--help` |
+| `1` | A step failed. Re-running the same command continues, with `--resume` where the message says so | Docker or CameraAgent did not respond, a verification failed, an install record that could not be written |
+| `2` | The command line or the answers file is invalid, or a question had no one to answer it | An unknown option, an answers file with an unknown member, a missing `--friendly-name` without a terminal |
+| `3` | Refused, and nothing was changed | Unmet [host prerequisites](#host-prerequisites), a host policy that cannot be trusted, running as root, a re-run that describes a different instance, an incompatible preflight, an upgrade to the image already active or to an older release, a rollback with no previous image |
+| `130` | Interrupted by Ctrl+C or SIGTERM | |
+
+With `--json`, a failure or refusal writes one JSON object to standard error:
+`{"schemaVersion": 1, "errorCode": "...", "message": "..."}`. A refusal's
+`errorCode` is `refused`, except `host-prerequisites` and `state-incompatible`,
+which keep their own codes. Without `--json` a refusal reads
+`Installation refused: <reason> Nothing was changed.`
+
+### Plan
+
+`--plan` is read-only and reports what the command would create, change, leave
+unchanged or remove. `--dry-run` is its older name and does the same. Install, its
+re-run, `cameraagent upgrade`, `rollback`, `reinstall`, `uninstall` and `purge`
+report a plan; `reset-state` and the catalog commands report their existing dry-run
+output. A plan that would be refused is not printed: the refusal is reported and the
+command exits `3`, so a printed plan can always be carried out.
+
+```console
+$ hvo-sky-install cameraagent install --answers camera.json --memory 6g --plan
+...
+Plan:
+  unchanged  folder     /var/lib/hvo-sky/cameraagents/<uuid> (instance)
+  change     file       /var/lib/hvo-sky/cameraagents/<uuid>/config/compose/compose.yml (Compose model, 2 CPUs, 6 GiB of memory and 256 PIDs)
+  change     file       /var/lib/hvo-sky/cameraagents/<uuid>/instance-manifest.json (instance manifest, 2 CPUs, 6 GiB of memory and 256 PIDs)
+  change     file       /var/lib/hvo-sky/cameraagents/<uuid>/state/deployment/installation-result.json (installation result, its Compose model)
+  change     container  hvo-skymonitor-<uuid> (recreated with 2 CPUs, 6 GiB of memory and 256 PIDs)
+  change     record     /etc/hvo-sky/install.json (instance <uuid>)
+0 to create, 5 to change, 1 unchanged.
+```
+
+With `--json` the plan is the result's `plan` member: `items`, each with `action`
+(`Create`, `Change`, `Unchanged` or `Remove`), `kind`, `target` and `detail`, and the
+`summary`. A completed install also reports the plan of what it did, under
+`Changes:`. Neither is retained in `installation-result.json`.
+
+### Answers file
+
+`cameraagent install --answers FILE` reads the install from strict JSON with a
+schema version. The members are those `--config` reads, under the same names:
+
+```json
+{
+  "schemaVersion": 1,
+  "instanceId": "8f6a1d0e-6c1b-4e57-9a3e-2d4b5c6e7f80",
+  "friendlyName": "North All-Sky Camera",
+  "ownerEmail": "owner@example.org",
+  "bindAddress": "127.0.0.1",
+  "port": 5130,
+  "catalogBundle": "/srv/hvo/hyg-v4.2-p3-s2-r1.bundle",
+  "imageReference": "sha256:<loaded-image-id>",
+  "latitudeDegrees": 35.2,
+  "longitudeDegrees": -114.1,
+  "elevationMeters": 800,
+  "timeZoneId": "America/Phoenix",
+  "cpus": 2,
+  "memory": "4g"
+}
+```
+
+- `schemaVersion` is required and must be `1`. A member the installer does not
+  read, a member given twice, or a file that cannot be read is a usage error (exit
+  `2`) naming the file.
+- `instanceId` and `friendlyName` are required, so running the file again addresses
+  the same instance. Every other member defaults as the command-line option does.
+- The other members are `productRoot`, `imageArchive`, `imageArchiveSha256`,
+  `passwordFile`, `acknowledgePlaintextHttp`, `generatePassword`, `noDownload` and
+  `replayProfile` (`InProcess` or `LocalRunner`). The run flags `dryRun`, `resume`
+  and `json` are not answers: give `--plan`, `--resume` and `--json` on the command
+  line. The key-signed release selectors are retired
+  ([#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309)) and are not
+  members.
+- No secret is ever an answer. A password is given in its own owner-only file
+  (`passwordFile`) or generated (`generatePassword`).
+- Only `--cpus` and `--memory` may accompany `--answers`, and they replace the file's
+  limits, so a re-run with the same file changes the limits (see
+  [Re-running an install](#re-running-an-install)).
+
+`--config FILE` is deprecated. It installs exactly as before and warns: on standard
+error, or with `--json` as an `option-deprecated` entry in the result's `warnings`.
+To convert a configuration file, add `"schemaVersion": 1` and remove `dryRun`,
+`resume` and `json`.
+
+### Re-running an install
+
+Running a completed install again with the same answers prints every item
+unchanged and `Nothing to change: the instance is installed as the answers
+describe.` It still validates the installed instance against its records and checks
+it is healthy, but writes no record.
+
+A re-run is held to the instance its records describe, not to the bytes of the first
+request: the camera name, owner email, bind address, port, product root, location,
+time zone, replay profile, image and catalog must match the installed instance. Any
+difference is refused with exit `3`, names each differing option, and changes
+nothing. Only the container limits change with a re-run (see
+[Container Resources](#container-resources)). After an upgrade, a re-run names the
+image the instance now runs; the image itself changes only with `cameraagent upgrade`.
+
+An unfinished install is different: `--resume` continues it only with exactly the
+inputs it began with.
+
+### Install record
+
+The installer keeps a machine install record at `/etc/hvo-sky/install.json`
+(contract section 5), beside the host policy and checked as the policy is: the file
+and every directory above it root-owned and not writable by group or other users,
+no symbolic or hard link. It holds no secret: one entry per instance under the
+production product root.
+
+```json
+{
+  "schemaVersion": 1,
+  "product": "HVO.SkyMonitor",
+  "productRoot": "/var/lib/hvo-sky",
+  "installerVersion": "0.0.0-dev+<commit>",
+  "updatedUtc": "2026-10-18T03:00:00+00:00",
+  "instances": [
+    {
+      "component": "CameraAgent",
+      "instanceId": "8f6a1d0e-6c1b-4e57-9a3e-2d4b5c6e7f80",
+      "friendlyName": "North All-Sky Camera",
+      "condition": "Installed",
+      "version": null,
+      "previousVersion": null,
+      "rolledBackFrom": null,
+      "imageId": "sha256:...",
+      "previousImageId": null,
+      "url": "http://127.0.0.1:5130/",
+      "resources": { "cpus": 2, "memoryBytes": 4294967296, "pidsLimit": 256, "cpusSetByOperator": false, "memorySetByOperator": false },
+      "updatedUtc": "2026-10-18T03:00:00+00:00"
+    }
+  ]
+}
+```
+
+- `version` is the release the instance runs, from its own release record; it is
+  `null` for an image given by `--image-ref`, which no release names.
+  `previousVersion` is the release before the last upgrade, cleared by a rollback;
+  `rolledBackFrom` is the release a rollback left, cleared by the next upgrade.
+- The instance's own records stay authoritative. Each operation that completes on
+  an instance (install, its re-run, upgrade, rollback, reinstall, uninstall) settles
+  that instance's entry from them before it records its completion, and `purge`
+  removes the entry. A write happens only when the entry changes.
+- The installer runs as the runtime user, so it changes the root-owned record
+  through one narrow `sudo` helper (`internal-record-instance`). The helper accepts
+  only the product root and one entry, re-reads the host policy itself, writes only
+  for the product root the policy resolves, and holds the host-policy lock. The
+  record is read back as the runtime user before the change counts.
+- A record that cannot be written, or one the installer did not write and cannot
+  read, fails the operation at that point with exit `1`, after its other changes
+  are complete; the record is never silently overwritten. Remove a damaged record,
+  then re-run the install or rerun a lifecycle command with `--resume` to finish:
+  the operation stays resumable until the record is settled. An upgrade settles the
+  record after capture has resumed, so a record failure never holds capture paused.
+- An admitted test product root (`HVO_INSTALLER_ALLOW_TEST_ROOT=1`) keeps its own
+  record, owner-only, at `<product root>/operations/install.json`, so a test never
+  writes the machine record.
 
 ## Inputs
 
@@ -110,17 +282,19 @@ part of the password.
 `--json` selects the versioned structured result. Its `warnings` array lists each
 [advisory host finding](#host-prerequisites) as a `code` and a `message`, and is
 empty when there is none; the retained `state/deployment/installation-result.json`
-does not carry it. `--dry-run` validates the catalog, Docker daemon, loaded image, generated
+does not carry it, nor the [`plan`](#plan). `--plan` (or its older name `--dry-run`) validates the catalog, Docker daemon, loaded image, generated
 configuration, and rendered Compose model using private temporary storage without
-creating the product root, loading/pulling an image, or starting a container.
+creating the product root, loading/pulling an image, or starting a container, and
+reports the [plan](#plan).
 
-Missing required values are prompted only on an interactive terminal. A strict
-JSON config may be supplied with `--config`; value options cannot be mixed with
-it. Its `cpus` number and `memory` string are the `--cpus` and `--memory`
-[container limits](#container-resources). Flags such as `--dry-run`, `--json`, `--no-download`, and the explicit non-loopback HTTP
-acknowledgement may still be applied. A configuration that does not name
-`productRoot` installs into the production product root, as the command-line form
-does; one that names a root keeps it and is validated like `--product-root`.
+Missing required values are prompted only on an interactive terminal; without one,
+a missing value is a usage error (exit `2`). The install can instead be read from an
+[answers file](#answers-file) with `--answers FILE`. `--config FILE`, its deprecated
+predecessor, still works and warns: it reads the same members without a schema
+version and with the run flags, and cannot be mixed with value options. A
+configuration that does not name `productRoot` installs into the production product
+root, as the command-line form does; one that names a root keeps it and is validated
+like `--product-root`.
 
 To serve the camera on a LAN address, bind it there and acknowledge plaintext
 HTTP:
@@ -148,7 +322,7 @@ and report every finding together so the host can be fixed in one pass:
 | `docker-cpu-quota-unsupported` | `docker info` reports `CpuCfsQuota: true`, so the Compose `cpus` quota is enforced |
 | `docker-pids-limit-unsupported` | `docker info` reports `PidsLimit: true`, so the Compose `pids_limit` is enforced |
 | `docker-host-cpus-insufficient` | `docker info` reports at least as many CPUs (`NCPU`) as the CameraAgent [CPU limit](#container-resources); Docker refuses to create a container with a larger quota |
-| `tar-missing` | an executable `tar` on `PATH`, for an archive of the whole instance (the explicit `backup` command, [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315)); upgrade and rollback no longer run it |
+| `tar-missing` | an executable `tar` on `PATH`, for an archive of the whole instance (the explicit `backup` command, [#1353](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1353)); upgrade and rollback no longer run it |
 | `product-root-storage-insufficient` | room on the filesystem that holds the product root: twice the catalog bundle and image archive together, plus 1 GiB |
 | `docker-root-storage-insufficient` | room on the filesystem that holds Docker's `DockerRootDir`: twice the image archive and 1 GiB |
 | `docker-root-unreported` | `docker info` reports an absolute `DockerRootDir` |
@@ -181,7 +355,7 @@ readable, and Docker's own limit warnings.
 The human form renders every finding and its remedy on standard error. With
 `--json` the structured report is written to standard output and standard error
 carries one error object with `errorCode` `host-prerequisites`; the exit code is
-`1` either way. The CLI uses SQLite in-process and never runs `sqlite3` or `jq`,
+`3` (refused, nothing changed) either way. The CLI uses SQLite in-process and never runs `sqlite3` or `jq`,
 so neither is required. Uninstall, purge, and the other lifecycle commands do not
 evaluate these prerequisites, so a host that loses limit support can still be
 cleaned up.
@@ -200,9 +374,10 @@ hvo-sky-install cameraagent install ... --cpus 3 --memory 6g
   `2.5`.
 - `--memory` is whole mebibytes or gibibytes, such as `6144m` or `6g`, from `4g`
   to `1024g`.
-- In a `--config` file they are the `cpus` number and the `memory` string, for
-  example `"cpus": 3, "memory": "6g"`. Leaving a member out, or setting it to
-  `null`, leaves that limit to the default.
+- In an [answers file](#answers-file) (or a deprecated `--config` file) they are the
+  `cpus` number and the `memory` string, for example `"cpus": 3, "memory": "6g"`.
+  Leaving a member out, or setting it to `null`, leaves that limit to the default on
+  a first install, and keeps the recorded limit on a re-run.
 - A limit below 2 CPUs or 4 GiB is **refused** as a usage error with exit code
   `2`. No acknowledgement admits one: the contract makes these limits a floor,
   and [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044)
@@ -214,7 +389,7 @@ hvo-sky-install cameraagent install ... --cpus 3 --memory 6g
   2 GiB and 64 PID limits. They bound one sandboxed replay at a time and are not
   changed by these options.
 
-Install and `install --dry-run` check the limits against the host Docker runs on
+Install and `install --plan` (`--dry-run`) check the limits against the host Docker runs on
 before anything is created (see [Host Prerequisites](#host-prerequisites)). A
 CPU limit above the CPUs Docker reports is refused, because Docker would refuse
 to create the container. A memory limit above the host's memory is the advisory
@@ -245,22 +420,47 @@ installer default:
   before the upgrade, authenticated against its recorded identity, and gives it
   the limits the instance records. A rollback never returns an instance to limits
   it has left.
-- **Reinstall** keeps the recorded limits, and so does a re-run of a completed
-  install. A re-run is held to the same request: adding, dropping or changing
-  `--cpus` or `--memory` is refused with `The retained installation state belongs
-  to different immutable inputs`. The same limit written another way, such as
-  `6g` and `6144m`, is the same request.
+- **Reinstall** keeps the recorded limits.
+- **A re-run** of a completed install changes them (contract section 7). A limit
+  given on the re-run replaces the recorded one and counts as set by the operator; a
+  limit left out keeps what the instance records. The same limit written another way,
+  such as `6g` and `6144m`, changes nothing. Giving the default explicitly changes no
+  limit, only records it as the operator's, so the next upgrade keeps it.
 - A failed upgrade candidate restores the exact prior Compose file and manifest,
   limits included.
-- The limits of an installed instance cannot be changed yet, apart from the
-  default moving on upgrade.
+- The [host check](#host-prerequisites) runs against the limits a re-run moves to,
+  before anything changes: a CPU limit above the CPUs Docker reports is refused
+  with exit `3`, and the 2 CPU and 4 GiB floor still refuses a lower limit as a
+  usage error.
+
+To change the limits of an installed instance, re-run its install with the new
+limits, from the answers file it was installed with or the same options:
+
+```bash
+hvo-sky-install cameraagent install --answers camera.json --cpus 3 --memory 6g --plan
+hvo-sky-install cameraagent install --answers camera.json --cpus 3 --memory 6g
+```
+
+The re-run first validates the instance at the limits it records and checks it is
+healthy. It then rewrites the Compose file with the new limits, Compose recreates
+the container, and the instance must come back healthy and verified. Only then are
+the instance manifest, the installation result and the
+[install record](#install-record) rewritten, in that order. If the recreated
+container does not come back healthy and verified, or the run is interrupted, the
+installer rewrites the Compose file with the recorded limits and recreates the
+container with them before it reports the failure (exit `1`, or `130` when
+interrupted); the records were not changed. The installation stays completed
+throughout, so re-running continues: a run interrupted after the manifest but before
+the result is finished by the next re-run, which rewrites the result to follow the
+manifest.
 
 An instance installed before limits were recorded has no `resources` member. It
 runs the original 1 CPU, 1 GiB and 256 PID limits. No operator could set them,
 because the installer had no option for them, so none counts as set by the
 operator. Its next `cameraagent upgrade` moves it to 2 CPUs and 4 GiB and records
 `resources` with both flags `false`; until then a re-run of its install keeps the
-original limits exactly. A runtime `docker update` override, such as a memory
+original limits exactly, unless the re-run gives a limit: the original 1 CPU and
+1 GiB are below the floor, so the limit not given moves to the default. A runtime `docker update` override, such as a memory
 override approved during recovery, is not an installer setting: it is not
 recorded, and the container an upgrade creates carries the recorded limits.
 
@@ -409,10 +609,13 @@ detection.
 can be evaluated against persisted state first without acquiring, loading, or starting anything; see
 [State Compatibility Boundary](#state-compatibility-boundary).
 
-`--migration-backward-compatible` is no longer needed. A candidate that declares a
+`--migration-backward-compatible` is deprecated. A candidate that declares a
 state migration has its small databases snapshotted before it starts instead; see
 [Swap upgrade and database snapshots](#swap-upgrade-and-database-snapshots). The flag
-is still accepted and changes nothing.
+is still accepted and changes nothing, and the command warns about it: on standard
+error before it runs, or with `--json` as an `option-deprecated` entry in the result's
+`warnings`. It is not removed yet because it is part of an upgrade's journaled request
+identity, so an interrupted upgrade begun with it still resumes with it (#1315).
 
 ### Edge work persisted across an upgrade
 
@@ -1399,7 +1602,8 @@ Rollback state is retained per operating-system user
 (`$XDG_STATE_HOME/hvo-sky/distribution`, else `~/.local/state/...`), so run the preflight as the same
 user that will run the upgrade for its rollback protection to consult the same floor.
 
-The command exits `0` when compatible and `1` with error code `state-incompatible` otherwise. Each finding
+The command exits `0` when compatible and `3` (refused, nothing changed) with error code `state-incompatible`
+otherwise. Each finding
 names its boundary code, path, observed
 value, expected value, and remediation. The checked boundaries are the selected catalog manifest version and
 catalog identity, the Identity migration lineage recorded in `__EFMigrationsHistory`, the raw-ingress
@@ -1944,7 +2148,7 @@ upgrade completed, and ordinary `--resume` cannot restart a settled recovery.
 Issue [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044) remains
 open for size-aware backup deadlines, capacity, progress, and cancellation/partial
 cleanup, which now apply to the explicit `backup` command
-([#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315)) rather than to
+([#1353](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1353)) rather than to
 every upgrade. Do not manually edit the lifecycle journal or
 reduce an approved memory override to work around those remaining limits.
 

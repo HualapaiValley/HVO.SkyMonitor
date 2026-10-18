@@ -265,6 +265,7 @@ internal sealed partial class CameraAgentInstaller
                 manifest,
                 target,
                 await ReadComposeIfPresentAsync(paths, cancellationToken).ConfigureAwait(false),
+                limitsChange,
                 limitsChange || resultModelStale,
                 recordAction,
                 location)
@@ -334,7 +335,8 @@ internal sealed partial class CameraAgentInstaller
         InstanceManifest manifest,
         ContainerResourceLimits? target,
         string? composeBefore,
-        bool recordsChange,
+        bool manifestChanges,
+        bool resultChanges,
         DeploymentPlanAction recordAction,
         InstallRecordLocation record)
     {
@@ -349,8 +351,10 @@ internal sealed partial class CameraAgentInstaller
                 new(DeploymentPlanAction.Unchanged, "folder", paths.InstanceRoot, "instance"),
                 new(containerChanges ? DeploymentPlanAction.Change : DeploymentPlanAction.Unchanged, "file", compose,
                     containerChanges ? $"Compose model, {limits}" : "Compose model"),
-                new(recordsChange ? DeploymentPlanAction.Change : DeploymentPlanAction.Unchanged, "file", paths.ManifestPath,
-                    recordsChange ? $"instance manifest, {limits}" : "instance manifest"),
+                new(manifestChanges ? DeploymentPlanAction.Change : DeploymentPlanAction.Unchanged, "file", paths.ManifestPath,
+                    manifestChanges ? $"instance manifest, {limits}" : "instance manifest"),
+                new(resultChanges ? DeploymentPlanAction.Change : DeploymentPlanAction.Unchanged, "file", paths.ResultPath,
+                    resultChanges ? "installation result, its Compose model" : "installation result"),
                 new(containerChanges ? DeploymentPlanAction.Change : DeploymentPlanAction.Unchanged, "container", container,
                     containerChanges ? $"recreated with {limits}" : $"image {manifest.Image.ImageId}, {limits}"),
                 new(recordAction, "record", record.Path, $"instance {manifest.InstanceId:D}")

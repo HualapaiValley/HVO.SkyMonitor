@@ -46,14 +46,11 @@ public sealed class ExitCodeContractTests
         ("host set-product-root", ["host", "set-product-root", "/srv/data/hvo-skymonitor"])
     ];
 
-    /// <summary>What the substituted executor does, and the exit code the contract gives it.</summary>
-    public static IEnumerable<object[]> Matrix =>
-        from command in Commands
-        from outcome in new (string Name, int Code)[] { ("done", 0), ("failed", 1), ("refused", 3), ("interrupted", 130) }
-        select new object[] { command.Name, outcome.Name, outcome.Code };
-
-    public static IEnumerable<object[]> CommandNames => Commands.Select(static command => new object[] { command.Name });
-
+    /// <summary>
+    /// Every command the parser accepts has its rows below: the matrix and the real-path tests list each one (a
+    /// <c>DataRow</c> per command and code, so the category audit discovers every case), and this test fails when a
+    /// command is added without them.
+    /// </summary>
     [TestMethod]
     public void Commands_CoverEveryCommandTheParserAccepts()
         => CollectionAssert.AreEqual(
@@ -62,7 +59,70 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DynamicData(nameof(Matrix))]
+    [DataRow("status", "done", 0)]
+    [DataRow("status", "failed", 1)]
+    [DataRow("status", "refused", 3)]
+    [DataRow("status", "interrupted", 130)]
+    [DataRow("cameraagent install", "done", 0)]
+    [DataRow("cameraagent install", "failed", 1)]
+    [DataRow("cameraagent install", "refused", 3)]
+    [DataRow("cameraagent install", "interrupted", 130)]
+    [DataRow("cameraagent recover-owner", "done", 0)]
+    [DataRow("cameraagent recover-owner", "failed", 1)]
+    [DataRow("cameraagent recover-owner", "refused", 3)]
+    [DataRow("cameraagent recover-owner", "interrupted", 130)]
+    [DataRow("cameraagent preflight", "done", 0)]
+    [DataRow("cameraagent preflight", "failed", 1)]
+    [DataRow("cameraagent preflight", "refused", 3)]
+    [DataRow("cameraagent preflight", "interrupted", 130)]
+    [DataRow("cameraagent reset-state", "done", 0)]
+    [DataRow("cameraagent reset-state", "failed", 1)]
+    [DataRow("cameraagent reset-state", "refused", 3)]
+    [DataRow("cameraagent reset-state", "interrupted", 130)]
+    [DataRow("cameraagent upgrade", "done", 0)]
+    [DataRow("cameraagent upgrade", "failed", 1)]
+    [DataRow("cameraagent upgrade", "refused", 3)]
+    [DataRow("cameraagent upgrade", "interrupted", 130)]
+    [DataRow("cameraagent rollback", "done", 0)]
+    [DataRow("cameraagent rollback", "failed", 1)]
+    [DataRow("cameraagent rollback", "refused", 3)]
+    [DataRow("cameraagent rollback", "interrupted", 130)]
+    [DataRow("cameraagent reinstall", "done", 0)]
+    [DataRow("cameraagent reinstall", "failed", 1)]
+    [DataRow("cameraagent reinstall", "refused", 3)]
+    [DataRow("cameraagent reinstall", "interrupted", 130)]
+    [DataRow("cameraagent uninstall", "done", 0)]
+    [DataRow("cameraagent uninstall", "failed", 1)]
+    [DataRow("cameraagent uninstall", "refused", 3)]
+    [DataRow("cameraagent uninstall", "interrupted", 130)]
+    [DataRow("cameraagent purge", "done", 0)]
+    [DataRow("cameraagent purge", "failed", 1)]
+    [DataRow("cameraagent purge", "refused", 3)]
+    [DataRow("cameraagent purge", "interrupted", 130)]
+    [DataRow("catalog install", "done", 0)]
+    [DataRow("catalog install", "failed", 1)]
+    [DataRow("catalog install", "refused", 3)]
+    [DataRow("catalog install", "interrupted", 130)]
+    [DataRow("catalog select", "done", 0)]
+    [DataRow("catalog select", "failed", 1)]
+    [DataRow("catalog select", "refused", 3)]
+    [DataRow("catalog select", "interrupted", 130)]
+    [DataRow("catalog rollback", "done", 0)]
+    [DataRow("catalog rollback", "failed", 1)]
+    [DataRow("catalog rollback", "refused", 3)]
+    [DataRow("catalog rollback", "interrupted", 130)]
+    [DataRow("catalog gc", "done", 0)]
+    [DataRow("catalog gc", "failed", 1)]
+    [DataRow("catalog gc", "refused", 3)]
+    [DataRow("catalog gc", "interrupted", 130)]
+    [DataRow("catalog check", "done", 0)]
+    [DataRow("catalog check", "failed", 1)]
+    [DataRow("catalog check", "refused", 3)]
+    [DataRow("catalog check", "interrupted", 130)]
+    [DataRow("host set-product-root", "done", 0)]
+    [DataRow("host set-product-root", "failed", 1)]
+    [DataRow("host set-product-root", "refused", 3)]
+    [DataRow("host set-product-root", "interrupted", 130)]
     public async Task RunAsync_EveryCommandEndsWithTheContractExitCode(string command, string outcome, int expected)
     {
         using var host = new PolicyHost();
@@ -75,7 +135,22 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DynamicData(nameof(CommandNames))]
+    [DataRow("status")]
+    [DataRow("cameraagent install")]
+    [DataRow("cameraagent recover-owner")]
+    [DataRow("cameraagent preflight")]
+    [DataRow("cameraagent reset-state")]
+    [DataRow("cameraagent upgrade")]
+    [DataRow("cameraagent rollback")]
+    [DataRow("cameraagent reinstall")]
+    [DataRow("cameraagent uninstall")]
+    [DataRow("cameraagent purge")]
+    [DataRow("catalog install")]
+    [DataRow("catalog select")]
+    [DataRow("catalog rollback")]
+    [DataRow("catalog gc")]
+    [DataRow("catalog check")]
+    [DataRow("host set-product-root")]
     public async Task RunAsync_EveryCommandWithAnOptionItDoesNotAccept_ExitsTwoBeforeAnythingRuns(string command)
     {
         using var host = new PolicyHost();
@@ -89,7 +164,22 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DynamicData(nameof(CommandNames))]
+    [DataRow("status")]
+    [DataRow("cameraagent install")]
+    [DataRow("cameraagent recover-owner")]
+    [DataRow("cameraagent preflight")]
+    [DataRow("cameraagent reset-state")]
+    [DataRow("cameraagent upgrade")]
+    [DataRow("cameraagent rollback")]
+    [DataRow("cameraagent reinstall")]
+    [DataRow("cameraagent uninstall")]
+    [DataRow("cameraagent purge")]
+    [DataRow("catalog install")]
+    [DataRow("catalog select")]
+    [DataRow("catalog rollback")]
+    [DataRow("catalog gc")]
+    [DataRow("catalog check")]
+    [DataRow("host set-product-root")]
     public async Task RunAsync_EveryCommandInterruptedBeforeItBegins_ExitsOneHundredThirty(string command)
     {
         using var host = new PolicyHost();
@@ -104,7 +194,22 @@ public sealed class ExitCodeContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DynamicData(nameof(CommandNames))]
+    [DataRow("status")]
+    [DataRow("cameraagent install")]
+    [DataRow("cameraagent recover-owner")]
+    [DataRow("cameraagent preflight")]
+    [DataRow("cameraagent reset-state")]
+    [DataRow("cameraagent upgrade")]
+    [DataRow("cameraagent rollback")]
+    [DataRow("cameraagent reinstall")]
+    [DataRow("cameraagent uninstall")]
+    [DataRow("cameraagent purge")]
+    [DataRow("catalog install")]
+    [DataRow("catalog select")]
+    [DataRow("catalog rollback")]
+    [DataRow("catalog gc")]
+    [DataRow("catalog check")]
+    [DataRow("host set-product-root")]
     public async Task RunAsync_EveryCommandUnderAHostPolicyThatCannotBeTrusted_IsRefusedWithExitThree(string command)
     {
         using var host = new PolicyHost();

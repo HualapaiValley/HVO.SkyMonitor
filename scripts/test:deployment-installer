@@ -246,6 +246,26 @@ test "$(jq -er '.installationId' "$root/first.json")" = "$(jq -er '.installation
 test "$(jq -er '.configurationSha256' "$root/first.json")" = "$(jq -er '.configurationSha256' "$root/rerun.json")"
 test "$(jq -er '.catalog.databaseSha256' "$root/first.json")" = "$(jq -er '.catalog.databaseSha256' "$root/rerun.json")"
 
+# A re-run that gives a new limit changes it (#1315, install contract section 7): its plan changes nothing, Compose
+# recreates the container with the new limit, and the manifest and the test root's install record follow. The same
+# answers again change nothing, and a last re-run returns the memory to 4 GiB for the scenarios below.
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" --memory 6g --plan >"$root/limits-plan.json"
+test "$(jq -er '.outcome' "$root/limits-plan.json")" = Planned
+test "$(jq -er '[.plan.items[] | select(.kind == "container")][0].action' "$root/limits-plan.json")" = Change
+test "$(docker inspect "$container" | jq -er '.[0].HostConfig.Memory')" = 4294967296
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" --memory 6g >"$root/limits.json"
+test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
+test "$(docker inspect "$container" | jq -er '.[0].HostConfig | "\(.NanoCpus) \(.Memory) \(.PidsLimit)"')" = \
+  "2000000000 6442450944 256"
+jq -e '.resources == {cpus: 2, memoryBytes: 6442450944, pidsLimit: 256, cpusSetByOperator: false, memorySetByOperator: true}' \
+  "$instance_root/instance-manifest.json" >/dev/null
+jq -e --arg id "$instance_id" '[.instances[] | select(.instanceId == $id)] | length == 1 and .[0].resources.memoryBytes == 6442450944' \
+  "$root/product/operations/install.json" >/dev/null
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" --memory 6g >"$root/limits-again.json"
+jq -e '.plan.summary | startswith("Nothing to change")' "$root/limits-again.json" >/dev/null
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" --memory 4g >"$root/limits-back.json"
+test "$(docker inspect "$container" | jq -er '.[0].HostConfig.Memory')" = 4294967296
+
 if [[ -n "$baseline_revision" ]]; then
   recovery_state="$root/product/operations/cameraagent-$instance_id.owner-recovery.json"
   lifecycle_state="$root/product/operations/cameraagent-$instance_id.lifecycle.json"

@@ -285,7 +285,8 @@ public sealed partial class InstallerFlowTests
             var result = await CameraAgentLifecycleManager.ReadResultAsync(resultPath, CancellationToken.None);
             Assert.AreEqual(manifest.ComposeModelSha256, result.ComposeModelSha256);
             Assert.AreEqual(DeploymentPlanAction.Unchanged, finished.Plan!.Items.Single(static item => item.Kind == "container").Action);
-            Assert.AreEqual(DeploymentPlanAction.Change, finished.Plan.Items.Single(static item => item.Target.EndsWith("instance-manifest.json", StringComparison.Ordinal)).Action);
+            Assert.AreEqual(DeploymentPlanAction.Unchanged, finished.Plan.Items.Single(static item => item.Target.EndsWith("instance-manifest.json", StringComparison.Ordinal)).Action);
+            Assert.AreEqual(DeploymentPlanAction.Change, finished.Plan.Items.Single(static item => item.Target.EndsWith("installation-result.json", StringComparison.Ordinal)).Action);
         }
         finally
         {
