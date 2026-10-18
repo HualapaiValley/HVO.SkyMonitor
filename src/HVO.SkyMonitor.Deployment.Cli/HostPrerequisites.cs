@@ -268,9 +268,10 @@ internal static class HostPrerequisites
     /// The loud warning a recovery <paramref name="operation"/> (a rollback or a restore-only recovery) gives before it
     /// changes anything, on standard error and in the operation's install log, when Docker cannot enforce some of the
     /// CameraAgent limits: each one, what it means for CameraAgent, the host's details and the remedy.
-    /// <see langword="null"/> when Docker enforces them all.
+    /// <see langword="null"/> when Docker enforces them all. An operation that is not a recovery but starts CameraAgent
+    /// again as it ran, a backup (#1353), names why it is not refused in <paramref name="notRefusedBecause"/>.
     /// </summary>
-    public static string? RollbackWarning(HostPrerequisiteReport report, string operation)
+    public static string? RollbackWarning(HostPrerequisiteReport report, string operation, string? notRefusedBecause = null)
     {
         ArgumentNullException.ThrowIfNull(report);
         ArgumentException.ThrowIfNullOrEmpty(operation);
@@ -282,8 +283,11 @@ internal static class HostPrerequisites
         var builder = new StringBuilder();
         builder.AppendLine(CultureInfo.InvariantCulture,
             $"WARNING: THE {operation.ToUpperInvariant()} GOES AHEAD, BUT DOCKER HERE CANNOT ENFORCE THESE CAMERAAGENT LIMITS, so CameraAgent runs WITHOUT them.");
+        var notRefused = notRefusedBecause is null
+            ? $"A {operation} is a recovery path, so it is not refused (install contract section 7)"
+            : $"{notRefusedBecause}, so it is not refused";
         builder.AppendLine(CultureInfo.InvariantCulture,
-            $"A {operation} is a recovery path, so it is not refused (install contract section 7); an install or an upgrade is refused here until this is fixed. Every limit Docker enforces is kept.");
+            $"{notRefused}; an install or an upgrade is refused here until this is fixed. Every limit Docker enforces is kept.");
         foreach (var finding in unenforced)
         {
             builder.AppendLine(CultureInfo.InvariantCulture, $"- {DescribeUnenforced(finding)}");

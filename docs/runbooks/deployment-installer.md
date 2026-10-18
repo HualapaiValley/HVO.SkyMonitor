@@ -181,8 +181,8 @@ there is never journaled:
   instance, the catalog bundle and the persisted state before it prepares anything.
 - A lifecycle command decides, before it takes a lock or writes its journal, the
   instance's condition, a rollback with no previous image, an older release, an
-  unfinished operation that demands `--resume`, the purge gates, for an upgrade or
-  a rollback the [container limits the host can enforce](#upgrade-rollback-and-the-hosts-limits),
+  unfinished operation that demands `--resume`, the purge gates, for an upgrade, a
+  rollback or a backup the [container limits the host can enforce](#upgrade-rollback-and-the-hosts-limits),
   and for an upgrade whose candidate is known without importing it (the image Docker
   holds, or a release's image read from its archive or registry), the already-active
   and state-contract checks and the state preflight. A registry release image is
@@ -505,7 +505,7 @@ The human form renders every finding and its remedy on standard error. With
 `--json` the structured report is written to standard output and standard error
 carries one error object with `errorCode` `host-prerequisites`; the exit code is
 `3` (refused, nothing changed) either way. The CLI uses SQLite in-process and never runs `sqlite3` or `jq`,
-so neither is required. An upgrade and a rollback are held to the limit and CPU
+so neither is required. An upgrade, a rollback and a backup are held to the limit and CPU
 findings ([below](#upgrade-rollback-and-the-hosts-limits)). Uninstall, purge, and
 the other lifecycle commands do not evaluate these prerequisites, so a host that
 loses limit support can still be cleaned up.
@@ -558,6 +558,14 @@ RoofController behaves the same way (HVO.RoofController#151).
   fewer CPUs, because Docker refuses to create that container. Its other guards,
   the instance's state, identity and journal, are unchanged. `upgrade --restore-only`
   is never refused by the host's limits; its own guards are unchanged too.
+- **A backup goes ahead as a rollback does** (#1353). It changes no image, but it
+  starts the instance it stopped again, so a backup of an installed instance warns
+  first, `WARNING: THE BACKUP GOES AHEAD, BUT DOCKER HERE CANNOT ENFORCE`, writes the
+  install log and the result's `warnings` the same way, and makes that start, and the
+  start of its `--resume` and of its recovery, through the same path, with
+  `host-compose.yml` on a host without CPU quota support. It is refused, before
+  anything changes, for a CPU limit Docker enforces on a host with fewer CPUs. A
+  restore starts nothing, so the host's limits do not apply to it.
 
 **A private place to unpack the installer.** `hvo-sky-install` is one
 self-contained file. Each time it starts, the .NET host extracts the native SQLite
@@ -1874,7 +1882,10 @@ This is a check of the archive the backup wrote, not a proof of the gzip format.
    keeps), the snapshot itself, and 256 MiB of headroom on each. Any partial archive an earlier interrupted backup of
    the instance left counts as free. Too little room refuses it (exit `3`).
 2. A running instance's capture is paused and drained, and its container stopped, only while the snapshot and the
-   archive are written. The container is then started, verified and resumed before the archive is read back.
+   archive are written. The container is then started, verified and resumed before the archive is read back. That
+   start is made as every lifecycle start is, so on a host whose Docker cannot enforce some of the CameraAgent limits
+   the backup warns first and starts without a CPU limit Docker refuses there (see
+   [Upgrade, rollback and the host's limits](#upgrade-rollback-and-the-hosts-limits)).
 3. The archive is written as `<archive>.partial`, made durable, read back in full, and proved whole against its
    manifest and the hash taken as it was written. Only then does the backup commit it, under the folder's lock: the
    record is written first, then the partial gets its name. A name that is already committed is refused before any

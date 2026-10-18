@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// PR-1369-R1 (#1353): a restore never lowers an issued counter (F1), a failed backup always restarts the instance (F4),
 /// live authority removals win (F5), a restore's swap is durable in both directories of every move (F7), a resumed
 /// restore needs only the space its remaining phases use (F8), and a backup's space bound covers every snapshot it holds
-/// (F9).
+/// (F9). With #1357 merged, a backup starts the instance it stopped again as every lifecycle start does.
 /// </summary>
 public sealed partial class LifecycleContractTests
 {
@@ -315,6 +315,43 @@ public sealed partial class LifecycleContractTests
             => [.. text.Split('\n', StringSplitOptions.RemoveEmptyEntries)
                 .Select(static line => System.Text.Json.JsonDocument.Parse(line))
                 .Where(document => document.RootElement.TryGetProperty("event", out var value) && value.GetString() == name)];
+    }
+
+    /// <summary>
+    /// A backup starts the instance it stopped again as every lifecycle start does (#1357): on a host without CPU quota
+    /// support, from a copy of the model without the CPU limit Docker refuses there, with the warning on standard error, in
+    /// the result and in the operation's install log. The instance's Compose model keeps every limit it records.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task BackupAsync_HostWithoutCpuQuota_StartsTheInstanceWithoutCpuLimitsAndWarns()
+    {
+        using var fixture = await BackupFixtureAsync();
+        var composePath = Path.Combine(fixture.Paths.ConfigRoot, "compose", "compose.yml");
+        var compose = await File.ReadAllTextAsync(composePath);
+        StringAssert.Contains(compose, "    cpus: \"1\"\n", StringComparison.Ordinal);
+        fixture.Runner.CpuCfsQuota = false;
+        var started = fixture.Runner.StartedModels.Count;
+        var lifecycle = new FakeLifecycleClient();
+        using var error = new StringWriter();
+
+        var result = await BackupAsync(fixture, lifecycle, error: error);
+
+        Assert.AreEqual("completed", result.Outcome);
+        Assert.IsTrue(fixture.Runner.Running, "the instance runs again");
+        Assert.AreEqual(1, lifecycle.ResumeCount);
+        var startedModel = fixture.Runner.StartedModels.Skip(started).Single();
+        Assert.AreEqual(CameraAgentContainerResources.WithoutCpuLimits(compose), startedModel);
+        Assert.AreEqual(
+            startedModel,
+            await File.ReadAllTextAsync(Path.Combine(
+                fixture.Paths.OperationsRoot, "lifecycle", result.OperationId!.Value.ToString("D"), CameraAgentLifecycleManager.HostComposeName)));
+        Assert.AreEqual(compose, await File.ReadAllTextAsync(composePath), "the instance's Compose model keeps every limit it records");
+        AssertRecoveryWarning(error.ToString(), [CpuQuotaUnsupported], "standard error", "BACKUP");
+        StringAssert.Contains(error.ToString(), "A backup starts the instance it stopped again, on the image it ran, so it is not refused",
+            StringComparison.Ordinal);
+        AssertRecoveryWarning(await File.ReadAllTextAsync(InstallLogPath(fixture, result.OperationId!.Value)), [CpuQuotaUnsupported], "the install log", "BACKUP");
+        Assert.IsTrue(result.Warnings?.Any(static warning => warning.Code == CpuQuotaUnsupported) ?? false, "the result carries the warning");
     }
 
     private static string CameraAgentLayoutIdentity(LifecycleFixture fixture) => CameraAgentStateLayout.IdentityDatabasePath(fixture.Paths.StateRoot);

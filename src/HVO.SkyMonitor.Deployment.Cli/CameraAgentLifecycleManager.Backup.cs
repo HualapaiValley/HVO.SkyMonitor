@@ -143,6 +143,7 @@ internal sealed partial class CameraAgentLifecycleManager
         string lifecycleControlToken,
         string verificationToken,
         DockerDaemonIdentity daemon,
+        HostPrerequisiteReport? hostLimits,
         TextWriter error,
         CancellationToken cancellationToken)
     {
@@ -168,7 +169,10 @@ internal sealed partial class CameraAgentLifecycleManager
             paths, manifest, installationResult, compose, docker,
             CreateLifecycleClient(installationResult.Url, lifecycleClientFactory),
             ownerClientFactory?.Invoke(installationResult.Url) ?? new OwnerBootstrapClient(installationResult.Url),
-            lifecycleControlToken, verificationToken);
+            lifecycleControlToken, verificationToken, hostLimits,
+            Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D")));
+        // The limits the restart goes ahead without are kept in the operation's install log, as a rollback keeps them.
+        await WriteHostLimitsToInstallLogAsync(request, paths, operation.OperationId, hostLimits, cancellationToken).ConfigureAwait(false);
         if (operation.MutationStarted)
         {
             return await ResumeBackupAsync(request, paths, manifest, vault, name, service, operation, daemon, error, cancellationToken)
@@ -538,13 +542,19 @@ internal sealed partial class CameraAgentLifecycleManager
         ICameraAgentLifecycleClient Lifecycle,
         IOwnerBootstrapClient Owner,
         string LifecycleControlToken,
-        string VerificationToken)
+        string VerificationToken,
+        HostPrerequisiteReport? HostLimits,
+        string OperationRoot)
     {
+        /// <summary>
+        /// Starts the instance as Docker here can run it, as every lifecycle start does (#1357,
+        /// <see cref="StartOnThisHostAsync"/>), then verifies it and resumes capture. A host without CPU quota support was
+        /// warned of, and its install log written, in <see cref="OperationRoot"/>, before the instance was stopped.
+        /// </summary>
         public async Task RestartAsync(Guid operationId, CancellationToken cancellationToken)
         {
             EnsureDaemon(Manifest.DockerDaemon, await Docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
-            await Docker.ComposeAsync(Compose.ComposeFile, Compose.EnvironmentFile, Compose.ProjectName,
-                ["up", "--detach", "--remove-orphans"], cancellationToken).ConfigureAwait(false);
+            await StartOnThisHostAsync(Docker, Compose, HostLimits, OperationRoot, cancellationToken).ConfigureAwait(false);
             await VerifyCandidateAsync(Owner, Docker, Compose, Paths, Manifest, Result, Manifest.Image, VerificationToken,
                 Manifest.RuntimeUid, Manifest.RuntimeGid, cancellationToken).ConfigureAwait(false);
             await Lifecycle.ResumeAsync(operationId, LifecycleControlToken, cancellationToken).ConfigureAwait(false);

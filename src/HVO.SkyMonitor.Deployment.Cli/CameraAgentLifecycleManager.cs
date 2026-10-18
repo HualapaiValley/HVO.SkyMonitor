@@ -113,8 +113,9 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         var docker = new DockerClient(processRunner);
         var compose = ComposeFrom(paths, manifest, result);
-        // An image change reads which limits Docker enforces from the same docker info read (#1357).
-        var capabilities = request.Operation is LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback
+        // An image change, and a backup that restarts the instance, read which limits Docker enforces from the same
+        // docker info read (#1357).
+        var capabilities = request.Operation is LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback or LifecycleOperationKind.Backup
             ? await docker.ReadHostCapabilitiesAsync(cancellationToken).ConfigureAwait(false)
             : null;
         var daemon = capabilities?.Daemon ?? await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
@@ -238,7 +239,7 @@ internal sealed partial class CameraAgentLifecycleManager
                     .ConfigureAwait(false),
                 LifecycleOperationKind.Backup => await BackupAsync(
                     request, paths, manifest, result, compose, docker, lifecycleClientFactory, ownerClientFactory,
-                    lifecycleControlToken!, installationVerificationToken!, daemon, error, cancellationToken)
+                    lifecycleControlToken!, installationVerificationToken!, daemon, hostLimits, error, cancellationToken)
                     .ConfigureAwait(false),
                 LifecycleOperationKind.Purge => await PurgeAsync(
                     request, paths, manifest, compose, docker, daemon, processRunner, cancellationToken).ConfigureAwait(false),

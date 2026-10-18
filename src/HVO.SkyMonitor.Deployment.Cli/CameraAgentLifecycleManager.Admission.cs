@@ -67,7 +67,10 @@ internal sealed partial class CameraAgentLifecycleManager
         }
 
         var resumed = await AdmitAsync(request, paths, kind, manifest, cancellationToken).ConfigureAwait(false);
-        var hostLimits = imageChange ? AdmitHostLimits(request, paths, manifest, capabilities!) : null;
+        // A backup restarts an installed instance as it was, so its host limits are held as a rollback's are (#1357).
+        var hostLimits = imageChange || kind == LifecycleOperationKind.Backup && manifest.LifecycleCondition == InstanceLifecycleCondition.Installed
+            ? AdmitHostLimits(request, paths, manifest, capabilities!)
+            : null;
         if (kind == LifecycleOperationKind.Backup && resumed is null)
         {
             await AdmitBackupAsync(request, paths, manifest, cancellationToken).ConfigureAwait(false);
@@ -98,8 +101,9 @@ internal sealed partial class CameraAgentLifecycleManager
     /// an install does; there is no override. A rollback and a restore-only recovery are the recovery path: they go
     /// ahead, with <see cref="WarnOfUnenforcedLimitsAsync"/>'s warning. A rollback is still refused for a CPU limit
     /// Docker enforces on a host with fewer CPUs, a container Docker refuses to create. A restore-only recovery is never
-    /// refused here: it puts back the image the instance ran, from its exact retained Compose files. Returns the report
-    /// a recovery goes ahead with.
+    /// refused here: it puts back the image the instance ran, from its exact retained Compose files. A backup of an
+    /// installed instance is held as a rollback is, since it starts the instance it stopped again (#1353). Returns the
+    /// report a recovery goes ahead with.
     /// </summary>
     private static HostPrerequisiteReport AdmitHostLimits(
         LifecycleRequest request,
@@ -130,13 +134,23 @@ internal sealed partial class CameraAgentLifecycleManager
     /// </summary>
     private static async Task WarnOfUnenforcedLimitsAsync(LifecycleRequest request, HostPrerequisiteReport? hostLimits, TextWriter error)
     {
-        if (!request.Json && hostLimits is not null && HostPrerequisites.RollbackWarning(hostLimits, RecoveryName(request)) is { } warning)
+        if (!request.Json && hostLimits is not null && HostLimitsWarning(request, hostLimits) is { } warning)
         {
             await error.WriteLineAsync(warning).ConfigureAwait(false);
         }
     }
 
     private static string RecoveryName(LifecycleRequest request) => request.RestoreOnly ? "restore-only recovery" : "rollback";
+
+    /// <summary>
+    /// The warning of each limit <paramref name="request"/> goes ahead without (#1357). A backup is not a recovery, but it
+    /// starts the instance it stopped again, on the image it ran, so it goes ahead as a rollback does (#1353).
+    /// </summary>
+    private static string? HostLimitsWarning(LifecycleRequest request, HostPrerequisiteReport hostLimits)
+        => request.Operation == LifecycleOperationKind.Backup
+            ? HostPrerequisites.RollbackWarning(
+                hostLimits, "backup", "A backup starts the instance it stopped again, on the image it ran")
+            : HostPrerequisites.RollbackWarning(hostLimits, RecoveryName(request));
 
     /// <summary>The result with the warnings of each limit the recovery went ahead without (#1357).</summary>
     private static LifecycleResult WithHostLimitWarnings(LifecycleResult result, HostPrerequisiteReport? hostLimits)
@@ -156,7 +170,7 @@ internal sealed partial class CameraAgentLifecycleManager
         HostPrerequisiteReport? hostLimits,
         CancellationToken cancellationToken)
     {
-        if (hostLimits is null || HostPrerequisites.RollbackWarning(hostLimits, RecoveryName(request)) is not { } warning)
+        if (hostLimits is null || HostLimitsWarning(request, hostLimits) is not { } warning)
         {
             return;
         }

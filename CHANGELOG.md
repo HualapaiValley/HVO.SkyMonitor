@@ -15,7 +15,8 @@ onward; earlier development is recorded in its pull requests. A release renames 
 - `sudo hvo-sky-install cameraagent backup` copies an instance, bulk captures and a verified snapshot of its databases
   included, into one root-only archive in `/var/backups/hvo-sky`. The archive is proved whole and recorded before it
   is kept; it is written with capture paused and the container stopped, after a free-space check, with progress
-  reports and no fixed deadline. A failure or Ctrl+C discards the partial archive and restarts the instance.
+  reports and no fixed deadline. A failure or Ctrl+C discards the partial archive and restarts the instance. On a host
+  whose Docker cannot enforce every CameraAgent limit, a backup warns first and restarts the instance as a rollback does.
   `sudo hvo-sky-install cameraagent restore <archive>` puts an uninstalled or absent instance back from a backup, after
   refusing a partial, unrecorded or damaged archive with nothing changed. It never lowers a counter the replaced
   instance handed out. It revokes again the API keys, passwords and authority revoked since the backup, or warns loudly
