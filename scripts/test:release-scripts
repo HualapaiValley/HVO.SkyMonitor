@@ -1081,7 +1081,7 @@ expect_latest_refusal "a release still a draft" "The release for v2.5.0 is not o
 latest_case github-latest-elsewhere "" v2.4.0
 expect_latest_refusal "a newest final release GitHub does not mark latest" "but GitHub's latest release is v2.4.0"
 latest_case other-image
-FAKE_SKOPEO_EXISTING=other expect_latest_refusal "a version tag naming another image" "is not $index_digest in the registry"
+FAKE_SKOPEO_EXISTING=other expect_latest_refusal "a version tag naming another image" "in the registry, not $index_digest, the image v2.5.0 names"
 ! grep -q '^copy' "$FAKE_SKOPEO_LOG" || fail "the latest tag copied an image its version tag does not name."
 latest_case copy-fails
 FAKE_SKOPEO_EXISTING=index FAKE_SKOPEO_COPY_STATUS=1 expect_latest_refusal "a copy the registry refuses" "cannot tag ghcr.io/hualapaivalley/skymonitor-cameraagent:latest."
