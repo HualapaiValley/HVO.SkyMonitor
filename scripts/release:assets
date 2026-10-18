@@ -9,7 +9,9 @@
 #
 # The CameraAgent image is built once, for every platform, into the OCI archive --image-oci names. That archive is what
 # scripts/release:push-image pushes, byte for byte, so the registry's digest is the digest release.json names, and the
-# offline archives are split from it. The release workflow (.github/workflows/prerelease.yml) runs exactly this script;
+# offline archives are split from it. The image is labelled with the release's version, commit and created time, and
+# release.json repeats its state contract label (install contract sections 1 and 6), which scripts/release:check-image-labels
+# checks once release.json is written. The release workflow (.github/workflows/prerelease.yml) runs exactly this script;
 # run it locally to reproduce a release's files without pushing or publishing anything.
 set -euo pipefail
 
@@ -128,6 +130,7 @@ docker buildx build "${builder_arguments[@]}" \
     --file src/HVO.SkyMonitor.CameraAgent/Dockerfile \
     --build-arg "HVO_VERSION=$version" \
     --build-arg "HVO_SOURCE_REVISION=$commit" \
+    --build-arg "HVO_CREATED=$created" \
     --provenance=false \
     --sbom=false \
     --output "type=oci,dest=$image_oci" \
@@ -163,11 +166,13 @@ digest="$(dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.S
 
 # What was written is what release.json and SHA256SUMS say.
 (cd "$output" && sha256sum --check --strict --quiet SHA256SUMS) || fail "SHA256SUMS does not match the files written."
-jq -e --arg version "$version" --arg commit "$commit" --arg digest "$digest" '
-    .version == $version and .commit == $commit and .images["skymonitor-cameraagent"].digest == $digest
+jq -e --arg version "$version" --arg commit "$commit" --arg created "$created" --arg digest "$digest" '
+    .version == $version and .commit == $commit and .created == $created and .images.cameraAgent.digest == $digest
 ' "$output/release.json" >/dev/null || fail "release.json does not name the release that was built."
 index_digest="$(tar -xOf "$image_oci" index.json | jq -r '.manifests[0].digest')"
 [[ "$index_digest" == "$digest" ]] || fail "release.json names $digest, but the image archive holds $index_digest."
+./scripts/release:check-image-labels "$image_oci" "$output/release.json" >&2 ||
+    fail "the image archive is not the CameraAgent image release.json describes."
 
 printf 'Release %s written to %s; image %s@%s\n' "$version" "$output" "$repository" "$digest" >&2
 printf '%s\n' "$digest"

@@ -8,11 +8,11 @@
   "created": "2026-10-17T18:00:00Z",
   "repository": "https://github.com/HualapaiValley/HVO.SkyMonitor",
   "images": {
-    "skymonitor-cameraagent": {
+    "cameraAgent": {
       "repository": "ghcr.io/hualapaivalley/skymonitor-cameraagent",
       "tag": "1.2.0-dev.3",
-      "digest": "sha256:3caeb9c1130f27b86c066dfa94c566a02e0c6c1d830af4225388fb710a30509f",
-      "reference": "ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3@sha256:3caeb9c1130f27b86c066dfa94c566a02e0c6c1d830af4225388fb710a30509f",
+      "digest": "sha256:159cf63f7ac2285c66c9d2f47c54bed59488b86d76c5627af650cca3e3492b18",
+      "reference": "ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3@sha256:159cf63f7ac2285c66c9d2f47c54bed59488b86d76c5627af650cca3e3492b18",
       "platforms": [
         "linux/amd64",
         "linux/arm64"
@@ -21,20 +21,38 @@
         {
           "name": "skymonitor-cameraagent-1.2.0-dev.3-linux-amd64.oci.tar",
           "platform": "linux/amd64",
-          "size": 9216,
-          "sha256": "92c57c45d3827e1cc27abaffd92e286aee8bead541a5344cb8ccf3e35be18571",
-          "manifestDigest": "sha256:08b6160a785cec7a7fbb317dc34cd525399f56674f07e23ef695ea36a79d87bb",
-          "configDigest": "sha256:3e4f1e4f8032e4f4787d223e881985526bf429d6c6c7a00b6613e857b96ffef4"
+          "size": 9728,
+          "sha256": "9b44c3b80ddaff22c6d2eee6b4543c18dd3407fd540a9318f9d996995e469557",
+          "manifestDigest": "sha256:feab2247b147bf6019c71d0adafc41e5dbc266ee67318f7c8bfe6ce6183e5e39",
+          "configDigest": "sha256:305262408137135236ae08c272143c00de7a529d0abedfc9b37c79a7de68a096"
         },
         {
           "name": "skymonitor-cameraagent-1.2.0-dev.3-linux-arm64.oci.tar",
           "platform": "linux/arm64",
-          "size": 9216,
-          "sha256": "60255ed9834600d8fa3c663b6e587921b1508b5f9e95f43eddea972d38100f58",
-          "manifestDigest": "sha256:83d50eec4842b0919dea18ee844807a2dc10269fbfc4a3a2eb4f7cd2d887dd0e",
-          "configDigest": "sha256:62797f5b3950ce10b0a99e98f38b7fb228dba753c81b377e17aac046175a062e"
+          "size": 9728,
+          "sha256": "75c107c9bc2976446df9c80dc5d365ee62d95e08cc4c40b21897f19aab4b08c8",
+          "manifestDigest": "sha256:1d13d4193a6a75faf76ce08e3ea53a543749db8e2890a7517a5d8d482da528a3",
+          "configDigest": "sha256:49ced7dc0f4af6b44cb14fa10b11659f7e8dcc519c82b15c8719a4057bfdad97"
         }
       ]
+    }
+  },
+  "stateContracts": {
+    "cameraAgent": {
+      "identity": {
+        "writes": 1,
+        "reads": {
+          "min": 1,
+          "max": 1
+        }
+      },
+      "rawIngress": {
+        "writes": 15,
+        "reads": {
+          "min": 13,
+          "max": 15
+        }
+      }
     }
   },
   "upgradeNotes": [
@@ -66,15 +84,15 @@
       "name": "skymonitor-cameraagent-1.2.0-dev.3-linux-amd64.oci.tar",
       "kind": "image-archive",
       "platform": "linux-x64",
-      "size": 9216,
-      "sha256": "92c57c45d3827e1cc27abaffd92e286aee8bead541a5344cb8ccf3e35be18571"
+      "size": 9728,
+      "sha256": "9b44c3b80ddaff22c6d2eee6b4543c18dd3407fd540a9318f9d996995e469557"
     },
     {
       "name": "skymonitor-cameraagent-1.2.0-dev.3-linux-arm64.oci.tar",
       "kind": "image-archive",
       "platform": "linux-arm64",
-      "size": 9216,
-      "sha256": "60255ed9834600d8fa3c663b6e587921b1508b5f9e95f43eddea972d38100f58"
+      "size": 9728,
+      "sha256": "75c107c9bc2976446df9c80dc5d365ee62d95e08cc4c40b21897f19aab4b08c8"
     }
   ]
 }

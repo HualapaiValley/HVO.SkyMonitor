@@ -17,6 +17,10 @@ internal sealed class OciReleaseFixture : IDisposable
     public const string Version = "1.2.0-dev.3";
     public const string Commit = "0123456789abcdef0123456789abcdef01234567";
     public const string Created = "2026-10-17T18:00:00Z";
+
+    /// <summary>The image's <c>io.hvo.skymonitor.state-contracts</c> label, which release.json's <c>stateContracts</c> repeats.</summary>
+    public const string StateContracts =
+        """{"identity":{"writes":1,"reads":{"min":1,"max":1}},"rawIngress":{"writes":15,"reads":{"min":13,"max":15}}}""";
     public const string IndexMediaType = "application/vnd.oci.image.index.v1+json";
     public const string ManifestMediaType = "application/vnd.oci.image.manifest.v1+json";
 
@@ -79,7 +83,9 @@ internal sealed class OciReleaseFixture : IDisposable
             {
                 ["io.hvo.skymonitor.component"] = "CameraAgent",
                 ["org.opencontainers.image.version"] = Version,
-                ["org.opencontainers.image.revision"] = Commit
+                ["org.opencontainers.image.revision"] = Commit,
+                ["org.opencontainers.image.created"] = Created,
+                ["io.hvo.skymonitor.state-contracts"] = StateContracts
             };
             labels?.Invoke(platform, imageLabels);
             var config = Bytes(new JsonObject

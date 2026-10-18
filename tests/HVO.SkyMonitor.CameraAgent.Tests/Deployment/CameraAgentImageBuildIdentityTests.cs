@@ -12,9 +12,10 @@ public sealed class CameraAgentImageBuildIdentityTests
     private const string StampArguments =
         "\"-p:InformationalVersion=${HVO_VERSION}\" \"-p:SourceRevisionId=${HVO_SOURCE_REVISION}\"";
 
-    // Each stage inherits the one declared default instead of restating it.
+    // Each stage inherits the one declared default instead of restating it. The release's created time has no default:
+    // only a release build is dated.
     private static readonly string[] StageIdentityDeclarations =
-        ["ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION", "ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION"];
+        ["ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION", "ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION", "ARG HVO_CREATED"];
 
     [TestMethod]
     public void Dockerfile_DeclaresADevelopmentVersionAndAnUnknownRevisionByDefault()
@@ -63,10 +64,12 @@ public sealed class CameraAgentImageBuildIdentityTests
 
         StringAssert.Contains(label, "org.opencontainers.image.version=\"${HVO_VERSION}\"", StringComparison.Ordinal);
         StringAssert.Contains(label, "org.opencontainers.image.revision=\"${HVO_SOURCE_REVISION}\"", StringComparison.Ordinal);
-        // The package install and payload copy stay cached across revisions.
-        Assert.IsGreaterThan(
-            runtime.FindLastIndex(static instruction => instruction.StartsWith("COPY --from=build ", StringComparison.Ordinal)),
-            runtime.IndexOf("ARG HVO_SOURCE_REVISION"));
+        // The release's created time (install contract section 1), never the base image's.
+        StringAssert.Contains(label, "org.opencontainers.image.created=\"${HVO_CREATED}\"", StringComparison.Ordinal);
+        // The package install and payload copy stay cached across revisions and release times.
+        var payload = runtime.FindLastIndex(static instruction => instruction.StartsWith("COPY --from=build ", StringComparison.Ordinal));
+        Assert.IsGreaterThan(payload, runtime.IndexOf("ARG HVO_SOURCE_REVISION"));
+        Assert.IsGreaterThan(payload, runtime.IndexOf("ARG HVO_CREATED"));
     }
 
     /// <summary>Reads the Dockerfile as logical instructions, joining continuation lines and dropping comments.</summary>

@@ -231,6 +231,7 @@ expect_release_scripts true push "$base_sha" "$head_sha"
 expect_release_scripts true workflow_dispatch "$base_sha" "$head_sha"
 release_scripts_paths=(
   "scripts/release:assets"
+  "scripts/release:check-image-labels"
   "scripts/release:push-image"
   "scripts/release:prerelease-gate"
   "scripts/release:prerelease-check"

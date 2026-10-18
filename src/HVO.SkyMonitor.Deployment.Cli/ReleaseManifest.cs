@@ -39,7 +39,15 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
     /// <summary>The repository every SkyMonitor release names.</summary>
     public const string RepositoryUrl = "https://github.com/HualapaiValley/HVO.SkyMonitor";
 
-    /// <summary>The CameraAgent image's name: its key under <c>images</c>, and its repository's last segment.</summary>
+    private const string CreatedFormat = "yyyy'-'MM'-'dd'T'HH':'mm':'ss'Z'";
+
+    /// <summary>
+    /// The CameraAgent image's key under <c>images</c> and <c>stateContracts</c>: a logical component name, not the image's
+    /// name (install contract section 4, decision D6).
+    /// </summary>
+    public const string CameraAgentImageKey = "cameraAgent";
+
+    /// <summary>The CameraAgent image's name: its repository's last segment, and its offline archives' prefix.</summary>
     public const string CameraAgentImageName = "skymonitor-cameraagent";
 
     /// <summary>The kind <c>assets</c> gives an offline image archive.</summary>
@@ -61,8 +69,15 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
     public DateTimeOffset Created { get; init; }
 
     /// <summary>
-    /// The CameraAgent image (<c>images.skymonitor-cameraagent</c>). Every release.json read by <see cref="Parse"/> has
-    /// one; a manifest constructed only for its notes does not.
+    /// A release's created time as release.json gives it, an RFC 3339 UTC time to the second such as
+    /// 2026-10-17T18:00:00Z, which is also its image's <c>org.opencontainers.image.created</c> label.
+    /// </summary>
+    public static string FormatCreated(DateTimeOffset created)
+        => created.ToUniversalTime().ToString(CreatedFormat, CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// The CameraAgent image (<c>images.cameraAgent</c>). Every release.json read by <see cref="Parse"/> has one; a
+    /// manifest constructed only for its notes does not.
     /// </summary>
     public ReleaseImage? CameraAgent { get; init; }
 
@@ -139,7 +154,7 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
             }
             if (Text(root, "created") is not { } createdText ||
                 !DateTimeOffset.TryParseExact(
-                    createdText, "yyyy'-'MM'-'dd'T'HH':'mm':'ss'Z'", CultureInfo.InvariantCulture,
+                    createdText, CreatedFormat, CultureInfo.InvariantCulture,
                     DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var created))
             {
                 throw Invalid("its created time is not a UTC time such as 2026-10-17T18:00:00Z");
@@ -177,9 +192,9 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
         {
             throw Invalid("it lists no images");
         }
-        if (!images.TryGetProperty(CameraAgentImageName, out var image) || image.ValueKind != JsonValueKind.Object)
+        if (!images.TryGetProperty(CameraAgentImageKey, out var image) || image.ValueKind != JsonValueKind.Object)
         {
-            throw Invalid($"it has no {CameraAgentImageName} image");
+            throw Invalid($"it has no {CameraAgentImageKey} image");
         }
         var repository = Text(image, "repository");
         if (repository is null || !RepositoryPattern().IsMatch(repository) || !NamesRegistry(repository) ||

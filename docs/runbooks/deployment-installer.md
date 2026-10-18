@@ -33,7 +33,7 @@ runbook describes the installer as it behaves today.
 | Settings catalogue served by the API | CameraAgent serves the [operator settings catalogue and group writes](../contracts/cameraagent-operator-settings-v1.md) through its operations API; the owner creates API keys for non-browser clients | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
 | Machine install record `/etc/hvo-sky/install.json` | Records live beneath each instance root (`instance-manifest.json`, `state/deployment/`); `/etc/hvo-sky/` holds only the host policy | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
 | Install and upgrade refuse a host that cannot enforce the container limits; a rollback proceeds with a loud warning (contract section 7) | Install refuses such a host ([Host Prerequisites](#host-prerequisites)); upgrade and rollback do not check | [#1357](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1357) |
-| `release.json` names images by component key (`images.cameraAgent`) and declares `stateContracts`; images carry `org.opencontainers.image.created` (contract sections 1, 4 and 6) | `release.json` names the image `skymonitor-cameraagent` and omits `stateContracts`; the image carries `version` and `revision` only | [#1359](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1359) |
+| Upgrade and rollback decide between a swap and a breaking change by comparing `stateContracts` (contract section 6, D1) | `release.json` and the image's `io.hvo.skymonitor.state-contracts` label declare `stateContracts` ([#1359](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1359)), but the installer still decides a state migration from the image's state boundary labels ([CameraAgent Lifecycle](#cameraagent-lifecycle)) | Epic [#1318](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1318); no issue yet |
 
 ## install.sh
 
@@ -423,7 +423,8 @@ Before it contacts Docker, the installer checks the folder. It refuses, naming t
   is loaded. Its OCI layout must name the release's digest, and only `<repository>:<version>` when it names the image.
   The release's index must list the platform once, as the manifest `release.json` names, and that manifest must name the
   configuration `release.json` names. The configuration must be for the platform and labelled CameraAgent at the
-  release's version and commit. Docker's own `manifest.json`, which its classic store loads instead, must describe the
+  release's version, commit and created time (`org.opencontainers.image.created`, exactly `release.json`'s `created`).
+  Docker's own `manifest.json`, which its classic store loads instead, must describe the
   same image and tag only `<repository>:<version>`, so a load cannot retag another image. Every layer the manifest
   names must be in the archive, the size the manifest gives it and the blob its digest names, so Docker cannot reject
   the load for a missing or damaged layer. The image must also declare the contracts the instance needs, as below.
@@ -458,8 +459,8 @@ this user's Docker credentials and credential helpers, so the installer never ha
 - the index's one entry for the platform, and that manifest exactly as served, which must be the content its digest
   names and, when `release.json` lists an offline archive for the platform, the manifest it names;
 - the configuration that manifest names, which buildx fetches by its digest: it must be the configuration
-  `release.json` names, when it names one, be for the platform, be labelled CameraAgent at the release's version and
-  commit, and declare the contracts the instance needs.
+  `release.json` names, when it names one, be for the platform, be labelled CameraAgent at the release's version,
+  commit and created time, and declare the contracts the instance needs.
 
 Anything else is refused with nothing pulled, naming what disagrees. When the registry cannot be read this way (no
 `docker buildx`, a buildx older than 0.8, no network, or no credentials for a private package), the installer refuses
@@ -476,7 +477,7 @@ Before it claims anything, the installer also requires the release's image, from
 the configuration and catalog contracts this instance needs (an upgrade also requires the current state contract).
 After Docker resolves the image, the installer again requires it to be one the release names: the image index, the
 platform's manifest or its configuration digest, as `release.json` or the registry gave them. It must also be labelled
-CameraAgent at the release's version and commit. Otherwise the installer refuses, naming the release, and removes what
+CameraAgent at the release's version, commit and created time. Otherwise the installer refuses, naming the release, and removes what
 that step loaded or pulled, unless Docker held it before. It removes it too when the load or pull fails or the
 operation is cancelled while it runs.
 
@@ -1346,7 +1347,7 @@ no `state-preflight.json`.
 
 **A compatible preflight is still not a promise that the upgrade will proceed.** It compares persisted state
 against this instance. Gates that need the image itself run only during the upgrade: a release's image must be one
-the release names and carry its version and commit (see [Release Install](#release-install)), the candidate's
+the release names and carry its version, commit and created time (see [Release Install](#release-install)), the candidate's
 contract identities must match this instance, and whether the candidate declares a state migration decides
 whether its small databases are snapshotted (see [CameraAgent Lifecycle](#cameraagent-lifecycle)).
 

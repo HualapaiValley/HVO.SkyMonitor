@@ -101,8 +101,15 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # 20251125021552_CreateLocalIdentity, and raw-ingress schema 11, which this image cannot
 # adopt in place. Deployment preflight compares the three declared boundaries below against
 # the persisted state before the container starts.
+#
+# The state-contracts label is the image's state contract (install contract section 6), which
+# release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,
+# the schema this image writes and the schemas it reads. CameraAgentStateContractsLabelTests
+# keeps it equal to the schema each store records when this image creates it. The created
+# label is the release's created time, which only a release build passes (scripts/release:assets).
 ARG HVO_VERSION
 ARG HVO_SOURCE_REVISION
+ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
       io.hvo.skymonitor.minimum-compatible-revision="70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f" \
@@ -113,8 +120,10 @@ LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.configuration-contract="cameraagent-install-v1" \
       io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v1" \
       io.hvo.skymonitor.replay-runner-contract="local-replay-runner-v1" \
+      io.hvo.skymonitor.state-contracts="{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":15,\"reads\":{\"min\":13,\"max\":15}},\"artifactOutbox\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"fleetStatus\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalOutbox\":{\"writes\":3,\"reads\":{\"min\":3,\"max\":3}},\"executionEvidenceOutbox\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"localAutomations\":{\"writes\":3,\"reads\":{\"min\":3,\"max\":3}}}" \
       org.opencontainers.image.version="${HVO_VERSION}" \
-      org.opencontainers.image.revision="${HVO_SOURCE_REVISION}"
+      org.opencontainers.image.revision="${HVO_SOURCE_REVISION}" \
+      org.opencontainers.image.created="${HVO_CREATED}"
 
 # Set environment
 ENV ASPNETCORE_ENVIRONMENT=Production \

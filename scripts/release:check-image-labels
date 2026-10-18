@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Checks a release's CameraAgent image, in the OCI archive scripts/release:assets built it into (--image-oci), against the
+# release.json written from that archive (install contract sections 1, 4 and 6). The archive must hold the image
+# release.json names, with an image for each of its platforms and no other, and each must be labelled as the release's
+# CameraAgent: its version and commit, its created time (org.opencontainers.image.created, release.json's created) and
+# its state contract (io.hvo.skymonitor.state-contracts, release.json's stateContracts.cameraAgent).
+#
+#   scripts/release:check-image-labels <oci-archive> <release.json>
+#
+# scripts/release:assets runs it on what it built, and the pre-release workflow on the files it is about to publish.
+# Needs tar, jq and sha256sum.
+set -euo pipefail
+
+fail() {
+    printf 'release:check-image-labels: %s\n' "$*" >&2
+    exit 1
+}
+
+[[ $# -eq 2 ]] || { sed -n '8p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2; exit 2; }
+archive="$1" manifest="$2"
+[[ -f "$archive" ]] || fail "$archive is not a file."
+[[ -f "$manifest" ]] || fail "$manifest is not a file."
+
+# A state contract: an object of stores, each with the schema it writes and the schemas it reads, whole numbers from 1
+# with min <= writes <= max.
+state_contract='def schema: type == "number" and . == floor and . >= 1;
+    type == "object" and all(.[]; type == "object" and keys == ["reads", "writes"] and (.writes | schema)
+        and (.reads | type == "object" and keys == ["max", "min"] and (.min | schema) and (.max | schema))
+        and .reads.min <= .writes and .writes <= .reads.max)'
+
+release_field() {
+    jq -ecr "$1" "$manifest" 2>/dev/null || fail "$manifest has no $2."
+}
+version="$(release_field '.version | strings' version)"
+commit="$(release_field '.commit | strings' commit)"
+created="$(release_field '.created | strings' 'created time')"
+digest="$(release_field '.images.cameraAgent.digest | strings' 'cameraAgent image')"
+platforms="$(release_field '.images.cameraAgent.platforms
+    | if type == "array" and length > 0 and all(type == "string") then sort | join(",") else empty end' 'cameraAgent image platforms')"
+contract="$(release_field '.stateContracts.cameraAgent | objects' stateContracts.cameraAgent)"
+jq -e "$state_contract" <<<"$contract" >/dev/null ||
+    fail "$manifest's stateContracts.cameraAgent is not a state contract: an object of stores, each with whole-number writes and reads.min and reads.max from 1, with min <= writes <= max."
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/hvo-check-image-labels.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+tar -xf "$archive" -C "$work" index.json blobs 2>/dev/null || fail "$archive is not an OCI archive."
+
+# A blob's bytes, which must be the content its digest names.
+blob() {
+    local digest="$1" file
+    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "$archive names a blob '$digest', which is not a sha256 digest."
+    file="$work/blobs/sha256/${digest#sha256:}"
+    [[ -f "$file" && ! -L "$file" ]] || fail "$archive has no blob $digest."
+    [[ "$(sha256sum "$file" | cut -d ' ' -f 1)" == "${digest#sha256:}" ]] || fail "$archive's blob $digest is not the content $digest names."
+    cat "$file"
+}
+
+top="$(jq -er '.manifests | if type == "array" and length == 1 then .[0] | "\(.mediaType) \(.digest)" else empty end' \
+    "$work/index.json" 2>/dev/null)" || fail "$archive does not hold exactly one image."
+read -r top_media top_digest <<<"$top"
+[[ "$top_digest" == "$digest" ]] || fail "$archive holds $top_digest, not the image $digest that $manifest names."
+case "$top_media" in
+    application/vnd.oci.image.index.v1+json | application/vnd.docker.distribution.manifest.list.v2+json)
+        index="$(blob "$top_digest")" || exit 1
+        entries="$(jq -er '[.manifests[] | .digest | strings] | join(" ")' <<<"$index" 2>/dev/null)" ||
+            fail "the image index $top_digest cannot be read."
+        read -ra image_manifests <<<"$entries"
+        ;;
+    application/vnd.oci.image.manifest.v1+json | application/vnd.docker.distribution.manifest.v2+json)
+        image_manifests=("$top_digest")
+        ;;
+    *)
+        fail "$top_digest has the media type '$top_media', which is neither an image nor an index."
+        ;;
+esac
+
+config=""
+label() { jq -r --arg name "$1" '.config.Labels[$name] // "" | strings' <<<"$config"; }
+checked=()
+for image_manifest in ${image_manifests[@]+"${image_manifests[@]}"}; do
+    image="$(blob "$image_manifest")" || exit 1
+    config_digest="$(jq -er '.config.digest | strings' <<<"$image" 2>/dev/null)" ||
+        fail "the manifest $image_manifest names no configuration."
+    config="$(blob "$config_digest")" || exit 1
+    platform="$(jq -er '"\(.os)/\(.architecture)"' <<<"$config" 2>/dev/null)" || fail "the configuration $config_digest cannot be read."
+
+    [[ "$(label io.hvo.skymonitor.component)" == CameraAgent && "$(label org.opencontainers.image.version)" == "$version" &&
+        "$(label org.opencontainers.image.revision)" == "$commit" ]] ||
+        fail "$platform: the image is not labelled as CameraAgent $version from commit $commit."
+    [[ "$(label org.opencontainers.image.created)" == "$created" ]] ||
+        fail "$platform: its created label (org.opencontainers.image.created) is '$(label org.opencontainers.image.created)', not release.json's created time $created."
+    jq -en --arg label "$(label io.hvo.skymonitor.state-contracts)" --argjson contract "$contract" \
+        '($label | fromjson) == $contract' >/dev/null 2>&1 ||
+        fail "$platform: its state contract label (io.hvo.skymonitor.state-contracts) is not release.json's stateContracts.cameraAgent."
+    printf '%s: CameraAgent %s, commit %s, created %s\n' "$platform" "$version" "$commit" "$created"
+    checked+=("$platform")
+done
+
+held="$(printf '%s\n' ${checked[@]+"${checked[@]}"} | sort | paste -sd, -)"
+[[ "$held" == "$platforms" ]] || fail "$archive holds images for ${held:-no platform}, not $platforms."

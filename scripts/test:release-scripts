@@ -13,6 +13,8 @@
 #                                        archive's digest;
 #   scripts/release:publish-prerelease   publishes only when the latest release is read for certain before and after,
 #                                        and fails when it moved;
+#   scripts/release:check-image-labels   refuses an image archive that is not release.json's CameraAgent image, with
+#                                        its version, commit, created time and state contract;
 #   scripts/release:assets               refuses bad arguments before it builds anything;
 #   scripts/test:release-install         leaves no container, image or temporary root behind, however far it gets;
 #   install.sh                           the release's entry point (src/HVO.SkyMonitor.Deployment.Cli/install.sh, #1311):
@@ -32,8 +34,8 @@ fail() {
 }
 
 # The workflow runs each script by its path, so each must be executable as committed.
-for script in release:assets release:push-image release:prerelease-gate release:prerelease-check release:publish-prerelease \
-    test:release-install test:release-scripts test:install-sh; do
+for script in release:assets release:check-image-labels release:push-image release:prerelease-gate release:prerelease-check \
+    release:publish-prerelease test:release-install test:release-scripts test:install-sh; do
     [[ -x "$repo_root/scripts/$script" ]] || fail "scripts/$script is not executable."
 done
 
@@ -614,6 +616,98 @@ reset_registry
 "$repo_root/scripts/release:push-image" --insecure "$test_root/image.oci.tar" localhost:5000/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3 >/dev/null
 grep -Fq -- "--dest-tls-verify=false" "$FAKE_SKOPEO_LOG" || fail "--insecure did not reach skopeo for a registry on this host."
 
+# The image check: the archive holds the image release.json names, an image for each of its platforms, each labelled as
+# the release's CameraAgent with its version, commit, created time and state contract (install contract sections 1, 6).
+labels_root="$test_root/labels"
+state_contract='{"identity":{"writes":1,"reads":{"min":1,"max":1}},"rawIngress":{"writes":15,"reads":{"min":13,"max":15}}}'
+release_labels="$(jq -cn --arg commit "$commit" --arg contract "$state_contract" '{
+    "io.hvo.skymonitor.component": "CameraAgent", "org.opencontainers.image.version": "1.2.0-dev.3",
+    "org.opencontainers.image.revision": $commit, "org.opencontainers.image.created": "2026-10-17T18:00:00Z",
+    "io.hvo.skymonitor.state-contracts": $contract}')"
+# Stores stdin as a blob of the OCI layout in $1 and prints its digest.
+add_blob() {
+    local file="$1/blob.tmp" digest
+    cat >"$file"
+    digest="$(sha256sum "$file" | cut -d ' ' -f 1)"
+    mv "$file" "$1/blobs/sha256/$digest"
+    printf 'sha256:%s' "$digest"
+}
+# Writes $1/image.oci.tar, a two-platform image whose amd64 configuration carries the labels $2 and whose arm64 one
+# carries $3 (by default $2), and $1/release.json naming it, changed by the jq filter $4.
+write_labelled_release() {
+    local dir="$1" amd64_labels="$2" arm64_labels="${3:-$2}" change="${4:-.}" entries=() architecture labels config manifest
+    rm -rf "$dir"
+    mkdir -p "$dir/oci/blobs/sha256"
+    for architecture in amd64 arm64; do
+        labels="$amd64_labels"
+        [[ "$architecture" == amd64 ]] || labels="$arm64_labels"
+        config="$(jq -cn --arg architecture "$architecture" --argjson labels "$labels" \
+            '{architecture: $architecture, os: "linux", config: {Labels: $labels}}' | add_blob "$dir/oci")"
+        manifest="$(jq -cn --arg config "$config" '{schemaVersion: 2, mediaType: "application/vnd.oci.image.manifest.v1+json",
+            config: {mediaType: "application/vnd.oci.image.config.v1+json", digest: $config, size: 1}, layers: []}' | add_blob "$dir/oci")"
+        entries+=("$(jq -cn --arg manifest "$manifest" --arg architecture "$architecture" '{mediaType: "application/vnd.oci.image.manifest.v1+json",
+            digest: $manifest, size: 1, platform: {architecture: $architecture, os: "linux"}}')")
+    done
+    index="$(printf '%s\n' "${entries[@]}" | jq -cs '{schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: .}' |
+        add_blob "$dir/oci")"
+    jq -cn --arg index "$index" '{schemaVersion: 2, manifests: [{mediaType: "application/vnd.oci.image.index.v1+json", digest: $index, size: 1}]}' \
+        >"$dir/oci/index.json"
+    printf '{"imageLayoutVersion":"1.0.0"}' >"$dir/oci/oci-layout"
+    tar -cf "$dir/image.oci.tar" -C "$dir/oci" oci-layout index.json blobs
+    jq -n --arg index "$index" --arg commit "$commit" --argjson contract "$state_contract" '{version: "1.2.0-dev.3", commit: $commit,
+        created: "2026-10-17T18:00:00Z", images: {cameraAgent: {digest: $index, platforms: ["linux/amd64", "linux/arm64"]}},
+        stateContracts: {cameraAgent: $contract}}' | jq "$change" >"$dir/release.json"
+}
+check_labels() {
+    "$repo_root/scripts/release:check-image-labels" "$1/image.oci.tar" "$1/release.json"
+}
+expect_labels_refusal() {
+    local label="$1" message="$2"
+    shift 2
+    write_labelled_release "$labels_root/refused" "$@"
+    if check_labels "$labels_root/refused" >/dev/null 2>"$labels_root/refused.err"; then
+        fail "the image check admitted $label."
+    fi
+    grep -Fq -- "$message" "$labels_root/refused.err" ||
+        { cat "$labels_root/refused.err" >&2; fail "the image check refused $label without saying: $message"; }
+}
+mkdir "$labels_root"
+write_labelled_release "$labels_root/release" "$release_labels"
+check_labels "$labels_root/release" >"$labels_root/release.out" || fail "the image check refused the release's own image."
+[[ "$(cat "$labels_root/release.out")" == "linux/amd64: CameraAgent 1.2.0-dev.3, commit $commit, created 2026-10-17T18:00:00Z
+linux/arm64: CameraAgent 1.2.0-dev.3, commit $commit, created 2026-10-17T18:00:00Z" ]] ||
+    { cat "$labels_root/release.out" >&2; fail "the image check did not name each platform image it checked."; }
+expect_labels_refusal "an image without a created label" \
+    "linux/arm64: its created label (org.opencontainers.image.created) is '', not release.json's created time 2026-10-17T18:00:00Z." \
+    "$release_labels" "$(jq -c 'del(.["org.opencontainers.image.created"])' <<<"$release_labels")"
+expect_labels_refusal "an image created at another time" \
+    "linux/amd64: its created label (org.opencontainers.image.created) is '2026-10-17T18:00:00+00:00', not release.json's created time 2026-10-17T18:00:00Z." \
+    "$(jq -c '.["org.opencontainers.image.created"] = "2026-10-17T18:00:00+00:00"' <<<"$release_labels")"
+expect_labels_refusal "a release.json created at another time" \
+    "linux/amd64: its created label (org.opencontainers.image.created) is '2026-10-17T18:00:00Z', not release.json's created time 2026-10-17T18:00:01Z." \
+    "$release_labels" "$release_labels" '.created = "2026-10-17T18:00:01Z"'
+expect_labels_refusal "an image without a state contract" \
+    "linux/arm64: its state contract label (io.hvo.skymonitor.state-contracts) is not release.json's stateContracts.cameraAgent." \
+    "$release_labels" "$(jq -c 'del(.["io.hvo.skymonitor.state-contracts"])' <<<"$release_labels")"
+expect_labels_refusal "a state contract other than release.json's" \
+    "linux/amd64: its state contract label (io.hvo.skymonitor.state-contracts) is not release.json's stateContracts.cameraAgent." \
+    "$release_labels" "$release_labels" '.stateContracts.cameraAgent.identity = {writes: 2, reads: {min: 1, max: 2}}'
+expect_labels_refusal "a release.json without stateContracts" "has no stateContracts.cameraAgent." \
+    "$release_labels" "$release_labels" 'del(.stateContracts)'
+expect_labels_refusal "a release.json whose stateContracts is not a state contract" \
+    "stateContracts.cameraAgent is not a state contract" "$release_labels" "$release_labels" \
+    '.stateContracts.cameraAgent.rawIngress.reads.min = 16'
+expect_labels_refusal "a release.json that keys its image by the image's name" "has no cameraAgent image." \
+    "$release_labels" "$release_labels" '.images = {"skymonitor-cameraagent": .images.cameraAgent}'
+expect_labels_refusal "an image of another version" \
+    "linux/amd64: the image is not labelled as CameraAgent 1.2.0-dev.3 from commit $commit." \
+    "$(jq -c '.["org.opencontainers.image.version"] = "1.2.0-dev.4"' <<<"$release_labels")"
+expect_labels_refusal "an archive of another image" "not the image sha256:$(printf '0%.0s' {1..64}) that" \
+    "$release_labels" "$release_labels" ".images.cameraAgent.digest = \"sha256:$(printf '0%.0s' {1..64})\""
+expect_labels_refusal "an archive with an image for a platform the release does not list" \
+    "holds images for linux/amd64,linux/arm64, not linux/amd64." "$release_labels" "$release_labels" \
+    '.images.cameraAgent.platforms = ["linux/amd64"]'
+
 # The asset script refuses bad arguments before it builds anything.
 cat >"$fake_bin/docker" <<'FAKE_DOCKER'
 #!/usr/bin/env bash
@@ -712,7 +806,7 @@ mkdir -p "$fake_release" "$test_root/catalog/hyg-test.bundle"
 jq -n --arg version "$release_version" --arg commit "$commit" --arg index "$index_id" --arg manifest "$manifest_id" \
     --arg config "$config_id" '{
         version: $version, commit: $commit,
-        images: {"skymonitor-cameraagent": {repository: "ghcr.io/hualapaivalley/skymonitor-cameraagent", digest: $index,
+        images: {cameraAgent: {repository: "ghcr.io/hualapaivalley/skymonitor-cameraagent", digest: $index,
             offlineArchives: [
                 {platform: "linux/amd64", manifestDigest: $manifest, configDigest: $config},
                 {platform: "linux/arm64", manifestDigest: $manifest, configDigest: $config}]}},

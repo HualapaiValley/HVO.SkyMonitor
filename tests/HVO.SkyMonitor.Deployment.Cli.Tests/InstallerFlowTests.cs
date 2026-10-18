@@ -594,6 +594,7 @@ public sealed partial class InstallerFlowTests
     [DataRow("org.opencontainers.image.version", "9.9.9")]
     [DataRow("org.opencontainers.image.revision", "ffffffffffffffffffffffffffffffffffffffff")]
     [DataRow("io.hvo.skymonitor.component", "LogicHost")]
+    [DataRow("org.opencontainers.image.created", "2026-10-17T18:00:01Z")]
     public async Task InstallAsync_LoadedImageNotLabelledAsTheRelease_IsRemovedBeforeComposeStartsAndRecordsNothing(string label, string value)
     {
         var bundle = RequireCatalogBundle();
@@ -616,7 +617,7 @@ public sealed partial class InstallerFlowTests
 
             Assert.AreEqual(
                 $"The CameraAgent image Docker resolved is not labelled as CameraAgent {release.Version} from commit " +
-                $"{ReleaseFixture.Commit}, as release v{release.Version} requires.",
+                $"{ReleaseFixture.Commit}, created {ReleaseFixture.Created}, as release v{release.Version} requires.",
                 exception.Message);
             Assert.AreEqual(0, runner.ComposeUpCount);
             Assert.AreEqual(1, runner.LoadCount);
@@ -747,9 +748,11 @@ public sealed partial class InstallerFlowTests
     /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("version-label", "holds an image that is not labelled as CameraAgent {version} from commit {commit}, as release v{version} requires.")]
-    [DataRow("revision-label", "holds an image that is not labelled as CameraAgent {version} from commit {commit}, as release v{version} requires.")]
-    [DataRow("component-label", "holds an image that is not labelled as CameraAgent {version} from commit {commit}, as release v{version} requires.")]
+    [DataRow("version-label", "holds an image that is not labelled as CameraAgent {version} from commit {commit}, created {created}, as release v{version} requires.")]
+    [DataRow("revision-label", "holds an image that is not labelled as CameraAgent {version} from commit {commit}, created {created}, as release v{version} requires.")]
+    [DataRow("component-label", "holds an image that is not labelled as CameraAgent {version} from commit {commit}, created {created}, as release v{version} requires.")]
+    [DataRow("created-label", "holds an image that is not labelled as CameraAgent {version} from commit {commit}, created {created}, as release v{version} requires.")]
+    [DataRow("created-other", "holds an image that is not labelled as CameraAgent {version} from commit {commit}, created {created}, as release v{version} requires.")]
     [DataRow("contract-label", "!The CameraAgent image does not declare the required current configuration and catalog contracts.")]
     [DataRow("catalog-label", "!The CameraAgent image does not declare the required current configuration and catalog contracts.")]
     [DataRow("other-image", "is not the image release v{version} names: its OCI layout names an image other than {digest}.")]
@@ -800,6 +803,8 @@ public sealed partial class InstallerFlowTests
             case "version-label": labels["org.opencontainers.image.version"] = "1.2.0-dev.4"; break;
             case "revision-label": labels["org.opencontainers.image.revision"] = new string('f', 40); break;
             case "component-label": labels["io.hvo.skymonitor.component"] = "LogicHost"; break;
+            case "created-label": labels.Remove("org.opencontainers.image.created"); break;
+            case "created-other": labels["org.opencontainers.image.created"] = "2026-10-17T18:00:00+00:00"; break;
             case "contract-label": labels.Remove("io.hvo.skymonitor.configuration-contract"); break;
             case "catalog-label": labels["io.hvo.skymonitor.catalog-contract"] = "no-such-catalog-contract"; break;
         }
@@ -961,7 +966,7 @@ public sealed partial class InstallerFlowTests
             // release.json names the other platform's manifest, which the index lists, for this platform's archive.
             var other = platform == "linux/amd64" ? "linux/arm64" : "linux/amd64";
             var otherManifest = release.ManifestDigest(other);
-            release.Rewrite(manifest => manifest["images"]![ReleaseManifest.CameraAgentImageName]!["offlineArchives"]!.AsArray()
+            release.Rewrite(manifest => manifest["images"]![ReleaseFixture.ImageKey]!["offlineArchives"]!.AsArray()
                 .Single(archive => (string)archive!["platform"]! == platform)!["manifestDigest"] = otherManifest);
         }
         var instanceId = Guid.Parse("1b5c7d9e-3f4a-4b6c-8d0e-2f3a4b5c6d7e");
@@ -977,6 +982,7 @@ public sealed partial class InstallerFlowTests
             var message = expected
                 .Replace("{version}", version, StringComparison.Ordinal)
                 .Replace("{commit}", ReleaseFixture.Commit, StringComparison.Ordinal)
+                .Replace("{created}", ReleaseFixture.Created, StringComparison.Ordinal)
                 .Replace("{digest}", release.Digest, StringComparison.Ordinal)
                 .Replace("{reference}", $"{release.Repository}:{version}", StringComparison.Ordinal)
                 .Replace("{platform}", platform, StringComparison.Ordinal)
@@ -1008,7 +1014,8 @@ public sealed partial class InstallerFlowTests
     /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow("version-label", "The CameraAgent image {reference} in its registry is not labelled as CameraAgent {version} from commit {commit}, as release v{version} requires. Nothing was pulled.")]
+    [DataRow("version-label", "The CameraAgent image {reference} in its registry is not labelled as CameraAgent {version} from commit {commit}, created {created}, as release v{version} requires. Nothing was pulled.")]
+    [DataRow("created-label", "The CameraAgent image {reference} in its registry is not labelled as CameraAgent {version} from commit {commit}, created {created}, as release v{version} requires. Nothing was pulled.")]
     [DataRow("contract-label", "The CameraAgent image does not declare the required current configuration and catalog contracts.")]
     [DataRow("catalog-label", "The CameraAgent image does not declare the required current configuration and catalog contracts.")]
     [DataRow("other-platform", "The CameraAgent image {reference} in its registry is not the {platform} image release v{version} names: its configuration is not for {platform}. Nothing was pulled.")]
@@ -1028,6 +1035,7 @@ public sealed partial class InstallerFlowTests
         switch (fault)
         {
             case "version-label": labels["org.opencontainers.image.version"] = "1.2.0-dev.4"; break;
+            case "created-label": labels.Remove("org.opencontainers.image.created"); break;
             case "contract-label": labels.Remove("io.hvo.skymonitor.configuration-contract"); break;
             case "catalog-label": labels["io.hvo.skymonitor.catalog-contract"] = "no-such-catalog-contract"; break;
         }
@@ -1083,7 +1091,8 @@ public sealed partial class InstallerFlowTests
                     .Replace("{digest}", release.Digest, StringComparison.Ordinal)
                     .Replace("{platform}", platform, StringComparison.Ordinal)
                     .Replace("{version}", version, StringComparison.Ordinal)
-                    .Replace("{commit}", ReleaseFixture.Commit, StringComparison.Ordinal),
+                    .Replace("{commit}", ReleaseFixture.Commit, StringComparison.Ordinal)
+                    .Replace("{created}", ReleaseFixture.Created, StringComparison.Ordinal),
                 exception.Message);
             Assert.IsGreaterThan(0, runner.Registry!.Reads);
             Assert.AreEqual(0, runner.PullCount, "a refused registry image must never be pulled");
@@ -1131,7 +1140,7 @@ public sealed partial class InstallerFlowTests
 
             Assert.AreEqual(
                 $"The CameraAgent image Docker resolved is not labelled as CameraAgent {release.Version} from commit " +
-                $"{ReleaseFixture.Commit}, as release v{release.Version} requires.",
+                $"{ReleaseFixture.Commit}, created {ReleaseFixture.Created}, as release v{release.Version} requires.",
                 exception.Message);
             Assert.AreEqual(1, runner.PullCount);
             CollectionAssert.Contains(runner.Removed, release.DigestReference);
@@ -1240,7 +1249,7 @@ public sealed partial class InstallerFlowTests
 
     /// <summary>The offline archive release.json lists for <paramref name="platform"/>.</summary>
     private static JsonNode ArchiveOf(JsonObject manifest, string platform)
-        => manifest["images"]![ReleaseManifest.CameraAgentImageName]!["offlineArchives"]!.AsArray()
+        => manifest["images"]![ReleaseFixture.ImageKey]!["offlineArchives"]!.AsArray()
             .Single(archive => (string)archive!["platform"]! == platform)!;
 
     /// <summary>Every path under <paramref name="root"/>, relative and sorted, for before-and-after comparison.</summary>
