@@ -169,9 +169,12 @@ operations manual's change-management rules for a live host. An upgrade pauses c
    ```
 
    Or let the release's `install.sh` check the host first, verify the installer and the catalog again, and add
-   `--release "$release" --no-download` and `--catalog-bundle` itself ([install.sh](deployment-installer.md#installsh)):
+   `--release "$release" --no-download` and `--catalog-bundle` itself ([install.sh](deployment-installer.md#installsh)).
+   It takes the release only from a folder that you alone can change, so take the group's and others' write access
+   away first (a umask of `002` leaves the downloaded files group-writable):
 
    ```bash
+   chmod -R go-w "$release"
    bash install.sh --from "$release" cameraagent install \
      --friendly-name "SkyMonitor 01" --bind-address 127.0.0.1 --port 5130 ...
    ```

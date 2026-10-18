@@ -38,9 +38,10 @@ hvo_sky_install_sh() {
   # scripts/test:install-sh puts the files this script reads (/etc/os-release and /proc/device-tree/model) in a folder of
   # its own. Nothing else changes with it.
   local root="${HVO_SKY_INSTALL_TEST_ROOT:-}"
-  # For tests only: where the release's files are downloaded from, in place of the release's GitHub download URL, so a
-  # test can serve a locally built release. It is still fetched over HTTPS alone.
-  local base_url="${HVO_SKY_INSTALL_TEST_RELEASE_URL:-https://github.com/${repository}/releases/download/v${release_version}}"
+  # Where the release's files are downloaded from. For tests only, HVO_SKY_INSTALL_TEST_RELEASE_URL names another
+  # address, so a test can serve a locally built release: it must be an absolute https:// URL with a host, it is handed
+  # to curl with --url (never as an option) and still fetched over HTTPS alone, and it is announced whenever it is set.
+  local base_url="https://github.com/${repository}/releases/download/v${release_version}"
 
   # The free space each place needs, in KiB: the download (the installer and the release's small files), the catalog
   # once it is unpacked, and Docker's images (CameraAgent's and the one it replaces). The installer measures exactly what
@@ -188,6 +189,18 @@ EOF
     [ -d "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] && [ -n "$(find "$1" -maxdepth 0 -perm 0700 2>/dev/null)" ]
   }
 
+  # trusted_file <file>: a real file (not a link) that is root's or yours and that no one else can write to. In a folder
+  # trusted_folder admits, only you and root can then change it, or put another in its place, after it is checked.
+  trusted_file() {
+    [ -f "$1" ] && [ ! -L "$1" ] || return 1
+    [ -O "$1" ] || [ -n "$(find "$1" -maxdepth 0 -user 0 2>/dev/null)" ] || return 1
+    [ -n "$(find "$1" -maxdepth 0 ! -perm -0020 ! -perm -0002 2>/dev/null)" ]
+  }
+
+  # The --from folder's problem when it is not a folder only you and root can change: the installer reads release.json,
+  # SHA256SUMS and the image archive from it after this script has checked them, so no one else may change them between.
+  local exposed_from="is not a folder only you and root can change: it, or a folder above it, is someone else's or writable by others and not sticky, so someone else could change the release's files after they are checked and before the installer reads them. Put the release's files in a folder of your own that no one else can write to (chmod -R go-w DIR), then run this again."
+
   # check_space <path> <KiB needed> <what it is for>: the free space on the file system that holds the path (or the
   # nearest folder above it that is there).
   check_space() {
@@ -219,16 +232,16 @@ EOF
     esac
   }
 
-  # fetch <url> <file>: a download over HTTPS only, retried a few times.
+  # fetch <url> <file>: a download over HTTPS only, retried a few times. The URL is curl's --url, never an option.
   fetch() {
-    curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 15 --max-time 600 -o "$2" "$1"
+    curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 15 --max-time 600 -o "$2" --url "$1"
   }
 
   # probe <url> <curl options...>: one request, HTTPS only, with a short timeout.
   probe() {
     local url=$1
     shift
-    curl -sS --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 30 "$@" "${url}"
+    curl -sS --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 30 "$@" --url "${url}"
   }
 
   # The file's SHA-256, from its contents on standard input: given a name with a backslash or a newline in it, sha256sum
@@ -248,7 +261,7 @@ EOF
     if verification=$(gh attestation verify "$1" --repo "${repository}" \
       --cert-identity "https://github.com/${repository}/.github/workflows/${workflow}@refs/tags/v${release_version}" \
       --source-ref "refs/tags/v${release_version}" --deny-self-hosted-runners 2>&1 </dev/null); then
-      ok "$2's attestation says ${repository}'s ${workflow} built it for v${release_version}"
+      ${quick} || ok "$2's attestation says ${repository}'s ${workflow} built it for v${release_version}"
     else
       printf '%s\n' "${verification}" | tail -n 5 | sed 's/^/        /' >&2
       refuse "$2's attestation did not verify, so it may not be the release's: nothing was installed."
@@ -275,7 +288,14 @@ EOF
   # returns.
   fetch_and_start() {
     local release_page="https://github.com/${repository}/releases/tag/v${release_version}"
-    local asset="hvo-sky-install-${rid}" work installer sums status=0 parent catalog="" catalog_dir=""
+    local asset="hvo-sky-install-${rid}" work installer sums status=0 parent catalog="" catalog_dir="" file arch=arm64 physical
+    [ "${rid}" != linux-x64 ] || arch=amd64
+    # A folder (--from) is used by its physical path, and only when only you and root can change it, so the files the
+    # installer reads there are the ones checked here.
+    if [ -n "${from}" ]; then
+      physical=$(trusted_folder "${from}") || refuse "${from} ${exposed_from} Nothing was installed."
+      from=${physical}
+    fi
     # The download goes in a new folder of this script's own, made by its physical path in a TMPDIR only you and root
     # can change (trusted_folder), so the installer that runs is the one checked. Only that folder is removed, and only
     # while it is still the one made.
@@ -296,6 +316,8 @@ EOF
       local status=0
       if [ -n "${from}" ]; then
         [ -f "${from}/$1" ] || refuse "${from} has no $1: download it from ${release_page} into it."
+        trusted_file "${from}/$1" \
+          || refuse "${from}/$1 is a link, or someone else's, or writable by others, so someone else could change it after it is checked: nothing was installed."
         cp -- "${from}/$1" "$2" || die "$1 could not be copied from ${from}."
       else
         fetch "${base_url}/$1" "$2" || status=$?
@@ -352,10 +374,9 @@ EOF
     fi
 
     # The attestations say the release's workflow built SHA256SUMS, which every other file is checked against, and the
-    # installer itself. gh fetches them when it is signed in.
-    if ${quick}; then
-      :
-    elif ! have gh; then
+    # installer itself. gh fetches them when it is signed in. They are checked before the installer is started at all,
+    # for its help and version too.
+    if ! have gh; then
       note "the attestations were not checked: gh (GitHub's CLI, https://cli.github.com) is not installed"
     elif ! gh auth status >/dev/null 2>&1 </dev/null; then
       note "the attestations were not checked: gh is not signed in (gh auth login), or did not reach GitHub (gh auth status)"
@@ -370,6 +391,8 @@ EOF
     built=$("${installer}" --version 2>&1 </dev/null) || status=$?
     ((status != 126)) \
       || refuse "Programs cannot run from ${TMPDIR:-/tmp} (it is mounted noexec): set TMPDIR to a folder they can run from, then run this again. Nothing was installed."
+    ((status == 0)) \
+      || refuse "${asset} --version failed (exit ${status}, saying '${built}'), so it is not this release's installer working here: nothing was installed."
     case "${built}" in
       "${release_version}+"*) [[ ${built#"${release_version}+"} =~ ^[0-9a-f]{40}$ ]] ;;
       *) false ;;
@@ -378,6 +401,15 @@ EOF
 
     if ${hand_catalog}; then
       supply_catalog "${work}/release/${catalog}" "${catalog}"
+    fi
+
+    # From a folder, the installer reads release.json and the image archive there itself: only you and root may be able
+    # to change them.
+    if ${hand_release} && [ -n "${from}" ]; then
+      for file in release.json "${image}-${release_version}-linux-${arch}.oci.tar"; do
+        [ ! -e "${from}/${file}" ] || trusted_file "${from}/${file}" \
+          || refuse "${from}/${file} is a link, or someone else's, or writable by others, so someone else could change it before the installer reads it: nothing was installed."
+      done
     fi
 
     # The hand-over. The installer reads the terminal, since this script's standard input is the download: with none
@@ -446,6 +478,18 @@ EOF
     catalog_dir="${folder}/${base}"
     ok "the catalog ${base} is unpacked in ${catalog_dir}"
   }
+
+  # ---------------------------------------------------------------------------------------------------------------------
+  # The test-only release URL, checked and announced before anything else.
+
+  if [ -n "${HVO_SKY_INSTALL_TEST_RELEASE_URL+set}" ]; then
+    local https_url='^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?(/[^[:space:]]*)?$'
+    [[ ${HVO_SKY_INSTALL_TEST_RELEASE_URL} =~ ${https_url} ]] \
+      || usage_error "HVO_SKY_INSTALL_TEST_RELEASE_URL is '${HVO_SKY_INSTALL_TEST_RELEASE_URL}', not an absolute https:// URL with a host. It is for tests only: unset it."
+    base_url=${HVO_SKY_INSTALL_TEST_RELEASE_URL%/}
+    printf 'install.sh: HVO_SKY_INSTALL_TEST_RELEASE_URL is set, for tests only: the release'"'"'s files come from %s, not from GitHub.\n' \
+      "${base_url}" >&2
+  fi
 
   # ---------------------------------------------------------------------------------------------------------------------
   # The command line: this script's options, then the installer's arguments.
@@ -571,7 +615,13 @@ EOF
   description=$(os_release PRETTY_NAME)
   description="Linux on ${processor}${description:+, ${description}}${pi_model:+, ${pi_model}}"
 
-  # The installer's help or version: nothing to check.
+  # hvo-sky-install runs as the user that runs Docker, and refuses root: it asks sudo itself for what needs root. Nothing
+  # this script downloads is started as root, not even for its help or version.
+  [ "$(id -u)" != 0 ] \
+    || refuse "hvo-sky-install runs as the user that runs CameraAgent's Docker containers, not as root: run this as that user, without sudo (it asks sudo itself for the steps that need root). Nothing was changed."
+
+  # The installer's help or version: nothing to check on this machine, and the installer is verified as fully as for an
+  # install before it runs.
   if ${quick} && ! ${check_only}; then
     fetch_and_start
   fi
@@ -580,10 +630,6 @@ EOF
   say ""
   say "Checking this machine"
   ok "${description} (${rid})"
-
-  # hvo-sky-install runs as the user that runs Docker, and refuses root: it asks sudo itself for what needs root.
-  [ "$(id -u)" != 0 ] \
-    || refuse "hvo-sky-install runs as the user that runs CameraAgent's Docker containers, not as root: run this as that user, without sudo (it asks sudo itself for the steps that need root). Nothing was changed."
 
   # ---------------------------------------------------------------------------------------------------------------------
   # The commands this script and the installer use
@@ -657,9 +703,11 @@ EOF
   # Docker pulls CameraAgent's image from ghcr.io.
   local arch=arm64 file
   [ "${rid}" != linux-x64 ] || arch=amd64
-  if [ -n "${from}" ]; then
+  if [ -n "${from}" ] && ! trusted_folder "${from}" >/dev/null; then
+    failed "${from} ${exposed_from}"
+  elif [ -n "${from}" ]; then
     local -a files=("hvo-sky-install-${rid}" SHA256SUMS release.json)
-    local absent=0 catalog=""
+    local absent=0 catalog="" exposed=""
     if [ -n "${deploys}" ] && ! ${names_image}; then
       files+=("${image}-${release_version}-linux-${arch}.oci.tar")
     fi
@@ -676,8 +724,13 @@ EOF
       if [ ! -f "${from}/${file}" ]; then
         missing="${missing:+${missing}, }${file}"
         absent=$((absent + 1))
+      elif ! trusted_file "${from}/${file}"; then
+        exposed="${exposed:+${exposed}, }${file}"
       fi
     done
+    if [ -n "${exposed}" ]; then
+      failed "In ${from}, $(and_list "${exposed}") $(printf '%s' "${exposed}" | grep -q ', ' && printf 'are' || printf 'is') a link, or someone else's, or writable by others, so someone else could change it after it is checked: make them yours and writable by you alone (chmod go-w), then run this again."
+    fi
     if [ -n "${missing}" ]; then
       failed "${from} does not have $(and_list "${missing}"): download $( ((absent == 1)) && printf 'it' || printf 'them') from https://github.com/${repository}/releases/tag/v${release_version} into ${from}, then run this again."
     elif [ -n "${deploys}" ] && ! ${names_image}; then

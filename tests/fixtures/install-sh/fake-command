@@ -55,13 +55,22 @@ case "${name}" in
           shift 2
           continue
           ;;
+        --url)
+          url=$2
+          shift 2
+          continue
+          ;;
         -I) head=true ;;
         -fsSL | -sS | --tlsv1.2) ;;
         -*)
           echo "fake curl: unexpected option $1" >&2
           exit 2
           ;;
-        *) url=$1 ;;
+        *)
+          # install.sh hands every URL over as --url, so none can be read as an option.
+          echo "fake curl: a URL not given with --url: $1" >&2
+          exit 2
+          ;;
       esac
       shift
     done
@@ -162,6 +171,8 @@ case "${name}" in
         [ "${FAKE_GH_AUTH:-yes}" = yes ] || { echo "You are not logged into any GitHub hosts. To log in, run: gh auth login" >&2; exit 1; }
         ;;
       "attestation verify")
+        # FAKE_GH_REPLACE: someone else replaces this file while the attestation is checked, after it was copied.
+        [ -z "${FAKE_GH_REPLACE:-}" ] || printf 'replaced while the attestation was checked\n' >"${FAKE_GH_REPLACE}"
         # FAKE_ATTESTATION_FAILS: the name of the file whose attestation does not verify (SHA256SUMS or hvo-sky-install).
         if [ "${3##*/}" = "${FAKE_ATTESTATION_FAILS:-}" ]; then
           printf 'Loaded digest sha256:%s for file://%s\n' "0000" "$3"

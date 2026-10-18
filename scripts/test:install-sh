@@ -10,6 +10,8 @@
 #
 # The tests run in parallel (INSTALL_SH_TEST_JOBS at a time, default the CPUs, at most 8), each in a folder of its own.
 set -uo pipefail
+# The release folder and its files are only this user's to change, as install.sh requires of a --from folder.
+umask 022
 
 REPOSITORY=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 SOURCE="${REPOSITORY}/src/HVO.SkyMonitor.Deployment.Cli/install.sh"
@@ -1102,6 +1104,157 @@ test_an_interruption_exits_130() {
   assert_no_download_folder_left
 }
 
+# --- Review PR-1356-R1 -----------------------------------------------------------------------------------------------
+
+# F1: the installer reads release.json, SHA256SUMS and the image archive from --from's folder after install.sh has checked
+# them, so only you and root may be able to change them. Someone else's replacement after verification is the attack: a
+# folder others can write to is refused before anything is checked, so it cannot happen.
+test_from_a_folder_others_can_change_is_refused_before_verification() {
+  chmod g+w "${WORK}/release"
+  install_sh FAKE_GH_REPLACE="${WORK}/release/release.json" -- --from "${WORK}/release" cameraagent install
+
+  assert_status 3
+  assert_output_contains "${WORK}/release is not a folder only you and root can change"
+  assert_not_called "gh attestation verify"
+  assert_installer_did_not_run
+  [ "$(cat "${WORK}/release/release.json")" = "{}" ] || fail_test "release.json was replaced"
+}
+
+test_check_from_a_folder_others_can_change_fails() {
+  chmod o+w "${WORK}/release"
+  install_sh -- --from "${WORK}/release" --check
+
+  assert_stopped_by_checks
+  assert_output_contains "FAIL  ${WORK}/release is not a folder only you and root can change"
+}
+
+# The quick paths (help, version) take the installer from the folder too, without the checks: still refused.
+test_from_a_folder_others_can_change_starts_not_even_the_installer_s_version() {
+  chmod g+w "${WORK}/release"
+  install_sh -- --from "${WORK}/release" --version
+
+  assert_status 3
+  assert_output_contains "is not a folder only you and root can change"
+  assert_output_not_contains "${VERSION}+${COMMIT}"
+}
+
+test_from_a_release_file_others_can_change_is_refused() {
+  chmod o+w "${WORK}/release/release.json" "${WORK}/release/SHA256SUMS"
+  install_sh -- --from "${WORK}/release" --check
+  assert_stopped_by_checks
+  assert_output_contains "FAIL  In ${WORK}/release, SHA256SUMS and release.json are a link, or someone else's, or writable by others"
+
+  install_sh -- --from "${WORK}/release" --version
+  assert_status 3
+  assert_output_contains "${WORK}/release/SHA256SUMS is a link, or someone else's, or writable by others"
+  assert_output_not_contains "${VERSION}+${COMMIT}"
+}
+
+test_from_a_linked_release_file_is_refused() {
+  mv "${WORK}/release/release.json" "${WORK}/release.json"
+  ln -s "${WORK}/release.json" "${WORK}/release/release.json"
+  install_sh -- --from "${WORK}/release" cameraagent install
+
+  assert_stopped_by_checks
+  assert_output_contains "FAIL  In ${WORK}/release, release.json is a link, or someone else's, or writable by others"
+}
+
+test_from_a_linked_folder_is_handed_over_by_its_physical_path() {
+  ln -s "${WORK}/release" "${WORK}/release-link"
+  install_sh -- --from "${WORK}/release-link" cameraagent upgrade --instance-id 1
+
+  assert_status 0
+  assert_installer "args=[cameraagent][upgrade][--instance-id][1][--release][${WORK}/release][--no-download]"
+}
+
+# F2: the installer is never started, not even for its help or version, before its and SHA256SUMS' attestations are
+# checked, and never as root.
+test_the_installer_s_help_is_not_started_when_its_attestation_fails() {
+  install_sh FAKE_ATTESTATION_FAILS=hvo-sky-install -- cameraagent install --help
+
+  assert_status 3
+  assert_output_contains "install.sh: hvo-sky-install-linux-arm64's attestation did not verify"
+  assert_output_not_contains "hvo-sky-install ran"
+  assert_installer_did_not_run
+}
+
+test_the_installer_s_version_is_not_started_when_sha256sums_attestation_fails() {
+  install_sh FAKE_ATTESTATION_FAILS=SHA256SUMS -- --version
+
+  assert_status 3
+  assert_output_contains "install.sh: SHA256SUMS's attestation did not verify"
+  assert_output_not_contains "${VERSION}+${COMMIT}"
+}
+
+test_the_quick_paths_check_the_attestations() {
+  install_sh -- cameraagent install --help
+
+  assert_status 0
+  assert_called "gh attestation verify ${WORK}/tmp/hvo-sky-install."
+  assert_called "/SHA256SUMS --repo HualapaiValley/HVO.SkyMonitor"
+  assert_installer "args=[cameraagent][install][--help]"
+}
+
+test_root_is_refused_before_the_installer_s_help_or_version() {
+  install_sh FAKE_UID=0 -- --version
+  assert_status 3
+  assert_output_contains "hvo-sky-install runs as the user that runs CameraAgent's Docker containers, not as root"
+  assert_output_not_contains "${VERSION}+${COMMIT}"
+  assert_nothing_downloaded
+
+  install_sh FAKE_UID=0 -- cameraagent install --help
+  assert_status 3
+  assert_installer_did_not_run
+}
+
+# F3: the test-only URL must be an absolute https:// URL with a host; anything else, an option for curl included, is
+# refused before any command runs.
+test_a_release_url_that_is_not_an_https_url_with_a_host_is_refused() {
+  local url
+  for url in "-K${WORK}/curlrc" "--proto=file" "file:///etc/passwd" "http://127.0.0.1:8080/release" "https:///release" \
+    "https://" "https://-K/release" "" " https://127.0.0.1/release"; do
+    : >"${FAKE_STATE_DIR}/calls.log"
+    install_sh HVO_SKY_INSTALL_TEST_RELEASE_URL="${url}" -- cameraagent install
+    [ "${STATUS}" = 2 ] || fail_test "'${url}' was not refused as a usage error (exit ${STATUS})"
+    [[ "${OUTPUT}" == *"HVO_SKY_INSTALL_TEST_RELEASE_URL is '${url}', not an absolute https:// URL with a host"* ]] ||
+      fail_test "'${url}' was not named"
+    [ ! -s "${FAKE_STATE_DIR}/calls.log" ] || fail_test "'${url}' ran commands: $(head -n 1 "${FAKE_STATE_DIR}/calls.log")"
+  done
+}
+
+# A URL is curl's --url, never an argument that could be read as an option.
+test_every_url_is_given_to_curl_with_url() {
+  install_sh HVO_SKY_INSTALL_TEST_RELEASE_URL=https://127.0.0.1:8443/release FAKE_RELEASE_URL=https://127.0.0.1:8443/release \
+    -- cameraagent install
+
+  assert_status 0
+  assert_called "--url https://github.com"
+  assert_called "--url https://ghcr.io/v2/"
+  assert_called "--url https://127.0.0.1:8443/release/SHA256SUMS"
+  assert_called "--url https://127.0.0.1:8443/release/release.json"
+}
+
+test_the_release_url_is_announced_in_every_path() {
+  local notice="install.sh: HVO_SKY_INSTALL_TEST_RELEASE_URL is set, for tests only: the release's files come from https://127.0.0.1:8443/release, not from GitHub."
+  local arguments
+  for arguments in "--version" "cameraagent install --help" "--check" "--help"; do
+    # shellcheck disable=SC2086 # each case is its words
+    install_sh HVO_SKY_INSTALL_TEST_RELEASE_URL=https://127.0.0.1:8443/release/ FAKE_RELEASE_URL=https://127.0.0.1:8443/release \
+      -- ${arguments}
+    [ "${STATUS}" = 0 ] || fail_test "'${arguments}' exited ${STATUS}"
+    [[ "${OUTPUT}" == *"${notice}"* ]] || fail_test "'${arguments}' did not announce the test-only URL"
+  done
+}
+
+# F4: the installer's --version must succeed, not only print the release's identity.
+test_an_installer_whose_version_fails_is_not_started() {
+  install_sh FAKE_INSTALLER_VERSION_EXIT=1 -- cameraagent install
+
+  assert_status 3
+  assert_output_contains "install.sh: hvo-sky-install-linux-arm64 --version failed (exit 1, saying '${VERSION}+${COMMIT}')"
+  assert_installer_did_not_run
+}
+
 # --- 4. Verification and the hand-over --------------------------------------------------------------------------------
 
 test_a_download_that_is_not_the_release_s_is_not_started() {
@@ -1275,10 +1428,11 @@ test_the_installer_s_help_skips_the_checks() {
 }
 
 test_the_installer_s_version_skips_the_checks() {
-  install_sh FAKE_UID=0 -- --version
+  install_sh FAKE_DOCKER_ENGINE=down -- --version
 
   assert_status 0
   assert_output_contains "${VERSION}+${COMMIT}"
+  assert_not_called "docker"
 }
 
 test_on_a_terminal_the_installer_reads_the_terminal() {

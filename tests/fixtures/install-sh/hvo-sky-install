@@ -2,12 +2,12 @@
 # A release's hvo-sky-install, as scripts/test:install-sh serves it: it says its version (FAKE_INSTALLER_VERSION), and
 # logs in ${FAKE_STATE_DIR}/installer.log whether its standard input is a terminal, its umask, its arguments, what the
 # folders it is given as --release and --catalog-bundle hold while it runs, and, without a terminal, how many bytes its
-# standard input held. It exits with FAKE_INSTALLER_EXIT; with FAKE_INSTALLER_NOEXEC, it cannot run at all, as from a
-# folder mounted noexec.
+# standard input held. It exits with FAKE_INSTALLER_EXIT (FAKE_INSTALLER_VERSION_EXIT for --version); with
+# FAKE_INSTALLER_NOEXEC, it cannot run at all, as from a folder mounted noexec.
 [ -z "${FAKE_INSTALLER_NOEXEC:-}" ] || exit 126
 if [ "$*" = --version ]; then
   printf '%s\n' "${FAKE_INSTALLER_VERSION}"
-  exit 0
+  exit "${FAKE_INSTALLER_VERSION_EXIT:-0}"
 fi
 
 log="${FAKE_STATE_DIR}/installer.log"

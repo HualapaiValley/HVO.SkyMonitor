@@ -62,7 +62,7 @@ installer's arguments, which start at the first argument that is not one of them
 | Option | Meaning |
 | --- | --- |
 | `--check` | Run the checks below, then stop. Nothing is downloaded or changed |
-| `--from DIR` | Take everything from `DIR`, a folder holding the release's files, instead of GitHub and ghcr.io: the installer, `SHA256SUMS`, the catalog and the offline image archive. ghcr.io is never contacted |
+| `--from DIR` | Take everything from `DIR`, a folder holding the release's files, instead of GitHub and ghcr.io: the installer, `SHA256SUMS`, the catalog and the offline image archive. ghcr.io is never contacted. `DIR`, and every folder above it, must be one that only you and root can change, and the release's files in it yours or root's, writable by no one else and not links: the installer reads `release.json`, `SHA256SUMS` and the archive there after `install.sh` has checked them. It is handed over by its physical path |
 | `-h`, `--help` | Its usage. `--help` after the installer's arguments is the installer's |
 
 **What the installer is given.** `install.sh` adds to the installer's arguments only what the installer is not
@@ -98,7 +98,8 @@ already given:
   and root can change;
 - github.com answers, and this machine's clock is within five minutes of its `Date`. With `--from`, github.com not
   answering is only noted. An unsynchronised clock (`timedatectl`) is noted;
-- with `--from`, the folder holds the installer for this machine, `SHA256SUMS`, `release.json` and, for an install or
+- with `--from`, the folder is one only you and root can change and holds, each yours or root's and writable by no one
+  else, the installer for this machine, `SHA256SUMS`, `release.json` and, for an install or
   an upgrade, the offline image archive for this machine and, for an install, the one catalog archive `SHA256SUMS`
   lists. Otherwise, for an install or an upgrade, ghcr.io answers;
 - for an install (`cameraagent install`, or no command) or an upgrade: Docker answers you and is 20.10 or later with
@@ -122,7 +123,9 @@ change. Then:
    name `.github/workflows/prerelease.yml` (for a `-dev.<n>` pre-release; `release.yml` otherwise) at the release's
    tag, built on a GitHub-hosted runner. Without `gh` this is noted and skipped. `SHA256SUMS` is what every other file,
    and the installer's own checks of `release.json` and the image, are checked against;
-3. the installer's `--version` must be `<version>+<40-character commit>`.
+3. the installer's `--version` must succeed and print `<version>+<40-character commit>`.
+
+The installer is never started before all of this, not even for its `--help` or `--version`, and never as root.
 
 It then runs as you, with your umask, reading the terminal when there is one (never the download), and the folder is
 removed afterwards. `install.sh` prints its own messages on standard error, so standard output is the installer's alone:
@@ -134,8 +137,10 @@ refused and nothing was changed, and `130` when it was interrupted.
 
 `scripts/test:install-sh` tests it with fake commands, as `curl ... | bash` runs it; `scripts/test:release-scripts`
 runs those tests ([ci-pipeline.md](ci-pipeline.md#release-script-tests)). For tests only,
-`HVO_SKY_INSTALL_TEST_RELEASE_URL` names another HTTPS address to download the release's files from, so a locally
-built release can be served; nothing else should set it.
+`HVO_SKY_INSTALL_TEST_RELEASE_URL` names another address to download the release's files from, so a locally
+built release can be served; nothing else should set it. It must be an absolute `https://` URL with a host (anything
+else is a usage error), it is handed to curl as `--url`, never as an option, and still fetched over HTTPS alone, and
+`install.sh` announces it on standard error whenever it is set.
 
 ## Inputs
 
