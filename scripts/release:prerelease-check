@@ -77,7 +77,7 @@ case "$check" in
         # inline bundle beside it. An answer with inline bundles only, or with nothing usable, stops publication.
         count="$(jq --argjson repository "$repository_id" '[.attestations[] | select(
             .repository_id == $repository and
-            (.bundle_url | type == "string" and test("^https://[A-Za-z0-9.-]+(:[0-9]+)?/[^[:space:]]+$"))
+            (.bundle_url | type == "string" and test("\\Ahttps://[A-Za-z0-9.-]+(:[0-9]+)?/[^[:space:]]+\\z"))
         )] | length' <<<"$attestations")"
         [[ "$count" -ge 1 ]] ||
             fail "No attestation of $repository is on record for $digest. A record counts only when it names this repository and an https bundle_url with a host and a path."

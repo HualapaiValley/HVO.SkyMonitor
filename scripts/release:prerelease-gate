@@ -40,7 +40,7 @@ version="${BASH_REMATCH[1]}"
 read_status=0
 reference="$(github_api_read --absent-ok "the tag $tag" \
     'type == "object" and (.object | type == "object") and (.object.type | type == "string")
-     and (.object.sha | type == "string" and test("^[0-9a-f]{40}$"))' \
+     and (.object.sha | type == "string" and test("\\A[0-9a-f]{40}\\z"))' \
     "repos/$repository/git/ref/tags/$tag")" || read_status=$?
 case "$read_status" in
     0) ;;

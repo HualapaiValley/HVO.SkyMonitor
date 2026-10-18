@@ -493,6 +493,7 @@ for record in '{}' '{"bundle":null}' '{"bundle":null,"repository_id":1}' '{"bund
     '{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net","repository_id":1}' \
     '{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net/","repository_id":1}' \
     '{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net/bundles/a b.json","repository_id":1}' \
+    '{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net/bundles/example.json\n","repository_id":1}' \
     "{\"bundle\":$inline_bundle,\"repository_id\":1}"; do
     expect_check_read_refusal "an attestation record $record" "${repo}_attestations_$image_digest" "200:{\"attestations\":[$record]}" \
         "No attestation of HualapaiValley/HVO.SkyMonitor is on record for $image_digest." attested "$image_digest"
