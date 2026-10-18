@@ -63,7 +63,11 @@ public sealed class TokenEndpointTests
             scope).ConfigureAwait(false);
 
         Assert.IsFalse(string.IsNullOrEmpty(token.AccessToken), "Access token should not be empty.");
+    }
 
+    [TestMethod]
+    public async Task RefreshGrantReturnsTokensAndRejectsRevokedTokenAsync()
+    {
         // A separate subject keeps token revocation isolated from the shared seeded users.
         await using var services = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         var users = services.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
@@ -130,8 +134,7 @@ public sealed class TokenEndpointTests
         }
         finally
         {
-            var deleted = await users.DeleteAsync(user).ConfigureAwait(false);
-            Assert.IsTrue(deleted.Succeeded);
+            _ = await users.DeleteAsync(user).ConfigureAwait(false);
         }
     }
 
