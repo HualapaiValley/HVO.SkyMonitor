@@ -170,6 +170,8 @@ onward; earlier development is recorded in its pull requests. A release renames 
   indexes, SBOM and provenance files, the embedded P-256 trust root, the bootstrap script
   `scripts/install-hvo-sky-install.sh`, and the release tool's signing and train commands. A release is trusted by
   `SHA256SUMS` and its build-provenance attestations. (#1310)
+- The `tar-missing` host prerequisite: `cameraagent install` no longer refuses a host without `tar`, because no
+  `hvo-sky-install` command runs it. `install.sh` still checks for `tar`, which it uses to unpack the catalog. (#1353)
 
 ### Deprecated
 

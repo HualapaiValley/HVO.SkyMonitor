@@ -1831,6 +1831,34 @@ public sealed partial class LifecycleContractTests
         Assert.IsTrue(await CatalogLifecycleManager.IsReferencedAsync(fixture.Paths, candidateVersion, CancellationToken.None));
     }
 
+    /// <summary>
+    /// A backup manifest an earlier installer left under <c>operations/backups</c> still holds the catalog it names, so
+    /// garbage collection never removes a catalog such a backup was taken with. #1353 removed the code that wrote these
+    /// manifests; this read stays for the ones already on a host.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task CatalogGarbageCollection_LegacyBackupManifestHoldsItsCatalog()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        const string backedUpVersion = "hyg-v4.2-p3-s2-r2";
+        Assert.IsFalse(await CatalogLifecycleManager.IsReferencedAsync(fixture.Paths, backedUpVersion, CancellationToken.None));
+        var backupsRoot = Path.Combine(fixture.Paths.OperationsRoot, "backups");
+        var backupRoot = Path.Combine(backupsRoot, Guid.NewGuid().ToString("D"));
+        SafeFileSystem.CreateOwnerDirectory(backupsRoot);
+        SafeFileSystem.CreateOwnerDirectory(backupRoot);
+        var legacy = new InstanceBackupManifest(
+            1, Guid.NewGuid(), fixture.InstanceId, Guid.NewGuid(), DateTimeOffset.UtcNow,
+            new string('1', 64), new string('2', 64), new string('3', 64), new string('4', 64),
+            fixture.Manifest.Catalog with { PackageVersion = backedUpVersion }, fixture.Manifest.Image,
+            [new BackupFileIdentity("config/instance.env", 42, new string('5', 64))], new string('6', 64), 4096);
+        await SafeFileSystem.WriteJsonAtomicAsync(
+            Path.Combine(backupRoot, "backup-manifest.json"), legacy, DeploymentJsonContext.Default.InstanceBackupManifest,
+            CancellationToken.None);
+
+        Assert.IsTrue(await CatalogLifecycleManager.IsReferencedAsync(fixture.Paths, backedUpVersion, CancellationToken.None));
+    }
+
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ReadOperationAsync_RefusedRecordThatClaimsMutationIsRejected()

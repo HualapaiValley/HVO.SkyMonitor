@@ -469,7 +469,6 @@ and report every finding together so the host can be fixed in one pass:
 | `docker-cpu-quota-unsupported` | `docker info` reports `CpuCfsQuota: true`, so the Compose `cpus` quota is enforced |
 | `docker-pids-limit-unsupported` | `docker info` reports `PidsLimit: true`, so the Compose `pids_limit` is enforced |
 | `docker-host-cpus-insufficient` | `docker info` reports at least as many CPUs (`NCPU`) as the CameraAgent [CPU limit](#container-resources); Docker refuses to create a container with a larger quota |
-| `tar-missing` | an executable `tar` on `PATH`. No lifecycle command runs it: [`backup`](#backup-and-restore) writes its archive itself, and upgrade and rollback archive nothing |
 | `product-root-storage-insufficient` | room on the filesystem that holds the product root: twice the catalog bundle and image archive together, plus 1 GiB |
 | `docker-root-storage-insufficient` | room on the filesystem that holds Docker's `DockerRootDir`: twice the image archive and 1 GiB |
 | `docker-root-unreported` | `docker info` reports an absolute `DockerRootDir` |
@@ -504,11 +503,12 @@ warnings.
 The human form renders every finding and its remedy on standard error. With
 `--json` the structured report is written to standard output and standard error
 carries one error object with `errorCode` `host-prerequisites`; the exit code is
-`3` (refused, nothing changed) either way. The CLI uses SQLite in-process and never runs `sqlite3` or `jq`,
-so neither is required. An upgrade, a rollback and a backup are held to the limit and CPU
-findings ([below](#upgrade-rollback-and-the-hosts-limits)). Uninstall, purge, and
-the other lifecycle commands do not evaluate these prerequisites, so a host that
-loses limit support can still be cleaned up.
+`3` (refused, nothing changed) either way. The CLI uses SQLite in-process and never
+runs `sqlite3`, `jq` or `tar`, so none is required; `install.sh` checks for `tar`
+itself, since it unpacks the catalog. An upgrade, a rollback and a backup are held
+to the limit and CPU findings ([below](#upgrade-rollback-and-the-hosts-limits)).
+Uninstall, purge, and the other lifecycle commands do not evaluate these
+prerequisites, so a host that loses limit support can still be cleaned up.
 
 ### Upgrade, rollback and the host's limits
 
@@ -516,7 +516,7 @@ An upgrade and a rollback check the host's container limits before they change
 anything, with the same checks as an install: `docker-memory-limit-unsupported`,
 `docker-cpu-quota-unsupported`, `docker-pids-limit-unsupported` and
 `docker-host-cpus-insufficient`, against the limits the instance moves to. They are
-not held to `tar` or the install's room; an upgrade measures its own room. Swap is
+not held to the install's room; an upgrade measures its own room. Swap is
 not one of CameraAgent's limits: Docker's own swap warning is quoted beside the
 limit findings, as at install. This is install contract section 7, and
 RoofController behaves the same way (HVO.RoofController#151).

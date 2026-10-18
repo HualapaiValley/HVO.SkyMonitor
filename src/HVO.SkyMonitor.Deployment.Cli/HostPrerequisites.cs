@@ -16,9 +16,6 @@ internal interface IHostEnvironment
     /// <summary>Measures the filesystem that holds <paramref name="path"/>, which need not exist yet.</summary>
     HostFileSystemMeasurement MeasureFileSystem(string path);
 
-    /// <summary>Whether an executable named <paramref name="name"/> is found on <c>PATH</c>, as process start resolves it.</summary>
-    bool HasExecutable(string name);
-
     /// <summary>The cgroup v2 controllers the kernel offers, or <see langword="null"/> when they cannot be read.</summary>
     string? ReadCgroupControllers();
 }
@@ -56,27 +53,6 @@ internal sealed class LinuxHostEnvironment : IHostEnvironment
                 ?? throw new InstallerException($"Could not identify the filesystem that stores '{path}'.");
         }
         return current;
-    }
-
-    public bool HasExecutable(string name)
-    {
-        ArgumentException.ThrowIfNullOrEmpty(name);
-        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
-                     .Split(':', StringSplitOptions.RemoveEmptyEntries))
-        {
-            if (!Path.IsPathFullyQualified(directory))
-            {
-                continue;
-            }
-            var candidate = Path.Combine(directory, name);
-            if (File.Exists(candidate) &&
-                (File.GetUnixFileMode(candidate) &
-                 (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0)
-            {
-                return true;
-            }
-        }
-        return false;
     }
 
     public string? ReadCgroupControllers()
@@ -147,8 +123,7 @@ internal sealed class HostPrerequisiteException : Exception
 /// <summary>
 /// The host prerequisites <c>cameraagent install</c> and <c>cameraagent install --dry-run</c> evaluate before anything
 /// is created: Docker must enforce the Compose memory, CPU and PIDs limits and its host must have the CPUs the CPU
-/// limit names; <c>tar</c>, which an archive of the whole instance needs, must be present; and the filesystems that hold the product root
-/// and Docker's data root must have room. A memory limit above the host's memory is advisory. Every finding is
+/// limit names; and the filesystems that hold the product root and Docker's data root must have room. A memory limit above the host's memory is advisory. Every finding is
 /// reported together so an operator resolves the complete set in one pass. The CLI uses SQLite in-process and never
 /// runs <c>sqlite3</c> or <c>jq</c>, so neither is required. An upgrade and a rollback are held to the limit and CPU
 /// findings (<see cref="EvaluateContainerLimits"/>, #1357).
@@ -211,7 +186,6 @@ internal static class HostPrerequisites
         var findings = new List<HostPrerequisiteFinding>();
         EvaluateResourceLimits(findings, docker, host, blocking: true);
         EvaluateCapacity(findings, docker, resources, checkCpus: true);
-        EvaluateTools(findings, host);
         EvaluateStorage(findings, docker, productRoot, productRootRequiredBytes, dockerRootRequiredBytes, host);
         return Report(productRoot, findings);
     }
@@ -230,8 +204,8 @@ internal static class HostPrerequisites
 
     /// <summary>
     /// The prerequisites an upgrade or a rollback is held to before it changes anything (#1357): the limit and CPU
-    /// findings of <see cref="Evaluate"/>, by the same checks. An image change measures its own room and runs no
-    /// <c>tar</c>, so it is not held to those. An upgrade is refused by any blocking finding, as an install is. A
+    /// findings of <see cref="Evaluate"/>, by the same checks. An image change measures its own room, so it is not
+    /// held to the install's storage findings. An upgrade is refused by any blocking finding, as an install is. A
     /// <paramref name="rollback"/> is the recovery path (install contract section 7), so a limit Docker cannot enforce
     /// is advisory and <see cref="RollbackWarning"/> names it. A CPU limit Docker enforces still needs the CPUs it names,
     /// since Docker refuses that container; one Docker cannot enforce is withheld, so the CPUs no longer count.
@@ -452,22 +426,6 @@ internal static class HostPrerequisites
                     $"at least {resources.MemoryBytes} bytes ({CameraAgentContainerResources.DescribeMemory(resources.MemoryBytes)}) for the CameraAgent memory limit"),
                 MemoryCapacityRemediation));
         }
-    }
-
-    private static void EvaluateTools(List<HostPrerequisiteFinding> findings, IHostEnvironment host)
-    {
-        if (host.HasExecutable("tar"))
-        {
-            return;
-        }
-        findings.Add(new HostPrerequisiteFinding(
-            "tar-missing",
-            "host-tools",
-            Blocking: true,
-            "PATH",
-            "no executable tar on PATH",
-            "an executable tar",
-            "Install tar (for example 'sudo apt-get install tar'); an archive of the whole instance needs it."));
     }
 
     private static void EvaluateStorage(

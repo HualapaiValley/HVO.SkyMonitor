@@ -647,8 +647,6 @@ public sealed partial class LifecycleContractTests
         public HostFileSystemMeasurement MeasureFileSystem(string path)
             => new(LinuxHostEnvironment.NearestExistingAncestor(path), "test:0", availableBytes);
 
-        public bool HasExecutable(string name) => true;
-
         public string? ReadCgroupControllers() => null;
     }
 
