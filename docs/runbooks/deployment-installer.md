@@ -32,6 +32,8 @@ runbook describes the installer as it behaves today.
 | Container limits kept in the install record and changed with a re-run | Limits are set at install and recorded in the instance's `instance-manifest.json`. A re-run with different `--cpus` or `--memory` is refused, and an installed instance's limits change only when an upgrade moves limits the operator did not set to the new default (see [Container Resources](#container-resources)) | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
 | Settings catalogue served by the API | CameraAgent serves the [operator settings catalogue and group writes](../contracts/cameraagent-operator-settings-v1.md) through its operations API; the owner creates API keys for non-browser clients | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
 | Machine install record `/etc/hvo-sky/install.json` | Records live beneath each instance root (`instance-manifest.json`, `state/deployment/`); `/etc/hvo-sky/` holds only the host policy | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
+| Install and upgrade refuse a host that cannot enforce the container limits; a rollback proceeds with a loud warning (contract section 7) | Install refuses such a host ([Host Prerequisites](#host-prerequisites)); upgrade and rollback do not check | [#1357](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1357) |
+| `release.json` names images by component key (`images.cameraAgent`) and declares `stateContracts`; images carry `org.opencontainers.image.created` (contract sections 1, 4 and 6) | `release.json` names the image `skymonitor-cameraagent` and omits `stateContracts`; the image carries `version` and `revision` only | [#1359](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1359) |
 
 ## Inputs
 
@@ -102,7 +104,7 @@ HTTP:
 
 ```bash
 hvo-sky-install cameraagent install ... \
-  --bind-address 192.168.2.138 --port 5130 --acknowledge-plaintext-http
+  --bind-address <host-lan-address> --port 5130 --acknowledge-plaintext-http
 ```
 
 After `compose up`, the installer waits for health and bootstraps the owner at
