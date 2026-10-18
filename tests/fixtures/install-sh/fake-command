@@ -66,7 +66,8 @@ case "${name}" in
       shift
     done
     ${https} || { echo "fake curl: not limited to HTTPS (--proto =https): ${url}" >&2; exit 2; }
-    release_url="https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v${FAKE_RELEASE_VERSION}/"
+    # FAKE_RELEASE_URL: where the release's files are served, as HVO_SKY_INSTALL_TEST_RELEASE_URL names it.
+    release_url="${FAKE_RELEASE_URL:-https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v${FAKE_RELEASE_VERSION}}/"
     case "${url}" in
       https://github.com)
         [ -z "${FAKE_GITHUB_EXIT:-}" ] || exit "${FAKE_GITHUB_EXIT}"
@@ -113,6 +114,12 @@ case "${name}" in
         esac
         printf '%s\n' "${FAKE_DOCKER_VERSION:-27.3.1}"
         ;;
+      "buildx version")
+        case "${FAKE_BUILDX:-v0.37.1}" in
+          missing) echo "docker: 'buildx' is not a docker command." >&2; exit 1 ;;
+          *) printf 'github.com/docker/buildx %s 0b265a9f62db554fa9aba6dd19e1bd5704bc7d8a\n' "${FAKE_BUILDX:-v0.37.1}" ;;
+        esac
+        ;;
       "compose version --short")
         [ "${FAKE_COMPOSE:-2.29.7}" != missing ] || { echo "docker: 'compose' is not a docker command." >&2; exit 1; }
         printf '%s\n' "${FAKE_COMPOSE:-2.29.7}"
@@ -143,13 +150,15 @@ case "${name}" in
     printf '%s\n' "${FAKE_NTP:-yes}"
     ;;
 
-  tar) ;;
+  tar) exec "${FAKE_REAL_TAR}" "$@" ;;
 
   sha256sum) exec "${FAKE_REAL_SHA256SUM}" "$@" ;;
 
   gh)
     case "$1 ${2:-}" in
       "auth status")
+        # FAKE_GH_INTERRUPT: someone presses Ctrl-C while gh runs, so install.sh is sent SIGINT.
+        [ -z "${FAKE_GH_INTERRUPT:-}" ] || kill -INT "${PPID}"
         [ "${FAKE_GH_AUTH:-yes}" = yes ] || { echo "You are not logged into any GitHub hosts. To log in, run: gh auth login" >&2; exit 1; }
         ;;
       "attestation verify")

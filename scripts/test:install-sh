@@ -18,13 +18,14 @@ VERSION="1.2.0-dev.3"
 FINAL_VERSION="1.2.0"
 COMMIT="0123456789abcdef0123456789abcdef01234567"
 RELEASE_URL="https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v${VERSION}"
+CATALOG="hyg-v4.2-p3-s2-r1.bundle"
 PI_DESCRIPTION="Linux on aarch64, Debian GNU/Linux 12 (bookworm), Raspberry Pi 5 Model B Rev 1.0 (linux-arm64)"
 # The real commands install.sh and the fakes use; everything else on the PATH is a fake, or missing.
-REAL_TOOLS="cat tr awk sed grep tail head dirname mktemp rm rmdir cp mv chmod mkdir ln wc find date"
+REAL_TOOLS="cat tr awk sed grep tail head dirname mktemp rm rmdir cp mv chmod mkdir ln wc find date gzip"
 # The fakes (tests/fixtures/install-sh/fake-command, linked under each name).
 FAKES="uname getconf ldd id curl docker df timedatectl tar sha256sum gh"
 
-for tool in setsid python3 sha256sum ${REAL_TOOLS}; do
+for tool in setsid python3 sha256sum tar ${REAL_TOOLS}; do
   command -v "${tool}" >/dev/null || { echo "test:install-sh: ${tool} is required." >&2; exit 1; }
 done
 
@@ -63,10 +64,23 @@ printf 'Raspberry Pi 5 Model B Rev 1.0\0' >"${SUITE}/root/proc/device-tree/model
 for name in linux-arm64 linux-x64; do
   cp "${FAKES_DIR}/hvo-sky-install" "${SUITE}/release/hvo-sky-install-${name}"
 done
-# The release's offline image archives and release.json: install.sh checks only that the ones it needs are there.
+# The release's offline image archives and release.json: install.sh checks only that the ones it needs are there, and
+# hands the installer the folder or release.json.
 : >"${SUITE}/release/skymonitor-cameraagent-${VERSION}-linux-amd64.oci.tar"
 : >"${SUITE}/release/skymonitor-cameraagent-${VERSION}-linux-arm64.oci.tar"
 printf '{}\n' >"${SUITE}/release/release.json"
+
+# catalog_archive <archive> <member>...: a catalog archive as the release tool writes it, read-only files under
+# <catalog>/ with no folder entries, holding the named members of ${SUITE}/catalog-source.
+mkdir -p "${SUITE}/catalog-source/${CATALOG}"
+printf '{"package":{"version":"hyg-v4.2-p3-s2-r1"}}\n' >"${SUITE}/catalog-source/${CATALOG}/manifest.json"
+printf 'catalog\n' >"${SUITE}/catalog-source/${CATALOG}/hyg_v42.sqlite"
+catalog_archive() {
+  local archive=$1
+  shift
+  tar -czf "${archive}" -C "${SUITE}/catalog-source" --owner=0 --group=0 --mode=0444 --no-recursion "$@"
+}
+catalog_archive "${SUITE}/release/${CATALOG}.tar.gz" "${CATALOG}/hyg_v42.sqlite" "${CATALOG}/manifest.json"
 (cd "${SUITE}/release" && sha256sum -- * >SHA256SUMS)
 
 # A Raspberry Pi 5 with the 64-bit Raspberry Pi OS and Docker, run by a person in the docker group, and the release's
@@ -78,12 +92,15 @@ setup() {
   RUN_VERSION=${VERSION}
   mkdir -p "${FAKE_STATE_DIR}" "${WORK}/tmp" "${WORK}/home" "${WORK}/docker"
   : >"${FAKE_STATE_DIR}/calls.log"
-  # TMPDIR is a folder only this user can change, whatever the umask: install.sh downloads only into such a one.
-  chmod 0700 "${WORK}/tmp"
+  # TMPDIR and HOME are folders only this user can change, whatever the umask: install.sh downloads only into such a
+  # TMPDIR, and unpacks the catalog only under such a HOME (~/.cache/hvo-sky/catalogs).
+  chmod 0700 "${WORK}/tmp" "${WORK}/home"
+  CATALOG_DIR="${WORK}/home/.cache/hvo-sky/catalogs/${CATALOG}"
   cp -a "${SUITE}/fakebin" "${SUITE}/release" "${SUITE}/root" "${WORK}/"
 }
 
 teardown() {
+  chmod -R u+w "${WORK}" 2>/dev/null
   rm -rf "${WORK}"
 }
 
@@ -115,7 +132,7 @@ build_command() {
     PATH="${WORK}/fakebin:${SUITE}/realbin" HOME="${WORK}/home" TMPDIR="${WORK}/tmp"
     HVO_SKY_INSTALL_TEST_ROOT="${WORK}/root" FAKE_STATE_DIR="${FAKE_STATE_DIR}"
     FAKE_RELEASE_DIR="${WORK}/release" FAKE_DOCKER_ROOT="${WORK}/docker"
-    FAKE_REAL_SHA256SUM="$(command -v sha256sum)"
+    FAKE_REAL_SHA256SUM="$(command -v sha256sum)" FAKE_REAL_TAR="$(command -v tar)"
     FAKE_RELEASE_VERSION="${RUN_VERSION}" FAKE_INSTALLER_VERSION="${RUN_VERSION}+${COMMIT}"
     ${env_pairs[@]+"${env_pairs[@]}"}
     "${SUITE}/realbin/bash" -c 'cat "$1" | "$2" -s -- "${@:3}"' install-sh "${SCRIPT_UNDER_TEST}" "${SUITE}/realbin/bash"
@@ -191,6 +208,21 @@ assert_installer() {
   fi
 }
 
+# assert_installer_matches <regular expression>: the installer ran, and a line of its log matches the expression (for
+# arguments naming install.sh's own download folder, whose name is random).
+assert_installer_matches() {
+  if [ ! -f "${FAKE_STATE_DIR}/installer.log" ]; then
+    fail_test "the installer did not run"
+  elif ! grep -qE -- "$1" "${FAKE_STATE_DIR}/installer.log"; then
+    fail_test "the installer's log has no line matching '$1': $(tr '\n' ' ' <"${FAKE_STATE_DIR}/installer.log")"
+  fi
+}
+
+# re <text>: the text as an extended regular expression that matches it literally.
+re() {
+  printf '%s' "$1" | sed 's/[][\.*^$+?(){}|]/\\&/g'
+}
+
 assert_installer_did_not_run() {
   [ ! -e "${FAKE_STATE_DIR}/installer.log" ] || fail_test "the installer ran: $(tr '\n' ' ' <"${FAKE_STATE_DIR}/installer.log")"
 }
@@ -207,9 +239,9 @@ assert_no_download_folder_left() {
   [ -z "${left}" ] || fail_test "TMPDIR still holds ${left}"
 }
 
-# The checks failed, and install.sh stopped before downloading anything.
+# The checks failed, and install.sh refused (3) before downloading anything.
 assert_stopped_by_checks() {
-  assert_status 1
+  assert_status 3
   assert_output_contains "nothing was downloaded or installed."
   assert_nothing_downloaded
   assert_installer_did_not_run
@@ -248,7 +280,7 @@ test_the_repository_s_copy_installs_nothing() {
   SCRIPT_UNDER_TEST=${SOURCE}
   install_sh -- cameraagent install
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "This is the repository's copy of install.sh, which names no release: use a release's copy."
   assert_output_contains "releases/latest/download/install.sh | bash"
   [ ! -s "${FAKE_STATE_DIR}/calls.log" ] || fail_test "it ran commands: $(head -n 1 "${FAKE_STATE_DIR}/calls.log")"
@@ -276,8 +308,8 @@ test_help_names_the_release_and_runs_nothing() {
 
 # Cut short anywhere before the end of its last line's call, the download runs no command at all: inside the function
 # bash finds it unfinished, and in the last line the call is not made, or is refused without its end marker. Cuts at
-# sampled offsets through the script, and at every byte of its last line. (Without its last argument, the call would
-# still run the checks.)
+# sampled offsets through the script, and at every byte of its last line up to the marker. (Without its last argument,
+# the call would still run the checks.)
 test_a_download_cut_short_anywhere_runs_nothing() {
   local size last call complete n refused=0 cuts=0 ran="" marker='"end of install.sh"'
   SCRIPT_UNDER_TEST="${WORK}/cut.sh"
@@ -288,7 +320,10 @@ test_a_download_cut_short_anywhere_runs_nothing() {
   complete=${last%%"${marker}"*}
   complete=$((call + ${#complete} + ${#marker}))
   build_command -- cameraagent install
-  for ((n = 0; n <= size; n += (n + 97 < call - 40 ? 97 : 1))); do
+  # Every 199th byte up to 40 bytes before the call, then every byte to the end marker, then the whole script (a cut
+  # after the marker runs the script, as the whole script does).
+  for ((n = 0; n <= size; n += (n < call - 40 ? (call - 40 - n < 199 ? call - 40 - n : 199) : 1))); do
+    ((n < complete || n == size)) || continue
     head -c "${n}" "${SCRIPT}" >"${SCRIPT_UNDER_TEST}"
     : >"${FAKE_STATE_DIR}/calls.log"
     rm -f "${FAKE_STATE_DIR}/installer.log"
@@ -345,7 +380,7 @@ test_from_a_folder_that_is_not_there_is_a_usage_error() {
 test_another_kernel_is_refused() {
   install_sh FAKE_KERNEL=Darwin -- --check
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "This machine runs Darwin: SkyMonitor's installer and CameraAgent run on Linux (64-bit ARM or x86-64)."
   assert_nothing_downloaded
 }
@@ -353,28 +388,28 @@ test_another_kernel_is_refused() {
 test_32_bit_arm_is_refused() {
   install_sh FAKE_MACHINE=armv7l -- --check
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "This machine runs 32-bit ARM (armv7l), and SkyMonitor's programs are 64-bit"
 }
 
 test_a_32_bit_system_on_a_64_bit_kernel_is_refused() {
   install_sh FAKE_LONG_BIT=32 -- --check
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "This machine has a 64-bit kernel and a 32-bit system"
 }
 
 test_another_processor_is_refused() {
   install_sh FAKE_MACHINE=riscv64 -- --check
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "This machine's processor is riscv64"
 }
 
 test_musl_is_refused() {
   install_sh FAKE_LIBC=musl -- --check
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "This Linux has musl (as Alpine does)"
 }
 
@@ -394,17 +429,27 @@ test_a_pi_is_checked_and_the_installer_downloaded_verified_and_started() {
   assert_output_contains "ok    Docker 27.3.1, with Compose 2.29.7"
   assert_output_contains "ok    Docker enforces memory, CPU and process limits"
   assert_output_contains "free on ${WORK}/docker for Docker's images"
-  assert_output_contains "Downloading hvo-sky-install ${VERSION} for linux-arm64"
+  assert_output_contains "ok    docker buildx 0.37, which reads CameraAgent's image from the registry before it is pulled"
+  assert_output_contains "free on ${WORK}/home for the catalog (${WORK}/home/.cache/hvo-sky/catalogs)"
+  assert_output_contains "Downloading hvo-sky-install ${VERSION} for linux-arm64 from ${RELEASE_URL}"
   assert_output_contains "ok    hvo-sky-install-linux-arm64's SHA-256 is the one SHA256SUMS lists"
   assert_output_contains "ok    SHA256SUMS's attestation says HualapaiValley/HVO.SkyMonitor's prerelease.yml built it for v${VERSION}"
   assert_output_contains "ok    hvo-sky-install-linux-arm64's attestation says"
   assert_output_contains "ok    hvo-sky-install-linux-arm64 says it is ${VERSION}+${COMMIT}"
+  assert_output_contains "ok    release.json's SHA-256 is the one SHA256SUMS lists"
+  assert_output_contains "ok    ${CATALOG}.tar.gz's SHA-256 is the one SHA256SUMS lists"
+  assert_output_contains "ok    the catalog ${CATALOG} is unpacked in ${CATALOG_DIR}"
   assert_output_contains "Starting hvo-sky-install ${VERSION}"
   assert_output_contains "hvo-sky-install ran"
   assert_called "curl -fsSL --proto =https --tlsv1.2 --retry 3 --connect-timeout 15 --max-time 600 -o"
   assert_called "${RELEASE_URL}/SHA256SUMS"
   assert_called "${RELEASE_URL}/hvo-sky-install-linux-arm64"
-  assert_installer "args=[cameraagent][install][--friendly-name][North sky][--port][5130]"
+  assert_called "${RELEASE_URL}/release.json"
+  assert_called "${RELEASE_URL}/${CATALOG}.tar.gz"
+  assert_not_called ".oci.tar"
+  assert_installer_matches "^args=\[cameraagent\]\[install\]\[--friendly-name\]\[North sky\]\[--port\]\[5130\]\[--release\]\[$(re "${WORK}/tmp")/hvo-sky-install\.[A-Za-z0-9]{8}/release\]\[--image-source\]\[registry\]\[--catalog-bundle\]\[$(re "${CATALOG_DIR}")\]$"
+  assert_installer "release-files=SHA256SUMS ${CATALOG}.tar.gz release.json "
+  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
   assert_installer "terminal=no"
   assert_no_download_folder_left
 }
@@ -422,7 +467,7 @@ test_x86_64_gets_the_x64_installer() {
 test_root_is_refused_before_anything_changes() {
   install_sh FAKE_UID=0 -- cameraagent install
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "hvo-sky-install runs as the user that runs CameraAgent's Docker containers, not as root"
   assert_not_called "docker"
   assert_nothing_downloaded
@@ -435,7 +480,7 @@ test_missing_commands_are_named() {
   without tar sha256sum
   install_sh -- --check
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "FAIL  These commands are missing: tar sha256sum. Install them (sudo apt-get install tar coreutils)"
 }
 
@@ -443,7 +488,7 @@ test_without_curl_nothing_more_is_checked() {
   without curl
   install_sh -- --check
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "These commands are missing: curl."
   assert_output_contains "Without curl nothing more can be checked"
   assert_not_called "docker"
@@ -484,7 +529,7 @@ test_github_not_answering_fails() {
 test_a_tls_failure_says_what_does_that() {
   install_sh FAKE_GITHUB_EXIT=60 -- --check
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "TLS failed (curl exit 60): a clock that is wrong, or a proxy that intercepts HTTPS, does this"
 }
 
@@ -602,7 +647,7 @@ test_less_memory_than_the_limit_is_only_noted() {
 
   assert_status 0
   assert_output_contains "note  This machine has 3.7 GB of memory, less than CameraAgent's 4 GiB limit"
-  assert_installer "args=[cameraagent][install]"
+  assert_installer_matches "^args=\[cameraagent\]\[install\]\[--release\]"
 }
 
 test_docker_info_that_fails_fails() {
@@ -672,7 +717,9 @@ test_from_a_folder_works_offline_and_never_asks_ghcr() {
   assert_output_contains "note  the attestations were not checked: gh is not signed in"
   assert_not_called "ghcr.io"
   assert_nothing_downloaded
-  assert_installer "args=[cameraagent][install][--port][5130][--release][${WORK}/release][--no-download]"
+  assert_installer "args=[cameraagent][install][--port][5130][--release][${WORK}/release][--no-download][--catalog-bundle][${CATALOG_DIR}]"
+  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
+  assert_output_contains "ok    ${CATALOG}.tar.gz's SHA-256 is the one SHA256SUMS lists"
 }
 
 test_check_from_a_folder_without_the_image_archive_fails() {
@@ -712,7 +759,7 @@ test_from_a_folder_with_its_own_release_or_image_still_pulls_nothing() {
   install_sh -- --from "${WORK}/release" cameraagent install --image-ref sha256:0000 --no-download
 
   assert_status 0
-  assert_installer "args=[cameraagent][install][--image-ref][sha256:0000][--no-download]"
+  assert_installer "args=[cameraagent][install][--image-ref][sha256:0000][--no-download][--catalog-bundle][${CATALOG_DIR}]"
   assert_output_contains "ok    ${WORK}/release has the release's files"
 }
 
@@ -738,7 +785,280 @@ test_from_a_relative_folder_is_given_by_its_absolute_path() {
   install_sh -- --from=release cameraagent install
 
   assert_status 0
-  assert_installer "args=[cameraagent][install][--release][${WORK}/release][--no-download]"
+  assert_installer "args=[cameraagent][install][--release][${WORK}/release][--no-download][--catalog-bundle][${CATALOG_DIR}]"
+}
+
+# --- 1. Online: the release's small files, checked, and the image pulled by its digest -------------------------------
+
+# release_folder_arg: the --release argument install.sh hands over online, its own download folder's release/.
+release_folder_arg() {
+  printf '\\[--release\\]\\[%s/hvo-sky-install\\.[A-Za-z0-9]{8}/release\\]' "$(re "${WORK}/tmp")"
+}
+
+test_online_an_install_gets_the_release_s_small_files_and_never_its_image_archive() {
+  install_sh -- cameraagent install --port 5130
+
+  assert_status 0
+  assert_called "${RELEASE_URL}/SHA256SUMS"
+  assert_called "${RELEASE_URL}/hvo-sky-install-linux-arm64"
+  assert_called "${RELEASE_URL}/release.json"
+  assert_called "${RELEASE_URL}/${CATALOG}.tar.gz"
+  assert_not_called ".oci.tar"
+  assert_installer_matches "^args=\\[cameraagent\\]\\[install\\]\\[--port\\]\\[5130\\]$(release_folder_arg)\\[--image-source\\]\\[registry\\]\\[--catalog-bundle\\]\\[$(re "${CATALOG_DIR}")\\]$"
+  assert_installer "release-files=SHA256SUMS ${CATALOG}.tar.gz release.json "
+  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
+  assert_no_download_folder_left
+}
+
+test_online_an_upgrade_gets_the_release_and_no_catalog() {
+  install_sh -- cameraagent upgrade --instance-id 1
+
+  assert_status 0
+  assert_called "${RELEASE_URL}/release.json"
+  assert_not_called "${CATALOG}.tar.gz"
+  assert_not_called ".oci.tar"
+  assert_installer_matches "^args=\\[cameraagent\\]\\[upgrade\\]\\[--instance-id\\]\\[1\\]$(release_folder_arg)\\[--image-source\\]\\[registry\\]$"
+  assert_installer "release-files=SHA256SUMS release.json "
+}
+
+test_online_release_json_that_is_not_the_release_s_starts_nothing() {
+  printf 'tampered\n' >>"${WORK}/release/release.json"
+  install_sh -- cameraagent install
+
+  assert_status 3
+  assert_output_contains "install.sh: release.json's SHA-256 is"
+  assert_output_contains "it is not the release's, and nothing was installed."
+  assert_installer_did_not_run
+  assert_no_download_folder_left
+}
+
+test_online_a_catalog_that_is_not_the_release_s_starts_nothing() {
+  printf 'tampered\n' >>"${WORK}/release/${CATALOG}.tar.gz"
+  install_sh -- cameraagent install
+
+  assert_status 3
+  assert_output_contains "install.sh: ${CATALOG}.tar.gz's SHA-256 is"
+  assert_installer_did_not_run
+  [ ! -e "${CATALOG_DIR}" ] || fail_test "a catalog that is not the release's was unpacked"
+  assert_no_download_folder_left
+}
+
+test_online_sha256sums_without_release_json_starts_nothing() {
+  grep -v ' release.json$' "${WORK}/release/SHA256SUMS" >"${WORK}/sums" && mv "${WORK}/sums" "${WORK}/release/SHA256SUMS"
+  install_sh -- cameraagent install
+
+  assert_status 3
+  assert_output_contains "SHA256SUMS does not list release.json once, so it cannot be checked: nothing was installed."
+  assert_installer_did_not_run
+}
+
+test_online_sha256sums_without_one_catalog_starts_nothing() {
+  grep -v "${CATALOG}.tar.gz$" "${WORK}/release/SHA256SUMS" >"${WORK}/sums" && mv "${WORK}/sums" "${WORK}/release/SHA256SUMS"
+  install_sh -- cameraagent install
+
+  assert_status 3
+  assert_output_contains "SHA256SUMS does not list one catalog (<catalog version>.bundle.tar.gz)"
+  assert_installer_did_not_run
+}
+
+test_online_sha256sums_with_two_catalogs_starts_nothing() {
+  sed -n "s/  ${CATALOG}.tar.gz$/  hyg-v4.4-p1-s1-r1.bundle.tar.gz/p" "${WORK}/release/SHA256SUMS" >"${WORK}/another"
+  cat "${WORK}/another" >>"${WORK}/release/SHA256SUMS"
+  install_sh -- cameraagent install
+
+  assert_status 3
+  assert_output_contains "SHA256SUMS does not list one catalog"
+  assert_installer_did_not_run
+}
+
+test_online_release_json_that_cannot_be_downloaded_fails_as_a_step() {
+  install_sh FAKE_DOWNLOAD_FAILS=release.json FAKE_DOWNLOAD_EXIT=22 -- cameraagent install
+
+  assert_status 1
+  assert_output_contains "install.sh: release.json could not be downloaded from ${RELEASE_URL}: it answered with an HTTP error."
+  assert_installer_did_not_run
+  assert_no_download_folder_left
+}
+
+test_online_a_catalog_that_cannot_be_downloaded_fails_as_a_step() {
+  install_sh FAKE_DOWNLOAD_FAILS="${CATALOG}.tar.gz" FAKE_DOWNLOAD_EXIT=7 -- cameraagent install
+
+  assert_status 1
+  assert_output_contains "install.sh: ${CATALOG}.tar.gz could not be downloaded from ${RELEASE_URL}"
+  assert_installer_did_not_run
+}
+
+test_online_the_installer_s_own_release_or_image_is_not_given_again() {
+  install_sh -- cameraagent install --release /srv/release
+  assert_status 0
+  assert_not_called "release.json"
+  assert_installer "args=[cameraagent][install][--release][/srv/release][--catalog-bundle][${CATALOG_DIR}]"
+
+  rm -f "${FAKE_STATE_DIR}/installer.log"
+  install_sh -- cameraagent install --image-ref sha256:0000
+  assert_status 0
+  assert_installer "args=[cameraagent][install][--image-ref][sha256:0000][--catalog-bundle][${CATALOG_DIR}]"
+}
+
+test_online_the_installer_s_own_image_source_is_not_given_again() {
+  install_sh -- cameraagent upgrade --image-source registry
+
+  assert_status 0
+  assert_installer_matches "^args=\\[cameraagent\\]\\[upgrade\\]\\[--image-source\\]\\[registry\\]$(release_folder_arg)$"
+}
+
+test_online_an_offline_image_source_is_a_usage_error() {
+  install_sh -- cameraagent install --image-source archive
+
+  assert_status 2
+  assert_output_contains "Without --from, CameraAgent's image is pulled from ghcr.io by its digest, and its offline archive is not downloaded"
+  assert_nothing_downloaded
+}
+
+test_online_the_installer_s_own_catalog_is_not_replaced() {
+  install_sh -- cameraagent install --catalog-bundle /srv/catalog
+
+  assert_status 0
+  assert_not_called "${CATALOG}.tar.gz"
+  assert_output_not_contains "free on ${WORK}/home for the catalog"
+  assert_installer_matches "^args=\\[cameraagent\\]\\[install\\]\\[--catalog-bundle\\]\\[/srv/catalog\\]$(release_folder_arg)\\[--image-source\\]\\[registry\\]$"
+}
+
+# --config names the whole request, and no value option may join it: nothing is added but --from's --no-download.
+test_a_config_file_gets_nothing_added() {
+  install_sh -- cameraagent install --config /srv/install.json
+  assert_status 0
+  assert_not_called "release.json"
+  assert_not_called "${CATALOG}.tar.gz"
+  assert_installer "args=[cameraagent][install][--config][/srv/install.json]"
+
+  rm -f "${FAKE_STATE_DIR}/installer.log"
+  install_sh -- --from "${WORK}/release" cameraagent install --config /srv/install.json
+  assert_status 0
+  assert_installer "args=[cameraagent][install][--config][/srv/install.json][--no-download]"
+}
+
+test_online_docker_without_buildx_fails() {
+  install_sh FAKE_BUILDX=missing -- cameraagent install
+
+  assert_stopped_by_checks
+  assert_output_contains "FAIL  docker buildx 0.8 or later is not installed, and the installer reads CameraAgent's image from the registry with it before pulling"
+}
+
+test_online_buildx_older_than_0_8_fails() {
+  install_sh FAKE_BUILDX=v0.7.1 -- cameraagent install
+
+  assert_stopped_by_checks
+  assert_output_contains "FAIL  docker buildx 0.8 or later is not installed (docker buildx version: github.com/docker/buildx v0.7.1"
+}
+
+test_from_a_folder_needs_no_buildx() {
+  install_sh FAKE_BUILDX=missing -- --from "${WORK}/release" cameraagent install
+
+  assert_status 0
+  assert_not_called "docker buildx"
+}
+
+# For tests only, the release's files can be served from elsewhere, still over HTTPS alone.
+test_the_release_url_can_be_another_for_tests() {
+  install_sh HVO_SKY_INSTALL_TEST_RELEASE_URL=https://127.0.0.1:8443/release FAKE_RELEASE_URL=https://127.0.0.1:8443/release \
+    -- cameraagent install
+
+  assert_status 0
+  assert_called "curl -fsSL --proto =https --tlsv1.2 --retry 3 --connect-timeout 15 --max-time 600 -o ${WORK}/tmp/hvo-sky-install."
+  assert_called "https://127.0.0.1:8443/release/release.json"
+  assert_not_called "${RELEASE_URL}"
+}
+
+# --- 5. The catalog: from the folder or downloaded, checked, and unpacked where a second run finds it ---------------
+
+test_from_a_folder_a_catalog_that_is_not_the_release_s_starts_nothing() {
+  printf 'tampered\n' >>"${WORK}/release/${CATALOG}.tar.gz"
+  install_sh -- --from "${WORK}/release" cameraagent install
+
+  assert_status 3
+  assert_output_contains "install.sh: ${CATALOG}.tar.gz's SHA-256 is"
+  assert_installer_did_not_run
+  assert_nothing_downloaded
+}
+
+test_check_from_a_folder_without_its_catalog_fails() {
+  rm "${WORK}/release/${CATALOG}.tar.gz"
+  install_sh -- --from "${WORK}/release" --check
+
+  assert_stopped_by_checks
+  assert_output_contains "FAIL  ${WORK}/release does not have ${CATALOG}.tar.gz: download it from"
+}
+
+test_a_catalog_holding_anything_outside_its_folder_starts_nothing() {
+  printf 'stray\n' >"${SUITE}/catalog-source/stray-${BASHPID}"
+  catalog_archive "${WORK}/release/${CATALOG}.tar.gz" "${CATALOG}/manifest.json" "stray-${BASHPID}"
+  rm -f "${SUITE}/catalog-source/stray-${BASHPID}"
+  (cd "${WORK}/release" && rm SHA256SUMS && sha256sum -- * >../sums && mv ../sums SHA256SUMS)
+  install_sh -- cameraagent install
+
+  assert_status 3
+  assert_output_contains "install.sh: ${CATALOG}.tar.gz holds stray-${BASHPID}, which is not a file in its folder ${CATALOG}"
+  assert_installer_did_not_run
+  [ ! -e "${CATALOG_DIR}" ] || fail_test "the catalog was unpacked"
+}
+
+test_a_catalog_holding_a_link_starts_nothing() {
+  local source="${WORK}/link-source"
+  mkdir -p "${source}/${CATALOG}"
+  printf '{}\n' >"${source}/${CATALOG}/manifest.json"
+  ln -s /etc/passwd "${source}/${CATALOG}/passwd"
+  tar -czf "${WORK}/release/${CATALOG}.tar.gz" -C "${source}" "${CATALOG}/manifest.json" "${CATALOG}/passwd"
+  (cd "${WORK}/release" && rm SHA256SUMS && sha256sum -- * >../sums && mv ../sums SHA256SUMS)
+  install_sh -- cameraagent install
+
+  assert_status 3
+  assert_output_contains "holds something other than files"
+  assert_installer_did_not_run
+}
+
+# The installer binds an install to the catalog folder it is given, so a second run, or a --resume, must name the same
+# one: the catalog is unpacked in the same place each time, afresh.
+test_the_catalog_is_unpacked_where_a_second_run_finds_it_again() {
+  install_sh -- cameraagent install
+  assert_status 0
+  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
+  printf 'left by hand\n' >"${CATALOG_DIR}/stray"
+  chmod 0500 "${CATALOG_DIR}"
+
+  rm -f "${FAKE_STATE_DIR}/installer.log"
+  install_sh -- cameraagent install
+  assert_status 0
+  assert_installer_matches "\\[--catalog-bundle\\]\\[$(re "${CATALOG_DIR}")\\]$"
+  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
+  [ -z "$(find "${WORK}/home/.cache/hvo-sky/catalogs" -mindepth 1 -maxdepth 1 -name '.*')" ] || fail_test "a staging folder was left"
+}
+
+test_xdg_cache_home_moves_the_catalog() {
+  mkdir -m 0700 "${WORK}/cache"
+  install_sh XDG_CACHE_HOME="${WORK}/cache" -- cameraagent install
+
+  assert_status 0
+  assert_installer_matches "\\[--catalog-bundle\\]\\[$(re "${WORK}/cache/hvo-sky/catalogs/${CATALOG}")\\]$"
+}
+
+test_a_catalog_location_others_can_change_fails() {
+  chmod 0777 "${WORK}/home"
+  install_sh -- cameraagent install
+
+  assert_stopped_by_checks
+  assert_output_contains "FAIL  ${WORK}/home is not a folder only you and root can change, and the catalog is unpacked in ${WORK}/home/.cache/hvo-sky/catalogs"
+}
+
+# --- 2. Exit codes ---------------------------------------------------------------------------------------------------
+
+# Interrupted (here while gh checks its sign-in), it exits 130 and removes its download folder.
+test_an_interruption_exits_130() {
+  install_sh FAKE_GH_INTERRUPT=1 -- cameraagent install
+
+  assert_status 130
+  assert_installer_did_not_run
+  assert_no_download_folder_left
 }
 
 # --- 4. Verification and the hand-over --------------------------------------------------------------------------------
@@ -747,9 +1067,9 @@ test_a_download_that_is_not_the_release_s_is_not_started() {
   printf 'tampered\n' >>"${WORK}/release/hvo-sky-install-linux-arm64"
   install_sh -- cameraagent install
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "hvo-sky-install-linux-arm64's SHA-256 is"
-  assert_output_contains "the download is not the release's, and nothing was installed."
+  assert_output_contains "it is not the release's, and nothing was installed."
   assert_installer_did_not_run
   assert_no_download_folder_left
 }
@@ -758,8 +1078,8 @@ test_sha256sums_without_the_installer_is_refused() {
   grep -v 'hvo-sky-install-linux-arm64$' "${WORK}/release/SHA256SUMS" >"${WORK}/sums" && mv "${WORK}/sums" "${WORK}/release/SHA256SUMS"
   install_sh -- cameraagent install
 
-  assert_status 1
-  assert_output_contains "SHA256SUMS does not list hvo-sky-install-linux-arm64 once, so the download cannot be checked"
+  assert_status 3
+  assert_output_contains "SHA256SUMS does not list hvo-sky-install-linux-arm64 once, so it cannot be checked"
   assert_installer_did_not_run
 }
 
@@ -768,17 +1088,17 @@ test_sha256sums_listing_the_installer_twice_is_refused() {
   cat "${WORK}/again" >>"${WORK}/release/SHA256SUMS"
   install_sh -- cameraagent install
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "SHA256SUMS does not list hvo-sky-install-linux-arm64 once"
   assert_installer_did_not_run
 }
 
 test_sha256sums_in_binary_mode_is_read() {
-  sed -i 's/  hvo-sky-install/ *hvo-sky-install/' "${WORK}/release/SHA256SUMS"
+  sed -i 's/  / */' "${WORK}/release/SHA256SUMS"
   install_sh -- cameraagent install
 
   assert_status 0
-  assert_installer "args=[cameraagent][install]"
+  assert_installer_matches "^args=\[cameraagent\]\[install\]\[--release\].*\[--catalog-bundle\]"
 }
 
 test_a_download_that_fails_names_the_problem() {
@@ -813,7 +1133,7 @@ test_a_final_release_s_attestations_name_the_release_workflow() {
 test_an_installer_whose_attestation_does_not_verify_is_not_started() {
   install_sh FAKE_ATTESTATION_FAILS=hvo-sky-install -- cameraagent install
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "X Verification failed"
   assert_output_contains "install.sh: hvo-sky-install-linux-arm64's attestation did not verify, so it may not be the release's: nothing was installed."
   assert_installer_did_not_run
@@ -822,7 +1142,7 @@ test_an_installer_whose_attestation_does_not_verify_is_not_started() {
 test_sha256sums_whose_attestation_does_not_verify_starts_nothing() {
   install_sh FAKE_ATTESTATION_FAILS=SHA256SUMS -- cameraagent install
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "install.sh: SHA256SUMS's attestation did not verify, so it may not be the release's: nothing was installed."
   assert_installer_did_not_run
 }
@@ -833,13 +1153,13 @@ test_without_gh_the_attestations_are_only_noted() {
 
   assert_status 0
   assert_output_contains "note  the attestations were not checked: gh (GitHub's CLI, https://cli.github.com) is not installed"
-  assert_installer "args=[cameraagent][install]"
+  assert_installer_matches "^args=\[cameraagent\]\[install\]\[--release\]"
 }
 
 test_an_installer_of_another_release_is_not_started() {
   install_sh FAKE_INSTALLER_VERSION="1.1.0+${COMMIT}" -- cameraagent install
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "hvo-sky-install-linux-arm64 says its version is '1.1.0+${COMMIT}', and this is release ${VERSION}: nothing was installed."
   assert_installer_did_not_run
 }
@@ -847,7 +1167,7 @@ test_an_installer_of_another_release_is_not_started() {
 test_an_installer_without_its_commit_is_not_started() {
   install_sh FAKE_INSTALLER_VERSION="${VERSION}+unknown" -- cameraagent install
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "says its version is '${VERSION}+unknown'"
   assert_installer_did_not_run
 }
@@ -855,7 +1175,7 @@ test_an_installer_without_its_commit_is_not_started() {
 test_a_tmpdir_where_programs_cannot_run_is_named() {
   install_sh FAKE_INSTALLER_NOEXEC=1 -- cameraagent install
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "Programs cannot run from ${WORK}/tmp (it is mounted noexec)"
 }
 
@@ -863,17 +1183,17 @@ test_a_tmpdir_others_can_change_is_refused() {
   chmod 0777 "${WORK}/tmp"
   install_sh -- cameraagent install
 
-  assert_status 1
+  assert_status 3
   assert_output_contains "TMPDIR (${WORK}/tmp) is not a folder only you and root can change"
   assert_installer_did_not_run
 }
 
 # The remaining arguments go to the installer as they are, after --, and its exit status is install.sh's.
 test_the_installer_gets_the_remaining_arguments_and_gives_its_status() {
-  install_sh FAKE_INSTALLER_EXIT=3 -- -- cameraagent install --friendly-name "--check" --json
+  install_sh FAKE_INSTALLER_EXIT=7 -- -- cameraagent install --friendly-name "--check" --json
 
-  assert_status 3
-  assert_installer "args=[cameraagent][install][--friendly-name][--check][--json]"
+  assert_status 7
+  assert_installer_matches "^args=\[cameraagent\]\[install\]\[--friendly-name\]\[--check\]\[--json\]\[--release\]"
 }
 
 # install.sh's own output is on standard error, so standard output is the installer's alone, as its --json needs.

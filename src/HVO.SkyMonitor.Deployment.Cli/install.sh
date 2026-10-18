@@ -8,6 +8,11 @@
 # release_version below, and this copy, the repository's, refuses to run. It needs Linux on 64-bit ARM or x86-64, bash,
 # curl, tar and sha256sum.
 #
+# It downloads the release's small files (the installer, SHA256SUMS, release.json and the catalog) into a private
+# folder, checks each, and hands cameraagent install and upgrade the release (--release) and the catalog
+# (--catalog-bundle); Docker then pulls CameraAgent's image from ghcr.io by the digest release.json names. With --from
+# DIR, everything comes from a folder holding the release's files, the offline image archive included.
+#
 # The whole script is one function, called on its last line, so a download cut short runs nothing: cut short in the
 # function, bash finds it unfinished; cut short in the last line, the call is not made, or is made without the marker
 # that line ends its arguments with, and refused. Its standard input is the download, so it reads nothing from it: the
@@ -20,6 +25,8 @@ hvo_sky_install_sh() {
   fi
   set -- "${@:1:$(($# - 1))}"
   set -euo pipefail
+  # Interrupted, it stops with the install contract's 130; the download folder's trap still removes what it made.
+  trap 'exit 130' INT TERM
   # The installer runs with the umask it would have without this script; this script's own files are private.
   local caller_umask
   caller_umask=$(umask)
@@ -31,10 +38,14 @@ hvo_sky_install_sh() {
   # scripts/test:install-sh puts the files this script reads (/etc/os-release and /proc/device-tree/model) in a folder of
   # its own. Nothing else changes with it.
   local root="${HVO_SKY_INSTALL_TEST_ROOT:-}"
+  # For tests only: where the release's files are downloaded from, in place of the release's GitHub download URL, so a
+  # test can serve a locally built release. It is still fetched over HTTPS alone.
+  local base_url="${HVO_SKY_INSTALL_TEST_RELEASE_URL:-https://github.com/${repository}/releases/download/v${release_version}}"
 
-  # The free space each place needs, in KiB: the installer's download, and Docker's images (CameraAgent's and the one it
-  # replaces). The installer measures exactly what it needs before it changes anything.
-  local need_download_kib=$((300 * 1024)) need_docker_kib=$((3 * 1024 * 1024))
+  # The free space each place needs, in KiB: the download (the installer and the release's small files), the catalog
+  # once it is unpacked, and Docker's images (CameraAgent's and the one it replaces). The installer measures exactly what
+  # it needs before it changes anything.
+  local need_download_kib=$((300 * 1024)) need_catalog_kib=$((50 * 1024)) need_docker_kib=$((3 * 1024 * 1024))
   # How far this machine's clock may be from github.com's: further, and TLS, the attestation and the certificates
   # CameraAgent makes go wrong.
   local clock_tolerance_seconds=300
@@ -55,9 +66,16 @@ hvo_sky_install_sh() {
     printf '  FAIL  %s\n' "$*" >&2
     failures=$((failures + 1))
   }
+  # The install contract's exit codes: 1 when a step failed and running this again continues (a download), 2 for a
+  # command line that is not valid, 3 when it refused and nothing was changed (a check, or a file that is not the
+  # release's), and 130 when it was interrupted.
   die() {
     printf 'install.sh: %s\n' "$*" >&2
     exit 1
+  }
+  refuse() {
+    printf 'install.sh: %s\n' "$*" >&2
+    exit 3
   }
   usage_error() {
     printf 'install.sh: %s\n' "$*" >&2
@@ -70,24 +88,32 @@ hvo_sky_install_sh() {
     cat <<EOF
 install.sh for HVO SkyMonitor ${which}
 
-Checks this machine, downloads hvo-sky-install ${release_version:+${release_version} }for it, checks the download
-against the release's SHA256SUMS (and its attestation, when gh is signed in) and its --version, and starts it as you.
+Checks this machine, downloads hvo-sky-install ${release_version:+${release_version} }for it with the release's small
+files, checks them against the release's SHA256SUMS (and its attestation, when gh is signed in) and the installer's
+--version, and starts it as you.
 
   curl -fsSL https://github.com/${repository}/releases/download/v${release_version:-<version>}/install.sh | bash -s -- [options] [--] [installer arguments]
 
 Options, before the installer's arguments:
-  --from DIR   Take hvo-sky-install, SHA256SUMS and CameraAgent's image (the release's offline image archive for this
-               machine) from DIR, a folder holding the release's files, not from GitHub and ghcr.io. cameraagent
-               install and cameraagent upgrade are given --release DIR and --no-download, so nothing is pulled.
+  --from DIR   Take hvo-sky-install, SHA256SUMS, the catalog and CameraAgent's image (the release's offline image
+               archive for this machine) from DIR, a folder holding the release's files, not from GitHub and ghcr.io.
+               cameraagent install and cameraagent upgrade are given --release DIR and --no-download, so nothing is
+               pulled.
   --check      Check this machine, then stop: download nothing and change nothing.
   -h, --help   This help. (--help after the installer's arguments is the installer's.)
 
 The first argument that is not one of these, and everything after it (or after --), goes to hvo-sky-install:
-cameraagent install, cameraagent upgrade, status, --help and the rest. Run this as the user that runs Docker, not as
-root: hvo-sky-install asks sudo itself for the steps that need root.
+cameraagent install, cameraagent upgrade, status, --help and the rest. Without --from, cameraagent install and
+cameraagent upgrade are given the release's release.json and SHA256SUMS (--release, a private folder) and
+--image-source registry: Docker pulls CameraAgent's image from ghcr.io by the digest release.json names. cameraagent
+install is also given the release's catalog (--catalog-bundle), unpacked in ${XDG_CACHE_HOME:-~/.cache}/hvo-sky/catalogs
+so that running it again names the same catalog. Whatever the installer is already given (--release, --image-ref,
+--image-archive, --catalog-bundle or --config) is not given again. Run this as the user that runs Docker, not as root:
+hvo-sky-install asks sudo itself for the steps that need root.
 
-Exit codes: the installer's, when it ran; otherwise 0 when --check passed, 1 when a check, the download or its
-verification failed, and 2 for a command line that is not valid.
+Exit codes: the installer's, when it ran; otherwise 0 when --check passed, 1 when a download failed (run this again),
+2 for a command line that is not valid, 3 when a check or the verification refused and nothing was changed, and 130
+when it was interrupted.
 EOF
   }
 
@@ -224,54 +250,108 @@ EOF
       ok "$2's attestation says ${repository}'s ${workflow} built it for v${release_version}"
     else
       printf '%s\n' "${verification}" | tail -n 5 | sed 's/^/        /' >&2
-      die "$2's attestation did not verify, so it may not be the release's: nothing was installed."
+      refuse "$2's attestation did not verify, so it may not be the release's: nothing was installed."
     fi
   }
 
-  # The download: the installer for this machine, checked against the release's SHA256SUMS, their attestations (with
-  # gh) and its --version; then the hand-over. It never returns.
+  # catalog_asset <SHA256SUMS>: the names of the release's catalog archives, <catalog version>.bundle.tar.gz, as
+  # SHA256SUMS lists them (a release has one).
+  catalog_asset() {
+    awk '{ name = $2; sub(/^\*/, "", name); if (name ~ /^[A-Za-z0-9][A-Za-z0-9._-]*\.bundle\.tar\.gz$/) print name }' "$1"
+  }
+
+  # catalog_root: where the release's catalog is unpacked, ${XDG_CACHE_HOME:-~/.cache}/hvo-sky/catalogs. It is kept
+  # there, not in the download folder, because the installer binds an install to the catalog folder it was given: a
+  # second run, or a --resume, must name the same one.
+  catalog_root() {
+    local cache=${XDG_CACHE_HOME:-}
+    [[ ${cache} == /* ]] || cache="${HOME}/.cache"
+    printf '%s/hvo-sky/catalogs' "${cache%/}"
+  }
+
+  # The download: the installer for this machine and the release's files the hand-over needs, each checked against the
+  # release's SHA256SUMS, their attestations (with gh) and the installer's --version; then the hand-over. It never
+  # returns.
   fetch_and_start() {
-    local base_url="https://github.com/${repository}/releases/download/v${release_version}"
     local release_page="https://github.com/${repository}/releases/tag/v${release_version}"
-    local asset="hvo-sky-install-${rid}" work installer expected actual status=0 parent
+    local asset="hvo-sky-install-${rid}" work installer sums status=0 parent catalog="" catalog_dir=""
     # The download goes in a new folder of this script's own, made by its physical path in a TMPDIR only you and root
     # can change (trusted_folder), so the installer that runs is the one checked. Only that folder is removed, and only
-    # while it is still the one made, and only what this script put in it.
+    # while it is still the one made.
     parent=$(trusted_folder "${TMPDIR:-/tmp}") \
-      || die "TMPDIR (${TMPDIR:-/tmp}) is not a folder only you and root can change: it is not there, or it or a folder above it is someone else's, or writable by others and not sticky, so someone else could change the installer after it is checked and before it runs. Nothing was made in it. Set TMPDIR to a folder that is, such as /tmp, then run this again."
+      || refuse "TMPDIR (${TMPDIR:-/tmp}) is not a folder only you and root can change: it is not there, or it or a folder above it is someone else's, or writable by others and not sticky, so someone else could change the installer after it is checked and before it runs. Nothing was made in it. Set TMPDIR to a folder that is, such as /tmp, then run this again."
     work=$(mktemp -d "${parent%/}/hvo-sky-install.XXXXXXXX") || die "Could not make a folder in ${parent} for the download."
-    own_folder "${work}" || die "The folder made for the download, ${work}, is not a folder of yours with mode 0700: nothing was installed."
+    own_folder "${work}" || refuse "The folder made for the download, ${work}, is not a folder of yours with mode 0700: nothing was installed."
     local quoted_work
     printf -v quoted_work '%q' "${work}"
     # shellcheck disable=SC2064 # The folder is named now, so the trap needs no variable when it runs.
-    trap "if own_folder ${quoted_work}; then rm -f -- ${quoted_work}/hvo-sky-install ${quoted_work}/SHA256SUMS; rmdir -- ${quoted_work} 2>/dev/null || true; fi" EXIT
+    trap "if own_folder ${quoted_work}; then rm -rf -- ${quoted_work}/hvo-sky-install ${quoted_work}/release; rmdir -- ${quoted_work} 2>/dev/null || true; fi" EXIT
+    mkdir -- "${work}/release" || die "Could not make a folder in ${work} for the release's files."
     installer="${work}/hvo-sky-install"
+    sums="${work}/release/SHA256SUMS"
+
+    # take <name> <destination>: one of the release's files, from the folder (--from) or downloaded.
+    take() {
+      local status=0
+      if [ -n "${from}" ]; then
+        [ -f "${from}/$1" ] || refuse "${from} has no $1: download it from ${release_page} into it."
+        cp -- "${from}/$1" "$2" || die "$1 could not be copied from ${from}."
+      else
+        fetch "${base_url}/$1" "$2" || status=$?
+        ((status == 0)) || die "$1 could not be downloaded from ${base_url}: $(curl_problem "${status}")."
+      fi
+    }
+
+    # verify_listed <file> <name>: the file is the one SHA256SUMS lists, once, under its name. SHA256SUMS is sha256sum's:
+    # a hash, two spaces (or a space and *, for binary) and the file's name.
+    verify_listed() {
+      local expected actual
+      expected=$(awk -v name="$2" '$2 == name || $2 == "*" name { print $1 }' "${sums}")
+      [[ ${expected} =~ ^[0-9a-f]{64}$ ]] \
+        || refuse "SHA256SUMS does not list $2 once, so it cannot be checked: nothing was installed."
+      actual=$(sha256_of "$1")
+      [ "${actual}" = "${expected}" ] \
+        || refuse "$2's SHA-256 is ${actual}, and SHA256SUMS says ${expected}: it is not the release's, and nothing was installed. Run this again; if it happens again, tell the project (https://github.com/${repository}/issues)."
+      ${quick} || ok "$2's SHA-256 is the one SHA256SUMS lists"
+    }
+
+    # What the hand-over needs besides the installer, unless the installer is already given it. cameraagent install and
+    # upgrade get the release (--release): from a folder, that folder; otherwise its release.json and SHA256SUMS, and
+    # Docker pulls the image by the digest release.json names, so its offline archive is never downloaded. cameraagent
+    # install also gets the release's catalog.
+    local hand_release=false hand_catalog=false
+    if ! ${quick} && ${takes_release} && ! ${names_image}; then
+      hand_release=true
+    fi
+    if ! ${quick} && ${install_command} && ! ${names_catalog}; then
+      hand_catalog=true
+    fi
 
     if [ -n "${from}" ]; then
       ${quick} || say "Taking hvo-sky-install ${release_version} for ${rid} from ${from}"
-      [ -f "${from}/${asset}" ] || die "${from} has no ${asset}: download it from ${release_page} into it."
-      [ -f "${from}/SHA256SUMS" ] || die "${from} has no SHA256SUMS: download it from ${release_page} into it."
-      cp "${from}/${asset}" "${installer}"
-      cp "${from}/SHA256SUMS" "${work}/SHA256SUMS"
     else
-      ${quick} || say "Downloading hvo-sky-install ${release_version} for ${rid}"
-      fetch "${base_url}/SHA256SUMS" "${work}/SHA256SUMS" || status=$?
-      ((status == 0)) || die "SHA256SUMS could not be downloaded from ${base_url}: $(curl_problem "${status}")."
-      fetch "${base_url}/${asset}" "${installer}" || status=$?
-      ((status == 0)) || die "${asset} could not be downloaded from ${base_url}: $(curl_problem "${status}")."
+      ${quick} || say "Downloading hvo-sky-install ${release_version} for ${rid} from ${base_url}"
+    fi
+    take SHA256SUMS "${sums}"
+    take "${asset}" "${installer}"
+    verify_listed "${installer}" "${asset}"
+    if ${hand_release} && [ -z "${from}" ]; then
+      take release.json "${work}/release/release.json"
+      verify_listed "${work}/release/release.json" release.json
+    fi
+    if ${hand_catalog}; then
+      catalog=$(catalog_asset "${sums}")
+      case "${catalog}" in
+        "" | *$'\n'*)
+          refuse "SHA256SUMS does not list one catalog (<catalog version>.bundle.tar.gz), so the catalog cannot be given to the installer: nothing was installed. Give it --catalog-bundle yourself, or use the release's own SHA256SUMS."
+          ;;
+      esac
+      take "${catalog}" "${work}/release/${catalog}"
+      verify_listed "${work}/release/${catalog}" "${catalog}"
     fi
 
-    # SHA256SUMS is sha256sum's: a hash, two spaces (or a space and *, for binary) and the file's name.
-    expected=$(awk -v name="${asset}" '$2 == name || $2 == "*" name { print $1 }' "${work}/SHA256SUMS")
-    [[ ${expected} =~ ^[0-9a-f]{64}$ ]] \
-      || die "SHA256SUMS does not list ${asset} once, so the download cannot be checked: nothing was installed."
-    actual=$(sha256_of "${installer}")
-    [ "${actual}" = "${expected}" ] \
-      || die "${asset}'s SHA-256 is ${actual}, and SHA256SUMS says ${expected}: the download is not the release's, and nothing was installed. Run this again; if it happens again, tell the project (https://github.com/${repository}/issues)."
-    ${quick} || ok "${asset}'s SHA-256 is the one SHA256SUMS lists"
-
-    # The attestations say the release's workflow built SHA256SUMS, which the installer trusts for release.json and the
-    # image archives, and the installer itself. gh fetches them when it is signed in.
+    # The attestations say the release's workflow built SHA256SUMS, which every other file is checked against, and the
+    # installer itself. gh fetches them when it is signed in.
     if ${quick}; then
       :
     elif ! have gh; then
@@ -279,7 +359,7 @@ EOF
     elif ! gh auth status >/dev/null 2>&1 </dev/null; then
       note "the attestations were not checked: gh is not signed in (gh auth login), or did not reach GitHub (gh auth status)"
     else
-      verify_attestation "${work}/SHA256SUMS" SHA256SUMS
+      verify_attestation "${sums}" SHA256SUMS
       verify_attestation "${installer}" "${asset}"
     fi
 
@@ -288,20 +368,31 @@ EOF
     status=0
     built=$("${installer}" --version 2>&1 </dev/null) || status=$?
     ((status != 126)) \
-      || die "Programs cannot run from ${TMPDIR:-/tmp} (it is mounted noexec): set TMPDIR to a folder they can run from, then run this again."
+      || refuse "Programs cannot run from ${TMPDIR:-/tmp} (it is mounted noexec): set TMPDIR to a folder they can run from, then run this again. Nothing was installed."
     case "${built}" in
       "${release_version}+"*) [[ ${built#"${release_version}+"} =~ ^[0-9a-f]{40}$ ]] ;;
       *) false ;;
-    esac || die "${asset} says its version is '${built}', and this is release ${release_version}: nothing was installed."
+    esac || refuse "${asset} says its version is '${built}', and this is release ${release_version}: nothing was installed."
     ${quick} || ok "${asset} says it is ${built}"
 
+    if ${hand_catalog}; then
+      supply_catalog "${work}/release/${catalog}" "${catalog}"
+    fi
+
     # The hand-over. The installer reads the terminal, since this script's standard input is the download: with none
-    # (cron, CI) it reads nothing, and asks nothing. From a folder, cameraagent install and upgrade take the release from
-    # it, unless they are told which release or image to use, and pull nothing.
+    # (cron, CI) it reads nothing, and asks nothing.
     local -a arguments=(${passed[@]+"${passed[@]}"})
-    if [ -n "${from}" ] && ${takes_release} && ! ${quick}; then
-      ${names_image} || arguments+=(--release "${from}")
-      ${no_download} || arguments+=(--no-download)
+    if ${hand_release} && [ -n "${from}" ]; then
+      arguments+=(--release "${from}")
+    elif ${hand_release}; then
+      arguments+=(--release "${work}/release")
+      [ -n "${image_source}" ] || arguments+=(--image-source registry)
+    fi
+    if [ -n "${from}" ] && ${takes_release} && ! ${quick} && ! ${no_download}; then
+      arguments+=(--no-download)
+    fi
+    if ${hand_catalog}; then
+      arguments+=(--catalog-bundle "${catalog_dir}")
     fi
     local input=/dev/null
     ! have_terminal || input=/dev/tty
@@ -314,6 +405,45 @@ EOF
     status=0
     "${installer}" ${arguments[@]+"${arguments[@]}"} <"${input}" || status=$?
     exit "${status}"
+  }
+
+  # supply_catalog <archive> <name>: unpacks the checked catalog archive into catalog_root, replacing what an earlier run
+  # unpacked there, and sets catalog_dir to the catalog's folder. The archive must hold only files in its one folder,
+  # <catalog version>.bundle; the installer checks the catalog itself.
+  supply_catalog() {
+    local archive=$1 name=$2 base=${2%.tar.gz} wanted folder staging entry
+    wanted=$(catalog_root)
+    mkdir -p -- "${wanted}" || die "Could not make ${wanted} for the catalog."
+    folder=$(trusted_folder "${wanted}") \
+      || refuse "${wanted} is not a folder only you and root can change, so the catalog cannot be unpacked there: set XDG_CACHE_HOME to a folder that is, or give the installer --catalog-bundle yourself. Nothing was installed."
+    while IFS= read -r entry; do
+      case "${entry}" in
+        "${base}/"?*) ;;
+        *) refuse "${name} holds ${entry}, which is not a file in its folder ${base}: it is not a catalog the installer takes, and nothing was installed." ;;
+      esac
+      case "/${entry}/" in
+        */../* | */./*) refuse "${name} holds ${entry}: it is not a catalog the installer takes, and nothing was installed." ;;
+      esac
+    done < <(tar -tzf "${archive}" 2>/dev/null || printf '%s\n' "(an archive tar cannot read)")
+    while IFS= read -r entry; do
+      [ "${entry:0:1}" = - ] \
+        || refuse "${name} holds something other than files (${entry}): it is not a catalog the installer takes, and nothing was installed."
+    done < <(tar -tvzf "${archive}" 2>/dev/null || printf '%s\n' "?")
+    staging=$(mktemp -d "${folder}/.${base}.XXXXXXXX") || die "Could not make a folder in ${folder} for the catalog."
+    if ! tar -xzf "${archive}" -C "${staging}" --no-same-owner --no-same-permissions 2>/dev/null || [ ! -d "${staging}/${base}" ]; then
+      chmod -R u+w -- "${staging}" 2>/dev/null || true
+      rm -rf -- "${staging}"
+      die "${name} could not be unpacked into ${folder}."
+    fi
+    if [ -e "${folder}/${base}" ] || [ -L "${folder}/${base}" ]; then
+      chmod -R u+w -- "${folder}/${base}" 2>/dev/null || true
+      rm -rf -- "${folder:?}/${base}"
+    fi
+    if ! mv -- "${staging}/${base}" "${folder}/${base}" || ! rmdir -- "${staging}"; then
+      die "${name} could not be put in ${folder}."
+    fi
+    catalog_dir="${folder}/${base}"
+    ok "the catalog ${base} is unpacked in ${catalog_dir}"
   }
 
   # ---------------------------------------------------------------------------------------------------------------------
@@ -349,16 +479,18 @@ EOF
   local -a passed=("$@")
 
   if [ -z "${release_version}" ]; then
-    die "This is the repository's copy of install.sh, which names no release: use a release's copy.
+    refuse "This is the repository's copy of install.sh, which names no release: use a release's copy.
   curl -fsSL https://github.com/${repository}/releases/latest/download/install.sh | bash"
   fi
 
   # What the installer is asked to do. Its command is its first word or two. An install (no command is one, as it is in
   # the install contract) and an upgrade start CameraAgent from the release, so they need Docker and its limits;
-  # cameraagent install and cameraagent upgrade read the release (--release DIR). Any other command checks what it
-  # needs itself, so a machine that lost Docker's limits can still be looked at, rolled back or uninstalled. Help and
-  # the version only print.
-  local words="" deploys="" takes_release=false quick=false names_image=false no_download=false index=0 argument
+  # cameraagent install and cameraagent upgrade read the release (--release DIR), and cameraagent install the catalog
+  # (--catalog-bundle). Any other command checks what it needs itself, so a machine that lost Docker's limits can still
+  # be looked at, rolled back or uninstalled. Help and the version only print. --config names the whole request, so
+  # nothing is added to it.
+  local words="" deploys="" takes_release=false install_command=false quick=false names_image=false names_catalog=false
+  local no_download=false image_source="" index=0 argument
   if ((${#passed[@]} > 0)) && [[ ${passed[0]} != -* ]]; then
     words=${passed[0]}
     if ((${#passed[@]} > 1)) && [[ ${passed[1]} != -* ]]; then
@@ -367,7 +499,7 @@ EOF
   fi
   case "${words}" in
     "") deploys=install ;;
-    "cameraagent install") deploys=install takes_release=true ;;
+    "cameraagent install") deploys=install takes_release=true install_command=true ;;
     "cameraagent upgrade") deploys=upgrade takes_release=true ;;
     help) quick=true ;;
   esac
@@ -377,6 +509,13 @@ EOF
       --help | -h) quick=true ;;
       --version) [ -n "${words}" ] || quick=true ;;
       --release | --release=* | --image-ref | --image-ref=* | --image-archive | --image-archive=*) names_image=true ;;
+      --catalog-bundle | --catalog-bundle=*) names_catalog=true ;;
+      --config | --config=*) names_image=true names_catalog=true ;;
+      --image-source)
+        image_source=${passed[index + 1]:-}
+        index=$((index + 1))
+        ;;
+      --image-source=*) image_source=${argument#--image-source=} ;;
       --no-download) no_download=true ;;
     esac
     index=$((index + 1))
@@ -384,6 +523,8 @@ EOF
   if [ -n "${from}" ]; then
     [ -d "${from}" ] || usage_error "--from ${from}: there is no such folder."
     from=$(CDPATH='' cd -- "${from}" && pwd)
+  elif ${takes_release} && ! ${names_image} && [ "${image_source}" = archive ]; then
+    usage_error "Without --from, CameraAgent's image is pulled from ghcr.io by its digest, and its offline archive is not downloaded: leave out --image-source archive, or install from a folder holding the release's files (--from DIR)."
   fi
 
   # ---------------------------------------------------------------------------------------------------------------------
@@ -392,26 +533,26 @@ EOF
   local rid="" processor pi_model="" description kernel
   kernel=$(uname -s)
   [ "${kernel}" = Linux ] \
-    || die "This machine runs ${kernel}: SkyMonitor's installer and CameraAgent run on Linux (64-bit ARM or x86-64)."
+    || refuse "This machine runs ${kernel}: SkyMonitor's installer and CameraAgent run on Linux (64-bit ARM or x86-64)."
   processor=$(uname -m)
   case "${processor}" in
     aarch64 | arm64) rid=linux-arm64 ;;
     x86_64 | amd64) rid=linux-x64 ;;
     arm* | aarch32)
-      die "This machine runs 32-bit ARM (${processor}), and SkyMonitor's programs are 64-bit: install the 64-bit Raspberry Pi OS (or another 64-bit Linux), then run this again."
+      refuse "This machine runs 32-bit ARM (${processor}), and SkyMonitor's programs are 64-bit: install the 64-bit Raspberry Pi OS (or another 64-bit Linux), then run this again."
       ;;
-    *) die "This machine's processor is ${processor}: SkyMonitor's programs run on 64-bit ARM (aarch64) and x86-64." ;;
+    *) refuse "This machine's processor is ${processor}: SkyMonitor's programs run on 64-bit ARM (aarch64) and x86-64." ;;
   esac
   # The 32-bit Raspberry Pi OS runs on a 64-bit kernel on a Pi 4 or 5: uname says aarch64, and nothing 64-bit runs.
   local bits
   bits=$(getconf LONG_BIT 2>/dev/null || printf 64)
   [ "${bits}" = 64 ] \
-    || die "This machine has a 64-bit kernel and a ${bits}-bit system, and SkyMonitor's programs are 64-bit: install the 64-bit Raspberry Pi OS (or another 64-bit Linux), then run this again."
+    || refuse "This machine has a 64-bit kernel and a ${bits}-bit system, and SkyMonitor's programs are 64-bit: install the 64-bit Raspberry Pi OS (or another 64-bit Linux), then run this again."
   # musl's ldd says so on its standard error, and exits 1.
   if have ldd; then
     case "$(ldd --version 2>&1 || true)" in
       *musl* | *MUSL*)
-        die "This Linux has musl (as Alpine does), and SkyMonitor's programs need glibc (as Debian, Raspberry Pi OS and Ubuntu have)."
+        refuse "This Linux has musl (as Alpine does), and SkyMonitor's programs need glibc (as Debian, Raspberry Pi OS and Ubuntu have)."
         ;;
     esac
   fi
@@ -437,7 +578,7 @@ EOF
 
   # hvo-sky-install runs as the user that runs Docker, and refuses root: it asks sudo itself for what needs root.
   [ "$(id -u)" != 0 ] \
-    || die "hvo-sky-install runs as the user that runs CameraAgent's Docker containers, not as root: run this as that user, without sudo (it asks sudo itself for the steps that need root). Nothing was changed."
+    || refuse "hvo-sky-install runs as the user that runs CameraAgent's Docker containers, not as root: run this as that user, without sudo (it asks sudo itself for the steps that need root). Nothing was changed."
 
   # ---------------------------------------------------------------------------------------------------------------------
   # The commands this script and the installer use
@@ -451,12 +592,26 @@ EOF
   else
     ok "curl, tar and sha256sum"
   fi
-  have curl || die "Without curl nothing more can be checked: install it, then run this again."
+  have curl || refuse "Without curl nothing more can be checked: install it, then run this again."
 
   # ---------------------------------------------------------------------------------------------------------------------
   # Free space, the network and the clock
 
   check_space "${TMPDIR:-/tmp}" "${need_download_kib}" "the installer's download (TMPDIR)"
+  # The catalog is unpacked where a second run finds it again (catalog_root): only you and root may change the folder.
+  if [ "${deploys}" = install ] && ! ${names_catalog}; then
+    local catalogs nearest
+    catalogs=$(catalog_root)
+    nearest=${catalogs}
+    while [ ! -e "${nearest}" ] && [ "${nearest}" != / ]; do
+      nearest=$(dirname "${nearest}")
+    done
+    if trusted_folder "${nearest}" >/dev/null; then
+      check_space "${nearest}" "${need_catalog_kib}" "the catalog (${catalogs})"
+    else
+      failed "${nearest} is not a folder only you and root can change, and the catalog is unpacked in ${catalogs}: set XDG_CACHE_HOME to a folder that is, or give the installer --catalog-bundle yourself, then run this again."
+    fi
+  fi
 
   local headers status=0 remote_date remote_seconds skew
   headers=$(probe https://github.com -I 2>/dev/null) || status=$?
@@ -499,9 +654,17 @@ EOF
   [ "${rid}" != linux-x64 ] || arch=amd64
   if [ -n "${from}" ]; then
     local -a files=("hvo-sky-install-${rid}" SHA256SUMS release.json)
-    local absent=0
+    local absent=0 catalog=""
     if [ -n "${deploys}" ] && ! ${names_image}; then
       files+=("${image}-${release_version}-linux-${arch}.oci.tar")
+    fi
+    # An install's catalog is the one archive SHA256SUMS lists as <catalog version>.bundle.tar.gz.
+    if [ "${deploys}" = install ] && ! ${names_catalog} && [ -f "${from}/SHA256SUMS" ]; then
+      catalog=$(catalog_asset "${from}/SHA256SUMS")
+      case "${catalog}" in
+        "" | *$'\n'*) failed "${from}/SHA256SUMS does not list one catalog (<catalog version>.bundle.tar.gz): use the release's own SHA256SUMS, or give the installer --catalog-bundle yourself." ;;
+        *) files+=("${catalog}") ;;
+      esac
     fi
     missing=""
     for file in "${files[@]}"; do
@@ -594,6 +757,17 @@ EOF
       note "This machine has $(size_of $((memory_total / 1024))) of memory, less than CameraAgent's 4 GiB limit: the limit is still set, and cannot keep CameraAgent from using all of it"
     fi
     check_space "${docker_root:-/var/lib/docker}" "${need_docker_kib}" "Docker's images"
+    # Online, the installer reads CameraAgent's image from the registry with docker buildx imagetools (0.8 or later)
+    # before anything is pulled.
+    if [ -z "${from}" ] && ! ${names_image} && [ "${image_source}" != archive ]; then
+      local buildx
+      buildx=$(docker buildx version 2>/dev/null </dev/null | awk 'NR == 1' || true)
+      if [[ ${buildx} =~ v([0-9]+)\.([0-9]+) ]] && ((10#${BASH_REMATCH[1]} > 0 || 10#${BASH_REMATCH[2]} >= 8)); then
+        ok "docker buildx ${BASH_REMATCH[1]}.${BASH_REMATCH[2]}, which reads CameraAgent's image from the registry before it is pulled"
+      else
+        failed "docker buildx 0.8 or later is not installed${buildx:+ (docker buildx version: ${buildx})}, and the installer reads CameraAgent's image from the registry with it before pulling: install it (sudo apt-get install docker-buildx-plugin), or install from a folder (--from DIR), then run this again."
+      fi
+    fi
   }
 
   if [ -n "${deploys}" ]; then
@@ -602,7 +776,7 @@ EOF
 
   say ""
   if ((failures > 0)); then
-    die "$( ((failures == 1)) && printf 'A check' || printf '%d checks' "${failures}") failed, and nothing was downloaded or installed."
+    refuse "$( ((failures == 1)) && printf 'A check' || printf '%d checks' "${failures}") failed, and nothing was downloaded or installed."
   fi
   if ${check_only}; then
     say "This machine is ready for hvo-sky-install ${release_version}."

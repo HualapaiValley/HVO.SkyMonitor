@@ -1,8 +1,9 @@
 #!/bin/sh
 # A release's hvo-sky-install, as scripts/test:install-sh serves it: it says its version (FAKE_INSTALLER_VERSION), and
-# logs in ${FAKE_STATE_DIR}/installer.log whether its standard input is a terminal, its umask, its arguments and, without
-# a terminal, how many bytes its standard input held. It exits with FAKE_INSTALLER_EXIT; with FAKE_INSTALLER_NOEXEC, it
-# cannot run at all, as from a folder mounted noexec.
+# logs in ${FAKE_STATE_DIR}/installer.log whether its standard input is a terminal, its umask, its arguments, what the
+# folders it is given as --release and --catalog-bundle hold while it runs, and, without a terminal, how many bytes its
+# standard input held. It exits with FAKE_INSTALLER_EXIT; with FAKE_INSTALLER_NOEXEC, it cannot run at all, as from a
+# folder mounted noexec.
 [ -z "${FAKE_INSTALLER_NOEXEC:-}" ] || exit 126
 if [ "$*" = --version ]; then
   printf '%s\n' "${FAKE_INSTALLER_VERSION}"
@@ -15,6 +16,20 @@ echo "umask=$(umask)" >>"${log}"
 printf 'args=' >>"${log}"
 for argument in "$@"; do printf '[%s]' "${argument}" >>"${log}"; done
 printf '\n' >>"${log}"
+# listing <folder>: the names in the folder, sorted, each followed by a space.
+listing() {
+  for file in "$1"/*; do
+    [ ! -e "${file}" ] || printf '%s ' "${file##*/}"
+  done
+}
+previous=""
+for argument in "$@"; do
+  case "${previous}" in
+    --release) printf 'release-files=%s\n' "$(listing "${argument}")" >>"${log}" ;;
+    --catalog-bundle) printf 'catalog-files=%s\n' "$(listing "${argument}")" >>"${log}" ;;
+  esac
+  previous=${argument}
+done
 [ -t 0 ] || printf 'stdin=%s\n' "$(wc -c | tr -d ' ')" >>"${log}"
 echo "hvo-sky-install ran"
 exit "${FAKE_INSTALLER_EXIT:-0}"
