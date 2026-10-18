@@ -48,6 +48,42 @@ public sealed partial class LifecycleContractTests
         }
     }
 
+    /// <summary>
+    /// <c>install.sh</c> hands <c>cameraagent upgrade</c> a release from the registry (#1311), which Docker does not hold
+    /// before the upgrade pulls it. Its plan reads and checks the candidate from the registry and pulls nothing.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_PlanOfARegistryReleaseDockerDoesNotHoldYet_IsPlannedFromTheRegistryAndPullsNothing()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        using var release = CandidateRelease(fixture, out var candidateImageId);
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            release.DigestReference, candidateImageId, fixture.Uid, fixture.Gid);
+        fixture.Runner.Registry = new FakeRegistry(release.RegistryContent);
+        fixture.Runner.CandidateHeld = [];
+        var before = FileSystemActivity.Snapshot(fixture.Root);
+
+        var planned = await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                Release = release.Folder,
+                ImageSource = ReleaseImageSource.Registry,
+                DryRun = true
+            },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None);
+
+        Assert.AreEqual("planned", planned.Outcome);
+        StringAssert.Contains(planned.Plan!.Items.Single(static item => item.Kind == "container").Detail!, candidateImageId, StringComparison.Ordinal);
+        Assert.IsGreaterThan(0, fixture.Runner.Registry.Reads);
+        Assert.AreEqual(0, fixture.Runner.PullCount);
+        Assert.IsEmpty(fixture.Runner.CandidateHeld!);
+        FileSystemActivity.AssertUnchanged(before, FileSystemActivity.Snapshot(fixture.Root), "the upgrade plan changed the product root");
+    }
+
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task LifecyclePlans_AreRefusedByTheJournalGatesTheirCommandsAreRefusedBy()

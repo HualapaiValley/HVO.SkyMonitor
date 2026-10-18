@@ -36,6 +36,53 @@ public sealed partial class InstallerFlowTests
         }
     }
 
+    /// <summary>
+    /// <c>install.sh</c>'s default hand-over (#1311): a release from the registry, which Docker does not hold before the
+    /// install pulls it. The plan reads and checks the image from the registry, as the install does before it pulls,
+    /// and pulls and writes nothing.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstallAsync_PlanOfARegistryReleaseDockerDoesNotHoldYet_IsPlannedFromTheRegistryAndPullsNothing()
+    {
+        var bundle = RequireCatalogBundle();
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-release-registry-plan-{Guid.NewGuid():N}");
+        var platform = $"linux/{ReleaseAcquirer.HostImageArchitecture()}";
+        using var release = ReleaseFixture.Create(root);
+        var instanceId = Guid.Parse("d6e7f809-1a2b-43c4-85d6-e7f8091a2b3c");
+        var request = ReleaseRequest(root, bundle, instanceId, release.Folder) with
+        {
+            ImageSource = ReleaseImageSource.Registry,
+            DryRun = true
+        };
+        var runner = new InstallerProcessRunner(release.ConfigDigest(platform), root, instanceId)
+        {
+            Labels = release.Labels(),
+            RepoDigests = [release.DigestReference],
+            Held = [],
+            Registry = new FakeRegistry(release.RegistryContent)
+        };
+        try
+        {
+            var (planned, created) = await FileSystemActivity.WithPrivateTemporaryDirectoryAsync(() => CameraAgentInstaller.InstallAsync(
+                request, runner, _ => new InstallerOwnerClient(), RuntimeUid, RuntimeGid, CancellationToken.None,
+                portAvailabilityProbe: new RecordingPortProbe().Probe));
+
+            Assert.AreEqual(InstallationOutcome.Planned, planned.Outcome);
+            Assert.AreEqual(release.ConfigDigest(platform), planned.Image.ImageId);
+            // The index, the platform manifest and the configuration are read; nothing is pulled.
+            Assert.IsTrue(runner.Imports.Count > 0 && runner.Imports.All(static import => import == "registry"), string.Join(", ", runner.Imports));
+            Assert.AreEqual(0, runner.PullCount);
+            Assert.IsEmpty(runner.Held!);
+            Assert.IsEmpty(created);
+            Assert.IsFalse(Directory.Exists(Path.Combine(root, "cameraagents")));
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task InstallAsync_PlanOfAReRun_CreatesNoFileDirectoryLockOrTemporaryFile()

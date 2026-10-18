@@ -609,10 +609,20 @@ internal sealed partial class CameraAgentLifecycleManager
         {
             var synthetic = ImageRequest(
                 manifest, request.ImageReference!, request.ImageArchive, request.ImageArchiveSha256, request.NoDownload);
-            var prepared = await docker.PrepareImageAsync(synthetic, !request.DryRun, signedImage?.Image, cancellationToken)
-                .ConfigureAwait(false);
-            EnsureDaemon(manifest.DockerDaemon, prepared.Daemon);
-            candidate = prepared.Image;
+            if (request.DryRun && signedImage?.CheckedImage is { } checkedImage &&
+                !await docker.HoldsReleaseImageAsync(signedImage.Image, cancellationToken).ConfigureAwait(false))
+            {
+                // A plan imports nothing: a release image Docker does not hold yet is described as it was read and
+                // checked from the release's archive or registry.
+                candidate = checkedImage;
+            }
+            else
+            {
+                var prepared = await docker.PrepareImageAsync(synthetic, !request.DryRun, signedImage?.Image, cancellationToken)
+                    .ConfigureAwait(false);
+                EnsureDaemon(manifest.DockerDaemon, prepared.Daemon);
+                candidate = prepared.Image;
+            }
         }
         if (candidate.ImageId == manifest.Image.ImageId)
         {
@@ -1614,9 +1624,9 @@ internal sealed partial class CameraAgentLifecycleManager
     /// as a terminal refusal, which blocks no later upgrade. A registry image's metadata is read from the registry by the
     /// digest release.json names, and checked, before anything is pulled
     /// (<see cref="DockerClient.ReadRegistryReleaseImageAsync"/>); it is then pulled, checked again, and removed if it is
-    /// refused, if the pull fails or if the upgrade is cancelled. A dry run reads and pulls nothing, as before. The same
-    /// checks run again on the image Docker resolves once the upgrade has begun. Returns the release, with the identities
-    /// its registry gave.
+    /// refused, if the pull fails or if the upgrade is cancelled. A plan reads and checks the registry the same way and
+    /// pulls nothing. The same checks run again on the image Docker resolves once the upgrade has begun. Returns the
+    /// release, with the identities its registry gave and the image it read there.
     /// </summary>
     private static async Task<AcquiredImage> EnsureReleaseCandidateAsync(
         LifecycleRequest request,
@@ -1656,14 +1666,15 @@ internal sealed partial class CameraAgentLifecycleManager
             Validate(archived);
             return release;
         }
+        // Reading the registry pulls nothing, so a plan reads and checks it too, as the command does (#1315).
+        var (registryImage, selection) = await docker.ReadRegistryReleaseImageAsync(release.Image, cancellationToken)
+            .ConfigureAwait(false);
+        Validate(registryImage);
+        release = release with { Image = selection, RegistryImage = registryImage };
         if (request.DryRun)
         {
             return release;
         }
-        var (registryImage, selection) = await docker.ReadRegistryReleaseImageAsync(release.Image, cancellationToken)
-            .ConfigureAwait(false);
-        Validate(registryImage);
-        release = release with { Image = selection };
         _ = await docker.ImportReleaseImageAsync(
                 ImageRequest(manifest, release.ImageReference, null, null, request.NoDownload), selection, Validate,
                 cancellationToken)

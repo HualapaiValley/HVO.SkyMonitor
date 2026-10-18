@@ -310,6 +310,18 @@ internal sealed record AcquiredImage(
     /// </summary>
     public ImageInstallationIdentity? ArchivedImage { get; init; }
 
+    /// <summary>
+    /// The image read from its registry, by the digest release.json names, before anything is pulled; set once the
+    /// registry has been read (<see cref="DockerClient.ReadRegistryReleaseImageAsync"/>).
+    /// </summary>
+    public ImageInstallationIdentity? RegistryImage { get; init; }
+
+    /// <summary>
+    /// The release's image as it was read and checked before any import, from the archive or the registry. A plan,
+    /// which imports nothing, describes the image by it when Docker does not hold the image yet (#1315).
+    /// </summary>
+    public ImageInstallationIdentity? CheckedImage => ArchivedImage ?? RegistryImage;
+
     /// <summary>The release the image belongs to.</summary>
     public ReleaseManifest Release => VerifiedRelease.Manifest;
 

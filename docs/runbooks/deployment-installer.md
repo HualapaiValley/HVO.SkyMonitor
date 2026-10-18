@@ -194,7 +194,10 @@ instance, an unfinished lifecycle operation that demands `--resume`, and whether
 instance's persisted state suits its image. A plan that would be refused is not
 printed: the refusal is reported and the command exits `3`, so a printed plan can be
 carried out. A fresh install's plan reports `composeModelSha256` as empty, because
-Docker renders a Compose model only from files.
+Docker renders a Compose model only from files. A release image Docker does not hold
+yet, such as the registry image `install.sh` hands an install or an upgrade, is
+planned from the image read and checked from the release's archive or registry,
+since a plan imports nothing.
 
 ```console
 $ hvo-sky-install cameraagent install --answers camera.json --memory 6g --plan
@@ -252,9 +255,13 @@ schema version. The members are those `--config` reads, under the same names:
   `--json` on the command line.
 - No secret is ever an answer. A password is given in its own owner-only file
   (`passwordFile`) or generated (`generatePassword`).
-- Only `--cpus` and `--memory` may accompany `--answers`, and they replace the file's
+- Only `--cpus`, `--memory`, `--release`, `--image-source`, `--catalog-bundle` and
+  `--no-download` may accompany `--answers`. Each replaces the file's member: the
   limits, so a re-run with the same file changes the limits (see
-  [Re-running an install](#re-running-an-install)).
+  [Re-running an install](#re-running-an-install)), and the release and catalog, so
+  [`install.sh`](#installsh) can hand the installer its verified release and catalog
+  beside an answers file. A file that names `imageReference` or `imageArchive` cannot
+  be given `--release`; leave the image to the release.
 
 `--config FILE` is deprecated. It installs exactly as before and warns: on standard
 error, or with `--json` as an `option-deprecated` entry in the result's `warnings`.

@@ -148,6 +148,14 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         CancellationToken cancellationToken)
         => ReleaseRegistryImage.ReadAsync(release, RunDockerRawAsync, cancellationToken);
 
+    /// <summary>Whether Docker already holds the release's image under any name it can have.</summary>
+    public async Task<bool> HoldsReleaseImageAsync(ReleaseImageSelection release, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(release);
+        var identities = ReleaseIdentities(release);
+        return (await AbsentAsync(identities, cancellationToken).ConfigureAwait(false)).Count < identities.Length;
+    }
+
     /// <summary>The names Docker can give a release's image: its digest reference, then its archive's identities.</summary>
     private static string[] ReleaseIdentities(ReleaseImageSelection release)
         => [.. new[] { release.DigestReference }.Concat(release.ImageIds ?? []).Distinct(StringComparer.Ordinal)];

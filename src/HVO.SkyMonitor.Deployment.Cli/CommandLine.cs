@@ -23,13 +23,19 @@ internal static class CommandLine
     private static readonly string[] InstallFlags =
         ["--plan", "--dry-run", "--resume", "--json", "--generate-password", "--acknowledge-plaintext-http", "--no-download"];
 
-    /// <summary>The answers file (install contract section 5), which only <c>--cpus</c> and <c>--memory</c> may accompany.</summary>
+    /// <summary>
+    /// The answers file (install contract section 5). Only the options in <see cref="AnswersOverrideOptions"/> may
+    /// accompany it, and <c>--no-download</c>.
+    /// </summary>
     internal const string AnswersOption = "--answers";
 
     private static readonly string[] AnswersValueOptions = [AnswersOption];
 
-    /// <summary>The value options an answers file leaves on the command line: the container limits a re-run changes.</summary>
-    private static readonly string[] AnswersOverrideOptions = ["--cpus", "--memory"];
+    /// <summary>
+    /// The value options that may accompany an answers file, each replacing the file's member: the container limits a
+    /// re-run changes, and the release and catalog <c>install.sh</c> hands the installer (#1311).
+    /// </summary>
+    private static readonly string[] AnswersOverrideOptions = ["--cpus", "--memory", "--release", "--image-source", "--catalog-bundle"];
 
     /// <summary>The flag every command with a read-only plan accepts; <c>--dry-run</c> is its older name.</summary>
     internal const string PlanOption = "--plan";
@@ -69,7 +75,7 @@ internal static class CommandLine
     [
         Lifecycle("status"),
         new(["cameraagent", "install"], null, [.. AnswersValueOptions, .. InstallValueOptions], InstallFlags,
-            "--answers reads the install from a JSON answers file with \"schemaVersion\": 1; only --cpus and --memory may accompany it. " +
+            "--answers reads the install from a JSON answers file with \"schemaVersion\": 1; only --cpus, --memory, --release, --image-source, --catalog-bundle and --no-download may accompany it. " +
             "--config is its deprecated predecessor and cannot be combined with the other value options. --plan is --dry-run."),
         new(["cameraagent", "recover-owner"], null, OwnerRecoveryValueOptions, OwnerRecoveryFlags),
         new(["cameraagent", "preflight"], null, StatePreflightValueOptions, StatePreflightFlags),
@@ -358,7 +364,8 @@ internal static class CommandLine
             }
             if (values.Keys.FirstOrDefault(option => !AnswersOverrideOptions.Contains(option, StringComparer.Ordinal)) is { } other)
             {
-                throw new InstallUsageException($"--answers can be combined only with --cpus and --memory, not '{other}'.");
+                throw new InstallUsageException(
+                    $"--answers can be combined only with --cpus, --memory, --release, --image-source, --catalog-bundle and --no-download, not '{other}'.");
             }
         }
         if (values.Remove("--config", out configPath) && values.Count > 0)
@@ -369,7 +376,8 @@ internal static class CommandLine
         InstallRequest request;
         if (answersPath is not null)
         {
-            // The limits given beside the answers replace theirs, so a re-run changes an installed instance's limits.
+            // An option given beside the answers replaces the file's member: the limits, so a re-run changes an installed
+            // instance's limits, and the release and catalog install.sh hands over (#1311).
             request = InstallAnswers.Read(answersPath).ToRequest(productionProductRoot);
             if (values.TryGetValue("--cpus", out var cpus))
             {
@@ -378,6 +386,18 @@ internal static class CommandLine
             if (values.TryGetValue("--memory", out var memory))
             {
                 request = request with { Memory = memory };
+            }
+            if (values.TryGetValue("--release", out var release))
+            {
+                request = request with { Release = release };
+            }
+            if (values.TryGetValue("--image-source", out var imageSource))
+            {
+                request = request with { ImageSource = ParseImageSource(imageSource) };
+            }
+            if (values.TryGetValue("--catalog-bundle", out var catalogBundle))
+            {
+                request = request with { CatalogBundle = catalogBundle };
             }
         }
         else if (configPath is not null)

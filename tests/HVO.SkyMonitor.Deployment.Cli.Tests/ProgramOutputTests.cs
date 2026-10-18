@@ -75,7 +75,7 @@ public sealed class ProgramOutputTests
           --no-download
           -h, --help
 
-        --answers reads the install from a JSON answers file with "schemaVersion": 1; only --cpus and --memory may accompany it. --config is its deprecated predecessor and cannot be combined with the other value options. --plan is --dry-run.
+        --answers reads the install from a JSON answers file with "schemaVersion": 1; only --cpus, --memory, --release, --image-source, --catalog-bundle and --no-download may accompany it. --config is its deprecated predecessor and cannot be combined with the other value options. --plan is --dry-run.
         """;
 
     private const string HostSetProductRootUsage = """

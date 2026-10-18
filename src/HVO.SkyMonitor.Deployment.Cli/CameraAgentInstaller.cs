@@ -136,7 +136,7 @@ internal sealed partial class CameraAgentInstaller
         }
         if (request.DryRun)
         {
-            var plan = await PlanAsync(request, paths, instanceId, docker, acquiredImage?.Image, cancellationToken)
+            var plan = await PlanAsync(request, paths, instanceId, docker, acquiredImage, cancellationToken)
                 .ConfigureAwait(false);
             var plannedPaths = paths.WithCatalog(Path.GetFileName(plan.Catalog.InstallRoot));
             var plannedRecord = InstallRecordLocation.For(plannedPaths.ProductRoot, request.ProductionProductRoot);
@@ -573,7 +573,7 @@ internal sealed partial class CameraAgentInstaller
             var (registryImage, selection) = await docker.ReadRegistryReleaseImageAsync(release.Image, cancellationToken)
                 .ConfigureAwait(false);
             Validate(registryImage);
-            release = release with { Image = selection };
+            release = release with { Image = selection, RegistryImage = registryImage };
         }
         if (!import)
         {
@@ -601,20 +601,25 @@ internal sealed partial class CameraAgentInstaller
     /// <summary>
     /// The plan of a fresh install, or of the resumption of one, computed without writing anything anywhere, not even a
     /// temporary file (#1315): the catalog is inspected where it lies, the image is inspected, and the Compose files are
-    /// rendered in memory. Docker renders a Compose model only from files, so a plan reports no model hash.
+    /// rendered in memory. Docker renders a Compose model only from files, so a plan reports no model hash. A release
+    /// image Docker does not hold yet, which the run would import, is described as it was read and checked from the
+    /// release's archive or registry.
     /// </summary>
     private static async Task<InstallationResult> PlanAsync(
         InstallRequest request,
         InstallationPaths finalPaths,
         Guid instanceId,
         DockerClient docker,
-        ReleaseImageSelection? releaseImage,
+        AcquiredImage? release,
         CancellationToken cancellationToken)
     {
         var applicationIdentity = Guid.NewGuid();
         var catalog = CatalogInstaller.Inspect(request.CatalogBundle!, finalPaths.CatalogRoot);
-        var (daemon, image) = await docker.PrepareImageAsync(request, allowMutation: false, releaseImage, cancellationToken)
-            .ConfigureAwait(false);
+        var (daemon, image) = release?.CheckedImage is { } checkedImage &&
+                              !await docker.HoldsReleaseImageAsync(release.Image, cancellationToken).ConfigureAwait(false)
+            ? (await docker.PreflightAsync(cancellationToken).ConfigureAwait(false), checkedImage)
+            : await docker.PrepareImageAsync(request, allowMutation: false, release?.Image, cancellationToken)
+                .ConfigureAwait(false);
         if (!IsValid(image, request.ReplayProfile))
             throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
         EnsureImageSupportsCatalog(image, catalog.CatalogId);
