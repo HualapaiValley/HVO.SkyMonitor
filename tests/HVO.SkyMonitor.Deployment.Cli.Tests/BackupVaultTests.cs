@@ -151,56 +151,83 @@ public sealed class BackupVaultTests
     }
 
     /// <summary>
-    /// Root's vault runs every operation on its folder in its root window, and nothing else: the archive itself streams
-    /// outside it (#1353 PR-1369-R1 F2/F3).
-    /// </summary>
-    [TestMethod]
-    public async Task RootVault_RunsEveryFolderOperationInItsWindowAndStreamsOutsideIt()
-    {
-        using var root = new Scratch();
-        var window = new CountingWindow();
-        var vault = new RootBackupVault(new BackupVaultFiles(Path.Combine(root.Path, BackupVault.FolderName)), window);
-        await using (var transfer = await vault.WriteAsync(Name, CancellationToken.None))
-        {
-            Assert.AreEqual(1, window.Steps, "creating the partial");
-            await transfer.Stream.WriteAsync("archive"u8.ToArray());
-            Assert.AreEqual(1, window.Steps, "the archive streams outside the window");
-            await transfer.CompleteAsync(CancellationToken.None);
-            Assert.AreEqual(2, window.Steps, "syncing the folder");
-        }
-        Assert.AreEqual(Name, (await vault.ListPartialsAsync(Instance, CancellationToken.None)).Single().Name);
-        await vault.CommitAsync(Record(7), CancellationToken.None);
-        Assert.AreEqual(Record(7), await vault.ReadRecordAsync(Name, CancellationToken.None));
-        await vault.DiscardAsync(Name, CancellationToken.None);
-
-        Assert.AreEqual(6, window.Steps);
-    }
-
-    /// <summary>
-    /// F2: root's vault is used only when it and every folder above it to <c>/</c> is root's and writable by root alone.
+    /// F18: a backup folder that does not exist yet, under folders only their owners can write, can hold backups; checking
+    /// it creates nothing.
     /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public void RootAncestry_RefusesAnyFolderSomeoneButRootCanChange()
-    {
-        using var root = new Scratch();
-
-        Assert.IsNull(RootPrivilege.RootAncestryProblem("/usr/share"), "a folder whose ancestry is root's alone");
-        Assert.IsNull(RootPrivilege.RootAncestryProblem("/usr/share/hvo-sky-not-made-yet"), "a folder not made yet, under one that is");
-        if (NativeLinux.getuid() != 0)
-        {
-            StringAssert.Contains(RootPrivilege.RootAncestryProblem(root.Path)!, "someone other than root", StringComparison.Ordinal);
-        }
-        StringAssert.Contains(RootPrivilege.RootAncestryProblem("/tmp/hvo-sky-backups")!, "/tmp", StringComparison.Ordinal);
-    }
-
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task RootVault_InAFolderSomeoneButRootCanChange_IsRefusedBeforeAnythingIsWritten()
+    public void Problem_FolderNotMadeYetUnderSafeFolders_IsNoneAndCreatesNothing()
     {
         using var root = new Scratch();
         var folder = Path.Combine(root.Path, BackupVault.FolderName);
-        var vault = new RootBackupVault(new BackupVaultFiles(folder, requireRootAncestry: true), new CountingWindow());
+        var files = new BackupVaultFiles(folder);
+
+        Assert.IsNull(files.Problem());
+        files.Admit();
+        Assert.IsFalse(Directory.Exists(folder));
+    }
+
+    /// <summary>
+    /// F18: a folder above the backup folder that a group or other users can write is a problem, named with its remedy,
+    /// unless its sticky bit keeps them from renaming what is not theirs.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(UnixFileMode.GroupWrite, true)]
+    [DataRow(UnixFileMode.OtherWrite, true)]
+    [DataRow(UnixFileMode.GroupWrite | UnixFileMode.OtherWrite | UnixFileMode.StickyBit, false)]
+    public void Problem_FolderAboveOthersCanWrite_IsNamedUnlessSticky(UnixFileMode added, bool problem)
+    {
+        using var root = new Scratch();
+        var parent = Path.Combine(root.Path, "product");
+        Directory.CreateDirectory(parent);
+        File.SetUnixFileMode(parent, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | added);
+        var files = new BackupVaultFiles(Path.Combine(parent, BackupVault.FolderName));
+
+        if (!problem)
+        {
+            Assert.IsNull(files.Problem());
+            return;
+        }
+        StringAssert.Contains(files.Problem()!, $"{parent}, which holds it", StringComparison.Ordinal);
+        StringAssert.Contains(files.Problem()!, $"chmod go-w {parent}", StringComparison.Ordinal);
+        Assert.IsTrue(Assert.ThrowsExactly<InstallerException>(files.Admit).IsRefusal);
+    }
+
+    /// <summary>F18: the backup folder itself must be the account's own, mode 0700, and a folder, not a link.</summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("group-readable", "chmod 700")]
+    [DataRow("link", "is not a folder")]
+    public void Problem_BackupFolderNotOwnerOnly_IsNamed(string shape, string named)
+    {
+        using var root = new Scratch();
+        var folder = Path.Combine(root.Path, BackupVault.FolderName);
+        if (shape == "link")
+        {
+            var target = Path.Combine(root.Path, "elsewhere");
+            Directory.CreateDirectory(target);
+            File.SetUnixFileMode(target, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            Directory.CreateSymbolicLink(folder, target);
+        }
+        else
+        {
+            Directory.CreateDirectory(folder);
+            File.SetUnixFileMode(folder, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupRead);
+        }
+
+        StringAssert.Contains(new BackupVaultFiles(folder).Problem()!, named, StringComparison.Ordinal);
+    }
+
+    /// <summary>F18: the vault refuses a folder that cannot hold backups before it writes anything, and creates nothing.</summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task OwnerVault_InAFolderOthersCanChange_IsRefusedBeforeAnythingIsWritten()
+    {
+        using var root = new Scratch();
+        File.SetUnixFileMode(root.Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupWrite);
+        var folder = Path.Combine(root.Path, BackupVault.FolderName);
+        var vault = new OwnerBackupVault(new BackupVaultFiles(folder));
 
         var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => vault.WriteAsync(Name, CancellationToken.None));
 
@@ -236,24 +263,14 @@ public sealed class BackupVaultTests
             new LifecycleStateSnapshot(Guid.NewGuid(), Operation, new string('b', 64), Started), entries, [], total),
             null, CancellationToken.None);
 
-    /// <summary>Runs each step as the current user and counts them.</summary>
-    private sealed class CountingWindow : IRootWindow
-    {
-        public int Steps { get; private set; }
-
-        public T Run<T>(Func<T> step)
-        {
-            Steps++;
-            return step();
-        }
-    }
-
     private sealed class Scratch : IDisposable
     {
         public Scratch()
         {
             Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"hvo-backup-vault-{Guid.NewGuid():N}");
+            // Owner-only, as the installer makes the product root, whatever the umask.
             Directory.CreateDirectory(Path);
+            File.SetUnixFileMode(Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
 
         public string Path { get; }

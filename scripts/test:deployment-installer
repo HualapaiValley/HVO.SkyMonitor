@@ -46,13 +46,6 @@ if [[ "$docker_server_operating_system" != linux ||
     "$docker_server_image_architecture" "$docker_server_machine_architecture" >&2
   exit 2
 fi
-# Backup and restore run as root through sudo, as they must under the production product root (#1353): the campaign
-# needs passwordless sudo for that step, and keeps their archives in a root-owned folder of its own under /var/backups.
-if ! sudo -n true 2>/dev/null; then
-  printf 'The installer campaign runs backup and restore as root, as production does: it needs passwordless sudo.\n' >&2
-  exit 2
-fi
-backup_folder="/var/backups/hvo-sky-campaign-$$"
 root="$(mktemp -d "/tmp/hvo-i.XXXXXX")"
 publish_root="$root/publish"
 archive="$root/cameraagent.tar"
@@ -78,9 +71,6 @@ cleanup() {
   fi
   if [[ -n "${loaded_release_image:-}" ]]; then
     docker image rm --force "$loaded_release_image" >/dev/null 2>&1 || true
-  fi
-  if [[ "$backup_folder" == /var/backups/hvo-sky-campaign-* ]]; then
-    sudo rm -rf -- "$backup_folder" >/dev/null 2>&1 || true
   fi
   chmod -R u+w "$root" >/dev/null 2>&1 || true
   rm -rf "$root"
@@ -500,34 +490,35 @@ for bind_source in identity data-protection provisioning raw archive replay-runn
   test "$(stat -c '%u:%g' "$instance_root/state/$bind_source")" = "$(id -u):$(id -g)"
 done
 
-# Backup and restore (#1353) run as root through sudo, as production requires (PR-1369-R1 F2/F3). The backup becomes the
-# instance's runtime user for everything but its archive folder, copies the running instance into one archive there, with
-# capture paused and the container stopped only while it writes, and puts the instance back healthy. The folder and the
-# archive are root's and owner-only, the record names the archive's bytes, --json reports progress on standard error, and
-# nothing the backup wrote under the product root belongs to root.
-# Runs the CLI as root, its standard error going to the file named first, which is shown if the command fails.
-as_root() {
+# Backup and restore (#1353) run as the instance's service account, with no sudo (owner decision 2026-10-18,
+# PR-1369-R2). The backup copies the running instance into one archive in <product-root>/backups, with capture paused and
+# the container stopped only while it writes, and puts the instance back healthy. The folder and the archive are the
+# account's own and owner-only, the record names the archive's bytes, --json reports progress on standard error, and
+# nothing under the product root belongs to root.
+# Runs the CLI, its standard error going to the file named first, which is shown if the command fails.
+logged() {
   local errors="$1"
   shift
-  if ! sudo env HVO_INSTALLER_ALLOW_TEST_ROOT=1 HVO_INSTALLER_BACKUP_FOLDER="$backup_folder" DOCKER_HOST="$DOCKER_HOST" "$@" \
-    2>"$errors"; then
+  if ! "$@" 2>"$errors"; then
     cat "$errors" >&2
     return 1
   fi
 }
-as_root "$root/backup-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent backup \
+logged "$root/backup-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent backup \
   --instance-id "$instance_id" \
   --product-root "$root/product" \
   --json >"$root/backup.json"
 test "$(jq -er '.outcome' "$root/backup.json")" = completed
 backup_archive="$(jq -er '.backup.archive' "$root/backup.json")"
+backup_folder="$root/product/backups"
 backup_path="$backup_folder/$backup_archive"
-test "$(sudo stat -c '%U:%G %a' "$backup_folder")" = "root:root 700"
-test "$(sudo stat -c '%U:%G %a' "$backup_path")" = "root:root 600"
-test "$(sudo stat -c '%U:%G %a' "$backup_path.json")" = "root:root 600"
-test "$(sudo sha256sum "$backup_path" | cut -d' ' -f1)" = "$(jq -er '.backup.archiveSha256' "$root/backup.json")"
-test "$(sudo jq -er '.archiveSha256' "$backup_path.json")" = "$(jq -er '.backup.archiveSha256' "$root/backup.json")"
-test -z "$(sudo find "$backup_folder" -name '*.partial' -print -quit)"
+test "$(stat -c '%u:%g %a' "$backup_folder")" = "$(id -u):$(id -g) 700"
+test "$(stat -c '%u:%g %a' "$backup_path")" = "$(id -u):$(id -g) 600"
+test "$(stat -c '%u:%g %a' "$backup_path.json")" = "$(id -u):$(id -g) 600"
+test "$(sha256sum "$backup_path" | cut -d' ' -f1)" = "$(jq -er '.backup.archiveSha256' "$root/backup.json")"
+test "$(jq -er '.archiveSha256' "$backup_path.json")" = "$(jq -er '.backup.archiveSha256' "$root/backup.json")"
+test "$(jq -er '.runtimeUid' "$backup_path.json"):$(jq -er '.runtimeGid' "$backup_path.json")" = "$(id -u):$(id -g)"
+test -z "$(find "$backup_folder" -name '*.partial' -print -quit)"
 test -z "$(find "$root/product" -uid 0 -print -quit)"
 jq -es 'length > 0 and all(.[]; .event == "backup-progress")' "$root/backup-events.jsonl" >/dev/null
 test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
@@ -539,16 +530,16 @@ test "$(docker inspect --format '{{.State.Health.Status}}' "$runner_container")"
   --json >"$root/reset-uninstall.json"
 test "$(jq -er '.outcome' "$root/reset-uninstall.json")" = completed
 
-# The uninstalled instance is restored from the archive, as root: its plan changes nothing, the restore leaves it
-# uninstalled on the archive's files and databases, every one its runtime user's, and reinstall starts it healthy on them.
+# The uninstalled instance is restored from the archive, by the same account: its plan changes nothing, the restore leaves
+# it uninstalled on the archive's files and databases, every one the account's, and reinstall starts it healthy on them.
 # It is then uninstalled again for the reset below.
-as_root "$root/restore-plan-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent restore "$backup_archive" \
+logged "$root/restore-plan-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent restore "$backup_archive" \
   --instance-id "$instance_id" \
   --product-root "$root/product" \
   --plan \
   --json >"$root/restore-plan.json"
 test "$(jq -er '.outcome' "$root/restore-plan.json")" = planned
-as_root "$root/restore-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent restore "$backup_path" \
+logged "$root/restore-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent restore "$backup_path" \
   --instance-id "$instance_id" \
   --product-root "$root/product" \
   --json >"$root/restore.json"
@@ -813,5 +804,76 @@ if [[ -z "$baseline_revision" ]]; then
   printf 'Swap upgrade contract passed for instance %s: routine upgrade snapshots nothing, migrating upgrade snapshots and verifies the real stores, rollback restores them, and a rollback after a state reset and reinstall is a pure swap.\n' \
     "$instance_id"
 fi
+
+# A restore keeps the live owner settings (#1353 PR-1369-R2 F14). The startup seeder makes the account
+# LocalIdentity__AdminEmail names the site owner. After a purge and a fresh install of the same instance with another
+# owner, the live settings name that owner; a backup taken before names the first. Restoring it over the fresh instance
+# keeps the live settings and owner email, and reinstalling runs the real seeder on the restored databases, which must
+# leave the backup's owner demoted and the live owner the site owner.
+backup_owner="installer-contract@example.test"
+live_owner="restore-live-owner@example.test"
+site_owner() {
+  sqlite3 -readonly "$identity_root/cameraagent_identity.db" \
+    "SELECT COALESCE(MAX(IsSiteOwner), 'absent') FROM AspNetUsers WHERE NormalizedEmail = upper('$1');"
+}
+test "$(site_owner "$backup_owner")" = 1
+logged "$root/owner-backup-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent backup \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-backup.json"
+test "$(jq -er '.outcome' "$root/owner-backup.json")" = completed
+owner_archive="$(jq -er '.backup.archive' "$root/owner-backup.json")"
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-uninstall.json"
+test "$(jq -er '.outcome' "$root/owner-uninstall.json")" = completed
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent purge \
+  --instance-id "$instance_id" \
+  --confirm-instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-purge.json"
+test "$(jq -er '.outcome' "$root/owner-purge.json")" = completed
+test ! -e "$instance_root"
+live_owner_install=("${common_arguments[@]}")
+for index in "${!live_owner_install[@]}"; do
+  if [[ "${live_owner_install[$index]}" == "$backup_owner" ]]; then live_owner_install[$index]="$live_owner"; fi
+done
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" "${live_owner_install[@]}" >"$root/owner-install.json"
+test "$(jq -er '.healthy' "$root/owner-install.json")" = true
+test "$(site_owner "$live_owner")" = 1
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-live-uninstall.json"
+test "$(jq -er '.outcome' "$root/owner-live-uninstall.json")" = completed
+logged "$root/owner-restore-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent restore "$owner_archive" \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-restore.json"
+test "$(jq -er '.outcome' "$root/owner-restore.json")" = completed
+owner_reinstall_status=0
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reinstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-reinstall.json" 2>"$root/owner-reinstall-error.json" || owner_reinstall_status=$?
+# The real seeder has run on the restored databases once the reinstalled container started, whatever the reinstall's
+# own verification then decided.
+if [[ "$(site_owner "$backup_owner")" != 0 ]]; then
+  printf 'The restore brought back the backup'"'"'s owner settings: the startup seeder made %s the site owner again.\n' "$backup_owner" >&2
+  exit 1
+fi
+test "$(site_owner "$live_owner")" = 1
+if (( owner_reinstall_status != 0 )); then
+  cat "$root/owner-reinstall-error.json" >&2
+  exit 1
+fi
+test "$(jq -er '.outcome' "$root/owner-reinstall.json")" = completed
+test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
+test "$(cat "$instance_root/config/secrets/LocalIdentity__AdminEmail")" = "$live_owner"
+test "$(jq -er '.ownerEmail' "$instance_root/instance-manifest.json")" = "$live_owner"
+jq -e '[.warnings[]? | select(.code == "restore-live-owner-settings-kept")] | length == 1' "$root/owner-restore.json" >/dev/null
+printf 'Restore owner settings contract passed for instance %s: the real seeder kept the backup'"'"'s owner demoted and the live owner the site owner.\n' \
+  "$instance_id"
 
 printf 'Disposable offline installer contract passed for instance %s.\n' "$instance_id"

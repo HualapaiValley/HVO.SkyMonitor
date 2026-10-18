@@ -127,7 +127,7 @@ public sealed partial class LifecycleContractTests
                     cancellation.Token.ThrowIfCancellationRequested();
                 }
         };
-        BackupVault.Override = (_, _) => vault;
+        BackupVault.Override = _ => vault;
         try
         {
             if (fault == "disk-full")
@@ -352,7 +352,7 @@ public sealed partial class LifecycleContractTests
                     cancellation.Token.ThrowIfCancellationRequested();
                 }
         };
-        BackupVault.Override = (_, _) => vault;
+        BackupVault.Override = _ => vault;
         try
         {
             if (fault == "read-fails")
@@ -664,6 +664,8 @@ public sealed partial class LifecycleContractTests
         public Action? DiscardFault { get; init; }
 
         public string Root => inner.Root;
+
+        public void Admit() => inner.Admit();
 
         public async Task<IBackupTransfer> WriteAsync(string name, CancellationToken cancellationToken)
             => new FaultingTransfer(await inner.WriteAsync(name, cancellationToken), FailWriteAfter, WriteFault);

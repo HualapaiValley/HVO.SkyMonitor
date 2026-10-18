@@ -27,9 +27,10 @@ internal sealed partial class CameraAgentLifecycleManager
         request.Validate();
         output ??= Console.Out;
         error ??= Console.Error;
+        // A backup or restore is the instance's service account's alone, and runs as nothing else (#1353 PR-1369-R2).
         if (request.Operation is LifecycleOperationKind.Backup or LifecycleOperationKind.Restore)
         {
-            (uid, gid) = await EnterBackupPrivilegeAsync(request, processRunner, uid, gid, cancellationToken).ConfigureAwait(false);
+            EnsureServiceAccount(request, uid, gid);
         }
         if (request.Operation is LifecycleOperationKind.CatalogInstall or LifecycleOperationKind.CatalogGarbageCollect)
         {
@@ -89,6 +90,10 @@ internal sealed partial class CameraAgentLifecycleManager
                 .ConfigureAwait(false);
         }
         var manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
+        if (request.Operation == LifecycleOperationKind.Backup)
+        {
+            EnsureRecordedOwner(request, manifest.RuntimeUid, manifest.RuntimeGid, uid, gid, $"Instance {instanceId:D} records");
+        }
         paths = paths.WithCatalog(manifest.Catalog.CatalogId);
         var result = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
         var retainedOperation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
@@ -239,7 +244,7 @@ internal sealed partial class CameraAgentLifecycleManager
                     .ConfigureAwait(false),
                 LifecycleOperationKind.Backup => await BackupAsync(
                     request, paths, manifest, result, compose, docker, lifecycleClientFactory, ownerClientFactory,
-                    lifecycleControlToken!, installationVerificationToken!, daemon, hostLimits, error, cancellationToken)
+                    lifecycleControlToken!, installationVerificationToken!, daemon, hostLimits, uid, gid, error, cancellationToken)
                     .ConfigureAwait(false),
                 LifecycleOperationKind.Purge => await PurgeAsync(
                     request, paths, manifest, compose, docker, daemon, processRunner, cancellationToken).ConfigureAwait(false),

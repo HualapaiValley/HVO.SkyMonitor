@@ -444,12 +444,6 @@ internal static partial class InstallRecordStore
             ApplyTrusted(trusted, location.ProductRoot, change);
             return true;
         }
-        if (RootPrivilege.Held)
-        {
-            // A backup or restore started through sudo can be root again for one step, so it needs no helper (#1353).
-            RootPrivilege.AsRoot(() => ApplyTrusted(trusted, location.ProductRoot, change));
-            return true;
-        }
         var result = await PrivilegedRunner.RunAsync("sudo", HelperArguments(location.ProductRoot, change), cancellationToken)
             .ConfigureAwait(false);
         if (result.ExitCode != 0)

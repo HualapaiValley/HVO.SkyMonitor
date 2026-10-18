@@ -182,7 +182,7 @@ there is never journaled:
 - A lifecycle command decides, before it takes a lock or writes its journal, the
   instance's condition, a rollback with no previous image, an older release, an
   unfinished operation that demands `--resume`, the purge gates, for an upgrade, a
-  rollback or a backup the [container limits the host can enforce](#upgrade-rollback-and-the-hosts-limits),
+  rollback or a backup that starts the instance the [container limits the host can enforce](#upgrade-rollback-and-the-hosts-limits),
   and for an upgrade whose candidate is known without importing it (the image Docker
   holds, or a release's image read from its archive or registry), the already-active
   and state-contract checks and the state preflight. A registry release image is
@@ -505,8 +505,8 @@ The human form renders every finding and its remedy on standard error. With
 carries one error object with `errorCode` `host-prerequisites`; the exit code is
 `3` (refused, nothing changed) either way. The CLI uses SQLite in-process and never
 runs `sqlite3`, `jq` or `tar`, so none is required; `install.sh` checks for `tar`
-itself, since it unpacks the catalog. An upgrade, a rollback and a backup are held
-to the limit and CPU findings ([below](#upgrade-rollback-and-the-hosts-limits)).
+itself, since it unpacks the catalog. An upgrade, a rollback and a backup that starts
+the instance are held to the limit and CPU findings ([below](#upgrade-rollback-and-the-hosts-limits)).
 Uninstall, purge, and the other lifecycle commands do not evaluate these
 prerequisites, so a host that loses limit support can still be cleaned up.
 
@@ -558,14 +558,16 @@ RoofController behaves the same way (HVO.RoofController#151).
   fewer CPUs, because Docker refuses to create that container. Its other guards,
   the instance's state, identity and journal, are unchanged. `upgrade --restore-only`
   is never refused by the host's limits; its own guards are unchanged too.
-- **A backup goes ahead as a rollback does** (#1353). It changes no image, but it
-  starts the instance it stopped again, so a backup of an installed instance warns
-  first, `WARNING: THE BACKUP GOES AHEAD, BUT DOCKER HERE CANNOT ENFORCE`, writes the
-  install log and the result's `warnings` the same way, and makes that start, and the
-  start of its `--resume` and of its recovery, through the same path, with
-  `host-compose.yml` on a host without CPU quota support. It is refused, before
+- **A backup that starts the instance goes ahead as a rollback does** (#1353). It
+  changes no image, but a backup of a running instance stops it and starts it again,
+  so it warns first, `WARNING: THE BACKUP GOES AHEAD, BUT DOCKER HERE CANNOT ENFORCE`,
+  writes the install log and the result's `warnings` the same way, and makes that
+  start, and the start of its `--resume` and of its recovery, through the same path,
+  with `host-compose.yml` on a host without CPU quota support. It is refused, before
   anything changes, for a CPU limit Docker enforces on a host with fewer CPUs. A
-  restore starts nothing, so the host's limits do not apply to it.
+  backup of an instance that is not running, or that its journal says was not
+  running when it is resumed, starts nothing, so the host's limits do not apply to
+  it. Nor do they to a restore, which starts nothing either.
 
 **A private place to unpack the installer.** `hvo-sky-install` is one
 self-contained file. Each time it starts, the .NET host extracts the native SQLite
@@ -1774,8 +1776,8 @@ instance identity back to healthy. Take an instance backup first if the deleted 
 
 ## CameraAgent Lifecycle
 
-Run lifecycle commands as the Docker-capable deployment user, never as root. The exceptions are `backup` and
-`restore`, which run with `sudo` and work as that user (see [Backup and restore](#backup-and-restore)).
+Run lifecycle commands, `backup` and `restore` included, as the Docker-capable deployment user, the instance's service
+account, never as root or with `sudo` (see [Backup and restore](#backup-and-restore)).
 Image and catalog transitions authenticate through the lifecycle-control credential
 provisioned during installation and bound to the instance manifest. Candidate
 health, installation identity, owner identity, and runtime ownership are verified
@@ -1788,8 +1790,8 @@ hvo-sky-install cameraagent upgrade --instance-id <uuid> \
 hvo-sky-install cameraagent rollback --instance-id <uuid>
 hvo-sky-install cameraagent uninstall --instance-id <uuid>
 hvo-sky-install cameraagent reinstall --instance-id <uuid>
-sudo hvo-sky-install cameraagent backup --instance-id <uuid>
-sudo hvo-sky-install cameraagent restore <archive> --instance-id <uuid>
+hvo-sky-install cameraagent backup --instance-id <uuid>
+hvo-sky-install cameraagent restore <archive> --instance-id <uuid>
 ```
 
 An upgrade whose candidate declares the installed state contract is a pure swap. The candidate declares a state
@@ -1830,31 +1832,37 @@ rollback models are rejected before runtime mutation.
 never copies bulk data (install contract draft 4).
 
 ```bash
-sudo hvo-sky-install cameraagent backup --instance-id <uuid> [--plan] [--json] [--resume]
-sudo hvo-sky-install cameraagent restore <archive> --instance-id <uuid> [--plan] [--json] [--resume]
+hvo-sky-install cameraagent backup --instance-id <uuid> [--plan] [--json] [--resume]
+hvo-sky-install cameraagent restore <archive> --instance-id <uuid> [--plan] [--json] [--resume]
 ```
 
-**Run them with `sudo`.** A backup holds the instance's secrets: its Identity database, Data Protection keys and
-tokens. So under the production product root both commands run as root, as RoofController's do, and anything else is
-refused (exit `3`) naming the command to run. As root they work as the instance's runtime user at once. They join its
-groups, so Docker answers as it does for that user, and take its user and group IDs, keeping root only to become root
-again for the few steps that need it:
-- the backup folder's own operations;
-- the machine install record;
-- creating an absent instance root.
+**Run them as the instance's service account.** Backups are owner-only (owner decision, 2026-10-18). The service
+account already owns every live store and secret a backup copies, its Identity database, Data Protection keys and
+tokens, and it is in the `docker` group, which is root on the host in all but name. An archive kept from it by root
+would protect almost nothing. So both commands run as that account, with no `sudo` and nothing done as root:
+- Run with `sudo`, as root or as another user, they are refused (exit `3`) before anything changes, naming the
+  account to run them as.
+- The account is the owner of the instance root, which the installer creates as the account the instance manifest
+  records. For an absent instance it is the account the backup's record names, which the backup verified as the
+  instance's owner when it ran.
+- Every file they write is that account's. Restoring an absent instance creates its instance root as `install` does:
+  as the account where the product root allows it, otherwise through the same narrow `sudo` helper `install` uses.
 
-Every other file they write belongs to the runtime user, as when that user runs any lifecycle command. Under a test
-product root they also run as that root's own user.
+RoofController's backups run as root, in `/var/backups/hvo-roof`. The install contract (section 5) records why
+SkyMonitor's differ.
 
-**Where backups are kept.** Each backup is one file in `/var/backups/hvo-sky`, named
+**Where backups are kept.** Each backup is one file in `<product-root>/backups`, named
 `hvo-sky-<instance>-<yyyyMMddTHHmmssZ>-<operation>.tar.gz`, with its record `<archive>.json` beside it.
-- The folder and both files are `root:root` and owner-only.
-- The folder and every folder above it, up to `/`, must be root's and writable by root alone, or the command refuses
-  before it writes anything, naming the folder. Otherwise someone else could put another file in a backup's place
-  between the moment it is named and the moment it is read.
-- Under a test product root the folder is `<product-root>/backups`, owned by that root's user. Run as root, a test
-  takes the folder from `HVO_INSTALLER_BACKUP_FOLDER`.
-- Copy a backup off the host as root, both files together. Backups are kept until you remove them.
+- The folder is the service account's, mode `0700`, and both files are its own, mode `0600`. The first backup creates
+  the folder.
+- Before a backup writes anything, it checks the folder, even when it does not exist yet, and creates nothing:
+  - every existing folder above it must be a folder, not a link, that no group or other user can write, unless its
+    sticky bit is set;
+  - the folder itself must be the account's own, mode `0700`.
+
+  Otherwise the backup is refused (exit `3`), naming the folder and its remedy, because someone else could put another
+  folder in its place.
+- Copy a backup off the host as the service account, both files together. Backups are kept until you remove them.
 
 **What a backup holds.** It is a gzip-compressed PAX tar:
 - under `instance/`, every folder and regular file of the instance root, except the instance lock and the owner
@@ -1864,12 +1872,12 @@ product root they also run as that root's own user.
   ([Swap upgrade and database snapshots](#swap-upgrade-and-database-snapshots)), and the snapshot the manifest keeps
   for a rollback, so a restored instance can still roll back;
 - as its last entry, the manifest `hvo-sky-backup.json`: every entry's path, type, mode, size and SHA-256, and the
-  instance, image, release, catalog, product root and runtime user the backup belongs to.
+  instance, image, release, catalog and product root the backup belongs to, and the service account it ran as.
 
 A link, device or other special file in the instance refuses the backup before anything changes.
 
 **What proves an archive.** The record binds the archive's bytes: restore reads only an archive whose SHA-256 and length
-are the ones its root-written record names. Within those bytes, the restore also requires:
+are the ones its record names. Within those bytes, the restore also requires:
 - every entry is named by the manifest, with the same type, mode, size and SHA-256;
 - the manifest is the last entry and names nothing else;
 - the decompressed stream holds nothing after the tar's end but zero padding.
@@ -1877,7 +1885,8 @@ are the ones its root-written record names. Within those bytes, the restore also
 This is a check of the archive the backup wrote, not a proof of the gzip format.
 
 **How a backup runs.**
-1. Before anything changes, it checks that there is room on each filesystem it writes. That is the archive at its worst
+1. Before anything changes, it checks the backup folder (above) and that there is room on each filesystem it writes. That
+   is the archive at its worst
    case (no compression, every entry's tar overhead, the snapshot it takes and the rollback snapshot the manifest
    keeps), the snapshot itself, and 256 MiB of headroom on each. Any partial archive an earlier interrupted backup of
    the instance left counts as free. Too little room refuses it (exit `3`).
@@ -1885,7 +1894,8 @@ This is a check of the archive the backup wrote, not a proof of the gzip format.
    archive are written. The container is then started, verified and resumed before the archive is read back. That
    start is made as every lifecycle start is, so on a host whose Docker cannot enforce some of the CameraAgent limits
    the backup warns first and starts without a CPU limit Docker refuses there (see
-   [Upgrade, rollback and the host's limits](#upgrade-rollback-and-the-hosts-limits)).
+   [Upgrade, rollback and the host's limits](#upgrade-rollback-and-the-hosts-limits)). A stopped instance is left
+   stopped, and the host's limits do not apply.
 3. The archive is written as `<archive>.partial`, made durable, read back in full, and proved whole against its
    manifest and the hash taken as it was written. Only then does the backup commit it, under the folder's lock: the
    record is written first, then the partial gets its name. A name that is already committed is refused before any
@@ -1901,14 +1911,16 @@ From then on, it reads the archive back, commits it and finishes. A partial or u
 
 **How a restore runs.** `restore` puts back an instance that is uninstalled and preserved, or absent (after `purge`,
 or on a rebuilt host with the same product root and Docker daemon). It never replaces an installed instance: uninstall
-it first. `<archive>` is the backup's name, or its path in `/var/backups/hvo-sky`. Before anything changes, the
+it first. `<archive>` is the backup's name, or its path in `<product-root>/backups`. Before anything changes, the
 restore reads the whole archive and refuses it (exit `3`) when:
 - it is partial, has no record, or its bytes are not the ones the record names;
 - an entry is not the one its manifest names, the manifest is not last, or the archive cannot be read to its end;
-- it belongs to another instance, product root or runtime user;
+- it belongs to another instance or product root, or its record names another account than the one running the
+  restore;
 - the catalog it needs is not installed, Docker is another daemon, or the instance's container exists;
 - there is not enough room for what is left to do. A fresh restore needs room to stage the archive and to copy each
-  database it puts back; a resumed one that already staged the archive needs only the second.
+  database it puts back. A resumed one needs room only for what it has not done: none for staging once the journal
+  records the archive staged, and none for the database copies once it records the databases restored.
 
 A `--plan` makes the same checks and writes nothing.
 
@@ -1918,11 +1930,14 @@ The restore then:
    every byte again. If any counter the replaced instance handed out could not be carried into the backup's
    databases, it stops here, with nothing replaced;
 3. swaps the staged files in, keeping what they replace until it completes. Each move is a rename on one filesystem,
-   durable in both folders before the next step;
+   durable in both folders before the next step. A resumed restore syncs both folders of every rename again, those it
+   finds already made included, since an interruption between a rename and its sync leaves it undurable;
 4. puts the databases back through the same staged, durable and verified snapshot restore an upgrade's recovery uses,
    carrying every counter past what the replaced instance handed out. A database that hands out identities, and that
-   the backup does not have because the instance created it later, is carried over from the replaced instance whole.
-   The restore is not done until every counter is at least as high as the replaced instance took it;
+   the backup does not have because the instance created it later, is carried over from the replaced instance whole:
+   the database file with its WAL, journal and shared-memory files, as one unit. An interruption between them leaves
+   the rest to move when the restore is resumed. The restore is not done until every counter is at least as high as
+   the replaced instance took it;
 5. revokes again the credentials and authority the live instance revoked after the backup, and reports each change:
    - an API key the backup holds and the live store does not is deleted;
    - an account whose password or security stamp changed keeps the live password and stamp;
@@ -1931,7 +1946,15 @@ The restore then:
    - an account the live store no longer has loses its password, roles, claims and site ownership, and is locked out.
 
    With no live credential store to compare (an absent instance), it warns loudly that every key and password valid at
-   the backup is valid again. With `--json`, both are a `credentials-restored` event.
+   the backup is valid again. With `--json`, both are a `credentials-restored` event;
+6. keeps the live instance's owner settings over the backup's, because at every start CameraAgent makes the account
+   they name the site owner, and creates it from the temporary password when it is missing:
+   `config/secrets/LocalIdentity__AdminEmail`, the other `LocalIdentity__Admin*` settings,
+   `LocalIdentity__AllowMissingAdminPassword` and `config/owner-bootstrap/temporary-password`. It also keeps the owner
+   email the live records name, which `reinstall` verifies the running instance against. So the backup does not give
+   back site ownership the live instance moved. It reports each setting it kept, by name only
+   (`restore-live-owner-settings-kept`). With no live instance it warns loudly that the backup's owner settings are in
+   force again (`restore-backup-owner-settings`).
 
 The instance is restored uninstalled, with its release records and install record settled from the restored manifest.
 Start it with `hvo-sky-install cameraagent reinstall --instance-id <uuid>`, which brings it up through the verified
@@ -2636,9 +2659,10 @@ step, because its baseline image may predate the boundary labels, and keeps the 
 upgrade.
 
 Run the disposable installer contract against the current image with
-`./scripts/test:deployment-installer`. It needs passwordless `sudo`: it runs `backup` and `restore` as root, as the
-production product root requires, keeps their archives in a root-owned folder of its own under `/var/backups`, and
-removes that folder when it ends. To validate an owner-recovery image
+`./scripts/test:deployment-installer`. It runs `backup` and `restore` as the instance's service account, the user
+running the campaign, with no `sudo`. Its last step purges the instance, installs it again with another owner, and
+restores the earlier backup over it, so the real CameraAgent startup seeder proves the live owner settings win. To
+validate an owner-recovery image
 transition, use a clean committed worktree with an ancestor pre-support commit
 available locally:
 

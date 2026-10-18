@@ -87,11 +87,11 @@ internal static class CommandLine
         Lifecycle("cameraagent", "uninstall"),
         Lifecycle("cameraagent", "purge"),
         new(["cameraagent", "backup"], null, LifecycleValueOptions, LifecycleFlags,
-            "Run it with sudo: a backup holds the instance's secrets, so it is root's, in /var/backups/hvo-sky. " +
-            "It works as the instance's runtime user, and copies the instance, bulk captures included. --plan is --dry-run. " + PlanScratchNote),
+            "Run it as the instance's service account, not with sudo: it copies the instance, bulk captures included, into one " +
+            "owner-only archive in <product-root>/backups. --plan is --dry-run. " + PlanScratchNote),
         new(["cameraagent", "restore"], "<archive>", LifecycleValueOptions, LifecycleFlags,
-            "Run it with sudo. <archive> is a backup's name in /var/backups/hvo-sky, or its path there. The instance must be uninstalled or absent; " +
-            "it is restored uninstalled, its files owned by its runtime user, and cameraagent reinstall starts it. --plan is --dry-run. " + PlanScratchNote),
+            "Run it as the instance's service account, not with sudo. <archive> is a backup's name in <product-root>/backups, or its path there. " +
+            "The instance must be uninstalled or absent; it is restored uninstalled, and cameraagent reinstall starts it. --plan is --dry-run. " + PlanScratchNote),
         Lifecycle("catalog", "install"),
         Lifecycle("catalog", "select"),
         Lifecycle("catalog", "rollback"),
@@ -662,17 +662,10 @@ internal static class CommandLine
             CatalogVersion = Get(values, "--catalog-version"),
             Archive = archive
         };
-        if (allowTestProductRoot && (operation is LifecycleOperationKind.Backup or LifecycleOperationKind.Restore) &&
-            Environment.GetEnvironmentVariable("HVO_INSTALLER_BACKUP_FOLDER") is { Length: > 0 } testFolder)
-        {
-            request = request with { TestBackupFolder = testFolder };
-        }
         if (archive is not null && archive.Contains('/', StringComparison.Ordinal))
         {
-            // A path names the archive only where the backup folder keeps it: root's, or a test product root's own.
-            var folder = string.Equals(request.ProductRoot, request.ProductionProductRoot, StringComparison.Ordinal) || NativeLinux.getuid() == 0
-                ? BackupVault.RootFolder(request)
-                : Path.Combine(request.ProductRoot, BackupVault.FolderName);
+            // A path names the archive only where the backup folder keeps it.
+            var folder = Path.Combine(request.ProductRoot, BackupVault.FolderName);
             if (!Path.IsPathFullyQualified(archive) || !string.Equals(Path.GetDirectoryName(Path.GetFullPath(archive)), folder, StringComparison.Ordinal))
             {
                 throw new InstallUsageException($"restore reads a backup only from {folder}; give its name or its path there.");

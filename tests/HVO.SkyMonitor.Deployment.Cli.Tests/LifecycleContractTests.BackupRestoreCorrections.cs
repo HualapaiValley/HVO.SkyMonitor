@@ -47,7 +47,7 @@ public sealed partial class LifecycleContractTests
         using var fixture = await BackupFixtureAsync();
         SeedBulk(fixture.Paths, filesPerTree: 3);
         var lifecycle = new FakeLifecycleClient();
-        BackupVault.Override = (_, _) => new FaultingVault(new OwnerBackupVault(new BackupVaultFiles(Path.Combine(fixture.Root, BackupVault.FolderName))))
+        BackupVault.Override = _ => new FaultingVault(new OwnerBackupVault(new BackupVaultFiles(Path.Combine(fixture.Root, BackupVault.FolderName))))
         {
             FailWriteAfter = 64 * 1024,
             WriteFault = static () => throw new IOException("No space left on device"),
@@ -230,35 +230,6 @@ public sealed partial class LifecycleContractTests
             CameraAgentLifecycleManager.BackupHost = original;
         }
         Assert.AreEqual(0, lifecycle.PauseCount);
-    }
-
-    /// <summary>
-    /// F2/F3: under the production product root a backup or restore runs only as root, through sudo, as RoofController's
-    /// does; run as the runtime user it is refused before anything is read or written, naming the command to run.
-    /// </summary>
-    [TestMethod]
-    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    [DataRow(LifecycleOperationKind.Backup, "sudo hvo-sky-install cameraagent backup")]
-    [DataRow(LifecycleOperationKind.Restore, "sudo hvo-sky-install cameraagent restore hvo-sky-")]
-    public async Task BackupAndRestore_UnderTheProductionRootWithoutRoot_AreRefusedNamingSudo(LifecycleOperationKind operation, string command)
-    {
-        if (NativeLinux.getuid() == 0) Assert.Inconclusive("The test runs as the runtime user.");
-        var instance = Guid.NewGuid();
-        var request = new LifecycleRequest(operation, instance, "/var/lib/hvo-sky", dryRun: false, resume: false, json: false)
-        {
-            ProductionProductRoot = "/var/lib/hvo-sky",
-            Archive = operation == LifecycleOperationKind.Restore
-                ? BackupVaultFiles.NameFor(instance, new DateTimeOffset(2026, 10, 18, 7, 30, 0, TimeSpan.Zero), Guid.NewGuid())
-                : null
-        };
-        var runner = new FakeRunner(new DockerDaemonIdentity("daemon", "host", "amd64", "29.7.2"));
-
-        var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            request, runner, null, null, NativeLinux.getuid(), NativeLinux.getgid(), CancellationToken.None));
-
-        Assert.IsTrue(refused.IsRefusal, refused.Message);
-        StringAssert.Contains(refused.Message, command, StringComparison.Ordinal);
-        Assert.AreEqual(0, runner.InvocationCount, "nothing ran before the refusal");
     }
 
     /// <summary>

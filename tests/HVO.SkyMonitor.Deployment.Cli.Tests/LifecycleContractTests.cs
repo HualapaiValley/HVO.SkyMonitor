@@ -2967,12 +2967,18 @@ public sealed partial class LifecycleContractTests
             var root = Path.Combine(Path.GetTempPath(), $"hvo-lifecycle-{Guid.NewGuid():N}");
             var instanceId = Guid.NewGuid();
             var paths = InstallationPaths.Create(root, instanceId, catalogId);
+            // Owner-only, as the installer makes them, whatever the umask: a backup refuses a folder above its own that
+            // others can write (#1353 PR-1369-R2 F18).
             foreach (var directory in new[]
             {
                 paths.ProductRoot, Path.Combine(paths.ProductRoot, "cameraagents"), paths.InstanceRoot,
                 paths.ConfigRoot, paths.StateRoot, paths.DeploymentStateRoot,
                 Path.Combine(paths.ConfigRoot, "compose"), paths.OperationsRoot
-            }) Directory.CreateDirectory(directory);
+            })
+            {
+                Directory.CreateDirectory(directory);
+                File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
             // The state preflight reads the selected catalog manifest before any lifecycle mutation, so the fixture
             // publishes the same manifest-version and catalog-identity pointer a real installation exposes. Tests
             // that install a real bundle into this root opt out because the adopted root needs its lineage binding.

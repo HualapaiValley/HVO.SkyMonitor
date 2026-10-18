@@ -8,8 +8,8 @@ namespace HVO.SkyMonitor.Deployment;
 
 /// <summary>
 /// <c>cameraagent backup</c> (#1353): the explicit full copy of an instance, its files and a verified snapshot of its
-/// small databases, into one root-only, self-verifying archive (<see cref="BackupArchive"/>) in the backup folder
-/// (<see cref="IBackupVault"/>). An image lifecycle operation never copies bulk data (install contract draft 4); this
+/// small databases, into one owner-only, self-verifying archive (<see cref="BackupArchive"/>) in the service account's
+/// backup folder (<see cref="IBackupVault"/>). An image lifecycle operation never copies bulk data (install contract draft 4); this
 /// command is the path that does.
 /// </summary>
 /// <remarks>
@@ -37,8 +37,9 @@ internal sealed partial class CameraAgentLifecycleManager
     internal static Action<string> BackupStepCompleted { get; set; } = static _ => { };
 
     /// <summary>
-    /// What a backup decides before anything changes, for the command and its plan alike: that every entry of the
-    /// instance is a file or a folder, and that there is room for the archive and the snapshot (#1353).
+    /// What a backup decides before anything changes, for the command and its plan alike: that the backup folder can hold
+    /// backups (#1353 PR-1369-R2 F18), that every entry of the instance is a file or a folder, and that there is room for
+    /// the archive and the snapshot (#1353).
     /// </summary>
     private static async Task AdmitBackupAsync(
         LifecycleRequest request,
@@ -46,9 +47,10 @@ internal sealed partial class CameraAgentLifecycleManager
         InstanceManifest manifest,
         CancellationToken cancellationToken)
     {
+        var vault = BackupVault.For(request);
+        vault.Admit();
         var stores = BackupStores(paths, manifest);
         var (items, _) = BackupInventory.CollectInstance(paths, stores);
-        var vault = BackupVault.For(request);
         var partials = await vault.ListPartialsAsync(manifest.InstanceId, cancellationToken).ConfigureAwait(false);
         EnsureBackupCapacity(paths, manifest, vault, items, stores, partials);
     }
@@ -144,6 +146,8 @@ internal sealed partial class CameraAgentLifecycleManager
         string verificationToken,
         DockerDaemonIdentity daemon,
         HostPrerequisiteReport? hostLimits,
+        uint uid,
+        uint gid,
         TextWriter error,
         CancellationToken cancellationToken)
     {
@@ -170,7 +174,7 @@ internal sealed partial class CameraAgentLifecycleManager
             CreateLifecycleClient(installationResult.Url, lifecycleClientFactory),
             ownerClientFactory?.Invoke(installationResult.Url) ?? new OwnerBootstrapClient(installationResult.Url),
             lifecycleControlToken, verificationToken, hostLimits,
-            Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D")));
+            Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D")), uid, gid);
         // The limits the restart goes ahead without are kept in the operation's install log, as a rollback keeps them.
         await WriteHostLimitsToInstallLogAsync(request, paths, operation.OperationId, hostLimits, cancellationToken).ConfigureAwait(false);
         if (operation.MutationStarted)
@@ -189,6 +193,12 @@ internal sealed partial class CameraAgentLifecycleManager
         {
             if (running)
             {
+                // Admission held the backup to the host's limits only if the instance was running then (PR-1369-R2 F19);
+                // one started since was not admitted for the start this backup would make, so it is left running.
+                if (hostLimits is null)
+                {
+                    throw new InstallerException("The instance was started after the backup was admitted, so its restart was not checked against this host's limits. Run the backup again.");
+                }
                 await ValidateComposeAuthorityAsync(docker, compose, manifest, cancellationToken).ConfigureAwait(false);
                 // Recorded before the pause, so an interruption anywhere after it is resumed by starting and resuming
                 // the instance again; an instance that was not running is left as it was.
@@ -232,7 +242,7 @@ internal sealed partial class CameraAgentLifecycleManager
                     (entries, total) => new BackupArchiveManifest(
                         BackupArchive.SchemaVersion, BackupArchive.Product, BackupArchive.Component, manifest.InstanceId,
                         manifest.FriendlyName, operation.OperationId, operation.StartedUtc, InstallerBuildIdentity.Current,
-                        paths.ProductRoot, manifest.RuntimeUid, manifest.RuntimeGid, manifest.Image.ImageId, releaseVersion,
+                        paths.ProductRoot, uid, gid, manifest.Image.ImageId, releaseVersion,
                         manifest.Catalog.CatalogId, manifest.Catalog.PackageVersion, snapshot, entries, omitted, total),
                     progress, cancellationToken)
                 .ConfigureAwait(false);
@@ -246,7 +256,8 @@ internal sealed partial class CameraAgentLifecycleManager
             {
                 await service.RestartAsync(operation.OperationId, cancellationToken).ConfigureAwait(false);
             }
-            var record = await CommitBackupArchiveAsync(vault, name, operation, error, request.Json, cancellationToken).ConfigureAwait(false);
+            var record = await CommitBackupArchiveAsync(vault, name, operation, service.Uid, service.Gid, error, request.Json, cancellationToken)
+                .ConfigureAwait(false);
             operation = await RecordAsync(paths, operation with { Phase = LifecycleOperationPhase.Committed }, cancellationToken)
                 .ConfigureAwait(false);
             operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
@@ -303,7 +314,8 @@ internal sealed partial class CameraAgentLifecycleManager
             {
                 await service.RestartAsync(operation.OperationId, cancellationToken).ConfigureAwait(false);
             }
-            var record = await CommitBackupArchiveAsync(vault, name, operation, error, request.Json, cancellationToken).ConfigureAwait(false);
+            var record = await CommitBackupArchiveAsync(vault, name, operation, service.Uid, service.Gid, error, request.Json, cancellationToken)
+                .ConfigureAwait(false);
             if (operation.Phase != LifecycleOperationPhase.Committed)
             {
                 operation = await RecordAsync(paths, operation with { Phase = LifecycleOperationPhase.Committed }, cancellationToken)
@@ -380,32 +392,37 @@ internal sealed partial class CameraAgentLifecycleManager
     /// <summary>
     /// Proves the archive whole and commits it: a partial is read back from the vault and its record written; an archive
     /// an interrupted commit already gave its name is checked against its record. Either way its bytes must be the ones
-    /// the journal recorded when it was written.
+    /// the journal recorded when it was written. The record names the account the backup ran as, <paramref name="uid"/>:
+    /// <paramref name="gid"/>, verified as the instance's owner, and the archive must name the same (PR-1369-R2 F13).
     /// </summary>
     private static async Task<BackupRecord> CommitBackupArchiveAsync(
         IBackupVault vault,
         string name,
         LifecycleOperationState operation,
+        uint uid,
+        uint gid,
         TextWriter error,
         bool json,
         CancellationToken cancellationToken)
     {
         if (await vault.ReadRecordAsync(name, cancellationToken).ConfigureAwait(false) is { } committed)
         {
-            if (committed.ArchiveSha256 != operation.BackupManifestSha256 || committed.OperationId != operation.OperationId)
+            if (committed.ArchiveSha256 != operation.BackupManifestSha256 || committed.OperationId != operation.OperationId ||
+                committed.RuntimeUid != uid || committed.RuntimeGid != gid)
                 throw new InstallerException($"The committed backup '{name}' is not the archive this backup wrote.");
             return committed;
         }
         var (manifest, sha256, length) = await ReadBackupArchiveAsync(
                 vault, name, partial: true, extract: null, new BackupProgress(error, json, "verify", null), cancellationToken)
             .ConfigureAwait(false);
-        if (sha256 != operation.BackupManifestSha256 || manifest.OperationId != operation.OperationId)
+        if (sha256 != operation.BackupManifestSha256 || manifest.OperationId != operation.OperationId ||
+            manifest.RuntimeUid != uid || manifest.RuntimeGid != gid)
         {
             throw new InstallerException($"The backup '{name}' read back differs from what was written, so it was not kept.");
         }
         var record = new BackupRecord(
             BackupRecord.CurrentSchemaVersion, name, manifest.InstanceId, manifest.OperationId, manifest.CreatedUtc, length, sha256,
-            manifest.TotalBytes, manifest.Entries.Count, manifest.RuntimeUid, manifest.RuntimeGid);
+            manifest.TotalBytes, manifest.Entries.Count, uid, gid);
         await vault.CommitAsync(record, cancellationToken).ConfigureAwait(false);
         BackupStepCompleted("backup-committed");
         return record;
@@ -544,7 +561,9 @@ internal sealed partial class CameraAgentLifecycleManager
         string LifecycleControlToken,
         string VerificationToken,
         HostPrerequisiteReport? HostLimits,
-        string OperationRoot)
+        string OperationRoot,
+        uint Uid,
+        uint Gid)
     {
         /// <summary>
         /// Starts the instance as Docker here can run it, as every lifecycle start does (#1357,

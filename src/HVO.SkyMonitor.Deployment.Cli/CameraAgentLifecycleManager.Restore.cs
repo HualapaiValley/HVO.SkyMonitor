@@ -149,15 +149,18 @@ internal sealed partial class CameraAgentLifecycleManager
                         .ConfigureAwait(false);
                 }
                 var outcome = await RevokeAgainAsync(paths, previous, archived.Archive, request.Json, error).ConfigureAwait(false);
+                var ownerSettings = await KeepLiveOwnerSettingsAsync(paths, previous, archived, request.Json, error, cancellationToken)
+                    .ConfigureAwait(false);
                 operation = await RecordAsync(paths, operation with { Phase = LifecycleOperationPhase.CandidateVerified }, cancellationToken)
                     .ConfigureAwait(false);
-                archived = archived with { Credentials = outcome, CredentialsCompared = true };
+                archived = archived with { Credentials = outcome, CredentialsCompared = true, Warnings = [.. archived.Warnings, .. ownerSettings] };
             }
             var committed = manifest with
             {
                 LifecycleCondition = InstanceLifecycleCondition.Uninstalled,
                 LastLifecycleOperationId = operation.OperationId,
-                UpdatedUtc = DateTimeOffset.UtcNow
+                UpdatedUtc = DateTimeOffset.UtcNow,
+                OwnerEmail = await LiveOwnerEmailAsync(paths, previous, cancellationToken).ConfigureAwait(false) ?? manifest.OwnerEmail
             };
             if (operation.Phase == LifecycleOperationPhase.CandidateVerified)
             {
@@ -267,7 +270,9 @@ internal sealed partial class CameraAgentLifecycleManager
 
     /// <summary>
     /// Moves back, from the files the swap kept aside, each store that holds a recorded floor and that the backup's snapshot
-    /// records as absent, with its recovery files, and syncs both directories of each move. A store already back is left.
+    /// records as absent, and syncs both directories of each move. A store is one unit with its WAL, journal and
+    /// shared-memory files (#1353 PR-1369-R2 F15): it is carried once none of them is left aside, never because its main
+    /// file is back, so a pass that an interruption split between them moves the rest.
     /// </summary>
     private static void CarryLiveStores(
         InstallationPaths paths, InstanceManifest manifest, StateSnapshotManifest snapshot, IReadOnlyList<StateCounterFloor> floors, string previous)
@@ -277,7 +282,12 @@ internal sealed partial class CameraAgentLifecycleManager
             if (snapshot.Databases.Any(database => database.RelativePath == store && database.Present)) continue;
             var target = CameraAgentStateSnapshot.StorePath(paths.StateRoot, store);
             var source = CameraAgentStateSnapshot.StorePath(Path.Combine(previous, "state"), store);
-            if (File.Exists(target) || !File.Exists(source)) continue;
+            var left = CameraAgentStateLayout.SqliteSidecarSuffixes.Prepend(string.Empty).Where(suffix => File.Exists(source + suffix)).ToArray();
+            if (left.Length == 0) continue;
+            if (left.FirstOrDefault(suffix => File.Exists(target + suffix)) is { } both)
+            {
+                throw new InstallerException($"The restore cannot carry '{store}{both}' over from the live instance: the restored instance has one too.");
+            }
             var directory = Path.GetDirectoryName(target)!;
             var missing = new Stack<string>();
             for (var ancestor = directory; !Directory.Exists(ancestor); ancestor = Path.GetDirectoryName(ancestor)!) missing.Push(ancestor);
@@ -286,9 +296,9 @@ internal sealed partial class CameraAgentLifecycleManager
                 SafeFileSystem.CreateRuntimeDirectory(created, manifest.RuntimeUid, manifest.RuntimeGid);
                 NativeLinux.FlushDirectory(Path.GetDirectoryName(created)!);
             }
-            foreach (var suffix in CameraAgentStateLayout.SqliteSidecarSuffixes.Prepend(string.Empty))
+            foreach (var suffix in left)
             {
-                if (File.Exists(source + suffix)) Move(source + suffix, target + suffix, Path.GetDirectoryName(source)!, directory);
+                Move(source + suffix, target + suffix, Path.GetDirectoryName(source)!, directory);
             }
             BackupStepCompleted($"restore-carried:{store}");
         }
@@ -341,6 +351,9 @@ internal sealed partial class CameraAgentLifecycleManager
                 $"'{name}' is not a committed backup in {vault.Root}: a partial or unrecorded archive is never restored.");
         if (record.InstanceId != instanceId)
             throw InstallerException.Refused($"'{name}' is a backup of instance {record.InstanceId:D}, not {instanceId:D}.");
+        // The files a restore writes are the account's that took the backup, so it runs as that account alone
+        // (PR-1369-R2 F13): its record names it, verified when the backup ran.
+        EnsureRecordedOwner(request, record.RuntimeUid, record.RuntimeGid, uid, gid, $"'{name}' was taken by");
 
         var captured = new Dictionary<string, byte[]>(StringComparer.Ordinal);
         var (archive, sha256, length) = await ReadBackupArchiveAsync(
@@ -380,10 +393,8 @@ internal sealed partial class CameraAgentLifecycleManager
         if (!string.Equals(manifest.ProductRoot, paths.ProductRoot, StringComparison.Ordinal) ||
             !string.Equals(archive.ProductRoot, paths.ProductRoot, StringComparison.Ordinal))
             throw InstallerException.Refused($"'{name}' was taken under the product root {archive.ProductRoot}, not {paths.ProductRoot}; a restore keeps the product root.");
-        if (manifest.RuntimeUid != uid || manifest.RuntimeGid != gid || archive.RuntimeUid != uid || archive.RuntimeGid != gid)
-            throw InstallerException.Refused(string.Create(
-                CultureInfo.InvariantCulture,
-                $"'{name}' belongs to the runtime user {archive.RuntimeUid}:{archive.RuntimeGid}; run the restore as that user."));
+        EnsureRecordedOwner(request, archive.RuntimeUid, archive.RuntimeGid, uid, gid, $"'{name}' was taken by");
+        EnsureRecordedOwner(request, manifest.RuntimeUid, manifest.RuntimeGid, uid, gid, $"The instance '{name}' holds belongs to");
         // The instance lock belongs to the running command and the staging folder to the restore, so an archive that
         // holds either, or a snapshot entry not in the one shape a snapshot has, is not one this installer wrote.
         if (archive.Entries.Any(static entry =>
@@ -464,19 +475,23 @@ internal sealed partial class CameraAgentLifecycleManager
                .All(static entry => entry is ".deployment.lock" or BackupInventory.RestoreFolderName);
 
     /// <summary>
-    /// Requires room for what is left to do, with headroom: staging every file of the archive beside the instance, unless
-    /// a resumed restore has staged it already, and the copy the database restore writes beside each store it replaces
-    /// (#1353 PR-1369-R1 F8). A restore resumed before its staging finished removes what it had staged first, so those
-    /// bytes count as free.
+    /// Requires room for the phases not yet complete, with headroom: staging every file of the archive beside the instance,
+    /// until the journal records it staged (#1353 PR-1369-R1 F8), and the copy the database restore writes beside each
+    /// store it replaces, until the journal records the databases restored (PR-1369-R2 F17). A restore resumed before its
+    /// staging finished removes what it had staged first, so those bytes count as free.
     /// </summary>
     private static void EnsureRestoreCapacity(InstallationPaths paths, BackupArchiveManifest archive, LifecycleOperationState? resumed)
     {
         var snapshotBytes = archive.Entries.Where(static entry => entry.Path.StartsWith(BackupArchive.SnapshotPrefix, StringComparison.Ordinal))
             .Sum(static entry => entry.Size);
         var staged = resumed is not null && resumed.Phase != LifecycleOperationPhase.Prepared;
-        var required = staged
-            ? checked(snapshotBytes + BackupHeadroomBytes)
-            : checked(archive.TotalBytes + (long)archive.Entries.Count * 4096 + snapshotBytes + BackupHeadroomBytes);
+        var databasesRestored = resumed is not null &&
+                                (resumed.StateSnapshotRestoredUtc is not null ||
+                                 resumed.Phase is LifecycleOperationPhase.CandidateVerified or LifecycleOperationPhase.Committed or LifecycleOperationPhase.Completed);
+        var required = checked(
+            (staged ? 0 : archive.TotalBytes + (long)archive.Entries.Count * 4096) +
+            (databasesRestored ? 0 : snapshotBytes) +
+            BackupHeadroomBytes);
         var reclaimed = resumed is { Phase: LifecycleOperationPhase.Prepared }
             ? DirectoryBytes(Path.Combine(paths.InstanceRoot, BackupInventory.RestoreFolderName, resumed.OperationId.ToString("D")))
             : 0;
@@ -682,6 +697,11 @@ internal sealed partial class CameraAgentLifecycleManager
             if (entry is ".deployment.lock" or BackupInventory.RestoreFolderName || plan.Contains(entry, StringComparer.Ordinal)) continue;
             Move(live, Path.Combine(previous, entry), paths.InstanceRoot, previous);
         }
+        // Every pass syncs the folders of every rename again, those an earlier pass made included (PR-1369-R2 F16): a pass
+        // interrupted after a rename and before its sync left it undurable, and finding it done says nothing of its sync.
+        NativeLinux.FlushDirectory(staged);
+        NativeLinux.FlushDirectory(previous);
+        NativeLinux.FlushDirectory(paths.InstanceRoot);
 
         static bool Exists(string path) => File.Exists(path) || Directory.Exists(path);
     }
@@ -694,6 +714,7 @@ internal sealed partial class CameraAgentLifecycleManager
     {
         if (Directory.Exists(from)) Directory.Move(from, to);
         else File.Move(from, to, overwrite: false);
+        BackupStepCompleted($"restore-renamed:{to}");
         NativeLinux.FlushDirectory(fromDirectory);
         NativeLinux.FlushDirectory(toDirectory);
     }
@@ -731,6 +752,49 @@ internal sealed partial class CameraAgentLifecycleManager
                 .ConfigureAwait(false);
         }
         return outcome;
+    }
+
+    /// <summary>
+    /// Keeps the live instance's owner settings over the backup's (PR-1369-R2 F14, <see cref="RestoredOwnerSettings"/>), and
+    /// the owner email its installation result names, and says which; with no live instance to compare, says loudly that
+    /// the backup's are in force again. Returns the warnings for the result. A run resumed after one that kept them finds
+    /// nothing to change and reports nothing, as the credential comparison does.
+    /// </summary>
+    private static async Task<IReadOnlyList<InstallationWarning>> KeepLiveOwnerSettingsAsync(
+        InstallationPaths paths, string previous, ArchivedInstance archived, bool json, TextWriter error, CancellationToken cancellationToken)
+    {
+        var liveOwnerEmail = await LiveOwnerEmailAsync(paths, previous, cancellationToken).ConfigureAwait(false);
+        if (liveOwnerEmail is null)
+        {
+            var warning = string.Create(CultureInfo.InvariantCulture,
+                $"WARNING: there was no live instance to compare, so the owner settings this backup holds ({archived.Archive.CreatedUtc:yyyy-MM-ddTHH:mm:ssZ}) are in force again: at its next start CameraAgent makes the account {RestoredOwnerSettings.AdminEmailSetting} names the site owner, from config/secrets/{RestoredOwnerSettings.AdminEmailSetting} and config/owner-bootstrap as the backup holds them. Check them before you start the instance.");
+            await ShowCredentialWarningAsync(archived.Archive, warning, json, error).ConfigureAwait(false);
+            return [new InstallationWarning("restore-backup-owner-settings", warning)];
+        }
+        var changed = new List<string>(RestoredOwnerSettings.KeepLive(paths.InstanceRoot, previous));
+        var result = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
+        if (!string.Equals(result.OwnerEmail, liveOwnerEmail, StringComparison.Ordinal))
+        {
+            await SafeFileSystem.WriteJsonAtomicAsync(
+                    paths.ResultPath, result with { OwnerEmail = liveOwnerEmail }, DeploymentJsonContext.Default.InstallationResult, cancellationToken)
+                .ConfigureAwait(false);
+            changed.Add("the records' ownerEmail");
+        }
+        if (changed.Count == 0) return [];
+        var kept = string.Create(CultureInfo.InvariantCulture,
+            $"Warning: the live instance's owner settings changed after the backup ({archived.Archive.CreatedUtc:yyyy-MM-ddTHH:mm:ssZ}); the restore kept the live ones, so the backup does not give back site ownership the live instance moved: {string.Join(", ", changed)}.");
+        await ShowCredentialWarningAsync(archived.Archive, kept, json, error).ConfigureAwait(false);
+        return [new InstallationWarning("restore-live-owner-settings-kept", kept)];
+    }
+
+    /// <summary>
+    /// The owner email the live instance's manifest names, from the files the swap kept aside, or <see langword="null"/>
+    /// when there was no live instance.
+    /// </summary>
+    private static async Task<string?> LiveOwnerEmailAsync(InstallationPaths paths, string previous, CancellationToken cancellationToken)
+    {
+        var live = Path.Combine(previous, Path.GetFileName(paths.ManifestPath));
+        return File.Exists(live) ? (await ReadManifestAsync(live, cancellationToken).ConfigureAwait(false)).OwnerEmail : null;
     }
 
     private static Task ShowCredentialWarningAsync(BackupArchiveManifest archive, string warning, bool json, TextWriter error)
