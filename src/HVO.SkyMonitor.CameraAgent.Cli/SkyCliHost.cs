@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text;
+using Terminal.Gui.App;
 
 namespace HVO.SkyMonitor.CameraAgent.Cli;
 
@@ -48,6 +49,23 @@ internal sealed class SkyCliHost
     /// <summary>For tests: the HTTP handler of every connection to CameraAgent.</summary>
     public Func<HttpMessageHandler>? CreateHandler { get; init; }
 
+    /// <summary>True when the terminal interface can run: both standard input and output are a terminal.</summary>
+    public bool HasTerminal { get; init; }
+
+    /// <summary>
+    /// Creates and initialises the Terminal.Gui application for <c>hvo-sky ui</c>. Tests give one on Terminal.Gui's
+    /// in-memory driver with a virtual clock.
+    /// </summary>
+    public Func<IApplication> CreateApplication { get; init; } = static () =>
+    {
+        var app = Application.Create();
+        app.Init();
+        return app;
+    };
+
+    /// <summary>Runs the interface until it closes. Tests replace this and drive the window themselves.</summary>
+    public Action<IApplication, IRunnable> RunApplication { get; init; } = static (app, window) => app.Run(window);
+
     /// <summary>This build's informational version, which <c>--version</c> prints.</summary>
     public static string Version { get; } =
         typeof(SkyCliHost).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown";
@@ -61,6 +79,7 @@ internal sealed class SkyCliHost
         Out = new SkyCliConsoleWriter(Console.Out),
         Error = new SkyCliConsoleWriter(Console.Error),
         IsInteractive = !Console.IsInputRedirected,
+        HasTerminal = !Console.IsInputRedirected && !Console.IsOutputRedirected,
         ReadLine = ReadConsoleLine
     };
 

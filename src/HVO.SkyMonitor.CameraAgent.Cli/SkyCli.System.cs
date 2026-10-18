@@ -93,14 +93,16 @@ internal static partial class SkyCli
     /// <summary>
     /// Asks CameraAgent to restart, and when <paramref name="wait"/> is set, waits until a new process answers: one with
     /// another start time than the process that took the request. A CameraAgent that nothing would start again refuses
-    /// before anything is sent (exit 3).
+    /// before anything is sent (exit 3). <paramref name="progress"/>, when given, is told what it waits for instead of
+    /// standard error (the terminal interface's).
     /// </summary>
     internal static async Task<SkyRestartOutcome> RestartAsync(
         SkyCliContext context,
         SkyApiClient client,
         bool wait,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(client);
@@ -121,9 +123,15 @@ internal static partial class SkyCli
             return new SkyRestartOutcome(before, response, null, TimeSpan.Zero);
         }
 
-        if (!context.Json)
+        var waiting = $"Restart requested; waiting up to {(int)timeout.TotalSeconds} s for CameraAgent to come back.";
+        if (progress is not null)
         {
-            await context.Error.WriteLineAsync($"Restart requested; waiting up to {(int)timeout.TotalSeconds} s for CameraAgent to come back.");
+            // The terminal interface says it on its own screen; standard error belongs to Terminal.Gui there.
+            progress(waiting);
+        }
+        else if (!context.Json)
+        {
+            await context.Error.WriteLineAsync(waiting);
         }
 
         var deadline = started + timeout;
