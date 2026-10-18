@@ -26,7 +26,7 @@ runbook describes the installer as it behaves today.
 | Contract | Today | Issue |
 | --- | --- | --- |
 | Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | The `hvo-sky-install` CLI, configured by flags or `--config`; no runtime client or wizard | [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
-| `install.sh` entry point with `--check`, `--from DIR`, and `--install-docker` and the like | [`install.sh`](#installsh) checks the host, then verifies the release's installer and small files and starts it, online or with `--from DIR`; it gives `cameraagent install` and `upgrade` the release and the catalog. It installs no Docker and changes no boot setting; it names the remedy. The installer still needs a command | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
+| `install.sh` entry point with `--check`, `--from DIR`, and `--install-docker` and the like | [`install.sh`](#installsh) checks the host, then verifies the release's installer and small files and starts it, online or with `--from DIR`; it gives `cameraagent install` and `upgrade` the release and the catalog. With no arguments it runs `cameraagent install`. It installs no Docker and changes no boot setting; it names the remedy. The installer itself still needs a command | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
 | Install and upgrade from a published release, by GHCR digest or offline archive | `--release <folder>` installs and upgrades from a downloaded release's `release.json` and `SHA256SUMS`, by GHCR digest or offline archive ([Release Install](#release-install)). Integration pre-releases are published ([prereleases.md](prereleases.md)); final releases are not yet | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
 | `--plan`, `--answers FILE`, `backup` and `restore FILE`, exit codes 0/1/2/3/130 | `--dry-run` and `--config`; no `backup` or `restore`; a refusal such as failed host prerequisites exits `1` | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
 | Container limits kept in the install record and changed with a re-run | Limits are set at install and recorded in the instance's `instance-manifest.json`. A re-run with different `--cpus` or `--memory` is refused, and an installed instance's limits change only when an upgrade moves limits the operator did not set to the new default (see [Container Resources](#container-resources)) | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
@@ -44,7 +44,10 @@ and starts the installer with the remaining arguments:
 # Check this machine for the release, changing nothing:
 curl -fsSL https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v<version>/install.sh | bash -s -- --check
 
-# Install the release; CameraAgent's image is pulled from ghcr.io by its digest:
+# Install the release, asking on the terminal for what the installer needs (no arguments is cameraagent install):
+curl -fsSL https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v<version>/install.sh | bash
+
+# Install the release with its settings given; CameraAgent's image is pulled from ghcr.io by its digest:
 curl -fsSL https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v<version>/install.sh \
   | bash -s -- cameraagent install --friendly-name "North All-Sky Camera" --bind-address 127.0.0.1 --port 5130 ...
 
@@ -69,7 +72,8 @@ already given:
 | --- | --- | --- |
 | `cameraagent install` | `--release <private folder> --image-source registry --catalog-bundle <catalog>` | `--release DIR --no-download --catalog-bundle <catalog>` |
 | `cameraagent upgrade` | `--release <private folder> --image-source registry` | `--release DIR --no-download` |
-| any other command | nothing | nothing |
+| no arguments | `cameraagent install`, then as above | `cameraagent install`, then as above |
+| any other command, or options with no command | nothing | nothing |
 
 - Online, the private folder holds the release's `release.json` and `SHA256SUMS`. Docker pulls CameraAgent's image by
   the digest `release.json` names, after the installer's [pre-import checks](#release-install); the offline image
@@ -78,6 +82,9 @@ already given:
   `${XDG_CACHE_HOME:-~/.cache}/hvo-sky/catalogs/<catalog version>.bundle`. It is unpacked there afresh each time, not
   in the temporary folder, because the installer binds an install to the catalog folder it is given: a second run, or a
   `--resume`, must name the same folder. The archive must hold only files in that one folder.
+- With no installer arguments, `install.sh` runs `cameraagent install`, as the install contract has it, with an
+  install's checks, downloads and hand-over; the installer asks on the terminal for what it needs. `--check` alone
+  still stops after the checks.
 - `--release`, `--image-ref` or `--image-archive` given by you means no `--release` is added; `--catalog-bundle`
   means no catalog is added; `--image-source` is not added twice; `--config`, which names the whole request, gets
   nothing but `--from`'s `--no-download`. Online, `--image-source archive` is refused, because the archive is not

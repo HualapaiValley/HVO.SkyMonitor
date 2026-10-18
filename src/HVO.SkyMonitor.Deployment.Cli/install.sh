@@ -103,7 +103,8 @@ Options, before the installer's arguments:
   -h, --help   This help. (--help after the installer's arguments is the installer's.)
 
 The first argument that is not one of these, and everything after it (or after --), goes to hvo-sky-install:
-cameraagent install, cameraagent upgrade, status, --help and the rest. Without --from, cameraagent install and
+cameraagent install, cameraagent upgrade, status, --help and the rest; with none, it runs cameraagent install, which
+asks on the terminal for what it needs. Without --from, cameraagent install and
 cameraagent upgrade are given the release's release.json and SHA256SUMS (--release, a private folder) and
 --image-source registry: Docker pulls CameraAgent's image from ghcr.io by the digest release.json names. cameraagent
 install is also given the release's catalog (--catalog-bundle), unpacked in ${XDG_CACHE_HOME:-~/.cache}/hvo-sky/catalogs
@@ -477,14 +478,18 @@ EOF
     esac
   done
   local -a passed=("$@")
+  # No installer arguments is an install, as the install contract has it: the installer is given cameraagent install, with
+  # an install's checks, downloads and hand-over. (--check alone still stops after the checks.)
+  ((${#passed[@]} > 0)) || passed=(cameraagent install)
 
   if [ -z "${release_version}" ]; then
     refuse "This is the repository's copy of install.sh, which names no release: use a release's copy.
   curl -fsSL https://github.com/${repository}/releases/latest/download/install.sh | bash"
   fi
 
-  # What the installer is asked to do. Its command is its first word or two. An install (no command is one, as it is in
-  # the install contract) and an upgrade start CameraAgent from the release, so they need Docker and its limits;
+  # What the installer is asked to do. Its command is its first word or two. An install (options with no command are
+  # checked as one, as the install contract has it) and an upgrade start CameraAgent from the release, so they need
+  # Docker and its limits;
   # cameraagent install and cameraagent upgrade read the release (--release DIR), and cameraagent install the catalog
   # (--catalog-bundle). Any other command checks what it needs itself, so a machine that lost Docker's limits can still
   # be looked at, rolled back or uninstalled. Help and the version only print. --config names the whole request, so

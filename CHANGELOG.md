@@ -21,8 +21,8 @@ onward; earlier development is recorded in its pull requests. A release renames 
   `release.json` and catalog, checks each against `SHA256SUMS` (and the attestations when `gh` is signed in) and the
   installer against its `--version`, and runs it as you. `cameraagent install` and `upgrade` are given the release
   (`--release`, with `--image-source registry`, so the image is pulled from ghcr.io by its digest), and `cameraagent
-  install` the release's catalog (`--catalog-bundle`, unpacked in `~/.cache/hvo-sky/catalogs`). `--check` stops after
-  the checks. `--from DIR` takes everything from a downloaded release folder, the offline image archive included, and
+  install` the release's catalog (`--catalog-bundle`, unpacked in `~/.cache/hvo-sky/catalogs`). With no installer
+  arguments it runs `cameraagent install`. `--check` stops after the checks. `--from DIR` takes everything from a downloaded release folder, the offline image archive included, and
   never contacts ghcr.io. Exit codes are the install contract's: 3 when it refused and nothing changed, 1 when a
   download failed, 2 for an invalid command line and 130 when interrupted. (#1311)
 - CameraAgent serves an operator settings catalogue and versioned group writes through its operations API. The

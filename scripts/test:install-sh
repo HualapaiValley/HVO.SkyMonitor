@@ -691,10 +691,23 @@ test_check_checks_everything_and_downloads_and_changes_nothing() {
   assert_status 0
   assert_output_contains "ok    ghcr.io answers"
   assert_output_contains "ok    Docker enforces memory, CPU and process limits"
+  assert_output_contains "ok    docker buildx 0.37"
+  assert_output_contains "free on ${WORK}/home for the catalog"
   assert_output_contains "This machine is ready for hvo-sky-install ${VERSION}."
   assert_nothing_downloaded
   assert_installer_did_not_run
   assert_no_download_folder_left
+  [ ! -e "${WORK}/home/.cache" ] || fail_test "--check made the catalog folder"
+}
+
+test_check_from_a_folder_alone_stops_after_the_checks() {
+  install_sh -- --from "${WORK}/release" --check
+
+  assert_status 0
+  assert_output_contains "ok    ${WORK}/release has the release's files"
+  assert_output_contains "This machine is ready for hvo-sky-install ${VERSION}."
+  assert_installer_did_not_run
+  assert_not_called "ghcr.io"
 }
 
 test_check_with_the_installer_s_help_still_downloads_nothing() {
@@ -764,12 +777,25 @@ test_from_a_folder_with_its_own_release_or_image_still_pulls_nothing() {
 }
 
 # Without a command the checks are an install's, and the installer, which needs a command, is given nothing to refuse.
-test_from_a_folder_without_a_command_adds_nothing() {
+# No installer arguments is an install (the install contract's default): cameraagent install, given the release, no
+# download and the catalog.
+test_from_a_folder_without_arguments_installs() {
   install_sh -- --from "${WORK}/release"
 
   assert_status 0
   assert_output_contains "skymonitor-cameraagent-${VERSION}-linux-arm64.oci.tar: the installer loads CameraAgent's image from it"
-  assert_installer "args="
+  assert_installer "args=[cameraagent][install][--release][${WORK}/release][--no-download][--catalog-bundle][${CATALOG_DIR}]"
+  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
+  assert_not_called "ghcr.io"
+  assert_nothing_downloaded
+}
+
+# Options with no command are checked as an install, and handed over as they are: the installer names what is missing.
+test_options_without_a_command_get_nothing_added() {
+  install_sh -- --from "${WORK}/release" -- --json
+
+  assert_status 0
+  assert_installer "args=[--json]"
 }
 
 test_from_a_folder_adds_nothing_to_a_command_that_reads_no_release() {
@@ -793,6 +819,21 @@ test_from_a_relative_folder_is_given_by_its_absolute_path() {
 # release_folder_arg: the --release argument install.sh hands over online, its own download folder's release/.
 release_folder_arg() {
   printf '\\[--release\\]\\[%s/hvo-sky-install\\.[A-Za-z0-9]{8}/release\\]' "$(re "${WORK}/tmp")"
+}
+
+# No installer arguments is an install: online, cameraagent install with the release's files and catalog, as when it is
+# named.
+test_online_without_arguments_installs() {
+  install_sh
+
+  assert_status 0
+  assert_output_contains "ok    docker buildx 0.37"
+  assert_called "${RELEASE_URL}/release.json"
+  assert_called "${RELEASE_URL}/${CATALOG}.tar.gz"
+  assert_not_called ".oci.tar"
+  assert_installer_matches "^args=\\[cameraagent\\]\\[install\\]$(release_folder_arg)\\[--image-source\\]\\[registry\\]\\[--catalog-bundle\\]\\[$(re "${CATALOG_DIR}")\\]$"
+  assert_installer "release-files=SHA256SUMS ${CATALOG}.tar.gz release.json "
+  assert_installer "catalog-files=hyg_v42.sqlite manifest.json "
 }
 
 test_online_an_install_gets_the_release_s_small_files_and_never_its_image_archive() {
