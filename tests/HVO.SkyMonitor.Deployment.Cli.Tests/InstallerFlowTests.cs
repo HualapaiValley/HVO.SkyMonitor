@@ -173,7 +173,9 @@ public sealed partial class InstallerFlowTests
                 "installation-state.json")));
             Assert.AreEqual("Completed", state.RootElement.GetProperty("phase").GetString());
             Assert.AreEqual("Completed", state.RootElement.GetProperty("status").GetString());
-            Assert.AreEqual(3, runner.ComposeUpCount);
+            // The install started the container twice, once to seed the owner; the completed re-run, with nothing to
+            // change, starts nothing (#1315).
+            Assert.AreEqual(2, runner.ComposeUpCount);
 
             var driftedResult = JsonNode.Parse(legacyInProcessResultJson)?.AsObject()
                 ?? throw new AssertFailedException("The retained result was not valid JSON.");
@@ -188,7 +190,7 @@ public sealed partial class InstallerFlowTests
                 CancellationToken.None,
                 portAvailabilityProbe: probe.Probe));
             StringAssert.Contains(resultDrift.Message, "retained result", StringComparison.Ordinal);
-            Assert.AreEqual(3, runner.ComposeUpCount);
+            Assert.AreEqual(2, runner.ComposeUpCount);
             await File.WriteAllTextAsync(resultPath, legacyInProcessResultJson);
 
             var unsupportedState = JsonNode.Parse(await File.ReadAllTextAsync(statePath))?.AsObject()
@@ -1544,6 +1546,9 @@ public sealed partial class InstallerFlowTests
         public string ExpectedOwnerEmail { get; init; } = "owner@example.test";
         public List<string> Passwords { get; } = [];
 
+        /// <summary>How many times the installation was verified.</summary>
+        public int Verifications { get; private set; }
+
         public Task WaitForHealthAsync(
             ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null)
         {
@@ -1572,6 +1577,7 @@ public sealed partial class InstallerFlowTests
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            Verifications++;
             Assert.AreEqual("hyg-v42-production", expectation.Catalog.CatalogId);
             Assert.AreEqual(64, expectation.ConfigurationSha256.Length);
             Assert.AreEqual(HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess, expectation.ReplayProfile);
@@ -1592,6 +1598,9 @@ public sealed partial class InstallerFlowTests
     private sealed class InstallerProcessRunner(string imageId, string root, Guid instanceId) : IProcessRunner
     {
         public int ComposeUpCount { get; private set; }
+
+        /// <summary>The Compose file the last <c>compose up</c> started the instance from: the limits it now runs with.</summary>
+        public string? LastComposeUp { get; private set; }
 
         public int Invocations { get; private set; }
 
@@ -1762,7 +1771,8 @@ public sealed partial class InstallerFlowTests
             if (arguments.Contains("up", StringComparer.Ordinal))
             {
                 ComposeUpCount++;
-                return Success(string.Empty);
+                var file = arguments.ToList().IndexOf("--file");
+                return file >= 0 ? UpAsync(arguments[file + 1], cancellationToken) : Success(string.Empty);
             }
             Assert.Fail($"Unexpected process: {fileName} {string.Join(' ', arguments)}");
             return Success(string.Empty);
@@ -1773,6 +1783,12 @@ public sealed partial class InstallerFlowTests
 
         private static async Task<ProcessResult> RenderAsync(string composeFile, CancellationToken cancellationToken)
             => new(0, await File.ReadAllTextAsync(composeFile, cancellationToken), string.Empty);
+
+        private async Task<ProcessResult> UpAsync(string composeFile, CancellationToken cancellationToken)
+        {
+            LastComposeUp = await File.ReadAllTextAsync(composeFile, cancellationToken);
+            return new ProcessResult(0, string.Empty, string.Empty);
+        }
 
         private void CancelImport()
         {

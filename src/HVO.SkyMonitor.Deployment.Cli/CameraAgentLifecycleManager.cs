@@ -127,9 +127,15 @@ internal sealed partial class CameraAgentLifecycleManager
                 runtime.Running && (runnerRuntime?.Running ?? true),
                 runtime.Healthy && (runnerRuntime?.Healthy ?? true));
         }
-        SafeFileSystem.CreateOwnerDirectory(paths.OperationsRoot);
-        using var productLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
-        using var instanceLock = OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
+        // A plan creates nothing, not even the operations directory or a lock file: it takes the locks that exist, so it
+        // still reads what a command would, and none where there is none to take (#1315).
+        if (!request.DryRun) SafeFileSystem.CreateOwnerDirectory(paths.OperationsRoot);
+        using var productLock = request.DryRun
+            ? OperationLock.AcquireExisting(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken)
+            : OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
+        using var instanceLock = request.DryRun
+            ? OperationLock.AcquireExisting(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken)
+            : OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
         EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
         manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
         paths = paths.WithCatalog(manifest.Catalog.CatalogId);
@@ -658,11 +664,23 @@ internal sealed partial class CameraAgentLifecycleManager
         // Every boundary is proved before the snapshot, drain, stop, and Compose mutation begin, so an incompatible
         // upgrade or rollback never reaches a container restart loop.
         // This creates a missing bind source and normalizes an existing one to 0700, exactly as the committed
-        // mutation does, so a dry run evaluates the same sources. A linked or foreign-owned source still fails
+        // mutation does. A plan creates nothing: it checks each source the same way and evaluates the ones the command
+        // would create or normalize as the command leaves them (#1315). A linked or foreign-owned source still fails
         // closed here with its own path rather than reaching the consolidated report.
-        foreach (var directory in ComposeDeployment.WritableStateDirectories(paths.StateRoot))
+        HashSet<string>? preparedSources = null;
+        if (request.DryRun)
         {
-            SafeFileSystem.CreateRuntimeDirectory(directory, manifest.RuntimeUid, manifest.RuntimeGid);
+            preparedSources = new HashSet<string>(
+                ComposeDeployment.WritableStateDirectories(paths.StateRoot)
+                    .Where(directory => SafeFileSystem.CheckRuntimeDirectory(directory, manifest.RuntimeUid, manifest.RuntimeGid)),
+                StringComparer.Ordinal);
+        }
+        else
+        {
+            foreach (var directory in ComposeDeployment.WritableStateDirectories(paths.StateRoot))
+            {
+                SafeFileSystem.CreateRuntimeDirectory(directory, manifest.RuntimeUid, manifest.RuntimeGid);
+            }
         }
         await CameraAgentStatePreflight.EnsureCompatibleAsync(
             paths,
@@ -677,7 +695,8 @@ internal sealed partial class CameraAgentLifecycleManager
             cancellationToken,
             rollback ? CameraAgentStateContractPolicy.AllowLegacy : CameraAgentStateContractPolicy.RequireCurrent,
             signedImage?.Release.Tag,
-            preflightDatabases)
+            preflightDatabases,
+            preparedSources)
             .ConfigureAwait(false);
         // The preflight has proved the persisted state readable and within the candidate's boundaries, so what remains
         // is whether the candidate changes that state. An unchanged contract is a pure swap. A declared migration has
@@ -1683,6 +1702,8 @@ internal sealed partial class CameraAgentLifecycleManager
         InstanceManifest manifest,
         CancellationToken cancellationToken)
     {
+        // A plan meets the same journal gates as the command, and writes nothing (#1315).
+        var resumed = await AdmitAsync(request, paths, kind, manifest, cancellationToken).ConfigureAwait(false);
         if (request.DryRun)
         {
             var now = DateTimeOffset.UtcNow;
@@ -1699,6 +1720,33 @@ internal sealed partial class CameraAgentLifecycleManager
                 manifest.Image,
                 OriginalCatalog: manifest.Catalog);
         }
+        if (resumed is not null) return resumed;
+        var state = new LifecycleOperationState(
+            DeploymentSchemaVersions.LifecycleOperation,
+            Guid.NewGuid(),
+            kind,
+            manifest.InstanceId,
+            request.ComputeRequestSha256(),
+            LifecycleOperationPhase.Prepared,
+            InstallationStatus.Running,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            manifest.Image,
+            OriginalCatalog: manifest.Catalog);
+        return await RecordAsync(paths, state, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The journal gates every lifecycle command and its plan pass before anything changes, reading the journal only.
+    /// Returns the retained operation a <c>--resume</c> continues, or <see langword="null"/> for a fresh operation.
+    /// </summary>
+    private static async Task<LifecycleOperationState?> AdmitAsync(
+        LifecycleRequest request,
+        InstallationPaths paths,
+        LifecycleOperationKind kind,
+        InstanceManifest manifest,
+        CancellationToken cancellationToken)
+    {
         var existing = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
         var hash = request.ComputeRequestSha256();
         // A refused operation is terminal: it mutated nothing, so it neither blocks a new operation nor offers
@@ -1727,19 +1775,7 @@ internal sealed partial class CameraAgentLifecycleManager
             return existing;
         }
         if (request.Resume) throw InstallerException.Refused("No incomplete matching lifecycle operation exists.");
-        var state = new LifecycleOperationState(
-            DeploymentSchemaVersions.LifecycleOperation,
-            Guid.NewGuid(),
-            kind,
-            manifest.InstanceId,
-            hash,
-            LifecycleOperationPhase.Prepared,
-            InstallationStatus.Running,
-            DateTimeOffset.UtcNow,
-            DateTimeOffset.UtcNow,
-            manifest.Image,
-            OriginalCatalog: manifest.Catalog);
-        return await RecordAsync(paths, state, cancellationToken).ConfigureAwait(false);
+        return null;
     }
 
     internal static Task<LifecycleOperationState> CompleteAsync(

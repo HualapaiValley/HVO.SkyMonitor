@@ -14,9 +14,10 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 - `hvo-sky-install` follows the shared install contract's command surface. `--plan` (the new name of `--dry-run`)
   reports what install, a re-run of one, `upgrade`, `rollback`, `reinstall`, `uninstall` and `purge` would create,
-  change, leave unchanged or remove, and changes nothing. `cameraagent install --answers FILE` installs from a strict,
+  change, leave unchanged or remove, after the same checks the command makes, and writes nothing, not even a temporary
+  file or a lock. `cameraagent install --answers FILE` installs from a strict,
   versioned JSON answers file in which an unknown member is an error. Running an install again with the same answers
-  prints `Nothing to change`. (#1315)
+  prints `Nothing to change`, and writes and restarts nothing. (#1315)
 - The installer keeps a machine install record, `/etc/hvo-sky/install.json`: each instance's condition, images, URL
   and container limits, the release version it runs, the one before, and the one a rollback left, and no secret. The
   versions are read from the instance's own release records, which stay their only source. Every completed operation

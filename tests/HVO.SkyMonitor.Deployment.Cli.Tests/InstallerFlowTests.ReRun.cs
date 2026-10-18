@@ -141,8 +141,8 @@ public sealed partial class InstallerFlowTests
             Assert.AreEqual(manifest.ComposeModelSha256, result.ComposeModelSha256);
             Assert.AreNotEqual(first.ComposeModelSha256, result.ComposeModelSha256);
             Assert.AreEqual(state, await File.ReadAllTextAsync(statePath), "a re-run never moves a completed installation's state");
-            // The re-run verifies the instance at its recorded limits, then recreates it with the new ones.
-            Assert.AreEqual(composeUps + 2, runner.ComposeUpCount);
+            // The re-run verifies the instance where it stands, then recreates it once, with the new limits.
+            Assert.AreEqual(composeUps + 1, runner.ComposeUpCount);
             Assert.AreEqual(DeploymentPlanAction.Change, changed.Plan!.Items.Single(static item => item.Kind == "container").Action);
             var entry = (await InstallRecordStore.ReadAsync(InstallRecordLocation.For(root, request.ProductionProductRoot), CancellationToken.None))!
                 .Instances.Single();

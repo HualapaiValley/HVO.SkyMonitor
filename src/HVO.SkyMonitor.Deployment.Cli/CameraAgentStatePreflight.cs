@@ -128,7 +128,8 @@ internal static class CameraAgentStatePreflight
         uint gid,
         ContractReplayProfile replayProfile,
         CameraAgentStateContractPolicy contractPolicy = CameraAgentStateContractPolicy.RequireCurrent,
-        CameraAgentStateDatabaseView? databases = null)
+        CameraAgentStateDatabaseView? databases = null,
+        IReadOnlySet<string>? preparedSources = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(requirements);
@@ -138,7 +139,7 @@ internal static class CameraAgentStatePreflight
         EvaluateCatalog(findings, paths, requirements);
         EvaluateIdentityLineage(findings, databases.IdentityDatabasePath, requirements);
         EvaluateRawIngressSchema(findings, databases.RawIngressDatabasePath, requirements, contractPolicy);
-        EvaluateBindSources(findings, paths, uid, gid, replayProfile);
+        EvaluateBindSources(findings, paths, uid, gid, replayProfile, preparedSources);
         var compatible = !findings.Any(static finding => finding.Blocking);
         return new CameraAgentStatePreflightReport(
             SchemaVersion,
@@ -172,7 +173,8 @@ internal static class CameraAgentStatePreflight
         CancellationToken cancellationToken,
         CameraAgentStateContractPolicy contractPolicy = CameraAgentStateContractPolicy.RequireCurrent,
         string? candidateRelease = null,
-        CameraAgentStateDatabaseView? databases = null)
+        CameraAgentStateDatabaseView? databases = null,
+        IReadOnlySet<string>? preparedSources = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(candidate);
@@ -189,7 +191,8 @@ internal static class CameraAgentStatePreflight
             gid,
             replayProfile,
             contractPolicy,
-            databases: databases);
+            databases: databases,
+            preparedSources: preparedSources);
         var reportPath = Path.Combine(paths.DeploymentStateRoot, "state-preflight.json");
         if (persist)
         {
@@ -473,11 +476,18 @@ internal static class CameraAgentStatePreflight
         InstallationPaths paths,
         uint uid,
         uint gid,
-        ContractReplayProfile replayProfile)
+        ContractReplayProfile replayProfile,
+        IReadOnlySet<string>? preparedSources)
     {
         const string boundary = "bind-source";
         foreach (var source in CameraAgentStateLayout.WritableBindSources(paths.StateRoot, replayProfile))
         {
+            // A plan creates nothing: a source the command would create or set the mode of, which the plan has checked
+            // it can, is evaluated as the command leaves it.
+            if (preparedSources?.Contains(source.HostPath) == true)
+            {
+                continue;
+            }
             if (!Directory.Exists(source.HostPath))
             {
                 findings.Add(new CameraAgentStatePreflightFinding(

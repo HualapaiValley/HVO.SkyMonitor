@@ -66,6 +66,42 @@ internal static class CatalogInstaller
         }
     }
 
+    /// <summary>
+    /// The identity <see cref="Install"/> would give the bundle in <paramref name="installRoot"/>, read without writing
+    /// anything, for a plan (#1315). A version already installed there is validated as it is. Otherwise the bundle's
+    /// file set, package version and database bytes are checked against the approved specification's pins, which fix
+    /// every value the identity holds.
+    /// </summary>
+    public static CatalogInstallationIdentity Inspect(string bundlePath, string installRoot)
+    {
+        var specification = ProductionCatalog.ReadBundleSpecification(bundlePath);
+        ValidateBundleEntries(bundlePath, specification);
+        var packageVersion = ReadPackageVersion(bundlePath, specification);
+        if (Directory.Exists(Path.Combine(installRoot, "versions", packageVersion)))
+        {
+            return ValidateExisting(bundlePath, installRoot);
+        }
+        using (var database = SafeFileSystem.OpenRegularFileRead(Path.Combine(bundlePath, specification.DatabaseRelativePath)))
+        {
+            if (database.Length != specification.DatabaseLength ||
+                Convert.ToHexStringLower(SHA256.HashData(database)) != specification.DatabaseSha256)
+            {
+                throw new InstallerException("The catalog does not match the installer-pinned production identity.");
+            }
+        }
+        return new CatalogInstallationIdentity(
+            specification.CatalogId,
+            packageVersion,
+            specification.SchemaVersion,
+            specification.PreprocessingVersion,
+            specification.DatabaseSha256,
+            specification.DatabaseLength,
+            specification.RowCount,
+            installRoot,
+            Convert.ToHexStringLower(HashFile(Path.Combine(bundlePath, "manifest.json"))),
+            "local-offline");
+    }
+
     public static CatalogInstallationIdentity ValidateExisting(string bundlePath, string installRoot)
     {
         var specification = ProductionCatalog.ReadBundleSpecification(bundlePath);

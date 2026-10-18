@@ -61,14 +61,29 @@ installer cannot read before it pulls: each is decided before anything is import
 removed. A load or pull that Docker itself rejects is a failed step and exits `1`, even where an upgrade's journal
 settles it as refused so that it blocks no later operation.
 
+An install makes every check that can refuse before its first write, and a refusal
+there is never journaled. Once an install has written, it cannot say nothing changed:
+a check that stops it after that point, such as the state preflight a fresh install
+repeats once its configuration is written, is a failure (exit `1`) that is journaled
+so a re-run resumes it.
+
 ### Plan
 
-`--plan` is read-only and reports what the command would create, change, leave
-unchanged or remove. `--dry-run` is its older name and does the same. Install, its
-re-run, `cameraagent upgrade`, `rollback`, `reinstall`, `uninstall` and `purge`
-report a plan; `reset-state` and the catalog commands report their existing dry-run
-output. A plan that would be refused is not printed: the refusal is reported and the
-command exits `3`, so a printed plan can always be carried out.
+`--plan` reports what the command would create, change, leave unchanged or remove,
+and writes nothing anywhere: no file, folder or lock, and not even a temporary file.
+It renders the Compose files in memory, inspects the catalog bundle where it lies, and
+takes only the locks that already exist. `--dry-run` is its older name and does the
+same. Install, its re-run, `cameraagent upgrade`, `rollback`, `reinstall`, `uninstall`
+and `purge` report a plan; `reset-state` and the catalog commands report their
+existing dry-run output.
+
+A plan makes the same checks the command makes before it changes anything: host
+prerequisites, the host policy, the release, the answers against the installed
+instance, an unfinished lifecycle operation that demands `--resume`, and whether the
+instance's persisted state suits its image. A plan that would be refused is not
+printed: the refusal is reported and the command exits `3`, so a printed plan can be
+carried out. A fresh install's plan reports `composeModelSha256` as empty, because
+Docker renders a Compose model only from files.
 
 ```console
 $ hvo-sky-install cameraagent install --answers camera.json --memory 6g --plan
@@ -139,8 +154,15 @@ To convert a configuration file, add `"schemaVersion": 1` and remove `dryRun`,
 
 Running a completed install again with the same answers prints every item
 unchanged and `Nothing to change: the instance is installed as the answers
-describe.` It still validates the installed instance against its records and checks
-it is healthy, but writes no record.
+describe.` It validates the installed instance against its records and checks it is
+healthy, and then stops: it writes nothing, not even a file with the same content,
+and starts and restarts nothing.
+
+A re-run puts back whatever no longer matches the records: Compose files that differ
+from what the records describe are rewritten, a container that is not running healthy
+on the recorded image is started again, a result behind its manifest is repaired,
+and an install record behind the instance's records is settled. Each is listed as a
+change, in the plan as in the run.
 
 A re-run is held to the instance its records describe, not to the bytes of the first
 request: the camera name, owner email, bind address, port, product root, location,
@@ -445,14 +467,23 @@ The re-run first validates the instance at the limits it records and checks it i
 healthy. It then rewrites the Compose file with the new limits, Compose recreates
 the container, and the instance must come back healthy and verified. Only then are
 the instance manifest, the installation result and the
-[install record](#install-record) rewritten, in that order. If the recreated
-container does not come back healthy and verified, or the run is interrupted, the
-installer rewrites the Compose file with the recorded limits and recreates the
-container with them before it reports the failure (exit `1`, or `130` when
-interrupted); the records were not changed. The installation stays completed
-throughout, so re-running continues: a run interrupted after the manifest but before
-the result is finished by the next re-run, which rewrites the result to follow the
-manifest.
+[install record](#install-record) rewritten, in that order. The manifest is the
+change's commit point:
+
+- Until the manifest is written, anything that stops the change, an interruption
+  included, rewrites the Compose file with the recorded limits, recreates the
+  container with them and puts the recorded manifest back before the failure is
+  reported (exit `1`, or `130` when interrupted). The restore has its own four-minute
+  bound.
+- Once the manifest is written, the container and the instance's records agree on
+  the new limits. An interruption while the result or the install record is written
+  leaves them behind, and the next re-run settles them.
+- A power loss before the manifest is written, which leaves the container on the new
+  limits and the records on the old ones, is settled by the next re-run too: the
+  records decide, so a re-run that gives no limits puts the container back, and one
+  that gives the new limits finishes the change.
+
+The installation stays completed throughout.
 
 An instance installed before limits were recorded has no `resources` member. It
 runs the original 1 CPU, 1 GiB and 256 PID limits. No operator could set them,

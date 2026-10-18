@@ -208,10 +208,11 @@ public sealed class ProgramOutputTests
 
         Assert.AreEqual(2, config.ExitCode);
         Assert.AreEqual(string.Empty, config.Output);
-        Assert.AreEqual(
-            $"The installer configuration '{missing}' could not be read: Protected file '{missing}' could not be opened without following links.{Environment.NewLine}" +
-            Text(InstallUsage),
-            config.Error);
+        // The diagnostic line is bounded (Redaction.SafeDiagnostic), so a long temporary path is cut short, never wrapped.
+        var diagnostic = Redaction.SafeDiagnostic(
+            $"The installer configuration '{missing}' could not be read: Protected file '{missing}' could not be opened without following links.");
+        Assert.IsLessThanOrEqualTo(256, diagnostic.Length);
+        Assert.AreEqual(diagnostic + Environment.NewLine + Text(InstallUsage), config.Error);
         Assert.AreEqual(2, answers.ExitCode);
         StringAssert.StartsWith(answers.Error, $"The answers file '{missing}' could not be read: ", StringComparison.Ordinal);
     }

@@ -80,131 +80,64 @@ internal sealed partial class CameraAgentInstaller
     private static string DifferentImage(InstanceManifest manifest, ImageInstallationIdentity requested)
         => $"Instance {manifest.InstanceId:D} runs image {manifest.Image.ImageId}, not the requested {requested.ImageId}. A re-run keeps the image; change it with 'hvo-sky-install cameraagent upgrade --instance-id {manifest.InstanceId:D}', or re-run naming the image it runs.";
 
-    private static async Task<string?> ReadComposeIfPresentAsync(InstallationPaths paths, CancellationToken cancellationToken)
+    /// <summary>
+    /// A completed instance as a re-run finds it, read without changing anything: what the re-run and its plan both
+    /// check before anything changes, and what the re-run would change (#1315).
+    /// </summary>
+    internal sealed record CompletedInstance(
+        InstanceManifest Manifest,
+        InstallationResult Result,
+        InstallationPaths Paths,
+        CatalogInstallationIdentity Catalog,
+        ImageInstallationIdentity Image,
+        DockerDaemonIdentity Daemon,
+        Guid ApplicationIdentity,
+        string VerificationToken,
+        string LifecycleControlToken,
+        ComposeFiles Compose,
+        ContainerResourceLimits? Target,
+        bool LimitsChange,
+        bool FilesDiffer,
+        bool ContainerDown,
+        bool ResultModelStale,
+        InstallRecordLocation RecordLocation,
+        DeploymentPlanAction RecordAction)
     {
-        var path = Path.Combine(paths.ConfigRoot, "compose", "compose.yml");
-        if (!File.Exists(path))
-        {
-            return null;
-        }
-        await using var stream = SafeFileSystem.OpenOwnerFileRead(path);
-        using var reader = new StreamReader(stream);
-        return await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+        /// <summary>The container must be started again from Compose files written for <see cref="Target"/>.</summary>
+        public bool NeedsDeploy => LimitsChange || FilesDiffer || ContainerDown;
+
+        public bool HasChanges => NeedsDeploy || ResultModelStale || RecordAction != DeploymentPlanAction.Unchanged;
     }
 
     /// <summary>
-    /// Moves a completed, just verified instance to <paramref name="target"/> limits: the Compose file is rewritten with
-    /// them, Compose recreates the container, and the instance must come back healthy and verified. Anything that stops
-    /// that, an interruption included, rewrites the Compose file with the recorded limits and recreates the container
-    /// with them before the failure is reported, so a failed change leaves the instance as it was; the restore has its
-    /// own four-minute bound because the run's own cancellation may be what stopped the change. The caller writes the
-    /// manifest and the result only after this returns.
+    /// The checks a re-run of a completed installation and its plan share, all of which only read: the instance its
+    /// records describe must be the one the answers describe, its files and container must still be what its records
+    /// describe (rendered in memory and compared, never rendered into a temporary directory), and its persisted state
+    /// must suit its image. What differs from the records is reported as a change, so a re-run puts it back.
     /// </summary>
-    private static async Task<(ComposeFiles Compose, string ComposeModelSha256)> ChangeLimitsAsync(
-        InstallRequest request,
-        InstallationPaths paths,
-        Guid instanceId,
-        Guid applicationIdentity,
-        uint uid,
-        uint gid,
-        ImageInstallationIdentity image,
-        CatalogInstallationIdentity catalog,
-        string passwordPath,
-        string verificationToken,
-        string lifecycleControlToken,
-        ContainerResourceLimits? recorded,
-        ContainerResourceLimits target,
-        InstanceManifest manifest,
-        IOwnerBootstrapClient ownerClient,
-        DockerClient docker,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await DeployAsync(target, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception exception) when (exception is not OutOfMemoryException)
-        {
-            using var restore = new CancellationTokenSource(TimeSpan.FromMinutes(4));
-            try
-            {
-                _ = await DeployAsync(recorded, restore.Token).ConfigureAwait(false);
-            }
-            catch (Exception restoreException) when (restoreException is not OutOfMemoryException)
-            {
-                throw new InstallerException(
-                    $"Changing the container limits failed, and restoring the recorded limits also failed: {Redaction.SafeDiagnostic(restoreException.Message)} Re-run the same install to carry on.",
-                    exception);
-            }
-            if (exception is OperationCanceledException)
-            {
-                throw;
-            }
-            throw new InstallerException(
-                $"Changing the container limits to {CameraAgentContainerResources.Describe(target)} failed, so the recorded limits were restored: {Redaction.SafeDiagnostic(exception.Message)}",
-                exception);
-        }
-
-        async Task<(ComposeFiles, string)> DeployAsync(ContainerResourceLimits? limits, CancellationToken token)
-        {
-            var compose = ComposeDeployment.Write(
-                request,
-                paths,
-                instanceId,
-                applicationIdentity,
-                uid,
-                gid,
-                image.ImageId,
-                catalog.PackageVersion,
-                passwordPath,
-                verificationToken,
-                lifecycleControlToken,
-                passwordAuthorityEnabled: false,
-                limits);
-            var rendered = await docker.ComposeAsync(
-                compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName, ["config"], token).ConfigureAwait(false);
-            await docker.ComposeAsync(
-                    compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName, ["up", "--detach", "--remove-orphans"], token)
-                .ConfigureAwait(false);
-            await ownerClient.WaitForHealthAsync(ProductionCatalog.Get(catalog.CatalogId), token).ConfigureAwait(false);
-            await docker.VerifyContainerAsync(compose, paths, image, uid, gid, token).ConfigureAwait(false);
-            await ownerClient.VerifyInstallationAsync(
-                verificationToken,
-                new InstallationVerificationExpectation(
-                    applicationIdentity.ToString("D"),
-                    request.OwnerEmail,
-                    "owner-password-change-required",
-                    compose.ConfigurationSha256,
-                    compose.RigProfileSha256,
-                    compose.ScheduleSha256,
-                    $"installer-{instanceId:D}",
-                    manifest.DeploymentLocationVersion,
-                    manifest.DeploymentLocationSha256,
-                    (ContractReplayProfile)request.ReplayProfile,
-                    catalog,
-                    AllowCompletedPasswordReplacement: true),
-                token).ConfigureAwait(false);
-            return (compose, ComposeDeployment.ComputeSha256(rendered.StandardOutput));
-        }
-    }
-
-    /// <summary>
-    /// The plan of a re-run of a completed installation, read without changing anything: the same checks a re-run makes
-    /// before it changes anything, then what it would change. A re-run with the same answers changes nothing.
-    /// </summary>
-    private static async Task<InstallationResult> PlanReRunAsync(
+    private static async Task<CompletedInstance> AssessCompletedAsync(
         InstallRequest request,
         RetainedInstallation retained,
         InstallationPaths paths,
         Guid instanceId,
         DockerClient docker,
-        ReleaseImageSelection? releaseImage,
+        AcquiredImage? release,
         uint uid,
         uint gid,
         CancellationToken cancellationToken)
     {
         var manifest = retained.Manifest ?? throw new InstallerException("A completed installation requires its retained instance manifest.");
         var result = retained.Result ?? throw new InstallerException("A completed installation requires its retained installation result.");
+        if (manifest.Product != "HVO.SkyMonitor" ||
+            manifest.Component != DeploymentComponent.CameraAgent ||
+            manifest.InstanceId != instanceId ||
+            manifest.InstallationId != retained.State.InstallationId ||
+            manifest.ProductRoot != paths.ProductRoot ||
+            manifest.ConfigRoot != paths.ConfigRoot ||
+            manifest.StateRoot != paths.StateRoot)
+        {
+            throw new InstallerException("The retained instance manifest does not correlate with this installation.");
+        }
         if (manifest.LifecycleCondition == InstanceLifecycleCondition.Uninstalled)
         {
             throw InstallerException.Refused("A preserved uninstalled instance must be restored with cameraagent reinstall.");
@@ -221,12 +154,15 @@ internal sealed partial class CameraAgentInstaller
                 $"The instance uses catalog {manifest.Catalog.CatalogId} {manifest.Catalog.PackageVersion}, not the requested {catalog.CatalogId} {catalog.PackageVersion}; change it with catalog select.");
         }
         var effectiveRequest = await StageImageArchiveAsync(request, paths, allowMutation: false, cancellationToken).ConfigureAwait(false);
-        var (daemon, image) = await docker.PrepareImageAsync(effectiveRequest, allowMutation: false, releaseImage, cancellationToken)
+        var (daemon, image) = await docker.PrepareImageAsync(effectiveRequest, allowMutation: false, release?.Image, cancellationToken)
             .ConfigureAwait(false);
         if (image.ImageId != manifest.Image.ImageId)
         {
             throw InstallerException.Refused(DifferentImage(manifest, image));
         }
+        if (!IsValid(image, request.ReplayProfile))
+            throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
+        EnsureImageSupportsCatalog(image, catalog.CatalogId);
         if (request.ReplayProfile == CameraAgentReplayProfile.InProcess &&
             manifest.Image.ReplayRunnerContract is null && result.Image.ReplayRunnerContract is null)
         {
@@ -234,38 +170,320 @@ internal sealed partial class CameraAgentInstaller
         }
         var applicationIdentity = await GetOrCreateApplicationIdentityAsync(
             paths.ApplicationIdentityPath, allowCreation: false, cancellationToken).ConfigureAwait(false);
+        if (result.InstallationId != manifest.InstallationId || result.InstanceId != instanceId ||
+            result.ApplicationIdentity != applicationIdentity || manifest.ApplicationIdentity != applicationIdentity)
+        {
+            throw new InstallerException("The retained installation result does not correlate with this installation.");
+        }
         var verificationToken = await ReadOwnerSecretAsync(
             Path.Combine(paths.ConfigRoot, "installation-verification", "token"), cancellationToken).ConfigureAwait(false);
         var lifecycleControlToken = await ReadOwnerSecretAsync(
             Path.Combine(paths.ConfigRoot, "lifecycle-control", "token"), cancellationToken).ConfigureAwait(false);
-        var resultModelStale = await ValidateCompletedCandidateAsync(
-                request, paths, instanceId, manifest.InstallationId, applicationIdentity, uid, gid, result.PasswordFile,
-                verificationToken, lifecycleControlToken, catalog, image, daemon, manifest, result, manifest.Resources, docker,
-                cancellationToken)
+
+        // The files the records describe, rendered in memory. When the instance's files are those, Docker renders the
+        // model from them where they lie; when they are not, the records' model is the one a re-run puts back.
+        var recorded = ComposeDeployment.Render(
+            request, paths, instanceId, applicationIdentity, uid, gid, image.ImageId, catalog.PackageVersion, result.PasswordFile,
+            verificationToken, lifecycleControlToken, passwordAuthorityEnabled: false, manifest.Resources);
+        var filesMatch = ComposeDeployment.Matches(recorded, paths, instanceId, uid, gid);
+        var model = filesMatch
+            ? ComposeDeployment.ComputeSha256((await docker.ComposeAsync(
+                    recorded.Files.ComposeFile, recorded.Files.EnvironmentFile, recorded.Files.ProjectName, ["config"], cancellationToken)
+                .ConfigureAwait(false)).StandardOutput)
+            : manifest.ComposeModelSha256;
+        var candidate = CreateManifest(
+            request, paths, instanceId, manifest.InstallationId, applicationIdentity, uid, gid, verificationToken,
+            lifecycleControlToken, recorded.Files, model, catalog, image, daemon, manifest, manifest.Resources,
+            keepPreviousStateSnapshot: true);
+        if (candidate != manifest)
+        {
+            throw new InstallerException("The completed installation differs from its retained immutable manifest.");
+        }
+        var candidateResult = CreateInstalledResult(
+            request, paths, instanceId, manifest.InstallationId, applicationIdentity, uid, gid, result.PasswordFile, recorded.Files,
+            result.ComposeModelSha256, catalog, image, daemon, "owner-password-change-required", result.OwnerPasswordIsDefault,
+            result.CompletedUtc);
+        if (candidateResult != result)
+        {
+            throw new InstallerException("The completed installation differs from its retained result.");
+        }
+
+        // Persisted state is held to the image before anything changes, so its refusal changes nothing.
+        await CameraAgentStatePreflight.EnsureCompatibleAsync(
+                paths,
+                instanceId,
+                image,
+                manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility,
+                uid,
+                gid,
+                (ContractReplayProfile)request.ReplayProfile,
+                persist: false,
+                renderToStandardError: !request.Json,
+                cancellationToken,
+                CameraAgentStateContractPolicy.AllowLegacy,
+                release?.Release.Tag)
             .ConfigureAwait(false);
+
         var target = CameraAgentContainerResources.ReRunTarget(manifest.Resources, request.Cpus, request.Memory);
         var location = InstallRecordLocation.For(paths.ProductRoot, request.ProductionProductRoot);
         var record = await InstallRecordStore.ReadAsync(location, cancellationToken).ConfigureAwait(false);
         var existing = record?.Instances.FirstOrDefault(instance => instance.InstanceId == manifest.InstanceId);
-        var limitsChange = target != manifest.Resources;
         var entry = await InstallRecordStore.ProjectAsync(
                 paths, manifest with { Resources = target }, InstallRecordEvent.Install, existing, cancellationToken)
             .ConfigureAwait(false);
-        var recordAction = existing is null ? DeploymentPlanAction.Create
-            : existing.SameAs(entry) ? DeploymentPlanAction.Unchanged : DeploymentPlanAction.Change;
-        return result with
+        return new CompletedInstance(
+            manifest,
+            result,
+            paths,
+            catalog,
+            image,
+            daemon,
+            applicationIdentity,
+            verificationToken,
+            lifecycleControlToken,
+            recorded.Files,
+            target,
+            target != manifest.Resources,
+            !filesMatch,
+            !await RunsAsync(docker, recorded.Files, image, cancellationToken).ConfigureAwait(false),
+            result.ComposeModelSha256 != manifest.ComposeModelSha256,
+            location,
+            existing is null ? DeploymentPlanAction.Create
+            : existing.SameAs(entry) ? DeploymentPlanAction.Unchanged : DeploymentPlanAction.Change);
+    }
+
+    /// <summary>Whether every container of the instance is running, healthy, and on its image.</summary>
+    private static async Task<bool> RunsAsync(
+        DockerClient docker,
+        ComposeFiles compose,
+        ImageInstallationIdentity image,
+        CancellationToken cancellationToken)
+    {
+        foreach (var container in new[] { compose.ContainerName, compose.ReplayRunnerContainerName }.OfType<string>())
         {
-            Outcome = InstallationOutcome.Planned,
-            Plan = ReRunPlan(
-                paths,
-                manifest,
-                target,
-                await ReadComposeIfPresentAsync(paths, cancellationToken).ConfigureAwait(false),
-                limitsChange,
-                limitsChange || resultModelStale,
-                recordAction,
-                location)
-        };
+            var runtime = await docker.InspectContainerAsync(container, cancellationToken).ConfigureAwait(false);
+            if (!runtime.Exists || !runtime.Running || !runtime.Healthy || runtime.ImageId != image.ImageId)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>The plan of a re-run of a completed installation: its shared checks, then what it would change.</summary>
+    private static async Task<InstallationResult> PlanReRunAsync(
+        InstallRequest request,
+        RetainedInstallation retained,
+        InstallationPaths paths,
+        Guid instanceId,
+        DockerClient docker,
+        AcquiredImage? release,
+        uint uid,
+        uint gid,
+        IReadOnlyList<InstallationWarning> warnings,
+        CancellationToken cancellationToken)
+    {
+        var instance = await AssessCompletedAsync(request, retained, paths, instanceId, docker, release, uid, gid, cancellationToken)
+            .ConfigureAwait(false);
+        return instance.Result with { Outcome = InstallationOutcome.Planned, Warnings = warnings, Plan = ReRunPlan(instance) };
+    }
+
+    /// <summary>
+    /// Re-runs a completed installation. After the shared checks it verifies the instance where it stands; with nothing
+    /// to change it returns there, having written nothing and started nothing. Otherwise it changes only what differs
+    /// from the answers: the container and its Compose files, then the manifest, the result and the install record.
+    /// </summary>
+    private static async Task<InstallationResult> ReRunAsync(
+        InstallRequest request,
+        InstallationPaths paths,
+        Guid instanceId,
+        DockerClient docker,
+        AcquiredImage? release,
+        DockerDaemonIdentity preflightDaemon,
+        IReadOnlyList<InstallationWarning> warnings,
+        uint uid,
+        uint gid,
+        Func<Uri, IOwnerBootstrapClient> ownerClientFactory,
+        CancellationToken cancellationToken)
+    {
+        // A completed instance already has its folders and locks, so a re-run prepares nothing.
+        using var productLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
+        using var instanceLock = OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
+        var retained = await ReadRetainedAsync(paths, cancellationToken).ConfigureAwait(false);
+        if (retained is not { Completed: true })
+        {
+            throw new InstallerException("The installation changed while this re-run was starting; run it again.");
+        }
+        EnsureInstanceRootCanBeOwned(paths, hasState: true);
+        var instance = await AssessCompletedAsync(request, retained, paths, instanceId, docker, release, uid, gid, cancellationToken)
+            .ConfigureAwait(false);
+        if (instance.Daemon != preflightDaemon)
+        {
+            throw new InstallerException("The Docker daemon identity changed after preflight.");
+        }
+        paths = instance.Paths;
+        var owner = ownerClientFactory(PublicUri(request));
+        // An instance whose files and container are what its records describe is verified where it stands before
+        // anything changes, a limits change included.
+        if (!instance.FilesDiffer && !instance.ContainerDown)
+        {
+            await VerifyAsync(request, instance, instance.Compose, owner, docker, uid, gid, cancellationToken).ConfigureAwait(false);
+        }
+        if (!instance.HasChanges)
+        {
+            return instance.Result with { Warnings = warnings, Plan = ReRunPlan(instance) };
+        }
+
+        var manifest = instance.Manifest;
+        if (instance.NeedsDeploy)
+        {
+            manifest = await ChangeContainerAsync(request, instance, owner, docker, uid, gid, cancellationToken).ConfigureAwait(false);
+        }
+        // The result follows the manifest's Compose model: after a limits change, or once the repair of a result an
+        // interrupted change left behind its manifest.
+        var result = instance.Result with { ComposeModelSha256 = manifest.ComposeModelSha256 };
+        if (result != instance.Result)
+        {
+            await SafeFileSystem.WriteJsonAtomicAsync(
+                paths.ResultPath, result, DeploymentJsonContext.Default.InstallationResult, cancellationToken).ConfigureAwait(false);
+        }
+        StepCompleted("limits-result-written");
+        // The install record is a view of the instance's own records, so an interruption here leaves those agreeing
+        // with the container and the next run settles the view.
+        cancellationToken.ThrowIfCancellationRequested();
+        var recordAction = await InstallRecordStore.SettleInstanceAsync(
+                instance.RecordLocation, paths, manifest, InstallRecordEvent.Install, cancellationToken)
+            .ConfigureAwait(false);
+        return result with { Warnings = warnings, Plan = ReRunPlan(instance, recordAction) };
+    }
+
+    /// <summary>
+    /// Starts the instance again from Compose files written for its target limits, verifies it there, and records the
+    /// new limits in the manifest, which is the change's commit point. Until the manifest is written, anything that
+    /// stops the change, an interruption included, puts the recorded limits back on the container and the recorded
+    /// manifest back on disk before the failure is reported; the restore has its own four-minute bound because the run's
+    /// own cancellation may be what stopped the change. After the commit an interruption leaves the container and the
+    /// manifest agreeing, and the next run settles the result and the install record. With no limits to change the
+    /// container is put back to what its records describe, which must give the recorded model.
+    /// </summary>
+    private static async Task<InstanceManifest> ChangeContainerAsync(
+        InstallRequest request,
+        CompletedInstance instance,
+        IOwnerBootstrapClient owner,
+        DockerClient docker,
+        uint uid,
+        uint gid,
+        CancellationToken cancellationToken)
+    {
+        var recorded = instance.Manifest;
+        var committed = false;
+        try
+        {
+            var model = await DeployAsync(instance.Target, cancellationToken).ConfigureAwait(false);
+            StepCompleted("limits-verified");
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!instance.LimitsChange)
+            {
+                return model == recorded.ComposeModelSha256
+                    ? recorded
+                    : throw new InstallerException("The completed installation differs from its retained immutable manifest.");
+            }
+            var changed = recorded with
+            {
+                Resources = instance.Target,
+                ComposeModelSha256 = model,
+                UpdatedUtc = DateTimeOffset.UtcNow
+            };
+            await SafeFileSystem.WriteJsonAtomicAsync(
+                instance.Paths.ManifestPath, changed, DeploymentJsonContext.Default.InstanceManifest, cancellationToken).ConfigureAwait(false);
+            committed = true;
+            StepCompleted("limits-manifest-written");
+            return changed;
+        }
+        catch (Exception exception) when (instance.LimitsChange && !committed && exception is not OutOfMemoryException)
+        {
+            using var restore = new CancellationTokenSource(TimeSpan.FromMinutes(4));
+            try
+            {
+                _ = await DeployAsync(recorded.Resources, restore.Token).ConfigureAwait(false);
+                // An interruption can land after the manifest was replaced and before the commit was seen.
+                if (await ReadManifestAsync(instance.Paths.ManifestPath, restore.Token).ConfigureAwait(false) != recorded)
+                {
+                    await SafeFileSystem.WriteJsonAtomicAsync(
+                        instance.Paths.ManifestPath, recorded, DeploymentJsonContext.Default.InstanceManifest, restore.Token).ConfigureAwait(false);
+                }
+            }
+            catch (Exception restoreException) when (restoreException is not OutOfMemoryException)
+            {
+                throw new InstallerException(
+                    $"Changing the container limits failed, and restoring the recorded limits also failed: {Redaction.SafeDiagnostic(restoreException.Message)} Re-run the same install to carry on.",
+                    exception);
+            }
+            if (exception is OperationCanceledException)
+            {
+                throw;
+            }
+            throw new InstallerException(
+                $"Changing the container limits to {CameraAgentContainerResources.Describe(instance.Target!)} failed, so the recorded limits were restored: {Redaction.SafeDiagnostic(exception.Message)}",
+                exception);
+        }
+
+        async Task<string> DeployAsync(ContainerResourceLimits? limits, CancellationToken token)
+        {
+            var compose = ComposeDeployment.Write(
+                request,
+                instance.Paths,
+                recorded.InstanceId,
+                instance.ApplicationIdentity,
+                uid,
+                gid,
+                instance.Image.ImageId,
+                instance.Catalog.PackageVersion,
+                instance.Result.PasswordFile,
+                instance.VerificationToken,
+                instance.LifecycleControlToken,
+                passwordAuthorityEnabled: false,
+                limits);
+            var rendered = await docker.ComposeAsync(
+                compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName, ["config"], token).ConfigureAwait(false);
+            await docker.ComposeAsync(
+                    compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName, ["up", "--detach", "--remove-orphans"], token)
+                .ConfigureAwait(false);
+            await VerifyAsync(request, instance, compose, owner, docker, uid, gid, token).ConfigureAwait(false);
+            return ComposeDeployment.ComputeSha256(rendered.StandardOutput);
+        }
+    }
+
+    /// <summary>Waits for the instance to be healthy and verifies its container and its installation identity.</summary>
+    private static async Task VerifyAsync(
+        InstallRequest request,
+        CompletedInstance instance,
+        ComposeFiles compose,
+        IOwnerBootstrapClient owner,
+        DockerClient docker,
+        uint uid,
+        uint gid,
+        CancellationToken cancellationToken)
+    {
+        await owner.WaitForHealthAsync(ProductionCatalog.Get(instance.Catalog.CatalogId), cancellationToken).ConfigureAwait(false);
+        await docker.VerifyContainerAsync(compose, instance.Paths, instance.Image, uid, gid, cancellationToken).ConfigureAwait(false);
+        await owner.VerifyInstallationAsync(
+                instance.VerificationToken,
+                new InstallationVerificationExpectation(
+                    instance.ApplicationIdentity.ToString("D"),
+                    request.OwnerEmail,
+                    "owner-password-change-required",
+                    compose.ConfigurationSha256,
+                    compose.RigProfileSha256,
+                    compose.ScheduleSha256,
+                    $"installer-{instance.Manifest.InstanceId:D}",
+                    instance.Manifest.DeploymentLocationVersion,
+                    instance.Manifest.DeploymentLocationSha256,
+                    (ContractReplayProfile)request.ReplayProfile,
+                    instance.Catalog,
+                    AllowCompletedPasswordReplacement: true),
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>What was already there when a fresh install, or the resumption of one, began.</summary>
@@ -324,36 +542,32 @@ internal sealed partial class CameraAgentInstaller
 
     /// <summary>
     /// What a re-run of a completed installation changes: with the same answers nothing, otherwise the container's limits,
-    /// which rewrite the Compose model, recreate the container and update the manifest and the install record.
+    /// which rewrite the Compose model, recreate the container and update the manifest and the install record; and
+    /// whatever no longer matches the records, which the re-run puts back.
     /// </summary>
-    private static DeploymentPlan ReRunPlan(
-        InstallationPaths paths,
-        InstanceManifest manifest,
-        ContainerResourceLimits? target,
-        string? composeBefore,
-        bool manifestChanges,
-        bool resultChanges,
-        DeploymentPlanAction recordAction,
-        InstallRecordLocation record)
+    private static DeploymentPlan ReRunPlan(CompletedInstance instance, DeploymentPlanAction? recordAction = null)
     {
-        var applied = composeBefore is null ? null : CameraAgentContainerResources.TryReadLimits(composeBefore);
-        var targetLimits = target ?? CameraAgentContainerResources.Legacy;
-        var containerChanges = applied is null || !CameraAgentContainerResources.SameLimits(applied, targetLimits);
-        var limits = DescribeLimits(target);
+        var paths = instance.Paths;
+        var manifest = instance.Manifest;
+        var limits = DescribeLimits(instance.Target);
+        var filesChange = instance.LimitsChange || instance.FilesDiffer;
+        var resultChanges = instance.LimitsChange || instance.ResultModelStale;
         var compose = Path.Combine(paths.ConfigRoot, "compose", "compose.yml");
         var container = $"hvo-skymonitor-{manifest.InstanceId:N}";
         return DeploymentPlan.Of(
             [
                 new(DeploymentPlanAction.Unchanged, "folder", paths.InstanceRoot, "instance"),
-                new(containerChanges ? DeploymentPlanAction.Change : DeploymentPlanAction.Unchanged, "file", compose,
-                    containerChanges ? $"Compose model, {limits}" : "Compose model"),
-                new(manifestChanges ? DeploymentPlanAction.Change : DeploymentPlanAction.Unchanged, "file", paths.ManifestPath,
-                    manifestChanges ? $"instance manifest, {limits}" : "instance manifest"),
+                new(filesChange ? DeploymentPlanAction.Change : DeploymentPlanAction.Unchanged, "file", compose,
+                    filesChange ? $"Compose model, {limits}" : "Compose model"),
+                new(instance.LimitsChange ? DeploymentPlanAction.Change : DeploymentPlanAction.Unchanged, "file", paths.ManifestPath,
+                    instance.LimitsChange ? $"instance manifest, {limits}" : "instance manifest"),
                 new(resultChanges ? DeploymentPlanAction.Change : DeploymentPlanAction.Unchanged, "file", paths.ResultPath,
                     resultChanges ? "installation result, its Compose model" : "installation result"),
-                new(containerChanges ? DeploymentPlanAction.Change : DeploymentPlanAction.Unchanged, "container", container,
-                    containerChanges ? $"recreated with {limits}" : $"image {manifest.Image.ImageId}, {limits}"),
-                new(recordAction, "record", record.Path, $"instance {manifest.InstanceId:D}")
+                new(instance.NeedsDeploy ? DeploymentPlanAction.Change : DeploymentPlanAction.Unchanged, "container", container,
+                    instance.NeedsDeploy
+                        ? filesChange ? $"recreated with {limits}" : $"started, {limits}"
+                        : $"image {manifest.Image.ImageId}, {limits}"),
+                new(recordAction ?? instance.RecordAction, "record", instance.RecordLocation.Path, $"instance {manifest.InstanceId:D}")
             ],
             "the instance is installed as the answers describe");
     }
