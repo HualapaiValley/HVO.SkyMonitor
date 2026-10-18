@@ -289,6 +289,27 @@ public sealed partial class LifecycleContractTests
         var credentials = Events(restoreErrors.ToString(), LifecycleCredentialsRestoredEvent.Name).Single();
         StringAssert.Contains(credentials.RootElement.GetProperty("warning").GetString()!, RevokedKey, StringComparison.Ordinal);
         Assert.IsNotEmpty(Events(restoreErrors.ToString(), LifecycleBackupProgressEvent.Name), "the restore's verification and extraction report progress too");
+        // The results as --json prints them carry what was backed up and what was restored.
+        using var backupResult = System.Text.Json.JsonDocument.Parse(
+            System.Text.Json.JsonSerializer.Serialize(backup, DeploymentJsonContext.Default.LifecycleResult));
+        var archive = backupResult.RootElement.GetProperty("backup");
+        Assert.AreEqual(backup.Backup.Archive, archive.GetProperty("archive").GetString());
+        StringAssert.EndsWith(archive.GetProperty("path").GetString()!, backup.Backup.Archive, StringComparison.Ordinal);
+        Assert.AreEqual(64, archive.GetProperty("archiveSha256").GetString()!.Length);
+        Assert.IsGreaterThan(0L, archive.GetProperty("archiveBytes").GetInt64());
+        Assert.IsGreaterThan(0L, archive.GetProperty("totalBytes").GetInt64());
+        Assert.IsGreaterThan(0, archive.GetProperty("entries").GetInt32());
+        Assert.AreEqual(backup.Backup.CreatedUtc, archive.GetProperty("createdUtc").GetDateTimeOffset());
+        using var restoreResult = System.Text.Json.JsonDocument.Parse(
+            System.Text.Json.JsonSerializer.Serialize(restored, DeploymentJsonContext.Default.LifecycleResult));
+        var restore = restoreResult.RootElement.GetProperty("restore");
+        Assert.AreEqual(backup.Backup.Archive, restore.GetProperty("archive").GetString());
+        Assert.AreEqual(backup.Backup.CreatedUtc, restore.GetProperty("backupCreatedUtc").GetDateTimeOffset());
+        Assert.AreEqual(backup.OperationId, restore.GetProperty("backupOperationId").GetGuid());
+        Assert.AreEqual(1, restore.GetProperty("apiKeysRevoked").GetInt32());
+        Assert.AreEqual(0, restore.GetProperty("accountsReset").GetInt32());
+        Assert.AreEqual(0, restore.GetProperty("authorityRevoked").GetInt32());
+        Assert.IsFalse(restore.GetProperty("noLiveCredentialStore").GetBoolean());
 
         static List<System.Text.Json.JsonDocument> Events(string text, string name)
             => [.. text.Split('\n', StringSplitOptions.RemoveEmptyEntries)
