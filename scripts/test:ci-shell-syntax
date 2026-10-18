@@ -171,7 +171,7 @@ fi
 
 # Non-shell files that live beside the scripts must not be dragged in: bash -n over a Python
 # or jq file would fail for a reason that has nothing to do with shell syntax.
-for excluded in scripts/lib/atomic-directory-publish.py; do
+for excluded in scripts/lib/atomic-directory-publish.py scripts/lib/assembly-identity.fsx; do
     cases=$((cases + 1))
     if grep -qxF "$excluded" <<<"$discovered"; then
         failures=$((failures + 1))
