@@ -169,21 +169,38 @@ which keep their own codes. Without `--json` a refusal reads
 
 Every refusal under [Release Install](#release-install) exits `3`, including a registry the
 installer cannot read before it pulls: each is decided before anything is imported, or after an import that is then
-removed. A load or pull that Docker itself rejects is a failed step and exits `1`, even where an upgrade's journal
-settles it as refused so that it blocks no later operation.
+removed. A load or pull that Docker itself rejects is a failed step and exits `1`. An upgrade loads an offline
+archive after its journal entry, so a loaded image that is not the release's is refused there: the journal settles
+it as refused, so it blocks no later operation, and it exits `1` (see below).
 
-An install makes every check that can refuse before its first write, and a refusal
-there is never journaled. Once an install has written, it cannot say nothing changed:
-a check that stops it after that point, such as the state preflight a fresh install
-repeats once its configuration is written, is a failure (exit `1`) that is journaled
-so a re-run resumes it.
+Every command makes each check that can refuse before its first write, and a refusal
+there is never journaled:
+
+- An install decides the host, the release, the answers against the installed
+  instance, the catalog bundle and the persisted state before it prepares anything.
+- A lifecycle command decides, before it takes a lock or writes its journal, the
+  instance's condition, a rollback with no previous image, an older release, an
+  unfinished operation that demands `--resume`, the purge gates, and for an upgrade
+  whose candidate is known without importing it (the image Docker holds, or a
+  release's image read from its archive or registry), the already-active and
+  state-contract checks and the state preflight. A registry release image is pulled
+  at that point, before any lock, and removed again if it is refused.
+
+Once a command has written, it cannot say nothing changed: a check that stops it
+after that point is a failure (exit `1`), journaled so that a re-run or `--resume`
+continues. Examples are the state preflight a fresh install repeats once its
+configuration is written, and an upgrade candidate that is only known once it is
+pulled after the journal entry.
 
 ### Plan
 
 `--plan` reports what the command would create, change, leave unchanged or remove,
-and writes nothing anywhere: no file, folder or lock, and not even a temporary file.
-It renders the Compose files in memory, inspects the catalog bundle where it lies, and
-takes only the locks that already exist. `--dry-run` is its older name and does the
+and writes nothing of the product's: no file, folder, lock or Compose file. It renders
+the Compose files in memory, admits the catalog bundle where it lies, and takes only
+the locks that already exist. One read needs scratch space: the state preflight reads
+a database it catches with an uncommitted transaction (a hot rollback journal)
+through a private temporary copy in `TMPDIR`, because SQLite cannot read such a
+database safely in place, and removes the copy when it is done. `--dry-run` is its older name and does the
 same. Install, its re-run, `cameraagent upgrade`, `rollback`, `reinstall`, `uninstall`
 and `purge` report a plan; `reset-state` and the catalog commands report their
 existing dry-run output.

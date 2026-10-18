@@ -76,7 +76,8 @@ internal static class CommandLine
         Lifecycle("status"),
         new(["cameraagent", "install"], null, [.. AnswersValueOptions, .. InstallValueOptions], InstallFlags,
             "--answers reads the install from a JSON answers file with \"schemaVersion\": 1; only --cpus, --memory, --release, --image-source, --catalog-bundle and --no-download may accompany it. " +
-            "--config is its deprecated predecessor and cannot be combined with the other value options. --plan is --dry-run."),
+            "--config is its deprecated predecessor and cannot be combined with the other value options. --plan is --dry-run. " +
+            PlanScratchNote),
         new(["cameraagent", "recover-owner"], null, OwnerRecoveryValueOptions, OwnerRecoveryFlags),
         new(["cameraagent", "preflight"], null, StatePreflightValueOptions, StatePreflightFlags),
         new(["cameraagent", "reset-state"], null, StateResetValueOptions, StateResetFlags),
@@ -95,7 +96,15 @@ internal static class CommandLine
     private static CommandDefinition Lifecycle(params string[] path)
         => new(path, null, LifecycleValueOptions, LifecycleFlags,
             "These options are shared with the other lifecycle commands; not every one applies to this command. " +
-            "--plan is --dry-run. --migration-backward-compatible is deprecated and has no effect.");
+            "--plan is --dry-run. " + PlanScratchNote + " --migration-backward-compatible is deprecated and has no effect.");
+
+    /// <summary>
+    /// What a plan leaves on disk (#1315): nothing of the product's. The state preflight reads a database caught with an
+    /// uncommitted transaction through a private temporary copy, because SQLite cannot read it safely in place, and
+    /// removes the copy.
+    /// </summary>
+    private const string PlanScratchNote =
+        "A plan writes no product file, lock or Compose file; a database caught mid-transaction is read through a private temporary copy that is removed.";
 
     /// <summary>
     /// The one place a non-production product root can be admitted. The variable is read here, where the

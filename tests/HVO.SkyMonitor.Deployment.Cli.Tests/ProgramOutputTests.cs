@@ -75,7 +75,7 @@ public sealed class ProgramOutputTests
           --no-download
           -h, --help
 
-        --answers reads the install from a JSON answers file with "schemaVersion": 1; only --cpus, --memory, --release, --image-source, --catalog-bundle and --no-download may accompany it. --config is its deprecated predecessor and cannot be combined with the other value options. --plan is --dry-run.
+        --answers reads the install from a JSON answers file with "schemaVersion": 1; only --cpus, --memory, --release, --image-source, --catalog-bundle and --no-download may accompany it. --config is its deprecated predecessor and cannot be combined with the other value options. --plan is --dry-run. A plan writes no product file, lock or Compose file; a database caught mid-transaction is read through a private temporary copy that is removed.
         """;
 
     private const string HostSetProductRootUsage = """
@@ -225,6 +225,7 @@ public sealed class ProgramOutputTests
         Assert.AreEqual(0, exitCode);
         StringAssert.Contains(output, "  --plan" + Environment.NewLine, StringComparison.Ordinal);
         StringAssert.Contains(output, "--migration-backward-compatible is deprecated and has no effect.", StringComparison.Ordinal);
+        StringAssert.Contains(output, "A plan writes no product file, lock or Compose file; a database caught mid-transaction is read through a private temporary copy that is removed.", StringComparison.Ordinal);
     }
 
     private static string Text(string usage) => usage.ReplaceLineEndings() + Environment.NewLine;

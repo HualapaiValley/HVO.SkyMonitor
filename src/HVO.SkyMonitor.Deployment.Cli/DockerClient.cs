@@ -24,7 +24,14 @@ internal sealed class DockerClient(IProcessRunner processRunner)
 {
     private string? endpoint;
 
-    internal sealed record ContainerRuntimeIdentity(bool Exists, bool Running, bool Healthy, string? ImageId);
+    internal sealed record ContainerRuntimeIdentity(bool Exists, bool Running, bool Healthy, string? ImageId)
+    {
+        /// <summary>
+        /// The CPU, memory and PID limits Docker enforces on the container, as its <c>HostConfig</c> reports them, or
+        /// <see langword="null"/> when it reports none of them. Docker reports an unset limit as zero.
+        /// </summary>
+        public ContainerResourceLimits? Limits { get; init; }
+    }
     public async Task<DockerDaemonIdentity> PreflightAsync(CancellationToken cancellationToken)
     {
         var identity = await ReadDaemonIdentityAsync(cancellationToken).ConfigureAwait(false);
@@ -320,6 +327,26 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                 $"The CameraAgent image Docker resolved is not labelled as CameraAgent {release.Version} from commit " +
                 $"{release.Commit}, as release {release.ReleaseTag} requires.");
         }
+    }
+
+    /// <summary>The limits a container's <c>HostConfig</c> imposes, or null when it reports none of them.</summary>
+    private static ContainerResourceLimits? ReadLimits(JsonElement host)
+    {
+        static long Read(JsonElement host, string name)
+            => host.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var number)
+                ? number
+                : 0;
+        if (!host.TryGetProperty("NanoCpus", out _) && !host.TryGetProperty("Memory", out _) && !host.TryGetProperty("PidsLimit", out _))
+        {
+            return null;
+        }
+        var pids = Read(host, "PidsLimit");
+        return new ContainerResourceLimits(
+            Read(host, "NanoCpus") / 1_000_000_000m,
+            Read(host, "Memory"),
+            pids is > 0 and <= int.MaxValue ? (int)pids : 0,
+            false,
+            false);
     }
 
     private async Task<ProcessResult?> TryInspectImageAsync(string reference, CancellationToken cancellationToken)
@@ -620,7 +647,10 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             true,
             state.GetProperty("Running").GetBoolean(),
             healthy,
-            container.GetProperty("Image").GetString());
+            container.GetProperty("Image").GetString())
+        {
+            Limits = container.TryGetProperty("HostConfig", out var host) ? ReadLimits(host) : null
+        };
     }
 
     public async Task EnsureNoInstanceReferencesAsync(

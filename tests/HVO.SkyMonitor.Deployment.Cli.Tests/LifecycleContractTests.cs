@@ -1430,7 +1430,8 @@ public sealed partial class LifecycleContractTests
 
         StringAssert.Contains(exception.Message, $"is not labelled as CameraAgent {release.Version}", StringComparison.Ordinal);
         Assert.AreEqual(0, lifecycle.PauseCount);
-        Assert.IsTrue(exception.IsRefusal, "the load is removed and the journal settled as refused, so it is a refusal (exit 3)");
+        // The load runs after the journal entry, so the refusal is settled in the journal and is a failure (exit 1) (#1315).
+        Assert.IsFalse(exception.IsRefusal, "refused after the journal entry, so a journaled failure (exit 1)");
         Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
         Assert.AreEqual(manifestBefore, await File.ReadAllTextAsync(fixture.Paths.ManifestPath));
         Assert.IsFalse(File.Exists(evidencePath), "A refused release wrote a release record.");
@@ -1499,8 +1500,9 @@ public sealed partial class LifecycleContractTests
             fixture.Uid, fixture.Gid, CancellationToken.None);
         Assert.AreEqual("completed", upgraded.Outcome);
 
-        // Upgrading to the image that is already active is refused after the journal is opened and before any
-        // mutation, the same window the label-agreement gate occupies.
+        // Upgrading to the image that is already active is refused before anything is written, so the journal still
+        // holds the completed upgrade (#1315).
+        var journal = await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath);
         var refused = fixture.Request(LifecycleOperationKind.Upgrade) with
         {
             ImageReference = candidateReference,
@@ -1511,10 +1513,8 @@ public sealed partial class LifecycleContractTests
             refused, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None));
         StringAssert.Contains(exception.Message, "already active", StringComparison.Ordinal);
-        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
-        Assert.AreEqual(InstallationStatus.Failed, retained!.Status);
-        Assert.AreEqual(CameraAgentLifecycleManager.RefusedFailureCode, retained.FailureCode);
-        Assert.IsFalse(retained.MutationStarted);
+        Assert.IsTrue(exception.IsRefusal);
+        Assert.AreEqual(journal, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
         Assert.AreEqual(1, lifecycle.PauseCount);
 
         var rolledBack = await CameraAgentLifecycleManager.ExecuteAsync(
@@ -1542,11 +1542,12 @@ public sealed partial class LifecycleContractTests
             NoDownload = true,
             MigrationBackwardCompatible = true
         };
-        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+        var refusal = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
             refused, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None));
-        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
-        Assert.AreEqual(CameraAgentLifecycleManager.RefusedFailureCode, retained!.FailureCode);
+        // Refused before anything is written: no journal entry is left to block the uninstall (#1315).
+        Assert.IsTrue(refusal.IsRefusal);
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath));
 
         var uninstalled = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.Uninstall), fixture.Runner, _ => lifecycle, null,
@@ -1768,7 +1769,13 @@ public sealed partial class LifecycleContractTests
         var candidateImageId = $"sha256:{new string('5', 64)}";
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             candidateReference, candidateImageId, fixture.Uid, fixture.Gid);
-        fixture.Runner.OnCandidateInspect = () => throw new OperationCanceledException("simulated cancellation during preparation");
+        // The admission before any write inspects the candidate first; the cancellation lands on the preparation's own
+        // inspection, after the journal entry and before any mutation.
+        var inspections = 0;
+        fixture.Runner.OnCandidateInspect = () =>
+        {
+            if (++inspections == 2) throw new OperationCanceledException("simulated cancellation during preparation");
+        };
         var lifecycle = new FakeLifecycleClient();
         var request = fixture.Request(LifecycleOperationKind.Upgrade) with
         {

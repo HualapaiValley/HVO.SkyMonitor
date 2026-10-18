@@ -100,11 +100,11 @@ internal sealed partial class CameraAgentInstaller
         {
             throw new InstallerException("No resumable installation state exists for --instance-id.");
         }
-        // A run that installs the catalog first proves the bundle in a scratch root; a plan inspects it where it lies,
-        // and a re-run validates the version the instance already has, so neither writes anything.
-        if (!request.DryRun && retained is not { Completed: true })
+        // The catalog bundle is admitted where it lies, completely and read-only, by a run and its plan alike; a re-run
+        // validates the version the instance already has (#1315).
+        if (retained is not { Completed: true })
         {
-            ValidateCatalogInput(request.CatalogBundle!);
+            _ = CatalogInstaller.Admit(request.CatalogBundle!, paths.ProductRoot);
         }
         // The bundle's approved specification selects the side-by-side catalog root this instance installs into.
         var catalogId = ProductionCatalog.ReadBundleSpecification(request.CatalogBundle!).CatalogId;
@@ -1131,22 +1131,6 @@ internal sealed partial class CameraAgentInstaller
             throw new InstallerException("The CameraAgent image cannot resolve the selected catalog.");
     }
 
-    private static void ValidateCatalogInput(string bundlePath)
-    {
-        var temporaryRoot = Path.Combine(Path.GetTempPath(), $"hvo-installer-catalog-preflight-{Guid.NewGuid():N}");
-        try
-        {
-            _ = CatalogInstaller.Install(bundlePath, temporaryRoot, Guid.NewGuid());
-        }
-        finally
-        {
-            if (Directory.Exists(temporaryRoot))
-            {
-                SafeFileSystem.MakeTreeOwnerWritable(temporaryRoot);
-                Directory.Delete(temporaryRoot, recursive: true);
-            }
-        }
-    }
 
     /// <summary>
     /// The identity of an install request, which a re-run or a resume must match. A release install binds the release

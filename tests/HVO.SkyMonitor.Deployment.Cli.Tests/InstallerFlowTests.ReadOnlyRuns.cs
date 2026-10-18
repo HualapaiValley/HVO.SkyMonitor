@@ -337,6 +337,101 @@ public sealed partial class InstallerFlowTests
         }
     }
 
+    /// <summary>
+    /// A limits change whose verification fails, and whose restore Docker then fails, leaves the container on the new
+    /// limits while the manifest and the Compose file hold the old ones (#1315 PR-1355-R2 R2-4). The next plan and run
+    /// read the limits the container actually has, report the difference, and redeploy it from the records.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstallAsync_LimitsChangeWhoseRestoreFails_IsRedeployedFromTheRecordsByTheNextRun()
+    {
+        var bundle = RequireProductionCatalogBundle();
+        var (request, root) = ResourceRequest(bundle, Guid.Parse("e7f8091a-2b3c-44d5-96e7-f8091a2b3c4d"));
+        var runner = new InstallerProcessRunner(request.ImageReference, root, request.InstanceId!.Value) { RenderComposeFile = true };
+        var owner = new VerificationFailingOwnerClient();
+        try
+        {
+            var first = await InstallResourceRequestAsync(request, runner, owner);
+            var composePath = Path.Combine(first.ConfigRoot, "compose", "compose.yml");
+            var recordedCompose = await File.ReadAllTextAsync(composePath);
+            // The instance is verified where it stands, then at 6 GiB, which fails; the restore's own start then fails.
+            owner.FailOnVerification = owner.Verifications + 2;
+            runner.FailComposeUpNumber = runner.ComposeUpCount + 2;
+
+            var failure = await Assert.ThrowsExactlyAsync<InstallerException>(
+                () => InstallResourceRequestAsync(request with { Memory = "6g" }, runner, owner));
+
+            StringAssert.Contains(failure.Message, "restoring the recorded limits also failed", StringComparison.Ordinal);
+            Assert.AreEqual(recordedCompose, await File.ReadAllTextAsync(composePath));
+            Assert.AreEqual(6 * ResourceGibibyte, CameraAgentContainerResources.TryReadLimits(runner.LastComposeUp!)!.MemoryBytes);
+
+            var planned = await InstallResourceRequestAsync(request with { DryRun = true }, runner, owner);
+            var settled = await InstallResourceRequestAsync(request, runner, owner);
+
+            Assert.AreEqual(DeploymentPlanAction.Change, planned.Plan!.Items.Single(static item => item.Kind == "container").Action);
+            Assert.AreEqual(DeploymentPlanAction.Change, settled.Plan!.Items.Single(static item => item.Kind == "container").Action);
+            Assert.AreEqual(4 * ResourceGibibyte, CameraAgentContainerResources.TryReadLimits(runner.LastComposeUp!)!.MemoryBytes);
+            Assert.IsFalse((await InstallResourceRequestAsync(request, runner, owner)).Plan!.HasChanges);
+        }
+        finally
+        {
+            DeleteResourceRoot(root);
+        }
+    }
+
+    /// <summary>
+    /// A fresh plan admits the catalog bundle exactly as the run does, its manifest included (#1315 PR-1355-R2 R2-2): a
+    /// manifest of a version the installer does not read, or one that is not JSON, is refused by both, the same way, and
+    /// before either writes anything.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("unsupported")]
+    [DataRow("malformed")]
+    public async Task InstallAsync_CatalogBundleWithABadManifest_IsRefusedByThePlanAsByTheRun(string fault)
+    {
+        var bundle = RequireProductionCatalogBundle();
+        var (request, root) = ResourceRequest(bundle, Guid.Parse("f8091a2b-3c4d-45e6-87f8-091a2b3c4d5e"));
+        var copy = Path.Combine(Path.GetTempPath(), $"hvo-catalog-bundle-{Guid.NewGuid():N}");
+        var runner = new InstallerProcessRunner(request.ImageReference, root, request.InstanceId!.Value);
+        try
+        {
+            Directory.CreateDirectory(copy);
+            foreach (var file in Directory.EnumerateFiles(bundle))
+            {
+                File.Copy(file, Path.Combine(copy, Path.GetFileName(file)));
+            }
+            var manifestPath = Path.Combine(copy, "manifest.json");
+            if (fault == "unsupported")
+            {
+                var manifest = JsonNode.Parse(await File.ReadAllTextAsync(manifestPath))!.AsObject();
+                manifest["manifestVersion"] = 1;
+                await File.WriteAllTextAsync(manifestPath, manifest.ToJsonString());
+            }
+            else
+            {
+                await File.WriteAllTextAsync(manifestPath, "{\"manifestVersion\": 2,");
+            }
+            var bad = request with { CatalogBundle = copy };
+
+            var planned = await Assert.ThrowsExactlyAsync<InstallerException>(
+                () => InstallResourceRequestAsync(bad with { DryRun = true }, runner, new InstallerOwnerClient()));
+            var run = await Assert.ThrowsExactlyAsync<InstallerException>(
+                () => InstallResourceRequestAsync(bad, runner, new InstallerOwnerClient()));
+
+            Assert.AreEqual(run.Message, planned.Message);
+            Assert.AreEqual(run.IsRefusal, planned.IsRefusal);
+            Assert.IsFalse(Directory.Exists(root), "the catalog is admitted before anything is written");
+            Assert.AreEqual(0, runner.ComposeUpCount);
+        }
+        finally
+        {
+            DeleteResourceRoot(copy);
+            DeleteResourceRoot(root);
+        }
+    }
+
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task InstallRecord_HoldsNoSecretBearingFieldOrValue()

@@ -84,6 +84,79 @@ public sealed partial class LifecycleContractTests
         FileSystemActivity.AssertUnchanged(before, FileSystemActivity.Snapshot(fixture.Root), "the upgrade plan changed the product root");
     }
 
+    /// <summary>
+    /// A lifecycle command decides every refusal it can before its first write (#1315 PR-1355-R2 R2-3): an upgrade to the
+    /// image already active, a rollback with no previous image, a reinstall or purge of an installed instance and an
+    /// upgrade of an uninstalled one are each refused with the whole tree unchanged, no lock file and no journal.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task LifecycleRefusals_AreDecidedBeforeAnyWrite()
+    {
+        using var installed = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, installedImage: CurrentStateContract);
+        using var uninstalled = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Uninstalled);
+        installed.Runner.ConfigureRuntime(installed.Paths, installed.Manifest.Image.ImmutableReference, installed.Manifest.Image.ImageId,
+            installed.Manifest.Image.ImmutableReference, installed.Manifest.Image.ImageId, installed.Uid, installed.Gid);
+        var refusals = new (string Name, LifecycleFixture Fixture, LifecycleRequest Request, string Message)[]
+        {
+            ("already-active", installed,
+                installed.Request(LifecycleOperationKind.Upgrade) with
+                {
+                    ImageReference = installed.Manifest.Image.ImmutableReference,
+                    NoDownload = true
+                },
+                "The candidate image is already active."),
+            ("no-previous", installed, installed.Request(LifecycleOperationKind.Rollback), "No previous image is retained for rollback."),
+            ("reinstall-installed", installed, installed.Request(LifecycleOperationKind.Reinstall), "Reinstall requires a preserved uninstalled instance."),
+            ("purge-installed", installed,
+                installed.Request(LifecycleOperationKind.Purge) with { ConfirmationInstanceId = installed.InstanceId },
+                "Purge requires a completed preserve-by-default uninstall."),
+            ("upgrade-uninstalled", uninstalled, UpgradeRequest(uninstalled, assertMigration: false),
+                "An uninstalled instance must be reinstalled before image lifecycle operations.")
+        };
+        foreach (var (name, fixture, request, message) in refusals)
+        {
+            var before = FileSystemActivity.Snapshot(fixture.Root);
+
+            var refused = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+                request, fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+                fixture.Uid, fixture.Gid, CancellationToken.None));
+
+            Assert.IsTrue(refused.IsRefusal, name);
+            Assert.AreEqual(message, refused.Message, name);
+            FileSystemActivity.AssertUnchanged(before, FileSystemActivity.Snapshot(fixture.Root), $"the {name} refusal changed the product root");
+        }
+    }
+
+    /// <summary>
+    /// A gate that only an imported candidate can decide runs after the journal entry, so its refusal is settled in the
+    /// journal and exits 1, not 3 (#1315 PR-1355-R2 R2-3): here a candidate pulled once the upgrade has begun declares an
+    /// old state contract.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_RefusalAfterTheJournalEntry_IsAJournaledFailure()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, installedImage: CurrentStateContract);
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            CandidateReference, CandidateImageId, fixture.Uid, fixture.Gid);
+        fixture.Runner.CandidateLabels["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v1";
+        fixture.Runner.CandidateHeld = [];
+
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with { ImageReference = CandidateReference, NoDownload = false },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        Assert.IsFalse(failure.IsRefusal, failure.Message);
+        StringAssert.StartsWith(failure.Message, "The candidate image declares state compatibility 'cameraagent-state-v1'", StringComparison.Ordinal);
+        Assert.AreEqual(1, fixture.Runner.PullCount);
+        var journal = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual(InstallationStatus.Failed, journal!.Status);
+        Assert.AreEqual(CameraAgentLifecycleManager.RefusedFailureCode, journal.FailureCode);
+        Assert.IsFalse(journal.MutationStarted);
+    }
+
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task LifecyclePlans_AreRefusedByTheJournalGatesTheirCommandsAreRefusedBy()

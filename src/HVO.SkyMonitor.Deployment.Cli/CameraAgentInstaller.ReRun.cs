@@ -98,13 +98,17 @@ internal sealed partial class CameraAgentInstaller
         ContainerResourceLimits? Target,
         bool LimitsChange,
         bool FilesDiffer,
-        bool ContainerDown,
+        bool ContainerDiffers,
         bool ResultModelStale,
         InstallRecordLocation RecordLocation,
         DeploymentPlanAction RecordAction)
     {
-        /// <summary>The container must be started again from Compose files written for <see cref="Target"/>.</summary>
-        public bool NeedsDeploy => LimitsChange || FilesDiffer || ContainerDown;
+        /// <summary>
+        /// The container must be started again from Compose files written for <see cref="Target"/>: the limits change,
+        /// the files differ from what the records describe, or the container is not running healthy on the recorded
+        /// image and limits (<see cref="ContainerDiffers"/>).
+        /// </summary>
+        public bool NeedsDeploy => LimitsChange || FilesDiffer || ContainerDiffers;
 
         public bool HasChanges => NeedsDeploy || ResultModelStale || RecordAction != DeploymentPlanAction.Unchanged;
     }
@@ -245,24 +249,34 @@ internal sealed partial class CameraAgentInstaller
             target,
             target != manifest.Resources,
             !filesMatch,
-            !await RunsAsync(docker, recorded.Files, image, cancellationToken).ConfigureAwait(false),
+            !await RunsAsync(docker, recorded.Files, image, manifest.Resources, cancellationToken).ConfigureAwait(false),
             result.ComposeModelSha256 != manifest.ComposeModelSha256,
             location,
             existing is null ? DeploymentPlanAction.Create
             : existing.SameAs(entry) ? DeploymentPlanAction.Unchanged : DeploymentPlanAction.Change);
     }
 
-    /// <summary>Whether every container of the instance is running, healthy, and on its image.</summary>
+    /// <summary>
+    /// Whether every container of the instance is running, healthy and on its image, and CameraAgent's container is held
+    /// to the limits its records describe. A container left on other limits, such as one a failed restore of a limits
+    /// change could not recreate, is redeployed from the records (#1315).
+    /// </summary>
     private static async Task<bool> RunsAsync(
         DockerClient docker,
         ComposeFiles compose,
         ImageInstallationIdentity image,
+        ContainerResourceLimits? recordedLimits,
         CancellationToken cancellationToken)
     {
         foreach (var container in new[] { compose.ContainerName, compose.ReplayRunnerContainerName }.OfType<string>())
         {
             var runtime = await docker.InspectContainerAsync(container, cancellationToken).ConfigureAwait(false);
             if (!runtime.Exists || !runtime.Running || !runtime.Healthy || runtime.ImageId != image.ImageId)
+            {
+                return false;
+            }
+            if (container == compose.ContainerName && runtime.Limits is { } applied &&
+                !CameraAgentContainerResources.SameLimits(applied, recordedLimits ?? CameraAgentContainerResources.Legacy))
             {
                 return false;
             }
@@ -325,7 +339,7 @@ internal sealed partial class CameraAgentInstaller
         var owner = ownerClientFactory(PublicUri(request));
         // An instance whose files and container are what its records describe is verified where it stands before
         // anything changes, a limits change included.
-        if (!instance.FilesDiffer && !instance.ContainerDown)
+        if (!instance.FilesDiffer && !instance.ContainerDiffers)
         {
             await VerifyAsync(request, instance, instance.Compose, owner, docker, uid, gid, cancellationToken).ConfigureAwait(false);
         }
@@ -564,9 +578,7 @@ internal sealed partial class CameraAgentInstaller
                 new(resultChanges ? DeploymentPlanAction.Change : DeploymentPlanAction.Unchanged, "file", paths.ResultPath,
                     resultChanges ? "installation result, its Compose model" : "installation result"),
                 new(instance.NeedsDeploy ? DeploymentPlanAction.Change : DeploymentPlanAction.Unchanged, "container", container,
-                    instance.NeedsDeploy
-                        ? filesChange ? $"recreated with {limits}" : $"started, {limits}"
-                        : $"image {manifest.Image.ImageId}, {limits}"),
+                    instance.NeedsDeploy ? $"recreated with {limits}" : $"image {manifest.Image.ImageId}, {limits}"),
                 new(recordAction ?? instance.RecordAction, "record", instance.RecordLocation.Path, $"instance {manifest.InstanceId:D}")
             ],
             "the instance is installed as the answers describe");

@@ -116,6 +116,30 @@ public static class CatalogSnapshotResolver
         var pointer = options.ExpectedPackageVersion is null
             ? ReadPointer(installRoot, Path.Combine(installRoot, "current"))
             : ReadExactVersion(installRoot, options.ExpectedPackageVersion);
+        return ResolveSnapshot(pointer, options);
+    }
+
+    /// <summary>
+    /// Resolves a directory that holds one package version's files itself, such as a production bundle before it is
+    /// installed, with every check <see cref="Resolve"/> makes on an installed version and without writing anything.
+    /// The options name the package version the directory must hold.
+    /// </summary>
+    public static CatalogSnapshotResult ResolveDirectory(string snapshotDirectory, CatalogSnapshotResolverOptions options)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(snapshotDirectory);
+        ArgumentNullException.ThrowIfNull(options);
+        ValidateOptions(options);
+        if (options.ExpectedPackageVersion is null)
+        {
+            throw new ArgumentException("A snapshot directory is resolved for an expected package version.", nameof(options));
+        }
+        var directory = Path.GetFullPath(snapshotDirectory);
+        EnsureDirectoryIsNotLink(directory, "Catalog snapshot directory");
+        return ResolveSnapshot(new SnapshotPointer(options.ExpectedPackageVersion, directory), options);
+    }
+
+    private static CatalogSnapshotResult ResolveSnapshot(SnapshotPointer pointer, CatalogSnapshotResolverOptions options)
+    {
         var snapshotVersion = pointer.SnapshotVersion;
         var snapshotDirectory = pointer.SnapshotDirectory;
 

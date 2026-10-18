@@ -1602,6 +1602,12 @@ public sealed partial class InstallerFlowTests
         /// <summary>The Compose file the last <c>compose up</c> started the instance from: the limits it now runs with.</summary>
         public string? LastComposeUp { get; private set; }
 
+        /// <summary>
+        /// The number the failing <c>compose up</c> would have: that one fails as Docker fails one it cannot complete, and
+        /// the container keeps what it ran before.
+        /// </summary>
+        public int FailComposeUpNumber { get; set; } = -1;
+
         public int Invocations { get; private set; }
 
         public int LoadCount { get; private set; }
@@ -1751,7 +1757,7 @@ public sealed partial class InstallerFlowTests
                                 ["io.hvo.skymonitor.instance-id"] = id
                             }
                         },
-                        HostConfig = new { ReadonlyRootfs = true, Privileged = false },
+                        HostConfig = Limits(),
                         Mounts = new[]
                         {
                             new { Source = Path.Combine(instanceRoot, "config", "camera-module.json"), Destination = "/app/cameraagent.deploy.json", RW = false },
@@ -1770,6 +1776,11 @@ public sealed partial class InstallerFlowTests
             }
             if (arguments.Contains("up", StringComparer.Ordinal))
             {
+                if (ComposeUpCount + 1 == FailComposeUpNumber)
+                {
+                    FailComposeUpNumber = -1;
+                    return Task.FromResult(new ProcessResult(1, string.Empty, "Error response from daemon: cannot recreate the container"));
+                }
                 ComposeUpCount++;
                 var file = arguments.ToList().IndexOf("--file");
                 return file >= 0 ? UpAsync(arguments[file + 1], cancellationToken) : Success(string.Empty);
@@ -1780,6 +1791,19 @@ public sealed partial class InstallerFlowTests
 
         private static Task<ProcessResult> Success(string output)
             => Task.FromResult(new ProcessResult(0, output, string.Empty));
+
+        /// <summary>The container's host configuration, with the limits of the Compose file it was last started from.</summary>
+        private object Limits()
+            => LastComposeUp is not null && CameraAgentContainerResources.TryReadLimits(LastComposeUp) is { } limits
+                ? new
+                {
+                    ReadonlyRootfs = true,
+                    Privileged = false,
+                    NanoCpus = (long)(limits.Cpus * 1_000_000_000m),
+                    Memory = limits.MemoryBytes,
+                    PidsLimit = (long)limits.PidsLimit
+                }
+                : new { ReadonlyRootfs = true, Privileged = false };
 
         private static async Task<ProcessResult> RenderAsync(string composeFile, CancellationToken cancellationToken)
             => new(0, await File.ReadAllTextAsync(composeFile, cancellationToken), string.Empty);

@@ -67,39 +67,39 @@ internal static class CatalogInstaller
     }
 
     /// <summary>
-    /// The identity <see cref="Install"/> would give the bundle in <paramref name="installRoot"/>, read without writing
-    /// anything, for a plan (#1315). A version already installed there is validated as it is. Otherwise the bundle's
-    /// file set, package version and database bytes are checked against the approved specification's pins, which fix
-    /// every value the identity holds.
+    /// Admits a catalog bundle without writing anything: its exact file set, its package version, and the bundle itself
+    /// resolved where it lies with every check the snapshot resolver makes on an installed version, the manifest's
+    /// version and fields included. A run admits its bundle this way before its first write and a plan the same way
+    /// (#1315). Returns the identity the bundle would have installed in <paramref name="installRoot"/>.
     /// </summary>
-    public static CatalogInstallationIdentity Inspect(string bundlePath, string installRoot)
+    public static CatalogInstallationIdentity Admit(string bundlePath, string installRoot)
     {
         var specification = ProductionCatalog.ReadBundleSpecification(bundlePath);
         ValidateBundleEntries(bundlePath, specification);
         var packageVersion = ReadPackageVersion(bundlePath, specification);
-        if (Directory.Exists(Path.Combine(installRoot, "versions", packageVersion)))
+        try
         {
-            return ValidateExisting(bundlePath, installRoot);
+            var resolved = CatalogSnapshotResolver.ResolveDirectory(
+                bundlePath, ProductionCatalog.ResolverOptions(bundlePath, specification.CatalogId, packageVersion));
+            return ProductionCatalog.ToIdentity(resolved, installRoot);
         }
-        using (var database = SafeFileSystem.OpenRegularFileRead(Path.Combine(bundlePath, specification.DatabaseRelativePath)))
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
         {
-            if (database.Length != specification.DatabaseLength ||
-                Convert.ToHexStringLower(SHA256.HashData(database)) != specification.DatabaseSha256)
-            {
-                throw new InstallerException("The catalog does not match the installer-pinned production identity.");
-            }
+            throw new InstallerException("The catalog bundle could not be installed or validated.", exception);
         }
-        return new CatalogInstallationIdentity(
-            specification.CatalogId,
-            packageVersion,
-            specification.SchemaVersion,
-            specification.PreprocessingVersion,
-            specification.DatabaseSha256,
-            specification.DatabaseLength,
-            specification.RowCount,
-            installRoot,
-            Convert.ToHexStringLower(HashFile(Path.Combine(bundlePath, "manifest.json"))),
-            "local-offline");
+    }
+
+    /// <summary>
+    /// The identity <see cref="Install"/> would give the bundle in <paramref name="installRoot"/>, read without writing
+    /// anything, for a plan (#1315): the bundle is admitted as a run admits it (<see cref="Admit"/>), and a version
+    /// already installed there is validated as it is.
+    /// </summary>
+    public static CatalogInstallationIdentity Inspect(string bundlePath, string installRoot)
+    {
+        var admitted = Admit(bundlePath, installRoot);
+        return Directory.Exists(Path.Combine(installRoot, "versions", admitted.PackageVersion))
+            ? ValidateExisting(bundlePath, installRoot)
+            : admitted;
     }
 
     public static CatalogInstallationIdentity ValidateExisting(string bundlePath, string installRoot)

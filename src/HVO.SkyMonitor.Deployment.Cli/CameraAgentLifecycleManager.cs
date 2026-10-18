@@ -127,78 +127,100 @@ internal sealed partial class CameraAgentLifecycleManager
                 runtime.Running && (runnerRuntime?.Running ?? true),
                 runtime.Healthy && (runnerRuntime?.Healthy ?? true));
         }
-        // A plan creates nothing, not even the operations directory or a lock file: it takes the locks that exist, so it
-        // still reads what a command would, and none where there is none to take (#1315).
-        if (!request.DryRun) SafeFileSystem.CreateOwnerDirectory(paths.OperationsRoot);
-        using var productLock = request.DryRun
-            ? OperationLock.AcquireExisting(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken)
-            : OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
-        using var instanceLock = request.DryRun
-            ? OperationLock.AcquireExisting(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken)
-            : OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
-        EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
-        manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
-        paths = paths.WithCatalog(manifest.Catalog.CatalogId);
-        result = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
-        retainedOperation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
-        allowTransactionalDrift = AllowsTransactionalDrift(request, retainedOperation);
-        EnsureCorrelated(paths, instanceId, manifest, result, allowTransactionalDrift);
-        if (allowTransactionalDrift) EnsureTransactionalCorrelation(retainedOperation!, manifest, result);
-        if (RequiresLifecycleControl(request.Operation))
+        // Every refusal that can be decided before the first write is decided here, for the command and its plan alike,
+        // so a refusal says truthfully that nothing changed (#1315).
+        if (!request.RestoreOnly)
         {
-            lifecycleControlToken = await ReadLifecycleControlTokenAsync(paths, cancellationToken).ConfigureAwait(false);
-            ValidateLifecycleControlToken(manifest, lifecycleControlToken);
-            await ValidateCatalogSelectionSettingAsync(
-                    paths, manifest.Catalog.PackageVersion,
-                    ResumableCatalogSelectionVersion(request, retainedOperation), cancellationToken)
+            signedImage = await AdmitBeforeWritingAsync(request, paths, manifest, compose, docker, signedImage, cancellationToken)
                 .ConfigureAwait(false);
         }
-        if (RequiresInstallationVerification(request.Operation))
+        var written = ReadWrittenState(paths);
+        try
         {
-            installationVerificationToken = await ReadInstallationVerificationTokenAsync(paths, manifest, cancellationToken)
-                .ConfigureAwait(false);
+            return await LockedAsync().ConfigureAwait(false);
         }
-        if (request.RestoreOnly)
+        catch (InstallerException exception) when (exception.IsRefusal && !request.DryRun && ReadWrittenState(paths) != written)
         {
-            try
-            {
-                return await RestoreOnlyAsync(request, paths, manifest, result, retainedOperation, docker,
-                    lifecycleClientFactory, ownerClientFactory, lifecycleControlToken!, installationVerificationToken!,
-                    uid, gid, error, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception exception) when (exception is IOException or HttpRequestException or JsonException or
-                                                UnauthorizedAccessException or KeyNotFoundException or InvalidOperationException)
-            {
-                throw new InstallerException("Restore-only could not verify its retained records or authenticated runtime response; recovery remains incomplete.");
-            }
+            // Once this run has written, a lock file or the journal, a gate that decides not to go ahead can no longer say
+            // nothing changed: it is a failure, journaled where an operation began (#1315).
+            throw new InstallerException(exception.Message, exception);
         }
-        return request.Operation switch
+
+        async Task<LifecycleResult> LockedAsync()
         {
-            LifecycleOperationKind.Upgrade => await ChangeImageAsync(
-                request, paths, manifest, result, compose, docker, lifecycleClientFactory, uid, gid,
-                ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage,
-                rollback: false, output, error, cancellationToken).ConfigureAwait(false),
-            LifecycleOperationKind.Rollback => await ChangeImageAsync(
-                request, paths, manifest, result, compose, docker, lifecycleClientFactory, uid, gid,
-                ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage: null,
-                rollback: true, output, error, cancellationToken).ConfigureAwait(false),
-            LifecycleOperationKind.Reinstall => await ReinstallAsync(
-                request, paths, manifest, result, compose, docker, lifecycleClientFactory, ownerClientFactory,
-                lifecycleControlToken!, installationVerificationToken!, daemon, cancellationToken)
-                .ConfigureAwait(false),
-            LifecycleOperationKind.Uninstall => await UninstallAsync(
-                request, paths, manifest, result, compose, docker, lifecycleClientFactory, lifecycleControlToken!, daemon,
-                cancellationToken)
-                .ConfigureAwait(false),
-            LifecycleOperationKind.Purge => await PurgeAsync(
-                request, paths, manifest, compose, docker, daemon, processRunner, cancellationToken).ConfigureAwait(false),
-            LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback =>
-                await CatalogLifecycleManager.SelectAsync(
+            // A plan creates nothing, not even the operations directory or a lock file: it takes the locks that exist, so it
+            // still reads what a command would, and none where there is none to take (#1315).
+            if (!request.DryRun) SafeFileSystem.CreateOwnerDirectory(paths.OperationsRoot);
+            using var productLock = request.DryRun
+                ? OperationLock.AcquireExisting(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken)
+                : OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
+            using var instanceLock = request.DryRun
+                ? OperationLock.AcquireExisting(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken)
+                : OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
+            EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
+            manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
+            paths = paths.WithCatalog(manifest.Catalog.CatalogId);
+            result = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
+            retainedOperation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
+            allowTransactionalDrift = AllowsTransactionalDrift(request, retainedOperation);
+            EnsureCorrelated(paths, instanceId, manifest, result, allowTransactionalDrift);
+            if (allowTransactionalDrift) EnsureTransactionalCorrelation(retainedOperation!, manifest, result);
+            if (RequiresLifecycleControl(request.Operation))
+            {
+                lifecycleControlToken = await ReadLifecycleControlTokenAsync(paths, cancellationToken).ConfigureAwait(false);
+                ValidateLifecycleControlToken(manifest, lifecycleControlToken);
+                await ValidateCatalogSelectionSettingAsync(
+                        paths, manifest.Catalog.PackageVersion,
+                        ResumableCatalogSelectionVersion(request, retainedOperation), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            if (RequiresInstallationVerification(request.Operation))
+            {
+                installationVerificationToken = await ReadInstallationVerificationTokenAsync(paths, manifest, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            if (request.RestoreOnly)
+            {
+                try
+                {
+                    return await RestoreOnlyAsync(request, paths, manifest, result, retainedOperation, docker,
+                        lifecycleClientFactory, ownerClientFactory, lifecycleControlToken!, installationVerificationToken!,
+                        uid, gid, error, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is IOException or HttpRequestException or JsonException or
+                                                    UnauthorizedAccessException or KeyNotFoundException or InvalidOperationException)
+                {
+                    throw new InstallerException("Restore-only could not verify its retained records or authenticated runtime response; recovery remains incomplete.");
+                }
+            }
+            return request.Operation switch
+            {
+                LifecycleOperationKind.Upgrade => await ChangeImageAsync(
+                    request, paths, manifest, result, compose, docker, lifecycleClientFactory, uid, gid,
+                    ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage,
+                    rollback: false, output, error, cancellationToken).ConfigureAwait(false),
+                LifecycleOperationKind.Rollback => await ChangeImageAsync(
+                    request, paths, manifest, result, compose, docker, lifecycleClientFactory, uid, gid,
+                    ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage: null,
+                    rollback: true, output, error, cancellationToken).ConfigureAwait(false),
+                LifecycleOperationKind.Reinstall => await ReinstallAsync(
                     request, paths, manifest, result, compose, docker, lifecycleClientFactory, ownerClientFactory,
-                    lifecycleControlToken!, daemon, installationVerificationToken!, cancellationToken)
+                    lifecycleControlToken!, installationVerificationToken!, daemon, cancellationToken)
                     .ConfigureAwait(false),
-            _ => throw new InstallUsageException("The lifecycle operation is unsupported for a CameraAgent instance.")
-        };
+                LifecycleOperationKind.Uninstall => await UninstallAsync(
+                    request, paths, manifest, result, compose, docker, lifecycleClientFactory, lifecycleControlToken!, daemon,
+                    cancellationToken)
+                    .ConfigureAwait(false),
+                LifecycleOperationKind.Purge => await PurgeAsync(
+                    request, paths, manifest, compose, docker, daemon, processRunner, cancellationToken).ConfigureAwait(false),
+                LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback =>
+                    await CatalogLifecycleManager.SelectAsync(
+                        request, paths, manifest, result, compose, docker, lifecycleClientFactory, ownerClientFactory,
+                        lifecycleControlToken!, daemon, installationVerificationToken!, cancellationToken)
+                        .ConfigureAwait(false),
+                _ => throw new InstallUsageException("The lifecycle operation is unsupported for a CameraAgent instance.")
+            };
+        }
     }
 
     private static async Task<LifecycleResult> RestoreOnlyAsync(
@@ -494,10 +516,7 @@ internal sealed partial class CameraAgentLifecycleManager
         {
             await UpgradeNotes.ShowAsync(upgradeNotes, request.Json, output, error).ConfigureAwait(false);
         }
-        if (!rollback && signedImage is not null)
-        {
-            signedImage = await EnsureReleaseCandidateAsync(request, manifest, docker, signedImage, cancellationToken).ConfigureAwait(false);
-        }
+        // A release candidate was checked, and a registry image pulled, before the locks (AdmitBeforeWritingAsync).
         var operation = await BeginAsync(request, paths, rollback ? LifecycleOperationKind.Rollback : LifecycleOperationKind.Upgrade,
             manifest, cancellationToken).ConfigureAwait(false);
         try
