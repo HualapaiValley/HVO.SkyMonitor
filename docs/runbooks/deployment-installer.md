@@ -26,12 +26,78 @@ runbook describes the installer as it behaves today.
 | Contract | Today | Issue |
 | --- | --- | --- |
 | Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | The `hvo-sky-install` CLI, configured by flags or `--config`; no runtime client or wizard | [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
-| `install.sh` entry point with `--check` and `--from DIR` | No `install.sh`; the self-contained CLI is run directly | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
+| `install.sh` entry point with `--check`, `--from DIR`, and `--install-docker` and the like | [`install.sh`](#installsh) checks the host, then verifies and starts the release's installer, with `--check` and `--from DIR`. It installs no Docker and changes no boot setting; it names the remedy. The installer still needs a command, and online it needs `--release <folder>` or `--image-ref`, because it does not download a release itself | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
 | Install and upgrade from a published release, by GHCR digest or offline archive | `--release <folder>` installs and upgrades from a downloaded release's `release.json` and `SHA256SUMS`, by GHCR digest or offline archive ([Release Install](#release-install)). Integration pre-releases are published ([prereleases.md](prereleases.md)); final releases are not yet | [#1310](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1310) |
 | `--plan`, `--answers FILE`, `backup` and `restore FILE`, exit codes 0/1/2/3/130 | `--dry-run` and `--config`; no `backup` or `restore`; a refusal such as failed host prerequisites exits `1` | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
 | Container limits kept in the install record and changed with a re-run | Limits are set at install and recorded in the instance's `instance-manifest.json`. A re-run with different `--cpus` or `--memory` is refused, and an installed instance's limits change only when an upgrade moves limits the operator did not set to the new default (see [Container Resources](#container-resources)) | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
 | Settings catalogue served by the API | CameraAgent serves the [operator settings catalogue and group writes](../contracts/cameraagent-operator-settings-v1.md) through its operations API; the owner creates API keys for non-browser clients | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
 | Machine install record `/etc/hvo-sky/install.json` | Records live beneath each instance root (`instance-manifest.json`, `state/deployment/`); `/etc/hvo-sky/` holds only the host policy | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
+
+## install.sh
+
+Each release carries `install.sh`, the contract's one-line entry point (section 5). The release tool writes the
+release's version into it when it builds the release's files; the repository's own copy names no release and refuses
+to run. It checks the machine, downloads that release's `hvo-sky-install` for it, verifies the download, and starts it
+with the remaining arguments:
+
+```bash
+# Check this machine for the release, changing nothing:
+curl -fsSL https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v<version>/install.sh | bash -s -- --check
+
+# Install from a downloaded release folder, offline:
+bash "$release/install.sh" --from "$release" cameraagent install \
+  --catalog-bundle "$release/catalog/hyg-v4.2-p3-s2-r1.bundle" --friendly-name "North All-Sky Camera" ...
+```
+
+An integration pre-release is never `latest`, so name its tag as above. Run it as the Docker-capable runtime user, not
+as root: the installer refuses root and asks `sudo` itself for the steps that need it. Its own options come before the
+installer's arguments, which start at the first argument that is not one of them, or after `--`:
+
+| Option | Meaning |
+| --- | --- |
+| `--check` | Run the checks below, then stop. Nothing is downloaded or changed |
+| `--from DIR` | Take the installer, `SHA256SUMS` and the offline image archive from `DIR`, a folder holding the release's files, instead of GitHub and ghcr.io. `cameraagent install` and `cameraagent upgrade` are given `--release DIR` (unless they name a release or image themselves) and `--no-download`, so nothing is pulled |
+| `-h`, `--help` | Its usage. `--help` after the installer's arguments is the installer's |
+
+**Checks.** All of them run, and every failure is reported, before anything is downloaded or changed:
+
+- Linux on 64-bit ARM or x86-64, with a 64-bit system and glibc, run by someone other than root;
+- `curl`, `tar` and `sha256sum`;
+- 300 MB free in `TMPDIR` for the download;
+- github.com answers, and this machine's clock is within five minutes of its `Date`. With `--from`, github.com not
+  answering is only noted. An unsynchronised clock (`timedatectl`) is noted;
+- with `--from`, the folder holds the installer for this machine, `SHA256SUMS`, `release.json` and, for an install or
+  an upgrade, the offline image archive for this machine; ghcr.io is never contacted. Otherwise, for an install or an
+  upgrade, ghcr.io answers;
+- for an install (`cameraagent install`, or no command) or an upgrade: Docker answers you and is 20.10 or later with
+  Compose v2; `docker info` reports `MemoryLimit`, `CPUCfsQuota` and `PidsLimit` as `true` and at least 2 CPUs; and
+  Docker's `DockerRootDir` has 3 GB free. On a Raspberry Pi whose Docker cannot limit memory it names the remedy in
+  [Host Prerequisites](#host-prerequisites): append a space and `cgroup_enable=memory` to the single line in
+  `/boot/firmware/cmdline.txt`, then reboot. Less memory than the 4 GiB limit is only noted, as the installer notes it.
+
+Other commands, such as `status`, `cameraagent rollback` and `cameraagent uninstall`, check what they need
+themselves, so a host that has lost Docker's limits can still be inspected, rolled back or cleaned up. The installer's
+own [host prerequisites](#host-prerequisites) still run, with exact sizes.
+
+**Verification.** The installer for this machine, `hvo-sky-install-linux-arm64` or `hvo-sky-install-linux-x64`, is
+downloaded with `SHA256SUMS`, or copied from `--from`, into a new folder of mode `0700` under `TMPDIR`. `TMPDIR` must be
+a folder that only you and root can change. Then:
+
+1. the installer's SHA-256 must be the one `SHA256SUMS` lists;
+2. when `gh` is installed and signed in, the build-provenance attestations of `SHA256SUMS` and of the installer must
+   name `.github/workflows/prerelease.yml` (for a `-dev.<n>` pre-release; `release.yml` otherwise) at the release's
+   tag, built on a GitHub-hosted runner. Without `gh` this is noted and skipped. `SHA256SUMS` is what the installer
+   trusts for `release.json` and the image archives;
+3. its `--version` must be `<version>+<40-character commit>`.
+
+It then runs as you, with your umask, reading the terminal when there is one (never the download), and the folder is
+removed afterwards.
+
+**Exit codes.** The installer's when it ran; otherwise `0` when `--check` passed, `1` when a check, the download or its
+verification failed, and `2` for an invalid command line.
+
+`scripts/test:install-sh` tests it with fake commands, as `curl ... | bash` runs it; `scripts/test:release-scripts`
+runs those tests ([ci-pipeline.md](ci-pipeline.md#release-script-tests)).
 
 ## Inputs
 

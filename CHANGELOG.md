@@ -12,6 +12,15 @@ onward; earlier development is recorded in its pull requests. A release renames 
 
 ### Added
 
+- Each release carries `install.sh`, the one-line entry point: `curl -fsSL
+  https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v<version>/install.sh | bash -s -- <installer
+  arguments>`. Before it changes anything it checks the platform (64-bit Linux with glibc), `curl`, `tar` and
+  `sha256sum`, free space, the clock, github.com and ghcr.io, and, for an install or an upgrade, Docker 20.10 or later
+  with Compose v2 that enforces CameraAgent's memory, CPU and PID limits. On a Raspberry Pi without memory limits it
+  names the `cgroup_enable=memory` remedy. It then downloads that release's `hvo-sky-install`, checks it against
+  `SHA256SUMS`, against its own and `SHA256SUMS`' attestations when `gh` is signed in, and against `--version`, and
+  runs it as you with the remaining arguments. `--check` stops after the checks. `--from DIR` takes everything from a
+  downloaded release folder, gives the installer `--release DIR --no-download`, and never contacts ghcr.io. (#1311)
 - CameraAgent serves an operator settings catalogue and versioned group writes through its operations API. The
   site owner can create and revoke Read or ReadWrite API keys for non-browser clients. (#1316)
 - `hvo-sky-install --version` prints the installer's version and the commit it was built from, as

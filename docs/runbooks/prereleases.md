@@ -16,7 +16,7 @@ Final releases, `vX.Y.Z` and `vX.Y.Z-rc.<n>` from `main`, are
 | `hvo-sky-install-linux-x64`, `hvo-sky-install-linux-arm64` | The self-contained installer. `--version` prints `<version>+<commit>` |
 | `skymonitor-cameraagent-<version>-linux-amd64.oci.tar`, `...-linux-arm64.oci.tar` | The CameraAgent image for one platform, as an OCI archive `docker image load` reads |
 | `<catalog version>.bundle.tar.gz` | The approved catalog bundle, under its own version: today `hyg-v4.2-p3-s2-r1.bundle.tar.gz` |
-| `install.sh` | The entry point, once [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) adds it. Until then a pre-release has none |
+| `install.sh` | The entry point, with the pre-release's version written in ([install.sh](deployment-installer.md#installsh), [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311)). A pre-release tagged before #1311 has none |
 | `release.json` | The release manifest, RoofController's schema 1 (contract section 4) |
 | `SHA256SUMS` | The SHA-256 of every other file, `release.json` included |
 
@@ -121,7 +121,7 @@ operations manual's change-management rules for a live host. An upgrade pauses c
    release="$HOME/hvo-releases/$version"
    mkdir -p -m 700 "$release"
    gh release download "v$version" --repo HualapaiValley/HVO.SkyMonitor --dir "$release" \
-     --pattern release.json --pattern SHA256SUMS --pattern hvo-sky-install-linux-arm64 \
+     --pattern release.json --pattern SHA256SUMS --pattern hvo-sky-install-linux-arm64 --pattern install.sh \
      --pattern "skymonitor-cameraagent-$version-linux-arm64.oci.tar" --pattern '*.bundle.tar.gz'
    ```
 
@@ -166,6 +166,14 @@ operations manual's change-management rules for a live host. An upgrade pauses c
 
    # The installed instance. Upgrade notes print before anything changes.
    ./hvo-sky-install-linux-arm64 cameraagent upgrade --instance-id <uuid> --release "$release"
+   ```
+
+   Or let the release's `install.sh` check the host first, verify the installer again, and add `--release "$release"
+   --no-download` itself ([install.sh](deployment-installer.md#installsh)):
+
+   ```bash
+   bash install.sh --from "$release" cameraagent install \
+     --catalog-bundle "$release/catalog/hyg-v4.2-p3-s2-r1.bundle" ...
    ```
 
    To pull the image by digest instead of loading the offline archive, add `--image-source registry`. The host then
@@ -217,9 +225,10 @@ then run `scripts/test:release-install --install-source registry --upgrade-sourc
 
 `scripts/test:release-scripts` proves the gate's, the checks', the publish script's and the push script's decisions with
 fake `gh` and `skopeo` commands, including GitHub reads that fail after a complete 200, 404s that are not GitHub's, and
-empty, repeated or malformed answers.
+empty, repeated or malformed answers. It also runs `scripts/test:install-sh`, which proves `install.sh` with fake
+commands of its own.
 CI's Quality job always runs it. **Development v1 / Preflight** runs it when the classifier's `release_scripts` output
-selects it: on a pull request that changes the release scripts or the libraries they source,
+selects it: on a pull request that changes the release scripts or the libraries they source, `install.sh` or its tests,
 `.github/workflows/prerelease.yml`, the release tool,
 or the Preflight wiring that runs it (`development-v1.yml`, `scripts/ci:classify`), on every push, and whenever the
 classification failed or is incomplete ([ci-pipeline.md](ci-pipeline.md#release-script-tests)).

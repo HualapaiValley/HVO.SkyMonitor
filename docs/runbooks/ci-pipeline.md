@@ -50,13 +50,17 @@ formatting, and package audit only for full-mode changes.
 `dotnet` commands ([prereleases.md](prereleases.md), #1309). Its fake `gh` answers as `gh api --include` prints, and
 can fail after a complete-looking 200, so the tests prove every GitHub read (`scripts/lib/github-api.sh`) refuses a
 transport failure, a 404 that is not GitHub's, and an empty, repeated or malformed body, before and after publishing.
-It always runs in Full Quality. **Development v1 /
+It then runs `scripts/test:install-sh`, which pipes the release's `install.sh` into bash as `curl ... | bash` does,
+with fake commands (`tests/fixtures/install-sh/`), and proves its checks, `--check`, `--from DIR`, the installer's
+verification and the hand-over ([deployment-installer.md](deployment-installer.md#installsh), #1311). Its tests run in
+parallel. It always runs in Full Quality. **Development v1 /
 Preflight** runs it after the secret scanner contract, reading the same classifier step, when the `release_scripts`
 output selects it. On a PR that output is `true` when the change touches `scripts/release:assets`,
 `scripts/release:push-image`, `scripts/release:prerelease-gate`, `scripts/release:prerelease-check`,
 `scripts/release:publish-prerelease`, `scripts/test:release-install`, `scripts/test:release-scripts`, the libraries
 those scripts source (`scripts/lib/deployment-installer-qualification.sh` and `scripts/lib/github-api.sh`),
-`.github/workflows/prerelease.yml`, anything under
+`src/HVO.SkyMonitor.Deployment.Cli/install.sh`, `scripts/test:install-sh`, anything under
+`tests/fixtures/install-sh/`, `.github/workflows/prerelease.yml`, anything under
 `tools/HVO.SkyMonitor.Deployment.ReleaseTool/`, or the wiring that runs it (`.github/workflows/development-v1.yml`,
 `scripts/ci:classify`). Deleting one of those paths selects it too. Pushes, missing commits, empty ranges, failed or
 malformed diffs, missing or non-regular tree entries, missing outputs and classifier-step failures all run it: only a
