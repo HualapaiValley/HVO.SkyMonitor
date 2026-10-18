@@ -84,7 +84,8 @@ internal sealed class DockerClient(IProcessRunner processRunner)
     /// Loads, pulls or finds the CameraAgent image a request names and reads its identity and contract labels. A
     /// <paramref name="release"/> selection additionally requires the image Docker resolved to be the release's: one of
     /// the identities its offline archive names, and labelled with the release's version and commit. A release image
-    /// this call imports and then refuses is removed again, so a refused release leaves Docker holding what it held.
+    /// this call imports is removed again when it is refused, when Docker fails, or when the operation is cancelled, so
+    /// a refused or abandoned release leaves Docker holding what it held.
     /// </summary>
     public async Task<(DockerDaemonIdentity Daemon, ImageInstallationIdentity Image)> PrepareImageAsync(
         InstallRequest request,
@@ -99,20 +100,22 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         {
             return await PrepareImageCoreAsync(request, allowMutation, release, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (added.Count > 0 && exception is not OperationCanceledException)
+        catch (Exception) when (added.Count > 0)
         {
+            // A cancellation is removed too: a load or pull it interrupted may already have imported the image.
             await RemoveImagesAsync(added).ConfigureAwait(false);
             throw;
         }
     }
 
     /// <summary>
-    /// Pulls a release's image by the digest release.json names and checks it with <paramref name="validate"/> as well as
-    /// against the release, before anything else is changed for it. The installer has no registry client of its own and
-    /// Docker holds the registry credentials, so a pulled image's identity and labels can only be read once Docker holds
-    /// it: an image this call pulled is removed again when it is refused.
+    /// Imports a release's image, loading its offline archive or pulling it by the digest release.json names, and checks
+    /// what Docker then holds with <paramref name="validate"/> as well as against the release, before anything else is
+    /// changed for it. Whatever this import added is removed again when the image is refused, when Docker fails, or when
+    /// the operation is cancelled, so it leaves Docker holding what it held. A registry image's metadata must have been
+    /// read and checked first (<see cref="ReadRegistryReleaseImageAsync"/>); these checks after the import are the second.
     /// </summary>
-    public async Task<ImageInstallationIdentity> PullReleaseImageAsync(
+    public async Task<ImageInstallationIdentity> ImportReleaseImageAsync(
         InstallRequest request,
         ReleaseImageSelection release,
         Action<ImageInstallationIdentity> validate,
@@ -128,12 +131,22 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             validate(image);
             return image;
         }
-        catch (Exception exception) when (added.Count > 0 && exception is not OperationCanceledException)
+        catch (Exception) when (added.Count > 0)
         {
             await RemoveImagesAsync(added).ConfigureAwait(false);
             throw;
         }
     }
+
+    /// <summary>
+    /// Reads a release's image from its registry, by the digest release.json names, and checks it without importing
+    /// anything (<see cref="ReleaseRegistryImage"/>). Returns the image's configuration identity, which the caller holds to
+    /// its own requirements before anything is pulled, and the selection extended by every identity the registry gave.
+    /// </summary>
+    public Task<(ImageInstallationIdentity Image, ReleaseImageSelection Release)> ReadRegistryReleaseImageAsync(
+        ReleaseImageSelection release,
+        CancellationToken cancellationToken)
+        => ReleaseRegistryImage.ReadAsync(release, RunDockerRawAsync, cancellationToken);
 
     /// <summary>The names Docker can give a release's image: its digest reference, then its archive's identities.</summary>
     private static string[] ReleaseIdentities(ReleaseImageSelection release)
@@ -154,7 +167,8 @@ internal sealed class DockerClient(IProcessRunner processRunner)
 
     /// <summary>
     /// Removes what an import added, best effort and without force: a name another image or a container now uses is
-    /// left alone. Once begun it is not cancelled, so a refused image is not left half removed.
+    /// left alone. It is never cancelled, so it also runs after a cancellation and a refused image is not left half
+    /// removed.
     /// </summary>
     private async Task RemoveImagesAsync(IEnumerable<string> references)
     {

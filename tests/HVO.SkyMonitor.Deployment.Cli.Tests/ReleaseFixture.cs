@@ -40,8 +40,9 @@ internal sealed class ReleaseFixture : IDisposable
 
     private readonly bool ownsRoot;
 
-    private ReleaseFixture(string folder, bool ownsRoot, string version, JsonObject manifest)
+    private ReleaseFixture(string folder, bool ownsRoot, string version, JsonObject manifest, Dictionary<string, byte[]> registryContent)
     {
+        RegistryContent = registryContent;
         Folder = folder;
         this.ownsRoot = ownsRoot;
         Version = version;
@@ -62,6 +63,12 @@ internal sealed class ReleaseFixture : IDisposable
     public string Repository => (string)Manifest["images"]![ReleaseManifest.CameraAgentImageName]!["repository"]!;
 
     public string DigestReference => $"{Repository}@{Digest}";
+
+    /// <summary>
+    /// What the release's registry serves by digest: the image index (unless the release names one platform's manifest),
+    /// each platform's manifest and each configuration. A test may change an entry to make the registry disagree.
+    /// </summary>
+    public Dictionary<string, byte[]> RegistryContent { get; }
 
     /// <summary>
     /// Writes a release of <paramref name="version"/> under <paramref name="root"/>, publishing the image for
@@ -201,7 +208,17 @@ internal sealed class ReleaseFixture : IDisposable
                 (JsonNode)new JsonObject { ["version"] = note.Version, ["text"] = note.Text })]),
             ["assets"] = assets
         };
-        var fixture = new ReleaseFixture(folder, ownsRoot, version, releaseJson);
+        var registry = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        if (!singleManifest)
+        {
+            registry[DigestOf(index)] = index;
+        }
+        foreach (var (_, configBlob, manifest) in images.Values)
+        {
+            registry[DigestOf(manifest)] = manifest;
+            registry[DigestOf(configBlob)] = configBlob;
+        }
+        var fixture = new ReleaseFixture(folder, ownsRoot, version, releaseJson, registry);
         fixture.Rewrite(static _ => { });
         return fixture;
     }

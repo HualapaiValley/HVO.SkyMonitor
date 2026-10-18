@@ -88,14 +88,15 @@ internal sealed class CameraAgentInstaller
         // The bundle's approved specification selects the side-by-side catalog root this instance installs into.
         var catalogId = ProductionCatalog.ReadBundleSpecification(request.CatalogBundle!).CatalogId;
         paths = paths.WithCatalog(catalogId);
-        // A release's image is proved to be the release's, and an image this instance can run, before anything is claimed
-        // for it: no product root, state, catalog, staged archive or Docker import exists yet when it is refused.
-        if (acquiredImage is not null &&
-            await EnsureReleaseImageAsync(request, acquiredImage, docker, catalogId, File.Exists(paths.StatePath), cancellationToken)
-                .ConfigureAwait(false))
+        // A release's image is proved to be the release's, and an image this instance can run, and a new installation
+        // imports it, before anything is claimed for it: no product root, state, application identity, catalog or staged
+        // archive exists yet when it is refused or when Docker cannot import it.
+        var releaseImported = false;
+        if (acquiredImage is not null)
         {
-            // The image this check pulled is the one the install uses; its image step finds it rather than pulling again.
-            request = request with { NoDownload = true };
+            (acquiredImage, releaseImported) = await EnsureReleaseImageAsync(
+                    request, acquiredImage, docker, catalogId, File.Exists(paths.StatePath), cancellationToken)
+                .ConfigureAwait(false);
         }
 
         await PrivilegedPreparation.PrepareAsync(paths, uid, gid, processRunner, cancellationToken).ConfigureAwait(false);
@@ -203,9 +204,10 @@ internal sealed class CameraAgentInstaller
                 paths,
                 allowMutation: retainedCompletedResult is null,
                 cancellationToken).ConfigureAwait(false);
+            // A release image imported before anything was claimed is found and checked again here, not imported twice.
             var (daemon, image) = await docker.PrepareImageAsync(
                 effectiveRequest,
-                allowMutation: retainedCompletedResult is null,
+                allowMutation: retainedCompletedResult is null && !releaseImported,
                 acquiredImage?.Image,
                 cancellationToken)
                 .ConfigureAwait(false);
@@ -510,19 +512,21 @@ internal sealed class CameraAgentInstaller
     }
 
     /// <summary>
-    /// Rewrites the request to install exactly the immutable image the release selected for this host: its offline
-    /// archive, loaded by the image ID it names, or its digest reference, pulled from the registry. A request that names
-    /// an operator-supplied image is returned unchanged.
+    /// Requires a release's image to be the release's and one this instance can run, and imports it for a new
+    /// installation, before the install claims anything:
+    /// <list type="bullet">
+    /// <item>An offline archive's image, layers included, was read from the archive at acquisition. A new installation
+    /// then loads it here, so a load Docker rejects, or one that is cancelled, leaves no state behind to recover.</item>
+    /// <item>A registry image's metadata is read from the registry by the digest release.json names, and checked, before
+    /// anything is pulled (<see cref="DockerClient.ReadRegistryReleaseImageAsync"/>). A new installation then pulls it
+    /// here.</item>
+    /// </list>
+    /// What Docker holds after the import is checked again, and an import that is refused, fails or is cancelled is
+    /// removed. An installation that already has state (a resumed or repeated one) imports nothing here; its image step
+    /// does, as before, from the same verified inputs. Returns the release, with the identities its registry gave, and
+    /// whether the image is now imported.
     /// </summary>
-    /// <summary>
-    /// Requires a release's image to be the release's and one this instance can run, before the install claims anything.
-    /// An offline archive's image was read from the archive at acquisition, so nothing is loaded to check it. A pulled
-    /// image can only be read once Docker holds it, because the installer has no registry client of its own and Docker
-    /// holds the registry credentials: it is pulled by the digest release.json names, checked, and removed again if it is
-    /// refused. An installation that already has state (a resumed or repeated one) pulls nothing here; its own image step
-    /// does, as before. Returns whether it pulled the image.
-    /// </summary>
-    private static async Task<bool> EnsureReleaseImageAsync(
+    private static async Task<(AcquiredImage Release, bool Imported)> EnsureReleaseImageAsync(
         InstallRequest request,
         AcquiredImage release,
         DockerClient docker,
@@ -539,16 +543,27 @@ internal sealed class CameraAgentInstaller
         if (release.ArchivedImage is { } archived)
         {
             Validate(archived);
-            return false;
+        }
+        else
+        {
+            var (registryImage, selection) = await docker.ReadRegistryReleaseImageAsync(release.Image, cancellationToken)
+                .ConfigureAwait(false);
+            Validate(registryImage);
+            release = release with { Image = selection };
         }
         if (stateExists)
         {
-            return false;
+            return (release, false);
         }
-        _ = await docker.PullReleaseImageAsync(request, release.Image, Validate, cancellationToken).ConfigureAwait(false);
-        return !request.NoDownload;
+        _ = await docker.ImportReleaseImageAsync(request, release.Image, Validate, cancellationToken).ConfigureAwait(false);
+        return (release, true);
     }
 
+    /// <summary>
+    /// Rewrites the request to install exactly the immutable image the release selected for this host: its offline
+    /// archive, loaded by the image ID it names, or its digest reference, pulled from the registry. A request that names
+    /// an operator-supplied image is returned unchanged.
+    /// </summary>
     private static InstallRequest ApplyReleaseImage(InstallRequest request, AcquiredImage? image)
         => image is null
             ? request

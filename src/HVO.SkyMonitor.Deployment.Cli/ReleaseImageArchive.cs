@@ -17,10 +17,17 @@ namespace HVO.SkyMonitor.Deployment;
 /// <item>that manifest names the configuration release.json names;</item>
 /// <item>the configuration is for the platform, and is labelled CameraAgent at the release's version and commit;</item>
 /// <item><c>manifest.json</c>, which Docker's classic store loads instead, names that configuration and those layers,
-/// and tags only <c>&lt;repository&gt;:&lt;version&gt;</c>, so a load cannot retag another image on the host.</item>
+/// and tags only <c>&lt;repository&gt;:&lt;version&gt;</c>, so a load cannot retag another image on the host;</item>
+/// <item>every layer the manifest names is in the archive, the size the manifest gives it and the blob its digest
+/// names, so Docker cannot reject the load for a missing or damaged layer.</item>
 /// </list>
-/// Every blob is checked against the digest that names it, its JSON is read with <see cref="ReleaseJson"/>, and an entry
-/// the check reads that appears twice, or is not a regular file, is refused.
+/// A loader reads entries by their cleaned path and lets a later entry replace an earlier one, so the archive must spell
+/// each entry one way and hold it once: every entry name must be the canonical spelling of its path (no <c>.</c> or
+/// <c>..</c> segment, no empty segment, no leading <c>/</c>, no backslash, and a trailing <c>/</c> only on a
+/// directory), must be part of the OCI image layout (<c>oci-layout</c>, <c>index.json</c>, <c>manifest.json</c>, the
+/// <c>blobs/sha256</c> directories and the blobs the image uses), must appear once, and must be a regular file, or a
+/// directory where the layout has one. Every blob is checked against the digest that names it, and its JSON is read
+/// with <see cref="ReleaseJson"/>.
 /// </summary>
 internal static class ReleaseImageArchive
 {
@@ -29,10 +36,16 @@ internal static class ReleaseImageArchive
 
     private const string BlobPrefix = "blobs/sha256/";
 
-    private static readonly string[] IndexMediaTypes =
+    /// <summary>The files of an OCI image layout, as the release tool writes it.</summary>
+    private static readonly string[] LayoutFiles = ["oci-layout", "index.json", "manifest.json"];
+
+    /// <summary>The directories of an OCI image layout, which the release tool writes as entries of their own.</summary>
+    private static readonly string[] LayoutDirectories = ["blobs", "blobs/sha256"];
+
+    internal static readonly string[] IndexMediaTypes =
         ["application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json"];
 
-    private static readonly string[] ManifestMediaTypes =
+    internal static readonly string[] ManifestMediaTypes =
         ["application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"];
 
     /// <summary>
@@ -60,22 +73,36 @@ internal static class ReleaseImageArchive
         {
             wanted.Add(BlobPrefix + Hex(image.Digest));
         }
-        var entries = await ReadEntriesAsync(stream, archive.Name, wanted, cancellationToken).ConfigureAwait(false);
+        var (entries, blobs) = await ReadEntriesAsync(stream, archive.Name, wanted, cancellationToken).ConfigureAwait(false);
         InstallerException Refusal(string reason)
             => new($"The offline archive {archive.Name} is not the image release {release.Tag} names: {reason}.");
         byte[] Entry(string name, string what)
             => entries.TryGetValue(name, out var bytes) ? bytes : throw Refusal($"it holds no {what}");
-        byte[] Blob(string digest, string what)
+        // A blob is the content its descriptor gives: the digest that names it and the size the descriptor records.
+        byte[] Blob(string digest, long? size, string what)
         {
             var bytes = Entry(BlobPrefix + Hex(digest), what);
             if (!string.Equals($"sha256:{Convert.ToHexStringLower(SHA256.HashData(bytes))}", digest, StringComparison.Ordinal))
             {
                 throw Refusal($"its {what} is not the blob {digest} names");
             }
+            if (size != bytes.Length)
+            {
+                throw Refusal($"its {what} is not the size its descriptor gives");
+            }
             return bytes;
         }
 
+        using (var layoutVersion = ReleaseJson.Parse(Entry("oci-layout", "OCI layout version"), $"the offline archive {archive.Name}'s oci-layout"))
+        {
+            if (Text(layoutVersion.RootElement, "imageLayoutVersion") != "1.0.0")
+            {
+                throw Refusal("its OCI layout is not version 1.0.0");
+            }
+        }
+
         var reference = $"{image.Repository}:{release.Version}";
+        long? imageSize;
         using (var layout = ReleaseJson.Parse(Entry("index.json", "OCI layout index"), $"the offline archive {archive.Name}'s OCI layout index"))
         {
             var top = Single(layout.RootElement, "manifests") ?? throw Refusal("its OCI layout does not name exactly one image");
@@ -83,6 +110,7 @@ internal static class ReleaseImageArchive
             {
                 throw Refusal($"its OCI layout names an image other than {image.Digest}");
             }
+            imageSize = Size(top);
             var mediaType = Text(top, "mediaType");
             if (!(singlePlatform ? ManifestMediaTypes : IndexMediaTypes).Contains(mediaType, StringComparer.Ordinal))
             {
@@ -102,9 +130,10 @@ internal static class ReleaseImageArchive
             }
         }
 
+        long? manifestSize = imageSize;
         if (!singlePlatform)
         {
-            using var index = ReleaseJson.Parse(Blob(image.Digest, "image index"), $"the offline archive {archive.Name}'s image index");
+            using var index = ReleaseJson.Parse(Blob(image.Digest, imageSize, "image index"), $"the offline archive {archive.Name}'s image index");
             if (index.RootElement.ValueKind != JsonValueKind.Object ||
                 !index.RootElement.TryGetProperty("manifests", out var manifests) || manifests.ValueKind != JsonValueKind.Array)
             {
@@ -120,10 +149,12 @@ internal static class ReleaseImageArchive
             {
                 throw Refusal($"its image index does not list {archive.Platform} once, as {archive.ManifestDigest}");
             }
+            manifestSize = Size(matching[0]);
         }
 
-        string[] layers;
-        using (var manifest = ReleaseJson.Parse(Blob(archive.ManifestDigest, $"{archive.Platform} manifest"), $"the offline archive {archive.Name}'s {archive.Platform} manifest"))
+        (string Digest, long Size)[] layerDescriptors;
+        long? configSize;
+        using (var manifest = ReleaseJson.Parse(Blob(archive.ManifestDigest, manifestSize, $"{archive.Platform} manifest"), $"the offline archive {archive.Name}'s {archive.Platform} manifest"))
         {
             var root = manifest.RootElement;
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("config", out var config) ||
@@ -131,21 +162,41 @@ internal static class ReleaseImageArchive
             {
                 throw Refusal($"its {archive.Platform} manifest does not name the configuration {archive.ConfigDigest}");
             }
+            configSize = Size(config);
             if (!root.TryGetProperty("layers", out var layerValues) || layerValues.ValueKind != JsonValueKind.Array)
             {
                 throw Refusal($"its {archive.Platform} manifest lists no layers");
             }
-            layers = [.. layerValues.EnumerateArray().Select(layer => layer.ValueKind == JsonValueKind.Object && Text(layer, "digest") is { } digest &&
-                                                                          IsDigest(digest)
-                ? BlobPrefix + Hex(digest)
-                : throw Refusal($"its {archive.Platform} manifest names a layer without a digest"))];
+            layerDescriptors = [.. layerValues.EnumerateArray().Select(layer => layer.ValueKind == JsonValueKind.Object &&
+                                                                                Text(layer, "digest") is { } digest && IsDigest(digest) &&
+                                                                                Size(layer) is { } size
+                ? (digest, size)
+                : throw Refusal($"its {archive.Platform} manifest names a layer without a digest and size"))];
+        }
+        string[] layers = [.. layerDescriptors.Select(static layer => BlobPrefix + Hex(layer.Digest))];
+
+        // Docker opens every layer the image names while it loads, and refuses the load when one is missing or is not
+        // the blob its digest names, which would be after the install has claimed its state.
+        foreach (var (digest, size) in layerDescriptors)
+        {
+            if (!blobs.TryGetValue(BlobPrefix + Hex(digest), out var layer))
+            {
+                throw Refusal($"it holds no {archive.Platform} layer {digest}");
+            }
+            if (layer.Length != size)
+            {
+                throw Refusal($"its {archive.Platform} layer {digest} is not the size its manifest gives");
+            }
+            if (layer.Digest != digest)
+            {
+                throw Refusal($"its {archive.Platform} layer {digest} is not the blob that digest names");
+            }
         }
 
         // Docker's classic store loads the image manifest.json describes rather than the OCI index, so it must describe
         // the same image and tag nothing else.
-        if (entries.TryGetValue("manifest.json", out var dockerManifestBytes))
         {
-            using var dockerManifest = ReleaseJson.Parse(dockerManifestBytes, $"the offline archive {archive.Name}'s manifest.json");
+            using var dockerManifest = ReleaseJson.Parse(Entry("manifest.json", "manifest.json"), $"the offline archive {archive.Name}'s manifest.json");
             var only = dockerManifest.RootElement.ValueKind == JsonValueKind.Array && dockerManifest.RootElement.GetArrayLength() == 1
                 ? dockerManifest.RootElement[0]
                 : default;
@@ -164,7 +215,7 @@ internal static class ReleaseImageArchive
             }
         }
 
-        using var configuration = ReleaseJson.Parse(Blob(archive.ConfigDigest, $"{archive.Platform} configuration"), $"the offline archive {archive.Name}'s {archive.Platform} configuration");
+        using var configuration = ReleaseJson.Parse(Blob(archive.ConfigDigest, configSize, $"{archive.Platform} configuration"), $"the offline archive {archive.Name}'s {archive.Platform} configuration");
         var configurationRoot = configuration.RootElement;
         if (configurationRoot.ValueKind != JsonValueKind.Object ||
             $"{Text(configurationRoot, "os")}/{Text(configurationRoot, "architecture")}" != archive.Platform)
@@ -184,59 +235,132 @@ internal static class ReleaseImageArchive
                 $"The offline archive {archive.Name} holds an image that is not labelled as CameraAgent {release.Version} from " +
                 $"commit {release.Commit}, as release {release.Tag} requires.");
         }
+
+        // Anything else under blobs/ is content no loader of this image reads, so the archive is not the one the release
+        // tool wrote.
+        var used = new HashSet<string>([.. wanted.Where(static name => name.StartsWith(BlobPrefix, StringComparison.Ordinal)), .. layers], StringComparer.Ordinal);
+        if (blobs.Keys.FirstOrDefault(name => !used.Contains(name)) is { } unused)
+        {
+            throw Refusal($"it holds {unused}, which its image does not use");
+        }
         return identity;
     }
 
     /// <summary>
-    /// The regular-file entries of the archive named in <paramref name="wanted"/>, each at most
-    /// <see cref="MaximumMetadataBytes"/>. Anything else, including the layers, is read past without being kept.
+    /// Reads the archive once. Every entry is checked: its name must be the canonical spelling of a path in the OCI image
+    /// layout, it must appear once, and it must be a regular file, or a directory where the layout has one. The layout's
+    /// files and the blobs named in <paramref name="wanted"/> are kept, each at most <see cref="MaximumMetadataBytes"/>,
+    /// and every blob's size and SHA-256 are recorded; the layers are read past without being kept.
     /// </summary>
-    private static async Task<Dictionary<string, byte[]>> ReadEntriesAsync(
+    private static async Task<(Dictionary<string, byte[]> Entries, Dictionary<string, BlobContent> Blobs)> ReadEntriesAsync(
         Stream stream,
         string name,
         HashSet<string> wanted,
         CancellationToken cancellationToken)
     {
         var entries = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        var blobs = new Dictionary<string, BlobContent>(StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         try
         {
             await using var reader = new TarReader(stream, leaveOpen: true);
             while (await reader.GetNextEntryAsync(copyData: false, cancellationToken).ConfigureAwait(false) is { } entry)
             {
-                // A loader reads "./index.json" as "index.json", so both spellings are one entry here.
-                var entryName = entry.Name;
-                while (entryName.StartsWith("./", StringComparison.Ordinal))
+                var entryName = CanonicalName(entry)
+                                ?? throw new InstallerException(
+                                    $"The offline archive {name} holds an entry named {Printable(entry.Name)}, which is not the canonical spelling of a path.");
+                var isBlob = IsBlobName(entryName);
+                if (!isBlob && !LayoutFiles.Contains(entryName, StringComparer.Ordinal) &&
+                    !LayoutDirectories.Contains(entryName, StringComparer.Ordinal))
                 {
-                    entryName = entryName[2..];
+                    throw new InstallerException(
+                        $"The offline archive {name} holds an entry named {Printable(entryName)}, which is not part of an OCI image layout.");
                 }
-                if (!wanted.Contains(entryName))
+                if (LayoutDirectories.Contains(entryName, StringComparer.Ordinal))
                 {
-                    continue;
+                    if (entry.EntryType != TarEntryType.Directory)
+                    {
+                        throw new InstallerException($"The offline archive {name} holds {entryName} as something other than a directory.");
+                    }
                 }
-                if (entry.EntryType is not (TarEntryType.RegularFile or TarEntryType.V7RegularFile))
+                else if (entry.EntryType is not (TarEntryType.RegularFile or TarEntryType.V7RegularFile))
                 {
                     throw new InstallerException($"The offline archive {name} holds {entryName} as something other than a file.");
                 }
-                if (entries.ContainsKey(entryName))
+                if (!seen.Add(entryName))
                 {
                     // A loader would read one of the two copies, and this check might have read the other.
                     throw new InstallerException($"The offline archive {name} holds {entryName} twice.");
                 }
-                if (entry.Length > MaximumMetadataBytes || entry.DataStream is null)
+                if (entry.EntryType == TarEntryType.Directory)
+                {
+                    continue;
+                }
+                var data = entry.DataStream ?? Stream.Null;
+                if (isBlob && !wanted.Contains(entryName))
+                {
+                    var digest = await SHA256.HashDataAsync(data, cancellationToken).ConfigureAwait(false);
+                    blobs.Add(entryName, new BlobContent(entry.Length, $"sha256:{Convert.ToHexStringLower(digest)}"));
+                    continue;
+                }
+                if (entry.Length > MaximumMetadataBytes)
                 {
                     throw new InstallerException($"The offline archive {name} holds an unreadable {entryName}.");
                 }
                 var bytes = new byte[entry.Length];
-                await entry.DataStream.ReadExactlyAsync(bytes, cancellationToken).ConfigureAwait(false);
+                await data.ReadExactlyAsync(bytes, cancellationToken).ConfigureAwait(false);
                 entries.Add(entryName, bytes);
+                if (isBlob)
+                {
+                    blobs.Add(entryName, new BlobContent(bytes.Length, $"sha256:{Convert.ToHexStringLower(SHA256.HashData(bytes))}"));
+                }
             }
         }
         catch (Exception exception) when (exception is InvalidDataException or FormatException or EndOfStreamException)
         {
             throw new InstallerException($"The offline archive {name} is not a readable tar archive.", exception);
         }
-        return entries;
+        return (entries, blobs);
     }
+
+    /// <summary>
+    /// The path <paramref name="entry"/> names, or <see langword="null"/> when its name is not that path's one canonical
+    /// spelling: an empty, <c>.</c> or <c>..</c> segment, a leading <c>/</c>, a backslash or a NUL, or a trailing
+    /// <c>/</c> on anything but a directory. Docker and containerd clean each name before they use it, so any other
+    /// spelling could reach a file this check did not read under that name.
+    /// </summary>
+    private static string? CanonicalName(TarEntry entry)
+    {
+        var name = entry.Name;
+        if (entry.EntryType == TarEntryType.Directory && name.EndsWith('/'))
+        {
+            name = name[..^1];
+        }
+        if (name.Length == 0 || name[0] == '/' || name.Contains('\\', StringComparison.Ordinal) || name.Contains('\0', StringComparison.Ordinal))
+        {
+            return null;
+        }
+        return name.Split('/').Any(static segment => segment.Length == 0 || segment is "." or "..") ? null : name;
+    }
+
+    private static bool IsBlobName(string name)
+        => name.Length == BlobPrefix.Length + 64 && name.StartsWith(BlobPrefix, StringComparison.Ordinal) &&
+           name[BlobPrefix.Length..].All(static character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    /// <summary>An entry name quoted for a message, unless it holds characters a message should not carry.</summary>
+    private static string Printable(string name)
+        => name.Length is > 0 and <= 160 &&
+           name.All(static character => character is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or
+               '.' or '/' or '-' or '_' or '+' or '@' or ':' or '\\')
+            ? $"'{name}'"
+            : "that the installer will not print";
+
+    /// <summary>The <c>size</c> a descriptor gives, or <see langword="null"/> when it gives none that is a byte count.</summary>
+    private static long? Size(JsonElement descriptor)
+        => descriptor.ValueKind == JsonValueKind.Object && descriptor.TryGetProperty("size", out var size) &&
+           size.ValueKind == JsonValueKind.Number && size.TryGetInt64(out var length) && length >= 0
+            ? length
+            : null;
 
     /// <summary>The one element of <paramref name="name"/>'s array, or <see langword="null"/> unless there is exactly one.</summary>
     private static JsonElement? Single(JsonElement element, string name)
@@ -255,4 +379,7 @@ internal static class ReleaseImageArchive
            value[7..].All(static character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
     private static string Hex(string digest) => digest["sha256:".Length..];
+
+    /// <summary>A blob as the archive holds it: its size and the SHA-256 of its content.</summary>
+    private readonly record struct BlobContent(long Length, string Digest);
 }

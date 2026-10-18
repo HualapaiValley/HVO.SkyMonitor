@@ -178,14 +178,72 @@ public sealed partial class LifecycleContractTests
     }
 
     /// <summary>
-    /// A pulled release image that is refused is removed again, before the journal entry, so the instance, its journal
-    /// and Docker end as they began.
+    /// A registry release image is read from its registry by the digest release.json names, and refused there, before
+    /// anything is pulled and before the journal entry, so the instance, its journal and Docker end as they began.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("version-label", "The CameraAgent image {reference} in its registry is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, as release v1.2.0-dev.3 requires. Nothing was pulled.")]
+    [DataRow("contract-label", "The candidate image does not declare the required CameraAgent configuration and catalog contracts.")]
+    [DataRow("state-contract", "!The candidate image declares state compatibility")]
+    [DataRow("unavailable", "The installer cannot read {reference} from its registry before pulling it, so it pulls nothing (docker: 'buildx' is not a docker command.). Install from the release's offline archive, the default image source (leave out --image-source registry), or let this user read the registry with 'docker buildx imagetools inspect'.")]
+    public async Task UpgradeAsync_RegistryReleaseImageThatIsRefused_IsRefusedBeforeAnyPullOrTheJournal(string fault, string expected)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        using var release = CandidateRelease(fixture, out var candidateImageId, labels: labels =>
+        {
+            switch (fault)
+            {
+                case "version-label": labels["org.opencontainers.image.version"] = "9.9.9"; break;
+                case "contract-label": labels.Remove("io.hvo.skymonitor.configuration-contract"); break;
+                case "state-contract": labels["io.hvo.skymonitor.state-compatibility"] = "cameraagent-state-v1"; break;
+            }
+        });
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            release.DigestReference, candidateImageId, fixture.Uid, fixture.Gid);
+        fixture.Runner.Registry = new FakeRegistry(release.RegistryContent)
+        {
+            Unavailable = fault == "unavailable" ? "docker: 'buildx' is not a docker command." : null
+        };
+        fixture.Runner.CandidateHeld = [];
+        var instanceBefore = InstanceTree(fixture);
+
+        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                Release = release.Folder,
+                ImageSource = ReleaseImageSource.Registry,
+                MigrationBackwardCompatible = true
+            },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        var message = expected.Replace("{reference}", release.DigestReference, StringComparison.Ordinal);
+        if (message.StartsWith('!'))
+            StringAssert.StartsWith(exception.Message, message[1..], StringComparison.Ordinal);
+        else
+            Assert.AreEqual(message, exception.Message);
+        Assert.IsGreaterThan(0, fixture.Runner.Registry!.Reads);
+        Assert.AreEqual(0, fixture.Runner.PullCount, "a refused registry image must never be pulled");
+        Assert.IsEmpty(fixture.Runner.RemovedImages, "nothing was pulled, so nothing is removed");
+        Assert.IsEmpty(fixture.Runner.CandidateHeld!);
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath), "a refused release must not open the journal");
+        CollectionAssert.AreEqual(instanceBefore, InstanceTree(fixture), "a refused release changed the instance");
+    }
+
+    /// <summary>
+    /// The checks on the pulled image stay as the second line: a registry whose metadata is the release's, but whose
+    /// pulled image Docker then reports otherwise, has that image removed again before the journal entry, so the
+    /// instance, its journal and Docker end as they began.
     /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow("version-label", "The CameraAgent image Docker resolved is not labelled as CameraAgent 1.2.0-dev.3 from commit 0123456789abcdef0123456789abcdef01234567, as release v1.2.0-dev.3 requires.")]
     [DataRow("contract-label", "The candidate image does not declare the required CameraAgent configuration and catalog contracts.")]
-    public async Task UpgradeAsync_PulledReleaseImageThatIsRefused_IsRemovedBeforeTheJournal(string fault, string expected)
+    public async Task UpgradeAsync_PulledImageDockerReportsAsAnotherRelease_IsRemovedBeforeTheJournal(string fault, string expected)
     {
         ArgumentNullException.ThrowIfNull(expected);
         using var fixture = await LifecycleFixture.CreateAsync(
@@ -194,7 +252,8 @@ public sealed partial class LifecycleContractTests
         using var release = CandidateRelease(fixture, out var candidateImageId);
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             release.DigestReference, candidateImageId, fixture.Uid, fixture.Gid);
-        // The registry serves an image the release's own archive does not describe.
+        // The registry's metadata is the release's, but Docker reports the image it pulled otherwise.
+        fixture.Runner.Registry = new FakeRegistry(release.RegistryContent);
         switch (fault)
         {
             case "version-label": fixture.Runner.CandidateLabels["org.opencontainers.image.version"] = "9.9.9"; break;
@@ -219,6 +278,44 @@ public sealed partial class LifecycleContractTests
         Assert.IsEmpty(fixture.Runner.CandidateHeld!, "the refused pull is still in Docker");
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath), "a refused release must not open the journal");
         CollectionAssert.AreEqual(instanceBefore, InstanceTree(fixture), "a refused release changed the instance");
+    }
+
+    /// <summary>
+    /// An upgrade cancelled while Docker pulls the release's image, after the image arrived, removes it again before the
+    /// journal entry, so the instance, its journal and Docker end as they began.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_CancelledWhileTheReleaseImageIsPulled_RemovesItBeforeTheJournal()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        using var release = CandidateRelease(fixture, out var candidateImageId);
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            release.DigestReference, candidateImageId, fixture.Uid, fixture.Gid);
+        fixture.Runner.Registry = new FakeRegistry(release.RegistryContent);
+        using var cancellation = new CancellationTokenSource();
+        fixture.Runner.CancelDuringPull = cancellation;
+        fixture.Runner.CandidateHeld = [];
+        var instanceBefore = InstanceTree(fixture);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                Release = release.Folder,
+                ImageSource = ReleaseImageSource.Registry,
+                MigrationBackwardCompatible = true
+            },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, cancellation.Token));
+
+        Assert.AreEqual(1, fixture.Runner.PullCount);
+        CollectionAssert.Contains(fixture.Runner.RemovedImages, release.DigestReference);
+        Assert.IsEmpty(fixture.Runner.CandidateHeld!, "the cancelled pull is still in Docker");
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath), "a cancelled pull must not open the journal");
+        CollectionAssert.AreEqual(instanceBefore, InstanceTree(fixture), "a cancelled pull changed the instance");
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
     }
 
     /// <summary>
@@ -292,6 +389,7 @@ public sealed partial class LifecycleContractTests
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             release.DigestReference, candidateImageId, fixture.Uid, fixture.Gid);
         fixture.Runner.CandidateRawIngressSchema = "13";
+        fixture.Runner.Registry = new FakeRegistry(release.RegistryContent);
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(LifecycleOperationKind.Upgrade) with
@@ -307,6 +405,9 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(candidateImageId, result.Image!.ImageId);
         Assert.AreEqual(release.DigestReference, result.Image.ImmutableReference);
         Assert.AreEqual("registry", result.Image.Source);
+        // The index, the platform manifest and the configuration were read before anything was pulled.
+        Assert.AreEqual(3, fixture.Runner.Registry!.Reads);
+        Assert.IsGreaterThan(0, fixture.Runner.PullCount);
     }
 
     [TestMethod]
@@ -3118,6 +3219,12 @@ public sealed partial class LifecycleContractTests
 
         public int PullCount { get; private set; }
 
+        /// <summary>The registry a release candidate is read from before it is pulled.</summary>
+        public FakeRegistry? Registry { get; set; }
+
+        /// <summary>Cancels this source while a pull runs, after Docker has the image, as a Ctrl+C mid-pull does.</summary>
+        public CancellationTokenSource? CancelDuringPull { get; set; }
+
         public void ConfigureRuntime(
             InstallationPaths installationPaths,
             string immutableInitialReference,
@@ -3163,6 +3270,8 @@ public sealed partial class LifecycleContractTests
             if (arguments is ["context", "inspect", ..])
                 return Task.FromResult(new ProcessResult(0, "unix:///var/run/docker.sock", string.Empty));
             if (arguments.Count >= 2 && arguments[0] == "--host") arguments = arguments.Skip(2).ToArray();
+            if (FakeRegistry.IsRead(arguments))
+                return Task.FromResult(Registry?.Answer(arguments) ?? throw new AssertFailedException("The test gave no registry."));
             if (arguments[0] == "image") ImagePreparationCount++;
             if (arguments is ["info", ..])
             {
@@ -3185,6 +3294,11 @@ public sealed partial class LifecycleContractTests
             {
                 PullCount++;
                 if (candidateImageId is not null) CandidateHeld?.UnionWith([pulled, candidateImageId]);
+                if (CancelDuringPull is { } cancellation)
+                {
+                    cancellation.Cancel();
+                    cancellation.Token.ThrowIfCancellationRequested();
+                }
                 return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
             }
             if (arguments is ["image", "load", ..] && candidateImageId is not null)

@@ -20,12 +20,12 @@ internal enum ReleaseImageSource
 /// Reads a release from the folder holding its files (install contract section 4) and selects its CameraAgent image for
 /// the platform that will run it. The trust model is the contract's: release.json must be the file SHA256SUMS names, and
 /// the two must list the same files with the same SHA-256; the image is pinned to the digest release.json names; and an
-/// offline archive must be the size and SHA-256 both give it, and must hold the release's image for the platform,
-/// labelled with the release's version and commit (<see cref="ReleaseImageArchive"/>). SHA256SUMS itself is checked
-/// against its build-provenance attestation by <c>install.sh</c> or the operator (<c>gh attestation verify</c>) before
-/// the installer runs. Every refusal here happens before Docker is asked to load, pull or start anything; a pulled
-/// image, which can only be read once Docker holds it, is checked before the install or upgrade claims anything
-/// (<see cref="DockerClient.PullReleaseImageAsync"/>).
+/// offline archive must be the size and SHA-256 both give it, and must hold the release's image for the platform, every
+/// layer included, labelled with the release's version and commit (<see cref="ReleaseImageArchive"/>). SHA256SUMS itself
+/// is checked against its build-provenance attestation by <c>install.sh</c> or the operator (<c>gh attestation
+/// verify</c>) before the installer runs. Every refusal here happens before Docker is asked to load, pull or start
+/// anything; a registry image's metadata is read from the registry and checked before anything is pulled
+/// (<see cref="DockerClient.ReadRegistryReleaseImageAsync"/>).
 /// </summary>
 internal static class ReleaseAcquirer
 {
@@ -285,7 +285,7 @@ internal sealed record AcquiredImage(
 
     /// <summary>
     /// The image an offline archive holds, read from the archive before anything is loaded; <see langword="null"/> for a
-    /// pulled image, which can only be read once Docker holds it.
+    /// registry image, which is read from its registry before it is pulled.
     /// </summary>
     public ImageInstallationIdentity? ArchivedImage { get; init; }
 

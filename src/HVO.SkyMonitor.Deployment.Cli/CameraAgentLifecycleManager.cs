@@ -490,7 +490,7 @@ internal sealed class CameraAgentLifecycleManager
         }
         if (!rollback && signedImage is not null)
         {
-            await EnsureReleaseCandidateAsync(request, manifest, docker, signedImage, cancellationToken).ConfigureAwait(false);
+            signedImage = await EnsureReleaseCandidateAsync(request, manifest, docker, signedImage, cancellationToken).ConfigureAwait(false);
         }
         var operation = await BeginAsync(request, paths, rollback ? LifecycleOperationKind.Rollback : LifecycleOperationKind.Upgrade,
             manifest, cancellationToken).ConfigureAwait(false);
@@ -1568,13 +1568,16 @@ internal sealed class CameraAgentLifecycleManager
 
     /// <summary>
     /// Requires a release's image to be the release's and one this instance can run before the upgrade's journal entry,
-    /// so a refused release leaves the instance, its journal and Docker as they were. An offline archive's image was read
-    /// from the archive at acquisition. A pulled image can only be read once Docker holds it, because the installer has no
-    /// registry client of its own and Docker holds the registry credentials: it is pulled by the digest release.json names,
-    /// checked, and removed again if it is refused. A dry run pulls nothing, as before. The same checks run again on the
-    /// image Docker resolves once the upgrade has begun.
+    /// so a refused release leaves the instance, its journal and Docker as they were. An offline archive's image, layers
+    /// included, was read from the archive at acquisition; a load Docker still rejects after the journal entry is settled
+    /// as a terminal refusal, which blocks no later upgrade. A registry image's metadata is read from the registry by the
+    /// digest release.json names, and checked, before anything is pulled
+    /// (<see cref="DockerClient.ReadRegistryReleaseImageAsync"/>); it is then pulled, checked again, and removed if it is
+    /// refused, if the pull fails or if the upgrade is cancelled. A dry run reads and pulls nothing, as before. The same
+    /// checks run again on the image Docker resolves once the upgrade has begun. Returns the release, with the identities
+    /// its registry gave.
     /// </summary>
-    private static async Task EnsureReleaseCandidateAsync(
+    private static async Task<AcquiredImage> EnsureReleaseCandidateAsync(
         LifecycleRequest request,
         InstanceManifest manifest,
         DockerClient docker,
@@ -1601,15 +1604,21 @@ internal sealed class CameraAgentLifecycleManager
         if (release.ArchivedImage is { } archived)
         {
             Validate(archived);
-            return;
+            return release;
         }
-        if (!request.DryRun)
+        if (request.DryRun)
         {
-            _ = await docker.PullReleaseImageAsync(
-                    ImageRequest(manifest, release.ImageReference, null, null, request.NoDownload), release.Image, Validate,
-                    cancellationToken)
-                .ConfigureAwait(false);
+            return release;
         }
+        var (registryImage, selection) = await docker.ReadRegistryReleaseImageAsync(release.Image, cancellationToken)
+            .ConfigureAwait(false);
+        Validate(registryImage);
+        release = release with { Image = selection };
+        _ = await docker.ImportReleaseImageAsync(
+                ImageRequest(manifest, release.ImageReference, null, null, request.NoDownload), selection, Validate,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return release;
     }
 
     private static InstallRequest ImageRequest(
