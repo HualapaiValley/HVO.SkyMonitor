@@ -170,7 +170,9 @@ which keep their own codes. Without `--json` a refusal reads
 
 Every refusal under [Release Install](#release-install) exits `3`, including a registry the
 installer cannot read before it pulls: each is decided before anything is imported, or after an import that is then
-removed. A load or pull that Docker itself rejects is a failed step and exits `1`. An upgrade loads an offline
+removed. When Docker does not remove that import, or cannot be read back to show it did, the refusal becomes a failed
+step instead and exits `1`, naming the image left behind. A load or pull that Docker itself rejects is a failed step and
+exits `1`. An upgrade loads an offline
 archive after its journal entry, so a loaded image that is not the release's is refused there: the journal settles
 it as refused, so it blocks no later operation, and it exits `1` (see below).
 
@@ -743,6 +745,11 @@ from the same verified inputs. An upgrade pulls a registry image before its jour
 only reads has passed, the state preflight included, so no refusal follows the pull; a refusal under the instance lock
 that still changes nothing removes the pulled image again. It loads an archive after its journal entry, and a load
 Docker still rejects there is settled as a terminal refusal that blocks no later operation.
+
+A refusal says that nothing changed, so after removing an image it imported the installer reads back what Docker holds.
+If Docker kept any name the import added, or cannot be read back, the command fails with exit `1` instead of refusing,
+names the image left behind, and gives the `docker image rm` command that removes it. Names Docker held before the
+import are never removed.
 
 Before it claims anything, the installer also requires the release's image, from the archive or the pull, to declare
 the configuration and catalog contracts this instance needs (an upgrade also requires the current state contract).

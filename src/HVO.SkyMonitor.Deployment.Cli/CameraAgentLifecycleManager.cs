@@ -145,9 +145,10 @@ internal sealed partial class CameraAgentLifecycleManager
             // Once this run has written, a lock file or the journal, a gate that decides not to go ahead can no longer say
             // nothing changed: it is a failure, journaled where an operation began (#1315).
             if (ReadWrittenState(paths) != written) throw new InstallerException(exception.Message, exception);
-            // Nothing is written yet, so the refusal still says nothing changed: an image this run pulled is removed again,
-            // as its pull's own refusal would remove it (#1315 PR-1355-R3 R3-1).
-            await docker.RemoveImportedImagesAsync(imported).ConfigureAwait(false);
+            // Nothing is written yet, so the refusal still says nothing changed once an image this run pulled is removed
+            // again, as its pull's own refusal would remove it (#1315 PR-1355-R3 R3-1). An image Docker keeps makes it a
+            // failure that names it (R4-1).
+            await docker.UndoImportAsync(imported, exception).ConfigureAwait(false);
             throw;
         }
 

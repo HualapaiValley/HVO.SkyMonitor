@@ -3247,6 +3247,12 @@ public sealed partial class LifecycleContractTests
         /// <summary>Runs while a pull runs, after Docker has the image, as another run changing the instance meanwhile does.</summary>
         public Action? OnPull { get; set; }
 
+        /// <summary>Makes every <c>image rm</c> exit 1 and remove nothing, as Docker refusing a removal does.</summary>
+        public bool FailImageRemoval { get; set; }
+
+        /// <summary>Makes Docker unreadable once an <c>image rm</c> has run, as a daemon that stops answering does.</summary>
+        public bool FailDaemonReadAfterRemoval { get; set; }
+
         public void ConfigureRuntime(
             InstallationPaths installationPaths,
             string immutableInitialReference,
@@ -3295,6 +3301,8 @@ public sealed partial class LifecycleContractTests
             if (FakeRegistry.IsRead(arguments))
                 return Task.FromResult(Registry?.Answer(arguments) ?? throw new AssertFailedException("The test gave no registry."));
             if (arguments[0] == "image") ImagePreparationCount++;
+            if (arguments is ["info", ..] && FailDaemonReadAfterRemoval && RemovedImages.Count > 0)
+                return Task.FromResult(new ProcessResult(1, string.Empty, "Cannot connect to the Docker daemon."));
             if (arguments is ["info", ..])
             {
                 infoCallCount++;
@@ -3333,6 +3341,8 @@ public sealed partial class LifecycleContractTests
             if (arguments is ["image", "rm", var removed])
             {
                 RemovedImages.Add(removed);
+                if (FailImageRemoval)
+                    return Task.FromResult(new ProcessResult(1, string.Empty, $"Error response from daemon: conflict: unable to remove {removed}"));
                 if (CandidateHeld is null || !CandidateHeld.Remove(removed))
                     return Task.FromResult(new ProcessResult(1, string.Empty, $"Error: No such image: {removed}"));
                 CandidateHeld.Clear();

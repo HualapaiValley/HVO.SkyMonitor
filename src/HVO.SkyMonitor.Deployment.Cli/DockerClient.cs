@@ -107,10 +107,10 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         {
             return await PrepareImageCoreAsync(request, allowMutation, release, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception) when (added.Count > 0)
+        catch (Exception exception) when (added.Count > 0)
         {
             // A cancellation is removed too: a load or pull it interrupted may already have imported the image.
-            await RemoveImagesAsync(added).ConfigureAwait(false);
+            await UndoImportAsync(added, exception).ConfigureAwait(false);
             throw;
         }
     }
@@ -121,8 +121,8 @@ internal sealed class DockerClient(IProcessRunner processRunner)
     /// changed for it. Whatever this import added is removed again when the image is refused, when Docker fails, or when
     /// the operation is cancelled, so it leaves Docker holding what it held. A registry image's metadata must have been
     /// read and checked first (<see cref="ReadRegistryReleaseImageAsync"/>); these checks after the import are the second.
-    /// Returns the image and the names this import added, which <see cref="RemoveImportedImagesAsync"/> removes again
-    /// when a later refusal undoes the import.
+    /// Returns the image and the names this import added, which <see cref="UndoImportAsync"/> removes again when a later
+    /// refusal undoes the import.
     /// </summary>
     public async Task<(ImageInstallationIdentity Image, IReadOnlyList<string> Added)> ImportReleaseImageAsync(
         InstallRequest request,
@@ -140,21 +140,57 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             validate(image);
             return (image, added);
         }
-        catch (Exception) when (added.Count > 0)
+        catch (Exception exception) when (added.Count > 0)
         {
-            await RemoveImagesAsync(added).ConfigureAwait(false);
+            await UndoImportAsync(added, exception).ConfigureAwait(false);
             throw;
         }
     }
 
     /// <summary>
-    /// Removes the names an import added (<see cref="ImportReleaseImageAsync"/>), the same way the import removes them when
-    /// it is refused: best effort, without force, and never cancelled.
+    /// Removes the names an import added once <paramref name="cause"/> has stopped the operation: without force, never
+    /// cancelled, and never a name Docker held before the import. A refusal says that nothing changed, so after one the
+    /// names are read back. When any is still held, or Docker cannot be read back, the refusal becomes a failure that
+    /// names what is left and how to remove it (#1315 PR-1355-R4 R4-1). A name already absent counts as removed. Any other
+    /// cause stands as it is: a failure or an interruption never says that nothing changed.
     /// </summary>
-    public Task RemoveImportedImagesAsync(IReadOnlyList<string> added)
+    public async Task UndoImportAsync(IReadOnlyList<string> added, Exception cause)
     {
         ArgumentNullException.ThrowIfNull(added);
-        return RemoveImagesAsync(added);
+        ArgumentNullException.ThrowIfNull(cause);
+        if (added.Count == 0) return;
+        await RemoveImagesAsync(added).ConfigureAwait(false);
+        if (cause is not InstallerException { IsRefusal: true }) return;
+        IReadOnlyList<string> left;
+        try
+        {
+            left = await HeldAsync(added).ConfigureAwait(false);
+        }
+        catch (Exception reread) when (reread is not OutOfMemoryException)
+        {
+            throw new InstallerException(
+                $"{cause.Message} The image this run imported may still be held: Docker could not be read after removing it ({Redaction.SafeDiagnostic(reread.Message)}). Check with 'docker image inspect {string.Join(' ', added)}' and remove what is left with 'docker image rm'.",
+                cause);
+        }
+        if (left.Count > 0)
+        {
+            throw new InstallerException(
+                $"{cause.Message} Docker did not remove the image this run imported, so it is still held: {string.Join(", ", left)}. Remove it with 'docker image rm {string.Join(' ', left)}'.",
+                cause);
+        }
+    }
+
+    /// <summary>
+    /// The names of <paramref name="names"/> Docker holds. An inspect that fails is read as an absent name only between two
+    /// reads of the daemon that succeed, so a daemon that stopped answering is never mistaken for a removed image; Docker's
+    /// error text is not read.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> HeldAsync(IReadOnlyList<string> names)
+    {
+        _ = await ReadDaemonIdentityAsync(CancellationToken.None).ConfigureAwait(false);
+        var absent = await AbsentAsync(names, CancellationToken.None).ConfigureAwait(false);
+        _ = await ReadDaemonIdentityAsync(CancellationToken.None).ConfigureAwait(false);
+        return [.. names.Except(absent, StringComparer.Ordinal)];
     }
 
     /// <summary>

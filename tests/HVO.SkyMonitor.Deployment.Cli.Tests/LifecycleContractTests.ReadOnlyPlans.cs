@@ -250,6 +250,72 @@ public sealed partial class LifecycleContractTests
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath), "the refusal opened the journal");
     }
 
+    /// <summary>
+    /// A refusal says that nothing changed, so it stands only once Docker no longer holds the image the run pulled
+    /// (#1315 PR-1355-R4 R4-1). When Docker refuses the removal, or cannot be read back afterwards, the refusal is a failure
+    /// (exit 1) that names the image left behind and how to remove it. This holds both for a refusal under the lock after
+    /// the pull and for the pull's own check of the image Docker resolved.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("refused-under-the-lock", "removal-fails")]
+    [DataRow("refused-under-the-lock", "read-back-fails")]
+    [DataRow("refused-by-the-pull-check", "removal-fails")]
+    public async Task UpgradeAsync_RefusalWhosePulledImageIsNotProvedRemoved_IsAFailureNamingTheImage(string refusal, string fault)
+    {
+        ArgumentNullException.ThrowIfNull(refusal);
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        using var release = CandidateRelease(fixture, out var candidateImageId);
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            release.DigestReference, candidateImageId, fixture.Uid, fixture.Gid);
+        fixture.Runner.Registry = new FakeRegistry(release.RegistryContent);
+        fixture.Runner.CandidateHeld = [];
+        fixture.Runner.FailImageRemoval = fault == "removal-fails";
+        fixture.Runner.FailDaemonReadAfterRemoval = fault == "read-back-fails";
+        if (refusal == "refused-under-the-lock")
+        {
+            SafeFileSystem.CreateOwnerDirectory(fixture.Paths.OperationsRoot);
+            using (OperationLock.Acquire(Path.Combine(fixture.Paths.OperationsRoot, "deployment.lock"), cancellationToken: CancellationToken.None))
+            using (OperationLock.Acquire(Path.Combine(fixture.Paths.InstanceRoot, ".deployment.lock"), cancellationToken: CancellationToken.None))
+            {
+            }
+            var uninstalled = fixture.Manifest with { LifecycleCondition = InstanceLifecycleCondition.Uninstalled };
+            fixture.Runner.OnPull = () => SafeFileSystem.WriteTextAtomic(
+                fixture.Paths.ManifestPath, JsonSerializer.Serialize(uninstalled, DeploymentJsonContext.Default.InstanceManifest));
+        }
+        else
+        {
+            // The registry's metadata is the release's, but Docker labels the image it pulled as another version.
+            fixture.Runner.CandidateLabels["org.opencontainers.image.version"] = "9.9.9";
+        }
+
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                Release = release.Folder,
+                ImageSource = ReleaseImageSource.Registry,
+                MigrationBackwardCompatible = true
+            },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None));
+
+        var name = $"{refusal}, {fault}";
+        Assert.IsFalse(failure.IsRefusal, $"{name}: an image left in Docker must not be reported as nothing changed: {failure.Message}");
+        Assert.IsTrue(failure.InnerException is InstallerException { IsRefusal: true }, name);
+        Assert.AreEqual(1, fixture.Runner.PullCount, name);
+        CollectionAssert.Contains(fixture.Runner.RemovedImages, release.DigestReference, name);
+        StringAssert.Contains(failure.Message, release.DigestReference, StringComparison.Ordinal, name);
+        StringAssert.Contains(failure.Message, "docker image rm", StringComparison.Ordinal, name);
+        if (fault == "removal-fails")
+        {
+            CollectionAssert.IsSubsetOf(new[] { release.DigestReference, candidateImageId }, fixture.Runner.CandidateHeld!.ToArray(), name);
+            StringAssert.Contains(failure.Message, candidateImageId, StringComparison.Ordinal, name);
+        }
+        Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath), $"{name}: the failure opened the journal");
+    }
+
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task LifecyclePlans_AreRefusedByTheJournalGatesTheirCommandsAreRefusedBy()
