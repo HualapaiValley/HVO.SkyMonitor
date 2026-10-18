@@ -663,6 +663,31 @@ public sealed class InstallWizardTests
         Assert.AreEqual(new Color(ColorName16.BrightCyan), driver.ColoursOf("CAMERA").Foreground);
     }
 
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void TheWizard_NeverLoadsTheNativeOnigurumaLibrary()
+    {
+        // Terminal.Gui loads TextMateSharp's and Onigwrap's managed assemblies as it reads its own types, but only its
+        // syntax highlighting calls into Onigwrap's native Oniguruma, and no page highlights text. The library is in the
+        // installer all the same, so its notice ships (THIRD-PARTY-NOTICES.md).
+        using (var host = new WizardHost())
+        using (var driver = WizardDriver.Start(host, []))
+        {
+            driver.Replace("North");
+            driver.NextTo<SoftwarePage>();
+            driver.Type(Release);
+            driver.Press(Key.Tab);
+            driver.Press(Key.Tab);
+            driver.Type(Catalog);
+            driver.NextTo<ReviewPage>();
+            driver.WaitIdle("the plan check");
+            _ = driver.Screen;
+        }
+
+        // The managed Onigwrap.dll is mapped; the native library, libonigwrap.so, never is.
+        Assert.DoesNotContain("libonigwrap", File.ReadAllText("/proc/self/maps"), StringComparison.Ordinal);
+    }
+
     private static void Stays(WizardDriver driver, string? problem)
     {
         var page = driver.Page;
