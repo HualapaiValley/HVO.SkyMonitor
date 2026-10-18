@@ -150,9 +150,11 @@ internal sealed class DockerClient(IProcessRunner processRunner)
     /// <summary>
     /// Removes the names an import added once <paramref name="cause"/> has stopped the operation: without force, never
     /// cancelled, and never a name Docker held before the import. A refusal says that nothing changed, so after one the
-    /// names are read back. When any is still held, or Docker cannot be read back, the refusal becomes a failure that
-    /// names what is left and how to remove it (#1315 PR-1355-R4 R4-1). A name already absent counts as removed. Any other
-    /// cause stands as it is: a failure or an interruption never says that nothing changed.
+    /// names are read back from one listing of every image Docker holds (<see cref="HeldAsync"/>). When any is still
+    /// listed, or the listing fails or cannot be read completely, the refusal becomes a failure that names the images and
+    /// how to remove them (#1315 PR-1355-R4 R4-1, R5-1). Absence is proven only by a listing that succeeds: a failed
+    /// command never proves that a name is gone. Any other cause stands as it is: a failure or an interruption never says
+    /// that nothing changed.
     /// </summary>
     public async Task UndoImportAsync(IReadOnlyList<string> added, Exception cause)
     {
@@ -169,7 +171,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         catch (Exception reread) when (reread is not OutOfMemoryException)
         {
             throw new InstallerException(
-                $"{cause.Message} The image this run imported may still be held: Docker could not be read after removing it ({Redaction.SafeDiagnostic(reread.Message)}). Check with 'docker image inspect {string.Join(' ', added)}' and remove what is left with 'docker image rm'.",
+                $"{cause.Message} The image this run imported may still be held: Docker's images could not be listed after removing it ({Redaction.SafeDiagnostic(reread.Message)}). Check with 'docker image ls --all --digests', and remove what is left with 'docker image rm {string.Join(' ', added)}'.",
                 cause);
         }
         if (left.Count > 0)
@@ -181,16 +183,63 @@ internal sealed class DockerClient(IProcessRunner processRunner)
     }
 
     /// <summary>
-    /// The names of <paramref name="names"/> Docker holds. An inspect that fails is read as an absent name only between two
-    /// reads of the daemon that succeed, so a daemon that stopped answering is never mistaken for a removed image; Docker's
-    /// error text is not read.
+    /// The names of <paramref name="names"/> Docker holds, from one structured listing of every image
+    /// (<c>docker image ls --all --digests --no-trunc --format '{{json .}}'</c>). A name is gone only when a listing that
+    /// succeeded, and whose every line was read, does not show it. A listing that exits non-zero, or any line of it that
+    /// is not an image this installer reads, proves nothing and throws. Docker's error text is not read.
     /// </summary>
     private async Task<IReadOnlyList<string>> HeldAsync(IReadOnlyList<string> names)
     {
-        _ = await ReadDaemonIdentityAsync(CancellationToken.None).ConfigureAwait(false);
-        var absent = await AbsentAsync(names, CancellationToken.None).ConfigureAwait(false);
-        _ = await ReadDaemonIdentityAsync(CancellationToken.None).ConfigureAwait(false);
-        return [.. names.Except(absent, StringComparer.Ordinal)];
+        var listing = await RunDockerRawAsync(
+                ["image", "ls", "--all", "--digests", "--no-trunc", "--format", "{{json .}}"], CancellationToken.None)
+            .ConfigureAwait(false);
+        if (listing.ExitCode != 0)
+        {
+            throw new InstallerException("Docker could not list its images.");
+        }
+        var images = ParseImageListing(listing.StandardOutput);
+        return [.. names.Where(name => images.Any(image => image.Shows(name)))];
+    }
+
+    private static readonly System.Buffers.SearchValues<char> LowerHexDigits = System.Buffers.SearchValues.Create("0123456789abcdef");
+
+    /// <summary>
+    /// Reads every line of an image listing as one image: a JSON object with a string <c>ID</c> that is a full
+    /// <c>sha256</c> digest, and string <c>Repository</c>, <c>Tag</c> and <c>Digest</c>. Any other line refuses the whole
+    /// listing, so nothing is concluded from a listing that was only partly read.
+    /// </summary>
+    internal static IReadOnlyList<ListedImage> ParseImageListing(string output)
+    {
+        ArgumentNullException.ThrowIfNull(output);
+        var images = new List<ListedImage>();
+        foreach (var line in output.Split('\n'))
+        {
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                var image = document.RootElement;
+                var id = image.ValueKind == JsonValueKind.Object ? Text(image, "ID") : null;
+                if (id is null || !id.StartsWith("sha256:", StringComparison.Ordinal) || id.Length != 71 ||
+                    id.AsSpan(7).IndexOfAnyExcept(LowerHexDigits) >= 0 ||
+                    Text(image, "Repository") is not { } repository || Text(image, "Tag") is not { } tag ||
+                    Text(image, "Digest") is not { } digest)
+                {
+                    throw new InstallerException("Docker listed an image in a form this installer does not read.");
+                }
+                images.Add(new ListedImage(id, repository, tag, digest));
+            }
+            catch (JsonException exception)
+            {
+                throw new InstallerException("Docker listed an image in a form this installer does not read.", exception);
+            }
+        }
+        return images;
+
+        static string? Text(JsonElement image, string name)
+            => image.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String && value.GetString() is { Length: > 0 } text
+                ? text
+                : null;
     }
 
     /// <summary>
@@ -856,4 +905,27 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         "arm64" or "aarch64" => "arm64",
         _ => throw new InstallerException($"Unsupported Docker architecture '{value}'.")
     };
+}
+
+/// <summary>One image of Docker's image listing, as <see cref="DockerClient.ParseImageListing"/> reads it.</summary>
+internal sealed record ListedImage(string Id, string Repository, string Tag, string Digest)
+{
+    /// <summary>
+    /// Whether Docker holds this image under <paramref name="name"/>, as an import records names: a bare <c>sha256</c>
+    /// digest is its ID or its repository digest, <c>repository@digest</c> its repository and digest, and
+    /// <c>repository:tag</c> (or a bare repository, which is <c>:latest</c>) its repository and tag.
+    /// </summary>
+    public bool Shows(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        if (name.StartsWith("sha256:", StringComparison.Ordinal))
+            return string.Equals(Id, name, StringComparison.Ordinal) || string.Equals(Digest, name, StringComparison.Ordinal);
+        var at = name.LastIndexOf('@');
+        if (at > 0)
+            return string.Equals(Repository, name[..at], StringComparison.Ordinal) && string.Equals(Digest, name[(at + 1)..], StringComparison.Ordinal);
+        var colon = name.LastIndexOf(':');
+        return colon > name.LastIndexOf('/')
+            ? string.Equals(Repository, name[..colon], StringComparison.Ordinal) && string.Equals(Tag, name[(colon + 1)..], StringComparison.Ordinal)
+            : string.Equals(Repository, name, StringComparison.Ordinal) && string.Equals(Tag, "latest", StringComparison.Ordinal);
+    }
 }

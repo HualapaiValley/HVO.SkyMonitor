@@ -252,15 +252,20 @@ public sealed partial class LifecycleContractTests
 
     /// <summary>
     /// A refusal says that nothing changed, so it stands only once Docker no longer holds the image the run pulled
-    /// (#1315 PR-1355-R4 R4-1). When Docker refuses the removal, or cannot be read back afterwards, the refusal is a failure
-    /// (exit 1) that names the image left behind and how to remove it. This holds both for a refusal under the lock after
-    /// the pull and for the pull's own check of the image Docker resolved.
+    /// (#1315 PR-1355-R4 R4-1). When Docker refuses the removal, or its images cannot be listed afterwards, the refusal is
+    /// a failure (exit 1) that names the images and how to remove them. Absence is proven only by a listing that succeeds
+    /// and reads completely: an inspect that fails while <c>docker info</c> answers proves nothing, nor does a listing that
+    /// fails or does not parse (R5-1). This holds both for a refusal under the lock after the pull and for the pull's own
+    /// check of the image Docker resolved.
     /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow("refused-under-the-lock", "removal-fails")]
     [DataRow("refused-under-the-lock", "read-back-fails")]
     [DataRow("refused-by-the-pull-check", "removal-fails")]
+    [DataRow("refused-under-the-lock", "removal-and-inspect-fail")]
+    [DataRow("refused-under-the-lock", "listing-fails")]
+    [DataRow("refused-under-the-lock", "listing-malformed")]
     public async Task UpgradeAsync_RefusalWhosePulledImageIsNotProvedRemoved_IsAFailureNamingTheImage(string refusal, string fault)
     {
         ArgumentNullException.ThrowIfNull(refusal);
@@ -272,8 +277,12 @@ public sealed partial class LifecycleContractTests
             release.DigestReference, candidateImageId, fixture.Uid, fixture.Gid);
         fixture.Runner.Registry = new FakeRegistry(release.RegistryContent);
         fixture.Runner.CandidateHeld = [];
-        fixture.Runner.FailImageRemoval = fault == "removal-fails";
+        fixture.Runner.FailImageRemoval = fault is "removal-fails" or "removal-and-inspect-fail";
         fixture.Runner.FailDaemonReadAfterRemoval = fault == "read-back-fails";
+        // Removal and inspection fail while 'docker info' answers, as with a failing containerd image store (R5-1).
+        fixture.Runner.FailImageInspectAfterRemoval = fault == "removal-and-inspect-fail";
+        fixture.Runner.FailImageListing = fault == "listing-fails";
+        fixture.Runner.MalformedImageListing = fault == "listing-malformed";
         if (refusal == "refused-under-the-lock")
         {
             SafeFileSystem.CreateOwnerDirectory(fixture.Paths.OperationsRoot);
@@ -308,10 +317,15 @@ public sealed partial class LifecycleContractTests
         CollectionAssert.Contains(fixture.Runner.RemovedImages, release.DigestReference, name);
         StringAssert.Contains(failure.Message, release.DigestReference, StringComparison.Ordinal, name);
         StringAssert.Contains(failure.Message, "docker image rm", StringComparison.Ordinal, name);
-        if (fault == "removal-fails")
+        if (fault is "removal-fails" or "removal-and-inspect-fail")
         {
             CollectionAssert.IsSubsetOf(new[] { release.DigestReference, candidateImageId }, fixture.Runner.CandidateHeld!.ToArray(), name);
             StringAssert.Contains(failure.Message, candidateImageId, StringComparison.Ordinal, name);
+        }
+        else
+        {
+            // Nothing could be proven, so the removal command names every image the run imported (R5-1).
+            StringAssert.Contains(failure.Message, $"docker image rm {release.DigestReference}", StringComparison.Ordinal, name);
         }
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath), $"{name}: the failure opened the journal");
     }

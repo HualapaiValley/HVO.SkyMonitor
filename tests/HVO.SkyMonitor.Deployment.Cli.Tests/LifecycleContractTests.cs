@@ -3253,6 +3253,36 @@ public sealed partial class LifecycleContractTests
         /// <summary>Makes Docker unreadable once an <c>image rm</c> has run, as a daemon that stops answering does.</summary>
         public bool FailDaemonReadAfterRemoval { get; set; }
 
+        /// <summary>
+        /// Makes every <c>image inspect</c> exit 1 once an <c>image rm</c> has run while <c>docker info</c> still answers, as
+        /// the containerd image store does when it cannot list images (#1315 PR-1355-R5 R5-1).
+        /// </summary>
+        public bool FailImageInspectAfterRemoval { get; set; }
+
+        /// <summary>Makes <c>image ls</c> exit 1.</summary>
+        public bool FailImageListing { get; set; }
+
+        /// <summary>Adds a line to <c>image ls</c> that is not an image this installer reads.</summary>
+        public bool MalformedImageListing { get; set; }
+
+        /// <summary>
+        /// One line of <c>docker image ls --all --digests --no-trunc --format '{{json .}}'</c> that shows the image
+        /// <paramref name="id"/> under <paramref name="name"/>.
+        /// </summary>
+        internal static string ListingLine(string id, string name)
+        {
+            var at = name.IndexOf('@', StringComparison.Ordinal);
+            return JsonSerializer.Serialize(new Dictionary<string, string>
+            {
+                ["Containers"] = "N/A",
+                ["Digest"] = at > 0 ? name[(at + 1)..] : "<none>",
+                ["ID"] = name.StartsWith("sha256:", StringComparison.Ordinal) ? name : id,
+                ["Repository"] = at > 0 ? name[..at] : "<none>",
+                ["Size"] = "1MB",
+                ["Tag"] = "<none>"
+            });
+        }
+
         public void ConfigureRuntime(
             InstallationPaths installationPaths,
             string immutableInitialReference,
@@ -3338,6 +3368,22 @@ public sealed partial class LifecycleContractTests
                 CandidateHeld?.Add(candidateImageId);
                 return Task.FromResult(new ProcessResult(0, $"Loaded image ID: {candidateImageId}\n", string.Empty));
             }
+            if (arguments is ["image", "ls", ..])
+            {
+                if (FailImageListing || FailDaemonReadAfterRemoval && RemovedImages.Count > 0)
+                    return Task.FromResult(new ProcessResult(1, string.Empty, "Cannot connect to the Docker daemon."));
+                var lines = new List<string>();
+                if (initialImageId is not null && initialReference is not null) lines.Add(ListingLine(initialImageId, initialReference));
+                if (candidateImageId is not null && candidateReference is not null && CandidateHeld is not { Count: 0 })
+                {
+                    lines.AddRange((CandidateHeld ?? [candidateReference, candidateImageId]).Order(StringComparer.Ordinal)
+                        .Select(name => ListingLine(candidateImageId, name)));
+                }
+                if (MalformedImageListing) lines.Add("{\"ID\": 42, \"Repository\": \"cameraagent\"}");
+                return Task.FromResult(new ProcessResult(0, string.Join('\n', lines) + "\n", string.Empty));
+            }
+            if (arguments is ["image", "inspect", _] && (FailImageInspectAfterRemoval || FailDaemonReadAfterRemoval) && RemovedImages.Count > 0)
+                return Task.FromResult(new ProcessResult(1, "[]", "Error response from daemon: failed to list images"));
             if (arguments is ["image", "rm", var removed])
             {
                 RemovedImages.Add(removed);

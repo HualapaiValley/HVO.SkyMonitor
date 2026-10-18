@@ -7,6 +7,43 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [TestCategory("Unit")]
 public sealed class DockerClientTests
 {
+    /// <summary>
+    /// The image listing that proves an imported image gone (#1315 PR-1355-R5 R5-1), in the form a real daemon prints it:
+    /// the first line was captured from Docker 29.8 with the containerd image store, the second is the classic store's.
+    /// </summary>
+    [TestMethod]
+    public void ParseImageListing_RealDaemonLines_ShowEachImageByIdDigestReferenceAndTag()
+    {
+        const string containerd = "{\"Containers\":\"1\",\"CreatedAt\":\"2026-08-04 13:49:32 +0000 UTC\",\"CreatedSince\":\"2 months ago\",\"Digest\":\"sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8\",\"ID\":\"sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8\",\"Repository\":\"moby/buildkit\",\"SharedSize\":\"N/A\",\"Size\":\"355MB\",\"Tag\":\"buildx-stable-1\",\"UniqueSize\":\"N/A\"}";
+        var classic = $"{{\"Containers\":\"N/A\",\"Digest\":\"sha256:{new string('4', 64)}\",\"ID\":\"sha256:{new string('5', 64)}\",\"Repository\":\"ghcr.io/example/cameraagent\",\"Tag\":\"<none>\"}}";
+
+        var images = DockerClient.ParseImageListing($"{containerd}\n{classic}\n");
+
+        Assert.HasCount(2, images);
+        Assert.IsTrue(images[0].Shows("moby/buildkit:buildx-stable-1"));
+        Assert.IsTrue(images[0].Shows("moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8"));
+        Assert.IsTrue(images[0].Shows("sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8"));
+        Assert.IsTrue(images[1].Shows($"ghcr.io/example/cameraagent@sha256:{new string('4', 64)}"));
+        Assert.IsTrue(images[1].Shows($"sha256:{new string('5', 64)}"));
+        Assert.IsFalse(images.Any(image => image.Shows($"ghcr.io/example/other@sha256:{new string('4', 64)}")));
+        Assert.IsFalse(images.Any(image => image.Shows("moby/buildkit:latest")));
+        Assert.IsEmpty(DockerClient.ParseImageListing(string.Empty), "a successful listing of no images shows nothing");
+    }
+
+    /// <summary>A listing with any line that is not an image this installer reads proves nothing.</summary>
+    [TestMethod]
+    [DataRow("not json")]
+    [DataRow("[]")]
+    [DataRow("{\"ID\":\"sha256:abc\",\"Repository\":\"r\",\"Tag\":\"t\",\"Digest\":\"d\"}")]
+    [DataRow("{\"ID\":\"sha256:5555555555555555555555555555555555555555555555555555555555555555\",\"Repository\":\"r\",\"Tag\":\"t\"}")]
+    [DataRow("{\"ID\":\"sha256:5555555555555555555555555555555555555555555555555555555555555555\",\"Repository\":7,\"Tag\":\"t\",\"Digest\":\"d\"}")]
+    public void ParseImageListing_LineThatIsNotAnImage_RefusesTheWholeListing(string line)
+    {
+        var valid = $"{{\"ID\":\"sha256:{new string('5', 64)}\",\"Repository\":\"r\",\"Tag\":\"t\",\"Digest\":\"<none>\"}}";
+
+        Assert.ThrowsExactly<InstallerException>(() => DockerClient.ParseImageListing($"{valid}\n{line}\n"));
+    }
+
     [TestMethod]
     public async Task PrepareImageAsync_ValidDigest_BindsDaemonAndImageIdentity()
     {

@@ -179,6 +179,13 @@ test "$(jq -er '.healthy' "$root/first.json")" = true
 test "$(jq -er '.replayProfile' "$root/first.json")" = LocalRunner
 test "$(jq -er '.image.imageId' "$root/first.json")" = "$image_id"
 test "$(jq -er '.image.archiveSha256' "$root/first.json")" = "$archive_sha256"
+# The image listing the installer reads to prove an imported image removed (#1315 PR-1355-R5 R5-1) has the shape it
+# parses on this daemon: one JSON object per line, a full sha256 ID and string Repository, Tag and Digest; and the
+# installed image is listed under the ID the installer recorded.
+docker image ls --all --digests --no-trunc --format '{{json .}}' >"$root/image-listing.jsonl"
+jq -es 'length > 0 and all(.[]; (.ID | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+  ([.Repository, .Tag, .Digest] | all(type == "string" and length > 0)))' "$root/image-listing.jsonl" >/dev/null
+jq -es --arg id "$image_id" 'any(.[]; .ID == $id or .Digest == $id)' "$root/image-listing.jsonl" >/dev/null
 test "$(docker inspect --format '{{.State.Health.Status}}' "$runner_container")" = healthy
 test "$(docker inspect --format '{{.Config.User}}' "$runner_container")" = "$(id -u):$(id -g)"
 # The CameraAgent container gets the default 2 CPUs, 4 GiB and 256 PIDs, recorded with the instance as limits no

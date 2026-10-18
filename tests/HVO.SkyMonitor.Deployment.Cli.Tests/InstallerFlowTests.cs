@@ -1714,6 +1714,16 @@ public sealed partial class InstallerFlowTests
                 CancelImport();
                 return Success(string.Empty);
             }
+            if (arguments is ["image", "ls", ..])
+            {
+                // The fake holds one image, listed under every name it holds, as the containerd image store lists it.
+                var listedId = imageId.StartsWith("sha256:", StringComparison.Ordinal) && imageId.Length == 71
+                    ? imageId
+                    : $"sha256:{Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(imageId)))}";
+                string[] names = Held is null ? [imageId, .. RepoDigests] : [.. Held.Order(StringComparer.Ordinal)];
+                return Success(string.Concat(names.Select(name => LifecycleContractTests.FakeRunner.ListingLine(
+                    listedId, name.StartsWith("sha256:", StringComparison.Ordinal) && name.Length != 71 ? listedId : name) + "\n")));
+            }
             if (arguments is ["image", "rm", var removed])
             {
                 Removed.Add(removed);
