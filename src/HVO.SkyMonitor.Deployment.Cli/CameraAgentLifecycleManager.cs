@@ -104,7 +104,11 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         var docker = new DockerClient(processRunner);
         var compose = ComposeFrom(paths, manifest, result);
-        var daemon = await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
+        // An image change reads which limits Docker enforces from the same docker info read (#1357).
+        var capabilities = request.Operation is LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback
+            ? await docker.ReadHostCapabilitiesAsync(cancellationToken).ConfigureAwait(false)
+            : null;
+        var daemon = capabilities?.Daemon ?? await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
         EnsureDaemon(manifest.DockerDaemon, daemon);
         if (request.Operation is null)
         {
@@ -130,15 +134,21 @@ internal sealed partial class CameraAgentLifecycleManager
         // Every refusal that can be decided before the first write is decided here, for the command and its plan alike,
         // so a refusal says truthfully that nothing changed (#1315).
         IReadOnlyList<string> imported = [];
+        HostPrerequisiteReport? hostLimits;
         if (!request.RestoreOnly)
         {
-            (signedImage, imported) = await AdmitBeforeWritingAsync(request, paths, manifest, compose, docker, signedImage, cancellationToken)
+            (signedImage, imported, hostLimits) = await AdmitBeforeWritingAsync(
+                    request, paths, manifest, compose, docker, capabilities, signedImage, error, cancellationToken)
                 .ConfigureAwait(false);
+        }
+        else
+        {
+            hostLimits = AdmitHostLimits(request, paths, manifest, capabilities!);
         }
         var written = ReadWrittenState(paths);
         try
         {
-            return await LockedAsync().ConfigureAwait(false);
+            return WithHostLimitWarnings(await LockedAsync().ConfigureAwait(false), hostLimits);
         }
         catch (InstallerException exception) when (exception.IsRefusal && !request.DryRun)
         {
@@ -191,7 +201,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 {
                     return await RestoreOnlyAsync(request, paths, manifest, result, retainedOperation, docker,
                         lifecycleClientFactory, ownerClientFactory, lifecycleControlToken!, installationVerificationToken!,
-                        uid, gid, error, cancellationToken).ConfigureAwait(false);
+                        uid, gid, error, hostLimits, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception exception) when (exception is IOException or HttpRequestException or JsonException or
                                                     UnauthorizedAccessException or KeyNotFoundException or InvalidOperationException)
@@ -204,11 +214,11 @@ internal sealed partial class CameraAgentLifecycleManager
                 LifecycleOperationKind.Upgrade => await ChangeImageAsync(
                     request, paths, manifest, result, compose, docker, lifecycleClientFactory, uid, gid,
                     ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage,
-                    rollback: false, output, error, cancellationToken).ConfigureAwait(false),
+                    rollback: false, hostLimits: null, output, error, cancellationToken).ConfigureAwait(false),
                 LifecycleOperationKind.Rollback => await ChangeImageAsync(
                     request, paths, manifest, result, compose, docker, lifecycleClientFactory, uid, gid,
                     ownerClientFactory, lifecycleControlToken!, installationVerificationToken!, signedImage: null,
-                    rollback: true, output, error, cancellationToken).ConfigureAwait(false),
+                    rollback: true, hostLimits, output, error, cancellationToken).ConfigureAwait(false),
                 LifecycleOperationKind.Reinstall => await ReinstallAsync(
                     request, paths, manifest, result, compose, docker, lifecycleClientFactory, ownerClientFactory,
                     lifecycleControlToken!, installationVerificationToken!, daemon, cancellationToken)
@@ -243,6 +253,7 @@ internal sealed partial class CameraAgentLifecycleManager
         uint uid,
         uint gid,
         TextWriter error,
+        HostPrerequisiteReport? hostLimits,
         CancellationToken cancellationToken)
     {
         if (operation is null || operation.Kind != LifecycleOperationKind.Upgrade ||
@@ -362,6 +373,10 @@ internal sealed partial class CameraAgentLifecycleManager
         if (!File.Exists(databases.IdentityDatabasePath) || !File.Exists(databases.RawIngressDatabasePath) ||
             CameraAgentStatePreflight.ReadRawIngressVersion(databases.RawIngressDatabasePath) != requirements.RawIngressSchema)
             throw new InstallerException("Restore-only requires retained initialized original image state.");
+        // Every restore-only guard has passed, so the recovery goes ahead: a limit Docker cannot enforce is warned of and
+        // logged before anything changes (#1357).
+        await WarnOfUnenforcedLimitsAsync(request, hostLimits, error).ConfigureAwait(false);
+        await WriteHostLimitsToInstallLogAsync(request, paths, operation.OperationId, hostLimits, cancellationToken).ConfigureAwait(false);
 
         // Without a database snapshot there is no Compose up, restart or stop: a recovered runtime may carry an
         // operator-approved memory override. An upgrade that recorded a snapshot must not run the original image on
@@ -502,6 +517,7 @@ internal sealed partial class CameraAgentLifecycleManager
         string verificationToken,
         AcquiredImage? signedImage,
         bool rollback,
+        HostPrerequisiteReport? hostLimits,
         TextWriter output,
         TextWriter error,
         CancellationToken cancellationToken)
@@ -527,10 +543,17 @@ internal sealed partial class CameraAgentLifecycleManager
             manifest, cancellationToken).ConfigureAwait(false);
         try
         {
+            // A rollback going ahead without a limit Docker cannot enforce logs it with the operation before anything
+            // changes; a plan writes nothing (#1357).
+            if (!request.DryRun)
+            {
+                await WriteHostLimitsToInstallLogAsync(request, paths, operation.OperationId, hostLimits, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             var changed = await ChangeImageAsync(
                     request, paths, manifest, installationResult, compose, docker, lifecycleClientFactory,
                     uid, gid, ownerClientFactory, lifecycleControlToken, verificationToken, signedImage, rollback, operation,
-                    error, cancellationToken)
+                    hostLimits, error, cancellationToken)
                 .ConfigureAwait(false);
             return upgradeNotes is null ? changed : changed with { UpgradeNotes = upgradeNotes };
         }
@@ -564,6 +587,7 @@ internal sealed partial class CameraAgentLifecycleManager
         AcquiredImage? signedImage,
         bool rollback,
         LifecycleOperationState operation,
+        HostPrerequisiteReport? hostLimits,
         TextWriter error,
         CancellationToken cancellationToken)
     {
@@ -764,7 +788,10 @@ internal sealed partial class CameraAgentLifecycleManager
         if (request.DryRun)
         {
             var planned = Result(operation.Kind, "planned", operation.OperationId, paths, manifest with { Image = candidate }, manifest.DockerDaemon, null, null);
-            return planned with { Plan = ImagePlan(request, paths, manifest, candidate, rollback, stateSnapshotRequired, retainedSnapshot) };
+            return planned with
+            {
+                Plan = ImagePlan(request, paths, manifest, candidate, rollback, stateSnapshotRequired, retainedSnapshot, hostLimits)
+            };
         }
         var expectedOwnerState = operation.ExpectedOwnerBootstrapState;
         if (!operation.MutationStarted)
@@ -866,6 +893,12 @@ internal sealed partial class CameraAgentLifecycleManager
             sourceCompose,
             candidateResources ?? CameraAgentContainerResources.Legacy,
             rollback ? null : manifest.Resources ?? CameraAgentContainerResources.Legacy);
+        // Docker refuses a container with a CPU limit on a host that cannot enforce one, so a rollback there withholds
+        // every CPU limit and keeps the others; the manifest keeps the limits the instance records (#1357).
+        if (rollback && hostLimits is not null && HostPrerequisites.WithholdsCpuLimits(hostLimits))
+        {
+            limitedCompose = CameraAgentContainerResources.WithoutCpuLimits(limitedCompose);
+        }
         if (!string.Equals(limitedCompose, sourceCompose, StringComparison.Ordinal))
         {
             SafeFileSystem.WriteTextAtomic(stagedCompose, limitedCompose);

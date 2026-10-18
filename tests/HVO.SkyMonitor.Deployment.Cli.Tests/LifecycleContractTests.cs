@@ -3262,6 +3262,19 @@ public sealed partial class LifecycleContractTests
         /// <summary>Makes <c>image ls</c> exit 1.</summary>
         public bool FailImageListing { get; set; }
 
+        /// <summary>
+        /// Whether <c>docker info</c> reports that Docker enforces each CameraAgent limit, and the CPUs it reports (#1357).
+        /// By default Docker enforces all three on a host with more CPUs than any limit; <see langword="null"/> is a
+        /// capability Docker does not report.
+        /// </summary>
+        public bool? MemoryLimit { get; set; } = true;
+
+        public bool? CpuCfsQuota { get; set; } = true;
+
+        public bool? PidsLimit { get; set; } = true;
+
+        public int Cpus { get; set; } = 64;
+
         /// <summary>Adds a line to <c>image ls</c> that is not an image this installer reads.</summary>
         public bool MalformedImageListing { get; set; }
 
@@ -3346,7 +3359,13 @@ public sealed partial class LifecycleContractTests
                     ID = currentDaemon.Id,
                     Name = currentDaemon.Name,
                     Architecture = currentDaemon.Architecture,
-                    ServerVersion = currentDaemon.ServerVersion
+                    ServerVersion = currentDaemon.ServerVersion,
+                    MemoryLimit,
+                    CpuCfsQuota,
+                    PidsLimit,
+                    CgroupVersion = "2",
+                    NCPU = Cpus,
+                    MemTotal = 64L * 1024 * 1024 * 1024
                 }), string.Empty));
             }
             if (arguments is ["compose", "version", ..]) return Task.FromResult(new ProcessResult(0, "v2", string.Empty));

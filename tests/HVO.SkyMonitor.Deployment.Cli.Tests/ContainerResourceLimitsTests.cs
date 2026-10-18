@@ -263,6 +263,39 @@ public sealed class ContainerResourceLimitsTests
         }
     }
 
+    /// <summary>
+    /// A rollback on a host whose Docker cannot enforce a CPU limit withholds every service's CPU limit (#1357), because
+    /// Docker refuses a container with one there. Each line keeps its value as a comment, so a file whose CPU limits are
+    /// withheld still agrees with the limits its instance records, and the next upgrade or rollback gives them back.
+    /// </summary>
+    [TestMethod]
+    public void WithoutCpuLimits_WithholdsEveryServicesCpuLimitAndWithLimitsGivesThemBack()
+    {
+        const string defaultLines = "    cpus: \"2\"\n    mem_limit: 4G\n    pids_limit: 256\n";
+        var compose = "services:\n  cameraagent:\n      start_period: 20s\n" + defaultLines + "    logging:\n" +
+                      "  replay-runner:\n    cpus: \"0.5\"\n    mem_limit: 2G\n    pids_limit: 64\n";
+
+        var withheld = CameraAgentContainerResources.WithoutCpuLimits(compose);
+
+        Assert.AreEqual(
+            "services:\n  cameraagent:\n      start_period: 20s\n" +
+            "    # cpus: \"2\" withheld: Docker here cannot enforce a CPU limit, so a rollback gave none (#1357)\n" +
+            "    mem_limit: 4G\n    pids_limit: 256\n    logging:\n" +
+            "  replay-runner:\n" +
+            "    # cpus: \"0.5\" withheld: Docker here cannot enforce a CPU limit, so a rollback gave none (#1357)\n" +
+            "    mem_limit: 2G\n    pids_limit: 64\n",
+            withheld);
+        Assert.AreEqual(withheld, CameraAgentContainerResources.WithoutCpuLimits(withheld));
+        Assert.AreEqual(
+            compose,
+            CameraAgentContainerResources.WithLimits(withheld, CameraAgentContainerResources.Default, CameraAgentContainerResources.Default));
+        Assert.AreEqual(compose, CameraAgentContainerResources.WithLimits(withheld, CameraAgentContainerResources.Default, null));
+        Assert.AreEqual(
+            compose.Replace(defaultLines, "    cpus: \"3\"\n    mem_limit: 4G\n    pids_limit: 256\n", StringComparison.Ordinal),
+            CameraAgentContainerResources.WithLimits(
+                withheld, CameraAgentContainerResources.Default with { Cpus = 3m }, CameraAgentContainerResources.Default));
+    }
+
     [TestMethod]
     public void IsValid_AcceptsOnlyLimitsThisInstallerCouldHaveRecorded()
     {
@@ -321,6 +354,11 @@ public sealed class ContainerResourceLimitsTests
                 StringAssert.Contains(text[..runnerStart], "      start_period: 20s\n" + expected + "    logging:", StringComparison.Ordinal);
                 StringAssert.Contains(text[runnerStart..], "    cpus: \"0.5\"\n    mem_limit: 2G\n    pids_limit: 64\n", StringComparison.Ordinal);
                 Assert.DoesNotContain("<cameraagent-resource-limits>", text);
+                // A rollback on a host that cannot enforce a CPU limit withholds both services' CPU limits in the
+                // rendered model, and the next change gives them back (#1357).
+                var withheld = CameraAgentContainerResources.WithoutCpuLimits(text);
+                Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(withheld, "^ *cpus:", System.Text.RegularExpressions.RegexOptions.Multiline));
+                Assert.AreEqual(text, CameraAgentContainerResources.WithLimits(withheld, resources ?? CameraAgentContainerResources.Legacy, resources));
             }
         }
         finally

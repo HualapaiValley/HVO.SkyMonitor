@@ -44,7 +44,10 @@ internal sealed partial class CameraAgentLifecycleManager
         _ => InstallRecordEvent.Settle
     };
 
-    /// <summary>What an upgrade or a rollback changes: the container's image and everything recorded with it.</summary>
+    /// <summary>
+    /// What an upgrade or a rollback changes: the container's image and everything recorded with it, and for a rollback
+    /// the limits Docker here cannot enforce, which it goes ahead without (#1357).
+    /// </summary>
     private static DeploymentPlan ImagePlan(
         LifecycleRequest request,
         InstallationPaths paths,
@@ -52,12 +55,20 @@ internal sealed partial class CameraAgentLifecycleManager
         ImageInstallationIdentity candidate,
         bool rollback,
         bool stateSnapshotRequired,
-        LifecycleStateSnapshot? retainedSnapshot)
+        LifecycleStateSnapshot? retainedSnapshot,
+        HostPrerequisiteReport? hostLimits)
     {
         var resources = rollback ? manifest.Resources : CameraAgentContainerResources.UpgradeTarget(manifest.Resources);
         var limits = resources is null
             ? CameraAgentContainerResources.Describe(CameraAgentContainerResources.Legacy)
             : CameraAgentContainerResources.Describe(resources);
+        var unenforced = hostLimits is null ? [] : HostPrerequisites.UnenforcedLimitNames(hostLimits);
+        if (unenforced.Count > 0)
+        {
+            limits += unenforced.Count == 1
+                ? $", without the {unenforced[0]} limit Docker here cannot enforce"
+                : $", without the {string.Join(", ", unenforced.Take(unenforced.Count - 1))} and {unenforced[^1]} limits Docker here cannot enforce";
+        }
         var items = new List<DeploymentPlanItem>
         {
             new(DeploymentPlanAction.Change, "container", Container(manifest),

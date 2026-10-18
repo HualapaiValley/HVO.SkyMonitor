@@ -155,12 +155,17 @@ internal static partial class CameraAgentContainerResources
     /// text when it already does. The CameraAgent service is the first in every generated model and the replay runner
     /// follows it, so only the text before the runner is searched. The service must carry exactly one recognisable
     /// limit block and, when <paramref name="recorded"/> is given, the limits it names: a file that disagrees with its
-    /// record is refused rather than silently rewritten.
+    /// record is refused rather than silently rewritten. A CPU limit a rollback withheld (<see cref="WithoutCpuLimits"/>)
+    /// is given back first, to CameraAgent and to the replay runner alike.
     /// </summary>
     public static string WithLimits(string compose, ContainerResourceLimits target, ContainerResourceLimits? recorded)
     {
         ArgumentNullException.ThrowIfNull(compose);
         ArgumentNullException.ThrowIfNull(target);
+        if (WithheldCpuLimitPattern().IsMatch(compose))
+        {
+            compose = WithheldCpuLimitPattern().Replace(compose, "    cpus: \"${cpus}\"\n");
+        }
         var runner = compose.IndexOf(ReplayRunnerService, StringComparison.Ordinal);
         var matches = LimitsPattern().Matches(runner < 0 ? compose : compose[..runner]);
         if (matches.Count != 1)
@@ -208,6 +213,20 @@ internal static partial class CameraAgentContainerResources
             false);
     }
 
+    /// <summary>
+    /// <paramref name="compose"/> for a rollback on a host whose Docker cannot enforce a CPU limit (#1357). Docker
+    /// discards a memory or PIDs limit it cannot enforce, with a warning, but refuses to create a container with a CPU
+    /// limit there, so every service's CPU limit is withheld and each other limit kept. Each line stays as a comment that
+    /// keeps its value, so the file still names the limits its instance records and <see cref="WithLimits"/> gives
+    /// them back.
+    /// </summary>
+    public static string WithoutCpuLimits(string compose)
+    {
+        ArgumentNullException.ThrowIfNull(compose);
+        return CpuLimitPattern().Replace(
+            compose, "    # cpus: \"${cpus}\" withheld: Docker here cannot enforce a CPU limit, so a rollback gave none (#1357)\n");
+    }
+
     /// <summary>Whether two limit sets impose the same limits, whoever set them.</summary>
     public static bool SameLimits(ContainerResourceLimits left, ContainerResourceLimits right)
     {
@@ -223,4 +242,12 @@ internal static partial class CameraAgentContainerResources
         "^    cpus: \"(?<cpus>[0-9]{1,4}(?:\\.[0-9]{1,2})?)\"\\n    mem_limit: (?<amount>[1-9][0-9]{0,6})(?<unit>[MG])\\n    pids_limit: (?<pids>[1-9][0-9]{0,6})\\n",
         RegexOptions.Multiline | RegexOptions.CultureInvariant)]
     private static partial Regex LimitsPattern();
+
+    [GeneratedRegex("^    cpus: \"(?<cpus>[0-9]{1,4}(?:\\.[0-9]{1,2})?)\"\\n", RegexOptions.Multiline | RegexOptions.CultureInvariant)]
+    private static partial Regex CpuLimitPattern();
+
+    [GeneratedRegex(
+        "^    # cpus: \"(?<cpus>[0-9]{1,4}(?:\\.[0-9]{1,2})?)\" withheld: Docker here cannot enforce a CPU limit, so a rollback gave none \\(#1357\\)\\n",
+        RegexOptions.Multiline | RegexOptions.CultureInvariant)]
+    private static partial Regex WithheldCpuLimitPattern();
 }

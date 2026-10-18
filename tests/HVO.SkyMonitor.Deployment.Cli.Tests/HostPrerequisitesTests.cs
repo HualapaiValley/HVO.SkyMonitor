@@ -264,6 +264,111 @@ public sealed class HostPrerequisitesTests
         }
     }
 
+    /// <summary>
+    /// An upgrade is held to the install's limit and CPU findings (#1357), each blocking, with the same codes, the same
+    /// host details and the same remedy. It is not held to tar or to the install's room, which it does not need.
+    /// </summary>
+    [TestMethod]
+    public void EvaluateContainerLimits_Upgrade_RefusesEveryLimitDockerCannotEnforceAndTooFewCpus()
+    {
+        var docker = Supported() with
+        {
+            MemoryLimit = false,
+            CpuCfsQuota = false,
+            PidsLimit = null,
+            CpuCount = 1,
+            Warnings = ["WARNING: No memory limit support", "WARNING: No swap limit support"]
+        };
+        var host = new FakeHostEnvironment { Tar = false, Controllers = "cpuset cpu io pids" };
+
+        var report = HostPrerequisites.EvaluateContainerLimits(docker, ProductRoot, host, Limits, rollback: false);
+
+        string[] expectedCodes =
+            ["docker-memory-limit-unsupported", "docker-cpu-quota-unsupported", "docker-pids-limit-unsupported", "docker-host-cpus-insufficient"];
+        Assert.IsFalse(report.Satisfied);
+        CollectionAssert.AreEqual(expectedCodes, report.Findings.Select(static finding => finding.Code).ToArray());
+        Assert.IsTrue(report.Findings.All(static finding => finding.Blocking));
+        Assert.IsEmpty(host.Measured, "An upgrade measures its own room; the install's storage findings are not evaluated.");
+        var install = HostPrerequisites.Evaluate(docker, ProductRoot, Required, Required, host, Limits);
+        CollectionAssert.AreEqual(
+            install.Findings.Where(static finding => finding.Boundary is "resource-limits" or "capacity").ToArray(),
+            report.Findings.ToArray());
+        foreach (var finding in report.Findings.Where(static finding => finding.Boundary == "resource-limits"))
+        {
+            StringAssert.Contains(finding.Remediation, "append cgroup_enable=memory", StringComparison.Ordinal);
+            StringAssert.Contains(finding.Remediation, "reboot", StringComparison.Ordinal);
+            // Swap is not a limit CameraAgent is given; Docker's own swap warning is quoted beside the limit findings.
+            StringAssert.Contains(finding.Observed, "\"WARNING: No swap limit support\"", StringComparison.Ordinal);
+        }
+        Assert.IsNull(HostPrerequisites.RollbackWarning(report, "rollback"), "An upgrade report is not a rollback warning.");
+    }
+
+    [TestMethod]
+    public void EvaluateContainerLimits_HostThatEnforcesTheLimits_IsSatisfiedForBoth()
+    {
+        foreach (var rollback in new[] { false, true })
+        {
+            var report = HostPrerequisites.EvaluateContainerLimits(Supported(), ProductRoot, new FakeHostEnvironment(), Limits, rollback);
+
+            Assert.IsTrue(report.Satisfied, $"rollback={rollback}");
+            Assert.IsEmpty(report.Findings, $"rollback={rollback}");
+            Assert.IsNull(HostPrerequisites.RollbackWarning(report, "rollback"));
+            Assert.IsFalse(HostPrerequisites.WithholdsCpuLimits(report));
+        }
+    }
+
+    /// <summary>
+    /// A rollback is the recovery path (#1357, as HVO.RoofController#151): a limit Docker cannot enforce is advisory, so
+    /// it proceeds, and its warning names each one with its consequence and the remedy. A CPU limit Docker enforces on
+    /// a host without that many CPUs still refuses it, because Docker refuses to create that container; a CPU limit
+    /// Docker cannot enforce is withheld, so the CPUs no longer count.
+    /// </summary>
+    [TestMethod]
+    [DataRow("memory", false, false, true, true, 4)]
+    [DataRow("cpu", false, true, false, true, 1)]
+    [DataRow("pids", false, true, true, false, 4)]
+    [DataRow("all", false, false, false, false, 1)]
+    [DataRow("cpus", true, true, true, true, 1)]
+    public void EvaluateContainerLimits_Rollback_ProceedsWithAWarningUnlessDockerWouldRefuseTheCpuLimit(
+        string shape, bool refused, bool memory, bool cpu, bool pids, int cpus)
+    {
+        var docker = Supported() with { MemoryLimit = memory, CpuCfsQuota = cpu, PidsLimit = pids, CpuCount = cpus };
+
+        var report = HostPrerequisites.EvaluateContainerLimits(docker, ProductRoot, new FakeHostEnvironment(), Limits, rollback: true);
+        var warning = HostPrerequisites.RollbackWarning(report, "rollback");
+
+        Assert.AreEqual(!refused, report.Satisfied, shape);
+        Assert.AreEqual(!cpu, HostPrerequisites.WithholdsCpuLimits(report), shape);
+        var unenforced = new[]
+        {
+            (memory, "docker-memory-limit-unsupported", "Docker discards the memory limit"),
+            (cpu, "docker-cpu-quota-unsupported", "withholds the CPU limits of CameraAgent and its replay runner"),
+            (pids, "docker-pids-limit-unsupported", "Docker discards the PIDs limit")
+        }.Where(static limit => !limit.Item1).ToArray();
+        CollectionAssert.AreEqual(
+            unenforced.Select(static limit => limit.Item2).ToArray(),
+            report.Findings.Where(static finding => finding.Boundary == "resource-limits").Select(static finding => finding.Code).ToArray(),
+            shape);
+        Assert.IsTrue(report.Findings.Where(static finding => finding.Boundary == "resource-limits").All(static finding => !finding.Blocking), shape);
+        if (refused)
+        {
+            Assert.AreEqual("docker-host-cpus-insufficient", report.Findings.Single(static finding => finding.Blocking).Code);
+            Assert.IsNull(warning, shape);
+            return;
+        }
+        Assert.IsFalse(report.Findings.Any(static finding => finding.Code == "docker-host-cpus-insufficient"), shape);
+        Assert.IsNotNull(warning, shape);
+        StringAssert.StartsWith(warning, "WARNING: THE ROLLBACK GOES AHEAD, BUT DOCKER HERE CANNOT ENFORCE", StringComparison.Ordinal, shape);
+        StringAssert.Contains(warning, "an install or an upgrade is refused here until this is fixed", StringComparison.Ordinal, shape);
+        foreach (var (_, code, consequence) in unenforced)
+        {
+            StringAssert.Contains(warning, code, StringComparison.Ordinal, shape);
+            StringAssert.Contains(warning, consequence, StringComparison.Ordinal, shape);
+        }
+        StringAssert.Contains(warning, "append cgroup_enable=memory", StringComparison.Ordinal, shape);
+        Assert.AreEqual(unenforced.Length, HostPrerequisites.RollbackWarnings(report).Count, shape);
+    }
+
     private static DockerHostCapabilities Supported()
         => new(Daemon, MemoryLimit: true, CpuCfsQuota: true, PidsLimit: true, "2", DockerRoot, [],
             CpuCount: 4, MemoryBytes: 8L * 1024 * 1024 * 1024);
