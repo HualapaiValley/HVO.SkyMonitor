@@ -295,10 +295,10 @@ EOF
     ${quick} || ok "${asset} says it is ${built}"
 
     # The hand-over. The installer reads the terminal, since this script's standard input is the download: with none
-    # (cron, CI) it reads nothing, and asks nothing. From a folder, an install or upgrade takes the release from it and
-    # pulls nothing, unless it is told which release or image to use.
+    # (cron, CI) it reads nothing, and asks nothing. From a folder, cameraagent install and upgrade take the release from
+    # it, unless they are told which release or image to use, and pull nothing.
     local -a arguments=(${passed[@]+"${passed[@]}"})
-    if [ -n "${from}" ] && [ -n "${deploys}" ] && ! ${quick}; then
+    if [ -n "${from}" ] && ${takes_release} && ! ${quick}; then
       ${names_image} || arguments+=(--release "${from}")
       ${no_download} || arguments+=(--no-download)
     fi
@@ -353,10 +353,11 @@ EOF
   fi
 
   # What the installer is asked to do. Its command is its first word or two. An install (no command is one, as it is in
-  # the install contract) and an upgrade start CameraAgent from the release: they need Docker and its limits, and read
-  # the release (--release DIR). Any other command checks what it needs itself, so a machine that lost Docker's limits
-  # can still be looked at, rolled back or uninstalled. Help and the version only print.
-  local words="" deploys="" quick=false names_image=false no_download=false index=0 argument
+  # the install contract) and an upgrade start CameraAgent from the release, so they need Docker and its limits;
+  # cameraagent install and cameraagent upgrade read the release (--release DIR). Any other command checks what it
+  # needs itself, so a machine that lost Docker's limits can still be looked at, rolled back or uninstalled. Help and
+  # the version only print.
+  local words="" deploys="" takes_release=false quick=false names_image=false no_download=false index=0 argument
   if ((${#passed[@]} > 0)) && [[ ${passed[0]} != -* ]]; then
     words=${passed[0]}
     if ((${#passed[@]} > 1)) && [[ ${passed[1]} != -* ]]; then
@@ -364,8 +365,9 @@ EOF
     fi
   fi
   case "${words}" in
-    "" | "cameraagent install") deploys=install ;;
-    "cameraagent upgrade") deploys=upgrade ;;
+    "") deploys=install ;;
+    "cameraagent install") deploys=install takes_release=true ;;
+    "cameraagent upgrade") deploys=upgrade takes_release=true ;;
     help) quick=true ;;
   esac
   while ((index < ${#passed[@]})); do

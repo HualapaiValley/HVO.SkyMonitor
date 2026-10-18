@@ -716,6 +716,15 @@ test_from_a_folder_with_its_own_release_or_image_still_pulls_nothing() {
   assert_output_contains "ok    ${WORK}/release has the release's files"
 }
 
+# Without a command the checks are an install's, and the installer, which needs a command, is given nothing to refuse.
+test_from_a_folder_without_a_command_adds_nothing() {
+  install_sh -- --from "${WORK}/release"
+
+  assert_status 0
+  assert_output_contains "skymonitor-cameraagent-${VERSION}-linux-arm64.oci.tar: the installer loads CameraAgent's image from it"
+  assert_installer "args="
+}
+
 test_from_a_folder_adds_nothing_to_a_command_that_reads_no_release() {
   install_sh -- --from "${WORK}/release" status --json
 
