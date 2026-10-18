@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
@@ -141,6 +143,62 @@ public sealed class DerivedProductReconcilerTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task RunAsync_AfterASnapshotRollback_KeepsAProductWrittenSinceTheSnapshotThroughTheWindowThenQuarantinesIt()
+    {
+        // An installer snapshot rollback (#1314) rewinds the processing store while the derived files written since
+        // stay on disk, unowned. They are kept through the orphan recovery window, in case reprocessing claims them
+        // again, and then moved to processing quarantine rather than deleted.
+        var root = CreateRoot();
+        try
+        {
+            byte[] payload = [7, 7, 7, 7];
+            var template = ReconstructableCaptureContractTests.CreateManifest(
+                CameraPixelFormat.Mono8, payload.Length, 1, payload.Length, payload);
+            var relativePayloadPath = $"derived/2026/08/25/Calibrated/{template.Descriptor.Artifact.ArtifactId:N}.bin";
+            var manifest = template with { RelativeArtifactPath = relativePayloadPath, ProducerStepId = "normalize" };
+            var payloadPath = Path.Combine(root, relativePayloadPath.Replace('/', Path.DirectorySeparatorChar));
+            var sidecarPath = Path.ChangeExtension(payloadPath, ".json");
+            Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
+            await File.WriteAllBytesAsync(payloadPath, payload).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(sidecarPath, CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
+            var clock = new OffsetTimeProvider();
+            var options = new DerivedProductLifecycleOptions();
+
+            using (var store = await CreateStoreAsync(root).ConfigureAwait(false))
+            {
+                var first = await new DerivedProductReconciler(root, store, options, clock)
+                    .RunAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(1, first.Recoverable);
+                Assert.AreEqual(0, first.Quarantined);
+                Assert.IsTrue(File.Exists(payloadPath));
+
+                clock.Offset = TimeSpan.FromMinutes(options.OrphanRecoveryWindowMinutes + 1);
+                var expired = await new DerivedProductReconciler(root, store, options, clock)
+                    .RunAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(1, expired.Quarantined);
+            }
+
+            Assert.IsFalse(File.Exists(payloadPath));
+            Assert.IsFalse(File.Exists(sidecarPath));
+            var quarantined = Directory.EnumerateFiles(Path.Combine(root, "processing-quarantine"), "*", SearchOption.AllDirectories)
+                .Select(Path.GetFileName).ToArray();
+            CollectionAssert.Contains(quarantined, Path.GetFileName(payloadPath), "The unowned product was deleted rather than quarantined.");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class OffsetTimeProvider : TimeProvider
+    {
+        public TimeSpan Offset { get; set; }
+
+        public override DateTimeOffset GetUtcNow() => System.GetUtcNow() + Offset;
     }
 
     [TestMethod]
@@ -288,6 +346,62 @@ public sealed class DerivedProductReconcilerTests
         return new(Options.Create(new CameraAgentHostOptions { RawIngressRoot = root }));
     }
 
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task RunOnceAsync_DurablyPausedAdmission_CleansNothingUntilCaptureResumes()
+    {
+        // An upgrade candidate starts on the journal the installer paused; reconciliation must not remove derived
+        // files the previous image may still need until the installer resumes capture.
+        using var hold = new HVO.SkyMonitor.CameraAgent.Tests.Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: true).ConfigureAwait(false);
+        var temporary = Path.Combine(hold.Path, "derived", "2026-10-16", "partial.tmp");
+        Directory.CreateDirectory(Path.GetDirectoryName(temporary)!);
+        await File.WriteAllTextAsync(temporary, "in flight").ConfigureAwait(false);
+        var service = await CreateReconciliationServiceAsync(hold.Path, admission: admission).ConfigureAwait(false);
+
+        await service.RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(File.Exists(temporary));
+
+        await admission.ResumeAsync("derived-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        await service.RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(File.Exists(temporary));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task RunOnceAsync_PassBlockedOnItsLockHoldsThePauseUntilItHasFinished()
+    {
+        // The pass entered while capture was running and is waiting for the storage lifecycle lock when the installer
+        // pauses. The pause must wait for it, so it cannot delete after the pause is acknowledged.
+        using var hold = new HVO.SkyMonitor.CameraAgent.Tests.Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: false).ConfigureAwait(false);
+        var service = await CreateReconciliationServiceAsync(hold.Path, admission: admission).ConfigureAwait(false);
+        var gate = StorageLifecycleLock.ForRoot(hold.Path);
+        await gate.WaitAsync().ConfigureAwait(false);
+        Task pass;
+        Task<CaptureControlCommandResult> pause;
+        try
+        {
+            pass = service.RunOnceAsync(CancellationToken.None).AsTask();
+            await Task.Delay(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
+            Assert.IsFalse(pass.IsCompleted);
+            pause = admission.PauseAsync("derived-barrier", null, "installer-lifecycle:test", null, CancellationToken.None);
+            await Task.Delay(TimeSpan.FromMilliseconds(400)).ConfigureAwait(false);
+            Assert.IsFalse(pause.IsCompleted, "The pause was acknowledged while an admitted derived pass waited to delete.");
+        }
+        finally
+        {
+            gate.Release();
+        }
+        await pass.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        Assert.AreEqual(CaptureAdmissionState.Paused, (await pause.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false)).State);
+        var temporary = Path.Combine(hold.Path, "derived", "2026-10-16", "after-pause.tmp");
+        Directory.CreateDirectory(Path.GetDirectoryName(temporary)!);
+        await File.WriteAllTextAsync(temporary, "written after the pause").ConfigureAwait(false);
+        await service.RunOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(File.Exists(temporary));
+    }
+
     private static string CreateRoot()
     {
         var root = Path.Combine(Path.GetTempPath(), "skymonitor-derived-reconciliation", Guid.NewGuid().ToString("N"));
@@ -297,7 +411,8 @@ public sealed class DerivedProductReconcilerTests
 
     private static async Task<DerivedProductReconciliationService> CreateReconciliationServiceAsync(
         string root,
-        IRawCaptureIngress? rawIngress = null)
+        IRawCaptureIngress? rawIngress = null,
+        HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureAdmissionCoordinator? admission = null)
     {
         if (Directory.Exists(root))
         {
@@ -319,7 +434,8 @@ public sealed class DerivedProductReconcilerTests
             provider.GetRequiredService<CaptureProcessingState>(),
             provider.GetRequiredService<CaptureDistributionService>(),
             NullLogger<DerivedProductReconciliationService>.Instance,
-            rawIngress);
+            rawIngress,
+            admission);
     }
 
     private sealed class FailingIngress : IRawCaptureIngress

@@ -175,9 +175,9 @@ internal static class ReleaseImageArchive
                      runtime.TryGetProperty("Labels", out var labelValues)
             ? labelValues
             : default;
-        var identity = DockerClient.ImageIdentityFrom(
+        var identity = CameraAgentImageLabels.Identity(
             "archive", archive.ConfigDigest, archive.ConfigDigest, archive.Platform["linux/".Length..], archive.Sha256, labels);
-        if (identity.Component != "CameraAgent" || DockerClient.Label(labels, "org.opencontainers.image.version") != release.Version ||
+        if (identity.Component != "CameraAgent" || CameraAgentImageLabels.Label(labels, "org.opencontainers.image.version") != release.Version ||
             identity.SourceRevision != release.Commit)
         {
             throw new InstallerException(

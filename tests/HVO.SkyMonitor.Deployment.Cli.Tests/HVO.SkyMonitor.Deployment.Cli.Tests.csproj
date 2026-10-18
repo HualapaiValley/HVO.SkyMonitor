@@ -13,4 +13,9 @@
     <EmbeddedResource Include="..\HVO.SkyMonitor.Deployment.Distribution.Tests\Fixtures\ReleaseTool\release.json"
                       LogicalName="HVO.SkyMonitor.Deployment.Cli.Tests.ReleaseToolOutput.json" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="..\fixtures\state-compatibility\previous-release\*" Link="Fixtures\previous-release\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 </Project>

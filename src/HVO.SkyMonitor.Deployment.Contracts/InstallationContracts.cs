@@ -104,7 +104,11 @@ public enum LifecycleOperationPhase
     Committed,
     Restoring,
     Completed,
-    Restored
+    Restored,
+    /// <summary>The operation's verified snapshot of the instance's small SQLite databases is recorded.</summary>
+    StateSnapshotRecorded,
+    /// <summary>A rollback has put back the database snapshot retained by the upgrade it undoes.</summary>
+    RetainedStateApplied
 }
 
 public sealed record ApplicationIdentityBinding(
@@ -209,7 +213,8 @@ public sealed record InstanceManifest(
     string? LifecycleControlTokenSha256 = null,
     string? PreviousComposeModelSha256 = null,
     CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess,
-    ContainerResourceLimits? Resources = null);
+    ContainerResourceLimits? Resources = null,
+    LifecycleStateSnapshot? PreviousStateSnapshot = null);
 
 public sealed record LifecycleOperationState(
     int SchemaVersion,
@@ -234,7 +239,77 @@ public sealed record LifecycleOperationState(
     [property: JsonPropertyName("originalOwnerBootstrapState")]
     string? ExpectedOwnerBootstrapState = null,
     Guid? RestoreResumeCommandId = null,
-    LifecycleResumeReceipt? RestoreResumeReceipt = null);
+    LifecycleResumeReceipt? RestoreResumeReceipt = null,
+    bool StateSnapshotRequired = false,
+    string? StateMigration = null,
+    LifecycleStateSnapshot? StateSnapshot = null,
+    DateTimeOffset? StateSnapshotRestoredUtc = null,
+    LifecycleStateSnapshot? RetainedStateSnapshot = null,
+    IReadOnlyList<StateCounterFloor>? StateCounterFloors = null,
+    StateRestorePlan? StateRestorePlan = null);
+
+/// <summary>
+/// What a snapshot restore covers, journaled before it replaces any store so that an interrupted retry still knows it:
+/// every store location the instance's configured inventory listed when the restore began (and at any earlier attempt
+/// of the same operation), and every location the target snapshot records. A store at a current location the snapshot
+/// does not record was created after the snapshot, so the restore removes it, keeping every bulk file.
+/// </summary>
+public sealed record StateRestorePlan(
+    Guid SnapshotId,
+    IReadOnlyList<string> CurrentLocations,
+    IReadOnlyList<string> TargetLocations);
+
+/// <summary>
+/// The highest value a CameraAgent counter or version token had reached when a snapshot restore began. Each one hands
+/// out a sequence or version that leaves the instance or that a client sends back, so a restore never lets one be
+/// handed out again for different state. <see cref="Carry"/> holds what the restore needs to continue a version line
+/// whose row the snapshot does not have.
+/// </summary>
+public sealed record StateCounterFloor(string Store, string Counter, string Key, long Value, StateCounterCarry? Carry = null);
+
+/// <summary>
+/// The latest revision of an automation definition the restored snapshot does not have, recorded so the restore can
+/// record that definition as removed at a version above every one it handed out.
+/// </summary>
+public sealed record StateCounterCarry(string RevisionSha256, string DefinitionJson);
+
+/// <summary>
+/// A verified snapshot of an instance's small SQLite databases, taken by one image lifecycle operation while the
+/// instance was stopped. It is kept in that operation's directory,
+/// <c>operations/lifecycle/&lt;operation&gt;/state-snapshots/&lt;snapshot&gt;</c>, and its manifest hash binds every file in
+/// it. Bulk capture data is never part of it.
+/// </summary>
+public sealed record LifecycleStateSnapshot(
+    Guid SnapshotId,
+    Guid OperationId,
+    string ManifestSha256,
+    DateTimeOffset RecordedUtc);
+
+/// <summary>The manifest of a <see cref="LifecycleStateSnapshot"/>: one entry per known CameraAgent SQLite store.</summary>
+public sealed record StateSnapshotManifest(
+    int SchemaVersion,
+    Guid SnapshotId,
+    Guid InstanceId,
+    Guid OperationId,
+    DateTimeOffset CreatedUtc,
+    ImageInstallationIdentity Image,
+    IReadOnlyList<StateSnapshotDatabase> Databases);
+
+/// <summary>
+/// One store in a <see cref="StateSnapshotManifest"/>. A store absent when the snapshot was taken is recorded as
+/// absent, so restoring the snapshot removes one a candidate created.
+/// </summary>
+public sealed record StateSnapshotDatabase(
+    string RelativePath,
+    bool Present,
+    string? SnapshotFile,
+    long Length,
+    string? Sha256,
+    long UserVersion,
+    string? SchemaSha256,
+    IReadOnlyList<StateSnapshotTableCount> Tables);
+
+public sealed record StateSnapshotTableCount(string Name, long Rows);
 
 public sealed record LifecycleContinuityBoundary(
     string CaptureState,
@@ -321,6 +396,23 @@ public sealed record LifecycleUpgradeNotesEvent(int SchemaVersion, string Event,
 {
     /// <summary>The <see cref="Event"/> this record carries.</summary>
     public const string Name = "upgrade-notes";
+}
+
+/// <summary>
+/// What a <c>--json</c> upgrade or rollback writes to standard error, as one line, when it restores a database
+/// snapshot: the warning that database changes made after the snapshot are lost. Without <c>--json</c> the same
+/// warning is written to standard error as text.
+/// </summary>
+public sealed record LifecycleStateSnapshotRestoreEvent(int SchemaVersion, string Event, string Warning, LifecycleStateSnapshot Snapshot)
+{
+    /// <summary>The <see cref="Event"/> this record carries.</summary>
+    public const string Name = "state-snapshot-restore";
+
+    /// <summary>
+    /// The <see cref="Event"/> a restore also writes when it could not read part of the state it replaces (a store a
+    /// failed candidate damaged), so that part is carried only as far as configuration and the journal recorded it.
+    /// </summary>
+    public const string IncompleteName = "state-snapshot-restore-incomplete";
 }
 
 public sealed record InstallationState(

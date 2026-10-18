@@ -256,7 +256,7 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                      imageConfig.TryGetProperty("Labels", out var imageLabels)
             ? imageLabels
             : default;
-        var installationIdentity = ImageIdentityFrom(
+        var installationIdentity = CameraAgentImageLabels.Identity(
             request.ImageArchive is null ? "registry" : "archive",
             reference,
             imageId,
@@ -266,40 +266,11 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         if (release is not null)
         {
             EnsureReleaseImageAgreement(
-                release, imageId, installationIdentity.Component, Label(labels, "org.opencontainers.image.version"),
+                release, imageId, installationIdentity.Component, CameraAgentImageLabels.Label(labels, "org.opencontainers.image.version"),
                 installationIdentity.SourceRevision);
         }
         return (identity, installationIdentity);
     }
-
-    /// <summary>
-    /// The identity and contract labels of an image, from the labels its configuration carries: as Docker reports them
-    /// for an image it holds, or as an offline archive's configuration declares them before it is loaded.
-    /// </summary>
-    internal static ImageInstallationIdentity ImageIdentityFrom(
-        string source,
-        string reference,
-        string imageId,
-        string architecture,
-        string? archiveSha256,
-        JsonElement labels)
-        => new(
-            source,
-            reference,
-            imageId,
-            architecture,
-            archiveSha256,
-            UpgradeCompatibility: Label(labels, "io.hvo.skymonitor.state-compatibility"),
-            SourceRevision: Label(labels, "org.opencontainers.image.revision"),
-            Component: Label(labels, "io.hvo.skymonitor.component"),
-            ConfigurationContract: Label(labels, "io.hvo.skymonitor.configuration-contract"),
-            CatalogContract: Label(labels, "io.hvo.skymonitor.catalog-contract"),
-            ReplayRunnerContract: Label(labels, "io.hvo.skymonitor.replay-runner-contract"),
-            MinimumCompatibleRevision: Label(labels, "io.hvo.skymonitor.minimum-compatible-revision"),
-            IdentityMigration: Label(labels, "io.hvo.skymonitor.identity-migration"),
-            RawIngressSchema: Label(labels, "io.hvo.skymonitor.raw-ingress-schema"),
-            CatalogManifestVersion: Label(labels, "io.hvo.skymonitor.catalog-manifest-version"),
-            RawIngressMigration: Label(labels, "io.hvo.skymonitor.raw-ingress-migration"));
 
     /// <summary>
     /// Requires the image Docker resolved to be the release's. Its digest pins its bytes, labels included, so the image
@@ -747,11 +718,6 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                                               option.Equals("size=67108864", StringComparison.OrdinalIgnoreCase)) == 1;
     }
 
-    internal static string? Label(JsonElement labels, string name)
-        => labels.ValueKind == JsonValueKind.Object && labels.TryGetProperty(name, out var value) &&
-           value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
 
     private async Task<ProcessResult> RunDockerAsync(IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {

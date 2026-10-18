@@ -24,6 +24,37 @@ Retention fails closed for a storage root before deleting anything when:
 - a pending payload is missing;
 - cancellation is requested while pending manifests are scanned.
 
+Retention, derived-product reconciliation and projected-scene stage reconciliation
+delete nothing while capture admission is not running. An installer upgrade or
+rollback pauses admission durably before it stops the previous image and resumes
+it only after the swap is decided, so a candidate image cannot delete frames,
+archives or derived products the previous image still needs. An operator pause
+holds them too; nothing new is captured while paused. Only the deletions wait:
+retention still measures capacity and publishes disk pressure, and derived-product
+reconciliation still refreshes its evidence inventory. Each skipped pass logs
+`<maintenance> held while capture admission is <state>; nothing was deleted` at
+Information, and the next pass after capture resumes runs normally.
+
+The pause is a barrier, not a flag each pass happens to read. A pass enters capture
+admission before it deletes anything, and the pause is acknowledged only after every
+admitted pass has finished, including one still waiting for its storage lock; no new
+pass is admitted until capture resumes.
+
+The same barrier covers every other deletion a restored database row could depend on:
+- An uploaded payload is not removed after its acknowledgement; retention removes it later, on its root's schedule.
+- A projected-scene stage is removed after its processing node commits only once capture opens. That removal waits in
+  memory, so a restart forgets it, and stage ownership does not depend on it: a stage whose projected-scene node is
+  durably complete belongs to no capture, and stage reconciliation removes it once capture runs. A snapshot restore
+  rewinds the node with the journal, so a stage the restored node still needs stays owned.
+- A frame sidecar is upgraded in place only once capture opens; until then the node retries.
+- Raw-ingress evidence is quarantined when the journal opens only once capture opens. Until then raw ingress reports
+  Degraded (`reconciliation-held`), and the quarantine runs as soon as capture resumes.
+- Stage cleanup when the journal opens, and the calibration bundle quarantine at host start, wait the same way.
+
+A first initialization reads the durable admission state from the journal, because admission initialization waits for
+it; a later one takes a lease without initializing admission. See
+[Swap upgrade and database snapshots](deployment-installer.md#swap-upgrade-and-database-snapshots).
+
 The completion log records the storage root, deleted file count, and number of
 protected pending artifacts. A repeated `Retention sweep failed` event requires
 operator investigation; do not edit the outbox database or delete evidence

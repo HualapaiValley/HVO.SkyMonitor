@@ -147,7 +147,7 @@ internal sealed class HostPrerequisiteException : Exception
 /// <summary>
 /// The host prerequisites <c>cameraagent install</c> and <c>cameraagent install --dry-run</c> evaluate before anything
 /// is created: Docker must enforce the Compose memory, CPU and PIDs limits and its host must have the CPUs the CPU
-/// limit names; <c>tar</c>, which upgrade backups run, must be present; and the filesystems that hold the product root
+/// limit names; <c>tar</c>, which an archive of the whole instance needs, must be present; and the filesystems that hold the product root
 /// and Docker's data root must have room. A memory limit above the host's memory is advisory. Every finding is
 /// reported together so an operator resolves the complete set in one pass. The CLI uses SQLite in-process and never
 /// runs <c>sqlite3</c> or <c>jq</c>, so neither is required.
@@ -353,7 +353,7 @@ internal static class HostPrerequisites
             "PATH",
             "no executable tar on PATH",
             "an executable tar",
-            "Install tar (for example 'sudo apt-get install tar'); upgrade and rollback run it to take and restore the consistent instance backup."));
+            "Install tar (for example 'sudo apt-get install tar'); an archive of the whole instance needs it."));
     }
 
     private static void EvaluateStorage(

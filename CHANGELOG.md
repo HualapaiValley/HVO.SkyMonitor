@@ -56,6 +56,24 @@ onward; earlier development is recorded in its pull requests. A release renames 
   `/run/hvo-sky-host-policy.lock`, per-user distribution state and cache are under `~/.local/state/hvo-sky` and
   `~/.cache/hvo-sky`, and the replay runner's default socket is `/run/hvo-sky/replay-runner.sock`. Nothing had been
   released, so there is no alias or migration: reinstall development hosts. (#1313)
+- A CameraAgent upgrade or rollback no longer archives the instance's configuration and state with `tar`, so its
+  time no longer grows with retained frames. It is a swap: the previous image is kept and restored if the candidate
+  fails. Only a candidate that declares a state migration has the small SQLite databases snapshotted and verified
+  first; a failed candidate is restored onto them, and a later `rollback` puts them back with a warning that database
+  changes since the upgrade are lost. The snapshot covers the outbox of every configured storage root, and a restore
+  never rewinds the capture-sequence, capture-control-version or fleet-report counters. An interrupted upgrade
+  recovers onto its snapshot with `--resume` or `--restore-only`. Every client-held version token is carried too:
+  the schedule, rig-selection, calibration, processing-graph and automation versions, and the row IDs in outbox
+  action tokens. A store under a storage root named after the snapshot is removed by the restore, keeping its
+  files. Every recovery authenticates its snapshot before it changes a container, and every restored directory is
+  synced before the restore is recorded. `--migration-backward-compatible` is no longer needed and changes nothing.
+  A candidate that left a store unreadable, or a value in it in a shape the installer does not read (a schedule
+  profile stored as text, say), cannot block its own recovery or a rollback: the restore carries what it can and says
+  on standard error what it could not read. Counter carrying is best effort: a counter that cannot be carried into the
+  restored snapshot is named on standard error, and the restore completes. CameraAgent holds every deletion a restore could depend on while capture
+  is paused, including upload cleanup, raw evidence quarantine and post-commit stage removal. A stage removal that a
+  restart forgets is reclaimed from the projected-scene node's durable completion once capture runs. CameraAgent
+  acknowledges a pause only after every deletion already running has finished. (#1314)
 - Successful raw ingress SQLite commits and checkpoints are logged at Debug instead of Warning. A manual location
   override superseded by configuration is logged at Information. Warnings now mean something did not work. (#1303)
 - `hvo-sky-install` is one self-contained file. Its native SQLite library is bundled in, rather than published beside

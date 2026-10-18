@@ -5,9 +5,10 @@ using Microsoft.Data.Sqlite;
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
-/// The upgrade requires <c>--migration-backward-compatible</c> exactly when the candidate declares a state
-/// migration (#1307): an unchanged state contract proceeds without it, every kind of declared migration is refused
-/// without it and admitted with it, and supplying it for an unchanged contract changes nothing.
+/// Whether the candidate declares a state migration decides whether the upgrade snapshots the small databases
+/// (#1307, #1314): an unchanged state contract is a pure swap with no snapshot, every kind of declared migration is
+/// named and snapshotted before the candidate starts, and neither needs <c>--migration-backward-compatible</c>, which
+/// is still accepted and changes nothing.
 /// </summary>
 public sealed partial class LifecycleContractTests
 {
@@ -30,7 +31,7 @@ public sealed partial class LifecycleContractTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task UpgradeAsync_UnchangedStateContract_CompletesWithOrWithoutTheMigrationAssertion(bool assertMigration)
+    public async Task UpgradeAsync_UnchangedStateContract_CompletesWithoutASnapshotWithOrWithoutTheMigrationAssertion(bool assertMigration)
     {
         using var fixture = await LifecycleFixture.CreateAsync(
             InstanceLifecycleCondition.Installed, installedImage: CurrentStateContract);
@@ -45,6 +46,10 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(CandidateImageId, result.Image!.ImageId);
         Assert.AreEqual(CandidateImageId, fixture.Runner.ActiveImageId);
         Assert.AreEqual(CameraAgentStateContract.Current, result.Image.UpgradeCompatibility);
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.IsFalse(retained!.StateSnapshotRequired);
+        Assert.IsNull(retained.StateMigration);
+        Assert.IsNull(retained.StateSnapshot);
     }
 
     [TestMethod]
@@ -56,7 +61,7 @@ public sealed partial class LifecycleContractTests
     [DataRow("raw-ingress-migration", "io.hvo.skymonitor.raw-ingress-migration installed none, candidate canonical-v13-to-v14")]
     [DataRow("catalog-manifest-version", "io.hvo.skymonitor.catalog-manifest-version installed 1, candidate 2")]
     [DataRow("undeclared-installed-boundary", "io.hvo.skymonitor.identity-migration installed none, candidate 20260827053715_InitialIdentity")]
-    public async Task UpgradeAsync_DeclaredStateMigration_IsRefusedWithoutTheAssertionAndAdmittedWithIt(
+    public async Task UpgradeAsync_DeclaredStateMigration_IsNamedAndSnapshottedWithoutTheAssertion(
         string migration,
         string expectedChange)
     {
@@ -88,12 +93,12 @@ public sealed partial class LifecycleContractTests
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             CandidateReference, CandidateImageId, fixture.Uid, fixture.Gid);
 
-        await AssertMigrationRefusedThenAdmittedAsync(fixture, expectedChange);
+        await AssertMigrationSnapshottedAsync(fixture, expectedChange);
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task UpgradeAsync_JournalBelowTheDeclaredSchema_RequiresTheAssertionEvenWhenTheLabelsAgree()
+    public async Task UpgradeAsync_JournalBelowTheDeclaredSchema_IsSnapshottedEvenWhenTheLabelsAgree()
     {
         // Both images declare raw-ingress schema 15 and the v13/v14 recovery migration, but the persisted journal is
         // still a canonical v14 one, for example one restored from an earlier backup. The preflight admits it because
@@ -111,41 +116,29 @@ public sealed partial class LifecycleContractTests
             CandidateReference, CandidateImageId, fixture.Uid, fixture.Gid);
         WriteCanonicalV14RawIngressJournal(fixture.Paths);
 
-        await AssertMigrationRefusedThenAdmittedAsync(fixture, "persisted raw-ingress journal schema 14, candidate schema 15");
+        await AssertMigrationSnapshottedAsync(fixture, "persisted raw-ingress journal schema 14, candidate schema 15");
     }
 
-    private static async Task AssertMigrationRefusedThenAdmittedAsync(LifecycleFixture fixture, string expectedChange)
+    private static async Task AssertMigrationSnapshottedAsync(LifecycleFixture fixture, string expectedChange)
     {
         var lifecycle = new FakeLifecycleClient();
-        var manifestBefore = await File.ReadAllTextAsync(fixture.Paths.ManifestPath);
-
-        var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => lifecycle,
-            _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None));
-
-        StringAssert.Contains(exception.Message, "declares a CameraAgent state migration", StringComparison.Ordinal);
-        StringAssert.Contains(exception.Message, expectedChange, StringComparison.Ordinal);
-        StringAssert.Contains(exception.Message, "--migration-backward-compatible", StringComparison.Ordinal);
-        // Refused before the drain, the backup, and any Compose mutation: the installed instance is untouched.
-        Assert.AreEqual(0, lifecycle.PauseCount);
-        Assert.AreEqual(0, fixture.Runner.BackupCount);
-        Assert.AreEqual(0, fixture.Runner.ComposeUpCount);
-        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
-        Assert.AreEqual(manifestBefore, await File.ReadAllTextAsync(fixture.Paths.ManifestPath));
-        // A terminal refusal blocks nothing, so the same upgrade with the assertion proceeds without --resume.
-        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
-        Assert.AreEqual(InstallationStatus.Failed, retained!.Status);
-        Assert.AreEqual(CameraAgentLifecycleManager.RefusedFailureCode, retained.FailureCode);
-        Assert.IsFalse(retained.MutationStarted);
-        StringAssert.Contains(retained.FailureMessage!, expectedChange, StringComparison.Ordinal);
 
         var result = await CameraAgentLifecycleManager.ExecuteAsync(
-            UpgradeRequest(fixture, assertMigration: true), fixture.Runner, _ => lifecycle,
+            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => lifecycle,
             _ => new FakeOwnerClient(fixture.ApplicationIdentity), fixture.Uid, fixture.Gid, CancellationToken.None);
 
+        // Admitted without the assertion: the snapshot is the restore path a failed candidate needs.
         Assert.AreEqual("completed", result.Outcome);
         Assert.AreEqual(CandidateImageId, result.Image!.ImageId);
         Assert.AreEqual(CandidateImageId, fixture.Runner.ActiveImageId);
+        Assert.AreEqual(0, fixture.Runner.BackupCount);
+        var retained = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.IsTrue(retained!.StateSnapshotRequired);
+        StringAssert.Contains(retained.StateMigration!, expectedChange, StringComparison.Ordinal);
+        Assert.IsNotNull(retained.StateSnapshot);
+        _ = await CameraAgentStateSnapshot.VerifyAsync(fixture.Paths, fixture.InstanceId, retained.StateSnapshot, CancellationToken.None);
+        var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
+        Assert.AreEqual(retained.StateSnapshot, manifest.PreviousStateSnapshot);
     }
 
     private static LifecycleRequest UpgradeRequest(LifecycleFixture fixture, bool assertMigration)
