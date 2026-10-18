@@ -289,20 +289,79 @@ public sealed class ReleaseAssetsToolTests
     }
 
     [TestMethod]
-    public async Task CreateRelease_InstallScript_IsAttachedAsItIs()
+    public async Task CreateRelease_InstallScript_IsAttachedWithTheReleasesVersionWrittenIn()
     {
         using var fixture = OciReleaseFixture.Create();
         var script = Path.Combine(fixture.Root, "install.sh");
-        await File.WriteAllTextAsync(script, "#!/usr/bin/env bash\nmain() { :; }\nmain \"$@\"\n");
+        const string Unstamped = "#!/usr/bin/env bash\nmain() {\n  local release_version=''  # Written by the release tool.\n  : \"${release_version}\"\n}\nmain \"$@\"\n";
+        await File.WriteAllTextAsync(script, Unstamped);
         var output = Path.Combine(fixture.Root, "release");
 
         Assert.AreEqual(0, await Program.Main(fixture.Arguments(output, "--install-script", script)));
 
-        CollectionAssert.AreEqual(await File.ReadAllBytesAsync(script), await File.ReadAllBytesAsync(Path.Combine(output, "install.sh")));
+        var written = Path.Combine(output, "install.sh");
+        Assert.AreEqual(
+            Unstamped.Replace(
+                "  local release_version=''  # Written by the release tool.",
+                $"  local release_version='{OciReleaseFixture.Version}'",
+                StringComparison.Ordinal),
+            await File.ReadAllTextAsync(written));
+        Assert.IsTrue(File.GetUnixFileMode(written).HasFlag(UnixFileMode.UserExecute | UnixFileMode.OtherExecute));
         var release = JsonNode.Parse(await File.ReadAllBytesAsync(Path.Combine(output, "release.json")))!;
         var asset = release["assets"]!.AsArray().Single(static node => (string)node!["name"]! == "install.sh")!;
         Assert.AreEqual("install-script", (string)asset["kind"]!);
         Assert.IsNull(asset["platform"]);
+        Assert.AreEqual(Sha256(written), (string)asset["sha256"]!);
+        Assert.AreEqual(new FileInfo(written).Length, (long)asset["size"]!);
+        CollectionAssert.Contains(await File.ReadAllLinesAsync(Path.Combine(output, "SHA256SUMS")), $"{Sha256(written)}  install.sh");
+    }
+
+    [TestMethod]
+    public async Task CreateRelease_TheRepositorysInstallScript_ChangesInItsVersionLineAlone()
+    {
+        var source = Path.Combine(RepositoryRoot(), "src", "HVO.SkyMonitor.Deployment.Cli", "install.sh");
+        using var fixture = OciReleaseFixture.Create();
+        var output = Path.Combine(fixture.Root, "release");
+
+        Assert.AreEqual(0, await Program.Main(fixture.Arguments(output, "--install-script", source)));
+
+        var before = await File.ReadAllLinesAsync(source);
+        var after = await File.ReadAllLinesAsync(Path.Combine(output, "install.sh"));
+        Assert.HasCount(before.Length, after);
+        var changed = Enumerable.Range(0, before.Length).Where(index => before[index] != after[index]).ToArray();
+        Assert.HasCount(1, changed);
+        StringAssert.StartsWith(before[changed[0]], "  local release_version=''", StringComparison.Ordinal);
+        Assert.AreEqual($"  local release_version='{OciReleaseFixture.Version}'", after[changed[0]]);
+    }
+
+    [TestMethod]
+    [DataRow("#!/usr/bin/env bash\nmain() { :; }\nmain \"$@\"\n", 0)]
+    [DataRow("main() {\n  local release_version=''\n  local release_version=''  # again\n}\n", 2)]
+    [DataRow("main() {\n  local release_version='1.1.0'\n}\n", 0)]
+    [DataRow("main() {\n local release_version=''\n}\n", 0)]
+    public async Task CreateRelease_InstallScriptWithoutOneVersionLine_IsRefusedBeforeTheOutputExists(string text, int lines)
+    {
+        using var fixture = OciReleaseFixture.Create();
+        var script = Path.Combine(fixture.Root, "install.sh");
+        await File.WriteAllTextAsync(script, text);
+        var output = Path.Combine(fixture.Root, "release");
+        using var error = new StringWriter();
+        var standardError = Console.Error;
+        Console.SetError(error);
+        try
+        {
+            Assert.AreEqual(1, await Program.Main(fixture.Arguments(output, "--install-script", script)));
+        }
+        finally
+        {
+            Console.SetError(standardError);
+        }
+
+        Assert.AreEqual(
+            $"release error: --install-script must name its release on one line, \"  local release_version=''\", and has {lines}." +
+            Environment.NewLine,
+            error.ToString());
+        Assert.IsFalse(Directory.Exists(output), "a refused release must leave nothing behind");
     }
 
     [TestMethod]
