@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Services;
 internal sealed partial class CameraAgentOperatorTelemetry : IDisposable
 {
     internal const string InstrumentationName = "HVO.SkyMonitor.CameraAgent.Operator";
-    private readonly Meter _meter = new(InstrumentationName);
+    private readonly Meter _meter;
     private readonly ActivitySource _activities = new(InstrumentationName);
     private readonly Counter<long> _planPreviews;
     private readonly Counter<long> _planMutations;
@@ -23,7 +23,13 @@ internal sealed partial class CameraAgentOperatorTelemetry : IDisposable
     private readonly ILogger _logger;
 
     public CameraAgentOperatorTelemetry(ILogger<CameraAgentOperatorTelemetry>? logger = null)
+        : this(new Meter(InstrumentationName), logger)
     {
+    }
+
+    internal CameraAgentOperatorTelemetry(Meter meter, ILogger<CameraAgentOperatorTelemetry>? logger = null)
+    {
+        _meter = meter;
         _logger = logger ?? NullLogger<CameraAgentOperatorTelemetry>.Instance;
         _planPreviews = _meter.CreateCounter<long>("camera_agent.processing.plan.previews", "{preview}");
         _planMutations = _meter.CreateCounter<long>("camera_agent.processing.plan.mutations", "{mutation}");
