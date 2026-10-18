@@ -236,20 +236,34 @@ internal sealed partial class InstallWizardSession
 
     /// <summary>
     /// Saves the answers at <paramref name="path"/> for Install, readable and writable by the operator only. The folder
-    /// of the default path is made (<c>0700</c>) when it is not there; another folder must exist.
+    /// of the default path is made (<c>0700</c>) when it is not there; another folder must exist, and its mode is left
+    /// alone. The file is written whole beside its place and then renamed onto it, so a reader never sees half of it,
+    /// and a link at the path is replaced rather than written through.
     /// </summary>
     public string SaveAnswers(string path)
     {
         ArgumentNullException.ThrowIfNull(path);
         var full = Path.GetFullPath(path.Trim());
+        var folder = Path.GetDirectoryName(full)!;
         if (string.Equals(full, DefaultAnswersPath, StringComparison.Ordinal))
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(full)!, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            Directory.CreateDirectory(folder, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
 
-        using (var stream = new FileStream(full, AnswersFileOptions))
+        var temporary = Path.Combine(folder, $".{Path.GetFileName(full)}.{Guid.NewGuid():N}.tmp");
+        try
         {
-            stream.Write(System.Text.Encoding.UTF8.GetBytes(AnswersJson()));
+            using (var stream = new FileStream(temporary, AnswersFileOptions))
+            {
+                stream.Write(System.Text.Encoding.UTF8.GetBytes(AnswersJson()));
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(temporary, full, overwrite: true);
+        }
+        finally
+        {
+            File.Delete(temporary);
         }
 
         AnswersPath = full;
@@ -472,10 +486,10 @@ internal sealed partial class InstallWizardSession
         };
     }
 
-    // Written whole, replacing what was there, readable and writable by the operator only.
+    // A new file, readable and writable by the operator only; never one that is there already, or a link.
     private static FileStreamOptions AnswersFileOptions => new()
     {
-        Mode = FileMode.Create,
+        Mode = FileMode.CreateNew,
         Access = FileAccess.Write,
         Share = FileShare.None,
         UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite

@@ -500,6 +500,31 @@ public sealed class InstallWizardTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void SavingTheAnswers_ReplacesALinkAtThePathRatherThanWritingThroughIt()
+    {
+        using var host = new WizardHost();
+        using var driver = WizardDriver.Start(host, ["cameraagent", "install", "--friendly-name", "North", "--release", Release, "--catalog-bundle", Catalog]);
+        var elsewhere = Path.Combine(host.Root, "elsewhere.txt");
+        File.WriteAllText(elsewhere, "not the answers");
+        var path = Path.Combine(host.Root, "answers.json");
+        File.CreateSymbolicLink(path, elsewhere);
+        var folderMode = File.GetUnixFileMode(host.Root);
+
+        Assert.AreEqual(path, driver.Session.SaveAnswers(path));
+
+        Assert.AreEqual("not the answers", File.ReadAllText(elsewhere));
+        Assert.IsNull(new FileInfo(path).LinkTarget, "the answers are a file of their own");
+        Assert.AreEqual(driver.Session.AnswersJson(), File.ReadAllText(path));
+        Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+        Assert.AreEqual(folderMode, File.GetUnixFileMode(host.Root), "another folder's mode is left alone");
+        Assert.HasCount(2, Directory.GetFileSystemEntries(host.Root).Where(entry => entry.EndsWith(".json", StringComparison.Ordinal) || entry.EndsWith(".txt", StringComparison.Ordinal)));
+        Assert.IsEmpty(Directory.GetFiles(host.Root, "*.tmp"), "no temporary file is left");
+
+        Assert.AreEqual(path, driver.Session.SaveAnswers(path), "and again, over the file it wrote");
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow("esc")]
     [DataRow("ctrl+c")]
     [DataRow("signal")]
