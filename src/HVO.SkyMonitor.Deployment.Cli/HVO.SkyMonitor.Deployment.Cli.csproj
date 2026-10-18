@@ -45,6 +45,7 @@
     <ProjectReference Include="..\HVO.SkyMonitor.AgentCore\HVO.SkyMonitor.AgentCore.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Catalog.Sqlite\HVO.SkyMonitor.Catalog.Sqlite.csproj" />
     <ProjectReference Include="..\HVO.SkyMonitor.Deployment.Contracts\HVO.SkyMonitor.Deployment.Contracts.csproj" />
+    <ProjectReference Include="..\HVO.SkyMonitor.TerminalUi\HVO.SkyMonitor.TerminalUi.csproj" />
   </ItemGroup>
   <ItemGroup>
     <!-- CameraAgent owns how an owner password file is read; the installer compiles the same reader so it validates,

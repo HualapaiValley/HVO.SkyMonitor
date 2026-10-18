@@ -282,6 +282,7 @@ combined_projects=(
 delivery_projects=(
   HVO.SkyMonitor.Deployment.Cli
   HVO.SkyMonitor.Deployment.Contracts
+  HVO.SkyMonitor.TerminalUi
   HVO.SkyMonitor.Deployment.ReleaseTool
   HVO.SkyMonitor.Deployment.Cli.Tests
   HVO.SkyMonitor.Deployment.Distribution.Tests
