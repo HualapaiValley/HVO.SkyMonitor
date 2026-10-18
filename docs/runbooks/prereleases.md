@@ -54,11 +54,11 @@ The workflow defaults to `contents: read`. Each job asks only for what it needs:
 
 | Job | Runs on | Permissions | What it does |
 | --- | --- | --- | --- |
-| Gate | GitHub-hosted | `contents: read`, `actions: read` | `scripts/release:prerelease-gate` checks several things. The tag is `vX.Y.Z-dev.<n>`, annotated, and names the commit. The commit is the `development/v1` head or behind it. The commit's newest Development v1 push run, and both its required jobs, succeeded. No release has the tag. Nothing is built if any check fails |
+| Gate | GitHub-hosted | `contents: read`, `actions: read` | `scripts/release:prerelease-gate` checks several things. The tag is `vX.Y.Z-dev.<n>`, annotated, and names the commit. The commit is the `development/v1` head or behind it. The commit's newest Development v1 push run, and both its required jobs, succeeded. No release has the tag. Every GitHub read is strict (`scripts/lib/github-api.sh`): only a 200 that `gh` completed, with exactly one JSON document of the expected shape, is an answer, and only GitHub's own 404 for the tag means it does not exist. A read that fails, is cut short or is malformed stops the gate, naming the read. Nothing is built if any check fails |
 | Build | GitHub-hosted | `contents: read` | `scripts/release:assets` builds every file from the tagged commit. The image is built once, for both platforms, into one OCI archive, and the offline archives are split from it |
-| Draft | GitHub-hosted | `contents`, `packages`, `id-token` and `attestations: write` | Refuses if a release or draft already has the tag. `scripts/release:push-image` pushes the archive under its version tag, refuses a tag the registry already has for another image, and checks the registry serves the archive's digest. The job then attests the image and every file, verifies the image's attestation, creates a **draft** pre-release with `--latest=false`, and reads its files back |
-| Install and Upgrade (arm64) | `[self-hosted, linux, ARM64, hvo-skymonitor-arm64]` (`github-runner-pi-01`) | `contents: read`, `packages: read` | Tag pushes only. `scripts/test:release-install` checks the draft's files and then works on a throwaway instance. It installs from the arm64 offline archive, moves the instance to a stand-in image, upgrades it from the release by digest from the registry, and checks that a second upgrade is refused. Then it uninstalls. However far it got, it removes the containers, the stand-in image, the release image it loaded or pulled (registered before the install, unless the runner held it already) and its temporary root. The registry login lives in a per-run Docker configuration that is deleted afterwards |
-| Publish | GitHub-hosted | `contents: write`, `attestations: read` | Checks the draft still holds exactly the files that were tested. Checks each file's attestation names this workflow, tag and commit, and that the image's attestation is on record. Then `scripts/release:publish-prerelease` publishes the draft as a pre-release with `--latest=false` and checks `releases/latest` did not move. Only GitHub's 404 counts as there being no latest release: a read that fails or names no tag stops before publishing, or fails the job after it |
+| Draft | GitHub-hosted | `contents`, `packages`, `id-token` and `attestations: write` | `scripts/release:prerelease-check unreleased` refuses if a release or draft already has the tag. It reads every page of the releases list, and a list it cannot read for certain fails the job rather than count as no release. `scripts/release:push-image` pushes the archive under its version tag, refuses a tag the registry already has for another image, and checks the registry serves the archive's digest. The job then attests the image and every file, verifies the image's attestation, creates a **draft** pre-release with `--latest=false`, and reads its files back |
+| Install and Upgrade (arm64) | `[self-hosted, linux, ARM64, hvo-skymonitor-arm64]` (`github-runner-pi-01`) | `contents: read`, `packages: read` | Tag pushes only. `scripts/test:release-install` checks the draft's files and then works on a throwaway instance. It installs from the arm64 offline archive, moves the instance to a stand-in image, upgrades it from the release by digest from the registry (read first with `docker buildx imagetools inspect`), and checks that a second upgrade is refused. Then it uninstalls. However far it got, it removes the containers, the stand-in image, the release image it loaded or pulled (registered before the install, unless the runner held it already) and its temporary root. The registry login lives in a per-run Docker configuration that is deleted afterwards |
+| Publish | GitHub-hosted | `contents: write`, `attestations: read` | `scripts/release:prerelease-check draft` checks that exactly one release has the tag and that it is still a draft pre-release. The job checks the draft still holds exactly the files that were tested, and that each file's attestation names this workflow, tag and commit. `scripts/release:prerelease-check attested` checks the image's attestation is on record. Then `scripts/release:publish-prerelease` publishes the draft as a pre-release with `--latest=false` and checks `releases/latest` did not move. Every read is strict: only GitHub's own 404 counts as there being no latest release, and a read that fails, is cut short, or is empty, repeated or malformed stops before publishing, or fails the job after it |
 
 The self-hosted runner never holds a token that can write. It runs only after the gate has admitted a commit that is
 already on `development/v1`. The install test uses its own instance ID, container, network and port (55420), and a
@@ -96,6 +96,11 @@ These settings are the owner's; the workflow cannot change them:
   `docker info` must then report `MemoryLimit`, `CpuCfsQuota` and `PidsLimit` as `true`. As of 2026-10-17,
   `github-runner-pi-01` and `skymonitor01` both meet this. A runner that does not fails every pre-release at the
   Install and Upgrade job, before anything is published. Once it is fixed, **Re-run failed jobs** completes the run.
+- **`docker buildx` on the arm64 runner.** The install test's upgrade pulls the image by digest, and the installer
+  first reads the image from the registry with `docker buildx imagetools inspect`
+  ([Release Install](deployment-installer.md#release-install)). A runner without buildx fails the Install and Upgrade
+  job at that read, before anything is pulled or published. `docker buildx version` confirms it. Any host that installs
+  with `--image-source registry` needs it too; the default archive source does not.
 - **The `skymonitor-cameraagent` package's visibility.** A new GHCR package is private, so a host must sign in to
   `ghcr.io` before it can pull by digest. The offline archives need no sign-in.
 
@@ -158,8 +163,9 @@ operations manual's change-management rules for a live host. An upgrade pauses c
    ./hvo-sky-install-linux-arm64 cameraagent upgrade --instance-id <uuid> --release "$release"
    ```
 
-   To pull the image by digest instead of loading the offline archive, add `--image-source registry`. The host must
-   then be signed in to `ghcr.io` while the package is private.
+   To pull the image by digest instead of loading the offline archive, add `--image-source registry`. The host then
+   needs `docker buildx`, which the installer uses to read the image from the registry before it pulls anything, and
+   must be signed in to `ghcr.io` while the package is private.
 
 5. Check the result, and keep the rollback command at hand:
 
@@ -204,9 +210,11 @@ digest install, start a throwaway registry on this host and rebuild into a fresh
 `scripts/release:push-image --insecure <archive> localhost:<port>/hualapaivalley/skymonitor-cameraagent:<version>`,
 then run `scripts/test:release-install --install-source registry --upgrade-source registry` against it.
 
-`scripts/test:release-scripts` proves the gate's and the push script's decisions with fake `gh` and `skopeo` commands.
+`scripts/test:release-scripts` proves the gate's, the checks', the publish script's and the push script's decisions with
+fake `gh` and `skopeo` commands, including GitHub reads that fail after a complete 200, 404s that are not GitHub's, and
+empty, repeated or malformed answers.
 CI's Quality job always runs it. **Development v1 / Preflight** runs it when the classifier's `release_scripts` output
-selects it: on a pull request that changes the release scripts or the library `scripts/test:release-install` sources,
+selects it: on a pull request that changes the release scripts or the libraries they source,
 `.github/workflows/prerelease.yml`, the release tool,
 or the Preflight wiring that runs it (`development-v1.yml`, `scripts/ci:classify`), on every push, and whenever the
 classification failed or is incomplete ([ci-pipeline.md](ci-pipeline.md#release-script-tests)).

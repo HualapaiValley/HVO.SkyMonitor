@@ -28,10 +28,14 @@ onward; earlier development is recorded in its pull requests. A release renames 
 - `hvo-sky-install cameraagent install` and `cameraagent upgrade` take `--release <folder>`, a release's downloaded
   files. Before contacting Docker, the installer checks `release.json` against `SHA256SUMS` and every file it uses
   against both, and refuses a folder whose files disagree. `--image-source archive`, the default, loads the platform's
-  offline archive; `--image-source registry` pulls the image by the digest `release.json` names. The image must be the
-  release's, carry its version and commit, and declare the contracts the instance needs. It is checked before the
-  install or upgrade claims anything: an archive's image is read from the archive before it is loaded, and a pulled
-  image that is refused is removed again. JSON in a release that names a property twice is refused. The instance
+  offline archive; `--image-source registry` pulls the image by the digest `release.json` names, and needs `docker
+  buildx`. The image must be the release's, carry its version and commit, and declare the contracts the instance
+  needs. It is checked before anything is imported or claimed. An archive's image is read from the archive, every
+  layer included, and an archive whose entries a loader could read differently (an alias such as
+  `metadata/../index.json`, a duplicate, a link, or an entry no OCI layout has) is refused. A registry image is read
+  from the registry with `docker buildx imagetools inspect` before anything is pulled. A new installation then loads
+  or pulls the image before it creates any state, and an import that is refused, fails or is cancelled is removed
+  again. JSON in a release that names a property twice is refused. The instance
   records the release it runs, and keeps the previous image's record so a rollback restores it, which is how an upgrade
   knows the installed version and refuses an older one. (#1309)
 - Integration pre-releases. An annotated `vX.Y.Z-dev.<n>` tag that the owner pushes on a green `development/v1` commit

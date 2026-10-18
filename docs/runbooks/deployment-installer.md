@@ -295,7 +295,7 @@ hvo-sky-install cameraagent install \
 | `--image-source` | The image |
 | --- | --- |
 | `archive` (the default) | Loaded from the platform's offline archive in the folder. Nothing is pulled, so an air-gapped host needs only the folder |
-| `registry` | Pulled as `<repository>@<digest>`, the digest `release.json` names, never by tag. The host must be signed in to `ghcr.io` while the package is private |
+| `registry` | Pulled as `<repository>@<digest>`, the digest `release.json` names, never by tag, once its metadata has been read from the registry and checked (below). The host needs `docker buildx`, and must be signed in to `ghcr.io` while the package is private |
 
 Before it contacts Docker, the installer checks the folder. It refuses, naming the reason and changing nothing, when:
 
@@ -313,26 +313,53 @@ Before it contacts Docker, the installer checks the folder. It refuses, naming t
   The release's index must list the platform once, as the manifest `release.json` names, and that manifest must name the
   configuration `release.json` names. The configuration must be for the platform and labelled CameraAgent at the
   release's version and commit. Docker's own `manifest.json`, which its classic store loads instead, must describe the
-  same image and tag only `<repository>:<version>`, so a load cannot retag another image. The image must also declare the
-  contracts the instance needs, as below. Every blob is checked against its digest, and an entry the check reads that
-  appears twice, or is not a regular file, is refused;
+  same image and tag only `<repository>:<version>`, so a load cannot retag another image. Every layer the manifest
+  names must be in the archive, the size the manifest gives it and the blob its digest names, so Docker cannot reject
+  the load for a missing or damaged layer. The image must also declare the contracts the instance needs, as below.
+  Every blob is checked against its digest and the size its descriptor gives;
+- with `archive`, an entry of the archive could be read differently by a loader. Docker and containerd clean each entry
+  name, and a later entry replaces an earlier one, so every name must be the one canonical spelling of its path: no
+  `.` or `..` segment, no empty segment (`//`), no leading `/`, no backslash, and a trailing `/` only on a directory.
+  It must also be part of the OCI image layout (`oci-layout` at version 1.0.0, `index.json`, `manifest.json`, the
+  `blobs/sha256` directories and the blobs the image uses), appear once, and be a regular file, or a directory where
+  the layout has one. A link, a duplicate, an alias such as `metadata/../index.json`, or a blob the image does not use
+  is refused;
 - `release.json`, or any JSON in the archive, names the same property twice in one object, compared after escapes are
   decoded, so two readers could see different values.
 
 Each file is opened as a regular file with a single link, so a symbolic link, hard link, FIFO or folder under a
 release file's name is refused rather than followed. Copy the files into the folder; do not link them.
 
-A pulled image (`registry`) can only be read once Docker holds it, because the installer has no registry client of its
-own and Docker holds the registry credentials. It is pulled by the digest `release.json` names and checked before the
-install or upgrade claims anything: no product root, state, catalog, staged archive or journal entry exists yet. When it
-is refused, the image the pull added is removed again.
+With `registry`, the image is read from the registry before anything is pulled. The installer runs `docker buildx
+imagetools inspect`, which uses this user's Docker credentials and credential helpers, so the installer never handles
+them. It reads, by the digest `release.json` names:
+
+- the release's image index (or, for a one-platform release, its manifest) exactly as the registry serves it, which must
+  be the content that digest names;
+- the index's one entry for the platform, and that manifest exactly as served, which must be the content its digest
+  names and, when `release.json` lists an offline archive for the platform, the manifest it names;
+- the configuration that manifest names, which buildx fetches by its digest: it must be the configuration
+  `release.json` names, when it names one, be for the platform, be labelled CameraAgent at the release's version and
+  commit, and declare the contracts the instance needs.
+
+Anything else is refused with nothing pulled, naming what disagrees. When the registry cannot be read this way (no
+`docker buildx`, no network, or no credentials for a private package), the installer refuses the registry source before
+pulling anything and names the default archive source as the alternative.
+
+A new installation then imports the release's image, by loading its archive or pulling it, before it claims anything:
+no product root, state, application identity, catalog, staged archive or journal entry exists yet. A load or pull that
+Docker rejects, or that is cancelled, therefore leaves nothing for `--resume` or purge to recover, and running the same
+install again completes it. A resumed or repeated installation, which already has state, imports in its image step
+from the same verified inputs. An upgrade pulls a registry image before its journal entry; it loads an archive after
+it, and a load Docker still rejects there is settled as a terminal refusal that blocks no later operation.
 
 Before it claims anything, the installer also requires the release's image, from the archive or the pull, to declare
 the configuration and catalog contracts this instance needs (an upgrade also requires the current state contract).
 After Docker resolves the image, the installer again requires it to be one the release names: the image index, the
-platform's manifest or its configuration digest. It must also be labelled CameraAgent at the release's version and
-commit. Otherwise the installer refuses, naming the release, and removes what that step loaded or pulled, unless Docker
-held it before.
+platform's manifest or its configuration digest, as `release.json` or the registry gave them. It must also be labelled
+CameraAgent at the release's version and commit. Otherwise the installer refuses, naming the release, and removes what
+that step loaded or pulled, unless Docker held it before. It removes it too when the load or pull fails or the
+operation is cancelled while it runs.
 
 The installer checks that a release's files agree with each other; it does not check who built them. Verify that with
 `sha256sum --check SHA256SUMS` and `gh attestation verify` before installing, as
