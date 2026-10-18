@@ -356,6 +356,49 @@ public sealed partial class InstallerFlowTests
         }
     }
 
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task InstallAsync_CompletedReRunKeepsTheRetainedSnapshotAndAnyOtherInstallDropsIt()
+    {
+        var bundle = RequireProductionCatalogBundle();
+        var (request, root) = ResourceRequest(bundle, Guid.Parse("1d2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5a"));
+        var runner = new InstallerProcessRunner(request.ImageReference, root, request.InstanceId!.Value);
+        var owner = new InstallerOwnerClient();
+        try
+        {
+            var first = await InstallResourceRequestAsync(request, runner, owner);
+            var manifestPath = Path.Combine(first.InstanceRoot, "instance-manifest.json");
+            var statePath = Path.Combine(first.StateRoot, "deployment", "installation-state.json");
+            // A migrating upgrade left a database snapshot that a rollback would put back.
+            var withSnapshot = JsonNode.Parse(await File.ReadAllTextAsync(manifestPath))!.AsObject();
+            withSnapshot["previousStateSnapshot"] = new JsonObject
+            {
+                ["snapshotId"] = Guid.NewGuid().ToString("D"),
+                ["operationId"] = Guid.NewGuid().ToString("D"),
+                ["manifestSha256"] = new string('a', 64),
+                ["recordedUtc"] = "2026-10-18T03:00:00+00:00"
+            };
+            await File.WriteAllTextAsync(manifestPath, withSnapshot.ToJsonString());
+
+            // A completed re-run describes the manifest as it is, so it validates and keeps the snapshot.
+            var reRun = await InstallResourceRequestAsync(request, runner, owner);
+            Assert.IsFalse(reRun.Plan!.HasChanges);
+            Assert.IsNotNull((await CameraAgentLifecycleManager.ReadManifestAsync(manifestPath, CancellationToken.None)).PreviousStateSnapshot);
+
+            // An install that is not a completed re-run, here one resuming a failed run, rebuilds the manifest without it,
+            // so a later rollback can never bring back databases from before (the reinstall after reset-state is one).
+            var failed = JsonNode.Parse(await File.ReadAllTextAsync(statePath))!.AsObject();
+            failed["status"] = "Failed";
+            await File.WriteAllTextAsync(statePath, failed.ToJsonString());
+            _ = await InstallResourceRequestAsync(request, runner, owner);
+            Assert.IsNull((await CameraAgentLifecycleManager.ReadManifestAsync(manifestPath, CancellationToken.None)).PreviousStateSnapshot);
+        }
+        finally
+        {
+            DeleteResourceRoot(root);
+        }
+    }
+
     /// <summary>The records a re-run may change, including the install record.</summary>
     private static string[] Records(InstallationResult installed, string root) =>
     [

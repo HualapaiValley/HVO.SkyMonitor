@@ -397,7 +397,7 @@ internal sealed partial class CameraAgentInstaller
             var manifest = CreateManifest(
                 request, paths, instanceId, installationId, applicationIdentity, uid, gid,
                 verificationToken, lifecycleControlToken, compose, composeModelSha256, catalog, image, daemon, existingManifest,
-                resources);
+                resources, keepPreviousStateSnapshot: retainedCompletedResult is not null);
             if (retainedCompletedResult is null)
             {
                 await SafeFileSystem.WriteJsonAtomicAsync(
@@ -853,7 +853,8 @@ internal sealed partial class CameraAgentInstaller
                 image,
                 daemon,
                 retainedManifest,
-                resources);
+                resources,
+                keepPreviousStateSnapshot: true);
             if (candidate != retainedManifest)
             {
                 throw new InstallerException("The completed installation differs from its retained immutable manifest.");
@@ -911,7 +912,8 @@ internal sealed partial class CameraAgentInstaller
         ImageInstallationIdentity image,
         DockerDaemonIdentity daemon,
         InstanceManifest? previous,
-        ContainerResourceLimits? resources)
+        ContainerResourceLimits? resources,
+        bool keepPreviousStateSnapshot = false)
     {
         var location = HVO.SkyMonitor.AgentCore.DeploymentLocationSnapshot.Create(
             $"installer-{instanceId:D}",
@@ -972,7 +974,10 @@ internal sealed partial class CameraAgentInstaller
             previous?.PreviousComposeModelSha256,
             (ContractReplayProfile)request.ReplayProfile,
             resources,
-            previous?.PreviousStateSnapshot);
+            // A completed installation's re-run describes the manifest as it is, retained database snapshot included. Any
+            // other install (a fresh one, a resumed one, the reinstall after a state reset) drops it, so a later
+            // rollback can never bring back databases from before the reset.
+            keepPreviousStateSnapshot ? previous?.PreviousStateSnapshot : null);
     }
 
     private static InstallationResult CreateInstalledResult(
