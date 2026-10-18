@@ -274,28 +274,50 @@ cover:
 
 ## Base-Image Updates
 
-Dependabot proposes updates for the digest-pinned base images of the CameraAgent
-and LogicHost Dockerfiles (`docker` in `.github/dependabot.yml`). It updates only
-`FROM` lines, so the CameraAgent Dockerfile pins its images on the `dotnet-sdk`
-and `dotnet-aspnet` alias stages, and its build and runtime stages select them
-through `DOTNET_SDK_IMAGE` and `DOTNET_ASPNET_IMAGE`. The ARM64 advisory build
-passes resolved native references through the same arguments. Updates are weekly
-and grouped per image across both Dockerfiles (`group-by: dependency-name`), so
-the two hosts keep the same bases.
+Dependabot covers every repository Dockerfile through the `docker` directories
+in `.github/dependabot.yml`: the devcontainer, Stellarium, CameraAgent, LogicHost,
+ProcessingRunner, and TimeLapseBenchmark images. Updates are weekly and grouped
+per dependency across all directories (`group-by: dependency-name`), so identical
+image tags keep the same digest wherever they occur.
+
+Dependabot updates `FROM` lines. CameraAgent pins its external images on the
+`dotnet-sdk` and `dotnet-aspnet` alias stages; its build/runtime stages select
+those aliases through `DOTNET_SDK_IMAGE` and `DOTNET_ASPNET_IMAGE`. The ARM64
+advisory build passes resolved native references through the same arguments.
 
 - `dotnet/aspnet` receives patch releases and digest refreshes. A new major
   version is ignored, because it is a target-framework migration.
 - `dotnet/sdk` receives digest refreshes of the pinned tag only. `global.json`
   requires that SDK exactly (`rollForward: disable`), so a new SDK is a manual
-  change to `global.json`, both Dockerfiles, and the other SDK pins together.
+  change to `global.json`, every SDK-bearing Dockerfile, and the other SDK pins
+  together.
+
+Every Development v1 Preflight, including drafts, runs
+`./scripts/ci:base-images`. This offline check enumerates tracked and non-ignored
+new files named `dockerfile` or `containerfile`, case-insensitively, including
+`X.*` and `*.X` variants, while excluding `*.dockerignore`. The Dependabot
+coverage contract uses the same discovery. The check requires SDK FROM tags
+to equal `global.json`, requires identical image tags to share one digest, and
+requires every external FROM to carry a full `sha256` digest. Earlier stage
+aliases inherit their checked base; global ARG defaults are resolved before
+checking FROMs. UTF-8 BOMs are decoded before checking parser directives and
+instructions. Unknown instructions, unresolved arguments and unsupported FROM
+forms fail closed.
+There are no pinning exceptions. Build-time argument overrides are outside this
+source check; the ARM64 harness separately resolves its native references.
+`./scripts/test:development-v1-ci` includes offline mismatch/alignment fixtures
+and verifies that every checked-in Dockerfile directory is listed in Dependabot.
+No Docker daemon, image pull, SDK invocation, or registry access is needed.
 
 Development v1 CI does not build images; full qualification's Deployment
-Contracts job does. Build both images locally before merging a base-image pull
-request:
+Contracts job exercises the CameraAgent and LogicHost images. ProcessingRunner
+has no dedicated CI image build. Build affected images locally before merging a
+base-image pull request, including ProcessingRunner when its base changes:
 
 ```bash
 docker build -f src/HVO.SkyMonitor.CameraAgent/Dockerfile .
 docker build -f src/HVO.SkyMonitor.LogicHost/Dockerfile .
+docker build -f src/HVO.SkyMonitor.ProcessingRunner/Dockerfile .
 ```
 
 ## Coverage Badge Publication
