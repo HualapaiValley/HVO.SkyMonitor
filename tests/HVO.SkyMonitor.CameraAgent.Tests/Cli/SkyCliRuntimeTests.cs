@@ -553,15 +553,31 @@ public sealed class SkyCliRuntimeTests
     }
 
     [TestMethod]
-    public async Task ScheduleApply_AnActivationCameraAgentMayHaveReceived_ExitsOneAndSaysItIsNotKnownAsync()
+    [DataRow("restart", "stalled")]
+    [DataRow("restart", "malformed")]
+    [DataRow("schedule apply", "stalled")]
+    [DataRow("schedule apply", "malformed")]
+    public async Task AChangeWhoseSuccessStatusArrivedButNotItsBody_IsAcceptedButUnverifiedAsync(string command, string body)
     {
+        ArgumentNullException.ThrowIfNull(command);
+        ArgumentNullException.ThrowIfNull(body);
         using var harness = new CliHarness();
-        harness.Api.Handle("POST", Fake.ScheduleRoute + "/rollback", _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StalledContent() });
+        var (route, status, change, args) = command == "restart"
+            ? (Fake.RestartRoute, HttpStatusCode.Accepted, "the restart", new[] { "restart", "--force" })
+            : (Fake.ScheduleRoute + "/rollback", HttpStatusCode.OK, "the rollback to schedule revision schedule-2", new[] { "schedule", "apply", "schedule-2" });
+        harness.Api.Handle("POST", route, _ => new HttpResponseMessage(status)
+        {
+            Content = body == "stalled" ? new StalledContent() : new StringContent("{\"status\": ", System.Text.Encoding.UTF8, "application/json")
+        });
 
-        var result = await harness.RunAsync("schedule", "apply", "schedule-2", "--timeout", "1").ConfigureAwait(false);
+        var result = await harness.RunAsync([.. args, "--timeout", "1", "--json"]).ConfigureAwait(false);
 
         Assert.AreEqual(1, result.ExitCode, result.ToString());
-        StringAssert.Contains(result.Error, "Whether CameraAgent received the rollback to schedule revision schedule-2 is not known", StringComparison.Ordinal);
+        var error = result.Json().GetProperty("error");
+        Assert.AreEqual("Unverified", error.GetProperty("kind").GetString());
+        Assert.AreEqual(body == "stalled" ? "TimedOut" : "Failed", error.GetProperty("cause").GetString());
+        StringAssert.StartsWith(error.GetProperty("message").GetString(), $"CameraAgent accepted {change}, but it could not be verified: ", StringComparison.Ordinal);
+        Assert.DoesNotContain("is not known", error.GetProperty("message").GetString()!, StringComparison.Ordinal);
     }
 
     [TestMethod]

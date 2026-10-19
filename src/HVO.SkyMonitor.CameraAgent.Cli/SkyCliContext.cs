@@ -151,8 +151,10 @@ internal sealed class SkyCliContext
     public void SaveCredentials(SkyStoredCredentials credentials) => SkyCredentialStore.Save(CredentialsPath, credentials, Host.UserId);
 
     /// <summary>
-    /// Sends a change, described as <paramref name="change"/> ("the restart"). Once CameraAgent answers it with success
-    /// (and <paramref name="changed"/>, when given, says the answer changed something), <see cref="AcceptedChange"/> is set.
+    /// Sends a change, described as <paramref name="change"/> ("the restart"). <see cref="AcceptedChange"/> is set as soon
+    /// as CameraAgent's success status line arrives, before its body is read or parsed, so a body that then stalls or
+    /// cannot be read is a change accepted but not verified. When <paramref name="changed"/> is given and the answer says,
+    /// with authority, that nothing changed (a settings group CameraAgent already had), the change is not counted.
     /// </summary>
     public async Task<JsonElement> SendChangeAsync(
         SkyApiClient client,
@@ -164,12 +166,13 @@ internal sealed class SkyCliContext
         Func<JsonElement, bool>? changed = null)
     {
         ArgumentNullException.ThrowIfNull(client);
+        var before = AcceptedChange;
         _sending = change;
-        var answer = await client.SendAsync(method, route, body, cancellationToken).ConfigureAwait(false);
+        var answer = await client.SendAsync(method, route, body, () => AcceptedChange ??= change, cancellationToken).ConfigureAwait(false);
         _sending = null;
-        if (changed is null || changed(answer))
+        if (changed is not null && !changed(answer))
         {
-            AcceptedChange ??= change;
+            AcceptedChange = before;
         }
 
         return answer;
