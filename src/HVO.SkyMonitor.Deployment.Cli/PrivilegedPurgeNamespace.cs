@@ -21,14 +21,28 @@ internal static class PrivilegedPurgeNamespace
     /// each without following links and requires root ownership with no group or other write access; the components
     /// that internal preparation creates must also belong to group 0.
     /// </summary>
-    internal static readonly IReadOnlyList<(string Name, bool RootGroup)> NamespaceComponents =
+    internal static readonly IReadOnlyList<(string Name, bool RootGroup)> DefaultNamespaceComponents =
     [
         ("var", false),
         ("lib", false),
-        ("hvo", true),
-        ("skymonitor", true),
+        ("hvo-sky", true),
         ("cameraagents", true)
     ];
+
+    /// <summary>
+    /// The components from <c>/</c> to the <c>cameraagents</c> namespace of the production product root. A host-policy
+    /// root requires every component to be <c>root:root</c>, as the policy itself does; without a policy the default
+    /// root keeps its established components.
+    /// </summary>
+    internal static IReadOnlyList<(string Name, bool RootGroup)> NamespaceComponents(ProductionProductRoot production)
+    {
+        ArgumentNullException.ThrowIfNull(production);
+        if (!production.FromPolicy)
+        {
+            return DefaultNamespaceComponents;
+        }
+        return [.. production.Path.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(static name => (name, true)), ("cameraagents", true)];
+    }
 
     internal enum Action
     {
@@ -122,18 +136,35 @@ internal static class PrivilegedPurgeNamespace
             "--device-minor", expected.DeviceMinor.ToString(CultureInfo.InvariantCulture)
         ];
 
+    /// <summary>
+    /// The <c>sudo</c>-executed mutation. It re-reads and re-validates the host policy itself and accepts only the
+    /// production product root that policy resolves, never a root its arguments merely name.
+    /// </summary>
     public static int RunInternal(string[] args)
     {
-        if (!TryParse(args, out var command) || NativeLinux.getuid() != 0 ||
+        if (NativeLinux.getuid() != 0 ||
             !uint.TryParse(Environment.GetEnvironmentVariable("SUDO_UID"), NumberStyles.None, CultureInfo.InvariantCulture, out var sudoUid) ||
-            !uint.TryParse(Environment.GetEnvironmentVariable("SUDO_GID"), NumberStyles.None, CultureInfo.InvariantCulture, out var sudoGid) ||
-            command.Uid != sudoUid || command.Gid != sudoGid)
+            !uint.TryParse(Environment.GetEnvironmentVariable("SUDO_GID"), NumberStyles.None, CultureInfo.InvariantCulture, out var sudoGid))
+        {
+            return 2;
+        }
+        ProductionProductRoot production;
+        try
+        {
+            production = HostProductRootPolicy.Resolve(HostPolicyLocation.Production);
+        }
+        catch (InstallerException exception)
+        {
+            Console.Error.WriteLine(exception.Message);
+            return 1;
+        }
+        if (!TryParse(args, production.Path, out var command) || command.Uid != sudoUid || command.Gid != sudoGid)
         {
             return 2;
         }
         try
         {
-            using var parent = OpenRootOwnedNamespace();
+            using var parent = OpenRootOwnedNamespace(production);
             Apply(command, parent);
             return 0;
         }
@@ -144,12 +175,13 @@ internal static class PrivilegedPurgeNamespace
         }
     }
 
-    internal static bool TryParse(string[] args, out Command command)
+    /// <summary>Parses the exact bound command for the production product root <paramref name="productionProductRoot"/>.</summary>
+    internal static bool TryParse(string[] args, string productionProductRoot, out Command command)
     {
         command = null!;
         if (args.Length != ArgumentCount || args[0] != CommandName ||
             args[1] != "--action" || args[2] is not ("quarantine" or "remove") ||
-            args[3] != "--product-root" || !string.Equals(args[4], InstallRequest.DefaultProductRoot, StringComparison.Ordinal) ||
+            args[3] != "--product-root" || !string.Equals(args[4], productionProductRoot, StringComparison.Ordinal) ||
             args[5] != "--instance-id" || !Guid.TryParseExact(args[6], "D", out var instanceId) || instanceId == Guid.Empty ||
             args[7] != "--operation-id" || !Guid.TryParseExact(args[8], "D", out var operationId) || operationId == Guid.Empty ||
             args[9] != "--uid" || !TryParseNumber(args[10], out uint uid) || uid == 0 ||
@@ -223,13 +255,13 @@ internal static class PrivilegedPurgeNamespace
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Each superseded component handle is disposed as the walk advances, and the current handle is disposed on failure or returned to the caller.")]
-    private static SafeFileHandle OpenRootOwnedNamespace()
+    private static SafeFileHandle OpenRootOwnedNamespace(ProductionProductRoot production)
     {
         var current = NativeLinux.OpenDirectoryNoFollow("/");
         try
         {
             EnsureRootOwned(current, "/", rootGroup: false);
-            foreach (var (name, rootGroup) in NamespaceComponents)
+            foreach (var (name, rootGroup) in NamespaceComponents(production))
             {
                 var next = NativeLinux.TryOpenDirectoryAt(current, name)
                     ?? throw new InstallerException($"Product namespace component '{name}' is not an authenticated directory.");

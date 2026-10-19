@@ -202,7 +202,7 @@ for project in "${!expected[@]}"; do
   fi
   command="${matches[0]}"
   step="$(step_of "$command")"
-  command_line="$(grep -nF -- "$command" <<<"$unit_job" | head -1 | cut -d: -f1)"
+  command_line="$(grep -nF -- "$command" <<<"$unit_job" | sed -n '1p' | cut -d: -f1)"
   if [[ -n "$bind_line" ]] && ((command_line > bind_line)); then
     fail "$project command runs after the evidence is bound and uploaded, so its results never reach the artifact"
   fi
@@ -214,7 +214,7 @@ for project in "${!expected[@]}"; do
   # is rejected rather than interpreted, so a complete list cannot hide a selection
   # that never runs and an env-looking line inside a script is never read as env.
   parsed="$(validate_step <<<"$step")"
-  unsupported="$(grep '^BAD ' <<<"$parsed" | head -1 || true)"
+  unsupported="$(grep '^BAD ' <<<"$parsed" | sed -n '1p' || true)"
   if [[ -n "$unsupported" ]]; then
     fail "$project command sits in a step outside the supported grammar, so its selection may not run: ${unsupported#BAD }"
   fi

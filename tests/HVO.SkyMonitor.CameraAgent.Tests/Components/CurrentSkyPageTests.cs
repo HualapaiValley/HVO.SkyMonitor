@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class CurrentSkyPageTests
+public sealed partial class CurrentSkyPageTests
 {
     [TestMethod]
     [DataRow("Available", "35.33°, -113.99° / 1100 m")]

@@ -1,4 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- The wizard runs here as the installer ships it: without Terminal.Gui's syntax highlighting (Directory.Build.targets). -->
+    <HvoTerminalProgram>true</HvoTerminalProgram>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="MSTest" />
     <PackageReference Include="coverlet.collector"><PrivateAssets>all</PrivateAssets></PackageReference>
@@ -7,7 +11,15 @@
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Deployment.Cli\HVO.SkyMonitor.Deployment.Cli.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Deployment.Contracts\HVO.SkyMonitor.Deployment.Contracts.csproj" />
-    <ProjectReference Include="..\..\src\HVO.SkyMonitor.Deployment.Distribution\HVO.SkyMonitor.Deployment.Distribution.csproj" />
     <EmbeddedResource Include="FrozenRawIngressV14.sql" />
+    <EmbeddedResource Include="ReleaseManifestSchema1.json" />
+    <!-- What the release tool writes for its own test inputs (ReleaseAssetsToolTests), which the installer must read. -->
+    <EmbeddedResource Include="..\HVO.SkyMonitor.Deployment.Distribution.Tests\Fixtures\ReleaseTool\release.json"
+                      LogicalName="HVO.SkyMonitor.Deployment.Cli.Tests.ReleaseToolOutput.json" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\fixtures\state-compatibility\previous-release\*" Link="Fixtures\previous-release\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 </Project>

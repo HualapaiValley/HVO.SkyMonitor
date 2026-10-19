@@ -15,4 +15,18 @@ if GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT=1 GITHUB_SHA="$head" \
   GITHUB_JOB=build "$script" package-audit quality "$root/bad" >/dev/null 2>&1; then
   printf 'Wrong producer job unexpectedly passed.\n' >&2; exit 1
 fi
+# The release workflow calls ci.yml as its qualification (#1310): a called run's workflow reference is the caller's,
+# release.yml at a release tag, and only that.
+GITHUB_RUN_ID=124 GITHUB_RUN_ATTEMPT=1 GITHUB_SHA="$head" \
+GITHUB_WORKFLOW_REF='HualapaiValley/HVO.SkyMonitor/.github/workflows/release.yml@refs/tags/v0.9.0' \
+GITHUB_JOB=quality "$script" package-audit quality "$root/release"
+jq -e '.runId==124 and .workflowPath==".github/workflows/ci.yml"' "$root/release/ci-artifact-provenance.json" >/dev/null
+for reference in .github/workflows/release.yml@refs/heads/main .github/workflows/prerelease.yml@refs/tags/v0.9.0-dev.1 \
+  .github/workflows/other.yml@refs/tags/v0.9.0; do
+  if GITHUB_RUN_ID=125 GITHUB_RUN_ATTEMPT=1 GITHUB_SHA="$head" \
+    GITHUB_WORKFLOW_REF="HualapaiValley/HVO.SkyMonitor/$reference" \
+    GITHUB_JOB=quality "$script" package-audit quality "$root/refused" >/dev/null 2>&1; then
+    printf 'The workflow reference %s unexpectedly passed.\n' "$reference" >&2; exit 1
+  fi
+done
 printf 'CI artifact producer provenance contract passed.\n'

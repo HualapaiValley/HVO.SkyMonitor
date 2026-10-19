@@ -78,7 +78,10 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         bool useCalibrationLibrary = false,
         bool requireOwnerPasswordReplacement = false,
         bool enableCentralIntegration = false,
-        bool useEnvironmentalAcquisition = false)
+        bool useEnvironmentalAcquisition = false,
+        Func<string, Task>? prepareRoot = null,
+        bool useTransientEvidence = false,
+        string ownerPassword = OwnerPassword)
     {
         var temporaryRoot = useCalibrationLibrary && Directory.Exists("/dev/shm")
             ? "/dev/shm"
@@ -147,7 +150,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         var overrides = new Dictionary<string, string?>
         {
             ["LocalIdentity:AdminEmail"] = OwnerEmail,
-            ["LocalIdentity:AdminPassword"] = OwnerPassword,
+            ["LocalIdentity:AdminPassword"] = ownerPassword,
             ["LocalIdentity:AdminPasswordFile"] = string.Empty,
             ["LocalIdentity:AllowMissingAdminPassword"] = "false",
             ["LocalIdentity:DatabasePath"] = Path.Combine(root, "identity", "cameraagent_identity.db"),
@@ -163,7 +166,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false",
             ["CameraAgent:EnvironmentalDelivery:Enabled"] = "false",
             ["CameraAgent:CentralIntegration:Mode"] = enableCentralIntegration ? "Enabled" : "Disabled",
-            ["CameraAgent:TransientDetection:Mode"] = "Off",
+            ["CameraAgent:TransientDetection:Mode"] = useTransientEvidence ? "Edge" : "Off",
             ["DeviceProvisioning:StateDirectory"] = provisioningRoot,
             ["CentralIdentity:ServiceUrl"] = "http://127.0.0.1:1/",
             ["SkyMonitor:BaseUrl"] = "http://127.0.0.1:1",
@@ -183,6 +186,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         var fixture = new CameraAgentKestrelFixture(root, catalog, overrides, configureServices);
         try
         {
+            if (prepareRoot is not null) await prepareRoot(root).ConfigureAwait(false);
             await fixture.StartHostAsync().ConfigureAwait(false);
             if (!requireOwnerPasswordReplacement)
             {
@@ -205,6 +209,13 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         _overrides["LocalIdentity:AdminPassword"] = string.Empty;
         _overrides["LocalIdentity:AdminPasswordFile"] = string.Empty;
         _overrides["LocalIdentity:AllowMissingAdminPassword"] = "true";
+        await StartHostAsync().ConfigureAwait(false);
+    }
+
+    internal async Task RunWithHostStoppedAsync(Func<string, Task> action)
+    {
+        await StopHostAsync().ConfigureAwait(false);
+        await action(_root).ConfigureAwait(false);
         await StartHostAsync().ConfigureAwait(false);
     }
 
@@ -327,7 +338,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "HttpClient takes ownership of its handler and the caller owns the returned client.")]
-    internal async Task<HttpClient> CreateOwnerClientAsync(string password = OwnerPassword)
+    internal async Task<HttpClient> CreateOwnerClientAsync(string password = OwnerPassword, string signInName = OwnerEmail)
     {
         var client = new HttpClient(new HttpClientHandler
         {
@@ -349,7 +360,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             using var form = new FormUrlEncodedContent(new Dictionary<string, string>
             {
                 ["__RequestVerificationToken"] = token,
-                ["Input.Email"] = OwnerEmail,
+                ["Input.Email"] = signInName,
                 ["Input.Password"] = password,
                 ["Input.RememberMe"] = "false",
                 ["_handler"] = "login"

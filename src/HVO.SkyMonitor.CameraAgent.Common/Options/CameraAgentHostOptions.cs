@@ -619,6 +619,9 @@ public sealed class CentralIntegrationOptions
 
 public sealed class ArtifactReadOptions
 {
+    /// <summary>Allows optional measured-trail metadata queries and composition for retained captures.</summary>
+    public bool MeasuredTransientTrailsEnabled { get; init; } = true;
+
     [Range(1, 2_048)]
     public int MaximumPreviewDimension { get; init; } = 2_048;
 

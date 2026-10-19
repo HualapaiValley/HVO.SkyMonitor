@@ -107,7 +107,8 @@ internal sealed record RawIngressReconciliationSummary(
     int MissingEvidence,
     long QuarantineBytes,
     int IndexProjectionFailures = 0,
-    int ProjectedSceneStageBacklog = 0);
+    int ProjectedSceneStageBacklog = 0,
+    int MaintenanceDeferred = 0);
 
 internal sealed record RawIngressPlannedQuarantine(
     string EvidenceKey,

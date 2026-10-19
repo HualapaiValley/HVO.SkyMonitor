@@ -95,6 +95,64 @@ public class LocalIdentityOptionsTests
     }
 
     [TestMethod]
+    public void Defaults_SeedTheAdminUserNameWithANonRoutableEmail()
+    {
+        var options = new LocalIdentityOptions();
+
+        Assert.AreEqual("admin", options.AdminUserName);
+        Assert.AreEqual("owner@cameraagent.local", options.AdminEmail);
+    }
+
+    [TestMethod]
+    [DataRow("skymonitor")]
+    [DataRow("abcdefgh")]
+    [DataRow("12345678")]
+    public void Validate_WithEightOrMoreCharactersAndNoCharacterClasses_Succeeds(string password)
+    {
+        var options = new LocalIdentityOptions { AdminPassword = password };
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(
+            options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsTrue(valid, string.Join("; ", results));
+    }
+
+    [TestMethod]
+    public void Validate_WithSevenCharacterPassword_Fails()
+    {
+        var options = new LocalIdentityOptions { AdminPassword = "abcdefg" };
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(
+            options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsFalse(valid);
+        var failure = results.Single(result => result.MemberNames.Contains(nameof(LocalIdentityOptions.AdminPassword)));
+        Assert.AreEqual("AdminPassword must be at least 8 characters.", failure.ErrorMessage);
+    }
+
+    [TestMethod]
+    [DataRow("")]
+    [DataRow("owner@cameraagent.local")]
+    [DataRow("site owner")]
+    public void Validate_WithUnusableAdminUserName_Fails(string userName)
+    {
+        var options = new LocalIdentityOptions
+        {
+            AdminPassword = "skymonitor",
+            AdminUserName = userName
+        };
+        var results = new List<ValidationResult>();
+
+        var valid = Validator.TryValidateObject(
+            options, new ValidationContext(options), results, validateAllProperties: true);
+
+        Assert.IsFalse(valid);
+        Assert.IsTrue(results.Any(result => result.MemberNames.Contains(nameof(LocalIdentityOptions.AdminUserName))));
+    }
+
+    [TestMethod]
     public void Validate_WithCustomCookieName_Succeeds()
     {
         var options = new LocalIdentityOptions

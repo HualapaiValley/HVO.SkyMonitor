@@ -26,6 +26,16 @@ public sealed record CameraAgentPresentationMaterializationResult(
 
 public interface ICameraAgentPresentationMaterializer
 {
+    ValueTask<CameraAgentPresentationMaterializationResult> SaveFrozenAsync(
+        Guid captureId,
+        string manifestIdentitySha256,
+        IReadOnlyList<string> enabledLayerIdentitySha256,
+        string actor,
+        CancellationToken cancellationToken)
+        => ValueTask.FromResult(new CameraAgentPresentationMaterializationResult(
+            CameraAgentPresentationMaterializationStatus.Conflict,
+            Reason: "The selected composition is unavailable."));
+
     ValueTask<CameraAgentPresentationMaterializationResult> SaveAsync(
         Guid captureId,
         IReadOnlyList<string> enabledLayerIdentitySha256,
@@ -35,8 +45,70 @@ public interface ICameraAgentPresentationMaterializer
 
 internal sealed class CameraAgentPresentationMaterializer(
     SqliteCaptureProcessingStore processingStore,
-    CaptureProcessingPersistence persistence) : ICameraAgentPresentationMaterializer
+    CaptureProcessingPersistence persistence,
+    ICameraAgentLayeredPresentationService? presentations = null) : ICameraAgentPresentationMaterializer
 {
+    public async ValueTask<CameraAgentPresentationMaterializationResult> SaveFrozenAsync(
+        Guid captureId,
+        string manifestIdentitySha256,
+        IReadOnlyList<string> enabledLayerIdentitySha256,
+        string actor,
+        CancellationToken cancellationToken)
+    {
+        if (captureId == Guid.Empty || enabledLayerIdentitySha256 is null ||
+            enabledLayerIdentitySha256.Count > LayeredPresentationJson.MaximumLayerCount ||
+            enabledLayerIdentitySha256.Distinct(StringComparer.Ordinal).Count() != enabledLayerIdentitySha256.Count ||
+            enabledLayerIdentitySha256.Any(static identity => identity is not { Length: 64 } ||
+                identity.Any(static character => character is not (>= '0' and <= '9' or >= 'A' and <= 'F'))) ||
+            string.IsNullOrWhiteSpace(actor) || actor.Length > 128)
+        {
+            return new(CameraAgentPresentationMaterializationStatus.Invalid,
+                Reason: "The selected presentation stack is invalid.");
+        }
+        if (presentations is null || manifestIdentitySha256 is not { Length: 64 } ||
+            manifestIdentitySha256.Any(static character => character is not (>= '0' and <= '9' or >= 'A' and <= 'F')))
+        {
+            return new(CameraAgentPresentationMaterializationStatus.Conflict,
+                Reason: "The selected composition is unavailable.");
+        }
+        // The private current projection is the save's linearization point: evidence committed before the save
+        // began is observed, and a later change is ordered after this save of the immutable shown composition.
+        var current = await presentations.GetCurrentAsync(captureId, cancellationToken).ConfigureAwait(false);
+        if (current.Presentation is not { } presentation ||
+            presentation.ManifestIdentitySha256 != manifestIdentitySha256 || presentation.ManifestArtifactId == Guid.Empty)
+        {
+            return new(CameraAgentPresentationMaterializationStatus.Conflict,
+                Reason: "The capture composition changed. Reload its layers before saving.");
+        }
+        if (enabledLayerIdentitySha256.Any(identity => !presentation.Layers.Any(layer => layer.IdentitySha256 == identity)))
+        {
+            return new(CameraAgentPresentationMaterializationStatus.Invalid,
+                Reason: "The selected presentation stack is invalid.");
+        }
+        try
+        {
+            var saved = await persistence.MaterializePresentationAsync(captureId, presentation.ManifestArtifactId,
+                enabledLayerIdentitySha256, actor, cancellationToken).ConfigureAwait(false);
+            return new(CameraAgentPresentationMaterializationStatus.Saved, new(captureId, saved.ArtifactId,
+                saved.OutputIdentitySha256, saved.ChecksumSha256, saved.ByteLength, saved.Replayed));
+        }
+        catch (ArgumentException)
+        {
+            return new(CameraAgentPresentationMaterializationStatus.Invalid,
+                Reason: "The selected presentation stack is invalid.");
+        }
+        catch (InvalidDataException)
+        {
+            return new(CameraAgentPresentationMaterializationStatus.Conflict,
+                Reason: "The retained presentation evidence conflicts with the requested stack.");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return new(CameraAgentPresentationMaterializationStatus.Unavailable,
+                Reason: "The presentation stack could not be saved.");
+        }
+    }
+
     public async ValueTask<CameraAgentPresentationMaterializationResult> SaveAsync(
         Guid captureId,
         IReadOnlyList<string> enabledLayerIdentitySha256,

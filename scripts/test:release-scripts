@@ -1,0 +1,1458 @@
+#!/usr/bin/env bash
+# Tests the decisions the pre-release workflow's scripts make, with fake gh, skopeo, docker and installer commands, so
+# they are proved without GitHub, a registry, a build or a Docker daemon:
+#   scripts/release:prerelease-gate      admits a green, annotated vX.Y.Z-dev.N tag on development/v1 and refuses the
+#                                        rest, telling a missing tag from a failed read;
+#   scripts/release:prerelease-check     refuses a release or draft that already has the tag, a draft that is gone or
+#                                        no longer the draft its tag calls for (a pre-release's, a release candidate's
+#                                        or a final release's), and an image with no attestation on record;
+#   scripts/lib/github-api.sh            every GitHub read those scripts and the publish script make: only a 200 that gh
+#                                        completed, with one JSON document of the expected shape, is an answer, and
+#                                        only GitHub's own 404 means absent; a failure, an answer cut short, an empty,
+#                                        repeated or malformed body never passes, before or after publishing;
+#   scripts/release:push-image           pushes a release version only, and fails unless the registry serves the
+#                                        archive's digest;
+#   scripts/release:publish-prerelease   publishes only when the latest release is read for certain before and after,
+#                                        and fails when it moved;
+#   scripts/release:check-image-labels   refuses an image archive that is not release.json's CameraAgent image, with
+#                                        its version, commit, created time and state contract;
+#   scripts/release:version              reads the one product version, and refuses a version or tag for another;
+#   scripts/release:assets               refuses bad arguments, a version that is not the product's, and a release without
+#                                        its third-party notices, before it builds
+#                                        anything;
+#   scripts/test:release-install         leaves no container, image or temporary root behind, however far it gets;
+#   install.sh                           the release's entry point (src/HVO.SkyMonitor.Deployment.Cli/install.sh, #1311):
+#                                        scripts/test:install-sh runs it as curl | bash does, with fake commands.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+test_root="$(mktemp -d)"
+trap 'rm -rf "$test_root"' EXIT
+fake_bin="$test_root/bin"
+mkdir "$fake_bin"
+export PATH="$fake_bin:$PATH"
+
+fail() {
+    printf 'test:release-scripts: %s\n' "$*" >&2
+    exit 1
+}
+
+# The workflow runs each script by its path, so each must be executable as committed.
+for script in release:assets release:check-image-labels release:version release:push-image release:prerelease-gate release:prerelease-check \
+    release:publish-prerelease test:release-install test:release-scripts test:install-sh; do
+    [[ -x "$repo_root/scripts/$script" ]] || fail "scripts/$script is not executable."
+done
+
+commit=0123456789abcdef0123456789abcdef01234567
+other=fedcba9876543210fedcba9876543210fedcba98
+tag_object=1111111111111111111111111111111111111111
+
+# A fake gh that answers API reads from files the cases write under $FAKE_GH, keyed by path without its query:
+# <key>.json is the body of a 200, <key>.status a status GitHub fails with, and <key>.<n>.http the n-th answer as gh
+# --include prints it (status line, headers, blank line, body; empty when GitHub cannot be reached). <key>.<n>.exit,
+# when present, is the status gh then exits with: a transport failure after a complete-looking answer. A path with no
+# file is GitHub's own 404. With --include every answer starts with its status line and headers, as gh prints them.
+# Each path read is logged in reads.log. "release edit" is recorded in edits.log and exits FAKE_GH_EDIT_STATUS.
+cat >"$fake_bin/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == release && "${2:-}" == edit ]]; then
+    printf '%s\n' "$*" >>"$FAKE_GH/edits.log"
+    exit "${FAKE_GH_EDIT_STATUS:-0}"
+fi
+[[ "$1" == api ]] || { printf 'unexpected gh %s\n' "$*" >&2; exit 90; }
+shift
+jq_filter=""
+path=""
+include=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --jq) jq_filter="$2"; shift 2 ;;
+        --method | -f) shift 2 ;;
+        --paginate) shift ;;
+        --include) include=1; shift ;;
+        *) path="$1"; shift ;;
+    esac
+done
+printf '%s\n' "$path" >>"$FAKE_GH/reads.log"
+key="$(printf '%s' "${path%%\?*}" | tr '/' '_')"
+# Prints an answer whose body is on stdin as gh does: with --include its status line and headers first, and without it
+# the body of a 200 alone, through --jq when it is given.
+answer() {
+    if [[ "$include" == 1 ]]; then
+        printf 'HTTP/2.0 %s %s\r\nContent-Type: application/json; charset=utf-8\r\n\r\n' "$1" "$2"
+        cat
+    elif [[ "$1" == 200 ]]; then
+        if [[ -n "$jq_filter" ]]; then jq -r "$jq_filter"; else cat; fi
+    fi
+}
+if compgen -G "$FAKE_GH/$key.*.http" >/dev/null; then
+    calls=$(( $(cat "$FAKE_GH/$key.count" 2>/dev/null || printf 0) + 1 ))
+    printf '%s' "$calls" >"$FAKE_GH/$key.count"
+    answer="$FAKE_GH/$key.$calls.http"
+    [[ -f "$answer" ]] || { printf 'gh: no answer %s scripted for %s\n' "$calls" "$path" >&2; exit 91; }
+    status="$(sed -n '1s/^HTTP\/[0-9.]* \([0-9]*\).*/\1/p' "$answer")"
+    if [[ "$include" == 1 ]]; then
+        cat "$answer"
+    elif [[ "$status" == 200 ]]; then
+        sed '1,/^\r\{0,1\}$/d' "$answer" | answer 200 OK
+    fi
+    if [[ -f "$FAKE_GH/$key.$calls.exit" ]]; then
+        printf 'gh: unexpected EOF\n' >&2
+        exit "$(cat "$FAKE_GH/$key.$calls.exit")"
+    fi
+    if [[ -z "$status" ]]; then printf 'gh: dial tcp: connection refused\n' >&2; exit 1; fi
+    [[ "$status" == 200 ]] || { printf 'gh: HTTP %s (HTTP %s)\n' "$status" "$status" >&2; exit 1; }
+    exit 0
+fi
+if [[ -f "$FAKE_GH/$key.status" ]]; then
+    status="$(cat "$FAKE_GH/$key.status")"
+    answer "$status" "Service Unavailable" <<<'{"message":"Service Unavailable"}'
+    printf 'gh: Service Unavailable (HTTP %s)\n' "$status" >&2
+    exit 1
+fi
+file="$FAKE_GH/$key.json"
+if [[ ! -f "$file" ]]; then
+    answer 404 "Not Found" <<<'{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+    printf 'gh: Not Found (HTTP 404)\n' >&2
+    exit 1
+fi
+answer 200 OK <"$file"
+FAKE_GH
+chmod +x "$fake_bin/gh"
+
+repo=repos_HualapaiValley_HVO.SkyMonitor
+# Scripts the answers gh gives for one path, in order. Each is status[/exit]:body: gh --include prints the status, its
+# headers and the body, then exits with <exit> when it is given (a transport failure after a complete-looking answer).
+# "none" is GitHub not answering at all.
+script_answers() {
+    local key="$1" calls=0 answer head
+    shift
+    rm -f "$FAKE_GH/$key".*.http "$FAKE_GH/$key".*.exit "$FAKE_GH/$key.count"
+    for answer in "$@"; do
+        calls=$((calls + 1))
+        if [[ "$answer" == none ]]; then
+            : >"$FAKE_GH/$key.$calls.http"
+            continue
+        fi
+        head="${answer%%:*}"
+        printf 'HTTP/2.0 %s Answer\r\nContent-Type: application/json; charset=utf-8\r\n\r\n%s' \
+            "${head%%/*}" "${answer#*:}" >"$FAKE_GH/$key.$calls.http"
+        [[ "$head" != */* ]] || printf '%s' "${head#*/}" >"$FAKE_GH/$key.$calls.exit"
+    done
+}
+# A page of the releases list: the given releases first, then published pre-releases v0.0.1-dev.<n> to fill it to <size>.
+releases_page() {
+    local size="$1"
+    shift
+    jq -cn --argjson size "$size" '$ARGS.positional | map(fromjson)
+        | . + [range(length; $size) | {tag_name: "v0.0.1-dev.\(.)", draft: false, prerelease: true}]' --args "$@"
+}
+gate_case() {
+    export FAKE_GH="$test_root/gh-$1"
+    rm -rf "$FAKE_GH"
+    mkdir -p "$FAKE_GH"
+    printf '{"object":{"type":"tag","sha":"%s"}}\n' "$tag_object" >"$FAKE_GH/${repo}_git_ref_tags_v1.2.0-dev.3.json"
+    printf '{"object":{"type":"commit","sha":"%s"}}\n' "$commit" >"$FAKE_GH/${repo}_git_tags_$tag_object.json"
+    printf '{"status":"behind"}\n' >"$FAKE_GH/${repo}_compare_development_v1...$commit.json"
+    printf '{"workflow_runs":[{"id":7,"run_number":7,"head_sha":"%s","event":"push","head_branch":"development/v1","status":"completed","conclusion":"success","html_url":"https://example.test/7"},{"id":3,"run_number":3,"head_sha":"%s","event":"push","head_branch":"development/v1","status":"completed","conclusion":"failure","html_url":"https://example.test/3"}]}\n' \
+        "$commit" "$commit" >"$FAKE_GH/${repo}_actions_workflows_development-v1.yml_runs.json"
+    printf '{"jobs":[{"name":"Development v1 / Preflight","conclusion":"success"},{"name":"Development v1 / Build and Unit","conclusion":"success"}]}\n' \
+        >"$FAKE_GH/${repo}_actions_runs_7_jobs.json"
+    printf '[{"tag_name":"v1.2.0-dev.2","draft":false,"prerelease":true}]\n' >"$FAKE_GH/${repo}_releases.json"
+    printf '{"commit":{"committer":{"date":"2026-10-17T18:00:00Z"}}}\n' >"$FAKE_GH/${repo}_commits_$commit.json"
+}
+
+expect_gate_refusal() {
+    local label="$1" message="$2" tag="${3:-v1.2.0-dev.3}" sha="${4:-$commit}"
+    if GITHUB_REPOSITORY=HualapaiValley/HVO.SkyMonitor "$repo_root/scripts/release:prerelease-gate" "$tag" "$sha" \
+        >"$test_root/gate.out" 2>"$test_root/gate.err"; then
+        fail "the gate admitted $label."
+    fi
+    grep -Fq -- "$message" "$test_root/gate.err" || {
+        cat "$test_root/gate.err" >&2
+        fail "the gate refused $label without saying: $message"
+    }
+}
+
+# A green, annotated pre-release tag on development/v1 is admitted, and the run's outputs are written.
+gate_case admitted
+GITHUB_REPOSITORY=HualapaiValley/HVO.SkyMonitor "$repo_root/scripts/release:prerelease-gate" v1.2.0-dev.3 "$commit" >"$test_root/gate.out"
+[[ "$(cat "$test_root/gate.out")" == $'version=1.2.0-dev.3\ntag=v1.2.0-dev.3\ncommit='"$commit"$'\ncreated=2026-10-17T18:00:00Z' ]] ||
+    fail "the gate's outputs are wrong: $(cat "$test_root/gate.out")"
+
+gate_case shape
+for tag in v1.2.0 v1.2.0-rc.1 1.2.0-dev.3 v1.2.0-dev.03 v1.2.0-dev.3+build v1.2-dev.3; do
+    expect_gate_refusal "the tag $tag" "is not an integration pre-release tag, vX.Y.Z-dev.N." "$tag"
+done
+expect_gate_refusal "a short commit" "is not a 40-character commit ID." v1.2.0-dev.3 0123456
+
+gate_case lightweight
+printf '{"object":{"type":"commit","sha":"%s"}}\n' "$commit" >"$FAKE_GH/${repo}_git_ref_tags_v1.2.0-dev.3.json"
+expect_gate_refusal "a lightweight tag" "is a lightweight tag"
+
+gate_case retargeted
+printf '{"object":{"type":"commit","sha":"%s"}}\n' "$other" >"$FAKE_GH/${repo}_git_tags_$tag_object.json"
+expect_gate_refusal "a tag naming another commit" "names $other, not the commit $commit"
+
+gate_case missing-tag
+rm "$FAKE_GH/${repo}_git_ref_tags_v1.2.0-dev.3.json"
+expect_gate_refusal "a deleted tag" "The tag v1.2.0-dev.3 does not exist."
+
+gate_case unreadable-tag
+printf '503' >"$FAKE_GH/${repo}_git_ref_tags_v1.2.0-dev.3.status"
+expect_gate_refusal "a tag GitHub failed to read" "cannot read the tag v1.2.0-dev.3 (503): gh: Service Unavailable (HTTP 503)"
+
+gate_case off-branch
+printf '{"status":"diverged"}\n' >"$FAKE_GH/${repo}_compare_development_v1...$commit.json"
+expect_gate_refusal "a commit off development/v1" "is not on development/v1 (compared with it, it is diverged)"
+
+gate_case ahead
+printf '{"status":"ahead"}\n' >"$FAKE_GH/${repo}_compare_development_v1...$commit.json"
+expect_gate_refusal "a commit ahead of development/v1" "is not on development/v1 (compared with it, it is ahead)"
+
+gate_case no-run
+printf '{"workflow_runs":[]}\n' >"$FAKE_GH/${repo}_actions_workflows_development-v1.yml_runs.json"
+expect_gate_refusal "a commit with no push run" "has no Development v1 push run on development/v1."
+
+gate_case other-runs
+printf '{"workflow_runs":[{"id":9,"run_number":9,"head_sha":"%s","event":"pull_request","head_branch":"development/v1","status":"completed","conclusion":"success","html_url":"x"},{"id":8,"run_number":8,"head_sha":"%s","event":"push","head_branch":"feature/x","status":"completed","conclusion":"success","html_url":"x"},{"id":10,"run_number":10,"head_sha":"%s","event":"push","head_branch":"development/v1","status":"completed","conclusion":"success","html_url":"x"}]}\n' \
+    "$commit" "$commit" "$other" >"$FAKE_GH/${repo}_actions_workflows_development-v1.yml_runs.json"
+expect_gate_refusal "a commit green only on a pull request, another branch or another commit" "has no Development v1 push run on development/v1."
+
+gate_case running
+printf '{"workflow_runs":[{"id":8,"run_number":8,"head_sha":"%s","event":"push","head_branch":"development/v1","status":"in_progress","conclusion":null,"html_url":"https://example.test/8"},{"id":7,"run_number":7,"head_sha":"%s","event":"push","head_branch":"development/v1","status":"completed","conclusion":"success","html_url":"https://example.test/7"}]}\n' \
+    "$commit" "$commit" >"$FAKE_GH/${repo}_actions_workflows_development-v1.yml_runs.json"
+expect_gate_refusal "a commit whose newest run is still going" "has not finished"
+
+gate_case red
+printf '{"workflow_runs":[{"id":8,"run_number":8,"head_sha":"%s","event":"push","head_branch":"development/v1","status":"completed","conclusion":"failure","html_url":"https://example.test/8"},{"id":7,"run_number":7,"head_sha":"%s","event":"push","head_branch":"development/v1","status":"completed","conclusion":"success","html_url":"https://example.test/7"}]}\n' \
+    "$commit" "$commit" >"$FAKE_GH/${repo}_actions_workflows_development-v1.yml_runs.json"
+expect_gate_refusal "a commit whose newest run failed" "is failure, not green."
+
+gate_case skipped-job
+printf '{"jobs":[{"name":"Development v1 / Preflight","conclusion":"success"},{"name":"Development v1 / Build and Unit","conclusion":"skipped"}]}\n' \
+    >"$FAKE_GH/${repo}_actions_runs_7_jobs.json"
+expect_gate_refusal "a run whose Build and Unit job was skipped" "has Development v1 / Build and Unit skipped, not success."
+
+gate_case missing-job
+printf '{"jobs":[{"name":"Development v1 / Build and Unit","conclusion":"success"}]}\n' >"$FAKE_GH/${repo}_actions_runs_7_jobs.json"
+expect_gate_refusal "a run without its Preflight job" "has Development v1 / Preflight missing, not success."
+
+gate_case released
+printf '[{"tag_name":"v1.2.0-dev.3","draft":false,"prerelease":true}]\n' >"$FAKE_GH/${repo}_releases.json"
+expect_gate_refusal "a tag already released" "A release for v1.2.0-dev.3 already exists"
+
+# The releases list is read page by page, 100 a page, until a short page: a release on the second page is found.
+gate_case released-page-2
+script_answers "${repo}_releases" "200:$(releases_page 100)" \
+    "200:$(releases_page 1 '{"tag_name":"v1.2.0-dev.3","draft":false,"prerelease":true}')"
+expect_gate_refusal "a tag released on the releases list's second page" "A release for v1.2.0-dev.3 already exists"
+grep -Fxq "repos/HualapaiValley/HVO.SkyMonitor/releases?per_page=100&page=2" "$FAKE_GH/reads.log" ||
+    fail "the gate did not read the releases list's second page."
+
+# Every gate read is strict. A read that fails, is cut short, or answers anything but one JSON document of the expected
+# shape refuses the tag naming the read, and never counts as an answer: above all, a releases list that cannot be read
+# never counts as there being no release.
+# Each case's folder is numbered, not named by its label: the fake's lookup is a glob, and a label holds brackets.
+read_cases=0
+expect_gate_read_refusal() {
+    local label="$1" key="$2" answer="$3" message="$4"
+    read_cases=$((read_cases + 1))
+    gate_case "read-$read_cases"
+    script_answers "$key" "$answer"
+    expect_gate_refusal "$label" "$message"
+}
+releases_read="cannot read the releases of HualapaiValley/HVO.SkyMonitor"
+expect_gate_read_refusal "a releases list answered {}" "${repo}_releases" '200:{}' "$releases_read (200, but not the expected answer)"
+expect_gate_read_refusal "a releases list answered [{}]" "${repo}_releases" '200:[{}]' "$releases_read (200, but not the expected answer)"
+expect_gate_read_refusal "a releases list answered as two arrays" "${repo}_releases" \
+    '200:[{"tag_name":"v1.2.0-dev.2","draft":false,"prerelease":true}][{"tag_name":"v1.2.0-dev.1","draft":false,"prerelease":true}]' \
+    "$releases_read (200, but not one JSON document)"
+expect_gate_read_refusal "a releases list cut short" "${repo}_releases" \
+    '200/1:[{"tag_name":"v1.2.0-dev.2","draft":false,"prerelease":true}]' "$releases_read (200, but gh failed): gh: unexpected EOF"
+expect_gate_read_refusal "a releases list GitHub does not have" "${repo}_releases" '404:{"message":"Not Found"}' "$releases_read (404)"
+expect_gate_read_refusal "a tag answered {}" "${repo}_git_ref_tags_v1.2.0-dev.3" '200:{}' \
+    "cannot read the tag v1.2.0-dev.3 (200, but not the expected answer)"
+expect_gate_read_refusal "a tag read cut short" "${repo}_git_ref_tags_v1.2.0-dev.3" \
+    "200/1:{\"object\":{\"type\":\"tag\",\"sha\":\"$tag_object\"}}" "cannot read the tag v1.2.0-dev.3 (200, but gh failed)"
+expect_gate_read_refusal "a tag read failing 404 without GitHub's answer" "${repo}_git_ref_tags_v1.2.0-dev.3" '404:' \
+    "cannot read the tag v1.2.0-dev.3 (404)"
+expect_gate_read_refusal "an annotated tag answered {}" "${repo}_git_tags_$tag_object" '200:{}' \
+    "cannot read the annotated tag v1.2.0-dev.3 (200, but not the expected answer)"
+expect_gate_read_refusal "an annotated tag read cut short" "${repo}_git_tags_$tag_object" \
+    "200/1:{\"object\":{\"type\":\"commit\",\"sha\":\"$commit\"}}" "cannot read the annotated tag v1.2.0-dev.3 (200, but gh failed)"
+expect_gate_read_refusal "a comparison answered {}" "${repo}_compare_development_v1...$commit" '200:{}' \
+    "cannot read the comparison of $commit with development/v1 (200, but not the expected answer)"
+expect_gate_read_refusal "a comparison cut short" "${repo}_compare_development_v1...$commit" '200/1:{"status":"behind"}' \
+    "cannot read the comparison of $commit with development/v1 (200, but gh failed)"
+green_run="{\"id\":7,\"run_number\":7,\"head_sha\":\"$commit\",\"event\":\"push\",\"head_branch\":\"development/v1\",\"status\":\"completed\",\"conclusion\":\"success\",\"html_url\":\"https://example.test/7\"}"
+expect_gate_read_refusal "runs answered {}" "${repo}_actions_workflows_development-v1.yml_runs" '200:{}' \
+    "cannot read the Development v1 push runs for $commit (200, but not the expected answer)"
+expect_gate_read_refusal "runs answered as an object of runs" "${repo}_actions_workflows_development-v1.yml_runs" \
+    "200:{\"workflow_runs\":{\"7\":$green_run}}" "cannot read the Development v1 push runs for $commit (200, but not the expected answer)"
+expect_gate_read_refusal "a runs read cut short" "${repo}_actions_workflows_development-v1.yml_runs" \
+    "200/1:{\"workflow_runs\":[$green_run]}" "cannot read the Development v1 push runs for $commit (200, but gh failed)"
+green_jobs='{"a":{"name":"Development v1 / Preflight","conclusion":"success"},"b":{"name":"Development v1 / Build and Unit","conclusion":"success"}}'
+expect_gate_read_refusal "jobs answered {}" "${repo}_actions_runs_7_jobs" '200:{}' \
+    "cannot read the jobs of Development v1 run 7 (200, but not the expected answer)"
+expect_gate_read_refusal "jobs answered as an object of jobs" "${repo}_actions_runs_7_jobs" "200:{\"jobs\":$green_jobs}" \
+    "cannot read the jobs of Development v1 run 7 (200, but not the expected answer)"
+expect_gate_read_refusal "a jobs read cut short" "${repo}_actions_runs_7_jobs" \
+    '200/1:{"jobs":[{"name":"Development v1 / Preflight","conclusion":"success"},{"name":"Development v1 / Build and Unit","conclusion":"success"}]}' \
+    "cannot read the jobs of Development v1 run 7 (200, but gh failed)"
+expect_gate_read_refusal "a commit answered {}" "${repo}_commits_$commit" '200:{}' \
+    "cannot read the commit $commit (200, but not the expected answer)"
+expect_gate_read_refusal "a commit read cut short" "${repo}_commits_$commit" \
+    '200/1:{"commit":{"committer":{"date":"2026-10-17T18:00:00Z"}}}' "cannot read the commit $commit (200, but gh failed)"
+expect_gate_read_refusal "a commit answered as two documents" "${repo}_commits_$commit" \
+    '200:{"commit":{"committer":{"date":"2026-10-17T18:00:00Z"}}}{"commit":{"committer":{"date":"2026-10-17T18:00:00Z"}}}' \
+    "cannot read the commit $commit (200, but not one JSON document)"
+
+# The publish script: the latest release must be read for certain before and after publishing, and must not move. Each
+# argument after the case's name is one read of releases/latest, as script_answers takes them.
+publish_case() {
+    export FAKE_GH="$test_root/gh-publish-$1"
+    rm -rf "$FAKE_GH"
+    mkdir -p "$FAKE_GH"
+    shift
+    script_answers "${repo}_releases_latest" "$@"
+}
+run_publish() {
+    GITHUB_REPOSITORY=HualapaiValley/HVO.SkyMonitor "$repo_root/scripts/release:publish-prerelease" "${1:-v1.2.0-dev.3}" \
+        >"$test_root/publish.out" 2>"$test_root/publish.err"
+}
+expect_published() {
+    local label="$1" latest="$2"
+    run_publish || { cat "$test_root/publish.err" >&2; fail "the publish failed for $label."; }
+    grep -Fq "the latest release is still $latest." "$test_root/publish.out" || fail "the publish did not report latest as $latest for $label."
+    [[ -s "$FAKE_GH/edits.log" ]] || fail "the publish did not publish the draft for $label."
+}
+expect_publish_refusal() {
+    local label="$1" message="$2" edited="$3"
+    if run_publish "${4:-}"; then
+        fail "the publish succeeded for $label."
+    fi
+    grep -Fq -- "$message" "$test_root/publish.err" || { cat "$test_root/publish.err" >&2; fail "the publish refused $label without saying: $message"; }
+    if [[ "$edited" == edited ]]; then
+        [[ -s "$FAKE_GH/edits.log" ]] || fail "the publish of $label did not reach the edit."
+    else
+        [[ ! -e "$FAKE_GH/edits.log" ]] || fail "the publish of $label edited the draft before it knew the latest release."
+    fi
+}
+not_found='404:{"message":"Not Found","status":"404"}'
+publish_case no-latest "$not_found" "$not_found"
+expect_published "a repository with no latest release" none
+publish_case kept '200:{"tag_name":"v1.0.0","name":"1.0.0"}' '200:{"tag_name":"v1.0.0","name":"1.0.0"}'
+expect_published "a latest release that stays" v1.0.0
+publish_case unavailable-before '503:{"message":"Service Unavailable"}'
+expect_publish_refusal "GitHub failing the first read" "cannot read the latest release (503)" unedited
+publish_case unreachable-before none
+expect_publish_refusal "GitHub not answering the first read" "cannot read the latest release (no answer from GitHub)" unedited
+publish_case malformed-before '200:{"name":"1.0.0"}'
+expect_publish_refusal "a first read naming no tag" "GitHub's latest release names no tag." unedited
+publish_case unavailable-after "$not_found" '503:{"message":"Service Unavailable"}'
+expect_publish_refusal "GitHub failing the read after publishing" \
+    "v1.2.0-dev.3 is published, but the latest release cannot be read back to show it did not move" edited
+publish_case moved "$not_found" '200:{"tag_name":"v1.2.0-dev.3"}'
+expect_publish_refusal "a publish that moved latest" "Publishing v1.2.0-dev.3 moved the latest release from none to v1.2.0-dev.3." edited
+publish_case edit-fails "$not_found"
+FAKE_GH_EDIT_STATUS=1 expect_publish_refusal "a failed edit" "cannot publish v1.2.0-dev.3" edited
+publish_case final-tag
+expect_publish_refusal "a final release's tag" "v1.2.0 is not an integration pre-release tag" unedited v1.2.0
+
+# Only a 200 that gh completed, with one JSON object naming a tag, is an answer, and only GitHub's own 404 means there
+# is no latest release. Before publishing anything else stops with nothing changed; after publishing it fails the job.
+published_unread="v1.2.0-dev.3 is published, but the latest release cannot be read back to show it did not move"
+publish_case cut-short-before '200/1:{"tag_name":"v1.0.0","name":"1.0.0"}' '200:{"tag_name":"v1.0.0","name":"1.0.0"}'
+expect_publish_refusal "a first read gh failed after a complete 200" \
+    "cannot read the latest release (200, but gh failed): gh: unexpected EOF" unedited
+publish_case cut-short-after '200:{"tag_name":"v1.0.0","name":"1.0.0"}' '200/1:{"tag_name":"v1.0.0","name":"1.0.0"}'
+expect_publish_refusal "a read after publishing gh failed after a complete 200" "$published_unread" edited
+grep -Fq "cannot read the latest release (200, but gh failed)" "$test_root/publish.err" ||
+    fail "the publish did not say why it could not read the latest release back."
+publish_case repeated-before '200:{"tag_name":"v1.0.0"}{"tag_name":"v1.0.0"}' '200:{"tag_name":"v1.0.0"}'
+expect_publish_refusal "a first read answering two documents" \
+    "cannot read the latest release (200, but not one JSON document)" unedited
+publish_case repeated-after '200:{"tag_name":"v1.0.0"}' '200:{"tag_name":"v1.0.0"}{"tag_name":"v1.0.0"}'
+expect_publish_refusal "a read after publishing answering two documents" "$published_unread" edited
+publish_case empty-object-before '200:{}'
+expect_publish_refusal "a first read answering {}" "GitHub's latest release names no tag." unedited
+publish_case empty-object-after "$not_found" '200:{}'
+expect_publish_refusal "a read after publishing answering {}" "$published_unread" edited
+publish_case no-tag-after "$not_found" '200:{"name":"1.0.0"}'
+expect_publish_refusal "a read after publishing naming no tag" "$published_unread" edited
+publish_case empty-before '200:'
+expect_publish_refusal "a first read answering an empty 200" \
+    "cannot read the latest release (200, but not one JSON document)" unedited
+publish_case foreign-404-before '404:<html>Not Found</html>'
+expect_publish_refusal "a first read failing 404 without GitHub's answer" "cannot read the latest release (404)" unedited
+publish_case foreign-404-after "$not_found" '404:<html>Not Found</html>'
+expect_publish_refusal "a read after publishing failing 404 without GitHub's answer" "$published_unread" edited
+
+# The draft and publish jobs' checks. Each reads strictly: a read that fails, is cut short, or answers anything but one
+# JSON document of the expected shape fails the check naming the read, and never counts as an answer.
+image_digest="sha256:$(printf 'image' | sha256sum | cut -d ' ' -f 1)"
+attestation_record='{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net/bundles/example.json","initiator":"upload","repository_id":1}'
+inline_bundle='{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","verificationMaterial":{"certificate":{"rawBytes":"MII="}},"dsseEnvelope":{"payload":"e30=","payloadType":"application/vnd.in-toto+json","signatures":[{"sig":"MEU="}]}}'
+check_case() {
+    export FAKE_GH="$test_root/gh-check-$1"
+    rm -rf "$FAKE_GH"
+    mkdir -p "$FAKE_GH"
+    printf '[{"tag_name":"v1.2.0-dev.2","draft":false,"prerelease":true},{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true}]\n' \
+        >"$FAKE_GH/${repo}_releases.json"
+    printf '{"id":1}\n' >"$FAKE_GH/${repo}.json"
+    # The shape GitHub answers today: the bundle is served from bundle_url, and the inline bundle is null.
+    printf '%s\n' "{\"attestations\":[$attestation_record]}" >"$FAKE_GH/${repo}_attestations_$image_digest.json"
+}
+run_check() {
+    GITHUB_REPOSITORY=HualapaiValley/HVO.SkyMonitor "$repo_root/scripts/release:prerelease-check" "$@" \
+        >"$test_root/check.out" 2>"$test_root/check.err"
+}
+expect_check() {
+    local label="$1"
+    shift
+    run_check "$@" || { cat "$test_root/check.err" >&2; fail "the check refused $label."; }
+}
+expect_check_refusal() {
+    local label="$1" message="$2"
+    shift 2
+    if run_check "$@"; then
+        fail "the check passed $label."
+    fi
+    grep -Fq -- "$message" "$test_root/check.err" || { cat "$test_root/check.err" >&2; fail "the check refused $label without saying: $message"; }
+}
+expect_check_read_refusal() {
+    local label="$1" key="$2" answer="$3" message="$4"
+    shift 4
+    read_cases=$((read_cases + 1))
+    check_case "read-$read_cases"
+    script_answers "$key" "$answer"
+    expect_check_refusal "$label" "$message" "$@"
+}
+
+check_case unreleased
+expect_check "a tag no release or draft has" unreleased v1.2.0-dev.4
+expect_check_refusal "a tag a draft already has" "A release or draft for v1.2.0-dev.3 already exists" unreleased v1.2.0-dev.3
+expect_check_refusal "a tag a published release already has" "A release or draft for v1.2.0-dev.2 already exists" unreleased v1.2.0-dev.2
+# The release workflow checks its final and release candidate tags the same way (#1310).
+expect_check "a final release's tag no release or draft has" unreleased v1.2.0
+expect_check "a release candidate's tag no release or draft has" unreleased v1.2.0-rc.1
+for tag in v1.2 v1.2.0-rc.0 v1.2.0-beta.1 1.2.0 v1.2.0+build; do
+    expect_check_refusal "the tag $tag" "$tag is not a release tag: vX.Y.Z, vX.Y.Z-rc.N or vX.Y.Z-dev.N." unreleased "$tag"
+done
+check_case unreleased-page-2
+script_answers "${repo}_releases" "200:$(releases_page 100)" \
+    "200:$(releases_page 1 '{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true}')"
+expect_check_refusal "a tag a draft on the second page has" "A release or draft for v1.2.0-dev.3 already exists" unreleased v1.2.0-dev.3
+for answer in '200:{}' '200:[{}]' '200:[{"tag_name":"v1.2.0-dev.2"}]'; do
+    expect_check_read_refusal "a releases list answered ${answer#200:}" "${repo}_releases" "$answer" \
+        "$releases_read (200, but not the expected answer)" unreleased v1.2.0-dev.4
+done
+expect_check_read_refusal "a releases list answered as two arrays" "${repo}_releases" \
+    '200:[{"tag_name":"v1.2.0-dev.2","draft":false,"prerelease":true}][{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true}]' \
+    "$releases_read (200, but not one JSON document)" unreleased v1.2.0-dev.4
+expect_check_read_refusal "a releases list cut short" "${repo}_releases" \
+    '200/1:[{"tag_name":"v1.2.0-dev.2","draft":false,"prerelease":true}]' "$releases_read (200, but gh failed)" unreleased v1.2.0-dev.4
+expect_check_read_refusal "a releases list GitHub cannot be reached for" "${repo}_releases" none \
+    "$releases_read (no answer from GitHub)" unreleased v1.2.0-dev.4
+expect_check_read_refusal "a releases list GitHub does not have" "${repo}_releases" '404:{"message":"Not Found"}' \
+    "$releases_read (404)" unreleased v1.2.0-dev.4
+
+check_case draft
+expect_check "a draft pre-release" draft v1.2.0-dev.3
+expect_check_refusal "a published release" "The release for v1.2.0-dev.2 is not a draft pre-release (draft=false prerelease=true)" \
+    draft v1.2.0-dev.2
+expect_check_refusal "a tag no draft has" "No release or draft has v1.2.0-dev.9; the tested draft is gone." draft v1.2.0-dev.9
+printf '[{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":false}]\n' >"$FAKE_GH/${repo}_releases.json"
+expect_check_refusal "a draft that is not a pre-release" "is not a draft pre-release (draft=true prerelease=false)" draft v1.2.0-dev.3
+printf '[{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true},{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true}]\n' \
+    >"$FAKE_GH/${repo}_releases.json"
+expect_check_refusal "two drafts with the tag" "2 releases have the tag v1.2.0-dev.3" draft v1.2.0-dev.3
+# A final release's draft is not a pre-release, and a release candidate's is (#1310).
+printf '[{"tag_name":"v1.2.0","draft":true,"prerelease":false},{"tag_name":"v1.2.0-rc.1","draft":true,"prerelease":true}]\n' \
+    >"$FAKE_GH/${repo}_releases.json"
+expect_check "a draft final release" draft v1.2.0
+expect_check "a draft release candidate" draft v1.2.0-rc.1
+printf '[{"tag_name":"v1.2.0","draft":true,"prerelease":true}]\n' >"$FAKE_GH/${repo}_releases.json"
+expect_check_refusal "a final release's draft marked a pre-release" \
+    "The release for v1.2.0 is not a draft final release (draft=true prerelease=true)" draft v1.2.0
+printf '[{"tag_name":"v1.2.0","draft":false,"prerelease":false}]\n' >"$FAKE_GH/${repo}_releases.json"
+expect_check_refusal "a published final release" "The release for v1.2.0 is not a draft final release (draft=false prerelease=false)" \
+    draft v1.2.0
+check_case draft-page-2
+script_answers "${repo}_releases" "200:$(releases_page 100)" \
+    "200:$(releases_page 1 '{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true}')"
+expect_check "a draft pre-release on the second page" draft v1.2.0-dev.3
+for answer in '200:{}' '200:[{}]'; do
+    expect_check_read_refusal "a draft's releases list answered ${answer#200:}" "${repo}_releases" "$answer" \
+        "$releases_read (200, but not the expected answer)" draft v1.2.0-dev.3
+done
+expect_check_read_refusal "a draft's releases list answered as two arrays" "${repo}_releases" \
+    '200:[{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true}][{"tag_name":"v1.2.0-dev.2","draft":false,"prerelease":true}]' \
+    "$releases_read (200, but not one JSON document)" draft v1.2.0-dev.3
+expect_check_read_refusal "a draft's releases list cut short" "${repo}_releases" \
+    '200/1:[{"tag_name":"v1.2.0-dev.3","draft":true,"prerelease":true}]' "$releases_read (200, but gh failed)" draft v1.2.0-dev.3
+
+check_case attested
+expect_check "an image with an attestation on record" attested "$image_digest"
+expect_check_refusal "an image reference that is not a digest" "is not an image digest" attested "${image_digest#sha256:}"
+attestations_read="cannot read the attestations for $image_digest"
+for answer in '200:{}' '200:[{}]' '200:{"attestations":{"a":1}}' '200:{"attestations":[1]}'; do
+    expect_check_read_refusal "attestations answered ${answer#200:}" "${repo}_attestations_$image_digest" "$answer" \
+        "$attestations_read (200, but not the expected answer)" attested "$image_digest"
+done
+expect_check_read_refusal "attestations answered with none" "${repo}_attestations_$image_digest" '200:{"attestations":[]}' \
+    "No attestation of HualapaiValley/HVO.SkyMonitor is on record for $image_digest." attested "$image_digest"
+# A record counts only when it is this repository's and names an https bundle_url with a host and a path (F11, F12).
+hollow_bundle='{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","verificationMaterial":{},"dsseEnvelope":{"payload":"e30=","payloadType":"application/vnd.in-toto+json","signatures":[null]}}'
+for record in '{}' '{"bundle":null}' '{"bundle":null,"repository_id":1}' '{"bundle":{},"repository_id":1}' \
+    '{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net/bundles/example.json","repository_id":2}' \
+    '{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net/bundles/example.json"}' \
+    '{"bundle":null,"bundle_url":"http://tmaproduction.blob.core.windows.net/bundles/example.json","repository_id":1}' \
+    '{"bundle":null,"bundle_url":"","repository_id":1}' \
+    '{"bundle":{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"},"repository_id":1}' \
+    "{\"bundle\":$inline_bundle,\"repository_id\":\"1\"}" \
+    '{"repository_id":1,"bundle_url":"https://"}' "{\"repository_id\":1,\"bundle\":$hollow_bundle}" \
+    '{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net","repository_id":1}' \
+    '{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net/","repository_id":1}' \
+    '{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net/bundles/a b.json","repository_id":1}' \
+    '{"bundle":null,"bundle_url":"https://tmaproduction.blob.core.windows.net/bundles/example.json\n","repository_id":1}' \
+    "{\"bundle\":$inline_bundle,\"repository_id\":1}"; do
+    expect_check_read_refusal "an attestation record $record" "${repo}_attestations_$image_digest" "200:{\"attestations\":[$record]}" \
+        "No attestation of HualapaiValley/HVO.SkyMonitor is on record for $image_digest." attested "$image_digest"
+done
+check_case attested-inline-only
+printf '%s\n' "{\"attestations\":[{\"bundle\":$inline_bundle,\"repository_id\":1}]}" \
+    >"$FAKE_GH/${repo}_attestations_$image_digest.json"
+expect_check_refusal "an answer whose only bundle is inline" \
+    "A record counts only when it names this repository and an https bundle_url with a host and a path." attested "$image_digest"
+check_case attested-mixed
+printf '%s\n' "{\"attestations\":[{},{\"bundle\":null},$attestation_record]}" >"$FAKE_GH/${repo}_attestations_$image_digest.json"
+expect_check "a real attestation beside empty records" attested "$image_digest"
+grep -Fq "has 1 attestation(s) of HualapaiValley/HVO.SkyMonitor on record" "$test_root/check.out" ||
+    fail "the check counted the empty attestation records."
+repository_read="cannot read the repository HualapaiValley/HVO.SkyMonitor"
+expect_check_read_refusal "a repository answered {}" "$repo" '200:{}' "$repository_read (200, but not the expected answer)" \
+    attested "$image_digest"
+expect_check_read_refusal "a repository read cut short" "$repo" '200/1:{"id":1}' "$repository_read (200, but gh failed)" \
+    attested "$image_digest"
+expect_check_read_refusal "attestations answered as two documents" "${repo}_attestations_$image_digest" \
+    '200:{"attestations":[{}]}{"attestations":[{}]}' "$attestations_read (200, but not one JSON document)" attested "$image_digest"
+expect_check_read_refusal "an attestations read cut short" "${repo}_attestations_$image_digest" \
+    '200/1:{"attestations":[{}]}' "$attestations_read (200, but gh failed)" attested "$image_digest"
+expect_check_read_refusal "attestations GitHub does not have" "${repo}_attestations_$image_digest" '404:{"message":"Not Found"}' \
+    "$attestations_read (404)" attested "$image_digest"
+
+# The push script: a release version alone, through skopeo, and the digest read back must be the archive's.
+index_digest="sha256:$(printf 'index' | sha256sum | cut -d ' ' -f 1)"
+mkdir "$test_root/layout"
+printf '{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"%s","size":5}]}\n' \
+    "$index_digest" >"$test_root/layout/index.json"
+tar -cf "$test_root/image.oci.tar" -C "$test_root/layout" index.json
+# A fake skopeo whose registry has the tag only once something was copied there, unless a case says it had it already
+# (FAKE_SKOPEO_EXISTING) or cannot be read (FAKE_SKOPEO_INSPECT_ERROR); after a copy it serves FAKE_SKOPEO_SERVED.
+cat >"$fake_bin/skopeo" <<'FAKE_SKOPEO'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FAKE_SKOPEO_LOG"
+case "$1" in
+    copy)
+        status="${FAKE_SKOPEO_COPY_STATUS:-0}"
+        [[ "$status" != 0 ]] || : >"$FAKE_SKOPEO_LOG.copied"
+        exit "$status"
+        ;;
+    inspect)
+        if [[ -e "$FAKE_SKOPEO_LOG.copied" ]]; then
+            printf '%s' "${FAKE_SKOPEO_SERVED:-index}"
+        elif [[ -n "${FAKE_SKOPEO_INSPECT_ERROR:-}" ]]; then
+            printf 'time="x" level=fatal msg="%s"\n' "$FAKE_SKOPEO_INSPECT_ERROR" >&2
+            exit 1
+        elif [[ -n "${FAKE_SKOPEO_EXISTING:-}" ]]; then
+            printf '%s' "$FAKE_SKOPEO_EXISTING"
+        else
+            printf 'time="x" level=fatal msg="reading manifest 1.2.0-dev.3: manifest unknown"\n' >&2
+            exit 1
+        fi
+        ;;
+    *) exit 90 ;;
+esac
+FAKE_SKOPEO
+chmod +x "$fake_bin/skopeo"
+export FAKE_SKOPEO_LOG="$test_root/skopeo.log"
+reset_registry() {
+    : >"$FAKE_SKOPEO_LOG"
+    rm -f "$FAKE_SKOPEO_LOG.copied"
+}
+reset_registry
+
+pushed="$("$repo_root/scripts/release:push-image" "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3)"
+[[ "$pushed" == "$index_digest" ]] || fail "the push printed $pushed, not the archive's digest."
+grep -Fxq "copy --dest-tls-verify=true --retry-times 3 --all --preserve-digests oci-archive:$test_root/image.oci.tar docker://ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3" \
+    "$FAKE_SKOPEO_LOG" || fail "the push did not copy every platform with its digests."
+
+expect_push_refusal() {
+    local label="$1" message="$2"
+    shift 2
+    if "$repo_root/scripts/release:push-image" "$@" >/dev/null 2>"$test_root/push.err"; then
+        fail "the push admitted $label."
+    fi
+    grep -Fq -- "$message" "$test_root/push.err" || { cat "$test_root/push.err" >&2; fail "the push refused $label without saying: $message"; }
+}
+reset_registry
+expect_push_refusal "latest" "is not a release version" "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:latest
+expect_push_refusal "an untagged repository" "is not <repository>:<tag>" "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent
+expect_push_refusal "--insecure to a remote registry" "--insecure is only for a registry on this host" \
+    --insecure "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3
+[[ ! -s "$FAKE_SKOPEO_LOG" ]] || fail "a refused push reached skopeo."
+
+# A version tag the registry has for another image is never moved, and nothing is copied.
+FAKE_SKOPEO_EXISTING=other expect_push_refusal "a tag the registry has for another image" "a version tag is never moved" \
+    "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3
+! grep -q '^copy' "$FAKE_SKOPEO_LOG" || fail "the push copied over a tag that names another image."
+reset_registry
+FAKE_SKOPEO_INSPECT_ERROR="unauthorized: authentication required" expect_push_refusal "a registry it cannot read" \
+    "cannot tell whether" "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3
+! grep -q '^copy' "$FAKE_SKOPEO_LOG" || fail "the push copied to a registry it could not read."
+# Only the registry's own "no such tag or repository" counts as absent; a failure that merely says "not found" does not.
+reset_registry
+FAKE_SKOPEO_INSPECT_ERROR="received unexpected HTTP status: 503 Service Unavailable (upstream not found)" \
+    expect_push_refusal "a registry failing with a message that says not found" \
+    "cannot tell whether" "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3
+! grep -q '^copy' "$FAKE_SKOPEO_LOG" || fail "the push copied after a failed read that said not found."
+# A rerun pushes the same image to the tag again.
+reset_registry
+rerun="$(FAKE_SKOPEO_EXISTING=index "$repo_root/scripts/release:push-image" "$test_root/image.oci.tar" \
+    ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3)"
+[[ "$rerun" == "$index_digest" ]] || fail "a rerun of the same image was not admitted."
+
+reset_registry
+FAKE_SKOPEO_SERVED=other expect_push_refusal "a registry serving another image" "not $index_digest, the image the archive holds" \
+    "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3
+reset_registry
+FAKE_SKOPEO_COPY_STATUS=1 expect_push_refusal "a failed copy" "cannot push" \
+    "$test_root/image.oci.tar" ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3
+reset_registry
+"$repo_root/scripts/release:push-image" --insecure "$test_root/image.oci.tar" localhost:5000/hualapaivalley/skymonitor-cameraagent:1.2.0-dev.3 >/dev/null
+grep -Fq -- "--dest-tls-verify=false" "$FAKE_SKOPEO_LOG" || fail "--insecure did not reach skopeo for a registry on this host."
+
+# The image check: the archive holds the image release.json names, an image for each of its platforms, each labelled as
+# the release's CameraAgent with its version, commit, created time and state contract (install contract sections 1, 6).
+labels_root="$test_root/labels"
+state_contract='{"identity":{"writes":1,"reads":{"min":1,"max":1}},"rawIngress":{"writes":15,"reads":{"min":13,"max":15}}}'
+release_labels="$(jq -cn --arg commit "$commit" --arg contract "$state_contract" '{
+    "io.hvo.skymonitor.component": "CameraAgent", "org.opencontainers.image.version": "1.2.0-dev.3",
+    "org.opencontainers.image.revision": $commit, "org.opencontainers.image.created": "2026-10-17T18:00:00Z",
+    "io.hvo.skymonitor.state-contracts": $contract}')"
+# Stores stdin as a blob of the OCI layout in $1 and prints its digest.
+add_blob() {
+    local file="$1/blob.tmp" digest
+    cat >"$file"
+    digest="$(sha256sum "$file" | cut -d ' ' -f 1)"
+    mv "$file" "$1/blobs/sha256/$digest"
+    printf 'sha256:%s' "$digest"
+}
+# Writes $1/image.oci.tar, a two-platform image whose amd64 configuration carries the labels $2 and whose arm64 one
+# carries $3 (by default $2), and $1/release.json naming it, changed by the jq filter $4.
+write_labelled_release() {
+    local dir="$1" amd64_labels="$2" arm64_labels="${3:-$2}" change="${4:-.}" entries=() architecture labels config manifest
+    rm -rf "$dir"
+    mkdir -p "$dir/oci/blobs/sha256"
+    for architecture in amd64 arm64; do
+        labels="$amd64_labels"
+        [[ "$architecture" == amd64 ]] || labels="$arm64_labels"
+        config="$(jq -cn --arg architecture "$architecture" --argjson labels "$labels" \
+            '{architecture: $architecture, os: "linux", config: {Labels: $labels}}' | add_blob "$dir/oci")"
+        manifest="$(jq -cn --arg config "$config" '{schemaVersion: 2, mediaType: "application/vnd.oci.image.manifest.v1+json",
+            config: {mediaType: "application/vnd.oci.image.config.v1+json", digest: $config, size: 1}, layers: []}' | add_blob "$dir/oci")"
+        entries+=("$(jq -cn --arg manifest "$manifest" --arg architecture "$architecture" '{mediaType: "application/vnd.oci.image.manifest.v1+json",
+            digest: $manifest, size: 1, platform: {architecture: $architecture, os: "linux"}}')")
+    done
+    index="$(printf '%s\n' "${entries[@]}" | jq -cs '{schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: .}' |
+        add_blob "$dir/oci")"
+    jq -cn --arg index "$index" '{schemaVersion: 2, manifests: [{mediaType: "application/vnd.oci.image.index.v1+json", digest: $index, size: 1}]}' \
+        >"$dir/oci/index.json"
+    printf '{"imageLayoutVersion":"1.0.0"}' >"$dir/oci/oci-layout"
+    tar -cf "$dir/image.oci.tar" -C "$dir/oci" oci-layout index.json blobs
+    jq -n --arg index "$index" --arg commit "$commit" --argjson contract "$state_contract" '{version: "1.2.0-dev.3", commit: $commit,
+        created: "2026-10-17T18:00:00Z", images: {cameraAgent: {digest: $index, platforms: ["linux/amd64", "linux/arm64"]}},
+        stateContracts: {cameraAgent: $contract}}' | jq "$change" >"$dir/release.json"
+}
+check_labels() {
+    "$repo_root/scripts/release:check-image-labels" "$1/image.oci.tar" "$1/release.json"
+}
+expect_labels_refusal() {
+    local label="$1" message="$2"
+    shift 2
+    write_labelled_release "$labels_root/refused" "$@"
+    if check_labels "$labels_root/refused" >/dev/null 2>"$labels_root/refused.err"; then
+        fail "the image check admitted $label."
+    fi
+    grep -Fq -- "$message" "$labels_root/refused.err" ||
+        { cat "$labels_root/refused.err" >&2; fail "the image check refused $label without saying: $message"; }
+}
+mkdir "$labels_root"
+write_labelled_release "$labels_root/release" "$release_labels"
+check_labels "$labels_root/release" >"$labels_root/release.out" || fail "the image check refused the release's own image."
+[[ "$(cat "$labels_root/release.out")" == "linux/amd64: CameraAgent 1.2.0-dev.3, commit $commit, created 2026-10-17T18:00:00Z
+linux/arm64: CameraAgent 1.2.0-dev.3, commit $commit, created 2026-10-17T18:00:00Z" ]] ||
+    { cat "$labels_root/release.out" >&2; fail "the image check did not name each platform image it checked."; }
+expect_labels_refusal "an image without a created label" \
+    "linux/arm64: its created label (org.opencontainers.image.created) is absent, not release.json's created time 2026-10-17T18:00:00Z." \
+    "$release_labels" "$(jq -c 'del(.["org.opencontainers.image.created"])' <<<"$release_labels")"
+expect_labels_refusal "an image created at another time" \
+    "linux/amd64: its created label (org.opencontainers.image.created) is \"2026-10-17T18:00:00+00:00\", not release.json's created time 2026-10-17T18:00:00Z." \
+    "$(jq -c '.["org.opencontainers.image.created"] = "2026-10-17T18:00:00+00:00"' <<<"$release_labels")"
+expect_labels_refusal "a release.json created at another time" \
+    "linux/amd64: its created label (org.opencontainers.image.created) is \"2026-10-17T18:00:00Z\", not release.json's created time 2026-10-17T18:00:01Z." \
+    "$release_labels" "$release_labels" '.created = "2026-10-17T18:00:01Z"'
+expect_labels_refusal "an image without a state contract" \
+    "linux/arm64: its state contract label (io.hvo.skymonitor.state-contracts) is not release.json's stateContracts.cameraAgent." \
+    "$release_labels" "$(jq -c 'del(.["io.hvo.skymonitor.state-contracts"])' <<<"$release_labels")"
+expect_labels_refusal "a state contract other than release.json's" \
+    "linux/amd64: its state contract label (io.hvo.skymonitor.state-contracts) is not release.json's stateContracts.cameraAgent." \
+    "$release_labels" "$release_labels" '.stateContracts.cameraAgent.identity = {writes: 2, reads: {min: 1, max: 2}}'
+expect_labels_refusal "a release.json without stateContracts" "has no stateContracts.cameraAgent." \
+    "$release_labels" "$release_labels" 'del(.stateContracts)'
+expect_labels_refusal "a release.json whose stateContracts is not a state contract" \
+    "stateContracts.cameraAgent is not a state contract" "$release_labels" "$release_labels" \
+    '.stateContracts.cameraAgent.rawIngress.reads.min = 16'
+expect_labels_refusal "a release.json that keys its image by the image's name" "has no cameraAgent image." \
+    "$release_labels" "$release_labels" '.images = {"skymonitor-cameraagent": .images.cameraAgent}'
+expect_labels_refusal "an image of another version" \
+    "linux/amd64: the image is not labelled as CameraAgent 1.2.0-dev.3 from commit $commit." \
+    "$(jq -c '.["org.opencontainers.image.version"] = "1.2.0-dev.4"' <<<"$release_labels")"
+expect_labels_refusal "an archive of another image" "not the image sha256:$(printf '0%.0s' {1..64}) that" \
+    "$release_labels" "$release_labels" ".images.cameraAgent.digest = \"sha256:$(printf '0%.0s' {1..64})\""
+expect_labels_refusal "an archive with an image for a platform the release does not list" \
+    "holds images for linux/amd64,linux/arm64, not linux/amd64." "$release_labels" "$release_labels" \
+    '.images.cameraAgent.platforms = ["linux/amd64"]'
+# Each value is compared whole, as JSON gives it: a shell copy would drop a trailing LF and pass it (PR-1364-R1 F1).
+# release.json's own values must be whole and valid, so a matching label cannot make an invalid one pass.
+expect_labels_refusal "an image whose created label ends in LF" \
+    "linux/arm64: its created label (org.opencontainers.image.created) is \"2026-10-17T18:00:00Z\\n\", not release.json's created time 2026-10-17T18:00:00Z." \
+    "$release_labels" "$(jq -c '.["org.opencontainers.image.created"] += "\n"' <<<"$release_labels")"
+expect_labels_refusal "an image whose created label is empty" \
+    "linux/amd64: its created label (org.opencontainers.image.created) is \"\", not release.json's created time 2026-10-17T18:00:00Z." \
+    "$(jq -c '.["org.opencontainers.image.created"] = ""' <<<"$release_labels")"
+expect_labels_refusal "a release.json whose created time ends in LF" \
+    "has no created time, an RFC 3339 UTC time such as 2026-10-17T18:00:00Z." \
+    "$release_labels" "$release_labels" '.created += "\n"'
+expect_labels_refusal "an empty created time and images without the label" \
+    "has no created time, an RFC 3339 UTC time such as 2026-10-17T18:00:00Z." \
+    "$(jq -c 'del(.["org.opencontainers.image.created"])' <<<"$release_labels")" "" '.created = ""'
+expect_labels_refusal "a created time that is no time, matched by the label" \
+    "has no created time, an RFC 3339 UTC time such as 2026-10-17T18:00:00Z." \
+    "$(jq -c '.["org.opencontainers.image.created"] = "not-a-time"' <<<"$release_labels")" "" '.created = "not-a-time"'
+expect_labels_refusal "a created time that is no date, matched by the label" \
+    "has no created time, an RFC 3339 UTC time such as 2026-10-17T18:00:00Z." \
+    "$(jq -c '.["org.opencontainers.image.created"] = "2026-02-30T18:00:00Z"' <<<"$release_labels")" "" \
+    '.created = "2026-02-30T18:00:00Z"'
+expect_labels_refusal "an image whose version label ends in LF" \
+    "linux/arm64: the image is not labelled as CameraAgent 1.2.0-dev.3 from commit $commit." \
+    "$release_labels" "$(jq -c '.["org.opencontainers.image.version"] += "\n"' <<<"$release_labels")"
+expect_labels_refusal "an image whose revision label ends in LF" \
+    "linux/arm64: the image is not labelled as CameraAgent 1.2.0-dev.3 from commit $commit." \
+    "$release_labels" "$(jq -c '.["org.opencontainers.image.revision"] += "\n"' <<<"$release_labels")"
+expect_labels_refusal "an image whose component label ends in LF" \
+    "linux/arm64: the image is not labelled as CameraAgent 1.2.0-dev.3 from commit $commit." \
+    "$release_labels" "$(jq -c '.["io.hvo.skymonitor.component"] += "\n"' <<<"$release_labels")"
+expect_labels_refusal "an image whose state contract label ends in LF" \
+    "linux/arm64: its state contract label (io.hvo.skymonitor.state-contracts) is not release.json's stateContracts.cameraAgent." \
+    "$release_labels" "$(jq -c '.["io.hvo.skymonitor.state-contracts"] += "\n"' <<<"$release_labels")"
+expect_labels_refusal "a release.json whose version ends in LF" "has no version, a release version such as 1.2.0-dev.3." \
+    "$release_labels" "$release_labels" '.version += "\n"'
+expect_labels_refusal "a release.json whose commit ends in LF" "has no commit, a 40-character lowercase commit ID." \
+    "$release_labels" "$release_labels" '.commit += "\n"'
+expect_labels_refusal "a release.json whose image digest ends in LF" "has no cameraAgent image." \
+    "$release_labels" "$release_labels" '.images.cameraAgent.digest += "\n"'
+expect_labels_refusal "a release.json whose last platform ends in LF" "has no cameraAgent image platforms" \
+    "$release_labels" "$release_labels" '.images.cameraAgent.platforms[1] += "\n"'
+
+# The final-release scripts (#1310) read the checkout they run in: its VersionPrefix, CHANGELOG.md and upgrade notes.
+# They run here from a copy of themselves in a repository of their own, whose product version is 2.5.0.
+final_repo="$test_root/final-repo"
+mkdir -p "$final_repo/scripts/lib" "$final_repo/docs/upgrade-notes"
+for script in release:version release:notes release:check-environment release:gate release:publish release:tag-latest; do
+    cp "$repo_root/scripts/$script" "$final_repo/scripts/$script"
+done
+cp "$repo_root/scripts/lib/github-api.sh" "$repo_root/scripts/lib/releases.sh" "$final_repo/scripts/lib/"
+printf '<Project>\n  <PropertyGroup>\n    <VersionPrefix>2.5.0</VersionPrefix>\n  </PropertyGroup>\n</Project>\n' \
+    >"$final_repo/Directory.Build.props"
+# The release PR's notes: 2.5.0's CHANGELOG section and its upgrade notes.
+final_notes() {
+    cat >"$final_repo/CHANGELOG.md" <<'CHANGELOG'
+# Changelog
+
+## [Unreleased]
+
+## [2.5.0] - 2026-11-02
+
+### Added
+
+- Final releases.
+
+## [2.4.0] - 2026-10-01
+
+- Older.
+
+[Unreleased]: https://github.com/HualapaiValley/HVO.SkyMonitor/compare/v2.5.0...HEAD
+[2.5.0]: https://github.com/HualapaiValley/HVO.SkyMonitor/releases/tag/v2.5.0
+CHANGELOG
+    printf 'Nothing to do by hand.\n' >"$final_repo/docs/upgrade-notes/2.5.0.md"
+}
+final_notes
+
+# A final release needs its CHANGELOG section and upgrade notes; a release candidate needs neither.
+"$final_repo/scripts/release:notes" --check 2.5.0 || fail "release:notes refused 2.5.0's notes."
+[[ "$("$final_repo/scripts/release:notes" --body 2.5.0)" == $'## Changes\n\n### Added\n\n- Final releases.\n\n## Upgrade notes\n\nNothing to do by hand.' ]] ||
+    fail "release:notes --body printed: $("$final_repo/scripts/release:notes" --body 2.5.0)"
+expect_notes_refusal() {
+    local label="$1" message="$2" version="${3:-2.5.0}"
+    if "$final_repo/scripts/release:notes" --check "$version" >/dev/null 2>"$test_root/notes.err"; then
+        fail "release:notes admitted $label."
+    fi
+    grep -Fq -- "$message" "$test_root/notes.err" || { cat "$test_root/notes.err" >&2; fail "release:notes refused $label without saying: $message"; }
+}
+rm "$final_repo/docs/upgrade-notes/2.5.0.md"
+"$final_repo/scripts/release:notes" --check 2.5.0-rc.1 || fail "release:notes required notes of a release candidate."
+expect_notes_refusal "a release without upgrade notes" "docs/upgrade-notes/2.5.0.md is missing or empty"
+printf ' \n\t\n' >"$final_repo/docs/upgrade-notes/2.5.0.md"
+expect_notes_refusal "a release whose upgrade notes are blank" "docs/upgrade-notes/2.5.0.md is missing or empty"
+final_notes
+sed -i 's/^## \[2\.5\.0\] - 2026-11-02$/## [Unreleased 2.5.0]/' "$final_repo/CHANGELOG.md"
+expect_notes_refusal "a release without its CHANGELOG section" "CHANGELOG.md has no '## [2.5.0]' section with text"
+final_notes
+sed -i '/^### Added$/d; /^- Final releases\.$/d' "$final_repo/CHANGELOG.md"
+expect_notes_refusal "a release whose CHANGELOG section is empty" "CHANGELOG.md has no '## [2.5.0]' section with text"
+final_notes
+sed -i 's/^## \[2\.5\.0\] - 2026-11-02$/## [2.5.0]-rc - 2026-11-02/' "$final_repo/CHANGELOG.md"
+expect_notes_refusal "a CHANGELOG heading for another version" "CHANGELOG.md has no '## [2.5.0]' section with text"
+final_notes
+
+# The publish job's environment must require a reviewer, or GitHub would run it unapproved.
+environment_key="${repo}_environments_production-release"
+protected_environment='{"name":"production-release","can_admins_bypass":false,"protection_rules":[{"id":1,"type":"required_reviewers","prevent_self_review":false,"reviewers":[{"type":"User","reviewer":{"login":"RoySalisbury","id":1}}]},{"id":2,"type":"branch_policy"}]}'
+environment_case() {
+    export FAKE_GH="$test_root/gh-environment-$1"
+    rm -rf "$FAKE_GH"
+    mkdir -p "$FAKE_GH"
+    printf '%s\n' "$protected_environment" >"$FAKE_GH/$environment_key.json"
+}
+run_environment() {
+    GITHUB_REPOSITORY=HualapaiValley/HVO.SkyMonitor "$final_repo/scripts/release:check-environment" production-release \
+        >"$test_root/environment.out" 2>"$test_root/environment.err"
+}
+expect_environment_refusal() {
+    local label="$1" message="$2"
+    if run_environment; then
+        fail "the environment check passed $label."
+    fi
+    grep -Fq -- "$message" "$test_root/environment.err" ||
+        { cat "$test_root/environment.err" >&2; fail "the environment check refused $label without saying: $message"; }
+}
+environment_case protected
+run_environment || { cat "$test_root/environment.err" >&2; fail "the environment check refused a protected environment."; }
+[[ "$(cat "$test_root/environment.out")" == $'The environment production-release requires a reviewer: RoySalisbury.\nPrevent self-review: false; administrators may bypass: false.' ]] ||
+    fail "the environment check printed: $(cat "$test_root/environment.out")"
+environment_case team
+printf '%s\n' '{"name":"production-release","protection_rules":[{"type":"required_reviewers","reviewers":[{"type":"Team","reviewer":{"slug":"release-owners","id":2}}]}]}' \
+    >"$FAKE_GH/$environment_key.json"
+run_environment && grep -Fq "requires a reviewer: release-owners." "$test_root/environment.out" ||
+    fail "the environment check did not admit a team as the required reviewer."
+# The rule is read fail-safe: the answer names this environment, and each required_reviewers rule's reviewers are an
+# array of users and teams, each with a positive integer ID. The control is a user given by its ID alone.
+reviewers_answer() {
+    printf '{"name":"%s","protection_rules":[{"type":"required_reviewers","reviewers":%s}]}\n' "${2:-production-release}" "$1"
+}
+environment_case id-only
+reviewers_answer '[{"type":"User","reviewer":{"id":7}}]' >"$FAKE_GH/$environment_key.json"
+run_environment && grep -Fxq "The environment production-release requires a reviewer: user 7." "$test_root/environment.out" ||
+    { cat "$test_root/environment.err" >&2; fail "the environment check did not admit a user given by its ID."; }
+for reviewers in '[{"reviewer":{"name":"nobody"}}]' '{"type":"User","reviewer":{"login":"RoySalisbury","id":1}}' \
+    '[{"type":"Bot","reviewer":{"login":"RoySalisbury","id":null}}]' '[{"type":"Bot","reviewer":{"login":"RoySalisbury","id":1}}]' \
+    '[{"type":"User","reviewer":{"login":"RoySalisbury","id":null}}]' '[{"type":"User","reviewer":{"login":"RoySalisbury"}}]' \
+    '[{"type":"User","reviewer":{"login":"RoySalisbury","id":0}}]' '[{"type":"User","reviewer":{"login":"RoySalisbury","id":-1}}]' \
+    '[{"type":"User","reviewer":{"login":"RoySalisbury","id":1.5}}]' '[{"type":"User","reviewer":{"login":"RoySalisbury","id":"1"}}]' \
+    '[{"type":"User","reviewer":null}]' '[{"type":"User","reviewer":{"login":"RoySalisbury","id":1}},{"reviewer":{"name":"nobody"}}]' \
+    'null'; do
+    environment_case malformed-reviewers
+    reviewers_answer "$reviewers" >"$FAKE_GH/$environment_key.json"
+    expect_environment_refusal "an environment whose reviewers are $reviewers" \
+        "cannot read the environment production-release (200, but not the expected answer)"
+done
+environment_case no-reviewers
+printf '%s\n' '{"name":"production-release","protection_rules":[{"type":"required_reviewers"}]}' >"$FAKE_GH/$environment_key.json"
+expect_environment_refusal "a required_reviewers rule without reviewers" \
+    "cannot read the environment production-release (200, but not the expected answer)"
+environment_case other-name
+reviewers_answer '[{"type":"User","reviewer":{"login":"RoySalisbury","id":1}}]' staging >"$FAKE_GH/$environment_key.json"
+expect_environment_refusal "an answer for another environment" \
+    "cannot read the environment production-release (200, but not the expected answer)"
+for rules in '[]' '[{"type":"wait_timer","wait_timer":30}]' '[{"type":"required_reviewers","reviewers":[]}]' '[{"type":"branch_policy"}]'; do
+    environment_case "unprotected"
+    printf '{"name":"production-release","protection_rules":%s}\n' "$rules" >"$FAKE_GH/$environment_key.json"
+    expect_environment_refusal "an environment with the rules $rules" "The environment production-release requires no reviewer"
+done
+environment_case missing
+rm "$FAKE_GH/$environment_key.json"
+expect_environment_refusal "a missing environment" "The environment production-release does not exist"
+environment_case unreadable
+printf '503' >"$FAKE_GH/$environment_key.status"
+expect_environment_refusal "an environment GitHub failed to read" "cannot read the environment production-release (503)"
+environment_case cut-short
+script_answers "$environment_key" "200/1:$protected_environment"
+expect_environment_refusal "an environment read cut short" "cannot read the environment production-release (200, but gh failed)"
+environment_case malformed
+script_answers "$environment_key" '200:{"name":"production-release"}'
+expect_environment_refusal "an environment answered without its rules" "cannot read the environment production-release (200, but not the expected answer)"
+
+# The release gate: an annotated vX.Y.Z or vX.Y.Z-rc.N tag naming the product version, on main, with a final release's
+# notes, not yet released, and publishing held for approval.
+final_gate_case() {
+    export FAKE_GH="$test_root/gh-final-gate-$1"
+    rm -rf "$FAKE_GH"
+    mkdir -p "$FAKE_GH"
+    local tag
+    for tag in v2.5.0 v2.5.0-rc.1 v2.6.0 v2.5.0-dev.1; do
+        printf '{"object":{"type":"tag","sha":"%s"}}\n' "$tag_object" >"$FAKE_GH/${repo}_git_ref_tags_$tag.json"
+    done
+    printf '{"object":{"type":"commit","sha":"%s"}}\n' "$commit" >"$FAKE_GH/${repo}_git_tags_$tag_object.json"
+    printf '{"status":"behind"}\n' >"$FAKE_GH/${repo}_compare_main...$commit.json"
+    printf '[{"tag_name":"v2.4.0","draft":false,"prerelease":false},{"tag_name":"v2.5.0-dev.4","draft":false,"prerelease":true}]\n' \
+        >"$FAKE_GH/${repo}_releases.json"
+    printf '%s\n' "$protected_environment" >"$FAKE_GH/$environment_key.json"
+    printf '{"commit":{"committer":{"date":"2026-11-02T18:00:00Z"}}}\n' >"$FAKE_GH/${repo}_commits_$commit.json"
+    final_notes
+}
+run_final_gate() {
+    GITHUB_REPOSITORY=HualapaiValley/HVO.SkyMonitor "$final_repo/scripts/release:gate" "$1" "${2:-$commit}" \
+        >"$test_root/final-gate.out" 2>"$test_root/final-gate.err"
+}
+expect_final_gate_refusal() {
+    local label="$1" message="$2"
+    if run_final_gate "${3:-v2.5.0}" "${4:-$commit}"; then
+        fail "the release gate admitted $label."
+    fi
+    grep -Fq -- "$message" "$test_root/final-gate.err" ||
+        { cat "$test_root/final-gate.err" >&2; fail "the release gate refused $label without saying: $message"; }
+}
+final_gate_case admitted
+run_final_gate v2.5.0 || { cat "$test_root/final-gate.err" >&2; fail "the release gate refused v2.5.0."; }
+[[ "$(cat "$test_root/final-gate.out")" == $'version=2.5.0\ntag=v2.5.0\ncommit='"$commit"$'\ncreated=2026-11-02T18:00:00Z\nprerelease=false' ]] ||
+    fail "the release gate's outputs are wrong: $(cat "$test_root/final-gate.out")"
+grep -Fq "requires a reviewer: RoySalisbury." "$test_root/final-gate.err" || fail "the release gate did not report the environment's reviewer."
+final_gate_case release-candidate
+rm "$final_repo/docs/upgrade-notes/2.5.0.md"
+run_final_gate v2.5.0-rc.1 || { cat "$test_root/final-gate.err" >&2; fail "the release gate refused v2.5.0-rc.1 without notes."; }
+grep -Fxq "prerelease=true" "$test_root/final-gate.out" || fail "the release gate did not mark v2.5.0-rc.1 a pre-release."
+final_gate_case other-version
+expect_final_gate_refusal "a tag for another version" "the tag 'v2.6.0' is for 2.6.0, but Directory.Build.props holds 2.5.0" v2.6.0
+for tag in v2.5.0-dev.1 v2.5 v2.5.0-rc.0 2.5.0 v2.5.0+build; do
+    expect_final_gate_refusal "the tag $tag" "the tag '$tag' is not a release tag" "$tag"
+done
+expect_final_gate_refusal "a short commit" "is not a 40-character commit ID." v2.5.0 0123456
+final_gate_case lightweight
+printf '{"object":{"type":"commit","sha":"%s"}}\n' "$commit" >"$FAKE_GH/${repo}_git_ref_tags_v2.5.0.json"
+expect_final_gate_refusal "a lightweight tag" "v2.5.0 is a lightweight tag"
+final_gate_case retargeted
+printf '{"object":{"type":"commit","sha":"%s"}}\n' "$other" >"$FAKE_GH/${repo}_git_tags_$tag_object.json"
+expect_final_gate_refusal "a tag naming another commit" "v2.5.0 names $other, not the commit $commit"
+final_gate_case missing-tag
+rm "$FAKE_GH/${repo}_git_ref_tags_v2.5.0.json"
+expect_final_gate_refusal "a deleted tag" "The tag v2.5.0 does not exist."
+final_gate_case unreadable-tag
+printf '503' >"$FAKE_GH/${repo}_git_ref_tags_v2.5.0.status"
+expect_final_gate_refusal "a tag GitHub failed to read" "cannot read the tag v2.5.0 (503)"
+for status in diverged ahead; do
+    final_gate_case "$status"
+    printf '{"status":"%s"}\n' "$status" >"$FAKE_GH/${repo}_compare_main...$commit.json"
+    expect_final_gate_refusal "a commit $status from main" "is not on main (compared with it, it is $status)"
+done
+final_gate_case no-changelog
+sed -i 's/^## \[2\.5\.0\] - 2026-11-02$/## [Unreleased 2.5.0]/' "$final_repo/CHANGELOG.md"
+expect_final_gate_refusal "a final release without its CHANGELOG section" "CHANGELOG.md has no '## [2.5.0]' section with text"
+final_gate_case no-notes
+rm "$final_repo/docs/upgrade-notes/2.5.0.md"
+expect_final_gate_refusal "a final release without its upgrade notes" "docs/upgrade-notes/2.5.0.md is missing or empty"
+final_gate_case released
+printf '[{"tag_name":"v2.5.0","draft":false,"prerelease":false}]\n' >"$FAKE_GH/${repo}_releases.json"
+expect_final_gate_refusal "a tag already released" "A release for v2.5.0 already exists"
+final_gate_case unreadable-releases
+printf '503' >"$FAKE_GH/${repo}_releases.status"
+expect_final_gate_refusal "a releases list GitHub failed to read" "cannot read the releases of HualapaiValley/HVO.SkyMonitor (503)"
+final_gate_case unprotected
+printf '{"name":"production-release","protection_rules":[]}\n' >"$FAKE_GH/$environment_key.json"
+expect_final_gate_refusal "an environment that requires no reviewer" "The environment production-release requires no reviewer"
+final_gate_case no-environment
+rm "$FAKE_GH/$environment_key.json"
+expect_final_gate_refusal "a missing environment" "The environment production-release does not exist"
+final_gate_case no-time
+printf '{"commit":{"committer":{"date":"yesterday"}}}\n' >"$FAKE_GH/${repo}_commits_$commit.json"
+expect_final_gate_refusal "a commit without a committer time" "has no committer time."
+
+# Publishing: latest moves only for the newest final release, by version, and is read for certain before and after.
+final_publish_case() {
+    export FAKE_GH="$test_root/gh-final-publish-$1"
+    rm -rf "$FAKE_GH"
+    mkdir -p "$FAKE_GH"
+    printf '%s\n' "${2:-[]}" >"$FAKE_GH/${repo}_releases.json"
+    shift "$(( $# < 2 ? $# : 2 ))"
+    script_answers "${repo}_releases_latest" "$@"
+}
+run_final_publish() {
+    GITHUB_REPOSITORY=HualapaiValley/HVO.SkyMonitor "$final_repo/scripts/release:publish" "${1:-v2.5.0}" \
+        >"$test_root/final-publish.out" 2>"$test_root/final-publish.err"
+}
+expect_final_published() {
+    local label="$1" moved="$2" edit="$3" tag="${4:-v2.5.0}"
+    run_final_publish "$tag" || { cat "$test_root/final-publish.err" >&2; fail "the publish failed for $label."; }
+    [[ "$(cat "$test_root/final-publish.out")" == "moved=$moved" ]] ||
+        fail "the publish printed $(cat "$test_root/final-publish.out") for $label, not moved=$moved."
+    grep -Fxq -- "release edit $tag --repo HualapaiValley/HVO.SkyMonitor $edit" "$FAKE_GH/edits.log" ||
+        { cat "$FAKE_GH/edits.log" >&2; fail "the publish did not publish $label with $edit."; }
+}
+expect_final_publish_refusal() {
+    local label="$1" message="$2" edited="$3"
+    if run_final_publish "${4:-v2.5.0}"; then
+        fail "the publish succeeded for $label."
+    fi
+    grep -Fq -- "$message" "$test_root/final-publish.err" ||
+        { cat "$test_root/final-publish.err" >&2; fail "the publish refused $label without saying: $message"; }
+    if [[ "$edited" == edited ]]; then
+        [[ -s "$FAKE_GH/edits.log" ]] || fail "the publish of $label did not reach the edit."
+    else
+        [[ ! -e "$FAKE_GH/edits.log" ]] || fail "the publish of $label edited the draft before it should."
+    fi
+}
+draft_final='{"tag_name":"v2.5.0","draft":true,"prerelease":false}'
+published_final='{"tag_name":"v2.5.0","draft":false,"prerelease":false}'
+latest_is() { printf '200:{"tag_name":"%s"}' "$1"; }
+final_publish_case newest "[{\"tag_name\":\"v2.4.0\",\"draft\":false,\"prerelease\":false},$draft_final]" "$(latest_is v2.4.0)" "$(latest_is v2.5.0)"
+expect_final_published "the newest final release" true "--draft=false --prerelease=false --latest=true"
+final_publish_case first "[$draft_final]" "$not_found" "$(latest_is v2.5.0)"
+expect_final_published "the first final release" true "--draft=false --prerelease=false --latest=true"
+final_publish_case by-number "[{\"tag_name\":\"v2.4.10\",\"draft\":false,\"prerelease\":false},$draft_final]" "$(latest_is v2.4.10)" "$(latest_is v2.5.0)"
+expect_final_published "a release newer than 2.4.10" true "--draft=false --prerelease=false --latest=true"
+final_publish_case older-line "[{\"tag_name\":\"v2.10.0\",\"draft\":false,\"prerelease\":false},$draft_final]" "$(latest_is v2.10.0)" "$(latest_is v2.10.0)"
+expect_final_published "a fix to an older version than 2.10.0" false "--draft=false --prerelease=false --latest=false"
+final_publish_case newer-draft "[{\"tag_name\":\"v3.0.0\",\"draft\":true,\"prerelease\":false},{\"tag_name\":\"v3.1.0\",\"draft\":false,\"prerelease\":true},{\"tag_name\":\"v2.4.0\",\"draft\":false,\"prerelease\":false},$draft_final]" \
+    "$(latest_is v2.4.0)" "$(latest_is v2.5.0)"
+expect_final_published "a release older only than a draft and a pre-release" true "--draft=false --prerelease=false --latest=true"
+final_publish_case candidate "[{\"tag_name\":\"v2.4.0\",\"draft\":false,\"prerelease\":false},{\"tag_name\":\"v2.5.0-rc.1\",\"draft\":true,\"prerelease\":true}]" \
+    "$(latest_is v2.4.0)" "$(latest_is v2.4.0)"
+expect_final_published "a release candidate" false "--draft=false --prerelease=true --latest=false" v2.5.0-rc.1
+final_publish_case already-published "[$published_final]"
+expect_final_publish_refusal "a release already published" "The release for v2.5.0 is not the draft it should be (draft=false prerelease=false" unedited
+final_publish_case marked-prerelease '[{"tag_name":"v2.5.0","draft":true,"prerelease":true}]'
+expect_final_publish_refusal "a final release's draft marked a pre-release" "is not the draft it should be (draft=true prerelease=true, not draft=true prerelease=false)" unedited
+final_publish_case unmarked-candidate '[{"tag_name":"v2.5.0-rc.1","draft":true,"prerelease":false}]'
+expect_final_publish_refusal "a release candidate's draft not marked a pre-release" "not draft=true prerelease=true" unedited v2.5.0-rc.1
+final_publish_case gone '[{"tag_name":"v2.4.0","draft":false,"prerelease":false}]'
+expect_final_publish_refusal "a draft that is gone" "No release or draft has v2.5.0; the tested draft is gone." unedited
+final_publish_case two "[$draft_final,$draft_final]"
+expect_final_publish_refusal "two drafts with the tag" "2 releases have the tag v2.5.0" unedited
+final_publish_case other-version '[{"tag_name":"v2.6.0","draft":true,"prerelease":false}]'
+expect_final_publish_refusal "a tag for another version" "is for 2.6.0, but Directory.Build.props holds 2.5.0" unedited v2.6.0
+final_publish_case unread-before "[$draft_final]" '503:{"message":"Service Unavailable"}'
+expect_final_publish_refusal "a latest release that cannot be read before" "cannot read the latest release (503)" unedited
+final_publish_case unread-after "[$draft_final]" "$not_found" '503:{"message":"Service Unavailable"}'
+expect_final_publish_refusal "a latest release that cannot be read after" "cannot be read back to show where it is" edited
+final_publish_case not-moved "[{\"tag_name\":\"v2.4.0\",\"draft\":false,\"prerelease\":false},$draft_final]" "$(latest_is v2.4.0)" "$(latest_is v2.4.0)"
+expect_final_publish_refusal "a newest final release GitHub does not make latest" "the latest release is v2.4.0, not v2.5.0" edited
+final_publish_case moved "[{\"tag_name\":\"v2.10.0\",\"draft\":false,\"prerelease\":false},$draft_final]" "$(latest_is v2.10.0)" "$(latest_is v2.5.0)"
+expect_final_publish_refusal "an older version's fix GitHub makes latest" "Publishing v2.5.0 moved the latest release from v2.10.0 to v2.5.0" edited
+final_publish_case edit-fails "[$draft_final]" "$not_found"
+FAKE_GH_EDIT_STATUS=1 expect_final_publish_refusal "a publish GitHub refuses" "cannot publish v2.5.0" edited
+final_publish_case unreadable-releases
+printf '503' >"$FAKE_GH/${repo}_releases.status"
+expect_final_publish_refusal "a releases list that cannot be read" "cannot read the releases of HualapaiValley/HVO.SkyMonitor (503)" unedited
+# Two drafts, v2.5.0 and v2.10.0, and the newer is published first, after this run checked its draft: the releases are
+# read again immediately before the write, so v2.5.0 is published without taking latest back.
+newer_draft='{"tag_name":"v2.10.0","draft":true,"prerelease":false}'
+newer_final='{"tag_name":"v2.10.0","draft":false,"prerelease":false}'
+final_publish_case newer-first "[]" "$(latest_is v2.10.0)" "$(latest_is v2.10.0)"
+script_answers "${repo}_releases" "200:[$newer_draft,$draft_final]" "200:[$newer_final,$draft_final]" \
+    "200:[$newer_final,$published_final]"
+expect_final_published "an older release whose newer draft is published first" false "--draft=false --prerelease=false --latest=false"
+# Whatever was published meanwhile, the latest release is never left older than the newest final release.
+final_publish_case newer-meanwhile "[]" "$not_found" "$(latest_is v2.5.0)"
+script_answers "${repo}_releases" "200:[$newer_draft,$draft_final]" "200:[$newer_draft,$draft_final]" \
+    "200:[$newer_final,$published_final]"
+expect_final_publish_refusal "a latest release left older than the newest final release" \
+    "the latest release is v2.5.0, but v2.10.0 is the newest final release" edited
+final_publish_case unread-releases-after "[]" "$not_found" "$(latest_is v2.5.0)"
+script_answers "${repo}_releases" "200:[$draft_final]" "200:[$draft_final]" '503:{"message":"Service Unavailable"}'
+expect_final_publish_refusal "a releases list that cannot be read after" \
+    "v2.5.0 is published, but the releases cannot be read back" edited
+
+# The image's latest tag follows the newest final release, from the digest its version tag still names.
+latest_releases="[{\"tag_name\":\"v2.4.0\",\"draft\":false,\"prerelease\":false},$published_final]"
+latest_case() {
+    export FAKE_GH="$test_root/gh-tag-latest-$1"
+    rm -rf "$FAKE_GH"
+    mkdir -p "$FAKE_GH"
+    printf '%s\n' "${2:-$latest_releases}" >"$FAKE_GH/${repo}_releases.json"
+    printf '{"tag_name":"%s"}\n' "${3:-v2.5.0}" >"$FAKE_GH/${repo}_releases_latest.json"
+    reset_registry
+}
+run_tag_latest() {
+    GITHUB_REPOSITORY=HualapaiValley/HVO.SkyMonitor "$final_repo/scripts/release:tag-latest" \
+        ghcr.io/hualapaivalley/skymonitor-cameraagent "${1:-v2.5.0}" "${2:-$index_digest}" \
+        >"$test_root/tag-latest.out" 2>"$test_root/tag-latest.err"
+}
+expect_latest_kept() {
+    local label="$1" message="$2"
+    run_tag_latest "${3:-v2.5.0}" || { cat "$test_root/tag-latest.err" >&2; fail "the latest tag failed for $label."; }
+    grep -Fq -- "$message" "$test_root/tag-latest.out" || fail "the latest tag did not say for $label: $message"
+    [[ ! -s "$FAKE_SKOPEO_LOG" ]] || fail "the latest tag reached the registry for $label."
+}
+expect_latest_refusal() {
+    local label="$1" message="$2"
+    if run_tag_latest; then
+        fail "the latest tag moved for $label."
+    fi
+    grep -Fq -- "$message" "$test_root/tag-latest.err" || { cat "$test_root/tag-latest.err" >&2; fail "the latest tag refused $label without saying: $message"; }
+}
+latest_case moved
+FAKE_SKOPEO_EXISTING=index run_tag_latest || { cat "$test_root/tag-latest.err" >&2; fail "the latest tag did not move to the newest final release."; }
+grep -Fxq "copy --dest-tls-verify=true --retry-times 3 --all --preserve-digests docker://ghcr.io/hualapaivalley/skymonitor-cameraagent@$index_digest docker://ghcr.io/hualapaivalley/skymonitor-cameraagent:latest" \
+    "$FAKE_SKOPEO_LOG" || fail "the latest tag was not copied from the release's digest with every platform."
+grep -Fq "skymonitor-cameraagent:latest is $index_digest, the image of v2.5.0" "$test_root/tag-latest.out" ||
+    fail "the latest tag did not report where it moved."
+latest_case candidate "[{\"tag_name\":\"v2.5.0-rc.1\",\"draft\":false,\"prerelease\":true}]" v2.4.0
+expect_latest_kept "a release candidate" "v2.5.0-rc.1 is a release candidate: the image latest tag stays where it is." v2.5.0-rc.1
+latest_case older-line "[{\"tag_name\":\"v2.10.0\",\"draft\":false,\"prerelease\":false},$published_final]" v2.10.0
+expect_latest_kept "a fix to an older version" "v2.5.0 is not the newest final release (2.10.0 is): the image latest tag stays where it is."
+latest_case draft "[$draft_final]"
+expect_latest_refusal "a release still a draft" "The release for v2.5.0 is not one published final release (draft=true prerelease=false)"
+latest_case github-latest-elsewhere "" v2.4.0
+expect_latest_refusal "a newest final release GitHub does not mark latest" "but GitHub's latest release is v2.4.0"
+latest_case other-image
+FAKE_SKOPEO_EXISTING=other expect_latest_refusal "a version tag naming another image" "in the registry, not $index_digest, the image v2.5.0 names"
+! grep -q '^copy' "$FAKE_SKOPEO_LOG" || fail "the latest tag copied an image its version tag does not name."
+latest_case copy-fails
+FAKE_SKOPEO_EXISTING=index FAKE_SKOPEO_COPY_STATUS=1 expect_latest_refusal "a copy the registry refuses" "cannot tag ghcr.io/hualapaivalley/skymonitor-cameraagent:latest."
+latest_case served-other
+FAKE_SKOPEO_EXISTING=index FAKE_SKOPEO_SERVED=other expect_latest_refusal "a latest tag the registry serves as another image" "after it was tagged"
+latest_case unreadable-releases
+printf '503' >"$FAKE_GH/${repo}_releases.status"
+expect_latest_refusal "a releases list that cannot be read" "cannot read the releases of HualapaiValley/HVO.SkyMonitor (503)"
+# A newer final release published before the copy: the releases are read again immediately before it, and latest stays.
+latest_case newer-first
+script_answers "${repo}_releases" "200:$latest_releases" "200:[$newer_final,$published_final]"
+FAKE_SKOPEO_EXISTING=index run_tag_latest ||
+    { cat "$test_root/tag-latest.err" >&2; fail "the latest tag failed when a newer release was published first."; }
+grep -Fq "v2.5.0 is not the newest final release (2.10.0 is): the image latest tag stays where it is." "$test_root/tag-latest.out" ||
+    fail "the latest tag did not say a newer release was published first."
+! grep -q '^copy' "$FAKE_SKOPEO_LOG" || fail "the latest tag moved to an older release's image."
+latest_case newer-meanwhile
+script_answers "${repo}_releases" "200:$latest_releases" "200:$latest_releases" "200:[$newer_final,$published_final]"
+FAKE_SKOPEO_EXISTING=index expect_latest_refusal "a newer release published while latest was moved" \
+    "but v2.10.0 is now the newest final release"
+
+# The asset script refuses bad arguments before it builds anything.
+cat >"$fake_bin/docker" <<'FAKE_DOCKER'
+#!/usr/bin/env bash
+printf 'the asset script ran docker before refusing its arguments\n' >&2
+exit 90
+FAKE_DOCKER
+chmod +x "$fake_bin/docker"
+cp "$fake_bin/docker" "$fake_bin/dotnet"
+expect_assets_refusal() {
+    local message="$1"
+    shift
+    if "$repo_root/scripts/release:assets" "$@" >/dev/null 2>"$test_root/assets.err"; then
+        fail "the asset script admitted $*."
+    fi
+    grep -Fq -- "$message" "$test_root/assets.err" || { cat "$test_root/assets.err" >&2; fail "the asset script refused $* without saying: $message"; }
+}
+expect_assets_refusal "must be a release version" --version 1.2.0+build --output "$test_root/out" --image-oci "$test_root/out.tar"
+expect_assets_refusal "must be a release version" --version v1.2.0 --output "$test_root/out" --image-oci "$test_root/out.tar"
+expect_assets_refusal "already exists" --version 1.2.0-dev.3 --output "$test_root" --image-oci "$test_root/out.tar"
+expect_assets_refusal "--platforms must be" --version 1.2.0-dev.3 --output "$test_root/out" --image-oci "$test_root/out.tar" --platforms linux/386
+expect_assets_refusal "Usage:" --version 1.2.0-dev.3 --output "$test_root/out"
+expect_assets_refusal "is not this checkout's HEAD" --version 1.2.0-dev.3 --output "$test_root/out" --image-oci "$test_root/out.tar" \
+    --commit "$other"
+
+# One product version (#1310): scripts/release:version reads Directory.Build.props's VersionPrefix, and the release
+# scripts take no other version.
+prefix="$("$repo_root/scripts/release:version")"
+[[ "$prefix" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "release:version printed '$prefix', not a release version."
+[[ "$(sed -n 's:^[[:space:]]*<VersionPrefix>\([^<]*\)</VersionPrefix>[[:space:]]*$:\1:p' "$repo_root/Directory.Build.props")" == "$prefix" ]] ||
+    fail "release:version printed $prefix, which is not Directory.Build.props's VersionPrefix."
+other_version="$((${prefix%%.*} + 1)).0.0"
+[[ "$("$repo_root/scripts/release:version" --dev)" == "$prefix-dev" ]] || fail "release:version --dev is not $prefix-dev."
+[[ "$("$repo_root/scripts/release:version" --tag "v$prefix")" == "$prefix" ]] || fail "release:version --tag v$prefix is not $prefix."
+[[ "$("$repo_root/scripts/release:version" --tag "v$prefix-rc.2")" == "$prefix-rc.2" ]] ||
+    fail "release:version --tag v$prefix-rc.2 is not $prefix-rc.2."
+for version in "$prefix" "$prefix-rc.1" "$prefix-dev.3"; do
+    "$repo_root/scripts/release:version" --check "$version" || fail "release:version refused $version."
+done
+expect_version_refusal() {
+    local message="$1" output
+    shift
+    if output="$("$repo_root/scripts/release:version" "$@" 2>&1)"; then
+        fail "release:version admitted $*."
+    fi
+    grep -Fq -- "$message" <<<"$output" || { printf '%s\n' "$output" >&2; fail "release:version refused $* without saying: $message"; }
+}
+expect_version_refusal "is for $other_version, but Directory.Build.props holds $prefix" --check "$other_version"
+expect_version_refusal "is for $other_version, but Directory.Build.props holds $prefix" --check "$other_version-dev.1"
+expect_version_refusal "is not a release version" --check "$prefix+build"
+expect_version_refusal "is not a release version" --check "v$prefix"
+expect_version_refusal "is not a release version" --check "$prefix-"
+expect_version_refusal "is not a release tag" --tag "v$prefix-dev.1"
+expect_version_refusal "is not a release tag" --tag "$prefix"
+expect_version_refusal "is not a release tag" --tag "v$prefix-rc.0"
+expect_version_refusal "is for $other_version, but Directory.Build.props holds $prefix" --tag "v$other_version"
+expect_assets_refusal "is for $other_version, but Directory.Build.props holds $prefix" --version "$other_version-dev.1" \
+    --output "$test_root/out" --image-oci "$test_root/out.tar" --allow-dirty
+# A final release's files carry its notes (#1310): the asset script refuses a final version without them, before it
+# builds anything. It runs from a copy in a repository of its own, whose product version is 2.5.0.
+assets_repo="$test_root/assets-repo"
+mkdir -p "$assets_repo/scripts"
+cp "$repo_root/scripts/release:assets" "$repo_root/scripts/release:version" "$repo_root/scripts/release:notes" "$assets_repo/scripts/"
+cp "$final_repo/Directory.Build.props" "$final_repo/CHANGELOG.md" "$assets_repo/"
+git -C "$assets_repo" init -q
+git -C "$assets_repo" -c user.name=test -c user.email=test@example.test commit -q --allow-empty -m test
+if "$assets_repo/scripts/release:assets" --version 2.5.0 --output "$test_root/out" --image-oci "$test_root/out.tar" --allow-dirty \
+    >/dev/null 2>"$test_root/assets.err"; then
+    fail "the asset script admitted a final release without its upgrade notes."
+fi
+grep -Fq "docs/upgrade-notes/2.5.0.md is missing or empty" "$test_root/assets.err" ||
+    { cat "$test_root/assets.err" >&2; fail "the asset script refused a final release without its notes without saying so."; }
+# Every release ships its third-party notices as an asset of their own (#1317): the asset script refuses a release
+# without them, here a pre-release, which needs no notes, before it builds anything.
+if "$assets_repo/scripts/release:assets" --version 2.5.0-dev.1 --output "$test_root/out" --image-oci "$test_root/out.tar" \
+    --allow-dirty >/dev/null 2>"$test_root/assets.err"; then
+    fail "the asset script admitted a release without its third-party notices."
+fi
+grep -Fq "THIRD-PARTY-NOTICES.md, the release's third-party notices, is missing or empty" "$test_root/assets.err" ||
+    { cat "$test_root/assets.err" >&2; fail "the asset script refused a release without its notices without saying so."; }
+
+# test:release-install leaves nothing behind, however far it gets: an install that fails after loading the release's
+# image, and a stand-in image that fails to be created or committed. A fake Docker keeps its images and containers as
+# files under $FAKE_DOCKER, and a fake installer loads the release's image the way the real one does before it can fail.
+cat >"$fake_bin/docker" <<'FAKE_DOCKER'
+#!/usr/bin/env bash
+set -euo pipefail
+state="$FAKE_DOCKER"
+printf '%s\n' "$*" >>"$state/calls.log"
+image_file() {
+    local name="$1" file
+    for file in "$state"/images/*; do
+        [[ -e "$file" ]] || continue
+        if grep -Fxq -- "$name" "$file"; then
+            printf '%s\n' "$file"
+            return 0
+        fi
+    done
+    return 1
+}
+case "$1 ${2:-}" in
+    "image ls")
+        for file in "$state"/images/*; do [[ -e "$file" ]] && head -n 1 "$file"; done
+        exit 0
+        ;;
+    "image inspect")
+        reference="${!#}"
+        file="$(image_file "$reference")" || { printf 'Error: No such image: %s\n' "$reference" >&2; exit 1; }
+        head -n 1 "$file"
+        exit 0
+        ;;
+    "image rm")
+        reference="${!#}"
+        file="$(image_file "$reference")" || { printf 'Error: No such image: %s\n' "$reference" >&2; exit 1; }
+        rm -f "$file"
+        exit 0
+        ;;
+    "network rm")
+        exit 1
+        ;;
+    "create --name")
+        [[ "${FAKE_DOCKER_FAIL:-}" != create ]] || exit 1
+        file="$(image_file "$4")" || exit 1
+        head -n 1 "$file" >"$state/containers/$3"
+        exit 0
+        ;;
+    "commit --change")
+        [[ "${FAKE_DOCKER_FAIL:-}" != commit ]] || exit 1
+        [[ -f "$state/containers/$4" ]] || exit 1
+        id="sha256:$(printf '%s' "$5" | sha256sum | cut -d ' ' -f 1)"
+        printf '%s\n%s\n' "$id" "$5" >"$state/images/${id#sha256:}"
+        exit 0
+        ;;
+esac
+if [[ "$1" == rm ]]; then
+    shift
+    [[ "${1:-}" != --force ]] || shift
+    for name in "$@"; do rm -f "$state/containers/$name"; done
+    exit 0
+fi
+printf 'fake docker: unexpected %s\n' "$*" >&2
+exit 90
+FAKE_DOCKER
+chmod +x "$fake_bin/docker"
+
+release_version=1.2.0-dev.3
+index_id="sha256:$(printf 'index' | sha256sum | cut -d ' ' -f 1)"
+manifest_id="sha256:$(printf 'manifest' | sha256sum | cut -d ' ' -f 1)"
+config_id="sha256:$(printf 'config' | sha256sum | cut -d ' ' -f 1)"
+unrelated_id="sha256:$(printf 'unrelated' | sha256sum | cut -d ' ' -f 1)"
+fake_release="$test_root/fake-release"
+mkdir -p "$fake_release" "$test_root/catalog/hyg-test.bundle"
+jq -n --arg version "$release_version" --arg commit "$commit" --arg index "$index_id" --arg manifest "$manifest_id" \
+    --arg config "$config_id" '{
+        version: $version, commit: $commit,
+        images: {cameraAgent: {repository: "ghcr.io/hualapaivalley/skymonitor-cameraagent", digest: $index,
+            offlineArchives: [
+                {platform: "linux/amd64", manifestDigest: $manifest, configDigest: $config},
+                {platform: "linux/arm64", manifestDigest: $manifest, configDigest: $config}]}},
+        assets: [{name: "hyg-test.bundle.tar.gz", kind: "catalog"}]}' >"$fake_release/release.json"
+tar -czf "$fake_release/hyg-test.bundle.tar.gz" -C "$test_root/catalog" hyg-test.bundle
+cat >"$fake_release/hvo-sky-install-linux-x64" <<'FAKE_INSTALLER'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == --version ]]; then
+    printf '%s\n' "$FAKE_RELEASE_IDENTITY"
+    exit 0
+fi
+command=("$1" "${2:-}")
+instance="" product=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --instance-id) instance="$2"; shift 2 ;;
+        --product-root) product="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+case "${command[0]} ${command[1]}" in
+    "cameraagent install")
+        # The real installer loads the release's image before anything can still fail.
+        printf '%s\n%s\n' "$FAKE_IMAGE_ID" "ghcr.io/hualapaivalley/skymonitor-cameraagent:$FAKE_VERSION" \
+            >"$FAKE_DOCKER/images/${FAKE_IMAGE_ID#sha256:}"
+        if [[ "${FAKE_INSTALL:-}" == fail ]]; then
+            printf '{"schemaVersion":1,"errorCode":"installation-failed","message":"injected"}\n' >&2
+            exit 1
+        fi
+        mkdir -p "$product/cameraagents/$instance/state/deployment"
+        printf '{"releaseVersion":"%s","source":"archive"}\n' "$FAKE_VERSION" \
+            >"$product/cameraagents/$instance/state/deployment/image-distribution.json"
+        printf '%s' "$FAKE_IMAGE_ID" >"$FAKE_DOCKER/active"
+        printf '{"image":{"imageId":"%s","source":"archive"},"healthy":true}\n' "$FAKE_IMAGE_ID"
+        ;;
+    "status --instance-id")
+        printf '{"outcome":"status","image":{"imageId":"%s"},"running":true,"healthy":true}\n' "$(cat "$FAKE_DOCKER/active")"
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+FAKE_INSTALLER
+chmod +x "$fake_release/hvo-sky-install-linux-x64"
+cp "$fake_release/hvo-sky-install-linux-x64" "$fake_release/hvo-sky-install-linux-arm64"
+(cd "$fake_release" && sha256sum release.json hyg-test.bundle.tar.gz hvo-sky-install-linux-x64 hvo-sky-install-linux-arm64 >SHA256SUMS)
+export FAKE_RELEASE_IDENTITY="$release_version+$commit" FAKE_VERSION="$release_version" FAKE_IMAGE_ID="$config_id"
+
+# Runs test:release-install against the fake release and requires it to fail with Docker and TMPDIR as they began.
+# Pass "held" to start with the release's image already in Docker, which the run must then leave there.
+expect_install_cleanup() {
+    local label="$1" held="${2:-}"
+    export FAKE_DOCKER="$test_root/docker-$label"
+    rm -rf "$FAKE_DOCKER" "$test_root/tmp-$label"
+    mkdir -p "$FAKE_DOCKER/images" "$FAKE_DOCKER/containers" "$test_root/tmp-$label"
+    printf '%s\n' "$unrelated_id" >"$FAKE_DOCKER/images/${unrelated_id#sha256:}"
+    if [[ "$held" == held ]]; then
+        printf '%s\n' "$config_id" >"$FAKE_DOCKER/images/${config_id#sha256:}"
+    fi
+    local before
+    before="$(ls "$FAKE_DOCKER/images")"
+    if TMPDIR="$test_root/tmp-$label" "$repo_root/scripts/test:release-install" --release "$fake_release" --upgrade-source archive \
+        >"$test_root/install-$label.out" 2>"$test_root/install-$label.err"; then
+        fail "test:release-install passed although $label."
+    fi
+    [[ "$(ls "$FAKE_DOCKER/images")" == "$before" ]] || {
+        cat "$FAKE_DOCKER/calls.log" >&2
+        fail "test:release-install left Docker's images changed after $label: $(ls "$FAKE_DOCKER/images" | tr '\n' ' ')"
+    }
+    [[ -z "$(ls "$FAKE_DOCKER/containers")" ]] || fail "test:release-install left a container after $label."
+    [[ -z "$(ls "$test_root/tmp-$label")" ]] || fail "test:release-install left its temporary root after $label."
+}
+FAKE_INSTALL=fail expect_install_cleanup "the install failed after loading the image"
+FAKE_DOCKER_FAIL=create expect_install_cleanup "the stand-in container could not be created"
+FAKE_DOCKER_FAIL=commit expect_install_cleanup "the stand-in image could not be committed"
+FAKE_INSTALL=fail expect_install_cleanup "the install failed with the image already held" held
+grep -Fq -- "${config_id}" "$test_root/docker-the install failed with the image already held/images/${config_id#sha256:}" ||
+    fail "test:release-install removed an image Docker held before it began."
+
+# The release workflow's shape (#1310), which actionlint does not check: CI qualifies the commit before anything is built,
+# both platforms install from the draft, publishing waits for production-release's approval and checks its rule first,
+# only the draft, publish and latest jobs can write, latest moves only after publishing moved it, and publish and latest
+# alone share the release-wide release-promotion group.
+python3 - "$repo_root" <<'PY' || fail "the release workflow's shape is wrong."
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+release = (root / ".github/workflows/release.yml").read_text()
+ci = (root / ".github/workflows/ci.yml").read_text()
+errors = []
+
+
+def job(name):
+    match = re.search(rf"^  {re.escape(name)}:\n(.*?)(?=^  [\w-]+:\n|\Z)", release, re.M | re.S)
+    if not match:
+        errors.append(f"release.yml has no {name} job")
+        return ""
+    return match.group(1)
+
+
+def require(condition, message):
+    if not condition:
+        errors.append(message)
+
+
+on = re.search(r"^on:\n(.*?)(?=^\S)", release, re.M | re.S).group(1)
+require(on.strip().splitlines()[0].strip() == "push:" and "workflow_dispatch" not in on and "pull_request" not in on,
+        "release.yml runs on anything but a tag push")
+require(re.findall(r"^      - '(.*)'$", on, re.M) == ["v[0-9]+.[0-9]+.[0-9]+", "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"],
+        "release.yml runs on tags other than vX.Y.Z and vX.Y.Z-rc.N")
+require(re.search(r"^on:\n(?:.*\n)*?  workflow_call:\n", ci, re.M) is not None, "ci.yml cannot be called")
+jobs = re.findall(r"^  ([\w-]+):\n", release.split("\njobs:\n", 1)[1], re.M)
+require(jobs == ["gate", "ci", "build", "draft", "install-test", "publish", "latest"], f"release.yml's jobs are {jobs}")
+require("uses: ./.github/workflows/ci.yml" in job("ci"), "the ci job does not call ci.yml")
+require("needs: [gate, ci]" in job("build"), "the build job does not wait for CI")
+install = job("install-test")
+require("platform: linux-x64" in install and "platform: linux-arm64" in install and "fail-fast: false" in install,
+        "the install test does not run on linux-x64 and linux-arm64 alike")
+require("needs: [gate, draft]" in install and "./scripts/test:release-install --release" in install,
+        "the install test does not install from the draft")
+publish = job("publish")
+require("needs: [gate, draft, install-test]" in publish, "the publish job does not wait for both install tests")
+check = publish.find("./scripts/release:check-environment production-release")
+published = publish.find("./scripts/release:publish ")
+require(0 <= check < published, "the publish job does not check the environment's approval rule before publishing")
+for name in jobs:
+    environment = re.findall(r"^    environment: (.*)$", job(name), re.M)
+    require(environment == (["production-release"] if name == "publish" else []), f"the {name} job's environment is {environment}")
+    writes = re.findall(r"^      ([\w-]+): write$", job(name), re.M)
+    allowed = {"draft": ["contents", "packages", "id-token", "attestations"], "publish": ["contents"], "latest": ["packages"]}
+    require(writes == allowed.get(name, []), f"the {name} job can write {writes}")
+    # Every promotion, of the latest release and of the image's latest tag, waits for every other release's.
+    concurrency = re.findall(r"^    concurrency:.*\n(?:      .*\n)*", job(name), re.M)
+    promotion = ["    concurrency:\n      group: release-promotion\n      cancel-in-progress: false\n"]
+    require(concurrency == (promotion if name in ("publish", "latest") else []), f"the {name} job's concurrency is {concurrency}")
+latest = job("latest")
+require("needs: [gate, draft, publish]" in latest and "if: needs.publish.outputs.moved == 'true'" in latest,
+        "the latest job runs without publishing having moved the latest release")
+if errors:
+    print("\n".join(errors), file=sys.stderr)
+    sys.exit(1)
+PY
+
+# install.sh's tests bring their own fake commands, so they run on the PATH this script was given.
+PATH="${PATH#"$fake_bin:"}" "$repo_root/scripts/test:install-sh" || fail "the install.sh tests failed."
+
+printf 'Release script tests passed.\n'

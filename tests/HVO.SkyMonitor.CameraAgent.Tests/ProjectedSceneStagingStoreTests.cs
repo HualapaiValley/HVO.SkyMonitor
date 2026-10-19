@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class ProjectedSceneStagingStoreTests
+public sealed partial class ProjectedSceneStagingStoreTests
 {
     [TestMethod]
     public async Task StageAsync_RestartPreservesCanonicalGeometryAndIdentity()

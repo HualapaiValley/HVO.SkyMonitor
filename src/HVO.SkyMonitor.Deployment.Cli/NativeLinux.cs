@@ -18,6 +18,7 @@ internal static partial class NativeLinux
     private const uint DirectoryType = 0x4000;
     private const uint RegularFileType = 0x8000;
     internal const uint SocketNodeType = 0xC000;
+    internal const uint RegularFileNodeType = RegularFileType;
     private const uint TypeMask = 0xF000;
     private const int OpenReadOnly = 0;
     private const int OpenReadWrite = 2;
@@ -37,6 +38,10 @@ internal static partial class NativeLinux
     private const int NoSuchFileOrDirectory = 2;
     private const int OperationNotPermitted = 1;
     private const int PermissionDenied = 13;
+    private const int LockExclusive = 2;
+    private const int LockNonBlocking = 4;
+    private const int LockRelease = 8;
+    private const int WouldBlock = 11;
 
     internal static int GetOpenDirectoryFlag(Architecture architecture)
         => architecture switch
@@ -61,6 +66,17 @@ internal static partial class NativeLinux
     [LibraryImport("libc")]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     public static partial uint getgid();
+
+    /// <summary>The name of the account <paramref name="uid"/>, or <see langword="null"/> when the host has none.</summary>
+    public static string? UserName(uint uid)
+    {
+        var entry = getpwuid(uid);
+        return entry == IntPtr.Zero ? null : Marshal.PtrToStringUTF8(Marshal.ReadIntPtr(entry));
+    }
+
+    [LibraryImport("libc")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static partial IntPtr getpwuid(uint uid);
 
     [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
@@ -90,6 +106,14 @@ internal static partial class NativeLinux
     [LibraryImport("libc", EntryPoint = "openat", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static partial int OpenAt(int directoryFileDescriptor, string path, int flags);
+
+    [LibraryImport("libc", EntryPoint = "openat", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static partial int OpenAtWithMode(int directoryFileDescriptor, string path, int flags, uint mode);
+
+    [LibraryImport("libc", EntryPoint = "flock", SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static partial int FLock(int fileDescriptor, int operation);
 
     [LibraryImport("libc", EntryPoint = "unlinkat", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
@@ -243,6 +267,35 @@ internal static partial class NativeLinux
             : throw new InstallerException($"Entry '{name}' could not be opened without following links.");
     }
 
+    /// <summary>
+    /// Opens or creates (mode <c>0600</c>) a lock file through an already-authenticated parent directory without
+    /// following a final link.
+    /// </summary>
+    public static SafeFileHandle OpenLockFileAt(SafeFileHandle parent, string name, string path)
+    {
+        var descriptor = OpenAtWithMode(
+            parent.DangerousGetHandle().ToInt32(), name,
+            OpenReadWrite | OpenCreate | OpenNoFollow | OpenCloseOnExec, 0x180);
+        return descriptor >= 0
+            ? new SafeFileHandle(descriptor, ownsHandle: true)
+            : throw new InstallerException($"Lock '{path}' could not be opened safely.");
+    }
+
+    /// <summary>
+    /// Takes an exclusive <c>flock</c> on the open file description without waiting. Unlike the record locks
+    /// <see cref="FileStream.Lock(long, long)"/> takes, it also excludes a second descriptor in the same process.
+    /// Returns <see langword="false"/> only when another holder has it.
+    /// </summary>
+    public static bool TryLockExclusive(SafeFileHandle handle, string path)
+    {
+        if (FLock(handle.DangerousGetHandle().ToInt32(), LockExclusive | LockNonBlocking) == 0) return true;
+        return Marshal.GetLastPInvokeError() == WouldBlock
+            ? false
+            : throw new InstallerException($"Lock '{path}' could not be taken.");
+    }
+
+    public static void Unlock(SafeFileHandle handle) => _ = FLock(handle.DangerousGetHandle().ToInt32(), LockRelease);
+
     public static UnixFileIdentity GetOpenFileIdentity(SafeFileHandle handle, string path)
     {
         const uint mask = StatxType | StatxMode | StatxLinkCount | StatxUid | StatxGid;
@@ -354,6 +407,12 @@ internal static partial class NativeLinux
         }
     }
 
+    /// <summary>
+    /// Runs after each directory is flushed to disk. Durability tests record the order of directory syncs here;
+    /// production leaves it empty.
+    /// </summary>
+    internal static Action<string> DirectoryFlushed { get; set; } = static _ => { };
+
     public static void FlushDirectory(string path)
     {
         using var descriptor = new SafeFileHandle(
@@ -363,6 +422,7 @@ internal static partial class NativeLinux
         {
             throw new InstallerException($"Directory '{path}' could not be flushed to disk.");
         }
+        DirectoryFlushed(path);
     }
 
     public static bool IsClockSynchronized()

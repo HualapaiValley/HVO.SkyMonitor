@@ -1,0 +1,244 @@
+# Integration Pre-releases
+
+An integration pre-release, `vX.Y.Z-dev.<n>`, publishes a commit on `development/v1` so a real host can install and
+upgrade from it before a release exists ([install contract](../hvo-install-contract.md) section 3,
+[#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309)). It carries the release assets of contract
+section 4. It is a GitHub pre-release, needs no CHANGELOG section, and never moves `latest`.
+
+Final releases and release candidates, `vX.Y.Z` and `vX.Y.Z-rc.<n>` from `main`, follow [releases.md](releases.md).
+A pre-release's version is a pre-release of the product version, `VersionPrefix` in `Directory.Build.props`
+([The product version](releases.md#the-product-version)): `scripts/release:assets` refuses a tag for another version
+in the Build job, before anything is pushed.
+
+## What a pre-release carries
+
+| File | Contents |
+| --- | --- |
+| `hvo-sky-install-linux-x64`, `hvo-sky-install-linux-arm64` | The self-contained installer. `--version` prints `<version>+<commit>` |
+| `hvo-sky-linux-x64`, `hvo-sky-linux-arm64` | The runtime client, `hvo-sky` (asset kind `cli`, [hvo-sky.md](hvo-sky.md), [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317)), self-contained. `--version` prints `<version>+<commit>`. A pre-release tagged before #1317 has none |
+| `skymonitor-cameraagent-<version>-linux-amd64.oci.tar`, `...-linux-arm64.oci.tar` | The CameraAgent image for one platform, as an OCI archive `docker image load` reads |
+| `<catalog version>.bundle.tar.gz` | The approved catalog bundle, under its own version: today `hyg-v4.2-p3-s2-r1.bundle.tar.gz` |
+| `install.sh` | The entry point, with the pre-release's version written in ([install.sh](deployment-installer.md#installsh), [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311)). A pre-release tagged before #1311 has none |
+| `release.json` | The release manifest, RoofController's schema 1 (contract section 4) |
+| `SHA256SUMS` | The SHA-256 of every other file, `release.json` included |
+
+The CameraAgent image is also pushed to `ghcr.io/hualapaivalley/skymonitor-cameraagent:<version>`, for both platforms.
+`release.json` names it by digest, and the offline archives hold exactly that image's platform manifests. No `latest`
+tag is ever pushed.
+
+Every file and the image carry a GitHub build-provenance attestation. It names the workflow
+`.github/workflows/prerelease.yml` at the tag, the commit, and a GitHub-hosted runner. Together with `SHA256SUMS` it is
+the only trust model (contract section 4). There are no signatures and the installer has no embedded keys.
+
+## Cutting a pre-release
+
+Only the owner pushes `v*` tags. Everything after the tag is the workflow's.
+
+1. Pick a commit on `development/v1` whose **Development v1** push run is green, with both **Development v1 /
+   Preflight** and **Development v1 / Build and Unit** successful. The branch head is the usual choice. If its run
+   is still going, wait for it to finish.
+2. Pick the version. `X.Y.Z` is the release the work is heading for, and `<n>` counts that release's pre-releases from
+   1. A version is never reused, even after a failed run.
+3. Create an **annotated** tag on the commit, and push only that tag:
+
+   ```bash
+   git fetch origin development/v1
+   git tag -a v1.2.0-dev.3 <commit> -m 'SkyMonitor 1.2.0-dev.3'
+   git push origin v1.2.0-dev.3
+   ```
+
+4. Follow the **Integration Pre-release** run in Actions. When it is green, the release page shows a pre-release
+   that is not marked latest.
+
+### What the workflow does
+
+The workflow defaults to `contents: read`. Each job asks only for what it needs:
+
+| Job | Runs on | Permissions | What it does |
+| --- | --- | --- | --- |
+| Gate | GitHub-hosted | `contents: read`, `actions: read` | `scripts/release:prerelease-gate` checks several things. The tag is `vX.Y.Z-dev.<n>`, annotated, and names the commit. The commit is the `development/v1` head or behind it. The commit's newest Development v1 push run, and both its required jobs, succeeded. No release has the tag. Every GitHub read is strict (`scripts/lib/github-api.sh`): only a 200 that `gh` completed, with exactly one JSON document of the expected shape, is an answer, and only GitHub's own 404 for the tag means it does not exist. A read that fails, is cut short or is malformed stops the gate, naming the read. Nothing is built if any check fails |
+| Build | GitHub-hosted | `contents: read` | `scripts/release:assets` builds every file from the tagged commit. The image is built once, for both platforms, into one OCI archive, and the offline archives are split from it. Each platform image is labelled with the release's version, commit and created time (`org.opencontainers.image.created`, the gate's commit time), and `release.json` repeats its state contract label (contract sections 1 and 6). `scripts/release:check-image-labels` refuses an archive whose images are labelled otherwise |
+| Draft | GitHub-hosted | `contents`, `packages`, `id-token` and `attestations: write` | The files must name the tagged release and its created time, and `scripts/release:check-image-labels` checks the image archive's labels against `release.json` again. `scripts/release:prerelease-check unreleased` refuses if a release or draft already has the tag. It reads every page of the releases list, and a list it cannot read for certain fails the job rather than count as no release. `scripts/release:push-image` pushes the archive under its version tag, refuses a tag the registry already has for another image, and checks the registry serves the archive's digest. The job then attests the image and every file, verifies the image's attestation, creates a **draft** pre-release with `--latest=false`, and reads its files back |
+| Install and Upgrade (arm64) | `[self-hosted, linux, ARM64, hvo-skymonitor-arm64]` (`github-runner-pi-01`) | `contents: read`, `packages: read` | Tag pushes only. `scripts/test:release-install` checks the draft's files and then works on a throwaway instance. It installs from the arm64 offline archive, moves the instance to a stand-in image, upgrades it from the release by digest from the registry (read first with `docker buildx imagetools inspect`), and checks that a second upgrade is refused. Then it uninstalls. However far it got, it removes the containers, the stand-in image, the release image it loaded or pulled (registered before the install, unless the runner held it already) and its temporary root. The registry login lives in a per-run Docker configuration that is deleted afterwards |
+| Publish | GitHub-hosted | `contents: write`, `attestations: read` | `scripts/release:prerelease-check draft` checks that exactly one release has the tag and that it is still a draft pre-release. The job checks the draft still holds exactly the files that were tested, and that each file's attestation names this workflow, tag and commit. `scripts/release:prerelease-check attested` checks that the image has an attestation of this repository on record: a record counts only when its `repository_id` is this repository's and its `bundle_url` is an absolute HTTPS URL with a host and a path (GitHub's answer carries a null inline bundle beside it), so an empty or malformed record does not, and an answer with inline bundles only stops publication. Then `scripts/release:publish-prerelease` publishes the draft as a pre-release with `--latest=false` and checks `releases/latest` did not move. Every read is strict: only GitHub's own 404 counts as there being no latest release, and a read that fails, is cut short, or is empty, repeated or malformed stops before publishing, or fails the job after it |
+
+The self-hosted runner never holds a token that can write. It runs only after the gate has admitted a commit that is
+already on `development/v1`. The install test uses its own instance ID, container, network and port (55420), and a
+temporary product root. It removes the images it added and leaves alone the ones that were there before.
+
+### When a run fails
+
+- **Gate or build:** nothing was pushed or drafted. Fix the cause on `development/v1`, then tag a new commit with the
+  next `<n>`. The failed tag names no release; whether to delete it is the owner's choice.
+- **Draft, after the image push:** the version tag is in the registry and may name an image no release lists. Cut the
+  next `<n>`. Do not reuse the version, because `release:push-image` never moves a tag to another image.
+- **Install and Upgrade or Publish:** the draft exists and is unpublished. A transient failure, such as the runner
+  being offline, can be retried with **Re-run failed jobs**, which reuses the same files and draft. Otherwise, delete
+  the draft, keeping its tag (`gh release delete vX.Y.Z-dev.<n> --repo HualapaiValley/HVO.SkyMonitor --yes`), and
+  cut the next `<n>`.
+
+A full re-run stops at the draft job while the earlier attempt's draft exists. This is deliberate: a release is never
+replaced.
+
+### Owner settings this relies on
+
+These settings are the owner's; the workflow cannot change them:
+
+- **The `release tags` ruleset** (id 25302808, contract section 2) is active on `refs/tags/v*`. Its creation, update,
+  deletion and non-fast-forward rules admit only repository administrators, so only the owner creates a
+  `vX.Y.Z-dev.<n>` tag, and once pushed a tag cannot be moved. The workflow relies on that: only the owner starts it,
+  and the gate then also requires a green `development/v1` commit.
+- **The arm64 runner's egress** must reach `ghcr.io` and `pkg-containers.githubusercontent.com`. The install test pulls
+  the image from there, so a blocked runner fails every pre-release at that job, before anything is published.
+- **Memory cgroups on every arm64 host**, the runner included. The install test's `cameraagent install` checks the
+  [host prerequisites](deployment-installer.md#host-prerequisites). They refuse a Docker daemon that cannot enforce
+  the CameraAgent memory, CPU and PIDs limits (`docker-memory-limit-unsupported` and its CPU and PIDs companions). A
+  Raspberry Pi's firmware adds `cgroup_disable=memory` to the kernel command line, so a Pi needs a space and
+  `cgroup_enable=memory` appended to the end of the single line in `/boot/firmware/cmdline.txt`, then a reboot.
+  `docker info` must then report `MemoryLimit`, `CpuCfsQuota` and `PidsLimit` as `true`. As of 2026-10-17,
+  `github-runner-pi-01` and `skymonitor01` both meet this. A runner that does not fails every pre-release at the
+  Install and Upgrade job, before anything is published. Once it is fixed, **Re-run failed jobs** completes the run.
+- **`docker buildx` 0.8 or later on every host that installs from the registry**, the arm64 runner included. The
+  install test's upgrade pulls the image by digest, and the installer first reads the image from the registry with
+  `docker buildx imagetools inspect --raw` and `--format '{{json .Image}}'`, which buildx 0.8 added
+  ([Release Install](deployment-installer.md#release-install)). A host without it, or with an older buildx, is refused
+  the registry source before anything is pulled, so a runner without it fails the Install and Upgrade job before
+  anything is published. The job runs with a per-run `DOCKER_CONFIG`, so buildx must be installed system-wide (for
+  example the `docker-buildx-plugin` package, in `/usr/libexec/docker/cli-plugins`), not only under
+  `~/.docker/cli-plugins`. As of 2026-10-18, `github-runner-pi-01` has `docker-buildx-plugin` 0.36.1 system-wide
+  (`docker buildx version` works as `roys` and as the runner's `actions` user) and `skymonitor01` has 0.38.0. The
+  default archive source does not need buildx.
+- **The `skymonitor-cameraagent` package's visibility.** A new GHCR package is private, so a host must sign in to
+  `ghcr.io` before it can pull by digest. The offline archives need no sign-in.
+
+## Installing a pre-release on skymonitor01
+
+These steps install or upgrade the Raspberry Pi `skymonitor01` (linux-arm64) from a published pre-release. Follow the
+operations manual's change-management rules for a live host. An upgrade pauses capture while the image changes.
+
+1. Download the arm64 files and the catalog into an owner-only folder:
+
+   ```bash
+   version=1.2.0-dev.3
+   release="$HOME/hvo-releases/$version"
+   mkdir -p -m 700 "$release"
+   gh release download "v$version" --repo HualapaiValley/HVO.SkyMonitor --dir "$release" \
+     --pattern release.json --pattern SHA256SUMS --pattern hvo-sky-install-linux-arm64 --pattern install.sh \
+     --pattern "skymonitor-cameraagent-$version-linux-arm64.oci.tar" --pattern '*.bundle.tar.gz'
+   ```
+
+2. Check the files. `--ignore-missing` skips the files you did not download:
+
+   ```bash
+   cd "$release"
+   sha256sum --check --strict --ignore-missing SHA256SUMS
+   for file in *; do
+     gh attestation verify "$file" --repo HualapaiValley/HVO.SkyMonitor \
+       --cert-identity "https://github.com/HualapaiValley/HVO.SkyMonitor/.github/workflows/prerelease.yml@refs/tags/v$version" \
+       --deny-self-hosted-runners
+   done
+   chmod 755 hvo-sky-install-linux-arm64
+   ./hvo-sky-install-linux-arm64 --version    # 1.2.0-dev.3+<commit>; compare the commit with release.json
+   ```
+
+   If `gh` is not on the host, download and verify on an admin workstation and copy the folder over. Run the
+   `sha256sum` check again on the host.
+
+   The installer unpacks its SQLite library under `~/.net`, or `$DOTNET_BUNDLE_EXTRACT_BASE_DIR` when set, each time it
+   starts, so run it as a user whose home only that user can write
+   ([host prerequisites](deployment-installer.md#host-prerequisites)).
+
+3. Extract the catalog bundle:
+
+   ```bash
+   mkdir -m 700 catalog
+   tar -xzf hyg-v4.2-p3-s2-r1.bundle.tar.gz -C catalog
+   ```
+
+4. Install, or upgrade the existing instance. Use the release's own installer. `--release` takes the folder's
+   absolute path:
+
+   ```bash
+   # A new instance, from the offline archive (the default image source).
+   ./hvo-sky-install-linux-arm64 cameraagent install \
+     --release "$release" \
+     --catalog-bundle "$release/catalog/hyg-v4.2-p3-s2-r1.bundle" \
+     --friendly-name "SkyMonitor 01" --bind-address 127.0.0.1 --port 5130 \
+     --latitude 35.2 --longitude -114.1 --elevation 800 --time-zone America/Phoenix
+
+   # The installed instance. Upgrade notes print before anything changes.
+   ./hvo-sky-install-linux-arm64 cameraagent upgrade --instance-id <uuid> --release "$release"
+   ```
+
+   Or let the release's `install.sh` check the host first, verify the installer and the catalog again, and add
+   `--release "$release" --no-download` and `--catalog-bundle` itself ([install.sh](deployment-installer.md#installsh)).
+   It takes the release only from a folder that you alone can change, so take the group's and others' write access
+   away first (a umask of `002` leaves the downloaded files group-writable):
+
+   ```bash
+   chmod -R go-w "$release"
+   bash install.sh --from "$release" cameraagent install \
+     --friendly-name "SkyMonitor 01" --bind-address 127.0.0.1 --port 5130 ...
+   ```
+
+   Without a downloaded folder, `curl -fsSL https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v$version/install.sh
+   | bash -s -- cameraagent install ...` downloads the release's small files itself and pulls the image by digest, which
+   needs a `ghcr.io` sign-in while the package is private and `docker buildx` 0.8 or later.
+
+   To pull the image by digest instead of loading the offline archive, add `--image-source registry`. The host then
+   needs `docker buildx` 0.8 or later (`skymonitor01` has 0.38.0), which the installer uses to read the image from the
+   registry before it pulls anything, and must be signed in to `ghcr.io` while the package is private.
+
+5. Check the result, and keep the rollback command at hand:
+
+   ```bash
+   ./hvo-sky-install-linux-arm64 status --instance-id <uuid>
+   # The release record, under the product root (/var/lib/hvo-sky by default):
+   cat /var/lib/hvo-sky/cameraagents/<uuid>/state/deployment/image-distribution.json
+   # Only if the upgrade has to be undone:
+   ./hvo-sky-install-linux-arm64 cameraagent rollback --instance-id <uuid>
+   ```
+
+An instance installed from an `--image-ref` has no release record. Its first upgrade from a release shows every
+upgrade note up to the target and says that the installed version is not recorded. From then on, the installer
+refuses an upgrade to an older version: only `rollback` goes back.
+
+The installer refuses a release folder whose files disagree, and changes nothing when it does. It refuses when:
+
+- `release.json` is not the file `SHA256SUMS` lists;
+- the two files list different assets or SHA-256s;
+- an offline archive differs from the size or SHA-256 they give;
+- the release does not publish this host's architecture;
+- the image Docker resolves is not one the release names, or is not labelled with the release's version, commit and
+  created time.
+
+[deployment-installer.md](deployment-installer.md#release-install) lists every check.
+
+## Building a release locally
+
+`scripts/release:assets` is what the workflow runs. A local build writes the same files without pushing or publishing
+anything. It needs a clean checkout at the commit it builds.
+
+```bash
+scripts/release:assets --version "$(scripts/release:version)-dev.0" --platforms linux/amd64 --builder default \
+  --catalog-bundle "$HVO_PRODUCTION_CATALOG_BUNDLE" \
+  --output /tmp/hvo-release --image-oci /tmp/hvo-release.oci.tar
+scripts/test:release-install --release /tmp/hvo-release --upgrade-source archive
+```
+
+A single-platform build holds one offline archive, and its `release.json` names that platform's manifest digest, because
+buildx writes no index over a single platform. A build for both platforms needs QEMU or an arm64 builder. To test a
+digest install, start a throwaway registry on this host and rebuild into a fresh folder with
+`--image-repository localhost:<port>/hualapaivalley/skymonitor-cameraagent`. Push that build's archive with
+`scripts/release:push-image --insecure <archive> localhost:<port>/hualapaivalley/skymonitor-cameraagent:<version>`,
+then run `scripts/test:release-install --install-source registry --upgrade-source registry` against it.
+
+`scripts/test:release-scripts` proves the gate's, the checks', the publish script's and the push script's decisions with
+fake `gh` and `skopeo` commands, including GitHub reads that fail after a complete 200, 404s that are not GitHub's, and
+empty, repeated or malformed answers. It also runs `scripts/test:install-sh`, which proves `install.sh` with fake
+commands of its own.
+CI's Quality job always runs it. **Development v1 / Preflight** runs it when the classifier's `release_scripts` output
+selects it: on a pull request that changes the release scripts or the libraries they source, `install.sh` or its tests,
+`.github/workflows/prerelease.yml`, the release tool,
+or the Preflight wiring that runs it (`development-v1.yml`, `scripts/ci:classify`), on every push, and whenever the
+classification failed or is incomplete ([ci-pipeline.md](ci-pipeline.md#release-script-tests)).

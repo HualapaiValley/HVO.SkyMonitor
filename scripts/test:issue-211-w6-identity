@@ -342,7 +342,7 @@ recipe_list_matches() {
     # From the marker line to the closing bracket, drop everything up to and including
     # the marker text itself (a C# `string[]` on the marker line would otherwise be read
     # as an empty list), then take the first bracketed list.
-    extracted="$(sed -n "/$2/,/\]/p" "$file" | sed "1s/.*$2//" | tr -d '\n' | grep -o '\[[^]]*\]' | head -1 | jq -c 'map(.)' 2>/dev/null)" || return 1
+    extracted="$(sed -n "/$2/,/\]/p" "$file" | sed "1s/.*$2//" | tr -d '\n' | grep -o '\[[^]]*\]' | sed -n '1p' | jq -c 'map(.)' 2>/dev/null)" || return 1
     [[ "$extracted" == "$REPLAY_RECIPE_NODES" ]]
 }
 recipe_list_matches "$REPLAY_PROGRAM" '^def recipe_backed_nodes' || fail 'issue-719-replay-evidence.jq recipe-backed node list drifted'

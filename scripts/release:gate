@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Decides whether a pushed tag may become a final release, vX.Y.Z, or a release candidate, vX.Y.Z-rc.N (install
+# contract section 3, #1310), before anything is built. It needs gh, signed in or with GH_TOKEN (contents and actions
+# read), and jq, and runs in a checkout of the tagged commit.
+#
+#   scripts/release:gate <tag> <commit>
+#
+# Every one of these must hold, or it fails naming the first that does not:
+#   - the tag names the product version, the VersionPrefix in Directory.Build.props (scripts/release:version), as
+#     vX.Y.Z or vX.Y.Z-rc.N; it is an annotated tag, and it names <commit>;
+#   - <commit> is on main, the release branch: its head, or a commit before it;
+#   - a final release has its CHANGELOG.md section and its upgrade notes (scripts/release:notes);
+#   - no published release has the tag yet (the drafting job checks drafts too, with a token that can see them);
+#   - the production-release environment requires a reviewer, so publishing will wait for approval
+#     (scripts/release:check-environment).
+# Every read is strict (scripts/lib/github-api.sh): only GitHub's own 404 for the tag means it does not exist, and a
+# read that fails, is cut short, or answers anything but one JSON document of the expected shape fails the gate naming
+# what it could not read. It prints version=, tag=, commit=, created= and prerelease= lines, for $GITHUB_OUTPUT.
+set -euo pipefail
+
+fail() {
+    printf '::error::%s\n' "$*" >&2
+    exit 1
+}
+
+[[ $# -eq 2 ]] || fail "usage: scripts/release:gate <tag> <commit>"
+tag="$1"
+commit="$2"
+repository="${GITHUB_REPOSITORY:-HualapaiValley/HVO.SkyMonitor}"
+branch=main
+environment=production-release
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/github-api.sh
+source "$repo_root/scripts/lib/github-api.sh"
+
+# One product version (install contract section 1): the tag names the VersionPrefix of the commit it tags.
+version="$("$repo_root/scripts/release:version" --tag "$tag" 2>&1)" || fail "${version#release:version: }"
+[[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail "$commit is not a 40-character commit ID."
+prerelease=false
+[[ "$version" != *-* ]] || prerelease=true
+
+# The tag as the repository holds it: annotated (install contract section 3), and naming this commit.
+# Only GitHub's own 404 means the tag does not exist; any other failed read is reported as one.
+read_status=0
+reference="$(github_api_read --absent-ok "the tag $tag" \
+    'type == "object" and (.object | type == "object") and (.object.type | type == "string")
+     and (.object.sha | type == "string" and test("\\A[0-9a-f]{40}\\z"))' \
+    "repos/$repository/git/ref/tags/$tag")" || read_status=$?
+case "$read_status" in
+    0) ;;
+    "$GITHUB_API_ABSENT") fail "The tag $tag does not exist." ;;
+    *) exit 1 ;;
+esac
+[[ "$(jq -r '.object.type' <<<"$reference")" == tag ]] ||
+    fail "$tag is a lightweight tag; cut a release with an annotated tag: git tag -a $tag -m 'SkyMonitor $version'."
+annotated="$(github_api_read "the annotated tag $tag" \
+    'type == "object" and (.object | type == "object") and (.object.type | type == "string") and (.object.sha | type == "string")' \
+    "repos/$repository/git/tags/$(jq -r '.object.sha' <<<"$reference")")" || exit 1
+tagged="$(jq -r '.object.sha + " " + .object.type' <<<"$annotated")"
+[[ "$tagged" == "$commit commit" ]] || fail "$tag names ${tagged%% *}, not the commit $commit this run is for."
+
+# On main: the branch's head, or behind it.
+comparison="$(github_api_read "the comparison of $commit with $branch" \
+    'type == "object" and (.status | type == "string")' "repos/$repository/compare/$branch...$commit")" || exit 1
+status="$(jq -r '.status' <<<"$comparison")"
+[[ "$status" == identical || "$status" == behind ]] ||
+    fail "$commit is not on $branch (compared with it, it is $status). Tag a commit on $branch."
+
+# A final release's notes (install contract section 3): its CHANGELOG section and its upgrade notes.
+notes_error="$("$repo_root/scripts/release:notes" --check "$version" 2>&1)" || fail "${notes_error#release:notes: }"
+
+# Nothing published under the tag yet: a release is never replaced. Every page is read; a list that cannot be read
+# for certain never counts as there being no release.
+releases="$(github_api_read_releases "$repository")" || exit 1
+[[ "$(jq --arg tag "$tag" '[.[] | select(.tag_name == $tag)] | length' <<<"$releases")" == 0 ]] ||
+    fail "A release for $tag already exists; a release is never replaced."
+
+# Publishing waits for a person: the publish job's environment must require a reviewer, or it would run unapproved.
+"$repo_root/scripts/release:check-environment" "$environment" >&2
+
+created="$(github_api_read "the commit $commit" \
+    'type == "object" and (.commit | type == "object") and (.commit.committer | type == "object")
+     and (.commit.committer.date | type == "string")' \
+    "repos/$repository/commits/$commit")" || exit 1
+created="$(jq -r '.commit.committer.date' <<<"$created")"
+[[ "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || fail "$commit has no committer time."
+printf 'version=%s\ntag=%s\ncommit=%s\ncreated=%s\nprerelease=%s\n' "$version" "$tag" "$commit" "$created" "$prerelease"

@@ -1,0 +1,114 @@
+namespace HVO.SkyMonitor.CameraAgent.Tests.Deployment;
+
+/// <summary>
+/// Keeps the CameraAgent image's build identity in its published assemblies and labels. The build context excludes
+/// <c>.git</c>, so the SDK cannot derive the source revision; before #1297 an image built from a known commit
+/// reported <c>1.0.0</c> on the Software page, <c>vunknown</c> in telemetry, and the base image's version label.
+/// </summary>
+[TestClass]
+[TestCategory("Unit")]
+public sealed class CameraAgentImageBuildIdentityTests
+{
+    // A build given a version passes it as -p:Version, which Directory.Build.targets checks against the product version
+    // (#1310); one given none is the product's development build.
+    private const string StampArguments =
+        "${HVO_VERSION:+\"-p:Version=${HVO_VERSION}\"} \"-p:SourceRevisionId=${HVO_SOURCE_REVISION}\"";
+
+    // Each stage inherits the one declared default instead of restating it. The release's created time has no default:
+    // only a release build is dated.
+    private static readonly string[] StageIdentityDeclarations =
+        ["ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION", "ARG HVO_VERSION", "ARG HVO_SOURCE_REVISION", "ARG HVO_CREATED"];
+
+    [TestMethod]
+    public void Dockerfile_DeclaresNoVersionAndAnUnknownRevisionByDefault()
+    {
+        var instructions = ReadInstructions();
+        var firstStage = instructions.FindIndex(static instruction => instruction.StartsWith("FROM ", StringComparison.Ordinal));
+        var global = instructions[..firstStage];
+
+        // No version is the product version's development build (Directory.Build.props), not a version of its own.
+        CollectionAssert.Contains(global, "ARG HVO_VERSION=\"\"");
+        CollectionAssert.Contains(global, "ARG HVO_SOURCE_REVISION=unknown");
+        CollectionAssert.AreEqual(
+            StageIdentityDeclarations,
+            instructions[firstStage..].Where(static instruction => instruction.StartsWith("ARG HVO_", StringComparison.Ordinal)).ToArray());
+    }
+
+    [TestMethod]
+    public void Dockerfile_StampsEveryPublishedOutputAfterTheCachedRestoreLayers()
+    {
+        var instructions = ReadInstructions();
+        var runtimeStage = instructions.FindLastIndex(static instruction => instruction.StartsWith("FROM ", StringComparison.Ordinal));
+        var build = instructions[..runtimeStage];
+        var publishes = build
+            .Select(static (instruction, index) => (instruction, index))
+            .Where(static item => item.instruction.Contains("dotnet publish ", StringComparison.Ordinal))
+            .ToArray();
+        var identity = build.IndexOf("ARG HVO_SOURCE_REVISION");
+
+        Assert.HasCount(2, publishes);
+        foreach (var (instruction, _) in publishes)
+        {
+            StringAssert.Contains(instruction, StampArguments, StringComparison.Ordinal);
+            Assert.DoesNotContain("InformationalVersion", instruction, StringComparison.Ordinal);
+        }
+        // The product version and its check are in the build context the publishes run in.
+        CollectionAssert.Contains(build, "COPY Directory.Build.props ./");
+        CollectionAssert.Contains(build, "COPY Directory.Build.targets ./");
+        // A change of revision alone must keep reusing restore and the source copy.
+        Assert.IsGreaterThan(build.IndexOf("COPY src/ src/"), identity);
+        Assert.IsGreaterThan(build.FindLastIndex(static instruction => instruction.StartsWith("RUN dotnet restore ", StringComparison.Ordinal)), identity);
+        Assert.IsLessThan(publishes[0].index, identity);
+    }
+
+    [TestMethod]
+    public void Dockerfile_LabelsTheVersionExplicitlyAfterThePayload()
+    {
+        var instructions = ReadInstructions();
+        var runtimeStage = instructions.FindLastIndex(static instruction => instruction.StartsWith("FROM ", StringComparison.Ordinal));
+        var runtime = instructions[runtimeStage..];
+        var label = runtime.Single(static instruction => instruction.StartsWith("LABEL ", StringComparison.Ordinal));
+
+        StringAssert.Contains(label, "org.opencontainers.image.version=\"${HVO_VERSION}\"", StringComparison.Ordinal);
+        StringAssert.Contains(label, "org.opencontainers.image.revision=\"${HVO_SOURCE_REVISION}\"", StringComparison.Ordinal);
+        // The release's created time (install contract section 1), never the base image's.
+        StringAssert.Contains(label, "org.opencontainers.image.created=\"${HVO_CREATED}\"", StringComparison.Ordinal);
+        // The package install and payload copy stay cached across revisions and release times.
+        var payload = runtime.FindLastIndex(static instruction => instruction.StartsWith("COPY --from=build ", StringComparison.Ordinal));
+        Assert.IsGreaterThan(payload, runtime.IndexOf("ARG HVO_SOURCE_REVISION"));
+        Assert.IsGreaterThan(payload, runtime.IndexOf("ARG HVO_CREATED"));
+    }
+
+    /// <summary>Reads the Dockerfile as logical instructions, joining continuation lines and dropping comments.</summary>
+    private static List<string> ReadInstructions()
+    {
+        var instructions = new List<string>();
+        var current = string.Empty;
+        foreach (var raw in File.ReadLines(Path.Combine(RepositoryRoot(), "src", "HVO.SkyMonitor.CameraAgent", "Dockerfile")))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0 || line.StartsWith('#'))
+            {
+                continue;
+            }
+            if (line.EndsWith('\\'))
+            {
+                current += line[..^1].TrimEnd() + " ";
+                continue;
+            }
+            instructions.Add(current + line);
+            current = string.Empty;
+        }
+        return instructions;
+    }
+
+    private static string RepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "HVO.SkyMonitor.v9.slnx")))
+        {
+            directory = directory.Parent;
+        }
+        return directory?.FullName ?? throw new DirectoryNotFoundException("Repository root was not found.");
+    }
+}

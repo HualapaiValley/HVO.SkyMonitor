@@ -17,7 +17,10 @@ virtual-first requirements, and detailed implementation plan remain in
 
 For a repository-independent local VirtualSky CameraAgent installation from
 verified local/offline assets, see the
-[`hvo-skymonitor` installer runbook](docs/runbooks/deployment-installer.md).
+[`hvo-sky-install` installer runbook](docs/runbooks/deployment-installer.md).
+Installation and release are being brought to the shared
+[HVO product installation and release contract](docs/hvo-install-contract.md)
+under epic [#1318](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1318).
 
 ## Development Environment
 

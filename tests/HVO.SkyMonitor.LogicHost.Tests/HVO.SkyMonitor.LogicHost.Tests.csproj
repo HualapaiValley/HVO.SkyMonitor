@@ -14,6 +14,7 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.LogicHost\HVO.SkyMonitor.LogicHost.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.ProcessingRunner.Contracts\HVO.SkyMonitor.ProcessingRunner.Contracts.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
+    <Compile Include="..\HVO.SkyMonitor.LogicHost.IntegrationTests\Infrastructure\DerivativeResetEvidence.cs" Link="Services\DerivativeResetEvidence.cs" />
     <Compile Include="..\TestSettings\MSTestSettings.cs" Link="MSTestSettings.cs" />
     <Compile Include="..\HVO.SkyMonitor.LogicHost.IntegrationTests\Infrastructure\P5TrialDiagnostics.cs" Link="Services\P5TrialDiagnostics.cs" />
     <!-- The universal object-store conformance suite is shared with the Integration project so the filesystem

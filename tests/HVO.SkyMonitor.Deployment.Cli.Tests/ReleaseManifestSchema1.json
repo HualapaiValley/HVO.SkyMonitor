@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "product": "HVO SkyMonitor",
+  "version": "1.2.0",
+  "tag": "v1.2.0",
+  "prerelease": false,
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "created": "2026-11-02T18:00:00Z",
+  "repository": "https://github.com/HualapaiValley/HVO.SkyMonitor",
+  "images": {
+    "cameraAgent": {
+      "repository": "ghcr.io/hualapaivalley/skymonitor-cameraagent",
+      "tag": "1.2.0",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "reference": "ghcr.io/hualapaivalley/skymonitor-cameraagent:1.2.0@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "platforms": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "offlineArchives": [
+        {
+          "name": "skymonitor-cameraagent-1.2.0-linux-arm64.oci.tar",
+          "platform": "linux/arm64",
+          "size": 734003200,
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "manifestDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "configDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        }
+      ]
+    }
+  },
+  "stateContracts": {
+    "cameraAgent": {
+      "identity": { "writes": 1, "reads": { "min": 1, "max": 1 } },
+      "rawIngress": { "writes": 15, "reads": { "min": 13, "max": 15 } }
+    }
+  },
+  "upgradeNotes": [
+    {
+      "version": "1.0.0",
+      "text": "1.0.0 is the first release, so there is no earlier release to upgrade from."
+    },
+    {
+      "version": "1.1.0",
+      "text": "Nothing to do by hand.\r\nUpgrade with `hvo-sky-install upgrade`."
+    },
+    {
+      "version": "1.2.0",
+      "text": "Read the Camera & rig page after upgrading.\n\nThe state contract is unchanged, so rollback is a swap."
+    }
+  ],
+  "assets": [
+    {
+      "name": "hvo-sky-install-linux-arm64",
+      "kind": "installer",
+      "platform": "linux-arm64",
+      "size": 49088133,
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "name": "install.sh",
+      "kind": "install-script",
+      "platform": null,
+      "size": 9000,
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "name": "skymonitor-cameraagent-1.2.0-linux-arm64.oci.tar",
+      "kind": "image-archive",
+      "platform": "linux-arm64",
+      "size": 734003200,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "name": "hyg-v4.2-p3-s2-r1.bundle.tar.gz",
+      "kind": "catalog",
+      "platform": null,
+      "size": 31000000,
+      "sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+      "files": {
+        "manifest.json": "8888888888888888888888888888888888888888888888888888888888888888"
+      }
+    }
+  ]
+}

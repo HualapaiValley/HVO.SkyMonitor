@@ -66,6 +66,42 @@ internal static class CatalogInstaller
         }
     }
 
+    /// <summary>
+    /// Admits a catalog bundle without writing anything: its exact file set, its package version, and the bundle itself
+    /// resolved where it lies with every check the snapshot resolver makes on an installed version, the manifest's
+    /// version and fields included. A run admits its bundle this way before its first write and a plan the same way
+    /// (#1315). Returns the identity the bundle would have installed in <paramref name="installRoot"/>.
+    /// </summary>
+    public static CatalogInstallationIdentity Admit(string bundlePath, string installRoot)
+    {
+        var specification = ProductionCatalog.ReadBundleSpecification(bundlePath);
+        ValidateBundleEntries(bundlePath, specification);
+        var packageVersion = ReadPackageVersion(bundlePath, specification);
+        try
+        {
+            var resolved = CatalogSnapshotResolver.ResolveDirectory(
+                bundlePath, ProductionCatalog.ResolverOptions(bundlePath, specification.CatalogId, packageVersion));
+            return ProductionCatalog.ToIdentity(resolved, installRoot);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            throw new InstallerException("The catalog bundle could not be installed or validated.", exception);
+        }
+    }
+
+    /// <summary>
+    /// The identity <see cref="Install"/> would give the bundle in <paramref name="installRoot"/>, read without writing
+    /// anything, for a plan (#1315): the bundle is admitted as a run admits it (<see cref="Admit"/>), and a version
+    /// already installed there is validated as it is.
+    /// </summary>
+    public static CatalogInstallationIdentity Inspect(string bundlePath, string installRoot)
+    {
+        var admitted = Admit(bundlePath, installRoot);
+        return Directory.Exists(Path.Combine(installRoot, "versions", admitted.PackageVersion))
+            ? ValidateExisting(bundlePath, installRoot)
+            : admitted;
+    }
+
     public static CatalogInstallationIdentity ValidateExisting(string bundlePath, string installRoot)
     {
         var specification = ProductionCatalog.ReadBundleSpecification(bundlePath);
@@ -226,6 +262,8 @@ internal static class CatalogInstaller
         {
             document = JsonDocument.Parse(stream, new JsonDocumentOptions
             {
+                // The snapshot resolver refuses duplicate properties too; this read decides a path before it runs.
+                AllowDuplicateProperties = false,
                 AllowTrailingCommas = false,
                 CommentHandling = JsonCommentHandling.Disallow,
                 MaxDepth = 32

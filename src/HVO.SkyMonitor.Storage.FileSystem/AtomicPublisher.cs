@@ -34,11 +34,27 @@ public static class AtomicPublisher
     /// the complete content; the stream is flushed to the medium after it returns.
     /// Returns the canonical absolute path of the published file.
     /// </summary>
+    public static Task<string> PublishAsync(
+        PhysicalRoot root,
+        string relativePath,
+        PublishMode mode,
+        Func<Stream, CancellationToken, Task> write,
+        CancellationToken cancellationToken)
+        => PublishAsync(root, relativePath, mode, write, null, cancellationToken);
+
+    /// <summary>
+    /// Publish with an observer at the file-flushed, renamed, and directory-synced boundaries.
+    /// The observer may throw to interrupt publication. Only this invocation's temporary is
+    /// cleaned up; a file already renamed remains owned by the caller's recovery policy.
+    /// The file-flushed callback runs before closing the temporary, and the renamed callback
+    /// runs before post-rename validation and directory synchronization.
+    /// </summary>
     public static async Task<string> PublishAsync(
         PhysicalRoot root,
         string relativePath,
         PublishMode mode,
         Func<Stream, CancellationToken, Task> write,
+        Action<PublicationPhase>? observe,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(root);
@@ -64,6 +80,7 @@ public static class AtomicPublisher
                 await write(stream, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 DurableSync.File(stream.SafeFileHandle, temporaryPath);
+                observe?.Invoke(PublicationPhase.FileFlushed);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or OperationCanceledException)
             {
@@ -71,16 +88,11 @@ public static class AtomicPublisher
             }
 
             root.Verify(directory, "publish-rename");
-            try
-            {
-                File.Move(temporaryPath, finalPath, overwrite: mode == PublishMode.Replace);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                throw FileSystemFaultException.From("publish-rename", relativePath, exception);
-            }
+            Rename(temporaryPath, finalPath, mode, "publish-rename", relativePath);
+            observe?.Invoke(PublicationPhase.Renamed);
             root.Verify(finalPath, "publish-rename");
             DurableSync.Directory(directory);
+            observe?.Invoke(PublicationPhase.DirectorySynced);
             return finalPath;
         }
         catch
@@ -91,15 +103,52 @@ public static class AtomicPublisher
     }
 
     /// <summary>
+    /// Rename a caller-prepared file in the same directory, without flushing files or directories
+    /// and without cleaning up on failure. The caller owns the temporary's creation, durable
+    /// flush, access mode, publication preconditions and subsequent directory synchronization.
+    /// This permits grouped publication and last-moment preconditions without imposing policy.
+    /// </summary>
+    public static void PublishPrepared(
+        PhysicalRoot root,
+        string temporaryPath,
+        string finalPath,
+        PublishMode mode)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        root.Verify(temporaryPath, "publish-prepared");
+        root.Verify(finalPath, "publish-prepared");
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (!string.Equals(
+                Path.GetDirectoryName(Path.GetFullPath(temporaryPath)),
+                Path.GetDirectoryName(Path.GetFullPath(finalPath)),
+                comparison))
+        {
+            throw new FileSystemFaultException(FileSystemFaultKind.Containment, "publish-prepared", finalPath);
+        }
+        Rename(temporaryPath, finalPath, mode, "publish-prepared", finalPath);
+    }
+
+    private static void Rename(string temporaryPath, string finalPath, PublishMode mode, string operation, string diagnosticPath)
+    {
+        try
+        {
+            File.Move(temporaryPath, finalPath, overwrite: mode == PublishMode.Replace);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw FileSystemFaultException.From(operation, diagnosticPath, exception);
+        }
+    }
+
+    /// <summary>
     /// Create <paramref name="absoluteDirectory"/> and any missing ancestors inside the root,
-    /// verifying containment, and flush the created chain so the entries are durable. Existing
-    /// directories are left as found.
+    /// verifying containment, and flush the chain so the entries are durable. Existing
+    /// directories are synchronized too: visibility does not prove a prior attempt synced them.
     /// </summary>
     public static void EnsureDirectory(PhysicalRoot root, string absoluteDirectory)
     {
         ArgumentNullException.ThrowIfNull(root);
         root.Verify(absoluteDirectory, "ensure-directory");
-        var existed = Directory.Exists(absoluteDirectory);
         try
         {
             Directory.CreateDirectory(absoluteDirectory);
@@ -109,10 +158,7 @@ public static class AtomicPublisher
             throw FileSystemFaultException.From("ensure-directory", absoluteDirectory, exception);
         }
         root.Verify(absoluteDirectory, "ensure-directory");
-        if (!existed)
-        {
-            DurableSync.DirectoryChain(root, absoluteDirectory);
-        }
+        DurableSync.DirectoryChain(root, absoluteDirectory);
     }
 
     /// <summary>
@@ -175,6 +221,19 @@ public static class AtomicPublisher
             return false;
         }
     }
+}
+
+/// <summary>Observable filesystem boundaries, without any host publication or recovery policy.</summary>
+public enum PublicationPhase
+{
+    /// <summary>The complete temporary has been flushed to its medium and remains open.</summary>
+    FileFlushed,
+
+    /// <summary>The temporary has been renamed; directory durability is not yet confirmed.</summary>
+    Renamed,
+
+    /// <summary>Directory synchronization completed (a no-op on unsupported platforms).</summary>
+    DirectorySynced
 }
 
 /// <summary>Whether a publication may replace an existing target.</summary>

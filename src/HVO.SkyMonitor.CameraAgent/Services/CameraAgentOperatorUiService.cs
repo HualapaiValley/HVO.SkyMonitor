@@ -276,6 +276,12 @@ internal interface ICameraAgentOperatorUiService
         IReadOnlyList<string> enabledLayerIdentitySha256,
         CancellationToken cancellationToken);
 
+    ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveFrozenLayeredPresentationAsync(
+        Guid captureId, string manifestIdentitySha256,
+        IReadOnlyList<string> enabledLayerIdentitySha256, CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Failure(
+            OperatorUiResultKind.Conflict, "The selected composition is unavailable."));
+
     ValueTask<OperatorUiResult<CameraAgentCurrentSkyView>> GetCurrentSkyViewAsync(CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<CameraAgentCaptureTransientView>> GetCaptureTransientAsync(
@@ -1092,10 +1098,21 @@ internal sealed class CameraAgentOperatorUiService(
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
-    public async ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveLayeredPresentationAsync(
+    public ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveLayeredPresentationAsync(
         Guid captureId,
         IReadOnlyList<string> enabledLayerIdentitySha256,
         CancellationToken cancellationToken)
+        => SavePresentationCoreAsync(captureId, null, enabledLayerIdentitySha256, cancellationToken);
+
+    public ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveFrozenLayeredPresentationAsync(
+        Guid captureId, string manifestIdentitySha256,
+        IReadOnlyList<string> enabledLayerIdentitySha256, CancellationToken cancellationToken)
+        => SavePresentationCoreAsync(captureId, manifestIdentitySha256, enabledLayerIdentitySha256, cancellationToken);
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
+    private async ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SavePresentationCoreAsync(
+        Guid captureId, string? manifestIdentitySha256,
+        IReadOnlyList<string> enabledLayerIdentitySha256, CancellationToken cancellationToken)
     {
         var actor = await GetAuthorizedActorAsync().ConfigureAwait(false);
         if (actor is null)
@@ -1104,8 +1121,10 @@ internal sealed class CameraAgentOperatorUiService(
         }
         try
         {
-            var result = await presentationMaterializer.SaveAsync(
-                captureId, enabledLayerIdentitySha256, actor, cancellationToken).ConfigureAwait(false);
+            var result = manifestIdentitySha256 is null
+                ? await presentationMaterializer.SaveAsync(captureId, enabledLayerIdentitySha256, actor, cancellationToken).ConfigureAwait(false)
+                : await presentationMaterializer.SaveFrozenAsync(captureId, manifestIdentitySha256,
+                    enabledLayerIdentitySha256, actor, cancellationToken).ConfigureAwait(false);
             return result.Status == CameraAgentPresentationMaterializationStatus.Saved && result.Receipt is { } receipt
                 ? OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Success(receipt)
                 : OperatorUiResult<CameraAgentPresentationMaterializationReceipt>.Failure(

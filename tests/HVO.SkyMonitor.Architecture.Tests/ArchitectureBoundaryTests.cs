@@ -21,13 +21,20 @@ public sealed class ArchitectureBoundaryTests
     private const string CameraAgentZwo = "HVO.SkyMonitor.CameraAgent.Modules.Zwo";
     private const string CameraAgentReplay = "HVO.SkyMonitor.CameraAgent.Replay";
     private const string CameraAgentReplayRunner = "HVO.SkyMonitor.CameraAgent.ReplayRunner";
+
+    // hvo-sky (#1317), CameraAgent's runtime client: a separate executable that reaches CameraAgent only over its HTTP
+    // operations API, so it references no host project; its terminal interface, 'hvo-sky ui', draws with TerminalUi.
+    private const string CameraAgentCli = "HVO.SkyMonitor.CameraAgent.Cli";
     private const string ProcessingRunnerContracts = "HVO.SkyMonitor.ProcessingRunner.Contracts";
     private const string ProcessingRunner = "HVO.SkyMonitor.ProcessingRunner";
     private const string CameraAgent = "HVO.SkyMonitor.CameraAgent";
     private const string LogicHost = "HVO.SkyMonitor.LogicHost";
     private const string DeploymentContracts = "HVO.SkyMonitor.Deployment.Contracts";
-    private const string DeploymentDistribution = "HVO.SkyMonitor.Deployment.Distribution";
     private const string DeploymentCli = "HVO.SkyMonitor.Deployment.Cli";
+
+    // What the terminal programs share (#1317): HVO Dark for Terminal.Gui, used by the installer's wizard and hvo-sky.
+    // Its dependency rule is asserted by TerminalUiBoundaryIsNarrow.
+    private const string TerminalUi = "HVO.SkyMonitor.TerminalUi";
 
     // Host-neutral filesystem primitives (#592): mechanisms only, references nothing, consumed
     // by the LogicHost filesystem provider (#585) and later CameraAgent.Common (#587). Its
@@ -71,13 +78,16 @@ public sealed class ArchitectureBoundaryTests
             [CameraAgentZwo] = Set(AgentCore),
             [CameraAgentReplay] = Set(AgentCore, Processing),
             [CameraAgentReplayRunner] = Set(Processing, CameraAgentReplay),
+            [CameraAgentCli] = Set(TerminalUi),
             [ProcessingRunnerContracts] = Set(AgentCore, Processing),
             [ProcessingRunner] = Set(AgentCore, Processing, ProcessingRunnerContracts),
             [CameraAgent] = Set(CameraAgentCommon, CameraAgentZwo, Catalog, Common),
             [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, ProcessingRunnerContracts, FleetContracts, Catalog, Common, StorageFileSystem),
             [DeploymentContracts] = Set(),
-            [DeploymentDistribution] = Set(DeploymentContracts),
-            [DeploymentCli] = Set(AgentCore, Catalog, DeploymentContracts, DeploymentDistribution)
+            [TerminalUi] = Set(),
+            // The installer verifies releases by release.json and SHA256SUMS (#1309); no project holds a signing trust
+            // root since the signed manifests were retired (#1310). Its wizard draws with TerminalUi (#1317).
+            [DeploymentCli] = Set(AgentCore, Catalog, DeploymentContracts, TerminalUi)
         };
 
     private static readonly IReadOnlySet<string> SharedTestProjects = Set(
@@ -109,12 +119,36 @@ public sealed class ArchitectureBoundaryTests
         "HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests",
         "HVO.SkyMonitor.CameraAgent.LogicHost.Tests");
 
+    private static readonly string[] ShippedSourceRoots = ["src", "tools"];
+
     private static readonly IReadOnlySet<string> CameraAgentImplementations = Set(
         CameraAgent,
+        CameraAgentCli,
         CameraAgentCommon,
         CameraAgentZwo,
         CameraAgentReplay,
         CameraAgentReplayRunner);
+
+    /// <summary>
+    /// The key-signed manifests and indexes are retired (owner decision 2026-10-16, #1310): no project embeds a signing
+    /// trust root, and none references the signed distribution layer that held one. A release is trusted by SHA256SUMS
+    /// and its build provenance attestations.
+    /// </summary>
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void Repository_EmbedsNoReleaseSigningTrustRoot()
+    {
+        var root = RepositoryGraph.FindRepositoryRoot();
+        var keys = ShippedSourceRoots
+            .SelectMany(directory => Directory.EnumerateFiles(Path.Combine(root, directory), "*.pem", SearchOption.AllDirectories))
+            .Select(path => Path.GetRelativePath(root, path))
+            .ToArray();
+        Assert.IsEmpty(keys, string.Join(", ", keys));
+        Assert.DoesNotContain(
+            "HVO.SkyMonitor.Deployment.Distribution/",
+            File.ReadAllText(Path.Combine(root, "HVO.SkyMonitor.v9.slnx")),
+            StringComparison.Ordinal);
+    }
 
     [TestMethod]
     [TestCategory("Integration")]
@@ -181,6 +215,31 @@ public sealed class ArchitectureBoundaryTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
+    public void TerminalUiBoundaryIsNarrow()
+    {
+        // #1317: what the terminal programs share. It takes Terminal.Gui and nothing else, so the installer and hvo-sky
+        // can both build on it; and no host draws a terminal, so neither CameraAgent nor LogicHost may take it, or
+        // Terminal.Gui with it. hvo-sky is CameraAgent's terminal client, not a host: it counts with CameraAgent for test
+        // ownership, and its 'ui' draws with TerminalUi.
+        var repository = Repository.Value;
+        Assert.IsTrue(repository.Projects.TryGetValue(TerminalUi, out var project), $"{TerminalUi} is in the repository.");
+        Assert.AreEqual(ProjectKind.Production, project.Kind);
+        Assert.IsTrue(AllowedProductionReferences.TryGetValue(TerminalUi, out var allowed) && allowed.Count == 0,
+            $"{TerminalUi} must be documented with an empty reference set.");
+        Assert.IsEmpty(project.References, $"{TerminalUi} must reference no project: {string.Join(", ", project.References)}");
+        CollectionAssert.AreEqual(new[] { "Terminal.Gui" }, project.PackageReferences.ToArray(), $"{TerminalUi} takes Terminal.Gui only.");
+
+        var hosts = repository.Projects.Values
+            .Where(candidate => candidate.Kind == ProjectKind.Production && candidate.Name != CameraAgentCli
+                && CameraAgentImplementations.Concat([LogicHost]).Contains(candidate.Name))
+            .Where(candidate => candidate.References.Contains(TerminalUi) || candidate.PackageReferences.Contains("Terminal.Gui"))
+            .Select(candidate => candidate.Name)
+            .ToArray();
+        Assert.IsEmpty(hosts, $"No host draws a terminal: {string.Join(", ", hosts)}");
+    }
+
+    [TestMethod]
     [TestCategory("Integration")]
     public void ProductionTransitiveGraphDoesNotReachHostsOrTestProjects()
     {
@@ -198,14 +257,12 @@ public sealed class ArchitectureBoundaryTests
         // 0x4000/0x8000 on arm and powerpc, so a hard-coded value silently breaks aarch64 while every x86-64 lane
         // stays green (#603). Any file that imports open(2)/openat(2) from libc must select the flags by
         // RuntimeInformation.ProcessArchitecture, either through a per-architecture table it declares itself or by
-        // delegating to LinuxOpenFlags, and no importer outside the four declared tables may spell the values on a
+        // delegating to LinuxOpenFlags, and no importer outside the three declared tables may spell the values on a
         // line that talks about open flags. The sweep covers src/; tests and tools do not import libc open.
-        // Storage.FileSystem (#592) carries the table the shared primitives use; #587 retires the CameraAgent copy
-        // in favour of it, at which point the CameraAgent entry below and one caller leave this guard.
+        // CameraAgent (#587) delegates to Storage.FileSystem; its public compatibility facade owns no table.
         var root = RepositoryGraph.FindRepositoryRoot();
         string[] tableFiles =
         [
-            Path.Combine("src", "HVO.SkyMonitor.CameraAgent.Common", "Storage", "LinuxOpenFlags.cs"),
             Path.Combine("src", "HVO.SkyMonitor.Deployment.Cli", "NativeLinux.cs"),
             Path.Combine("src", "HVO.SkyMonitor.Catalog.Sqlite", "CatalogSnapshotResolver.cs"),
             Path.Combine("src", "HVO.SkyMonitor.Storage.FileSystem", "LinuxOpenFlags.cs"),
@@ -223,6 +280,11 @@ public sealed class ArchitectureBoundaryTests
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         var violations = new List<string>();
         var callers = 0;
+
+        var cameraAgentFacade = File.ReadAllText(Path.Combine(root, "src", "HVO.SkyMonitor.CameraAgent.Common", "Storage", "LinuxOpenFlags.cs"));
+        Assert.IsTrue(cameraAgentFacade.Contains("HVO.SkyMonitor.Storage.FileSystem.LinuxOpenFlags", StringComparison.Ordinal));
+        Assert.IsFalse(cameraAgentFacade.Contains("Architecture.Arm64", StringComparison.Ordinal),
+            "CameraAgent's public compatibility facade must not regain a private ABI table.");
 
         foreach (var table in tableFiles.Where(table => !File.Exists(Path.Combine(root, table))))
         {
@@ -261,10 +323,9 @@ public sealed class ArchitectureBoundaryTests
             }
         }
 
-        // Seven importers: RawIngressFileStore and the CameraAgent table's other callers, the deployment CLI, the
-        // SQLite catalog resolver, and Storage.FileSystem's DurableSync plus HardLinkPublisher, which delegate to
-        // the shared per-architecture flag table.
-        Assert.AreEqual(7, callers, "the set of libc open importers changed; update this guard deliberately");
+        // Six importers: the remaining authenticated CameraAgent callers, deployment CLI, SQLite catalog
+        // resolver, and Storage.FileSystem's DurableSync plus HardLinkPublisher.
+        Assert.AreEqual(6, callers, "the set of libc open importers changed; update this guard deliberately");
         Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
     }
 

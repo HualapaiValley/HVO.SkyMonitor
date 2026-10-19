@@ -45,7 +45,9 @@ internal sealed class OwnerRecoveryClient : IOwnerRecoveryClient
 {
     private const int AttestationNonceLength = 32;
     private const int MaximumChallengeBytes = 4096;
-    private const int MaximumPasswordBytes = 256;
+    // Recovery passwords are printable ASCII, so these byte bounds are the character bounds CameraAgent applies.
+    private const int MinimumPasswordBytes = OwnerCredentialDefaults.MinimumPasswordLength;
+    private const int MaximumPasswordBytes = OwnerCredentialDefaults.MaximumPasswordLength;
     private const int MaximumStateBytes = 128;
     private const byte CompletionProtocolVersion = 1;
     private const string RecoveryOperationHeader = "X-HVO-Recovery-Operation";
@@ -90,6 +92,16 @@ internal sealed class OwnerRecoveryClient : IOwnerRecoveryClient
         string temporaryPassword,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(temporaryPassword);
+        // CameraAgent refuses a password outside these bounds on every attempt, so the refusal happens before anything
+        // is disclosed and asks for a fresh operation instead of a resume that could only repeat it.
+        if (!HasValidPasswordLength(temporaryPassword))
+        {
+            throw new OwnerRecoveryProtocolException(
+                OwnerRecoveryFailureDisposition.FreshOperationRequired,
+                "The owner recovery password must be 8 to 256 characters long; start a new recovery operation.");
+        }
+
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(15));
         try
@@ -210,7 +222,7 @@ internal sealed class OwnerRecoveryClient : IOwnerRecoveryClient
         var challengeBytes = StrictUtf8.GetBytes(challenge);
         var passwordBytes = StrictUtf8.GetBytes(temporaryPassword);
         if (challengeBytes.Length is < 1 or > MaximumChallengeBytes ||
-            passwordBytes.Length is < 16 or > MaximumPasswordBytes)
+            passwordBytes.Length is < MinimumPasswordBytes or > MaximumPasswordBytes)
         {
             throw new InstallerException("The owner recovery credential payload is invalid.");
         }
@@ -222,6 +234,18 @@ internal sealed class OwnerRecoveryClient : IOwnerRecoveryClient
         challengeBytes.CopyTo(payload, 9);
         passwordBytes.CopyTo(payload, 9 + challengeBytes.Length);
         return payload;
+    }
+
+    private static bool HasValidPasswordLength(string temporaryPassword)
+    {
+        try
+        {
+            return StrictUtf8.GetByteCount(temporaryPassword) is >= MinimumPasswordBytes and <= MaximumPasswordBytes;
+        }
+        catch (EncoderFallbackException)
+        {
+            return false;
+        }
     }
 
     private static async Task<byte[]> ReadBoundedAsync(

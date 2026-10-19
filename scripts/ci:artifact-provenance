@@ -11,7 +11,10 @@ output_dir="${3:-}"
 [[ -n "$output_dir" ]] || { printf 'Output directory is required.\n' >&2; exit 2; }
 [[ "${GITHUB_RUN_ID:-}" =~ ^[1-9][0-9]*$ && "${GITHUB_RUN_ATTEMPT:-}" =~ ^[1-9][0-9]*$ ]] || { printf 'GitHub run identity is unavailable.\n' >&2; exit 1; }
 [[ "${GITHUB_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || { printf 'GitHub head SHA is unavailable.\n' >&2; exit 1; }
-[[ "${GITHUB_WORKFLOW_REF:-}" == */.github/workflows/ci.yml@* ]] || { printf 'Unexpected workflow reference.\n' >&2; exit 1; }
+# ci.yml's own runs, and its runs as the release workflow's qualification (#1310), whose workflow reference is the
+# caller's: release.yml at a release tag.
+[[ "${GITHUB_WORKFLOW_REF:-}" == */.github/workflows/ci.yml@* || "${GITHUB_WORKFLOW_REF:-}" == */.github/workflows/release.yml@refs/tags/v* ]] ||
+  { printf 'Unexpected workflow reference.\n' >&2; exit 1; }
 [[ "${GITHUB_JOB:-}" == "$job_key" ]] || { printf 'GitHub job key does not match the requested provenance key.\n' >&2; exit 1; }
 
 mkdir -p "$output_dir"

@@ -73,6 +73,32 @@ Do not duplicate them in the runner installation `.env`, and remove any stale
 `DOTNET_ROOT` assignment from that file. The setup action exports the selected
 install directory as job-scoped `DOTNET_ROOT`.
 
+The service account must also have a real, writable and searchable absolute
+`HOME` directory, for example `/home/actions`. It must be owned by the service
+UID, have no group or other write bits (0700 is recommended; 0755 is allowed,
+0770 is refused), and have no symlinks anywhere in its path.
+.NET runtime 10.0.13 named mutexes use a nonempty `XDG_RUNTIME_DIR` when set,
+otherwise `~/.dotnet/corefx/Runtime/SharedMemory`; `DOTNET_CLI_HOME` alone does
+not redirect this runtime state
+([dotnet/runtime#135726](https://github.com/dotnet/runtime/issues/135726)).
+
+When HOME is selected, the preflight walks `.dotnet`, `.dotnet/corefx`,
+`.dotnet/corefx/Runtime` and `.dotnet/corefx/Runtime/SharedMemory`. Every existing
+component must be a non-symlink directory owned by the service UID and writable
+and searchable. It probes file creation in the deepest existing component,
+or in HOME when none exist. Repair any file, symlink, ownership or permissions
+blocking this chain before starting the runner.
+
+Alternatively, explicitly set `XDG_RUNTIME_DIR` in the service drop-in to an
+existing absolute directory, for example `/srv/runner-data/cache/dotnet-runtime`.
+It must be owned by the service UID, writable and searchable, have no symlinks
+in its path, and have no group or other write bits (0700 is recommended).
+`/tmp`, `/dev/shm` and 0777 directories are refused. Create the directory before
+starting the service. A nonempty `XDG_RUNTIME_DIR` takes precedence even when
+HOME is valid; the preflight checks and probes that directory directly without
+walking HOME's `.dotnet` chain or falling back to HOME. An empty value selects
+HOME. The check runs before dotnet and does not repair the account.
+
 On a current Raspberry Pi kernel, grant the service account access only to the
 restricted `/dev/vcio_gencmd` interface through a dedicated group such as
 `hvo-vcgencmd`. Persist the device group and mode with a udev rule because the
@@ -107,7 +133,7 @@ the bounded registration command:
 read -rsp 'Runner registration token: ' RUNNER_TOKEN
 printf '\n'
 ./config.sh \
-  --url https://github.com/RoySalisbury/HVO.SkyMonitor \
+  --url https://github.com/HualapaiValley/HVO.SkyMonitor \
   --token "$RUNNER_TOKEN" \
   --name github-runner-pi-01 \
   --labels hvo-skymonitor-arm64,dotnet,docker,pi5 \
@@ -130,6 +156,9 @@ the generated service before starting it:
 RequiresMountsFor=/srv/runner-data
 
 [Service]
+Environment="HOME=/home/actions"
+# If HOME cannot be physical/writable, create a private directory first, then set:
+# Environment="XDG_RUNTIME_DIR=/srv/runner-data/cache/dotnet-runtime"
 Environment="DOTNET_INSTALL_DIR=/srv/runner-data/cache/dotnet-install"
 Environment="DOTNET_CLI_HOME=/srv/runner-data/cache/dotnet-cli"
 Environment="NUGET_PACKAGES=/srv/runner-data/cache/nuget/packages"
@@ -196,7 +225,7 @@ checks that follow it.
 Trigger a trusted default-branch run manually with:
 
 ```bash
-gh api --method POST repos/RoySalisbury/HVO.SkyMonitor/dispatches \
+gh api --method POST repos/HualapaiValley/HVO.SkyMonitor/dispatches \
   -f event_type=cameraagent-arm64
 ```
 

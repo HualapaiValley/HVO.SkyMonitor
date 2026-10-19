@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Net;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -50,6 +51,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
+using HVO.SkyMonitor.CameraAgent.Authentication;
+using HVO.SkyMonitor.CameraAgent.Settings;
 
 namespace HVO.SkyMonitor.CameraAgent;
 
@@ -81,6 +84,9 @@ public class Program
                 localSettings.FindOverriddenKeys,
                 provider.GetRequiredService<ILogger<OperatorSettingsFile>>()));
         }
+        builder.Services.AddSingleton(provider => new CameraAgentSettingSources(
+            provider.GetRequiredService<IConfiguration>(),
+            localSettings is null ? static _ => false : localSettings.IsSettingsFileProvider));
 
         var reverseProxy = builder.Configuration.GetSection(DeploymentReverseProxyOptions.SectionName).Get<DeploymentReverseProxyOptions>() ?? new();
         if (reverseProxy.Enabled)
@@ -102,7 +108,9 @@ public class Program
             });
         }
 
-        builder.AddSkyMonitorObservability();
+        // The Software page reads the same informational version, so telemetry and the UI name one build identity.
+        builder.AddSkyMonitorObservability(
+            typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion);
 
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddSingleton<ICorrelationIdAccessor, HttpContextCorrelationIdAccessor>();
@@ -196,6 +204,7 @@ public class Program
             options.Stores.SchemaVersion = IdentitySchemaVersions.Version3;
         })
         .AddEntityFrameworkStores<ApplicationDbContext>()
+        .AddCameraAgentPasswordPolicy()
         .AddClaimsPrincipalFactory<CanonicalLocalUserClaimsPrincipalFactory>()
         .AddSignInManager()
         .AddDefaultTokenProviders();
@@ -292,6 +301,8 @@ public class Program
             ConfigureApplicationCookie(options, localIdentitySettings.CookieName));
 
         builder.Services.AddCameraAgentAuthorization();
+        builder.Services.AddScoped<CameraAgentApiKeyStore>();
+        builder.Services.AddScoped<CameraAgentSettingsService>();
         builder.Services.AddCameraAgentOutboxOperations();
         builder.Services.AddScoped<ICameraAgentOperatorUiService, CameraAgentOperatorUiService>();
         builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();
@@ -405,6 +416,7 @@ public class Program
         app.UseRouting();
 
         app.UseAuthentication();
+        app.UseMiddleware<CameraAgentApiKeyAuthenticationMiddleware>();
         app.UseMiddleware<OwnerBootstrapGateMiddleware>();
         app.UseAuthorization();
 
@@ -423,10 +435,12 @@ public class Program
         app.MapCameraAgentTimeLapseSampleEndpoints();
         app.MapCameraAgentTimeLapseEndpoints();
         app.MapCameraAgentOperationsEndpoints();
+        app.MapCameraAgentSystemOperationsEndpoints();
         app.MapCameraAgentSkyMapEndpoints();
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
         app.MapCameraAgentAutomationOperationsEndpoints();
         app.MapCameraAgentScheduleOperationsEndpoints();
+        app.MapCameraAgentSettingsEndpoints();
         app.MapCameraAgentNamedRigEndpoints();
         app.MapCameraAgentPipelineOperationsEndpoints();
         app.MapCameraAgentProcessingGraphOperationsEndpoints();
@@ -604,7 +618,15 @@ public class Program
         {
             throw new InvalidOperationException("LocalIdentity:AdminPasswordFile must be a non-empty regular file no larger than 4096 bytes.");
         }
-        var password = File.ReadAllText(passwordFile).TrimEnd('\r', '\n');
+        string password;
+        try
+        {
+            password = OwnerPasswordFileText.Decode(File.ReadAllBytes(passwordFile));
+        }
+        catch (DecoderFallbackException exception)
+        {
+            throw new InvalidOperationException("LocalIdentity:AdminPasswordFile is not valid UTF-8.", exception);
+        }
         if (password.Length == 0)
         {
             throw new InvalidOperationException("LocalIdentity:AdminPasswordFile is empty.");

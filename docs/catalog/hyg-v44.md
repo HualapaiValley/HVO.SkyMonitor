@@ -132,8 +132,8 @@ not change how a star's position is computed.
 Each approved lineage has its own root under the product root:
 
 ```text
-/var/lib/hvo/skymonitor/catalogs/hyg-v42-production/versions/hyg-v4.2-p3-s2-r1
-/var/lib/hvo/skymonitor/catalogs/hyg-v44-production/versions/hyg-v4.4-p4-s3-r1
+/var/lib/hvo-sky/catalogs/hyg-v42-production/versions/hyg-v4.2-p3-s2-r1
+/var/lib/hvo-sky/catalogs/hyg-v44-production/versions/hyg-v4.4-p4-s3-r1
 ```
 
 `catalog install` reads the catalog ID from the bundle manifest, checks it
@@ -141,10 +141,9 @@ against the registry and installs the bundle beneath that lineage's root. It doe
 not select the catalog for any instance:
 
 ```bash
-hvo-skymonitor catalog install --catalog-bundle /owner-private/hyg-v4.4-p4-s3-r1.bundle
-hvo-skymonitor catalog select --instance-id <uuid> --catalog-version hyg-v4.4-p4-s3-r1
-hvo-skymonitor catalog rollback --instance-id <uuid>
-hvo-skymonitor catalog check --catalog-manifest <signed-manifest-url-or-path>
+hvo-sky-install catalog install --catalog-bundle /owner-private/hyg-v4.4-p4-s3-r1.bundle
+hvo-sky-install catalog select --instance-id <uuid> --catalog-version hyg-v4.4-p4-s3-r1
+hvo-sky-install catalog rollback --instance-id <uuid>
 ```
 
 Package versions are unique across lineages, so `--catalog-version` names exactly
@@ -176,17 +175,9 @@ Two instances on one host may select different catalog IDs, and offline
 instances on different hosts may run different IDs. Each host resolves only the
 root it mounts.
 
-`catalog check` takes no lock, downloads no bundle, and writes nothing to
-installed catalogs, instance selections, the distribution cache or index
-rollback state. It verifies the signed manifest or index (or a previously
-verified cached copy when offline) and reports one of two outcomes:
-
-- `available`: the package is not installed;
-- `installed`: the installed `versions/<version>` matches the signed identity.
-
-An installed directory whose identity differs from the signed release is
-refused. When the host is offline and no verified copy is cached, the check fails
-closed without contacting the network.
+The installer checks an installed catalog's identity when it installs and selects it. There is no
+`catalog check` command: the signed catalog manifests it read are retired (install contract section 10), and a
+release carries its catalog bundle as an ordinary asset with a SHA-256 in `SHA256SUMS`.
 
 ## Runtime identity and health
 

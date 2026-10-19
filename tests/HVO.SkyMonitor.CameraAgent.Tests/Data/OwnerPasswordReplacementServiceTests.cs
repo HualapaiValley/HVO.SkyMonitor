@@ -74,6 +74,66 @@ public sealed class OwnerPasswordReplacementServiceTests
     }
 
     [TestMethod]
+    [DataRow("skymonitor", CameraAgentPasswordValidator.DefaultPasswordCode)]
+    [DataRow("SkyMonitor", CameraAgentPasswordValidator.DefaultPasswordCode)]
+    [DataRow("Camera-Owner", CameraAgentPasswordValidator.UserNamePasswordCode)]
+    [DataRow("abcdefg", "PasswordTooShort")]
+    public async Task ReplaceAsync_RefusesDefaultUserNameAndShortPasswords(string newPassword, string expectedCode)
+    {
+        using var fixture = await ReplacementFixture.CreateAsync(userName: "camera-owner").ConfigureAwait(false);
+        var securityStamp = fixture.Owner.SecurityStamp;
+
+        var result = await fixture.Service.ReplaceAsync(
+            fixture.Owner,
+            ReplacementFixture.TemporaryPassword,
+            newPassword).ConfigureAwait(false);
+
+        Assert.IsFalse(result.Succeeded);
+        CollectionAssert.Contains(result.Errors.Select(static error => error.Code).ToArray(), expectedCode);
+        Assert.IsTrue(fixture.Owner.PasswordChangeRequired);
+        Assert.AreEqual(securityStamp, fixture.Owner.SecurityStamp);
+        Assert.IsTrue(await fixture.UserManager.CheckPasswordAsync(
+            fixture.Owner, ReplacementFixture.TemporaryPassword).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task ReplaceAsync_DefaultOwnerAcceptsEightCharactersWithoutCharacterClasses()
+    {
+        using var fixture = await ReplacementFixture.CreateAsync(
+            temporaryPassword: "skymonitor",
+            userName: "admin").ConfigureAwait(false);
+
+        var result = await fixture.Service.ReplaceAsync(fixture.Owner, "skymonitor", "abcdefgh").ConfigureAwait(false);
+
+        Assert.IsTrue(result.Succeeded, string.Join(", ", result.Errors.Select(static error => error.Description)));
+        Assert.IsFalse(fixture.Owner.PasswordChangeRequired);
+        Assert.IsFalse(await fixture.UserManager.CheckPasswordAsync(fixture.Owner, "skymonitor").ConfigureAwait(false));
+        Assert.IsTrue(await fixture.UserManager.CheckPasswordAsync(fixture.Owner, "abcdefgh").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow("skymonitor", "PasswordMustChange")]
+    [DataRow("SKYMONITOR", CameraAgentPasswordValidator.DefaultPasswordCode)]
+    [DataRow("Admin1234", null)]
+    public async Task ReplaceAsync_DefaultOwnerCannotKeepTheDefault(string newPassword, string? expectedCode)
+    {
+        using var fixture = await ReplacementFixture.CreateAsync(
+            temporaryPassword: "skymonitor",
+            userName: "admin").ConfigureAwait(false);
+
+        var result = await fixture.Service.ReplaceAsync(fixture.Owner, "skymonitor", newPassword).ConfigureAwait(false);
+
+        // "Admin1234" contains the user name but is not the user name, so the policy accepts it.
+        Assert.AreEqual(expectedCode is null, result.Succeeded);
+        if (expectedCode is not null)
+        {
+            CollectionAssert.Contains(result.Errors.Select(static error => error.Code).ToArray(), expectedCode);
+            Assert.IsTrue(fixture.Owner.PasswordChangeRequired);
+            Assert.IsTrue(await fixture.UserManager.CheckPasswordAsync(fixture.Owner, "skymonitor").ConfigureAwait(false));
+        }
+    }
+
+    [TestMethod]
     public async Task ReplaceAsync_FlagPersistenceFailureRollsBackPasswordAndReloadsOwner()
     {
         using var fixture = await ReplacementFixture.CreateAsync(failPasswordChangeCompletion: true)
@@ -120,7 +180,10 @@ public sealed class OwnerPasswordReplacementServiceTests
         internal UserManager<ApplicationUser> UserManager { get; }
         internal OwnerPasswordReplacementService Service { get; }
 
-        internal static async Task<ReplacementFixture> CreateAsync(bool failPasswordChangeCompletion = false)
+        internal static async Task<ReplacementFixture> CreateAsync(
+            bool failPasswordChangeCompletion = false,
+            string temporaryPassword = TemporaryPassword,
+            string userName = "owner@cameraagent.test")
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync().ConfigureAwait(false);
@@ -135,7 +198,8 @@ public sealed class OwnerPasswordReplacementServiceTests
                 }
             });
             services.AddIdentityCore<ApplicationUser>()
-                .AddEntityFrameworkStores<ApplicationDbContext>();
+                .AddEntityFrameworkStores<ApplicationDbContext>()
+                .AddCameraAgentPasswordPolicy();
             var provider = services.BuildServiceProvider();
             var scope = provider.CreateScope();
             try
@@ -145,13 +209,23 @@ public sealed class OwnerPasswordReplacementServiceTests
                 var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
                 var owner = new ApplicationUser
                 {
-                    UserName = "owner@cameraagent.test",
+                    UserName = userName,
                     Email = "owner@cameraagent.test",
                     EmailConfirmed = true,
                     IsSiteOwner = true,
                     PasswordChangeRequired = true
                 };
-                var created = await users.CreateAsync(owner, TemporaryPassword).ConfigureAwait(false);
+                IdentityResult created;
+                if (CameraAgentIdentityPolicy.IsDefaultOwnerPassword(temporaryPassword))
+                {
+                    // The seeder's path: the default is hashed directly because the policy refuses it as a password.
+                    owner.PasswordHash = users.PasswordHasher.HashPassword(owner, temporaryPassword);
+                    created = await users.CreateAsync(owner).ConfigureAwait(false);
+                }
+                else
+                {
+                    created = await users.CreateAsync(owner, temporaryPassword).ConfigureAwait(false);
+                }
                 Assert.IsTrue(created.Succeeded, string.Join(", ", created.Errors.Select(static error => error.Description)));
                 return new ReplacementFixture(connection, provider, scope, owner);
             }

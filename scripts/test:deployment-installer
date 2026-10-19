@@ -46,18 +46,15 @@ if [[ "$docker_server_operating_system" != linux ||
     "$docker_server_image_architecture" "$docker_server_machine_architecture" >&2
   exit 2
 fi
-# shellcheck disable=SC2034 # Passed by name to ownership-aware cleanup helpers.
-declare -A installer_startup_image_ids=()
-hvo_installer_snapshot_image_ids installer_startup_image_ids
-
 root="$(mktemp -d "/tmp/hvo-i.XXXXXX")"
 publish_root="$root/publish"
 archive="$root/cameraagent.tar"
 baseline_revision="${HVO_INSTALLER_BASELINE_REVISION:-}"
 install_tag="hvo-skymonitor-cameraagent:installer-contract-$$"
 candidate_tag=""
-declare -A signed_loaded_images=()
-signed_source_worktrees=()
+variant_base_tag="hvo-skymonitor-cameraagent:installer-variant-base-$$"
+routine_tag="hvo-skymonitor-cameraagent:installer-routine-$$"
+migrating_tag="hvo-skymonitor-cameraagent:installer-migrating-$$"
 port=55415
 instance_id="$(tr -d '\n' </proc/sys/kernel/random/uuid)"
 
@@ -65,16 +62,8 @@ cleanup() {
   docker rm --force "hvo-skymonitor-${instance_id//-/}" >/dev/null 2>&1 || true
   docker rm --force "hvo-skymonitor-${instance_id//-/}-replay" >/dev/null 2>&1 || true
   docker network rm "hvo-skymonitor-${instance_id//-/}_default" >/dev/null 2>&1 || true
-  if [[ -n "${signed_instance_id:-}" ]]; then
-    docker rm --force "hvo-skymonitor-${signed_instance_id//-/}" >/dev/null 2>&1 || true
-    docker rm --force "hvo-skymonitor-${signed_instance_id//-/}-replay" >/dev/null 2>&1 || true
-    docker network rm "hvo-skymonitor-${signed_instance_id//-/}_default" >/dev/null 2>&1 || true
-  fi
-  for signed_image in "${!signed_loaded_images[@]}"; do
-    docker image rm --force "$signed_image" >/dev/null 2>&1 || true
-  done
-  for signed_worktree in "${signed_source_worktrees[@]}"; do
-    git worktree remove --force "$signed_worktree" >/dev/null 2>&1 || true
+  for variant_tag in "$migrating_tag" "$routine_tag" "$variant_base_tag"; do
+    docker image rm --force "$variant_tag" >/dev/null 2>&1 || true
   done
   docker image rm --force "$install_tag" >/dev/null 2>&1 || true
   if [[ -n "$candidate_tag" ]]; then
@@ -95,38 +84,6 @@ if (( ${#owner_socket_path} > 107 )); then
   exit 2
 fi
 source_root=.
-# Every signed-scenario precondition is checked here rather than after the other scenarios have run, so an
-# unusable configuration fails in seconds instead of an hour.
-if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
-  if [[ -n "$(git status --porcelain)" ]]; then
-    printf 'The signed-release scenario builds its candidates and its CLI from committed revisions; the worktree must be clean.\n' >&2
-    exit 2
-  fi
-  if ! command -v openssl >/dev/null; then
-    printf 'The signed-release scenario requires openssl to create its ephemeral signing keys.\n' >&2
-    exit 2
-  fi
-  signed_revision_b="$(git rev-parse --verify "${HVO_INSTALLER_SIGNED_CANDIDATE_REVISION:-HEAD}^{commit}")"
-  signed_revision_a="$(git rev-parse --verify "${HVO_INSTALLER_SIGNED_BASE_REVISION:-HEAD~1}^{commit}")"
-  if [[ "$signed_revision_a" = "$signed_revision_b" ]]; then
-    printf 'The signed upgrade requires two distinct source revisions; set HVO_INSTALLER_SIGNED_BASE_REVISION.\n' >&2
-    exit 2
-  fi
-  if ! git merge-base --is-ancestor "$signed_revision_a" "$signed_revision_b"; then
-    printf 'The superseded signed release must be built from an ancestor of the candidate revision.\n' >&2
-    exit 2
-  fi
-  # Both revisions build their own candidate with their own release train, so each manifest describes exactly the
-  # tree it was built from rather than relabelling one build as two releases.
-  git cat-file -e "$signed_revision_a:scripts/release:cameraagent-image"
-  git cat-file -e "$signed_revision_b:scripts/release:cameraagent-image"
-  signed_version_a="${HVO_INSTALLER_SIGNED_VERSION_A:-0.0.0-598a}"
-  signed_version_b="${HVO_INSTALLER_SIGNED_VERSION_B:-0.0.0-598b}"
-  if [[ "$signed_version_a" = "$signed_version_b" ]]; then
-    printf 'The two signed candidates must publish distinct release versions.\n' >&2
-    exit 2
-  fi
-fi
 if [[ -n "$baseline_revision" ]]; then
   if [[ -n "$(git status --porcelain)" ]]; then
     printf 'HVO_INSTALLER_BASELINE_REVISION requires a clean candidate worktree.\n' >&2
@@ -158,21 +115,27 @@ if [[ -n "$baseline_revision" ]]; then
   test "$candidate_image_id" != "$(docker image inspect --format '{{.Id}}' "$install_tag")"
   test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$install_tag")" = "$baseline_revision"
   test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$candidate_tag")" = "$candidate_revision"
+  # A development image is given no version, so its version label is empty (#1310).
+  test -z "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$candidate_tag")"
 elif [[ -n "${HVO_INSTALLER_RELEASE_ARCHIVE:-}" ]]; then
-  # Install the exact bytes a signed image release publishes rather than an image built here, so the lifecycle
-  # contract is proved against the artifact an operator receives.
+  # Install the exact bytes of an image archive an operator receives rather than an image built here, so the
+  # lifecycle contract is proved against that artifact.
   test -f "$HVO_INSTALLER_RELEASE_ARCHIVE"
   release_archive=1
 else
   docker build --build-arg "HVO_SOURCE_REVISION=$(git rev-parse HEAD)" --tag "$install_tag" \
     --file src/HVO.SkyMonitor.CameraAgent/Dockerfile .
+  test -z "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$install_tag")"
 fi
 dotnet restore "$source_root/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" --runtime "$host_cli_runtime"
 dotnet publish "$source_root/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
   --no-restore --configuration Release --runtime "$host_cli_runtime" --output "$publish_root"
+# The published installer as an operator runs it, on a terminal and without one, and without Terminal.Gui's syntax
+# highlighting, which it leaves out (#1317).
+python3 "$repo_root/scripts/lib/published-installer-terminal.py" "$publish_root/HVO.SkyMonitor.Deployment.Cli"
 if [[ "${release_archive:-0}" == 1 ]]; then
   cp "$HVO_INSTALLER_RELEASE_ARCHIVE" "$archive"
-  loaded_reference="$(docker image load --input "$archive" | sed -n 's/^Loaded image ID: //p;s/^Loaded image: //p' | head -n 1)"
+  loaded_reference="$(docker image load --input "$archive" | sed -n 's/^Loaded image ID: //p;s/^Loaded image: //p' | sed -n '1p')"
   test -n "$loaded_reference"
   image_id="$(docker image inspect --format '{{.Id}}' "$loaded_reference")"
   loaded_release_image="$image_id"
@@ -219,8 +182,23 @@ test "$(jq -er '.healthy' "$root/first.json")" = true
 test "$(jq -er '.replayProfile' "$root/first.json")" = LocalRunner
 test "$(jq -er '.image.imageId' "$root/first.json")" = "$image_id"
 test "$(jq -er '.image.archiveSha256' "$root/first.json")" = "$archive_sha256"
+# The image listing the installer reads to prove an imported image removed (#1315 PR-1355-R5 R5-1) has the shape it
+# parses on this daemon: one JSON object per line, a full sha256 ID and string Repository, Tag and Digest; and the
+# installed image is listed under the ID the installer recorded.
+docker image ls --all --digests --no-trunc --format '{{json .}}' >"$root/image-listing.jsonl"
+jq -es 'length > 0 and all(.[]; (.ID | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+  ([.Repository, .Tag, .Digest] | all(type == "string" and length > 0)))' "$root/image-listing.jsonl" >/dev/null
+jq -es --arg id "$image_id" 'any(.[]; .ID == $id or .Digest == $id)' "$root/image-listing.jsonl" >/dev/null
 test "$(docker inspect --format '{{.State.Health.Status}}' "$runner_container")" = healthy
 test "$(docker inspect --format '{{.Config.User}}' "$runner_container")" = "$(id -u):$(id -g)"
+# The CameraAgent container gets the default 2 CPUs, 4 GiB and 256 PIDs, recorded with the instance as limits no
+# operator set; the replay runner keeps its own bounds.
+test "$(docker inspect "$container" | jq -er '.[0].HostConfig | "\(.NanoCpus) \(.Memory) \(.PidsLimit)"')" = \
+  "2000000000 4294967296 256"
+test "$(docker inspect "$runner_container" | jq -er '.[0].HostConfig | "\(.NanoCpus) \(.Memory) \(.PidsLimit)"')" = \
+  "500000000 2147483648 64"
+jq -e '.resources == {cpus: 2, memoryBytes: 4294967296, pidsLimit: 256, cpusSetByOperator: false, memorySetByOperator: false}' \
+  "$instance_root/instance-manifest.json" >/dev/null
 
 docker stop "$container" >/dev/null
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" >"$root/rerun.json"
@@ -229,6 +207,26 @@ test "$(docker inspect --format '{{.State.Health.Status}}' "$runner_container")"
 test "$(jq -er '.installationId' "$root/first.json")" = "$(jq -er '.installationId' "$root/rerun.json")"
 test "$(jq -er '.configurationSha256' "$root/first.json")" = "$(jq -er '.configurationSha256' "$root/rerun.json")"
 test "$(jq -er '.catalog.databaseSha256' "$root/first.json")" = "$(jq -er '.catalog.databaseSha256' "$root/rerun.json")"
+
+# A re-run that gives a new limit changes it (#1315, install contract section 7): its plan changes nothing, Compose
+# recreates the container with the new limit, and the manifest and the test root's install record follow. The same
+# answers again change nothing, and a last re-run returns the memory to 4 GiB for the scenarios below.
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" --memory 6g --plan >"$root/limits-plan.json"
+test "$(jq -er '.outcome' "$root/limits-plan.json")" = Planned
+test "$(jq -er '[.plan.items[] | select(.kind == "container")][0].action' "$root/limits-plan.json")" = Change
+test "$(docker inspect "$container" | jq -er '.[0].HostConfig.Memory')" = 4294967296
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" --memory 6g >"$root/limits.json"
+test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
+test "$(docker inspect "$container" | jq -er '.[0].HostConfig | "\(.NanoCpus) \(.Memory) \(.PidsLimit)"')" = \
+  "2000000000 6442450944 256"
+jq -e '.resources == {cpus: 2, memoryBytes: 6442450944, pidsLimit: 256, cpusSetByOperator: false, memorySetByOperator: true}' \
+  "$instance_root/instance-manifest.json" >/dev/null
+jq -e --arg id "$instance_id" '[.instances[] | select(.instanceId == $id)] | length == 1 and .[0].resources.memoryBytes == 6442450944' \
+  "$root/product/operations/install.json" >/dev/null
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" --memory 6g >"$root/limits-again.json"
+jq -e '.plan.summary | startswith("Nothing to change")' "$root/limits-again.json" >/dev/null
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" --memory 4g >"$root/limits-back.json"
+test "$(docker inspect "$container" | jq -er '.[0].HostConfig.Memory')" = 4294967296
 
 if [[ -n "$baseline_revision" ]]; then
   recovery_state="$root/product/operations/cameraagent-$instance_id.owner-recovery.json"
@@ -320,7 +318,7 @@ if [[ -n "$baseline_revision" ]]; then
     status_code="$(curl --silent --show-error --output /dev/null --dump-header "$headers" \
       --write-out '%{http_code}' --cookie "$cookie_jar" "http://127.0.0.1:$port/")"
     test "$status_code" = 302
-    tr -d '\r' <"$headers" | grep -Eqi '^location: /Account/ReplaceTemporaryPassword$'
+    tr -d '\r' <"$headers" | grep -Ei '^location: /Account/ReplaceTemporaryPassword$' >/dev/null
   }
 
   owner_session_status_code() {
@@ -495,11 +493,78 @@ for bind_source in identity data-protection provisioning raw archive replay-runn
   test "$(stat -c '%u:%g' "$instance_root/state/$bind_source")" = "$(id -u):$(id -g)"
 done
 
+# Backup and restore (#1353) run as the instance's service account, with no sudo (owner decision 2026-10-18,
+# PR-1369-R2). The backup copies the running instance into one archive in <product-root>/backups, with capture paused and
+# the container stopped only while it writes, and puts the instance back healthy. The folder and the archive are the
+# account's own and owner-only, the record names the archive's bytes, --json reports progress on standard error, and
+# nothing under the product root belongs to root.
+# Runs the CLI, its standard error going to the file named first, which is shown if the command fails.
+logged() {
+  local errors="$1"
+  shift
+  if ! "$@" 2>"$errors"; then
+    cat "$errors" >&2
+    return 1
+  fi
+}
+logged "$root/backup-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent backup \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/backup.json"
+test "$(jq -er '.outcome' "$root/backup.json")" = completed
+backup_archive="$(jq -er '.backup.archive' "$root/backup.json")"
+backup_folder="$root/product/backups"
+backup_path="$backup_folder/$backup_archive"
+test "$(stat -c '%u:%g %a' "$backup_folder")" = "$(id -u):$(id -g) 700"
+test "$(stat -c '%u:%g %a' "$backup_path")" = "$(id -u):$(id -g) 600"
+test "$(stat -c '%u:%g %a' "$backup_path.json")" = "$(id -u):$(id -g) 600"
+test "$(sha256sum "$backup_path" | cut -d' ' -f1)" = "$(jq -er '.backup.archiveSha256' "$root/backup.json")"
+test "$(jq -er '.archiveSha256' "$backup_path.json")" = "$(jq -er '.backup.archiveSha256' "$root/backup.json")"
+test "$(jq -er '.runtimeUid' "$backup_path.json"):$(jq -er '.runtimeGid' "$backup_path.json")" = "$(id -u):$(id -g)"
+test -z "$(find "$backup_folder" -name '*.partial' -print -quit)"
+test -z "$(find "$root/product" -uid 0 -print -quit)"
+jq -es 'length > 0 and all(.[]; .event == "backup-progress")' "$root/backup-events.jsonl" >/dev/null
+test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
+test "$(docker inspect --format '{{.State.Health.Status}}' "$runner_container")" = healthy
+
 "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
   --instance-id "$instance_id" \
   --product-root "$root/product" \
   --json >"$root/reset-uninstall.json"
 test "$(jq -er '.outcome' "$root/reset-uninstall.json")" = completed
+
+# The uninstalled instance is restored from the archive, by the same account: its plan changes nothing, the restore leaves
+# it uninstalled on the archive's files and databases, every one the account's, and reinstall starts it healthy on them.
+# It is then uninstalled again for the reset below.
+logged "$root/restore-plan-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent restore "$backup_archive" \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --plan \
+  --json >"$root/restore-plan.json"
+test "$(jq -er '.outcome' "$root/restore-plan.json")" = planned
+logged "$root/restore-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent restore "$backup_path" \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/restore.json"
+test "$(jq -er '.outcome' "$root/restore.json")" = completed
+test "$(jq -er '.lifecycleCondition' "$root/restore.json")" = Uninstalled
+test "$(jq -er '.restore.archive' "$root/restore.json")" = "$backup_archive"
+test "$(jq -er '.restore.noLiveCredentialStore' "$root/restore.json")" = false
+test ! -e "$instance_root/.hvo-restore"
+test -z "$(find "$root/product" -uid 0 -print -quit)"
+test "$(jq -er '.lifecycleCondition' "$instance_root/instance-manifest.json")" = Uninstalled
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reinstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/restore-reinstall.json"
+test "$(jq -er '.outcome' "$root/restore-reinstall.json")" = completed
+test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
+test "$(docker inspect --format '{{.State.Health.Status}}' "$runner_container")" = healthy
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/restore-uninstall.json"
+test "$(jq -er '.outcome' "$root/restore-uninstall.json")" = completed
 
 if "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reset-state \
   --instance-id "$instance_id" \
@@ -577,893 +642,330 @@ test "$(jq -er '.CameraAgent.SkyMap.MaximumObjects' "$operator_settings_path")" 
 
 printf 'CameraAgent state preflight and operator-confirmed reset contract passed for instance %s.\n' "$instance_id"
 
-printf 'Disposable offline installer contract passed for instance %s.\n' "$instance_id"
-
-# The signed CameraAgent image train is proved end to end here: two real release candidates, a real container,
-# and the retained release record following the image the instance actually runs across install, upgrade,
-# rollback, and refusal. The scenario is opt-in because it builds two multi-architecture release candidates.
-if [[ "${HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN:-0}" == 1 ]]; then
-  signed_arm64_builder="${HVO_INSTALLER_SIGNED_ARM64_BUILDER:-${HVO_RELEASE_ARM64_BUILDER:-hvo-edge-01-arm64}}"
-  signed_workspace="${HVO_INSTALLER_SIGNED_WORKSPACE:-$root/signed}"
-  mkdir -p "$signed_workspace"
-  chmod 700 "$signed_workspace"
-  # git reports worktrees by their resolved physical path, so a relative or symlinked workspace would never match
-  # the membership check below and its checkout would be deleted without being deregistered.
-  signed_workspace="$(cd "$signed_workspace" && pwd -P)"
-  signed_evidence_root="${HVO_INSTALLER_SIGNED_EVIDENCE_ROOT:-TestResults/issue-598/$(date -u +%Y%m%dT%H%M%SZ)}"
-  mkdir -p "$signed_evidence_root"
-  signed_evidence_root="$(cd "$signed_evidence_root" && pwd -P)"
-
-  # The production signing key is unavailable outside the release workflow, so the campaign signs with an ephemeral
-  # key and publishes a campaign CLI whose embedded trust root is that key. Nothing else about verification changes:
-  # the substitution is proved below to redirect trust rather than to remove it.
-  if [[ ! -f "$signed_workspace/signing.pem" ]]; then
-    openssl ecparam -name prime256v1 -genkey -noout -out "$signed_workspace/signing.pem"
-    chmod 600 "$signed_workspace/signing.pem"
-  fi
-  openssl pkey -in "$signed_workspace/signing.pem" -pubout -out "$signed_workspace/signing.pub.pem"
-  signed_key_id="p256-sha256:$(openssl pkey -pubin -in "$signed_workspace/signing.pub.pem" -outform DER |
-    sha256sum | cut -d ' ' -f 1)"
-  if [[ ! -f "$signed_workspace/untrusted.pem" ]]; then
-    openssl ecparam -name prime256v1 -genkey -noout -out "$signed_workspace/untrusted.pem"
-    chmod 600 "$signed_workspace/untrusted.pem"
-  fi
-  openssl pkey -in "$signed_workspace/untrusted.pem" -pubout -out "$signed_workspace/untrusted.pub.pem"
-  signed_untrusted_key_id="p256-sha256:$(openssl pkey -pubin -in "$signed_workspace/untrusted.pub.pem" -outform DER |
-    sha256sum | cut -d ' ' -f 1)"
-  test "$signed_untrusted_key_id" != "$signed_key_id"
-
-  dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
-    --configuration Release -warnaserror >/dev/null
-  signed_release_tool() {
-    dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
-      --no-build --configuration Release -- "$@"
+# An upgrade is a swap that never archives state (#1314). Both candidates are the installed image with labels added.
+# The routine one declares exactly the installed state boundaries: it upgrades as a pure swap and snapshots nothing.
+# The migrating one declares a different minimum compatible revision, a state boundary the persisted-state preflight
+# never compares with the instance: it upgrades without --migration-backward-compatible, after the installer has
+# snapshotted and verified the real SQLite stores, and a rollback puts that snapshot back under the real container. A
+# baseline-revision run may install an image that predates the boundary labels, from which no upgrade is routine.
+if [[ -z "$baseline_revision" ]]; then
+  lifecycle_state="$root/product/operations/cameraagent-$instance_id.lifecycle.json"
+  state_boundary_labels() {
+    docker image inspect "$1" | jq -cS '.[0].Config.Labels | with_entries(select(.key | IN(
+      "io.hvo.skymonitor.state-compatibility", "io.hvo.skymonitor.minimum-compatible-revision",
+      "io.hvo.skymonitor.identity-migration", "io.hvo.skymonitor.raw-ingress-schema",
+      "io.hvo.skymonitor.raw-ingress-migration", "io.hvo.skymonitor.catalog-manifest-version")))'
   }
-  verify_signed_candidate() {
-    local slot="$1" revision="$2" version="$3" tree
-    tree="$(git rev-parse --verify "$revision^{tree}")"
-    hvo_installer_verify_signed_candidate \
-      "$signed_workspace/release-$slot" "$revision" "$tree" "$version" "image-v$version" \
-      "$signed_workspace/signing.pub.pem"
-  }
-
-  # `git worktree prune` deregisters every worktree whose directory is momentarily absent, including other agents'
-  # checkouts of this repository, so the throwaway source worktrees are always removed through git itself.
-  remove_signed_worktree() {
-    local source_worktree="$1"
-    if git worktree list --porcelain | grep -Fqx "worktree $source_worktree"; then
-      git worktree remove --force "$source_worktree" >/dev/null 2>&1 || true
-    fi
-    rm -rf "$source_worktree"
-  }
-  # The release script loads the host archive for its smoke test and leaves the image behind, so each candidate's
-  # identities are registered for cleanup as soon as its manifest exists rather than after both builds succeed.
-  register_signed_images() {
-    local manifest="$1"
-    hvo_installer_register_owned_image_pair installer_startup_image_ids signed_loaded_images \
-      "$(signed_platform_identity "$manifest" offlineArchiveImageId)" \
-      "$(signed_platform_identity "$manifest" manifestDigest)"
-  }
-  build_signed_release() {
-    local slot="$1" revision="$2" version="$3"
-    local source_worktree="$signed_workspace/source-$slot"
-    local manifest="$signed_workspace/release-$slot/image-manifest.json"
-    if [[ -f "$manifest" ]]; then
-      # Reuse is allowed only after the same production verifier authenticates the signed manifest, every asset,
-      # the independently signed checksum list, and the requested Git identities.
-      verify_signed_candidate "$slot" "$revision" "$version"
-      printf 'Reusing the retained %s release candidate in %s.\n' "$version" "$signed_workspace" >&2
-      register_signed_images "$manifest"
-      return 0
-    fi
-    rm -rf "$signed_workspace/release-$slot"
-    remove_signed_worktree "$source_worktree"
-    git worktree add --detach "$source_worktree" "$revision" >/dev/null
-    signed_source_worktrees+=("$source_worktree")
-    "$source_worktree/scripts/release:cameraagent-image" \
-      --version "$version" \
-      --revision "$revision" \
-      --output "$signed_workspace/release-$slot" \
-      --arm64-builder "$signed_arm64_builder" \
-      --sign-key "$signed_workspace/signing.pem"
-    verify_signed_candidate "$slot" "$revision" "$version"
-    register_signed_images "$manifest"
-    # The cleanup trap tolerates an already-removed worktree, so the entry is left in place rather than trimmed.
-    remove_signed_worktree "$source_worktree"
-  }
-  signed_platform_identity() {
-    jq -er --arg architecture "$host_image_architecture" --arg field "$2" \
-      '[.images[0].platforms[] | select(.operatingSystem == "linux" and .architecture == $architecture)]
-       | if length == 1 then .[0][$field] else error("expected exactly one native Linux platform") end' "$1"
-  }
-  build_signed_release a "$signed_revision_a" "$signed_version_a"
-  build_signed_release b "$signed_revision_b" "$signed_version_b"
-
-  signed_manifest_a="$signed_workspace/release-a/image-manifest.json"
-  signed_manifest_b="$signed_workspace/release-b/image-manifest.json"
-  signed_image_a="$(signed_platform_identity "$signed_manifest_a" offlineArchiveImageId)"
-  signed_image_b="$(signed_platform_identity "$signed_manifest_b" offlineArchiveImageId)"
-  signed_digest_a="$(signed_platform_identity "$signed_manifest_a" manifestDigest)"
-  signed_digest_b="$(signed_platform_identity "$signed_manifest_b" manifestDigest)"
-  signed_archive_a="$(signed_platform_identity "$signed_manifest_a" offlineArchiveAsset)"
-  signed_archive_b="$(signed_platform_identity "$signed_manifest_b" offlineArchiveAsset)"
-  # The upgrade must move the instance to different immutable bytes, otherwise the transition proves nothing.
-  test "$signed_image_a" != "$signed_image_b"
-  test "$signed_digest_a" != "$signed_digest_b"
-  test "$(jq -er '.images[0].sourceRevision' "$signed_manifest_a")" = "$signed_revision_a"
-  test "$(jq -er '.images[0].sourceRevision' "$signed_manifest_b")" = "$signed_revision_b"
-  test "$(jq -er '.signing.keyId' "$signed_manifest_a")" = "$signed_key_id"
-  test "$(jq -er '.signing.keyId' "$signed_manifest_b")" = "$signed_key_id"
-  test "$(jq -er '.release.version' "$signed_manifest_b")" = "$signed_version_b"
-
-  # Each refused release is a manifest and signature in its own directory that names the real published archives
-  # through --asset-base-url, so nothing copies or links a gigabyte of archives, the published candidates keep
-  # exactly the files their SHA256SUMS describe, and the installer's refusal to read a hard-linked input still
-  # applies to every file it opens.
-  signed_derived_root="$signed_workspace/derived"
-  rm -rf "$signed_derived_root"
-  mkdir -p "$signed_derived_root"
-  signed_derived_manifest() { printf '%s/%s-image-manifest.json' "$signed_derived_root" "$1"; }
-
-  # A release whose signed compatibility record contradicts the image it names. The manifest's own consistency
-  # rules already bind the release identity to the image identity, so the boundary that can drift is exactly the
-  # compatibility record the label-agreement gate exists to check. The signature is genuine, so the refusal below
-  # comes from that gate rather than from signature verification.
-  signed_manifest_contradicting="$(signed_derived_manifest contradicting)"
-  test "$(jq -er '.images[0].compatibility.minimumCompatibleRevision' "$signed_manifest_b")" != "$signed_revision_a"
-  jq --arg revision "$signed_revision_a" '.images[0].compatibility.minimumCompatibleRevision = $revision' \
-    "$signed_manifest_b" >"$signed_manifest_contradicting"
-  test "$(jq -er '.images[0].compatibility.minimumCompatibleRevision' "$signed_manifest_contradicting")" = \
-    "$signed_revision_a"
-
-  # The same release bytes, signed by a key the trust root does not hold.
-  signed_manifest_untrusted="$(signed_derived_manifest untrusted)"
-  jq --arg keyId "$signed_untrusted_key_id" '.signing.keyId = $keyId' \
-    "$signed_manifest_b" >"$signed_manifest_untrusted"
-
-  # The same manifest, but signed by the key the trust root does hold. Signature verification therefore succeeds
-  # and the manifest's own declared key identity is what refuses it, which is the only way to reach that
-  # comparison: the release tool refuses to sign a manifest whose declared key is not the signing key, so the
-  # signature is produced in detached mode.
-  signed_manifest_declared_key="$(signed_derived_manifest declared-key)"
-  cp "$signed_manifest_untrusted" "$signed_manifest_declared_key"
-
-  # The same release bytes and the trusted key id, presented with that key's signature over a different release.
-  # The signature is well formed and made by the trusted key, so only verifying it against these bytes refuses it.
-  signed_manifest_forged="$(signed_derived_manifest forged)"
-  cp "$signed_manifest_b" "$signed_manifest_forged"
-  cp "$signed_workspace/release-a/image-manifest.json.sig" "$signed_manifest_forged.sig"
-
-  # A genuinely signed release that names the other candidate's archive under this release's signed length and
-  # checksum. Only verifying the acquired bytes against the signed asset identity can refuse it, so without that
-  # check the campaign would pass while archive integrity was unenforced.
-  signed_manifest_mismatched="$(signed_derived_manifest mismatched)"
-  jq --arg was "$signed_archive_b" --arg now "$signed_archive_a" '
-      .images[0].platforms |= map(if .offlineArchiveAsset == $was then .offlineArchiveAsset = $now else . end)
-      | .artifacts |= map(if .assetName == $was then .assetName = $now else . end)' \
-    "$signed_manifest_b" >"$signed_manifest_mismatched"
-  test "$(signed_platform_identity "$signed_manifest_mismatched" offlineArchiveAsset)" = "$signed_archive_a"
-  test "$(jq -er --arg name "$signed_archive_a" '[.artifacts[] | select(.assetName == $name)] | length' \
-    "$signed_manifest_mismatched")" = 1
-
-  signed_release_tool sign-local \
-    --manifest "$signed_manifest_contradicting" \
-    --private-key "$signed_workspace/signing.pem" \
-    --signature "$signed_manifest_contradicting.sig"
-  signed_release_tool sign-local \
-    --manifest "$signed_manifest_untrusted" \
-    --private-key "$signed_workspace/untrusted.pem" \
-    --signature "$signed_manifest_untrusted.sig"
-  signed_release_tool sign-local \
-    --manifest "$signed_manifest_mismatched" \
-    --private-key "$signed_workspace/signing.pem" \
-    --signature "$signed_manifest_mismatched.sig"
-  signed_release_tool sign-local \
-    --manifest "$signed_manifest_declared_key" \
-    --private-key "$signed_workspace/signing.pem" \
-    --signature "$signed_manifest_declared_key.sig" \
-    --metadata-kind detached
-
-  # Publish a campaign CLI from the exact candidate revision with the ephemeral public key substituted for the
-  # committed production trust root. Only the trusted key changes; no verification step is removed or relaxed.
-  signed_source="$root/signed-source"
-  mkdir -m 700 "$signed_source"
-  git archive "$signed_revision_b" | tar -x -C "$signed_source"
-  signed_trust_pem="$signed_source/src/HVO.SkyMonitor.Deployment.Distribution/Trust/hvo-skymonitor-production-release-p256-public.pem"
-  signed_trust_source="$signed_source/src/HVO.SkyMonitor.Deployment.Distribution/DistributionTrust.cs"
-  test -f "$signed_trust_pem"
-  # Publish the unmodified CLI from this exact source first. The production-trust-root refusal then compares two
-  # binaries built from one revision that differ only in the embedded trusted key, rather than comparing against
-  # whatever revision the rest of the campaign happened to publish.
-  signed_production_publish_root="$root/signed-publish-production"
-  dotnet restore "$signed_source/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" --runtime "$host_cli_runtime"
-  dotnet publish "$signed_source/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
-    --no-restore --configuration Release --runtime "$host_cli_runtime" --output "$signed_production_publish_root"
-  signed_production_cli="$signed_production_publish_root/HVO.SkyMonitor.Deployment.Cli"
-  cp "$signed_workspace/signing.pub.pem" "$signed_trust_pem"
-  signed_production_key_id="$(grep -m1 -o 'p256-sha256:[0-9a-f]\{64\}' "$signed_trust_source")"
-  test -n "$signed_production_key_id"
-  sed -i "s|$signed_production_key_id|$signed_key_id|g" "$signed_trust_source"
-  test "$(grep -c "$signed_production_key_id" "$signed_trust_source")" = 0
-  signed_publish_root="$root/signed-publish"
-  dotnet restore "$signed_source/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" --runtime "$host_cli_runtime"
-  dotnet publish "$signed_source/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
-    --no-restore --configuration Release --runtime "$host_cli_runtime" --output "$signed_publish_root"
-  signed_cli="$signed_publish_root/HVO.SkyMonitor.Deployment.Cli"
-
-  signed_instance_id="$(tr -d '\n' </proc/sys/kernel/random/uuid)"
-  signed_port=55416
-  signed_container="hvo-skymonitor-${signed_instance_id//-/}"
-  signed_instance_root="$root/product/cameraagents/$signed_instance_id"
-  signed_evidence_path="$signed_instance_root/state/deployment/image-distribution.json"
-  signed_lifecycle_state="$root/product/operations/cameraagent-$signed_instance_id.lifecycle.json"
-  signed_compose_file="$signed_instance_root/config/compose/compose.yml"
-  signed_environment_file="$signed_instance_root/config/compose/instance.env"
-
-  signed_install_arguments=(
-    cameraagent install
-    --instance-id "$signed_instance_id"
-    --friendly-name "Signed Release Camera"
-    --owner-email "signed-release@example.test"
-    --bind-address 127.0.0.1
-    --port "$signed_port"
-    --product-root "$root/product"
-    --catalog-bundle "$HVO_PRODUCTION_CATALOG_BUNDLE"
-    --channel local
-    --image-manifest "$signed_manifest_a"
-    --no-download
-    --latitude 35.2
-    --longitude -114.1
-    --elevation 800
-    --time-zone America/Phoenix
-    --generate-password
-    --replay-profile local-runner
-    --json
-  )
-
-  # Every transition retains the release record, the durable lifecycle records, a state inventory with modes and
-  # checksums, the container logs, and the exact reports the assertions read, so a reviewer can read the
-  # transition rather than trust the exit code. Capture runs before the assertions so a failing step still leaves
-  # its evidence, and each directory is cleared first so a reused evidence root can never mix two runs.
-  capture_signed_state() {
-    local label="$1"
-    local destination="$signed_evidence_root/$label"
-    rm -rf "$destination"
-    mkdir -p "$destination"
-    shift
-    local retained_report
-    for retained_report in "$@"; do
-      test -f "$root/$retained_report.json"
-      cp "$root/$retained_report.json" "$destination/$retained_report.json"
-    done
-    if [[ -f "$signed_evidence_path" ]]; then
-      cp "$signed_evidence_path" "$destination/image-distribution.json"
-    else
-      printf 'image-distribution.json is absent\n' >"$destination/image-distribution.absent"
-    fi
-    for retained in instance-manifest.json \
-      state/deployment/installation-result.json \
-      state/deployment/installation-state.json \
-      state/deployment/state-preflight.json; do
-      if [[ -f "$signed_instance_root/$retained" ]]; then
-        cp "$signed_instance_root/$retained" "$destination/$(basename "$retained")"
-      fi
-    done
-    if [[ -f "$root/product/operations/cameraagent-$signed_instance_id.lifecycle.json" ]]; then
-      cp "$root/product/operations/cameraagent-$signed_instance_id.lifecycle.json" "$destination/lifecycle.json"
-    fi
-    find "$signed_instance_root" -maxdepth 4 -printf '%y %M %P\n' | LC_ALL=C sort >"$destination/state-inventory.txt"
-    find "$signed_instance_root/state/deployment" -maxdepth 1 -type f -exec sha256sum {} + |
-      sed "s|$signed_instance_root/||" | LC_ALL=C sort -k2 >"$destination/deployment-checksums.txt"
-    sha256sum "$signed_compose_file" "$signed_environment_file" |
-      sed "s|$signed_instance_root/||" | LC_ALL=C sort -k2 >"$destination/compose-checksums.txt"
-    if [[ -f "$signed_lifecycle_state" ]]; then
-      local lifecycle_operation_id lifecycle_diagnostics
-      lifecycle_operation_id="$(jq -er '.operationId' "$signed_lifecycle_state")"
-      lifecycle_diagnostics="$root/product/operations/lifecycle/$lifecycle_operation_id/candidate-diagnostics.txt"
-      if [[ -f "$lifecycle_diagnostics" ]]; then
-        cp "$lifecycle_diagnostics" "$destination/candidate-diagnostics.txt"
-      fi
-    fi
-    # Retained container logs and the container's real image are acceptance artifacts, so a failure to collect
-    # them fails the campaign instead of leaving a diagnostic where the evidence should be.
-    docker logs --tail 200 "$signed_container" >"$destination/container.log" 2>&1
-    docker inspect --format '{{.Image}}|{{.State.Status}}|{{.State.Health.Status}}' "$signed_container" \
-      >"$destination/container-runtime.txt"
-  }
-
-  # A refusal must leave the retained record exactly as it found it. Comparing its bytes catches a refused
-  # operation that rewrites the record with the same content it would already have held.
-  signed_record_fingerprint() {
-    if [[ -f "$signed_evidence_path" ]]; then
-      sha256sum "$signed_evidence_path" | cut -d ' ' -f 1
-    else
-      printf 'absent\n'
-    fi
-  }
-
-  # A refused operation and a read-only preflight must leave every durable deployment record alone, not only the
-  # release record, so the whole set is fingerprinted together. The staged image archive belongs to that set: only
-  # the install path writes it, so every refusal, upgrade, rollback, and preflight must leave the bytes an
-  # air-gapped reinstall would load untouched.
-  signed_record_set_fingerprint() {
-    local relative
-    {
-      for relative in instance-manifest.json \
-        state/deployment/installation-result.json \
-        state/deployment/installation-state.json \
-        state/deployment/state-preflight.json \
-        state/deployment/image-distribution.json \
-        state/deployment/image-archive.tar; do
-        if [[ -f "$signed_instance_root/$relative" ]]; then
-          printf '%s %s\n' "$(sha256sum "$signed_instance_root/$relative" | cut -d ' ' -f 1)" "$relative"
-        else
-          printf 'absent %s\n' "$relative"
-        fi
-      done
-    } | sha256sum | cut -d ' ' -f 1
-  }
-
-  # The lifecycle journal joins the record set for operations that must not journal anything. The label-agreement
-  # refusal legitimately journals its refused operation, so it compares the record set on its own.
-  signed_durable_fingerprint() {
-    {
-      printf '%s records\n' "$(signed_record_set_fingerprint)"
-      if [[ -f "$signed_lifecycle_state" ]]; then
-        printf '%s lifecycle\n' "$(sha256sum "$signed_lifecycle_state" | cut -d ' ' -f 1)"
-      else
-        printf 'absent lifecycle\n'
-      fi
-    } | sha256sum | cut -d ' ' -f 1
-  }
-
-  assert_signed_evidence_names() {
-    local version="$1" image_id="$2" revision="$3"
-    local expected_archive="cameraagent-image-v${version}-linux-${host_image_architecture}.tar"
-    local expected_inventory="image-components-linux-${host_image_architecture}.spdx.json"
-    test -f "$signed_evidence_path"
-    test "$(jq -er '.distribution.releaseTrain' "$signed_evidence_path")" = image
-    test "$(jq -er '.distribution.releaseVersion' "$signed_evidence_path")" = "$version"
-    test "$(jq -er '.distribution.releaseTag' "$signed_evidence_path")" = "image-v$version"
-    test "$(jq -er '.distribution.signingKeyId' "$signed_evidence_path")" = "$signed_key_id"
-    test "$(jq -er '.distribution.verificationResult' "$signed_evidence_path")" = verified
-    test "$(jq -er '.imageId' "$signed_evidence_path")" = "$image_id"
-    test "$(jq -er '.sourceRevision' "$signed_evidence_path")" = "$revision"
-    test "$(jq -er '.platformOperatingSystem' "$signed_evidence_path")" = linux
-    test "$(jq -er '.distribution.assetName' "$signed_evidence_path")" = "$expected_archive"
-    test "$(jq -er '.platformArchitecture' "$signed_evidence_path")" = "$host_image_architecture"
-    test "$(jq -er '.componentInventoryAsset' "$signed_evidence_path")" = "$expected_inventory"
-    test "$(jq -er '.component' "$signed_evidence_path")" = CameraAgent
-  }
-
-  # A daemon backed by the containerd image store names a loaded image by its manifest digest and the classic store
-  # by its configuration digest. The release signs both, so an installed identity is required to be one of them
-  # rather than assumed to follow one store's scheme.
-  assert_signed_installed_identity() {
-    local actual="$1" archive_image_id="$2" manifest_digest="$3"
-    test "$actual" = "$archive_image_id" || test "$actual" = "$manifest_digest"
-  }
-
-  # The running image is read back from the product's own status, whose "status" outcome means the container image
-  # equals the recorded installation image; a drifted container reports "drifted" instead.
-  read_signed_status() {
-    "$signed_cli" status \
-      --instance-id "$signed_instance_id" \
+  assert_running_image() {
+    local expected="$1" evidence_name="$2"
+    "$publish_root/HVO.SkyMonitor.Deployment.Cli" status \
+      --instance-id "$instance_id" \
       --product-root "$root/product" \
-      --json >"$root/$1.json"
-  }
-
-  assert_signed_running_image() {
-    local archive_image_id="$1" manifest_digest="$2" evidence_name="$3"
+      --json >"$root/$evidence_name.json"
+    # A container running any image other than the manifest's reports outcome "drifted" and still exits zero.
     test "$(jq -er '.outcome' "$root/$evidence_name.json")" = status
-    assert_signed_installed_identity \
-      "$(jq -er '.image.imageId' "$root/$evidence_name.json")" "$archive_image_id" "$manifest_digest"
+    test "$(jq -er '.image.imageId' "$root/$evidence_name.json")" = "$expected"
     test "$(jq -er '.running' "$root/$evidence_name.json")" = true
     test "$(jq -er '.healthy' "$root/$evidence_name.json")" = true
   }
+  # Every boundary except the optional raw-ingress migration must be declared, or no upgrade from this image could
+  # be routine and the routine case below would prove nothing.
+  jq -e '.[0].Config.Labels as $labels | [
+      "io.hvo.skymonitor.state-compatibility", "io.hvo.skymonitor.minimum-compatible-revision",
+      "io.hvo.skymonitor.identity-migration", "io.hvo.skymonitor.raw-ingress-schema",
+      "io.hvo.skymonitor.catalog-manifest-version"
+    ] | all(. as $label | ($labels[$label] // "") != "")' <(docker image inspect "$image_id") >/dev/null
+  test "$(docker image inspect --format '{{index .Config.Labels "io.hvo.skymonitor.state-compatibility"}}' "$image_id")" = \
+    cameraagent-state-v2
+  docker image tag "$image_id" "$variant_base_tag"
+  printf 'FROM %s\nLABEL io.hvo.skymonitor.installer-campaign=routine-upgrade\n' "$variant_base_tag" |
+    docker build --quiet --tag "$routine_tag" - >/dev/null
+  printf 'FROM %s\nLABEL io.hvo.skymonitor.installer-campaign=migrating-upgrade io.hvo.skymonitor.minimum-compatible-revision=%s\n' \
+    "$variant_base_tag" 0000000000000000000000000000000000000000 |
+    docker build --quiet --tag "$migrating_tag" - >/dev/null
+  routine_image_id="$(docker image inspect --format '{{.Id}}' "$routine_tag")"
+  migrating_image_id="$(docker image inspect --format '{{.Id}}' "$migrating_tag")"
+  test "$routine_image_id" != "$image_id"
+  test "$migrating_image_id" != "$image_id"
+  test "$(state_boundary_labels "$routine_image_id")" = "$(state_boundary_labels "$image_id")"
+  test "$(state_boundary_labels "$migrating_image_id")" != "$(state_boundary_labels "$image_id")"
 
-  # The continuity endpoint is read moments after the agent has been restored, so one transient connection failure
-  # must not abort the campaign as an unattributed non-zero exit. A bounded retry keeps the read honest and names
-  # the failure if it persists.
-  read_signed_continuity() {
-    local attempt
-    for attempt in 1 2 3 4 5; do
-      if curl --silent --show-error --fail --header "@$root/signed-lifecycle.header" \
-        "http://127.0.0.1:$signed_port/api/internal/deployment/lifecycle/state" >"$root/$1.json"; then
-        return 0
-      fi
-      sleep 1
-    done
-    printf 'The lifecycle continuity endpoint did not answer within %s attempts while reading %s.\n' "$attempt" "$1" >&2
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent upgrade \
+    --instance-id "$instance_id" \
+    --product-root "$root/product" \
+    --image-ref "$routine_image_id" \
+    --no-download \
+    --json >"$root/routine-upgrade.json"
+  test "$(jq -er '.outcome' "$root/routine-upgrade.json")" = completed
+  test "$(jq -er '.image.imageId' "$root/routine-upgrade.json")" = "$routine_image_id"
+  assert_running_image "$routine_image_id" routine-upgrade-status
+
+  test "$(jq -er '.stateSnapshotRequired' "$lifecycle_state")" = false
+  test "$(jq -er '.stateSnapshot' "$lifecycle_state")" = null
+  test "$(jq -er '.previousStateSnapshot' "$instance_root/instance-manifest.json")" = null
+  # No lifecycle operation archives the instance any more.
+  test -z "$(find "$root/product/operations" -name '*.tar.gz' -print -quit)"
+
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent upgrade \
+    --instance-id "$instance_id" \
+    --product-root "$root/product" \
+    --image-ref "$migrating_image_id" \
+    --no-download \
+    --json >"$root/migrating-upgrade.json" 2>"$root/migrating-upgrade-error.json"
+  test "$(jq -er '.outcome' "$root/migrating-upgrade.json")" = completed
+  test "$(jq -er '.image.imageId' "$root/migrating-upgrade.json")" = "$migrating_image_id"
+  test ! -s "$root/migrating-upgrade-error.json"
+  assert_running_image "$migrating_image_id" migrating-upgrade-status
+  test "$(jq -er '.stateSnapshotRequired' "$lifecycle_state")" = true
+  jq -e '.stateMigration | contains("io.hvo.skymonitor.minimum-compatible-revision installed ")' "$lifecycle_state" >/dev/null
+  migration_snapshot="$(jq -cS '.stateSnapshot' "$lifecycle_state")"
+  test "$(jq -cS '.previousStateSnapshot' "$instance_root/instance-manifest.json")" = "$migration_snapshot"
+  snapshot_root="$root/product/operations/lifecycle/$(jq -er '.operationId' <<<"$migration_snapshot")/state-snapshots/$(jq -er '.snapshotId' <<<"$migration_snapshot")"
+  test "$(sha256sum "$snapshot_root/manifest.json" | cut -d ' ' -f 1)" = "$(jq -er '.manifestSha256' <<<"$migration_snapshot")"
+  # The real instance had created its Identity database and raw-ingress journal, and each is in the snapshot.
+  jq -e '[.databases[] | select(.present) | .relativePath] |
+    index("identity/cameraagent_identity.db") != null and index("raw/journal/raw-ingress.db") != null' \
+    "$snapshot_root/manifest.json" >/dev/null
+  while IFS=$'\t' read -r snapshot_file snapshot_sha256; do
+    test "$(sha256sum "$snapshot_root/$snapshot_file" | cut -d ' ' -f 1)" = "$snapshot_sha256"
+    test "$(sqlite3 "file:$snapshot_root/$snapshot_file?immutable=1" 'PRAGMA integrity_check;')" = ok
+  done < <(jq -er '.databases[] | select(.present) | [.snapshotFile, .sha256] | @tsv' "$snapshot_root/manifest.json")
+
+  # Rollback undoes the migrating upgrade by putting its snapshot back under the real container, and says so first.
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent rollback \
+    --instance-id "$instance_id" \
+    --product-root "$root/product" \
+    --json >"$root/migrating-rollback.json" 2>"$root/migrating-rollback-error.json"
+  test "$(jq -er '.outcome' "$root/migrating-rollback.json")" = completed
+  test "$(jq -er '.image.imageId' "$root/migrating-rollback.json")" = "$routine_image_id"
+  test "$(jq -er '.event' "$root/migrating-rollback-error.json")" = state-snapshot-restore
+  test "$(jq -cS '.snapshot' "$root/migrating-rollback-error.json")" = "$migration_snapshot"
+  assert_running_image "$routine_image_id" migrating-rollback-status
+  test "$(jq -cS '.retainedStateSnapshot' "$lifecycle_state")" = "$migration_snapshot"
+  test "$(jq -cS '.previousStateSnapshot' "$instance_root/instance-manifest.json")" = "$(jq -cS '.stateSnapshot' "$lifecycle_state")"
+  # The restored Identity database carries the snapshot's migration lineage. The restarted image has opened the stores
+  # since, so they are compared by content rather than byte for byte.
+  identity_snapshot="$(jq -er '.databases[] | select(.relativePath == "identity/cameraagent_identity.db") | .snapshotFile' "$snapshot_root/manifest.json")"
+  test "$(sqlite3 "file:$snapshot_root/$identity_snapshot?immutable=1" 'SELECT group_concat(MigrationId) FROM __EFMigrationsHistory;')" = \
+    "$(sqlite3 "file:$instance_root/state/identity/cameraagent_identity.db?immutable=1" 'SELECT group_concat(MigrationId) FROM __EFMigrationsHistory;')"
+
+  # A state reset discards the retained snapshot: the documented uninstall, reset-state and install rebuild the manifest
+  # without previousStateSnapshot, so a later rollback is a pure swap onto the reinstalled stores and never brings back
+  # the databases from before the reset.
+  retained_snapshot="$(jq -cS '.previousStateSnapshot' "$instance_root/instance-manifest.json")"
+  test "$retained_snapshot" != null
+  retained_root="$root/product/operations/lifecycle/$(jq -er '.operationId' <<<"$retained_snapshot")/state-snapshots/$(jq -er '.snapshotId' <<<"$retained_snapshot")"
+  retained_identity="$(jq -er '.databases[] | select(.relativePath == "identity/cameraagent_identity.db") | .snapshotFile' "$retained_root/manifest.json")"
+  pre_reset_users="$(sqlite3 "file:$retained_root/$retained_identity?immutable=1" 'SELECT group_concat(Id) FROM (SELECT Id FROM AspNetUsers ORDER BY Id);')"
+  test -n "$pre_reset_users"
+  rollback_target_image_id="$(jq -er '.previousImage.imageId' "$instance_root/instance-manifest.json")"
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
+    --instance-id "$instance_id" \
+    --product-root "$root/product" \
+    --json >"$root/swap-reset-uninstall.json"
+  test "$(jq -er '.outcome' "$root/swap-reset-uninstall.json")" = completed
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reset-state \
+    --instance-id "$instance_id" \
+    --confirm-instance-id "$instance_id" \
+    --product-root "$root/product" \
+    --json >"$root/swap-reset.json"
+  test "$(jq -er '.outcome' "$root/swap-reset.json")" = completed
+  # The reset preserves the manifest, retained snapshot reference included; the install is what clears it. Until
+  # then the instance has no installation result, so no lifecycle operation, rollback included, can run on it.
+  test "$(jq -cS '.previousStateSnapshot' "$instance_root/instance-manifest.json")" = "$retained_snapshot"
+  if "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent rollback \
+    --instance-id "$instance_id" \
+    --product-root "$root/product" \
+    --json >"$root/reset-rollback-refused.json" 2>"$root/reset-rollback-refused-error.json"; then
+    printf 'CameraAgent rollback ran on a reset instance before its reinstall.\n' >&2
     exit 1
-  }
-
-  # The release script's own container smoke deliberately prevents building a broken signed candidate. Instead,
-  # this campaign-only shim forwards every Docker command to the real daemon and changes exactly one inspection
-  # result after the healthy candidate is running. The lifecycle therefore passes every acquisition, agreement,
-  # state, drain, stop, backup, and Compose gate, then fails inside the ordinary candidate-container verifier. All
-  # automatic recovery calls see unmodified Docker results. Production code and candidate bytes remain untouched.
-  signed_docker_shim_root="$root/signed-docker-shim"
-  mkdir -m 700 "$signed_docker_shim_root"
-  cat >"$signed_docker_shim_root/docker" <<'SIGNED_DOCKER_SHIM'
-#!/usr/bin/env bash
-set -euo pipefail
-
-arguments=("$@")
-inspect_target=""
-for ((index = 0; index + 2 < ${#arguments[@]}; index++)); do
-  if [[ "${arguments[$index]}" == container && "${arguments[$((index + 1))]}" == inspect ]]; then
-    inspect_target="${arguments[$((index + 2))]}"
-    break
   fi
+  test ! -e "$identity_root/cameraagent_identity.db"
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" "${common_arguments[@]}" >"$root/swap-post-reset.json"
+  test "$(jq -er '.healthy' "$root/swap-post-reset.json")" = true
+  test "$(jq -er '.previousStateSnapshot' "$instance_root/instance-manifest.json")" = null
+  test "$(jq -er '.previousImage.imageId' "$instance_root/instance-manifest.json")" = "$rollback_target_image_id"
+  post_reset_users="$(sqlite3 "file:$identity_root/cameraagent_identity.db?immutable=1" 'SELECT group_concat(Id) FROM (SELECT Id FROM AspNetUsers ORDER BY Id);')"
+  test -n "$post_reset_users"
+  test "$post_reset_users" != "$pre_reset_users"
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent rollback \
+    --instance-id "$instance_id" \
+    --product-root "$root/product" \
+    --json >"$root/post-reset-rollback.json" 2>"$root/post-reset-rollback-error.json"
+  test "$(jq -er '.outcome' "$root/post-reset-rollback.json")" = completed
+  test "$(jq -er '.image.imageId' "$root/post-reset-rollback.json")" = "$rollback_target_image_id"
+  # No restore warning and no snapshot: the rollback swapped images over the reinstalled databases.
+  test ! -s "$root/post-reset-rollback-error.json"
+  assert_running_image "$rollback_target_image_id" post-reset-rollback-status
+  test "$(jq -er '.stateSnapshotRequired' "$lifecycle_state")" = false
+  test "$(jq -er '.stateSnapshot' "$lifecycle_state")" = null
+  test "$(jq -er '.retainedStateSnapshot' "$lifecycle_state")" = null
+  test "$(jq -er '.previousStateSnapshot' "$instance_root/instance-manifest.json")" = null
+  test "$(sqlite3 "file:$identity_root/cameraagent_identity.db?immutable=1" 'SELECT group_concat(Id) FROM (SELECT Id FROM AspNetUsers ORDER BY Id);')" = \
+    "$post_reset_users"
+
+  printf 'Swap upgrade contract passed for instance %s: routine upgrade snapshots nothing, migrating upgrade snapshots and verifies the real stores, rollback restores them, and a rollback after a state reset and reinstall is a pure swap.\n' \
+    "$instance_id"
+fi
+
+# A restore keeps the live owner settings (#1353 PR-1369-R2 F14). The startup seeder makes the account
+# LocalIdentity__AdminEmail names the site owner. After a purge and a fresh install of the same instance with another
+# owner, the live settings name that owner; a backup taken before names the first. Restoring it over the fresh instance
+# keeps the live settings and owner email, and reinstalling runs the real seeder on the restored databases, which must
+# leave the backup's owner demoted and the live owner the site owner.
+backup_owner="installer-contract@example.test"
+live_owner="restore-live-owner@example.test"
+site_owner() {
+  sqlite3 -readonly "$identity_root/cameraagent_identity.db" \
+    "SELECT COALESCE(MAX(IsSiteOwner), 'absent') FROM AspNetUsers WHERE NormalizedEmail = upper('$1');"
+}
+# Fails the campaign with a message, so no step of this contract stops it silently.
+owner_contract_fails() {
+  printf 'Restore owner settings contract: %s\n' "$1" >&2
+  exit 1
+}
+[[ "$(site_owner "$backup_owner")" == 1 ]] || owner_contract_fails "$backup_owner is not the site owner before the backup."
+logged "$root/owner-backup-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent backup \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-backup.json"
+[[ "$(jq -er '.outcome' "$root/owner-backup.json")" == completed ]] || owner_contract_fails "the backup did not complete."
+owner_archive="$(jq -er '.backup.archive' "$root/owner-backup.json")"
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-uninstall.json"
+[[ "$(jq -er '.outcome' "$root/owner-uninstall.json")" == completed ]] || owner_contract_fails "the uninstall did not complete."
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent purge \
+  --instance-id "$instance_id" \
+  --confirm-instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-purge.json"
+[[ "$(jq -er '.outcome' "$root/owner-purge.json")" == completed ]] || owner_contract_fails "the purge did not complete."
+[[ ! -e "$instance_root" ]] || owner_contract_fails "the purge left the instance root."
+[[ -f "$root/product/backups/$owner_archive" ]] || owner_contract_fails "the purge removed the backup."
+live_owner_install=("${common_arguments[@]}")
+for index in "${!live_owner_install[@]}"; do
+  if [[ "${live_owner_install[$index]}" == "$backup_owner" ]]; then live_owner_install[$index]="$live_owner"; fi
 done
-
-if [[ "${HVO_INSTALLER_TEST_INJECT_CANDIDATE_VERIFY_FAILURE:-0}" == 1 &&
-      "$inspect_target" == "${HVO_INSTALLER_TEST_INJECT_CONTAINER:-}" &&
-      ! -e "${HVO_INSTALLER_TEST_INJECT_EVIDENCE:-}" ]]; then
-  inspect_json="$("$HVO_INSTALLER_TEST_REAL_DOCKER" "$@")"
-  inspected_image="$(jq -er '.[0].Image' <<<"$inspect_json")"
-  if [[ "$inspected_image" == "${HVO_INSTALLER_TEST_INJECT_IMAGE_ID:-}" ||
-        "$inspected_image" == "${HVO_INSTALLER_TEST_INJECT_MANIFEST_DIGEST:-}" ]]; then
-    if jq -e '.[0].State.Running == true and .[0].State.Health.Status == "healthy" and
-      .[0].HostConfig.Privileged == false' <<<"$inspect_json" >/dev/null; then
-      jq '.[0] | {
-        image: .Image,
-        running: .State.Running,
-        health: .State.Health.Status,
-        privileged: .HostConfig.Privileged
-      }' <<<"$inspect_json" >"$HVO_INSTALLER_TEST_INJECT_EVIDENCE"
-      jq '.[0].HostConfig.Privileged = true' <<<"$inspect_json"
-      exit 0
-    fi
-  fi
-  printf '%s\n' "$inspect_json"
-  exit 0
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" "${live_owner_install[@]}" >"$root/owner-install.json"
+[[ "$(jq -er '.healthy' "$root/owner-install.json")" == true ]] || owner_contract_fails "the fresh install with $live_owner is not healthy."
+[[ "$(site_owner "$live_owner")" == 1 ]] || owner_contract_fails "the fresh install did not make $live_owner the site owner."
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-live-uninstall.json"
+[[ "$(jq -er '.outcome' "$root/owner-live-uninstall.json")" == completed ]] || owner_contract_fails "the second uninstall did not complete."
+logged "$root/owner-restore-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent restore "$owner_archive" \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-restore.json"
+[[ "$(jq -er '.outcome' "$root/owner-restore.json")" == completed ]] || owner_contract_fails "the restore did not complete."
+owner_reinstall_status=0
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reinstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-reinstall.json" 2>"$root/owner-reinstall-error.json" || owner_reinstall_status=$?
+# The real seeder has run on the restored databases once the reinstalled container started, whatever the reinstall's
+# own verification then decided.
+backup_owner_state="$(site_owner "$backup_owner")"
+live_owner_state="$(site_owner "$live_owner")"
+if [[ "$backup_owner_state" != 0 ]]; then
+  owner_contract_fails "the restore brought back the backup's owner settings: the startup seeder made $backup_owner the site owner again ($backup_owner_state)."
 fi
-
-exec "$HVO_INSTALLER_TEST_REAL_DOCKER" "$@"
-SIGNED_DOCKER_SHIM
-  chmod 700 "$signed_docker_shim_root/docker"
-
-  "$signed_cli" "${signed_install_arguments[@]}" >"$root/signed-install.json"
-  read_signed_status signed-status-install
-  capture_signed_state 01-install-release-a signed-install signed-status-install
-  test "$(jq -er '.instanceId' "$root/signed-install.json")" = "$signed_instance_id"
-  test "$(jq -er '.healthy' "$root/signed-install.json")" = true
-  assert_signed_installed_identity \
-    "$(jq -er '.image.imageId' "$root/signed-install.json")" "$signed_image_a" "$signed_digest_a"
-  test "$(jq -er '.image.source' "$root/signed-install.json")" = archive
-  test "$(jq -er '.image.sourceRevision' "$root/signed-install.json")" = "$signed_revision_a"
-  assert_signed_evidence_names "$signed_version_a" "$signed_image_a" "$signed_revision_a"
-  test "$(jq -er '.distribution.assetName' "$signed_evidence_path")" = "$signed_archive_a"
-  assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-install
-  printf 'X-HVO-Installation-Token: %s\n' \
-    "$(<"$signed_instance_root/config/lifecycle-control/token")" >"$root/signed-lifecycle.header"
-  chmod 600 "$root/signed-lifecycle.header"
-
-  # A refused upgrade and a read-only preflight must leave every durable deployment record byte-identical. The
-  # record's own bytes are compared, so a refusal that rewrote the record with the release it refused, or merely
-  # re-stamped the record it found, fails here; the wider fingerprint catches the same thing in the instance
-  # manifest, the installation result and state, the retained preflight report, and the lifecycle journal.
-  signed_record_before="$(signed_record_fingerprint)"
-  signed_durable_before="$(signed_durable_fingerprint)"
-
-  # The committed production trust root must not accept an ephemeral-key release. This CLI is published from the
-  # same archived candidate source as the campaign CLI and differs from it only in the embedded trust root, so the
-  # refusal isolates the key rather than any other difference between two builds.
-  if "$signed_production_cli" cameraagent upgrade \
-    --instance-id "$signed_instance_id" \
-    --product-root "$root/product" \
-    --channel local \
-    --image-manifest "$signed_manifest_b" \
-    --no-download \
-    --migration-backward-compatible \
-    --json >"$root/signed-production-trust.json" 2>"$root/signed-production-trust-error.json"; then
-    printf 'The production trust root accepted a release signed by the campaign key.\n' >&2
-    exit 1
-  fi
-  read_signed_status signed-status-production-trust
-  capture_signed_state 02-production-trust-root-refusal \
-    signed-production-trust-error signed-status-production-trust
-  test ! -s "$root/signed-production-trust.json"
-  test "$(jq -er '.errorCode' "$root/signed-production-trust-error.json")" = installation-failed
-  jq -er '.message | test("could not be acquired or verified")' "$root/signed-production-trust-error.json" >/dev/null
-  test "$(signed_record_fingerprint)" = "$signed_record_before"
-  test "$(signed_durable_fingerprint)" = "$signed_durable_before"
-  assert_signed_evidence_names "$signed_version_a" "$signed_image_a" "$signed_revision_a"
-  assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-production-trust
-
-  # The state preflight resolves the same signed release the upgrade is about to consume, without acquiring the
-  # archive or contacting Docker, so the candidate's declared boundaries are evaluated before anything is touched.
-  # It must name that release and change nothing, or a preflight that ignored the selector would pass unnoticed.
-  "$signed_cli" cameraagent preflight \
-    --instance-id "$signed_instance_id" \
-    --product-root "$root/product" \
-    --channel local \
-    --image-manifest "$signed_manifest_b" \
-    --no-download \
-    --json >"$root/signed-candidate-preflight.json"
-  read_signed_status signed-status-candidate-preflight
-  capture_signed_state 03a-candidate-preflight signed-candidate-preflight signed-status-candidate-preflight
-  test "$(jq -er '.compatible' "$root/signed-candidate-preflight.json")" = true
-  test "$(jq -er '.outcome' "$root/signed-candidate-preflight.json")" = compatible
-  test "$(jq -er '.candidateRelease' "$root/signed-candidate-preflight.json")" = "image-v$signed_version_b"
-  assert_signed_installed_identity \
-    "$(jq -er '.candidateImageId' "$root/signed-candidate-preflight.json")" "$signed_image_b" "$signed_digest_b"
-  test "$(jq -er '[.findings[] | select(.blocking)] | length' "$root/signed-candidate-preflight.json")" = 0
-  test "$(signed_record_fingerprint)" = "$signed_record_before"
-  test "$(signed_durable_fingerprint)" = "$signed_durable_before"
-  assert_signed_evidence_names "$signed_version_a" "$signed_image_a" "$signed_revision_a"
-  assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-candidate-preflight
-
-  # The candidate has passed the read-only preflight and every signed-acquisition gate. Force only the first real
-  # container verification after candidate Compose-up to report an impossible privileged runtime. The lifecycle
-  # must catch that post-mutation failure, restore release A's exact runtime and Compose files, resume capture, and
-  # never call either signed-evidence writer for release B or the rollback evidence remover.
-  signed_manifest_before_failure="$(sha256sum "$signed_instance_root/instance-manifest.json" | cut -d ' ' -f 1)"
-  signed_result_before_failure="$(sha256sum "$signed_instance_root/state/deployment/installation-result.json" | cut -d ' ' -f 1)"
-  signed_compose_before_failure="$(sha256sum "$signed_compose_file" | cut -d ' ' -f 1)"
-  signed_environment_before_failure="$(sha256sum "$signed_environment_file" | cut -d ' ' -f 1)"
-  signed_candidate_inspection="$root/signed-candidate-verification-inspect.json"
-  signed_real_docker="$(command -v docker)"
-  rm -f "$signed_candidate_inspection"
-  if env \
-    PATH="$signed_docker_shim_root:$PATH" \
-    HVO_INSTALLER_TEST_REAL_DOCKER="$signed_real_docker" \
-    HVO_INSTALLER_TEST_INJECT_CANDIDATE_VERIFY_FAILURE=1 \
-    HVO_INSTALLER_TEST_INJECT_CONTAINER="$signed_container" \
-    HVO_INSTALLER_TEST_INJECT_IMAGE_ID="$signed_image_b" \
-    HVO_INSTALLER_TEST_INJECT_MANIFEST_DIGEST="$signed_digest_b" \
-    HVO_INSTALLER_TEST_INJECT_EVIDENCE="$signed_candidate_inspection" \
-    "$signed_cli" cameraagent upgrade \
-      --instance-id "$signed_instance_id" \
-      --product-root "$root/product" \
-      --channel local \
-      --image-manifest "$signed_manifest_b" \
-      --no-download \
-      --migration-backward-compatible \
-      --json >"$root/signed-post-mutation-failure.json" 2>"$root/signed-post-mutation-failure-error.json"; then
-    printf 'The injected post-mutation candidate verification failure unexpectedly succeeded.\n' >&2
-    exit 1
-  fi
-  read_signed_status signed-status-post-mutation-restore
-  read_signed_continuity signed-continuity-post-mutation-restore
-  signed_restored_sequence="$(jq -er '.captureSequence' "$root/signed-continuity-post-mutation-restore.json")"
-  for _ in {1..60}; do
-    read_signed_continuity signed-continuity-post-mutation-resumed
-    if jq -e --argjson restored "$signed_restored_sequence" '
-      .captureControl.value.state == "Running" and .captureSequence > $restored
-    ' "$root/signed-continuity-post-mutation-resumed.json" >/dev/null; then
-      break
-    fi
-    sleep 1
-  done
-  capture_signed_state 03b-post-mutation-failure-restore \
-    signed-post-mutation-failure-error \
-    signed-candidate-verification-inspect \
-    signed-status-post-mutation-restore \
-    signed-continuity-post-mutation-restore \
-    signed-continuity-post-mutation-resumed
-  test ! -s "$root/signed-post-mutation-failure.json"
-  test -s "$signed_candidate_inspection"
-  # The recovery boundary always writes candidate diagnostics once mutation has started, so the retained copy must
-  # exist and must name the candidate container the lifecycle read logs from.
-  test -s "$signed_evidence_root/03b-post-mutation-failure-restore/candidate-diagnostics.txt"
-  grep -Fq "container=$signed_container" \
-    "$signed_evidence_root/03b-post-mutation-failure-restore/candidate-diagnostics.txt"
-  test "$(jq -er '.errorCode' "$root/signed-post-mutation-failure-error.json")" = installation-failed
-  jq -er '.message | test("retained journal and diagnostics identify the recovery boundary")' \
-    "$root/signed-post-mutation-failure-error.json" >/dev/null
-  test "$(jq -er '.image' "$signed_candidate_inspection")" = "$signed_image_b" || \
-    test "$(jq -er '.image' "$signed_candidate_inspection")" = "$signed_digest_b"
-  test "$(jq -er '.running' "$signed_candidate_inspection")" = true
-  test "$(jq -er '.health' "$signed_candidate_inspection")" = healthy
-  test "$(jq -er '.privileged' "$signed_candidate_inspection")" = false
-  test "$(jq -er '.kind' "$signed_lifecycle_state")" = Upgrade
-  test "$(jq -er '.phase' "$signed_lifecycle_state")" = Prepared
-  test "$(jq -er '.status' "$signed_lifecycle_state")" = Failed
-  test "$(jq -er '.mutationStarted' "$signed_lifecycle_state")" = false
-  test "$(jq -er '.failureCode' "$signed_lifecycle_state")" = lifecycle-failed
-  jq -er '.failureMessage | test("unprivileged")' "$signed_lifecycle_state" >/dev/null
-  test "$(jq -er '.preMutationContinuity.captureState' "$signed_lifecycle_state")" = Paused
-  test "$(jq -er '.postMutationContinuity == null' "$signed_lifecycle_state")" = true
-  assert_signed_installed_identity \
-    "$(jq -er '.candidateImage.imageId' "$signed_lifecycle_state")" "$signed_image_b" "$signed_digest_b"
-  test "$(sha256sum "$signed_instance_root/instance-manifest.json" | cut -d ' ' -f 1)" = \
-    "$signed_manifest_before_failure"
-  test "$(sha256sum "$signed_instance_root/state/deployment/installation-result.json" | cut -d ' ' -f 1)" = \
-    "$signed_result_before_failure"
-  test "$(sha256sum "$signed_compose_file" | cut -d ' ' -f 1)" = "$signed_compose_before_failure"
-  test "$(sha256sum "$signed_environment_file" | cut -d ' ' -f 1)" = "$signed_environment_before_failure"
-  test "$(signed_record_fingerprint)" = "$signed_record_before"
-  assert_signed_evidence_names "$signed_version_a" "$signed_image_a" "$signed_revision_a"
-  assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-post-mutation-restore
-  test "$(jq -er '.captureControl.value.state' "$root/signed-continuity-post-mutation-restore.json")" = Running
-  jq -e --argjson restored "$signed_restored_sequence" '
-    .captureControl.value.state == "Running" and .captureSequence > $restored
-  ' "$root/signed-continuity-post-mutation-resumed.json" >/dev/null
-
-  "$signed_cli" cameraagent upgrade \
-    --instance-id "$signed_instance_id" \
-    --product-root "$root/product" \
-    --channel local \
-    --image-manifest "$signed_manifest_b" \
-    --no-download \
-    --migration-backward-compatible \
-    --resume \
-    --json >"$root/signed-upgrade.json"
-  read_signed_status signed-status-upgrade
-  capture_signed_state 03c-resumed-upgrade-release-b signed-upgrade signed-status-upgrade
-  test "$(jq -er '.outcome' "$root/signed-upgrade.json")" = completed
-  assert_signed_installed_identity \
-    "$(jq -er '.image.imageId' "$root/signed-upgrade.json")" "$signed_image_b" "$signed_digest_b"
-  test "$(jq -er '.image.sourceRevision' "$root/signed-upgrade.json")" = "$signed_revision_b"
-  assert_signed_evidence_names "$signed_version_b" "$signed_image_b" "$signed_revision_b"
-  test "$(jq -er '.distribution.assetName' "$signed_evidence_path")" = "$signed_archive_b"
-  assert_signed_running_image "$signed_image_b" "$signed_digest_b" signed-status-upgrade
-  test "$(signed_record_fingerprint)" != "$signed_record_before"
-  signed_record_before="$(signed_record_fingerprint)"
-
-  # An operator-supplied image that no signed release named must withdraw the retained record, otherwise the record
-  # keeps naming a release the instance no longer runs. Release A's image is still loaded from the candidate build,
-  # so the instance is moved to it by the identity the daemon reported at install rather than through a manifest.
-  "$signed_cli" cameraagent upgrade \
-    --instance-id "$signed_instance_id" \
-    --product-root "$root/product" \
-    --image-ref "$(jq -er '.image.imageId' "$root/signed-install.json")" \
-    --no-download \
-    --migration-backward-compatible \
-    --json >"$root/signed-image-reference-upgrade.json"
-  read_signed_status signed-status-image-reference-upgrade
-  capture_signed_state 03d-image-reference-upgrade signed-image-reference-upgrade signed-status-image-reference-upgrade
-  test "$(jq -er '.outcome' "$root/signed-image-reference-upgrade.json")" = completed
-  assert_signed_installed_identity \
-    "$(jq -er '.image.imageId' "$root/signed-image-reference-upgrade.json")" "$signed_image_a" "$signed_digest_a"
-  test ! -e "$signed_evidence_path"
-  test "$(signed_record_fingerprint)" = absent
-  assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-image-reference-upgrade
-
-  # Returning to the signed candidate through its manifest records it again, so the remaining transitions start from
-  # the state they always did: release B running with its record present.
-  "$signed_cli" cameraagent upgrade \
-    --instance-id "$signed_instance_id" \
-    --product-root "$root/product" \
-    --channel local \
-    --image-manifest "$signed_manifest_b" \
-    --no-download \
-    --migration-backward-compatible \
-    --json >"$root/signed-reupgrade.json"
-  read_signed_status signed-status-reupgrade
-  capture_signed_state 03e-signed-upgrade-release-b signed-reupgrade signed-status-reupgrade
-  test "$(jq -er '.outcome' "$root/signed-reupgrade.json")" = completed
-  assert_signed_installed_identity \
-    "$(jq -er '.image.imageId' "$root/signed-reupgrade.json")" "$signed_image_b" "$signed_digest_b"
-  assert_signed_evidence_names "$signed_version_b" "$signed_image_b" "$signed_revision_b"
-  test "$(jq -er '.distribution.assetName' "$signed_evidence_path")" = "$signed_archive_b"
-  assert_signed_running_image "$signed_image_b" "$signed_digest_b" signed-status-reupgrade
-  # Re-acquiring the same release rewrites the record with fresh acquisition and verification timestamps; every
-  # other field must match the record the first upgrade to release B retained.
-  diff <(jq -S 'del(.recordedUtc, .distribution.verifiedUtc)' \
-      "$signed_evidence_root/03c-resumed-upgrade-release-b/image-distribution.json") \
-    <(jq -S 'del(.recordedUtc, .distribution.verifiedUtc)' "$signed_evidence_path") >/dev/null
-  signed_record_before="$(signed_record_fingerprint)"
-  signed_durable_before="$(signed_durable_fingerprint)"
-
-  # Four acquisition-stage refusals. Each derived release varies exactly one trust or integrity condition against
-  # the release just accepted, so each isolates one gate even though the CLI reports them all through one acquirer
-  # diagnostic: a signature made by a key the trust root does not hold, a manifest declaring a key identity the
-  # trust root does not carry under the trusted key's real signature, the trusted key's real signature over other
-  # bytes, and a release naming the other candidate's archive under this release's signed length and checksum.
-  # None of them may touch the instance, the retained record, or the lifecycle journal.
-  refuse_signed_acquisition() {
-    local label="$1" manifest="$2" asset_base="$3" evidence_label="$4" failure="$5"
-    if "$signed_cli" cameraagent upgrade \
-      --instance-id "$signed_instance_id" \
-      --product-root "$root/product" \
-      --channel local \
-      --image-manifest "$manifest" \
-      --asset-base-url "$asset_base" \
-      --no-download \
-      --migration-backward-compatible \
-      --json >"$root/signed-$label.json" 2>"$root/signed-$label-error.json"; then
-      printf '%s\n' "$failure" >&2
-      exit 1
-    fi
-    read_signed_status "signed-status-$label"
-    capture_signed_state "$evidence_label" "signed-$label-error" "signed-status-$label"
-    test ! -s "$root/signed-$label.json"
-    test "$(jq -er '.errorCode' "$root/signed-$label-error.json")" = installation-failed
-    jq -er '.message | test("could not be acquired or verified")' "$root/signed-$label-error.json" >/dev/null
-    test "$(signed_record_fingerprint)" = "$signed_record_before"
-    test "$(signed_durable_fingerprint)" = "$signed_durable_before"
-    assert_signed_evidence_names "$signed_version_b" "$signed_image_b" "$signed_revision_b"
-    assert_signed_running_image "$signed_image_b" "$signed_digest_b" "signed-status-$label"
-  }
-  refuse_signed_acquisition untrusted "$signed_manifest_untrusted" "$signed_workspace/release-b" \
-    04-untrusted-key-refusal 'The campaign trust root accepted a release signed by a key it does not hold.'
-  refuse_signed_acquisition declared-key "$signed_manifest_declared_key" "$signed_workspace/release-b" \
-    05-declared-key-identity-refusal 'A release declaring a key identity the trust root does not carry was accepted.'
-  refuse_signed_acquisition forged "$signed_manifest_forged" "$signed_workspace/release-b" \
-    06-forged-signature-refusal 'A release presented with another release signature was accepted.'
-  refuse_signed_acquisition mismatched "$signed_manifest_mismatched" "$signed_workspace/release-a" \
-    07-archive-integrity-refusal 'A release naming an archive that is not the one it signed was accepted.'
-
-  "$signed_cli" cameraagent rollback \
-    --instance-id "$signed_instance_id" \
-    --product-root "$root/product" \
-    --json >"$root/signed-rollback.json"
-  read_signed_status signed-status-rollback
-  capture_signed_state 08-rollback signed-rollback signed-status-rollback
-  test "$(jq -er '.outcome' "$root/signed-rollback.json")" = completed
-  assert_signed_installed_identity \
-    "$(jq -er '.image.imageId' "$root/signed-rollback.json")" "$signed_image_a" "$signed_digest_a"
-  # The rollback target is the retained previous image, not a release, so the record is withdrawn rather than
-  # rewritten: no retained evidence may claim a release the instance is no longer running.
-  test ! -e "$signed_evidence_path"
-  assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-rollback
-  signed_record_before="$(signed_record_fingerprint)"
-  test "$signed_record_before" = absent
-  signed_durable_before="$(signed_durable_fingerprint)"
-  signed_records_before="$(signed_record_set_fingerprint)"
-
-  # A release whose signed compatibility record contradicts the image it names is refused after acquisition and
-  # before any mutation, and it records nothing: a refused upgrade never resurrects a withdrawn release record.
-  if "$signed_cli" cameraagent upgrade \
-    --instance-id "$signed_instance_id" \
-    --product-root "$root/product" \
-    --channel local \
-    --image-manifest "$signed_manifest_contradicting" \
-    --asset-base-url "$signed_workspace/release-b" \
-    --no-download \
-    --migration-backward-compatible \
-    --json >"$root/signed-contradicting.json" 2>"$root/signed-contradicting-error.json"; then
-    printf 'A release contradicting the image labels was accepted.\n' >&2
-    exit 1
-  fi
-  read_signed_status signed-status-contradicting
-  capture_signed_state 09-contradicting-label-refusal signed-contradicting-error signed-status-contradicting
-  test ! -s "$root/signed-contradicting.json"
-  test "$(jq -er '.errorCode' "$root/signed-contradicting-error.json")" = installation-failed
-  jq -er '.message | test("does not carry the compatibility identity the release signed")' \
-    "$root/signed-contradicting-error.json" >/dev/null
-  jq -er '.message | test("minimum compatible revision signed")' "$root/signed-contradicting-error.json" >/dev/null
-  # The label-agreement gate runs after the operation is journalled but before any mutation, so the refusal is
-  # settled as a terminal failure: Failed, carrying the lifecycle-refused code and the gate's own diagnostic, with
-  # mutationStarted=false. A journal that still reported the refused operation as Running would block rollback,
-  # uninstall, and every other upgrade behind a --resume the same gate refuses again (#638).
-  test "$(jq -er '.kind' "$signed_lifecycle_state")" = Upgrade
-  test "$(jq -er '.phase' "$signed_lifecycle_state")" = Prepared
-  test "$(jq -er '.status' "$signed_lifecycle_state")" = Failed
-  test "$(jq -er '.failureCode' "$signed_lifecycle_state")" = lifecycle-refused
-  jq -er '.failureMessage | test("does not carry the compatibility identity the release signed")' \
-    "$signed_lifecycle_state" >/dev/null
-  test "$(jq -er '.mutationStarted' "$signed_lifecycle_state")" = false
-  assert_signed_installed_identity \
-    "$(jq -er '.image.imageId' "$signed_instance_root/instance-manifest.json")" "$signed_image_a" "$signed_digest_a"
-  test "$(signed_record_fingerprint)" = "$signed_record_before"
-  test ! -e "$signed_evidence_path"
-  assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-contradicting
-  # The label-agreement refusal legitimately journals its operation, so the journal must have changed while every
-  # other durable record, including the staged archive, stays byte-identical.
-  test "$(signed_record_set_fingerprint)" = "$signed_records_before"
-  test "$(signed_durable_fingerprint)" != "$signed_durable_before"
-  signed_durable_before="$(signed_durable_fingerprint)"
-
-  # The refused operation is terminal, so resuming the refused command finds nothing to resume. The refusal must
-  # come from the journal, not from the label gate again, and it must leave every durable record, the journal
-  # included, byte-identical.
-  if "$signed_cli" cameraagent upgrade \
-    --instance-id "$signed_instance_id" \
-    --product-root "$root/product" \
-    --channel local \
-    --image-manifest "$signed_manifest_contradicting" \
-    --asset-base-url "$signed_workspace/release-b" \
-    --no-download \
-    --migration-backward-compatible \
-    --resume \
-    --json >"$root/signed-contradicting-resume.json" 2>"$root/signed-contradicting-resume-error.json"; then
-    printf 'A refused upgrade was resumed.\n' >&2
-    exit 1
-  fi
-  read_signed_status signed-status-contradicting-resume
-  capture_signed_state 09b-refused-upgrade-resume-refusal signed-contradicting-resume-error \
-    signed-status-contradicting-resume
-  test ! -s "$root/signed-contradicting-resume.json"
-  test "$(jq -er '.errorCode' "$root/signed-contradicting-resume-error.json")" = installation-failed
-  jq -er '.message | test("No incomplete matching lifecycle operation exists")' \
-    "$root/signed-contradicting-resume-error.json" >/dev/null
-  test "$(signed_record_fingerprint)" = "$signed_record_before"
-  test ! -e "$signed_evidence_path"
-  test "$(signed_durable_fingerprint)" = "$signed_durable_before"
-  assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-contradicting-resume
-
-  # The state-compatibility preflight must still pass on the instance the signed lifecycle left behind, so the
-  # scenario cannot have reached its end by weakening the gate it shares with the operator-supplied image path.
-  "$signed_cli" cameraagent preflight \
-    --instance-id "$signed_instance_id" \
-    --product-root "$root/product" \
-    --json >"$root/signed-preflight.json"
-  read_signed_status signed-status-preflight
-  capture_signed_state 10-final-preflight signed-preflight signed-status-preflight
-  test "$(jq -er '.compatible' "$root/signed-preflight.json")" = true
-  test "$(jq -er '.outcome' "$root/signed-preflight.json")" = compatible
-  test "$(jq -er '.instanceId' "$root/signed-preflight.json")" = "$signed_instance_id"
-  test "$(jq -er '[.findings[] | select(.blocking)] | length' "$root/signed-preflight.json")" = 0
-  test "$(signed_record_fingerprint)" = "$signed_record_before"
-  test "$(signed_durable_fingerprint)" = "$signed_durable_before"
-  test ! -e "$signed_evidence_path"
-  assert_signed_running_image "$signed_image_a" "$signed_digest_a" signed-status-preflight
-
-  # The instance the refusal left behind is operable without --resume: an ordinary uninstall completes, the journal
-  # moves to the completed uninstall, the withdrawn release record stays absent, and the container is gone. The
-  # container is removed by the operation itself, so this transition retains its evidence without the running
-  # container the earlier captures require.
-  "$signed_cli" cameraagent uninstall \
-    --instance-id "$signed_instance_id" \
-    --product-root "$root/product" \
-    --json >"$root/signed-uninstall.json"
-  test "$(jq -er '.outcome' "$root/signed-uninstall.json")" = completed
-  test "$(jq -er '.lifecycleCondition' "$root/signed-uninstall.json")" = Uninstalled
-  test "$(jq -er '.kind' "$signed_lifecycle_state")" = Uninstall
-  test "$(jq -er '.phase' "$signed_lifecycle_state")" = Completed
-  test "$(jq -er '.status' "$signed_lifecycle_state")" = Completed
-  test "$(jq -er '.lifecycleCondition' "$signed_instance_root/instance-manifest.json")" = Uninstalled
-  test "$(signed_record_fingerprint)" = absent
-  test ! -e "$signed_evidence_path"
-  # The local-runner profile runs two containers, so both must be gone.
-  for signed_uninstalled_container in "$signed_container" "$signed_container-replay"; do
-    if docker inspect "$signed_uninstalled_container" >/dev/null 2>&1; then
-      printf 'Container %s survived the signed instance uninstall.\n' "$signed_uninstalled_container" >&2
-      exit 1
-    fi
-  done
-  rm -rf "$signed_evidence_root/11-post-refusal-uninstall"
-  mkdir -p "$signed_evidence_root/11-post-refusal-uninstall"
-  cp "$root/signed-uninstall.json" "$signed_evidence_root/11-post-refusal-uninstall/signed-uninstall.json"
-  cp "$signed_lifecycle_state" "$signed_evidence_root/11-post-refusal-uninstall/lifecycle.json"
-  cp "$signed_instance_root/instance-manifest.json" "$signed_evidence_root/11-post-refusal-uninstall/instance-manifest.json"
-  printf 'image-distribution.json is absent\n' >"$signed_evidence_root/11-post-refusal-uninstall/image-distribution.absent"
-  printf 'container %s is absent\ncontainer %s-replay is absent\n' "$signed_container" "$signed_container" \
-    >"$signed_evidence_root/11-post-refusal-uninstall/container-runtime.txt"
-
-  {
-    printf 'signed release campaign\n'
-    printf 'campaign trust root: %s (ephemeral; the production key is unavailable outside the release workflow)\n' "$signed_key_id"
-    printf 'production trust root refused this release: %s\n' "$signed_production_key_id"
-    printf 'release %s revision %s image %s\n' "$signed_version_a" "$signed_revision_a" "$signed_image_a"
-    printf 'release %s revision %s image %s\n' "$signed_version_b" "$signed_revision_b" "$signed_image_b"
-    printf 'post-mutation verification injection: one healthy candidate container inspection reported privileged; exact rollback restored release %s and capture advanced\n' "$signed_version_a"
-    printf 'campaign host architecture: %s\n' "$host_machine_architecture"
-    printf 'campaign native platform: linux/%s\n' "$host_image_architecture"
-    printf 'campaign CLI runtime: %s\n' "$host_cli_runtime"
-    printf 'Docker server architecture: %s/%s (%s)\n' "$docker_server_operating_system" \
-      "$docker_server_image_architecture" "$docker_server_machine_architecture"
-    printf 'Docker endpoint: %s (%s)\n' "$HVO_INSTALLER_DOCKER_ENDPOINT" \
-      "$HVO_INSTALLER_DOCKER_ENDPOINT_SOURCE"
-    printf 'arm64 builder: %s\n' "$signed_arm64_builder"
-  } >"$signed_evidence_root/summary.txt"
-  cp "$signed_manifest_a" "$signed_evidence_root/image-manifest-a.json"
-  cp "$signed_manifest_b" "$signed_evidence_root/image-manifest-b.json"
-  cp "$signed_workspace/release-a/SHA256SUMS" "$signed_evidence_root/SHA256SUMS-a.txt"
-  cp "$signed_workspace/release-b/SHA256SUMS" "$signed_evidence_root/SHA256SUMS-b.txt"
-  mkdir -p "$signed_evidence_root/refused-releases"
-  # The manifests alone do not show why each was refused: the forged one is byte-identical to the accepted
-  # release and differs only in the signature it was presented with. Retain the exact signatures and the public
-  # keys that verify them.
-  cp "$signed_derived_root"/*-image-manifest.json "$signed_derived_root"/*-image-manifest.json.sig \
-    "$signed_evidence_root/refused-releases/"
-  cp "$signed_workspace/release-a/image-manifest.json.sig" \
-    "$signed_evidence_root/refused-releases/release-a-image-manifest.json.sig"
-  cp "$signed_workspace/release-b/image-manifest.json.sig" \
-    "$signed_evidence_root/refused-releases/release-b-image-manifest.json.sig"
-  cp "$signed_workspace/signing.pub.pem" "$signed_evidence_root/refused-releases/campaign-trust-root.pem"
-  cp "$signed_workspace/untrusted.pub.pem" "$signed_evidence_root/refused-releases/untrusted-key.pem"
-  # Re-authenticate the complete retained candidates after all destructive lifecycle and refusal probes. This
-  # catches any campaign-time mutation instead of trusting only the checksum text stored beside the assets.
-  verify_signed_candidate a "$signed_revision_a" "$signed_version_a"
-  verify_signed_candidate b "$signed_revision_b" "$signed_version_b"
-
-  printf 'Signed CameraAgent image install, upgrade, rollback, refusal, and post-refusal uninstall contract passed for instance %s.\n' \
-    "$signed_instance_id"
-  printf 'Signed release campaign evidence retained under %s.\n' "$signed_evidence_root"
+if (( owner_reinstall_status != 0 )); then
+  cat "$root/owner-reinstall-error.json" >&2
+  printf 'The restore reported: %s\n' "$(jq -c '.warnings' "$root/owner-restore.json")" >&2
+  sqlite3 -readonly "$identity_root/cameraagent_identity.db" \
+    "SELECT Id, UserName, Email, IsSiteOwner, PasswordHash IS NULL, LockoutEnd FROM AspNetUsers;" >&2 || true
+  docker logs --tail 60 "$container" >&2 || true
+  owner_contract_fails "the reinstall after the restore failed (exit $owner_reinstall_status; $live_owner is $live_owner_state)."
 fi
+[[ "$live_owner_state" == 1 ]] || owner_contract_fails "the startup seeder did not make $live_owner the site owner ($live_owner_state)."
+[[ "$(jq -er '.outcome' "$root/owner-reinstall.json")" == completed ]] || owner_contract_fails "the reinstall did not complete."
+[[ "$(docker inspect --format '{{.State.Health.Status}}' "$container")" == healthy ]] || owner_contract_fails "the reinstalled instance is not healthy."
+[[ "$(cat "$instance_root/config/secrets/LocalIdentity__AdminEmail")" == "$live_owner" ]] ||
+  owner_contract_fails "LocalIdentity__AdminEmail is not the live owner's."
+[[ "$(jq -er '.ownerEmail' "$instance_root/instance-manifest.json")" == "$live_owner" ]] ||
+  owner_contract_fails "the instance manifest does not name the live owner."
+jq -e '[.warnings[]? | select(.code == "restore-live-owner-settings-kept")] | length == 1' "$root/owner-restore.json" >/dev/null ||
+  owner_contract_fails "the restore did not report the owner settings it kept: $(jq -c '.warnings' "$root/owner-restore.json")."
+# Restoring the same archive again changes nothing more (PR-1369-R4 F26): the backup's owner, which the first restore
+# renamed and locked out, is reconciled already, and the live owner stays in place through the real seeder.
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-again-uninstall.json"
+[[ "$(jq -er '.outcome' "$root/owner-again-uninstall.json")" == completed ]] || owner_contract_fails "the uninstall before the second restore did not complete."
+logged "$root/owner-again-restore-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent restore "$owner_archive" \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-again-restore.json"
+[[ "$(jq -er '.outcome' "$root/owner-again-restore.json")" == completed ]] || owner_contract_fails "the second restore of the same archive did not complete."
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reinstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-again-reinstall.json"
+[[ "$(jq -er '.outcome' "$root/owner-again-reinstall.json")" == completed ]] || owner_contract_fails "the reinstall after the second restore did not complete."
+[[ "$(site_owner "$backup_owner")" == 0 && "$(site_owner "$live_owner")" == 1 ]] ||
+  owner_contract_fails "after the second restore the site owners are $backup_owner $(site_owner "$backup_owner"), $live_owner $(site_owner "$live_owner")."
+printf 'Restore owner settings contract passed for instance %s: the real seeder kept the backup'"'"'s owner demoted and the live owner the site owner.\n' \
+  "$instance_id"
+
+# A fresh install that reuses the owner's email makes a new Identity account for it (PR-1369-R3 F25). Restoring a backup
+# taken before puts the live account in the place of the backup's, which held that email and sign-in name, so after the
+# real seeder runs the live owner is still the site owner and can still sign in with its live password.
+archived_owner_id="$(sqlite3 -readonly "$identity_root/cameraagent_identity.db" "SELECT Id FROM AspNetUsers WHERE NormalizedEmail = upper('$live_owner');")"
+[[ -n "$archived_owner_id" ]] || owner_contract_fails "$live_owner has no account before the same-email backup."
+logged "$root/owner2-backup-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent backup \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner2-backup.json"
+[[ "$(jq -er '.outcome' "$root/owner2-backup.json")" == completed ]] || owner_contract_fails "the same-email backup did not complete."
+owner2_archive="$(jq -er '.backup.archive' "$root/owner2-backup.json")"
+for step in uninstall purge; do
+  purge_arguments=()
+  [[ "$step" != purge ]] || purge_arguments=(--confirm-instance-id "$instance_id")
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent "$step" \
+    --instance-id "$instance_id" \
+    "${purge_arguments[@]}" \
+    --product-root "$root/product" \
+    --json >"$root/owner2-$step.json"
+  [[ "$(jq -er '.outcome' "$root/owner2-$step.json")" == completed ]] || owner_contract_fails "the same-email $step did not complete."
+done
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" "${live_owner_install[@]}" >"$root/owner2-install.json"
+[[ "$(jq -er '.healthy' "$root/owner2-install.json")" == true ]] || owner_contract_fails "the same-email fresh install is not healthy."
+live_owner_id="$(sqlite3 -readonly "$identity_root/cameraagent_identity.db" "SELECT Id FROM AspNetUsers WHERE NormalizedEmail = upper('$live_owner');")"
+[[ -n "$live_owner_id" && "$live_owner_id" != "$archived_owner_id" ]] ||
+  owner_contract_fails "the same-email fresh install did not make a new account for $live_owner ($live_owner_id)."
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner2-live-uninstall.json"
+[[ "$(jq -er '.outcome' "$root/owner2-live-uninstall.json")" == completed ]] || owner_contract_fails "the same-email second uninstall did not complete."
+logged "$root/owner2-restore-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent restore "$owner2_archive" \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner2-restore.json"
+[[ "$(jq -er '.outcome' "$root/owner2-restore.json")" == completed ]] || owner_contract_fails "the same-email restore did not complete."
+owner2_reinstall_status=0
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reinstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner2-reinstall.json" 2>"$root/owner2-reinstall-error.json" || owner2_reinstall_status=$?
+site_owner_account="$(sqlite3 -readonly "$identity_root/cameraagent_identity.db" \
+  "SELECT Id || '|' || (PasswordHash IS NOT NULL) || '|' || (LockoutEnd IS NULL) FROM AspNetUsers WHERE IsSiteOwner = 1;")"
+if [[ "$site_owner_account" != "$live_owner_id|1|1" ]]; then
+  owner_contract_fails "after the same-email restore the site owner is not the live owner's account $live_owner_id with its password and not locked out ($site_owner_account; the backup's was $archived_owner_id)."
+fi
+if (( owner2_reinstall_status != 0 )); then
+  cat "$root/owner2-reinstall-error.json" >&2
+  owner_contract_fails "the reinstall after the same-email restore failed (exit $owner2_reinstall_status)."
+fi
+[[ "$(jq -er '.outcome' "$root/owner2-reinstall.json")" == completed ]] || owner_contract_fails "the same-email reinstall did not complete."
+[[ "$(sqlite3 -readonly "$identity_root/cameraagent_identity.db" "SELECT (NormalizedEmail IS NULL) || '|' || IsSiteOwner || '|' || (PasswordHash IS NULL) FROM AspNetUsers WHERE Id = '$archived_owner_id';")" == "1|0|1" ]] ||
+  owner_contract_fails "the backup's account $archived_owner_id still holds the live owner's email, ownership or password."
+printf 'Restore same-email owner contract passed for instance %s: the live owner'"'"'s new account replaced the backup'"'"'s and can still sign in.\n' \
+  "$instance_id"
+
+printf 'Disposable offline installer contract passed for instance %s.\n' "$instance_id"

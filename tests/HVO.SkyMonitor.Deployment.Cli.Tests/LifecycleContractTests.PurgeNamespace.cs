@@ -893,7 +893,7 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual($"/proc/{Environment.ProcessId}/exe", arguments[1]);
         var helper = arguments.Skip(2).ToArray();
 
-        Assert.IsTrue(PrivilegedPurgeNamespace.TryParse(helper, out var command));
+        Assert.IsTrue(PrivilegedPurgeNamespace.TryParse(helper, InstallRequest.DefaultProductRoot, out var command));
         Assert.AreEqual(
             new PrivilegedPurgeNamespace.Command(PrivilegedPurgeNamespace.Action.Remove, instanceId, operationId, 1000, 1001, 4242, 8, 1),
             command);
@@ -901,7 +901,7 @@ public sealed partial class LifecycleContractTests
 
         foreach (var (index, value) in new (int, string)[]
                  {
-                     (0, "internal-prepare"), (2, "delete"), (4, "/tmp/hvo/skymonitor"), (4, InstallRequest.DefaultProductRoot + "/"),
+                     (0, "internal-prepare"), (2, "delete"), (4, "/tmp/hvo-sky"), (4, InstallRequest.DefaultProductRoot + "/"),
                      (6, instanceId.ToString("N")), (6, Guid.Empty.ToString("D")), (8, "../../etc"), (10, "0"), (10, "+1000"),
                      (10, " 1000"), (10, "-1"), (12, "1001 "), (14, "0x1092"), (16, "8.0"), (18, "4294967296"), (1, "--action=remove"),
                      (5, "--operation-id")
@@ -909,13 +909,14 @@ public sealed partial class LifecycleContractTests
         {
             var changed = (string[])helper.Clone();
             changed[index] = value;
-            Assert.IsFalse(PrivilegedPurgeNamespace.TryParse(changed, out _), $"{index}={value}");
+            Assert.IsFalse(PrivilegedPurgeNamespace.TryParse(changed, InstallRequest.DefaultProductRoot, out _), $"{index}={value}");
         }
-        Assert.IsFalse(PrivilegedPurgeNamespace.TryParse([.. helper, "--force"], out _));
-        Assert.IsFalse(PrivilegedPurgeNamespace.TryParse(helper[..^1], out _));
+        Assert.IsFalse(PrivilegedPurgeNamespace.TryParse([.. helper, "--force"], InstallRequest.DefaultProductRoot, out _));
+        Assert.IsFalse(PrivilegedPurgeNamespace.TryParse(helper[..^1], InstallRequest.DefaultProductRoot, out _));
         Assert.AreEqual(
             PrivilegedPurgeNamespace.NamespaceRoot(InstallRequest.DefaultProductRoot),
-            "/" + string.Join('/', PrivilegedPurgeNamespace.NamespaceComponents.Select(static component => component.Name)));
+            "/" + string.Join('/', PrivilegedPurgeNamespace.NamespaceComponents(ProductionProductRoot.Default)
+                .Select(static component => component.Name)));
     }
 
     [TestMethod]
@@ -1081,7 +1082,7 @@ public sealed partial class LifecycleContractTests
             Assert.AreEqual(fixture.Paths.ProductRoot, arguments[6]);
             var helper = arguments.Skip(2).ToArray();
             helper[4] = InstallRequest.DefaultProductRoot;
-            Assert.IsTrue(PrivilegedPurgeNamespace.TryParse(helper, out var command));
+            Assert.IsTrue(PrivilegedPurgeNamespace.TryParse(helper, InstallRequest.DefaultProductRoot, out var command));
             commands?.Add(command);
             try
             {

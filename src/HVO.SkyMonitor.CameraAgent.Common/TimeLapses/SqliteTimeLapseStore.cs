@@ -156,10 +156,11 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
             using var connection = await OpenAsync(token).ConfigureAwait(false);
             await RecoverPublicationsAsync(connection, token).ConfigureAwait(false);
             using var transaction = Begin(connection);
-            using var command = Command(connection, transaction, "SELECT " + JobColumns + """
-                 FROM jobs AS job WHERE state = 'Queued'
-                   AND NOT EXISTS(SELECT 1 FROM jobs AS child WHERE child.parent_job_id = job.job_id AND child.state IN ('Queued','Working'))
-                 ORDER BY CASE WHEN parent_job_id IS NULL THEN 1 ELSE 0 END, updated_ticks, job_id LIMIT 1;
+            using var command = Command(connection, transaction, $"""
+                SELECT {JobColumns}
+                FROM jobs AS job WHERE state = 'Queued'
+                  AND NOT EXISTS(SELECT 1 FROM jobs AS child WHERE child.parent_job_id = job.job_id AND child.state IN ('Queued','Working'))
+                ORDER BY CASE WHEN parent_job_id IS NULL THEN 1 ELSE 0 END, updated_ticks, job_id LIMIT 1;
                 """);
             CameraAgentTimeLapseJob? job;
             using (var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false))

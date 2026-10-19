@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1771" height="702" viewBox="0 0 1771.20 702.00" role="img" aria-label="hvo-sky-install">
+<g font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', 'DejaVu Sans Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" xml:space="preserve" style="white-space: pre">
+<rect x="0" y="0" width="1771.20" height="702.00" rx="8" fill="#1e1e1e"/>
+<rect x="0" y="0" width="1771.20" height="30" rx="8" fill="#323233"/>
+<rect x="0" y="22" width="1771.20" height="8" fill="#323233"/>
+<circle cx="16" cy="15.0" r="6" fill="#ff5f57"/>
+<circle cx="36" cy="15.0" r="6" fill="#febc2e"/>
+<circle cx="56" cy="15.0" r="6" fill="#28c840"/>
+<text x="885.60" y="20.0" fill="#cccccc" text-anchor="middle" font-size="13">hvo-sky-install</text>
+<rect x="12.00" y="42" width="1008.40" height="18.4" fill="#0d1420"/>
+<rect x="12.00" y="60" width="1008.40" height="18.4" fill="#0d1420"/>
+<rect x="12.00" y="78" width="1008.40" height="18.4" fill="#0d1420"/>
+<rect x="12.00" y="96" width="1008.40" height="18.4" fill="#0d1420"/>
+<rect x="12.00" y="114" width="1008.40" height="18.4" fill="#0d1420"/>
+<rect x="12.00" y="132" width="1008.40" height="18.4" fill="#0d1420"/>
+<rect x="12.00" y="150" width="1008.40" height="18.4" fill="#0d1420"/>
+<rect x="12.00" y="582" width="1008.40" height="18.4" fill="#0c3721"/>
+<rect x="12.00" y="600" width="1008.40" height="18.4" fill="#0d1420"/>
+<rect x="12.00" y="618" width="1008.40" height="18.4" fill="#0d1420"/>
+<rect x="12.00" y="636" width="1008.40" height="18.4" fill="#0d1420"/>
+<rect x="12.00" y="654" width="1008.40" height="18.4" fill="#0d1420"/>
+<line x1="16.20" y1="50.40" x2="16.20" y2="159.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="16.20" y1="608.40" x2="16.20" y2="663.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="15.60" y1="51.00" x2="29.40" y2="51.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="129.00" y1="51.00" x2="1016.40" y2="51.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="1015.80" y1="50.40" x2="1015.80" y2="159.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="1015.80" y1="608.40" x2="1015.80" y2="663.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="15.60" y1="159.00" x2="1016.40" y2="159.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="15.60" y1="609.00" x2="29.40" y2="609.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="78.60" y1="609.00" x2="1016.40" y2="609.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="15.60" y1="663.00" x2="1016.40" y2="663.00" stroke="#3a4a60" stroke-width="1.2"/>
+<text x="37.20" y="55.50" fill="#58a6ff" textLength="84.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">INSTALLING</text>
+<text x="28.80" y="73.50" fill="#f7f9fc" textLength="823.20" lengthAdjust="spacingAndGlyphs">Carrying out the plan you reviewed for Allsky East, instance 6f9b3c1e-2d4a-4e8b-9c7d-1a2b3c4d5e6f.</text>
+<text x="28.80" y="91.50" fill="#98a7bb" textLength="747.60" lengthAdjust="spacingAndGlyphs">The installer asks sudo for the steps that need root: it may ask for your password below.</text>
+<text x="28.80" y="109.50" fill="#98a7bb" textLength="697.20" lengthAdjust="spacingAndGlyphs">It takes a few minutes. Ctrl+C stops it; running the same command again carries on.</text>
+<text x="28.80" y="127.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Answers</text>
+<text x="112.80" y="127.50" fill="#f7f9fc" textLength="428.40" lengthAdjust="spacingAndGlyphs">/home/operator/.config/hvo-sky/install-answers.json</text>
+<text x="28.80" y="145.50" fill="#98a7bb" textLength="462.00" lengthAdjust="spacingAndGlyphs">The command, under this panel, is the one to run again.</text>
+<text x="12.00" y="181.50" fill="#d4d4d4" textLength="1747.20" lengthAdjust="spacingAndGlyphs">hvo-sky-install cameraagent install --answers /home/operator/.config/hvo-sky/install-answers.json --release /home/operator/hvo-sky-0.9.0 --catalog-bundle /home/operator/.cache/hvo-sky/hyg-v4.2-p3-s2-r1.bundle</text>
+<text x="12.00" y="217.50" fill="#d4d4d4" textLength="151.20" lengthAdjust="spacingAndGlyphs">Outcome: Installed</text>
+<text x="12.00" y="235.50" fill="#d4d4d4" textLength="504.00" lengthAdjust="spacingAndGlyphs">Instance: 6f9b3c1e-2d4a-4e8b-9c7d-1a2b3c4d5e6f (Allsky East)</text>
+<text x="12.00" y="253.50" fill="#d4d4d4" textLength="226.80" lengthAdjust="spacingAndGlyphs">URL: http://127.0.0.1:5130/</text>
+<text x="12.00" y="271.50" fill="#d4d4d4" textLength="252.00" lengthAdjust="spacingAndGlyphs">Owner: owner@cameraagent.local</text>
+<text x="12.00" y="289.50" fill="#d4d4d4" textLength="655.20" lengthAdjust="spacingAndGlyphs">Sign in as admin / skymonitor; a password change is required at first sign-in.</text>
+<text x="12.00" y="307.50" fill="#d4d4d4" textLength="680.40" lengthAdjust="spacingAndGlyphs">Instance root: /var/lib/hvo-sky/cameraagents/6f9b3c1e-2d4a-4e8b-9c7d-1a2b3c4d5e6f</text>
+<text x="12.00" y="325.50" fill="#d4d4d4" textLength="663.60" lengthAdjust="spacingAndGlyphs">Configuration: 4e1f0c9b7a2d5e8f3b6c9a1d4e7f0b3c6d9e2a5f8b1c4d7e0a3f6b9c2e5d8a1f</text>
+<text x="12.00" y="343.50" fill="#d4d4d4" textLength="201.60" lengthAdjust="spacingAndGlyphs">Rig profile: default / 1</text>
+<text x="12.00" y="361.50" fill="#d4d4d4" textLength="168.00" lengthAdjust="spacingAndGlyphs">Schedule: active / 1</text>
+<text x="12.00" y="379.50" fill="#d4d4d4" textLength="394.80" lengthAdjust="spacingAndGlyphs">Catalog: hyg-v42-production / hyg-v4.2-p3-s2-r1</text>
+<text x="12.00" y="397.50" fill="#d4d4d4" textLength="655.20" lengthAdjust="spacingAndGlyphs">Image: sha256:9c3f6e2b1a7d4c8e5f0a3b6d9e2c5f8a1b4d7e0c3f6a9b2d5e8f1a4c7b0d3e6f</text>
+<text x="12.00" y="415.50" fill="#d4d4d4" textLength="369.60" lengthAdjust="spacingAndGlyphs">Runtime: 1000:1000; alive=True; healthy=True</text>
+<text x="12.00" y="433.50" fill="#d4d4d4" textLength="310.80" lengthAdjust="spacingAndGlyphs">State: owner-password-change-required</text>
+<text x="12.00" y="451.50" fill="#d4d4d4" textLength="67.20" lengthAdjust="spacingAndGlyphs">Changes:</text>
+<text x="28.80" y="469.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
+<text x="121.20" y="469.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs">folder</text>
+<text x="213.60" y="469.50" fill="#d4d4d4" textLength="554.40" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/cameraagents/6f9b3c1e-2d4a-4e8b-9c7d-1a2b3c4d5e6f</text>
+<text x="28.80" y="487.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
+<text x="121.20" y="487.50" fill="#d4d4d4" textLength="33.60" lengthAdjust="spacingAndGlyphs">file</text>
+<text x="213.60" y="487.50" fill="#d4d4d4" textLength="756.00" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/cameraagents/6f9b3c1e-2d4a-4e8b-9c7d-1a2b3c4d5e6f/config/cameraagent.json</text>
+<text x="28.80" y="505.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
+<text x="121.20" y="505.50" fill="#d4d4d4" textLength="42.00" lengthAdjust="spacingAndGlyphs">image</text>
+<text x="213.60" y="505.50" fill="#d4d4d4" textLength="915.60" lengthAdjust="spacingAndGlyphs">sha256:9c3f6e2b1a7d4c8e5f0a3b6d9e2c5f8a1b4d7e0c3f6a9b2d5e8f1a4c7b0d3e6f (imported from the release's archive)</text>
+<text x="28.80" y="523.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
+<text x="121.20" y="523.50" fill="#d4d4d4" textLength="58.80" lengthAdjust="spacingAndGlyphs">catalog</text>
+<text x="213.60" y="523.50" fill="#d4d4d4" textLength="285.60" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/catalogs/hyg-v4.2</text>
+<text x="28.80" y="541.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
+<text x="121.20" y="541.50" fill="#d4d4d4" textLength="75.60" lengthAdjust="spacingAndGlyphs">container</text>
+<text x="213.60" y="541.50" fill="#d4d4d4" textLength="655.20" lengthAdjust="spacingAndGlyphs">hvo-sky-cameraagent-6f9b3c1e2d4a4e8b9c7d1a2b3c4d5e6f (2 CPUs, 4 GiB, 256 PIDs)</text>
+<text x="28.80" y="559.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs">change</text>
+<text x="121.20" y="559.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs">record</text>
+<text x="213.60" y="559.50" fill="#d4d4d4" textLength="386.40" lengthAdjust="spacingAndGlyphs">/etc/hvo-sky/install.json (adds this instance)</text>
+<text x="12.00" y="577.50" fill="#d4d4d4" textLength="319.20" lengthAdjust="spacingAndGlyphs">5 to create, 1 to change, 0 unchanged.</text>
+<text x="20.40" y="595.50" fill="#bbf7d0" textLength="218.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[OK] The install finished.</text>
+<text x="37.20" y="613.50" fill="#58a6ff" textLength="33.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">DONE</text>
+<text x="28.80" y="631.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Answers</text>
+<text x="112.80" y="631.50" fill="#f7f9fc" textLength="428.40" lengthAdjust="spacingAndGlyphs">/home/operator/.config/hvo-sky/install-answers.json</text>
+<text x="28.80" y="649.50" fill="#98a7bb" textLength="403.20" lengthAdjust="spacingAndGlyphs">Running the command below again changes nothing.</text>
+<text x="12.00" y="685.50" fill="#d4d4d4" textLength="1747.20" lengthAdjust="spacingAndGlyphs">hvo-sky-install cameraagent install --answers /home/operator/.config/hvo-sky/install-answers.json --release /home/operator/hvo-sky-0.9.0 --catalog-bundle /home/operator/.cache/hvo-sky/hyg-v4.2-p3-s2-r1.bundle</text>
+</g>
+</svg>

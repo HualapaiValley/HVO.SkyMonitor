@@ -415,6 +415,43 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
     }
 
     [TestMethod]
+    public async Task PostCommitStageRemovalWhileCaptureIsPaused_WaitsUntilCaptureRuns()
+    {
+        // A snapshot restore can rewind the node, and its re-run reads the stage again, so a candidate started under the
+        // installer's pause removes no stage; the removal runs once capture admission opens (#1314 R10).
+        using var hold = new HVO.SkyMonitor.CameraAgent.Tests.Capture.MaintenanceHoldRoot();
+        var root = CreateRoot();
+        try
+        {
+            using var staging = CreateStaging(root);
+            var scene = await CreateSceneAsync().ConfigureAwait(false);
+            var key = new string('5', 64);
+            var sceneId = new string('D', 64);
+            await staging.StageAsync(key, sceneId, scene, CancellationToken.None).ConfigureAwait(false);
+            var fixture = CreateContext(root, new SceneProvenance(
+                sceneId, "rig-v1", "test", "1", new string('0', 64), "EquidistantFisheye",
+                "projection-v1", "astronomy-v1", "sensor-v1",
+                ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
+                ProjectedSceneStageKey: key));
+            using var admission = await hold.AdmissionAsync(paused: true).ConfigureAwait(false);
+            var step = CreateStep(staging, maintenance: hold.Gate);
+
+            await step.OnCommittedAsync(new CaptureDescriptorProcessingContext(fixture.Context), CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsNotNull(await staging.ReadAsync(key, CancellationToken.None).ConfigureAwait(false), "A paused candidate removed a stage.");
+            await admission.ResumeAsync("stage-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+            while (await staging.ReadAsync(key, CancellationToken.None).ConfigureAwait(false) is not null && DateTimeOffset.UtcNow < deadline)
+                await Task.Delay(TimeSpan.FromMilliseconds(50)).ConfigureAwait(false);
+            Assert.IsNull(await staging.ReadAsync(key, CancellationToken.None).ConfigureAwait(false), "The deferred stage removal never ran.");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task CompletedDeleteFault_LeavesMarkerThatReconciliationDeletesDespiteRawOwnership()
     {
         var root = CreateRoot();
@@ -899,12 +936,13 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
         ProjectedSceneStagingStore staging,
         IProjectedSceneStagingStore? stagingStore = null,
         CameraAgentRecipeExecutionAdapter? adapter = null,
-        IProjectedSceneStagingReader? stagingReader = null)
+        IProjectedSceneStagingReader? stagingReader = null,
+        HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureMaintenanceGate? maintenance = null)
     {
         return new ProjectedSceneCaptureProcessingStep(
             new CaptureProcessingStepMetadata("projected-scene", "ProjectedScene", 0),
             new ProjectedSceneCaptureProcessingStepOptions(), stagingStore ?? staging, stagingReader ?? staging,
-            adapter ?? new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor()));
+            adapter ?? new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor()), maintenance);
     }
 
     private static (CaptureProcessingContext Context, ReconstructionDescriptor Descriptor, string PayloadPath) CreateContext(

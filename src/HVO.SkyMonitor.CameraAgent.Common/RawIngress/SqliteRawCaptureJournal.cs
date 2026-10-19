@@ -26,8 +26,8 @@ internal sealed partial class SqliteRawCaptureJournal(
 {
     // v15 fences readers that do not preserve audited evidence dispositions and retention holds.
     internal const int CurrentSchemaVersion = 15;
-    private const int PreviousSchemaVersion = 13;
-    private const int PreviousRecoverySchemaVersion = 14;
+    internal const int PreviousSchemaVersion = 13;
+    internal const int PreviousRecoverySchemaVersion = 14;
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
         new(() => CreateCanonicalSchemaDefinitions(includeProfiles: true));
     private static readonly Lazy<Dictionary<string, string>> PreviousSchemaDefinitions =
@@ -517,6 +517,47 @@ internal sealed partial class SqliteRawCaptureJournal(
         _faultInjector.Inject(RawIngressFaultPoint.BeforeJournalTransactionCommit);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return RawIngressOutcome.Committed;
+    }
+
+    /// <summary>
+    /// Whether this journal records a capture admission state other than running: a durable pause, or one being
+    /// acquired. A journal with no recorded state has never been paused, and every installer swap records its pause
+    /// before it stops the previous image.
+    /// </summary>
+    internal async Task<bool> HasDurablePauseAsync(CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT state FROM capture_control_state WHERE state_key = 1;";
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is string state &&
+               !string.Equals(state, "running", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The captures, as <c>N</c>-format IDs, whose processing node running <paramref name="recipeName"/> is durably
+    /// complete. The capture processing store keeps its nodes in this journal, and a snapshot restore rewinds them with
+    /// it; a journal the store has not initialized has none.
+    /// </summary>
+    internal async Task<IReadOnlySet<string>> ReadCompletedNodeCapturesAsync(string recipeName, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(recipeName);
+        var captures = new HashSet<string>(StringComparer.Ordinal);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using (var exists = connection.CreateCommand())
+        {
+            exists.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'processing_nodes';";
+            if (Convert.ToInt64(await exists.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) == 0)
+                return captures;
+        }
+        using var command = connection.CreateCommand();
+        // Matches the recipe as ix_processing_nodes_recipe indexes it.
+        command.CommandText = "SELECT capture_id FROM processing_nodes WHERE upper(recipe_name) = $recipe AND status = $status;";
+        command.Parameters.AddWithValue("$recipe", recipeName.ToUpperInvariant());
+        command.Parameters.AddWithValue("$status", nameof(DurableProcessingNodeStatus.Completed));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            captures.Add(reader.GetString(0));
+        return captures;
     }
 
     internal async Task<(long Count, long Bytes, DateTimeOffset? Oldest)> ReadHeldTotalsAsync(CancellationToken cancellationToken)

@@ -244,7 +244,26 @@
                 <p>Measured image evidence, expected sky context, and predicted diagnostics remain distinct from the base image.</p>
                 <div class="overlay-list sky-layer-controls">
                     <div class="overlay-group" role="group" aria-label="Measured layers"><p><strong>Measured</strong><span>Image-derived associations</span></p>
+                        <button class="text-button refresh-measured-evidence" type="button" disabled="@(_layers is null || _layerLoading || _saving || _viewerOpen)" @onclick="RefreshMeasuredEvidenceAsync">@(_layerLoading ? "Reading measured evidence..." : "Refresh measured evidence")</button>
                         <label><input type="checkbox" disabled /><span class="layer-swatch stars"></span><span><strong>Associated stars</strong><small>source-association / arrives with #526</small></span></label>
+                        @foreach (var layer in RetainedLayers("Measured")) { @LayerToggle(layer) }
+                        @if (!HasLayer("MeasuredTransientTrails"))
+                        {
+                            <label><input type="checkbox" disabled /><span class="layer-swatch meteor"></span><span><strong>Measured transient trails</strong><small>@(_layers?.TrailEvidence?.Reason ?? (_layers?.TrailEvidence?.State == "NoRecordedCandidate" ? "No recorded candidate for this capture" : "Compatible measured trail evidence is unavailable"))</small></span></label>
+                        }
+                        @if (_layers?.TrailEvidence is { Trails.Count: > 0 } trailEvidence)
+                        {
+                            <p>Positional uncertainty unavailable. No uncertainty band is drawn.</p>
+                            <ul class="source-list">
+                                @foreach (var trail in trailEvidence.Trails)
+                                {
+                                    <li><a href="/transients/@trail.CandidateId.ToString("D")">@OperationsPage.SplitWords(trail.State)</a>
+                                        <a href="/gallery/@trail.SourceManifest.Descriptor.Capture.CaptureId.ToString("D")">Capture #@trail.SourceManifest.Descriptor.Capture.CaptureSequence</a>
+                                        <time datetime="@trail.DetectorInput.Source.ObservationStartedUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture)">@SiteTime.Format(trail.DetectorInput.Source.ObservationStartedUtc)</time>
+                                    </li>
+                                }
+                            </ul>
+                        }
                         <label><input type="checkbox" disabled /><span class="layer-swatch deep-sky"></span><span><strong>Deep-sky associations</strong><small>measured product not produced</small></span></label>
                     </div>
                     <div class="overlay-group" role="group" aria-label="Sky context layers"><p><strong>Sky context</strong><span>Expected projected geometry</span></p>
@@ -259,7 +278,6 @@
                         <label><input type="checkbox" disabled /><span class="layer-swatch satellites"></span><span><strong>Predicted satellite tracks</strong><small>geometry only / arrives with #529</small></span></label>
                         @foreach (var layer in RetainedLayers("Diagnostics")) { @LayerToggle(layer) }
                         @if (!HasLayer("cloud-mask", "cloud-labels")) { <label><input type="checkbox" disabled /><span class="layer-swatch cloud"></span><span><strong>Measured cloud assessment</strong><small>image analyzer / no layer retained, #1004</small></span></label> }
-                        <label><input type="checkbox" disabled /><span class="layer-swatch meteor"></span><span><strong>Meteor tracks</strong><small>measured track overlay not retained for this capture</small></span></label>
                         @if (!HasLayer("scene-image-circle", "image-circle")) { <label><input type="checkbox" disabled /><span class="layer-swatch boundary"></span><span><strong>Image geometry</strong><small>native coordinates / not retained</small></span></label> }
                         @if (!HasLayer("environment", "corner-annotations")) { <label><input type="checkbox" disabled /><span class="layer-swatch environment"></span><span><strong>Frame facts</strong><small>source and coordinate provenance / not retained</small></span></label> }
                     </div>

@@ -10,7 +10,7 @@ public enum ReplayRunnerTransport
 
 public sealed class LocalReplayRunnerOptions
 {
-    public const string DefaultSocketPath = "/run/hvo-skymonitor/replay-runner.sock";
+    public const string DefaultSocketPath = "/run/hvo-sky/replay-runner.sock";
     public const long MaximumTransferBytes = 128L * 1024 * 1024;
     public const long MaximumAggregateTransferBytes = 512L * 1024 * 1024;
 

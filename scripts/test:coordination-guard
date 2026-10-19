@@ -97,4 +97,23 @@ for owner in "$participant_a" "$participant_b"; do
     fi
 done
 
+# An interior LIVE match must still reject when sed has more than a pipe buffer
+# left to write. A quiet grep can exit early and turn that rejection into a pass.
+{
+    printf 'C1.2 | S12\nOWNER %s LEASE 2\n%s\n' "$participant_a" "$live_line"
+    printf 'padding %0500000d\n' 0
+    printf '%s\n' "$live_line"
+} > "$work_root/interior-live.txt"
+interior_live_sha="$(sha256_file "$work_root/interior-live.txt")"
+if $guard render-live --registry "$work_root/registry.json" --participant "$participant_a" \
+    --lease-generation 2 --current-body "$work_root/interior-live.txt" \
+    --expected-sha256 "$interior_live_sha" --live-line "$live_line" \
+    > "$work_root/interior-live.out" 2> "$work_root/interior-live.err"; then
+    printf 'An interior LIVE line passed the guard under pipefail.\n' >&2
+    exit 1
+fi
+grep -Fxq 'Only the trailing line may contain mutable liveness.' "$work_root/interior-live.err"
+[[ ! -s "$work_root/interior-live.out" ]]
+printf 'Coordination interior-LIVE SIGPIPE regression passed: 1 large-body rejection.\n'
+
 printf 'Coordination enrollment, targeting, idempotency, lease, and CAS guards passed.\n'

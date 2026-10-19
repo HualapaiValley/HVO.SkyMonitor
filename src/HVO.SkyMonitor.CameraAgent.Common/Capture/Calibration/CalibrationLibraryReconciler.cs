@@ -12,7 +12,8 @@ public sealed record CalibrationLibraryReconciliationSummary(
     int Inspected,
     int Adopted,
     int Quarantined,
-    int Failed);
+    int Failed,
+    int Held = 0);
 
 public sealed class CalibrationLibraryReconciler(
     SqliteCalibrationLibraryStore store,
@@ -20,6 +21,7 @@ public sealed class CalibrationLibraryReconciler(
     CalibrationTelemetry? telemetry = null)
 {
     private readonly SqliteCalibrationLibraryStore _store = store;
+    internal Action<string>? BeforeQuarantineDirectorySyncForTest { get; set; }
     private readonly string _root = Path.GetFullPath(options.Value.RawIngressRoot);
     private readonly CalibrationTelemetry? _telemetry = telemetry;
 
@@ -31,10 +33,20 @@ public sealed class CalibrationLibraryReconciler(
         var adopted = 0;
         var quarantined = 0;
         var failed = 0;
+        // Moving a bundle into quarantine is a move a snapshot restore can depend on (restored calibration and
+        // processing rows name its artifacts), so it happens only while no durable pause is recorded. This runs at host
+        // start, before any pause can be acknowledged; a held move stays planned, or is found again, at a later start.
+        var movesAllowed = !await _store.HasDurablePauseAsync(cancellationToken).ConfigureAwait(false);
+        var held = 0;
         foreach (var planned in await _store.ReadPlannedReconciliationsAsync(cancellationToken).ConfigureAwait(false))
         {
             try
             {
+                if (planned.Outcome == "quarantined" && !movesAllowed)
+                {
+                    held++;
+                    continue;
+                }
                 if (planned.Outcome == "quarantined")
                 {
                     MovePlannedQuarantine(planned);
@@ -56,7 +68,7 @@ public sealed class CalibrationLibraryReconciler(
             if (!Directory.Exists(syntheticRoot))
             {
                 return await CompleteRunAsync(
-                    new CalibrationLibraryReconciliationSummary(0, adopted, quarantined, failed),
+                    new CalibrationLibraryReconciliationSummary(0, adopted, quarantined, failed, held),
                     activity,
                     cancellationToken).ConfigureAwait(false);
             }
@@ -67,7 +79,7 @@ public sealed class CalibrationLibraryReconciler(
         catch (Exception exception) when (IsExpectedReconciliationFailure(exception))
         {
             return await CompleteRunAsync(
-                new CalibrationLibraryReconciliationSummary(0, adopted, quarantined, failed + 1),
+                new CalibrationLibraryReconciliationSummary(0, adopted, quarantined, failed + 1, held),
                 activity,
                 cancellationToken).ConfigureAwait(false);
         }
@@ -101,6 +113,11 @@ public sealed class CalibrationLibraryReconciler(
                             evidenceKey, failedOperation.Reason, cancellationToken).ConfigureAwait(false);
                         _telemetry?.RecordValidationFailure("reconcile", failedOperation.Reason);
                         failed++;
+                        continue;
+                    }
+                    if (!movesAllowed)
+                    {
+                        held++;
                         continue;
                     }
                     var quarantineRelativePath = Normalize(Path.Combine(
@@ -164,7 +181,7 @@ public sealed class CalibrationLibraryReconciler(
             }
         }
         return await CompleteRunAsync(
-            new CalibrationLibraryReconciliationSummary(directories.Length, adopted, quarantined, failed),
+            new CalibrationLibraryReconciliationSummary(directories.Length, adopted, quarantined, failed, held),
             activity,
             cancellationToken).ConfigureAwait(false);
     }
@@ -234,26 +251,23 @@ public sealed class CalibrationLibraryReconciler(
         }
         var source = ResolveSafePath(operation.SourceRelativePath);
         var destination = ResolveSafePath(operation.QuarantineRelativePath);
-        if (!Directory.Exists(source))
+        var sourceExists = Directory.Exists(source);
+        var destinationExists = Directory.Exists(destination);
+        if (!sourceExists && !destinationExists)
         {
-            if (Directory.Exists(destination))
-            {
-                return;
-            }
             throw new IOException("Planned calibration quarantine evidence is missing.");
         }
-        if (Directory.Exists(destination))
+        if (sourceExists && destinationExists)
         {
             throw new IOException("Planned calibration quarantine destination already exists.");
         }
         var parent = Path.GetDirectoryName(destination)!;
-        var parentExisted = Directory.Exists(parent);
         Directory.CreateDirectory(parent);
-        if (!parentExisted)
-        {
-            RawIngressFileStore.SyncDirectoryHierarchy(_root, parent);
-        }
-        Directory.Move(source, destination);
+        RawIngressFileStore.SyncDirectoryHierarchy(_root, parent);
+        if (sourceExists) Directory.Move(source, destination);
+        // A visible destination can be the result of a rename whose sync failed. Keep
+        // the SQLite operation planned until both namespaces are durable, including retries.
+        BeforeQuarantineDirectorySyncForTest?.Invoke(Path.GetDirectoryName(source)!);
         RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(source)!);
         RawIngressFileStore.SyncDirectory(parent);
     }

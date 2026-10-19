@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Services;
 internal sealed partial class CameraAgentOperatorTelemetry : IDisposable
 {
     internal const string InstrumentationName = "HVO.SkyMonitor.CameraAgent.Operator";
-    private readonly Meter _meter = new(InstrumentationName);
+    private readonly Meter _meter;
     private readonly ActivitySource _activities = new(InstrumentationName);
     private readonly Counter<long> _planPreviews;
     private readonly Counter<long> _planMutations;
@@ -19,10 +19,17 @@ internal sealed partial class CameraAgentOperatorTelemetry : IDisposable
     private readonly Counter<long> _transientQueries;
     private readonly Histogram<double> _transientQueryDuration;
     private readonly Histogram<long> _transientResponseBytes;
+    private readonly Counter<long> _apiKeyAuthentications;
     private readonly ILogger _logger;
 
     public CameraAgentOperatorTelemetry(ILogger<CameraAgentOperatorTelemetry>? logger = null)
+        : this(new Meter(InstrumentationName), logger)
     {
+    }
+
+    internal CameraAgentOperatorTelemetry(Meter meter, ILogger<CameraAgentOperatorTelemetry>? logger = null)
+    {
+        _meter = meter;
         _logger = logger ?? NullLogger<CameraAgentOperatorTelemetry>.Instance;
         _planPreviews = _meter.CreateCounter<long>("camera_agent.processing.plan.previews", "{preview}");
         _planMutations = _meter.CreateCounter<long>("camera_agent.processing.plan.mutations", "{mutation}");
@@ -34,6 +41,7 @@ internal sealed partial class CameraAgentOperatorTelemetry : IDisposable
         _transientQueries = _meter.CreateCounter<long>("hvo.transient.operator.queries");
         _transientQueryDuration = _meter.CreateHistogram<double>("hvo.transient.operator.query.duration", "ms");
         _transientResponseBytes = _meter.CreateHistogram<long>("hvo.transient.operator.response.bytes", "By");
+        _apiKeyAuthentications = _meter.CreateCounter<long>("camera_agent.api_key.authentications", "{authentication}");
     }
 
     internal Activity? StartPlanPreview() => _activities.StartActivity("processing-plan.preview");
@@ -57,6 +65,10 @@ internal sealed partial class CameraAgentOperatorTelemetry : IDisposable
         _planMutations.Add(1, new TagList { { "action", action }, { "outcome", outcome } });
         PlanMutationCompleted(_logger, action, outcome);
     }
+
+    /// <summary>Counts one presented API key by outcome, <c>accepted</c> or <c>rejected</c>; never the key itself.</summary>
+    internal void RecordApiKeyAuthentication(string outcome)
+        => _apiKeyAuthentications.Add(1, new TagList { { "outcome", outcome } });
 
     internal void RecordComparison(TimeSpan duration, long outputBytes, string outcome)
     {
