@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -31,10 +32,16 @@ class ReferenceVerifierTests(unittest.TestCase):
         entry = next(item for item in manifest["files"] if item["path"] == name)
         entry.update(bytes=len(blobs[name]), sha256=hashlib.sha256(blobs[name]).hexdigest())
         blobs["manifest.json"] = json.dumps(manifest).encode()
+        expected_reason = "JSON numbers must be finite" if overflow_literal else (
+            "Reference residuals must be finite" if math.isfinite(value) else "Nonstandard JSON constant"
+        )
+        # Patching Path also intercepts distribution metadata reads. Pin that
+        # unrelated dependency check so rejection must come from the mutation.
         with patch.object(Path, "read_text", lambda path, *a, **k: blobs[path.name].decode()), \
              patch.object(Path, "read_bytes", lambda path: blobs[path.name]), \
-             patch.object(Path, "is_file", lambda path: path.name in blobs):
-            with self.assertRaises(ValueError):
+             patch.object(Path, "is_file", lambda path: path.name in blobs), \
+             patch.object(verifier.importlib.metadata, "version", return_value="2.27"):
+            with self.assertRaisesRegex(ValueError, expected_reason):
                 verifier.verify(root)
 
     def test_repinned_nonfinite_expected_positions_and_velocities_are_rejected(self):

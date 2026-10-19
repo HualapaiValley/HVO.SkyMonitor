@@ -53,8 +53,8 @@
     },
     {
       "path": "test_verify.py",
-      "bytes": 2949,
-      "sha256": "f2e9bce85767cc52fa8d57eb9265b98c609b12df7a41bb24c7e465667483c8f7"
+      "bytes": 3429,
+      "sha256": "e4d6dbc8945c10d74c70e449b5a5b82559db5b10c3947c43bb82b63dc6e7997d"
     },
     {
       "path": "vallado-afspc-vectors.json",
