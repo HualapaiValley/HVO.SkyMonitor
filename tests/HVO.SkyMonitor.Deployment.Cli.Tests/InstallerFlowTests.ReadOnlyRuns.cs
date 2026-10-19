@@ -400,7 +400,11 @@ public sealed partial class InstallerFlowTests
             Directory.CreateDirectory(copy);
             foreach (var file in Directory.EnumerateFiles(bundle))
             {
-                File.Copy(file, Path.Combine(copy, Path.GetFileName(file)));
+                // File.Copy keeps the source's mode, and the shared bundle's files may be read-only (#1374): only the
+                // copy is made writable, so the test can damage its manifest without touching the shared bundle.
+                var copied = Path.Combine(copy, Path.GetFileName(file));
+                File.Copy(file, copied);
+                File.SetUnixFileMode(copied, File.GetUnixFileMode(copied) | UnixFileMode.UserWrite);
             }
             var manifestPath = Path.Combine(copy, "manifest.json");
             if (fault == "unsupported")
