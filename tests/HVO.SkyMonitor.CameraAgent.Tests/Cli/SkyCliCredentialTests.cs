@@ -505,6 +505,28 @@ public sealed class SkyCliCredentialTests
         Assert.DoesNotContain("unencrypted", tls.Error, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// An address bound to one of this machine's interfaces is this machine: a request to it never crosses the network,
+    /// so <c>hvo-sky</c> run on the CameraAgent host against its own LAN address does not warn. Any other address, and a
+    /// name, still does (#1384).
+    /// </summary>
+    [TestMethod]
+    public async Task PlainHttpToAnAddressOfThisMachine_DoesNotWarnAsync()
+    {
+        using var harness = new CliHarness();
+        harness.LocalAddresses = [IPAddress.Parse("192.0.2.10"), IPAddress.Parse("2001:db8::10")];
+
+        var lan = await harness.RunAsync("status", "--url", "http://192.0.2.10:5130/").ConfigureAwait(false);
+        var lan6 = await harness.RunAsync("status", "--url", "http://[2001:db8::10]:5130/").ConfigureAwait(false);
+        var other = await harness.RunAsync("status", "--url", "http://192.0.2.11:5130/").ConfigureAwait(false);
+        var name = await harness.RunAsync("status", "--url", "http://allsky.example:5130/").ConfigureAwait(false);
+
+        Assert.DoesNotContain("unencrypted", lan.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("unencrypted", lan6.Error, StringComparison.Ordinal);
+        StringAssert.Contains(other.Error, "unencrypted", StringComparison.Ordinal);
+        StringAssert.Contains(name.Error, "unencrypted", StringComparison.Ordinal);
+    }
+
     [TestMethod]
     public void Store_DefaultPathFollowsXdgConfigHomeAndOtherwiseTheHomeDirectory()
     {

@@ -1,3 +1,4 @@
+using System.Net;
 using System.Reflection;
 using System.Text;
 using HVO.SkyMonitor.CameraAgent.Cli.Client;
@@ -52,6 +53,12 @@ internal sealed class SkyCliHost
 
     /// <summary>hvo-sky's own version: <c>&lt;version&gt;+&lt;commit&gt;</c>.</summary>
     public string ClientVersion { get; init; } = Version;
+
+    /// <summary>
+    /// The addresses bound to this machine's interfaces. Plain HTTP to one of them stays on this machine, so it is not
+    /// warned about (#1384). Tests give their own.
+    /// </summary>
+    public Func<IReadOnlyCollection<IPAddress>> LocalAddresses { get; init; } = SkyAddress.InterfaceAddresses;
 
     /// <summary>For tests: the HTTP handler of every connection to CameraAgent.</summary>
     public Func<HttpMessageHandler>? CreateHandler { get; init; }
