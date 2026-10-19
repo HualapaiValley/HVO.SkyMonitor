@@ -87,7 +87,11 @@ public enum LifecycleOperationKind
     CatalogInstall,
     CatalogSelect,
     CatalogRollback,
-    CatalogGarbageCollect
+    CatalogGarbageCollect,
+    /// <summary><c>cameraagent backup</c>: the instance copied into one owner-only, self-verifying archive (#1353).</summary>
+    Backup,
+    /// <summary><c>cameraagent restore</c>: an uninstalled or absent instance put back from a committed backup (#1353).</summary>
+    Restore
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<LifecycleOperationPhase>))]
@@ -388,6 +392,62 @@ public sealed record LifecycleResult(
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<InstallationWarning>? Warnings { get; init; }
+
+    /// <summary>The archive a completed <c>cameraagent backup</c> committed. Omitted by every other command.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public LifecycleBackup? Backup { get; init; }
+
+    /// <summary>What a completed <c>cameraagent restore</c> put back. Omitted by every other command.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public LifecycleRestore? Restore { get; init; }
+}
+
+/// <summary>
+/// The archive a backup committed (#1353): its name in the backup folder, its path, when the backup was taken, the
+/// archive's size and SHA-256 as its record names them, and the bytes and entries it holds.
+/// </summary>
+public sealed record LifecycleBackup(
+    string Archive,
+    string Path,
+    DateTimeOffset CreatedUtc,
+    long ArchiveBytes,
+    string ArchiveSha256,
+    long TotalBytes,
+    int Entries);
+
+/// <summary>
+/// What a restore put back (#1353): the archive, when its backup was taken and by which operation, and the credentials
+/// and authority it revoked again. <see cref="NoLiveCredentialStore"/> is true when there was no live store to compare, so
+/// credentials revoked after the backup are valid again; the credential fields are null when a resumed restore did not
+/// make the comparison itself.
+/// </summary>
+public sealed record LifecycleRestore(
+    string Archive,
+    DateTimeOffset BackupCreatedUtc,
+    Guid BackupOperationId,
+    int? ApiKeysRevoked,
+    int? AccountsReset,
+    int? AuthorityRevoked,
+    bool? NoLiveCredentialStore);
+
+/// <summary>
+/// What a <c>--json</c> backup or restore writes to standard error, as one line, as it goes: how many bytes of the
+/// archive it has written, verified or extracted (<see cref="Stage"/> <c>write</c>, <c>verify</c> or <c>extract</c>).
+/// </summary>
+public sealed record LifecycleBackupProgressEvent(int SchemaVersion, string Event, string Stage, long Bytes, long? TotalBytes)
+{
+    /// <summary>The <see cref="Event"/> this record carries.</summary>
+    public const string Name = "backup-progress";
+}
+
+/// <summary>
+/// What a <c>--json</c> restore writes to standard error, as one line, about the credentials the backup holds: that
+/// those revoked since were revoked again, or, with no live store to compare, that they are valid again.
+/// </summary>
+public sealed record LifecycleCredentialsRestoredEvent(int SchemaVersion, string Event, string Warning, DateTimeOffset BackupCreatedUtc)
+{
+    /// <summary>The <see cref="Event"/> this record carries.</summary>
+    public const string Name = "credentials-restored";
 }
 
 /// <summary>One release's upgrade notes, from its <c>docs/upgrade-notes/X.Y.Z.md</c> as release.json carries them.</summary>

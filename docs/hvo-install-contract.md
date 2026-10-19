@@ -217,10 +217,24 @@ HVO.RoofController#127):
 | *(none)* / `install` | Install; interactive on a terminal, otherwise from flags or `--answers` |
 | `upgrade [--version V]` | Upgrade to the latest release or to `V` (section 6) |
 | `rollback` | Return to the release recorded as previous |
-| `backup` / `restore FILE` | A root-only, self-verifying archive of the product's own data, with a manifest |
+| `backup` / `restore FILE` | A self-verifying archive of the product's own data, with a manifest, that only its owner can read (below) |
 | `uninstall [--purge --confirm HOST --backup\|--no-backup]` | Remove what was installed; `--purge` also removes data |
 | `status` | What is installed here, its versions and health |
 
+- **Who owns a backup.** Each product keeps its archives readable by the account that already holds the data they copy,
+  and by no one else:
+  - RoofController's are root-only: `sudo hvo-roof-install backup` runs as root and keeps them in `/var/backups/hvo-roof`.
+  - SkyMonitor's are **owner-only, the service account's** (owner decision, 2026-10-18, decision 8). `backup` and
+    `restore` run as the instance's service account, not started with `sudo`, and refuse to run as anyone else. The
+    archives are `0600` in `<product-root>/backups`, a `0700` folder that account owns. All archive and data handling
+    stays with the account.
+  - **The single exception:** before changing anything, they may call the installer's existing folder-preparation
+    helper, the one `install` uses, only to create two folders owned by the service account: `<product-root>/backups`,
+    and an absent instance root when restoring after a purge. A restore leaves the machine install record to
+    `reinstall`.
+  - Reason: SkyMonitor's service account already owns every live store and secret a backup copies, and it is in the
+    `docker` group, which is root on the host in all but name. A root-only archive would add almost no protection, and
+    running as root was the riskiest code of the backup. The difference from RoofController stays.
 - **Common flags:** `--plan` (read-only; prints what would be created, changed, unchanged or refused), `--answers FILE`
   (strict JSON with a schema version; unknown members are errors), `--json`, `--version` and `-h`/`--help` (prints on
   stdout and exits 0).
@@ -471,3 +485,13 @@ Owner decisions of 2026-10-18:
   per-instance records (section 5). SkyMonitor keeps `/etc/hvo-sky/install.json` as a summary view, written after the
   per-instance records, which stay authoritative. #1343's release records own the installed version. At every settle
   the view reads `version`, `previousVersion` and `rolledBackFrom` from them, and adds `lastImageChange`.
+
+Owner decision of 2026-10-18, on #1353:
+
+8. **SkyMonitor backups are owner-only:** the instance's service account's, not root's (section 5). `backup` and
+   `restore` run as that account, not started with `sudo`, and keep archives `0600` in its own `0700` folder,
+   `<product-root>/backups`. The account already owns every live store and secret and is in the `docker` group, so a
+   root-only archive adds almost no protection. Refined the same day: before changing anything they may use the
+   installer's existing folder-preparation helper only to create that folder and an absent instance root, both the
+   account's, and a restore leaves the machine install record to `reinstall`. RoofController keeps running its backups
+   as root. SkyMonitor met this in #1353 (#1369).

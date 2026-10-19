@@ -67,6 +67,17 @@ internal static partial class NativeLinux
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     public static partial uint getgid();
 
+    /// <summary>The name of the account <paramref name="uid"/>, or <see langword="null"/> when the host has none.</summary>
+    public static string? UserName(uint uid)
+    {
+        var entry = getpwuid(uid);
+        return entry == IntPtr.Zero ? null : Marshal.PtrToStringUTF8(Marshal.ReadIntPtr(entry));
+    }
+
+    [LibraryImport("libc")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static partial IntPtr getpwuid(uint uid);
+
     [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static partial int chown(string path, uint owner, uint group);

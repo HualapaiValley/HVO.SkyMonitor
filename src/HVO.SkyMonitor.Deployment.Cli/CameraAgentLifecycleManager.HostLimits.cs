@@ -1,6 +1,6 @@
 namespace HVO.SkyMonitor.Deployment;
 
-/// <summary>How an image change and a restore-only recovery start CameraAgent on the host as it is (#1357).</summary>
+/// <summary>How an image change, a restore-only recovery and a backup start CameraAgent on the host as it is (#1357).</summary>
 internal sealed partial class CameraAgentLifecycleManager
 {
     /// <summary>
@@ -11,7 +11,8 @@ internal sealed partial class CameraAgentLifecycleManager
     /// <summary>
     /// Starts CameraAgent (<c>docker compose up</c>, or <c>restart</c> when <paramref name="restart"/> is set) from
     /// <paramref name="compose"/> as Docker here can run it. Every container start and restart of an upgrade or a
-    /// rollback, of their <c>--resume</c> and their recovery, and of a restore-only recovery comes through here, whether
+    /// rollback, of their <c>--resume</c> and their recovery, of a restore-only recovery, and a backup's start of the
+    /// instance it stopped (#1353) comes through here, whether
     /// it starts a candidate's staged model or the authenticated model of the image it puts back (PR-1370-R1 F1, F2; R2
     /// F3). A restart keeps each container's configuration, so it is given the same model as the start before it. Docker
     /// discards a memory or PIDs limit it cannot enforce, with its own warning,

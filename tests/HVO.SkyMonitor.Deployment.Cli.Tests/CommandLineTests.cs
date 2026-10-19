@@ -350,6 +350,50 @@ public sealed class CommandLineTests
         Assert.AreEqual(message, exception.Message);
     }
 
+    private const string BackupName = "hvo-sky-5a3f7c1e2b4d4e6f8a9b0c1d2e3f4a5b-20261018T073000Z-11223344.tar.gz";
+
+    /// <summary><c>cameraagent restore</c> names its backup by name, or by its path in the product root's backup folder (#1353).</summary>
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void ParseCommand_Restore_NamesTheBackupInTheBackupFolder(bool byPath)
+    {
+        var instance = Guid.NewGuid().ToString("D");
+        var productRoot = ((LifecycleRequest)CommandLine.ParseCommand(["cameraagent", "restore", BackupName, "--instance-id", instance])).ProductRoot;
+        var archive = byPath ? Path.Combine(productRoot, BackupVault.FolderName, BackupName) : BackupName;
+
+        var request = (LifecycleRequest)CommandLine.ParseCommand(["cameraagent", "restore", archive, "--instance-id", instance, "--plan"]);
+
+        Assert.AreEqual(LifecycleOperationKind.Restore, request.Operation);
+        Assert.AreEqual(BackupName, request.Archive);
+        Assert.IsTrue(request.DryRun);
+    }
+
+    [TestMethod]
+    [DataRow("/tmp/" + BackupName, "restore reads a backup only from")]
+    [DataRow("/var/backups/hvo-sky/" + BackupName, "restore reads a backup only from")]
+    [DataRow("backup.tar.gz", "restore requires the name of a backup")]
+    [DataRow(null, "restore requires the name of a backup")]
+    public void ParseCommand_RestoreOfAnythingButABackupInTheFolder_IsRejected(string? archive, string message)
+    {
+        string[] arguments = archive is null
+            ? ["cameraagent", "restore", "--instance-id", Guid.NewGuid().ToString("D")]
+            : ["cameraagent", "restore", archive, "--instance-id", Guid.NewGuid().ToString("D")];
+
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(arguments));
+
+        StringAssert.StartsWith(exception.Message, message, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void ParseCommand_BackupWithAnArchive_IsRejected()
+    {
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(
+            ["cameraagent", "backup", BackupName, "--instance-id", Guid.NewGuid().ToString("D")]));
+
+        Assert.AreEqual("Unexpected positional argument.", exception.Message);
+    }
+
     [TestMethod]
     public void ParseCommand_UpgradeImageSourceWithoutARelease_IsRejected()
     {
