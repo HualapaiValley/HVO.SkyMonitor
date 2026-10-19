@@ -739,7 +739,39 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         {
             return new(false, []);
         }
-        command.Parameters.Clear();
+        return new(true, await ReadFinishedStandardBeforeAsync(connection, sequence, maximumFinished, cancellationToken)
+            .ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// Reads up to <paramref name="maximum"/> captures before <paramref name="captureId"/> whose standard work has
+    /// ended, newest first: the page that follows a candidate already tried.
+    /// </summary>
+    internal async ValueTask<IReadOnlyList<Guid>> ReadFinishedStandardBeforeAsync(
+        Guid captureId,
+        int maximum,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(captureId, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maximum, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximum, MaximumProductQueryCount);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT capture_sequence FROM raw_captures WHERE capture_id = $capture_id;";
+        command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long sequence
+            ? await ReadFinishedStandardBeforeAsync(connection, sequence, maximum, cancellationToken).ConfigureAwait(false)
+            : [];
+    }
+
+    private static async ValueTask<IReadOnlyList<Guid>> ReadFinishedStandardBeforeAsync(
+        SqliteConnection connection,
+        long sequence,
+        int maximum,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
         // CROSS JOIN keeps raw_captures outermost, so the newest-first sequence index stops at the first ended work.
         // Without table statistics the planner otherwise sorts every ended standard row.
         command.CommandText = """
@@ -752,14 +784,14 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             LIMIT $maximum;
             """;
         command.Parameters.AddWithValue("$sequence", sequence);
-        command.Parameters.AddWithValue("$maximum", maximumFinished);
-        var finished = new List<Guid>(maximumFinished);
+        command.Parameters.AddWithValue("$maximum", maximum);
+        var finished = new List<Guid>(maximum);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
             finished.Add(Guid.ParseExact(reader.GetString(0), "N"));
         }
-        return new(true, finished);
+        return finished;
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The selected query is one of two fixed internal statements and all values remain parameterized.")]

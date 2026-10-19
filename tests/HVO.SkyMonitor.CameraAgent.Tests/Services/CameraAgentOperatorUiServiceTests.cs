@@ -618,7 +618,7 @@ public sealed class CameraAgentOperatorUiServiceTests
             .ProjectWithRetainedDisplay(finished);
         var (service, presentations, gallery, layers, completion) = CreateCurrentSkyService(newest);
         completion.Setup(value => value.ReadAsync(newest.DisplayCapture!.CaptureId,
-                CameraAgentOperatorUiService.MaximumFinishedCandidates, It.IsAny<CancellationToken>()))
+                CameraAgentOperatorUiService.FinishedCandidatePageSize, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CameraAgentProcessingCompletion(true, [finished.CaptureId]));
         gallery.Setup(value => value.GetCaptureAsync(finished.CaptureId, It.IsAny<CancellationToken>())).ReturnsAsync(finished);
         presentations.Setup(value => value.ProjectCaptureAsync(finished, It.IsAny<CancellationToken>())).ReturnsAsync(projection);
@@ -642,7 +642,10 @@ public sealed class CameraAgentOperatorUiServiceTests
 
     [TestMethod]
     [DoNotParallelize]
-    public async Task CurrentSkyPassesOverAnEndedCaptureItCannotDisplayAsync()
+    [DataRow(1)]
+    [DataRow(4)]
+    [DataRow(9)]
+    public async Task CurrentSkyPassesOverEndedCapturesItCannotDisplayAsync(int undisplayable)
     {
         var root = EdgeUpgradeLaneTests.CreateRoot("current-sky-undisplayable");
         try
@@ -654,19 +657,29 @@ public sealed class CameraAgentOperatorUiServiceTests
             var fixture = await EdgeUpgradeLaneTests.StartAsync(provider, root).ConfigureAwait(false);
             // A running host has its camera configuration before any page reads a capture's delivery state.
             provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(fixture.Configuration);
+            // Every capture is accepted first: quarantined required work refuses further ingress.
             var completed = await fixture.AcceptAsync(0).ConfigureAwait(false);
-            var quarantined = await fixture.AcceptAsync(1).ConfigureAwait(false);
-            var pending = await fixture.AcceptAsync(2).ConfigureAwait(false);
-            // The quarantined capture's raw evidence is gone, so it has no stage to display.
+            var quarantined = new List<Guid>(undisplayable);
+            for (var index = 1; index <= undisplayable; index++)
+            {
+                quarantined.Add(await fixture.AcceptAsync(index).ConfigureAwait(false));
+            }
+            var pending = await fixture.AcceptAsync(undisplayable + 1).ConfigureAwait(false);
             await EdgeUpgradeLaneTests.ExecuteAsync(root, """
                 UPDATE capture_lane_work SET state = 'completed'
                 WHERE lane_name = 'standard'
                   AND raw_capture_row_id = (SELECT raw_capture_row_id FROM raw_captures WHERE capture_id = $completed);
-                UPDATE capture_lane_work SET state = 'quarantined', failure_reason = 'evidence-invalid'
-                WHERE lane_name = 'standard'
-                  AND raw_capture_row_id = (SELECT raw_capture_row_id FROM raw_captures WHERE capture_id = $quarantined);
-                UPDATE raw_captures SET state = 'missing_evidence' WHERE capture_id = $quarantined;
-                """, ("$completed", completed.ToString("N")), ("$quarantined", quarantined.ToString("N"))).ConfigureAwait(false);
+                """, ("$completed", completed.ToString("N"))).ConfigureAwait(false);
+            // Each quarantined capture's raw evidence is gone, so it has no stage to display. Nine span three pages.
+            foreach (var captureId in quarantined)
+            {
+                await EdgeUpgradeLaneTests.ExecuteAsync(root, """
+                    UPDATE capture_lane_work SET state = 'quarantined', failure_reason = 'evidence-invalid'
+                    WHERE lane_name = 'standard'
+                      AND raw_capture_row_id = (SELECT raw_capture_row_id FROM raw_captures WHERE capture_id = $quarantined);
+                    UPDATE raw_captures SET state = 'missing_evidence' WHERE capture_id = $quarantined;
+                    """, ("$quarantined", captureId.ToString("N"))).ConfigureAwait(false);
+            }
             var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
             var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
             authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
@@ -692,6 +705,33 @@ public sealed class CameraAgentOperatorUiServiceTests
     }
 
     [TestMethod]
+    public async Task CurrentSkyStopsPagingEndedCapturesAtTheDeadlineAsync()
+    {
+        var newest = OperatorUiTestData.CurrentImage() with { StructuredLayersAvailable = false };
+        var (service, _, _, _, completion) = CreateCurrentSkyService(newest);
+        using var deadline = new CancellationTokenSource();
+        static IReadOnlyList<Guid> FullPage() => [.. Enumerable.Range(0, CameraAgentOperatorUiService.FinishedCandidatePageSize)
+            .Select(static _ => Guid.NewGuid())];
+        completion.Setup(value => value.ReadAsync(newest.DisplayCapture!.CaptureId,
+                CameraAgentOperatorUiService.FinishedCandidatePageSize, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CameraAgentProcessingCompletion(true, FullPage()));
+        var pages = 0;
+        // Every candidate is gone from the gallery and history never runs out; the deadline expires on the second page.
+        completion.Setup(value => value.ReadFinishedBeforeAsync(It.IsAny<Guid>(),
+                CameraAgentOperatorUiService.FinishedCandidatePageSize, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(() =>
+            {
+                if (++pages == 2) deadline.Cancel();
+                return FullPage();
+            });
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await service.GetCurrentSkyViewAsync(deadline.Token).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual(2, pages);
+    }
+
+    [TestMethod]
     [DataRow("pending-alone", true)]
     [DataRow("finished", false)]
     [DataRow("layers-retained", false)]
@@ -703,7 +743,7 @@ public sealed class CameraAgentOperatorUiServiceTests
         var finishedId = Guid.NewGuid();
         var (service, presentations, gallery, _, completion) = CreateCurrentSkyService(newest);
         var read = completion.Setup(value => value.ReadAsync(newest.DisplayCapture!.CaptureId,
-            CameraAgentOperatorUiService.MaximumFinishedCandidates, It.IsAny<CancellationToken>()));
+            CameraAgentOperatorUiService.FinishedCandidatePageSize, It.IsAny<CancellationToken>()));
         switch (scenario)
         {
             case "pending-alone": read.ReturnsAsync(new CameraAgentProcessingCompletion(true, [])); break;

@@ -837,8 +837,8 @@ internal sealed class CameraAgentOperatorUiService(
 
     private static readonly TimeSpan FactsCacheLifetime = TimeSpan.FromSeconds(60);
 
-    /// <summary>How many ended captures Current Sky tries, newest first, while the newest one is still processing.</summary>
-    internal const int MaximumFinishedCandidates = 4;
+    /// <summary>How many ended captures Current Sky reads at a time, newest first, while the newest one is still processing.</summary>
+    internal const int FinishedCandidatePageSize = 4;
     private (CameraAgentCurrentSkyFacts Facts, Guid? CombinedArtifactId, DateTimeOffset ReadUtc)? _cachedFacts;
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
@@ -923,8 +923,8 @@ internal sealed class CameraAgentOperatorUiService(
     // Current Sky moves only to a capture whose overlays are settled: retained, or never coming because its processing
     // ended. While the newest displayable capture is still processing, the newest earlier capture whose processing has
     // ended and that can be displayed is shown instead; an ended capture without a displayable stage is passed over.
-    // Only when none of the bounded candidates can be shown is the newest reported as pending. Every read runs within
-    // the caller's deadline, and completion that cannot be read never holds the page.
+    // Candidates are read a page at a time until one can be shown, history runs out (the newest is then reported as
+    // pending), or the caller's deadline expires. Completion that cannot be read never holds the page.
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "An unreadable completion state falls back to the newest displayable capture, as before.")]
     private async ValueTask<(CameraAgentCurrentImagePresentation Presentation, bool Pending)> ResolveCompleteDisplayAsync(
         CameraAgentCurrentImagePresentation newest,
@@ -937,32 +937,42 @@ internal sealed class CameraAgentOperatorUiService(
         try
         {
             var completion = await processingCompletion.ReadAsync(
-                display.CaptureId, MaximumFinishedCandidates, cancellationToken).ConfigureAwait(false);
+                display.CaptureId, FinishedCandidatePageSize, cancellationToken).ConfigureAwait(false);
             if (!completion.Pending)
             {
                 return (newest, false);
             }
-            foreach (var finishedId in completion.NewestFinishedCaptureIds)
+            var page = completion.NewestFinishedCaptureIds;
+            while (page.Count > 0)
             {
-                if (await gallery.GetCaptureAsync(finishedId, cancellationToken).ConfigureAwait(false) is not { } finished)
+                foreach (var finishedId in page)
                 {
-                    continue;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (await gallery.GetCaptureAsync(finishedId, cancellationToken).ConfigureAwait(false) is not { } finished)
+                    {
+                        continue;
+                    }
+                    var projected = await currentImagePresentation.ProjectCaptureAsync(finished, cancellationToken).ConfigureAwait(false);
+                    if (projected.SelectedStage is null)
+                    {
+                        continue;
+                    }
+                    var layers = await layeredPresentations.GetAsync(finishedId, cancellationToken).ConfigureAwait(false);
+                    return (newest with
+                    {
+                        DisplayCapture = new CameraAgentPresentationCapture(finished.CaptureId, finished.CaptureSequence,
+                            finished.ExposureStartedUtc, Math.Max(0, (long)(newest.ObservedUtc - finished.ExposureStartedUtc).TotalSeconds),
+                            finished.EvidenceOrigin),
+                        SelectedStage = projected.SelectedStage,
+                        Stages = projected.Stages,
+                        StructuredLayersAvailable = layers.Status == CameraAgentLayeredPresentationStatus.Found
+                    }, false);
                 }
-                var projected = await currentImagePresentation.ProjectCaptureAsync(finished, cancellationToken).ConfigureAwait(false);
-                if (projected.SelectedStage is null)
-                {
-                    continue;
-                }
-                var layers = await layeredPresentations.GetAsync(finishedId, cancellationToken).ConfigureAwait(false);
-                return (newest with
-                {
-                    DisplayCapture = new CameraAgentPresentationCapture(finished.CaptureId, finished.CaptureSequence,
-                        finished.ExposureStartedUtc, Math.Max(0, (long)(newest.ObservedUtc - finished.ExposureStartedUtc).TotalSeconds),
-                        finished.EvidenceOrigin),
-                    SelectedStage = projected.SelectedStage,
-                    Stages = projected.Stages,
-                    StructuredLayersAvailable = layers.Status == CameraAgentLayeredPresentationStatus.Found
-                }, false);
+                // A short page is the end of history.
+                page = page.Count < FinishedCandidatePageSize
+                    ? []
+                    : await processingCompletion.ReadFinishedBeforeAsync(page[^1], FinishedCandidatePageSize, cancellationToken)
+                        .ConfigureAwait(false);
             }
             return (newest, true);
         }

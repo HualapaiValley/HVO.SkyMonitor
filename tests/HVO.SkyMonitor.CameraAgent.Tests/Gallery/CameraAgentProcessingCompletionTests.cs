@@ -44,6 +44,12 @@ public sealed class CameraAgentProcessingCompletionTests
             AssertCompletion(await ReadAsync(completion, third).ConfigureAwait(false), false);
             AssertCompletion(await ReadAsync(completion, fourth).ConfigureAwait(false), true, third, second, first);
             AssertCompletion(await completion.ReadAsync(fourth, 2, CancellationToken.None).ConfigureAwait(false), true, third, second);
+            // The next page starts after the last candidate tried, whatever that candidate's own state.
+            CollectionAssert.AreEqual(new[] { second, first },
+                (await completion.ReadFinishedBeforeAsync(third, 2, CancellationToken.None).ConfigureAwait(false)).ToArray());
+            CollectionAssert.AreEqual(new[] { first },
+                (await completion.ReadFinishedBeforeAsync(second, 2, CancellationToken.None).ConfigureAwait(false)).ToArray());
+            Assert.IsEmpty(await completion.ReadFinishedBeforeAsync(first, 2, CancellationToken.None).ConfigureAwait(false));
 
             // A capture without standard work has nothing to wait for.
             await EdgeUpgradeLaneTests.ExecuteAsync(root, """

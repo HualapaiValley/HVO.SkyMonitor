@@ -16,6 +16,12 @@ public interface ICameraAgentProcessingCompletion
         Guid captureId,
         int maximumFinished,
         CancellationToken cancellationToken);
+
+    /// <summary>Up to <paramref name="maximum"/> ended captures before <paramref name="captureId"/>, newest first.</summary>
+    ValueTask<IReadOnlyList<Guid>> ReadFinishedBeforeAsync(
+        Guid captureId,
+        int maximum,
+        CancellationToken cancellationToken);
 }
 
 internal sealed class CameraAgentProcessingCompletionReader(
@@ -26,4 +32,10 @@ internal sealed class CameraAgentProcessingCompletionReader(
         int maximumFinished,
         CancellationToken cancellationToken)
         => store.ReadStandardCompletionAsync(captureId, maximumFinished, cancellationToken);
+
+    public ValueTask<IReadOnlyList<Guid>> ReadFinishedBeforeAsync(
+        Guid captureId,
+        int maximum,
+        CancellationToken cancellationToken)
+        => store.ReadFinishedStandardBeforeAsync(captureId, maximum, cancellationToken);
 }
