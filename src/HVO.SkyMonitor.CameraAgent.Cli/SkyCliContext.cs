@@ -129,6 +129,12 @@ internal sealed class SkyCliContext
     /// </summary>
     public string? AcceptedChange { get; private set; }
 
+    /// <summary>
+    /// Whether the latest change sent got CameraAgent's success status, whatever became of its body: a later failure of
+    /// that change is a change accepted but not verified, never one that was not made.
+    /// </summary>
+    public bool LastChangeAccepted { get; private set; }
+
     /// <summary>Reads the credentials file: null when there is none.</summary>
     /// <exception cref="SkyCredentialFileException">The file, or its folder, exists but cannot be used.</exception>
     public SkyStoredCredentials? LoadCredentials() => SkyCredentialStore.Load(CredentialsPath, Host.UserId);
@@ -138,10 +144,11 @@ internal sealed class SkyCliContext
     public void SaveCredentials(SkyStoredCredentials credentials) => SkyCredentialStore.Save(CredentialsPath, credentials, Host.UserId);
 
     /// <summary>
-    /// Sends a change, described as <paramref name="change"/> ("the restart"). <see cref="AcceptedChange"/> is set as soon
-    /// as CameraAgent's success status line arrives, before its body is read or parsed, so a body that then stalls or
-    /// cannot be read is a change accepted but not verified. When <paramref name="changed"/> is given and the answer says,
-    /// with authority, that nothing changed (a settings group CameraAgent already had), the change is not counted.
+    /// Sends a change, described as <paramref name="change"/> ("the restart"). <see cref="AcceptedChange"/> becomes it, and
+    /// <see cref="LastChangeAccepted"/> true, as soon as CameraAgent's success status line arrives, before its body is read
+    /// or parsed, so a body that then stalls or cannot be read is a change accepted but not verified. When
+    /// <paramref name="changed"/> is given and the answer says, with authority, that nothing changed (a settings group
+    /// CameraAgent already had), the change is not counted.
     /// </summary>
     public async Task<JsonElement> SendChangeAsync(
         SkyApiClient client,
@@ -154,12 +161,18 @@ internal sealed class SkyCliContext
     {
         ArgumentNullException.ThrowIfNull(client);
         var before = AcceptedChange;
+        LastChangeAccepted = false;
         _sending = change;
-        var answer = await client.SendAsync(method, route, body, () => AcceptedChange ??= change, cancellationToken).ConfigureAwait(false);
+        var answer = await client.SendAsync(method, route, body, () =>
+        {
+            AcceptedChange = change;
+            LastChangeAccepted = true;
+        }, cancellationToken).ConfigureAwait(false);
         _sending = null;
         if (changed is not null && !changed(answer))
         {
             AcceptedChange = before;
+            LastChangeAccepted = false;
         }
 
         return answer;

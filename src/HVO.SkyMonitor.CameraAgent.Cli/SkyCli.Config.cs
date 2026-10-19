@@ -527,11 +527,17 @@ internal static partial class SkyCli
                         $"the {group.Key} settings", cancellationToken,
                         static answer => SkyJson.Text(answer, "status") != "Unchanged").ConfigureAwait(false));
                 }
-                catch (Exception error) when (context.AcceptedChange is not null && error is not OperationCanceledException)
+                catch (Exception error) when (error is not OperationCanceledException && context.AcceptedChange is not null
+                    && !context.LastChangeAccepted)
                 {
+                    // An earlier group was saved and this one was not taken: "not saved" only when CameraAgent refused it
+                    // (HTTP 4xx). A group whose success status arrived is not caught here: whatever failed after it, it was
+                    // accepted, and the command says so (Unverified).
                     var (_, _, message) = SkyCliContext.Classify(error);
+                    var status = error is SkyApiException answered ? (int)answered.StatusCode : 0;
+                    var refused = status is >= 400 and < 500;
                     throw new SkyCliOutcomeException(
-                        $"The {group.Key} group was not saved: {message} The groups before it were saved; run the command again to continue.",
+                        $"The {group.Key} group {(refused ? "was not saved" : "may not have been saved")}: {message} The groups before it were saved; run the command again to continue.",
                         SkyExitCode.Failed, "Failed", error)
                     { SaysWhatWasAccepted = true };
                 }

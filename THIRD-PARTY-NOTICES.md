@@ -153,13 +153,14 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-## The installer's terminal packages
+## The single-file programs' packages
 
-`hvo-sky-install`, the installer, is one self-contained file. Its wizard (#1317)
-draws with Terminal.Gui, and the installer contains Terminal.Gui and the
-packages listed here, which Terminal.Gui brings in. Every release ships this
-file beside the installers as an asset of its own, `THIRD-PARTY-NOTICES.md`
-(install contract section 4).
+`hvo-sky-install`, the installer, and `hvo-sky`, CameraAgent's command line
+(#1317), are each one self-contained file. The installer's wizard draws with
+Terminal.Gui, and the installer contains Terminal.Gui and the packages listed
+here that Terminal.Gui brings in. `hvo-sky` contains `System.CommandLine`
+2.0.13, listed with them. Every release ships this file beside them as an asset
+of its own, `THIRD-PARTY-NOTICES.md` (install contract section 4).
 
 Terminal.Gui also depends on TextMateSharp, its grammars and Onigwrap's native
 Oniguruma library, for the syntax highlighting of its Code and Markdown views.
@@ -189,6 +190,7 @@ none of their files are in it (`Directory.Build.targets`).
 | `Microsoft.Extensions.Logging.Abstractions` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
 | `Microsoft.Extensions.Options` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
 | `Microsoft.Extensions.Primitives` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
+| `System.CommandLine` | MIT | Copyright (c) Microsoft Corporation | https://github.com/dotnet/command-line-api |
 
 The following MIT terms apply to each package above that is under the MIT
 License, with its copyright notice:
