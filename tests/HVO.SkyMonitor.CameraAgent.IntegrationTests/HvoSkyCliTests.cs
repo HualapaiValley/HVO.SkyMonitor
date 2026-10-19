@@ -137,9 +137,22 @@ public sealed class HvoSkyCliTests
             var schedule = await RunAsync("schedule", "show", "--json").ConfigureAwait(false);
             Assert.AreEqual(0, schedule.Code, schedule.Error);
 
-            // A Read key from the environment overrides the saved key; CameraAgent refuses it a change (403).
+            // A revision the schedule does not list is refused before anything is sent: whether it is older or newer than
+            // the active one cannot be established.
+            var unlisted = await RunAsync("schedule", "apply", "no-such-revision", "--json").ConfigureAwait(false);
+            Assert.AreEqual(3, unlisted.Code, unlisted.Out);
+            using (var json = JsonDocument.Parse(unlisted.Out))
+            {
+                Assert.AreEqual("Refused", json.RootElement.GetProperty("error").GetProperty("kind").GetString());
+            }
+
+            // A Read key from the environment overrides the saved key; CameraAgent refuses it a change (403). A settings
+            // change is refused by the client itself, as the catalogue marks it read-only for that key, so the change
+            // sent is a schedule stage, which CameraAgent's authorization refuses before it reads the profile.
             environment[SkyCredentialStore.ApiKeyVariable] = read;
-            var forbidden = await RunAsync("schedule", "apply", "no-such-revision", "--json").ConfigureAwait(false);
+            var profile = Path.Combine(home, "profile.json");
+            await File.WriteAllTextAsync(profile, """{"name": "operator"}""").ConfigureAwait(false);
+            var forbidden = await RunAsync("schedule", "stage", profile, "--json").ConfigureAwait(false);
             Assert.AreEqual(3, forbidden.Code, forbidden.Out);
             using (var json = JsonDocument.Parse(forbidden.Out))
             {
