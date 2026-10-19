@@ -461,24 +461,31 @@ public sealed class HvoSkyUiTests
     }
 
     [TestMethod]
-    public void TheInterface_NeverLoadsTheNativeOnigurumaLibrary()
+    public void TheInterface_RunsWithoutTerminalGuisSyntaxHighlighting()
     {
-        // As the installer's wizard: Terminal.Gui loads Onigwrap's managed code, but only its syntax highlighting calls the
-        // native Oniguruma, and no page highlights text. The library is in hvo-sky all the same (THIRD-PARTY-NOTICES.md).
+        // As the installer's wizard: Terminal.Gui brings in TextMateSharp, its grammars and Onigwrap's native Oniguruma
+        // for its Code and Markdown views. hvo-sky ships without them (Directory.Build.targets), and this test project
+        // runs without them too, so every page here, and every other interface test, shows they are not needed.
+        var here = AppContext.BaseDirectory;
+        string[] left = ["TextMateSharp.dll", "TextMateSharp.Grammars.dll", "Onigwrap.dll"];
+        Assert.IsEmpty(left.Where(file => File.Exists(Path.Combine(here, file))).ToArray());
+        Assert.IsEmpty(Directory.EnumerateFiles(here, "*onigwrap*", SearchOption.AllDirectories).ToArray());
+
         using (var harness = new CliHarness())
         using (var driver = SkyUiDriver.Start(harness, pollInterval: Quick))
         {
             for (var index = 0; index < SkyTerminalUi.PageNames.Length; index++)
             {
                 driver.ShowPage(index);
-                _ = driver.Screen;
+                StringAssert.Contains(driver.Rows[0], "[LIVE]", StringComparison.Ordinal);
             }
 
             driver.Ui.Pages[4].Press("Sign in");
-            _ = driver.Screen;
+            Assert.IsNotNull(driver.Ui.Prompt);
         }
 
-        Assert.DoesNotContain("libonigwrap", File.ReadAllText("/proc/self/maps"), StringComparison.Ordinal);
+        string[] highlighting = ["TextMateSharp", "TextMateSharp.Grammars", "Onigwrap"];
+        Assert.IsEmpty(AppDomain.CurrentDomain.GetAssemblies().Where(assembly => highlighting.Contains(assembly.GetName().Name)).ToArray());
     }
 
     [TestMethod]
