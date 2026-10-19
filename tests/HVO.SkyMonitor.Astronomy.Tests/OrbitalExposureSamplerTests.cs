@@ -305,8 +305,9 @@ public sealed class OrbitalExposureSamplerTests
         query = new(query.Request, query.Geometry, query.Timing with
         { Clock = new("estimate-only", AstrometricClockSynchronization.Unsynchronized, null, .2) });
         var estimated = Complete(Run(query, _ => State(new(0, 0, 1000))));
-        Assert.AreEqual(.2, estimated.Uncertainty.Clock.Value);
-        StringAssert.Contains(estimated.Uncertainty.Clock.Reason, "estimated-error", StringComparison.Ordinal);
+        Assert.IsNull(estimated.Uncertainty.Clock.Value);
+        Assert.AreEqual(.2, estimated.Timing.Clock.EstimatedErrorSeconds);
+        StringAssert.Contains(estimated.Uncertainty.Clock.Reason, "clock-error-unknown", StringComparison.Ordinal);
         Assert.IsNull(Complete(Run(Query(1), _ => State(new(0, 0, 1000)))).Uncertainty.Clock.Value);
     }
 
