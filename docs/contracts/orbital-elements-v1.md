@@ -1,8 +1,9 @@
 # Shared orbital contracts v1 (#1402)
 
-Status: design checkpoint under [#527](../planning/orbital-data-decision-527.md),
-2026-10-19; executable types and conformance are delivered by #1402. A frozen
-document is not evidence that those implementations already exist. This is a
+Status: executable contract delivery under #1402, following the approved
+[#527 checkpoint](../planning/orbital-data-decision-527.md) merged in #1403.
+Consumer readiness requires the reviewed, merged #1402 commit and both lanes
+verifying the conformance pack; the document alone is not that handoff. This is a
 satellite GP contract, not a generalized data-feed or catalog-install framework.
 
 ## Ownership and version boundary
@@ -198,3 +199,78 @@ sampling and pass tests. Contract examples alone do not qualify either runtime.
 Assessment-referenced originals and later retrospective inputs remain separate
 and append-only. No source download, math engine, scheduler, storage adapter,
 host page or detector redesign is implemented by this contract issue.
+
+
+## Executable surface and adapter agreement (#1402)
+
+The canonical implementation is `src/HVO.SkyMonitor.Astronomy/Orbital/`.
+`OrbitalContract.CreateRecord`, `OrbitalSnapshot.Create/Parse` and
+`OrbitalRecordSelector.Select` implement the normalized contract and pure
+selection only. `IOrbitalSnapshotReader` is implemented by #528;
+`IOrbitalPredictionEngine` by #529. `OrbitalPredictionJson` creates, validates,
+identifies and strictly round-trips separate track/pass products.
+`CameraAgent.Common/Orbital/OrbitalRefreshStatus.cs` owns operational status.
+No host DI, scheduled job, HTTP parser, propagator or UI is activated here.
+
+The manifest explicitly binds `hvo-orbital-elements-v1` and
+`celestrak-gp-json-v1`. Identity strings are uppercase SHA256, catalog text
+is canonical decimal, and software `ImplementationSha256` identifies the
+retained implementation/source package, not a platform-specific runtime DLL.
+Canonical JSON uses the existing capture canonical writer, typed numeric and
+UTC values, ordered collections and a final numeric-zero normalization. Exact
+parsing rejects unknown/duplicate/missing members, unsupported metadata,
+noncanonical number spellings, bad source bindings and corrupt identities.
+Source bytes are hashed unchanged by the acquisition adapter; the shared
+snapshot validates their manifest binding, not unavailable original bytes.
+
+Reader unavailable reasons are `InvalidIdentity`, `NotConfigured`,
+`NoActiveSnapshot`, `UnknownIdentity`, `Retired`, `IntegrityFailure` and
+`StorageUnavailable`. Exact reads use the **manifest** identity and return
+`InvalidIdentity` for anything except 64 uppercase hex characters before I/O.
+They never substitute current. Cancellation throws `OperationCanceledException`.
+`Retired` requires durable retirement evidence; a known manifest with
+unexpected missing/corrupt bytes is `IntegrityFailure`. Halted or disabled
+refresh does not erase last-known-good readability. Keep active,
+previous-active, loading and unretired assessment/product references protected,
+including supporting original/model inputs. Other retention count/duration
+limits are host-owned. No change token or public lease framework is added.
+
+A repeat acquisition with unchanged payload gets its own manifest/history row;
+normalized bytes may be deduplicated by payload hash. B owns the
+`unchanged-payload` activation-history representation, durable refresh kind
+`orbital-elements-refresh`, task/DI registration and rollback guidance.
+
+`OrbitalSelectionPolicy` defaults to withholding stale records. Its hashed
+`AllowStaleDiagnostics` opt-in is for explicitly qualified diagnostic use;
+`OrbitalPredictionUse.MeasuredAssociation` rejects that policy and nominal
+zero EOP. Products preserve signed age and source validity separately.
+`OrbitalExposureQuery` requires exact accepted calibration/assessment evidence
+for a measured basis and rejects a zero-EOP measured combination. This verifies
+existing evidence; it does not deliver #523 or approve a calibration workflow.
+External astrometry hashes are compared with their existing casing convention;
+orbital provenance stores their uppercase representation.
+
+EOP coverage/status/interpolation and leap-table coverage/hash are product facts.
+The #529 engine owns resolved immutable DUT1/polar-motion and leap tables,
+loaded before a query, and must verify their identity/coverage against these
+facts, reject unsupported leap-crossing intervals and never resolve them over
+network or filesystem inside the frame path. These contracts do not implement
+time conversion or infer a leap table from a hash. Zero EOP is a declared
+configured-rig diagnostic only. Missing solar/shadow identity requires unknown
+illumination. Observer height datum and clock/sensor-timing basis remain explicit.
+
+A track binds requested/achieved step and chord error, with separate physical,
+clock, calibration and sampling error components. Unknown is nullable, never
+zero. Complete tracks require full interval coverage and achieved sampling
+bounds; complete results cannot conceal budget/deadline failures or partial
+children. Results bind the request's snapshot, policy, interval, observer,
+model, population and object set; materialized child collections are defensive.
+Pass window-boundary labels must coincide with the search endpoint. Product
+fact validation is not numerical or physical qualification.
+
+The immutable examples and file hashes live in
+[`tests/fixtures/orbital/contract-v1`](../../tests/fixtures/orbital/contract-v1/README.md).
+They are synthetic schema examples, including illustrative pixels, not new
+satellite truth. #528 must add reader/provider adapter conformance and #529
+independent numerical/projection/sampling validation. Both lanes record the
+merged commit, schema/profile and pack hashes on #1402/#1391 before adoption.
