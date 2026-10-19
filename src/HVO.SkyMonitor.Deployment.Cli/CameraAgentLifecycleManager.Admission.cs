@@ -32,6 +32,9 @@ internal sealed partial class CameraAgentLifecycleManager
         DockerClient docker,
         DockerHostCapabilities? capabilities,
         AcquiredImage? signedImage,
+        IProcessRunner processRunner,
+        uint uid,
+        uint gid,
         TextWriter error,
         CancellationToken cancellationToken)
     {
@@ -67,7 +70,17 @@ internal sealed partial class CameraAgentLifecycleManager
         }
 
         var resumed = await AdmitAsync(request, paths, kind, manifest, cancellationToken).ConfigureAwait(false);
-        var hostLimits = imageChange ? AdmitHostLimits(request, paths, manifest, capabilities!) : null;
+        // A backup that starts the instance it stopped is held to the host's limits as a rollback is (#1357); one that
+        // starts nothing is not (PR-1369-R2 F19).
+        var hostLimits = imageChange ||
+                         kind == LifecycleOperationKind.Backup &&
+                         await BackupStartsInstanceAsync(manifest, compose, docker, resumed, cancellationToken).ConfigureAwait(false)
+            ? AdmitHostLimits(request, paths, manifest, capabilities!)
+            : null;
+        if (kind == LifecycleOperationKind.Backup && resumed is null)
+        {
+            await AdmitBackupAsync(request, paths, manifest, processRunner, uid, gid, cancellationToken).ConfigureAwait(false);
+        }
         if (kind == LifecycleOperationKind.Upgrade && signedImage is not null)
         {
             signedImage = await CheckReleaseCandidateAsync(manifest, docker, signedImage, cancellationToken).ConfigureAwait(false);
@@ -94,8 +107,9 @@ internal sealed partial class CameraAgentLifecycleManager
     /// an install does; there is no override. A rollback and a restore-only recovery are the recovery path: they go
     /// ahead, with <see cref="WarnOfUnenforcedLimitsAsync"/>'s warning. A rollback is still refused for a CPU limit
     /// Docker enforces on a host with fewer CPUs, a container Docker refuses to create. A restore-only recovery is never
-    /// refused here: it puts back the image the instance ran, from its exact retained Compose files. Returns the report
-    /// a recovery goes ahead with.
+    /// refused here: it puts back the image the instance ran, from its exact retained Compose files. A backup that starts
+    /// the instance it stopped is held as a rollback is (#1353, <see cref="BackupStartsInstanceAsync"/>). Returns the
+    /// report a recovery goes ahead with.
     /// </summary>
     private static HostPrerequisiteReport AdmitHostLimits(
         LifecycleRequest request,
@@ -126,13 +140,40 @@ internal sealed partial class CameraAgentLifecycleManager
     /// </summary>
     private static async Task WarnOfUnenforcedLimitsAsync(LifecycleRequest request, HostPrerequisiteReport? hostLimits, TextWriter error)
     {
-        if (!request.Json && hostLimits is not null && HostPrerequisites.RollbackWarning(hostLimits, RecoveryName(request)) is { } warning)
+        if (!request.Json && hostLimits is not null && HostLimitsWarning(request, hostLimits) is { } warning)
         {
             await error.WriteLineAsync(warning).ConfigureAwait(false);
         }
     }
 
     private static string RecoveryName(LifecycleRequest request) => request.RestoreOnly ? "restore-only recovery" : "rollback";
+
+    /// <summary>
+    /// Whether a backup will start the instance (#1353 PR-1369-R2 F19): a fresh backup stops and starts an installed
+    /// instance only when it is running, and a resumed one when its journal recorded that it was, as its pre-mutation
+    /// continuity. A backup that starts nothing is not held to the host's limits, so a host that could not start the
+    /// instance does not stop a backup of it.
+    /// </summary>
+    private static async Task<bool> BackupStartsInstanceAsync(
+        InstanceManifest manifest,
+        ComposeFiles compose,
+        DockerClient docker,
+        LifecycleOperationState? resumed,
+        CancellationToken cancellationToken)
+        => manifest.LifecycleCondition == InstanceLifecycleCondition.Installed &&
+           (resumed is { MutationStarted: true }
+               ? resumed.PreMutationContinuity is not null
+               : (await docker.InspectContainerAsync(compose.ContainerName, cancellationToken).ConfigureAwait(false)).Running);
+
+    /// <summary>
+    /// The warning of each limit <paramref name="request"/> goes ahead without (#1357). A backup is not a recovery, but it
+    /// starts the instance it stopped again, on the image it ran, so it goes ahead as a rollback does (#1353).
+    /// </summary>
+    private static string? HostLimitsWarning(LifecycleRequest request, HostPrerequisiteReport hostLimits)
+        => request.Operation == LifecycleOperationKind.Backup
+            ? HostPrerequisites.RollbackWarning(
+                hostLimits, "backup", "A backup starts the instance it stopped again, on the image it ran")
+            : HostPrerequisites.RollbackWarning(hostLimits, RecoveryName(request));
 
     /// <summary>The result with the warnings of each limit the recovery went ahead without (#1357).</summary>
     private static LifecycleResult WithHostLimitWarnings(LifecycleResult result, HostPrerequisiteReport? hostLimits)
@@ -152,7 +193,7 @@ internal sealed partial class CameraAgentLifecycleManager
         HostPrerequisiteReport? hostLimits,
         CancellationToken cancellationToken)
     {
-        if (hostLimits is null || HostPrerequisites.RollbackWarning(hostLimits, RecoveryName(request)) is not { } warning)
+        if (hostLimits is null || HostLimitsWarning(request, hostLimits) is not { } warning)
         {
             return;
         }

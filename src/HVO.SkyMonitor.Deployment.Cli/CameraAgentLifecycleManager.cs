@@ -27,6 +27,11 @@ internal sealed partial class CameraAgentLifecycleManager
         request.Validate();
         output ??= Console.Out;
         error ??= Console.Error;
+        // A backup or restore is the instance's service account's alone, and runs as nothing else (#1353 PR-1369-R2).
+        if (request.Operation is LifecycleOperationKind.Backup or LifecycleOperationKind.Restore)
+        {
+            EnsureServiceAccount(request, uid, gid);
+        }
         if (request.Operation is LifecycleOperationKind.CatalogInstall or LifecycleOperationKind.CatalogGarbageCollect)
         {
             return await CatalogLifecycleManager.ExecuteAsync(request, processRunner, uid, gid, cancellationToken)
@@ -67,6 +72,11 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         if (request.Operation is not null && uid == 0)
             throw InstallerException.Refused("Run lifecycle operations as the Docker-capable runtime user, not as root.");
+        // A restore's target may be absent or half replaced, so it starts from the archive, not the instance manifest.
+        if (request.Operation == LifecycleOperationKind.Restore)
+        {
+            return await RestoreAsync(request, processRunner, uid, gid, error, cancellationToken).ConfigureAwait(false);
+        }
         if (request.Operation == LifecycleOperationKind.Purge && !Directory.Exists(paths.InstanceRoot))
         {
             if (!request.Resume) throw InstallerException.Refused("The instance root is absent; use --resume only for a retained purge operation.");
@@ -80,6 +90,10 @@ internal sealed partial class CameraAgentLifecycleManager
                 .ConfigureAwait(false);
         }
         var manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
+        if (request.Operation == LifecycleOperationKind.Backup)
+        {
+            EnsureRecordedOwner(request, manifest.RuntimeUid, manifest.RuntimeGid, uid, gid, $"Instance {instanceId:D} records");
+        }
         paths = paths.WithCatalog(manifest.Catalog.CatalogId);
         var result = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
         var retainedOperation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
@@ -104,8 +118,9 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         var docker = new DockerClient(processRunner);
         var compose = ComposeFrom(paths, manifest, result);
-        // An image change reads which limits Docker enforces from the same docker info read (#1357).
-        var capabilities = request.Operation is LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback
+        // An image change, and a backup that restarts the instance, read which limits Docker enforces from the same
+        // docker info read (#1357).
+        var capabilities = request.Operation is LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback or LifecycleOperationKind.Backup
             ? await docker.ReadHostCapabilitiesAsync(cancellationToken).ConfigureAwait(false)
             : null;
         var daemon = capabilities?.Daemon ?? await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
@@ -138,7 +153,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (!request.RestoreOnly)
         {
             (signedImage, imported, hostLimits) = await AdmitBeforeWritingAsync(
-                    request, paths, manifest, compose, docker, capabilities, signedImage, error, cancellationToken)
+                    request, paths, manifest, compose, docker, capabilities, signedImage, processRunner, uid, gid, error, cancellationToken)
                 .ConfigureAwait(false);
         }
         else
@@ -226,6 +241,10 @@ internal sealed partial class CameraAgentLifecycleManager
                 LifecycleOperationKind.Uninstall => await UninstallAsync(
                     request, paths, manifest, result, compose, docker, lifecycleClientFactory, lifecycleControlToken!, daemon,
                     cancellationToken)
+                    .ConfigureAwait(false),
+                LifecycleOperationKind.Backup => await BackupAsync(
+                    request, paths, manifest, result, compose, docker, lifecycleClientFactory, ownerClientFactory,
+                    lifecycleControlToken!, installationVerificationToken!, daemon, hostLimits, uid, gid, error, cancellationToken)
                     .ConfigureAwait(false),
                 LifecycleOperationKind.Purge => await PurgeAsync(
                     request, paths, manifest, compose, docker, daemon, processRunner, cancellationToken).ConfigureAwait(false),
@@ -2599,11 +2618,12 @@ internal sealed partial class CameraAgentLifecycleManager
 
     private static bool RequiresLifecycleControl(LifecycleOperationKind? operation)
         => operation is LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback or LifecycleOperationKind.Reinstall or
-            LifecycleOperationKind.Uninstall or LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback;
+            LifecycleOperationKind.Uninstall or LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback or
+            LifecycleOperationKind.Backup;
 
     private static bool RequiresInstallationVerification(LifecycleOperationKind? operation)
         => operation is LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback or LifecycleOperationKind.Reinstall or
-            LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback;
+            LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback or LifecycleOperationKind.Backup;
 
     internal static string? ResumableCatalogSelectionVersion(
         LifecycleRequest request,
