@@ -119,6 +119,13 @@
 <text x="37.20" y="253.50" fill="#f7f9fc" textLength="100.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">&gt; schedule-3</text>
 <text x="154.80" y="253.50" fill="#f7f9fc" font-weight="bold">3</text>
 <text x="180.00" y="253.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">active</text>
+<text x="306.00" y="253.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">&gt; 10-19 01:00Z</text>
+<text x="440.40" y="253.50" fill="#f7f9fc" textLength="100.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">10-19 12:00Z</text>
+<text x="558.00" y="253.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">night</text>
+<text x="54.00" y="271.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs">schedule-2</text>
+<text x="154.80" y="271.50" fill="#f7f9fc">2</text>
+<text x="54.00" y="289.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs">schedule-1</text>
+<text x="154.80" y="289.50" fill="#f7f9fc">1</text>
 <text x="20.40" y="379.50" fill="#98a7bb" textLength="134.40" lengthAdjust="spacingAndGlyphs" opacity="0.6">[ Apply staged ]</text>
 <text x="171.60" y="379.50" fill="#98a7bb" textLength="100.80" lengthAdjust="spacingAndGlyphs" opacity="0.6">[ Activate ]</text>
 <text x="289.20" y="379.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Refresh ]</text>

@@ -16,6 +16,15 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Cli.Ui;
 [UnsupportedOSPlatform("windows")]
 public sealed class HvoSkyUiRenderTests
 {
+    /// <summary>The pages after Status, with text from each row of their tables, chosen and not.</summary>
+    private static readonly (int Index, string Name, string[] Rows)[] Pages =
+    [
+        (1, "2-settings", ["Site profile", "Deployment location", "Sky map", "Camera", "Capture schedule", "Observatory name", "Hualapai Valley"]),
+        (2, "3-rig", ["rig-1", "rig-2", "active"]),
+        (3, "4-schedule", ["schedule-3", "schedule-2", "schedule-1", "night"]),
+        (4, "5-system", ["0123456789abcdef", "supervised"])
+    ];
+
     public TestContext TestContext { get; set; } = null!;
 
     /// <summary>
@@ -43,10 +52,17 @@ public sealed class HvoSkyUiRenderTests
         Fits(driver, width, height);
         driver.Render(TestContext, $"ui-{size}-1-status");
         TestContext.WriteLine(driver.Screen);
-        foreach (var (index, name) in new[] { (1, "2-settings"), (2, "3-rig"), (3, "4-schedule"), (4, "5-system") })
+        foreach (var (index, name, rows) in Pages)
         {
             driver.ShowPage(index);
             Fits(driver, width, height);
+
+            // Every row of every table is drawn, the chosen one and the rest, focused or not.
+            foreach (var row in rows)
+            {
+                StringAssert.Contains(driver.Screen, row, StringComparison.Ordinal);
+            }
+
             driver.Render(TestContext, $"ui-{size}-{name}");
             TestContext.WriteLine(driver.Screen);
         }

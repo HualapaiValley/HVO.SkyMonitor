@@ -127,6 +127,11 @@
 <text x="238.80" y="289.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">VirtualSky</text>
 <text x="339.60" y="289.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">ASI676MC</text>
 <text x="423.60" y="289.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">active</text>
+<text x="54.00" y="307.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs">rig-2</text>
+<text x="138.00" y="307.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs">allsky</text>
+<text x="213.60" y="307.50" fill="#f7f9fc">2</text>
+<text x="238.80" y="307.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs">VirtualSky</text>
+<text x="339.60" y="307.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs">ASI676MC</text>
 <text x="45.60" y="469.50" fill="#58a6ff" textLength="126.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">CAMERA SETTINGS</text>
 <text x="37.20" y="487.50" fill="#98a7bb" textLength="100.80" lengthAdjust="spacingAndGlyphs">Sky lighting</text>
 <text x="154.80" y="487.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs">SolarDriven</text>

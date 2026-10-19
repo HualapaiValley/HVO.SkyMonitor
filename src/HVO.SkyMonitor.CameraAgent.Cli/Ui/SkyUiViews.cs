@@ -192,7 +192,9 @@ internal sealed class SkyUiTable : View
             SetAttribute(chosen && HasFocus
                 ? _theme.Selected.Normal
                 : _theme.Label(_rows[index].Tone, HvoGround.Surface, bold: chosen).Normal);
-            AddStr(0, row + 1, TerminalText.Pad(SkyUiFields.Cut(text, width), chosen && HasFocus ? width : 0));
+            // The focused choice's highlight runs to the edge; every other row is drawn as it is, cut at the edge.
+            var cut = SkyUiFields.Cut(text, width);
+            AddStr(0, row + 1, chosen && HasFocus ? TerminalText.Pad(cut, width) : cut);
         }
 
         if (_rows.Count > Room && Viewport.Height > 1)
