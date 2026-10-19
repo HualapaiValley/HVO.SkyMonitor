@@ -73,6 +73,34 @@ public sealed class OrbitalPredictionEngineTests
     }
 
     [TestMethod]
+    public async Task ExhaustedSamplesPreservePrefixAndExcludedObjectsReleaseUnusedTrackSlots()
+    {
+        var (query, time) = SimpleQuery();
+        var r = query.Request;
+        var limitedRequest = new OrbitalPredictionRequest(r.Use, r.Snapshot, r.SelectionPolicy, r.Interval, r.Objects,
+            r.Observer, r.Model, r.Bounds with { MaximumSamples = 2 });
+        var limited = await new OrbitalPredictionEngine(time).PredictExposureAsync(new(limitedRequest, query.Geometry, query.Timing), TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalExecutionStatus.Partial, limited.Status);
+        Assert.AreEqual(OrbitalPredictionReason.SampleBudget, limited.Reason);
+        Assert.AreEqual(1, limited.Products.Count); Assert.AreEqual(2, limited.Products[0].Samples.Count);
+        Assert.IsLessThan(r.Interval.EndUtc, limited.Products[0].CoveredInterval.EndUtc);
+
+        var record = r.Snapshot.Records[0];
+        var excluded = OrbitalContract.CreateRecord(record with
+        {
+            ObjectIdentity = new("norad", "1"),
+            Elements = record.Elements with { MeanAnomalyDegrees = record.Elements.MeanAnomalyDegrees + 180 }
+        });
+        var snapshot = OrbitalContractExamples.Snapshot(record, excluded);
+        var request = new OrbitalPredictionRequest(r.Use, snapshot, r.SelectionPolicy, r.Interval, snapshot.ObjectIdentities,
+            r.Observer, r.Model, r.Bounds with { MaximumTracks = 1 });
+        var result = await new OrbitalPredictionEngine(time).PredictExposureAsync(new(request, query.Geometry, query.Timing), TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalExecutionStatus.Complete, result.Status);
+        Assert.AreEqual(2, result.EvaluatedObjects); Assert.AreEqual(1, result.Products.Count);
+        Assert.AreEqual(record.ObjectIdentity, result.Products[0].Lineage.ObjectIdentity);
+    }
+
+    [TestMethod]
     [DataRow(ProjectionModel.Perspective)]
     [DataRow(ProjectionModel.EquidistantFisheye)]
     [DataRow(ProjectionModel.EquisolidFisheye)]

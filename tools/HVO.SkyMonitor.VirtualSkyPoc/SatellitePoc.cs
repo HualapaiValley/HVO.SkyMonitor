@@ -278,8 +278,14 @@ internal static partial class Program
         // These artifacts contain raw pixels, layout, timing and ordinary compatibility only. No scene metadata crosses this boundary.
         var controlDetection = SatelliteDetect(SatelliteArtifacts(control, config), projection, output, "control");
         var injectedDetection = SatelliteDetect(SatelliteArtifacts(injected, config), projection, output, "injected");
-        DrawSatelliteDiagnostics(output, predicted[2], injectedDetection.Components, args[5], first.AddSeconds(2 * profile.ExposureSeconds),
-            profile.ExposureSeconds, canonical ? "canonical product" : "reference mode i");
+        var targetStart = first.AddSeconds(2 * profile.ExposureSeconds);
+        var labels = canonical ? tracks.Where(t => t.RequestedInterval.StartUtc == targetStart)
+            .Where(static t => t.Segments.Count > 0)
+            .Select(static t => (t.Samples[t.Segments[0].StartSampleIndex].Pixel!.Value,
+                $"Predicted NORAD {t.Lineage.ObjectIdentity.CatalogNumber}")).ToArray() :
+            predicted[2].Take(1).Select(static p => (p[0], "Reference ISS 25544 (mode i)")).ToArray();
+        DrawSatelliteDiagnostics(output, predicted[2], injectedDetection.Components, args[5], targetStart,
+            profile.ExposureSeconds, canonical ? "canonical product" : "reference mode i", labels);
         WriteJson(Path.Combine(privatePath, "target-comparisons.json"), SatelliteCompare(predicted[2], injectedDetection.Components));
         WriteJson(Path.Combine(output, "validation.json"), new
         {

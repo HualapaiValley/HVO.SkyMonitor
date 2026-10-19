@@ -11,7 +11,8 @@ namespace HVO.SkyMonitor.VirtualSkyPoc;
 internal static partial class Program
 {
     private static void DrawSatelliteDiagnostics(string output, IReadOnlyList<PixelPoint[]> segments,
-        IReadOnlyList<Linear16TransientComponent> components, string fontPath, DateTimeOffset start, double seconds, string mode)
+        IReadOnlyList<Linear16TransientComponent> components, string fontPath, DateTimeOffset start, double seconds, string mode,
+        IReadOnlyList<(PixelPoint Anchor, string Text)> labels)
     {
         using var typeface = SKTypeface.FromFile(fontPath) ?? throw new ArgumentException("Explicit diagnostic font required.");
         using var font = new SKFont(typeface, 13);
@@ -44,6 +45,17 @@ internal static partial class Program
         canvas.DrawText("Gold: supplied exposure segments (gaps preserved)", 12, 63, SKTextAlign.Left, font, paint);
         paint.Color = SKColors.Magenta;
         canvas.DrawText("Magenta: all measured components; no temporal direction", 12, 83, SKTextAlign.Left, font, paint);
+        // Labels belong only to this diagnostic derivative, never the raw frame or detector input.
+        foreach (var (anchor, text) in labels.Take(4))
+        {
+            var width = font.MeasureText(text);
+            var x = (float)Math.Clamp(anchor.X + 8, 8, Math.Max(8, bitmap.Width - width - 8));
+            var y = (float)Math.Clamp(anchor.Y - 8, 110, bitmap.Height - 12);
+            paint.Color = new SKColor(0, 0, 0, 210);
+            canvas.DrawRect(x - 3, y - 14, width + 6, 18, paint);
+            paint.Color = SKColors.Gold;
+            canvas.DrawText(text, x, y, SKTextAlign.Left, font, paint);
+        }
         using var image = SKImage.FromBitmap(bitmap);
         using var encoded = image.Encode(SKEncodedImageFormat.Png, 100);
         using var stream = File.Create(Path.Combine(output, "injected-diagnostic.png"));
