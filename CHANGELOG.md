@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- The pre-release and release **Build** jobs may run for 120 minutes (it was 60): the arm64 image is built under
+  emulation, and its publish alone has taken 46 minutes, which cancelled the first `0.9.1` pre-release. (#1410)
 - The product version is `0.9.1`, the next release (owner decision 2026-10-19). Integration pre-releases are
   `0.9.1-dev.<n>`, and a build given no version is `0.9.1-dev`. (#1406)
 - Sky overlays are drawn in their original colours again, instead of the purple and cyan theme that did not read well on
