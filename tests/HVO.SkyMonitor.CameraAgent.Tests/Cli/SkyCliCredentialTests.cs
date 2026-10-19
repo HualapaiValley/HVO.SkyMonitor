@@ -505,6 +505,81 @@ public sealed class SkyCliCredentialTests
         Assert.DoesNotContain("unencrypted", tls.Error, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// An address bound to one of this machine's interfaces is this machine: a request to it never crosses the network,
+    /// so <c>hvo-sky</c> run on the CameraAgent host against its own LAN address does not warn. Any other address, and a
+    /// name, still does (#1384).
+    /// </summary>
+    [TestMethod]
+    public async Task PlainHttpToAnAddressOfThisMachine_DoesNotWarnAsync()
+    {
+        using var harness = new CliHarness();
+        harness.LocalAddresses = [IPAddress.Parse("192.0.2.10"), IPAddress.Parse("2001:db8::10")];
+
+        var lan = await harness.RunAsync("status", "--url", "http://192.0.2.10:5130/").ConfigureAwait(false);
+        var lan6 = await harness.RunAsync("status", "--url", "http://[2001:db8::10]:5130/").ConfigureAwait(false);
+        var other = await harness.RunAsync("status", "--url", "http://192.0.2.11:5130/").ConfigureAwait(false);
+        var name = await harness.RunAsync("status", "--url", "http://allsky.example:5130/").ConfigureAwait(false);
+
+        Assert.DoesNotContain("unencrypted", lan.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("unencrypted", lan6.Error, StringComparison.Ordinal);
+        StringAssert.Contains(other.Error, "unencrypted", StringComparison.Ordinal);
+        StringAssert.Contains(name.Error, "unencrypted", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Through a proxy, a request to this machine's own address leaves it, Authorization header and all (PR-1390-R1 F1):
+    /// such an address is this machine only when the proxy bypasses it, as <c>no_proxy</c> does. With no proxy it is this
+    /// machine, and a name is warned about whatever the proxy.
+    /// </summary>
+    [TestMethod]
+    public async Task PlainHttpToAnAddressOfThisMachine_ThroughAProxy_WarnsUnlessTheProxyBypassesItAsync()
+    {
+        using var harness = new CliHarness();
+        harness.LocalAddresses = [IPAddress.Parse("192.0.2.10")];
+        const string local = "http://192.0.2.10:5130/";
+
+        harness.Proxy = new EnvironmentLikeProxy(new Uri("http://192.0.2.99:8080/"));
+        var proxied = await harness.RunAsync("status", "--url", local).ConfigureAwait(false);
+        harness.Proxy = new EnvironmentLikeProxy(new Uri("http://192.0.2.99:8080/"), "192.0.2.10");
+        var bypassed = await harness.RunAsync("status", "--url", local).ConfigureAwait(false);
+        var named = await harness.RunAsync("status", "--url", "http://allsky.example:5130/").ConfigureAwait(false);
+        harness.Proxy = null;
+        var direct = await harness.RunAsync("status", "--url", local).ConfigureAwait(false);
+
+        StringAssert.Contains(proxied.Error, "unencrypted", StringComparison.Ordinal);
+        Assert.DoesNotContain("unencrypted", bypassed.Error, StringComparison.Ordinal);
+        StringAssert.Contains(named.Error, "unencrypted", StringComparison.Ordinal);
+        Assert.DoesNotContain("unencrypted", direct.Error, StringComparison.Ordinal);
+    }
+
+    /// <summary>hvo-sky's own connections go through <see cref="HttpClient.DefaultProxy"/>, so the warning asks it.</summary>
+    [TestMethod]
+    public void Host_TheProxyTheWarningAsks_IsTheOneTheConnectionUses()
+    {
+        var host = SkyCliHost.System();
+
+        Assert.AreSame(HttpClient.DefaultProxy, host.Proxy());
+        Assert.IsNull(host.CreateHandler, "the connection's handler is the default one, which uses HttpClient.DefaultProxy");
+    }
+
+    /// <summary>
+    /// A proxy as <c>http_proxy</c> with <c>no_proxy</c> configures one: every request goes through it except those to a
+    /// host the bypass list names.
+    /// </summary>
+    private sealed class EnvironmentLikeProxy(Uri proxy, params string[] noProxy) : IWebProxy
+    {
+        public ICredentials? Credentials { get; set; }
+
+        public Uri? GetProxy(Uri destination) => IsBypassed(destination) ? null : proxy;
+
+        public bool IsBypassed(Uri host)
+        {
+            ArgumentNullException.ThrowIfNull(host);
+            return noProxy.Contains(host.Host, StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
     [TestMethod]
     public void Store_DefaultPathFollowsXdgConfigHomeAndOtherwiseTheHomeDirectory()
     {

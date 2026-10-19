@@ -224,6 +224,12 @@ internal sealed class CliHarness : IDisposable
     /// <summary>For <c>hvo-sky ui</c>: what runs the interface, which tests replace to drive it.</summary>
     public Action<Terminal.Gui.App.IApplication, Terminal.Gui.App.IRunnable>? RunApplication { get; set; }
 
+    /// <summary>The addresses bound to this machine's interfaces, as hvo-sky sees them; none unless a test names some.</summary>
+    public IReadOnlyList<IPAddress> LocalAddresses { get; set; } = [];
+
+    /// <summary>The proxy hvo-sky takes its connections to go through; none unless a test names one.</summary>
+    public IWebProxy? Proxy { get; set; }
+
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromMilliseconds(5);
 
     /// <summary>The fake's current process start time, which a restart replaces.</summary>
@@ -278,6 +284,8 @@ internal sealed class CliHarness : IDisposable
             UserId = UserId,
             Time = Time,
             HasTerminal = HasTerminal,
+            LocalAddresses = () => LocalAddresses,
+            Proxy = () => Proxy,
             ClientVersion = "0.9.0-test+" + new string('c', 40),
             CreateHandler = Api.CreateHandler,
             CreateApplication = CreateApplication ?? SkyCliHost.CreateTerminalApplication,

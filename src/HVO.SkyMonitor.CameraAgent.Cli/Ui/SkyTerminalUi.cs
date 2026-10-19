@@ -215,7 +215,7 @@ internal sealed class SkyTerminalUi : IDisposable
         {
             // Not CreateClient(connection), which writes its warning on the command line, under the interface: it shows here.
             Connection = Context.ResolveConnection();
-            ClearText = SkyCliContext.ClearTextWarning(Connection.Url);
+            ClearText = Context.ClearTextWarning(Connection.Url);
             _client = Context.CreateClient(Connection.Url, Connection.ApiKey);
         }
         catch (Exception error) when (error is SkyCliNotConfiguredException or SkyCredentialFileException)
