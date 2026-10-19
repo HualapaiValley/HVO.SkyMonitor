@@ -21,6 +21,10 @@ public sealed class ArchitectureBoundaryTests
     private const string CameraAgentZwo = "HVO.SkyMonitor.CameraAgent.Modules.Zwo";
     private const string CameraAgentReplay = "HVO.SkyMonitor.CameraAgent.Replay";
     private const string CameraAgentReplayRunner = "HVO.SkyMonitor.CameraAgent.ReplayRunner";
+
+    // hvo-sky (#1317), CameraAgent's runtime client: a separate executable that reaches CameraAgent only over its HTTP
+    // operations API, so it references no project.
+    private const string CameraAgentCli = "HVO.SkyMonitor.CameraAgent.Cli";
     private const string ProcessingRunnerContracts = "HVO.SkyMonitor.ProcessingRunner.Contracts";
     private const string ProcessingRunner = "HVO.SkyMonitor.ProcessingRunner";
     private const string CameraAgent = "HVO.SkyMonitor.CameraAgent";
@@ -74,6 +78,7 @@ public sealed class ArchitectureBoundaryTests
             [CameraAgentZwo] = Set(AgentCore),
             [CameraAgentReplay] = Set(AgentCore, Processing),
             [CameraAgentReplayRunner] = Set(Processing, CameraAgentReplay),
+            [CameraAgentCli] = Set(),
             [ProcessingRunnerContracts] = Set(AgentCore, Processing),
             [ProcessingRunner] = Set(AgentCore, Processing, ProcessingRunnerContracts),
             [CameraAgent] = Set(CameraAgentCommon, CameraAgentZwo, Catalog, Common),
@@ -118,6 +123,7 @@ public sealed class ArchitectureBoundaryTests
 
     private static readonly IReadOnlySet<string> CameraAgentImplementations = Set(
         CameraAgent,
+        CameraAgentCli,
         CameraAgentCommon,
         CameraAgentZwo,
         CameraAgentReplay,

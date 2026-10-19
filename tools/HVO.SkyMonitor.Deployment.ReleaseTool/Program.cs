@@ -292,14 +292,14 @@ internal static partial class Program
             : throw new ReleaseToolException($"{name} must be an ISO-8601 UTC timestamp.");
     }
 
-    private static void ValidateElf(string path, ushort expectedMachine, string architecture)
+    private static void ValidateElf(string path, ushort expectedMachine, string architecture, string what = "installer")
     {
         Span<byte> header = stackalloc byte[20];
         using var stream = File.OpenRead(path);
         if (stream.Read(header) != header.Length || !header[..4].SequenceEqual("\u007fELF"u8) ||
             System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(header[18..20]) != expectedMachine)
         {
-            throw new ReleaseToolException($"The {architecture} installer does not have the expected ELF identity.");
+            throw new ReleaseToolException($"The {architecture} {what} does not have the expected ELF identity.");
         }
     }
 

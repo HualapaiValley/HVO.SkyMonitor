@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>HVO.SkyMonitor.CameraAgent.Cli</AssemblyName>
+    <RootNamespace>HVO.SkyMonitor.CameraAgent.Cli</RootNamespace>
+    <Description>hvo-sky: the command-line client of a running CameraAgent, over its operations API (install contract section 8).</Description>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- The generated marshalling of statx, which checks who owns the credentials file (Client/SkyFileSystem.cs). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RuntimeIdentifiers>linux-x64;linux-arm64</RuntimeIdentifiers>
+  </PropertyGroup>
+  <!--
+    A release ships the client as one self-contained file, hvo-sky-<rid> (install contract section 4), which the operator
+    installs as hvo-sky. A build without a runtime identifier is the framework-dependent one the tests load.
+  -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+  </PropertyGroup>
+  <!--
+    The client's build identity (install contract section 1), as the installer's: its informational version is
+    <version>+<40-character commit>, which hvo-sky's version option prints. A build with neither a checkout nor a
+    supplied -p:SourceRevisionId says so rather than printing a bare version.
+  -->
+  <Target Name="HvoClientBuildIdentity"
+          AfterTargets="InitializeSourceControlInformation"
+          BeforeTargets="AddSourceRevisionToInformationalVersion">
+    <PropertyGroup Condition="'$(SourceRevisionId)' == ''">
+      <SourceRevisionId>unknown</SourceRevisionId>
+    </PropertyGroup>
+    <Error Code="HVO1317"
+           Condition="'$(SourceRevisionId)' != 'unknown' and !$([System.Text.RegularExpressions.Regex]::IsMatch('$(SourceRevisionId)', '\A[0-9a-f]{40}\z'))"
+           Text="The hvo-sky source revision '$(SourceRevisionId)' must be a 40-character lowercase commit ID or 'unknown'." />
+  </Target>
+  <ItemGroup>
+    <PackageReference Include="System.CommandLine" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="HVO.SkyMonitor.CameraAgent.Tests" />
+    <InternalsVisibleTo Include="HVO.SkyMonitor.CameraAgent.IntegrationTests" />
+  </ItemGroup>
+</Project>

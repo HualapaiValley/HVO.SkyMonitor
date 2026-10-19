@@ -261,6 +261,7 @@ shared_projects=(
 
 cameraagent_projects=(
   HVO.SkyMonitor.CameraAgent
+  HVO.SkyMonitor.CameraAgent.Cli
   HVO.SkyMonitor.CameraAgent.Common
   HVO.SkyMonitor.CameraAgent.Modules.Zwo
   HVO.SkyMonitor.CameraAgent.Replay
@@ -310,7 +311,7 @@ is_host_private_path() {
   local path="$1"
 
   case "$path" in
-    src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/* | src/HVO.SkyMonitor.CameraAgent.Replay/* | src/HVO.SkyMonitor.CameraAgent.ReplayRunner/*)
+    src/HVO.SkyMonitor.CameraAgent.Modules.Zwo/* | src/HVO.SkyMonitor.CameraAgent.Replay/* | src/HVO.SkyMonitor.CameraAgent.ReplayRunner/* | src/HVO.SkyMonitor.CameraAgent.Cli/*)
       return 0
       ;;
     src/HVO.SkyMonitor.CameraAgent/Components/Account/* | src/HVO.SkyMonitor.LogicHost/Components/Account/*)

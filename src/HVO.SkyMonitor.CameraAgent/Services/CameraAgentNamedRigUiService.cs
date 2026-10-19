@@ -1,5 +1,4 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -87,12 +86,10 @@ internal sealed partial class CameraAgentNamedRigUiService(
     IHostApplicationLifetime lifetime, IConfiguration configuration, TimeProvider timeProvider,
     ILogger<CameraAgentNamedRigUiService> logger) : ICameraAgentNamedRigUiService
 {
-    internal const string SupervisedRestartKey = "CameraAgent:Restart:Supervised";
-    // Scoped per circuit, so the one-shot restart latch is keyed by the process-wide host lifetime.
-    private static readonly ConditionalWeakTable<IHostApplicationLifetime, string> RestartRequests = new();
+    internal const string SupervisedRestartKey = CameraAgentRestart.SupervisedKey;
 
     /// <summary>Delay between answering the restart request and stopping, so the reply reaches the browser.</summary>
-    internal TimeSpan RestartDelay { get; init; } = TimeSpan.FromSeconds(1);
+    internal TimeSpan RestartDelay { get; init; } = CameraAgentRestart.DefaultDelay;
 
     private async Task<ClaimsPrincipal?> PrincipalAsync(string policy)
     {
@@ -219,48 +216,11 @@ internal sealed partial class CameraAgentNamedRigUiService(
         });
 
     public ValueTask<OperatorUiResult<CameraAgentRestartDisposition>> RequestRestartAsync(CancellationToken token)
-        => MutateAsync(actor =>
-        {
-            if (!IsSupervised(configuration))
-                return Task.FromResult(CameraAgentRestartDisposition.Unsupervised);
-            if (lifetime.ApplicationStopping.IsCancellationRequested || !RestartRequests.TryAdd(lifetime, actor))
-                return Task.FromResult(CameraAgentRestartDisposition.AlreadyRequested);
-            LogRestartRequested(logger, actor);
-            _ = StopAfterDelayAsync();
-            return Task.FromResult(CameraAgentRestartDisposition.Scheduled);
-        });
+        => MutateAsync(actor => Task.FromResult(CameraAgentRestart.Request(
+            lifetime, configuration, actor, RestartDelay, timeProvider, logger, LogRestartRequested)));
 
-    private bool RestartRequested
-        => lifetime.ApplicationStopping.IsCancellationRequested || RestartRequests.TryGetValue(lifetime, out _);
+    private bool RestartRequested => CameraAgentRestart.IsRequested(lifetime);
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
-        Justification = "A failed background stop is logged and the one-shot latch is released for a retry.")]
-    private async Task StopAfterDelayAsync()
-    {
-        try
-        {
-            if (RestartDelay > TimeSpan.Zero)
-                await Task.Delay(RestartDelay, timeProvider).ConfigureAwait(false);
-            lifetime.StopApplication();
-        }
-        catch (Exception exception)
-        {
-            RestartRequests.Remove(lifetime);
-            logger.LogError(exception, "CameraAgent restart request could not stop the host.");
-        }
-    }
-
-    /// <summary>
-    /// Restart is offered only when something will start the process again: an explicit
-    /// <c>CameraAgent:Restart:Supervised</c> setting wins; otherwise a .NET container image
-    /// (<c>DOTNET_RUNNING_IN_CONTAINER=true</c>) is treated as supervised by its restart policy.
-    /// </summary>
-    internal static bool IsSupervised(IConfiguration configuration)
-    {
-        ArgumentNullException.ThrowIfNull(configuration);
-        var configured = configuration[SupervisedRestartKey];
-        if (!string.IsNullOrWhiteSpace(configured))
-            return bool.TryParse(configured, out var supervised) && supervised;
-        return string.Equals(configuration["DOTNET_RUNNING_IN_CONTAINER"], "true", StringComparison.OrdinalIgnoreCase);
-    }
+    /// <inheritdoc cref="CameraAgentRestart.IsSupervised"/>
+    internal static bool IsSupervised(IConfiguration configuration) => CameraAgentRestart.IsSupervised(configuration);
 }

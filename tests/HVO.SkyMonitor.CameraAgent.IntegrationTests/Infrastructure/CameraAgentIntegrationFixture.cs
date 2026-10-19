@@ -108,6 +108,13 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         return _agentFactory!.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
     }
 
+    /// <summary>A handler that sends requests to the in-process CameraAgent, for a client that builds its own HttpClient.</summary>
+    public HttpMessageHandler CreateCameraAgentHandler()
+    {
+        EnsureInitialized();
+        return _agentFactory!.Server.CreateHandler();
+    }
+
     public WebApplicationFactory<Program> CreateCameraAgentFactory(Action<IServiceCollection> configureServices)
     {
         ArgumentNullException.ThrowIfNull(configureServices);
@@ -153,6 +160,8 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
         ["CameraAgent:RawIngressRoot"] = _storageRoot,
         ["CameraAgent:DiskPressureThresholdPercent"] = "1",
         ["CameraAgent:DiskPressureRecoveryPercent"] = "2",
+        // The shared host must never stop itself: a restart request is refused as unsupervised, wherever the tests run.
+        ["CameraAgent:Restart:Supervised"] = "false",
         ["Catalog:Root"] = _catalogFixture?.Root,
         ["Catalog:RequiredCatalogId"] = "hyg-v42-fixture",
         ["Catalog:RequiredPackageKind"] = "Fixture",
