@@ -44,13 +44,21 @@ public sealed class DurableSyncTests
     }
 
     [TestMethod]
-    public void File_FlushesAnExistingFileByPathAndHandle()
+    public void File_FlushesAnExistingFileByPathHandleAndStream()
     {
         var path = Path.Combine(_temp, "data.bin");
         File.WriteAllBytes(path, new byte[64 * 1024]);
         DurableSync.File(path);
-        using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.ReadWrite);
-        DurableSync.File(handle, path);
+        using (var handle = File.OpenHandle(path, FileMode.Open, FileAccess.ReadWrite))
+        {
+            DurableSync.File(handle, path);
+        }
+        using var stream = new FileStream(path, FileMode.Append, FileAccess.Write);
+        stream.Write([1, 2, 3]);
+
+        DurableSync.File(stream);
+
+        Assert.AreEqual(64 * 1024 + 3, new FileInfo(path).Length, "the stream's buffered bytes reached the file");
     }
 
     [TestMethod]

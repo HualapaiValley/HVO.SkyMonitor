@@ -616,7 +616,13 @@ public sealed class CameraCaptureServiceTests
             var staged = await named.StageAsync(target.RevisionId, selection.Version, "override-race-stage", "owner", true,
                 active.ActiveRevision.RevisionId, active.ActiveRevision.ProfileSha256, CancellationToken.None).ConfigureAwait(false);
             named.SnapshotStartupPendingSelection((await named.GetAsync(CancellationToken.None).ConfigureAwait(false)).Selection);
-            var stale = new GatedInitializationModule();
+            // The service disposes the stale module and, at once, prepares and commits the staged revision again, so the
+            // runtime's revision is read when the stale module is disposed, not after (#1374).
+            string? revisionAtStaleDisposal = null;
+            var stale = new GatedInitializationModule
+            {
+                Disposing = () => revisionAtStaleDisposal = runtime.Snapshot?.Revision.RevisionId
+            };
             var fresh = new RigRecordingModule(clock);
             var factory = new SequenceModuleFactory(stale, fresh);
             var service = new CameraCaptureService(accessor, factory, ingress, new RecordingDistributor(), clock,
@@ -639,7 +645,8 @@ public sealed class CameraCaptureServiceTests
                 await stale.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                 Assert.AreEqual(0, stale.CaptureCalls);
                 Assert.AreEqual(CaptureAdmissionState.Running, admission.Snapshot.State);
-                Assert.AreEqual(active.ActiveRevision.RevisionId, runtime.Snapshot!.Revision.RevisionId);
+                Assert.AreEqual(active.ActiveRevision.RevisionId, revisionAtStaleDisposal,
+                    "the conflicted startup commit published the staged revision while the stale module was open");
                 Assert.IsNull(named.PendingRuntimeFailure);
                 Assert.IsNull(named.ActiveRuntimeFailure);
                 var captured = await ingress.Captured.Task.WaitAsync(TimeSpan.FromSeconds(12)).ConfigureAwait(false);
@@ -743,6 +750,8 @@ public sealed class CameraCaptureServiceTests
         public TaskCompletionSource InitializationStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReleaseInitialization { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Disposed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        /// <summary>Runs on the capture service's thread as the module is disposed, before the service goes on.</summary>
+        public Action? Disposing { get; init; }
         public int CaptureCalls { get; private set; }
         public string Id => "test";
         public string DisplayName => "Test";
@@ -760,6 +769,7 @@ public sealed class CameraCaptureServiceTests
         }
         public ValueTask DisposeAsync()
         {
+            Disposing?.Invoke();
             Disposed.TrySetResult();
             return ValueTask.CompletedTask;
         }

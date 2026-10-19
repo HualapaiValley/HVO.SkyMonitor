@@ -101,8 +101,9 @@ A full re-run stops at the draft job while the earlier attempt's draft exists: a
 
 The workflow changes no repository or environment setting; these are the owner's to apply:
 
-- **`production-release` environment** (Settings, Environments). As of 2026-10-18 it has no protection rules and
-  administrators may bypass it, so the release gate refuses every release until this is set:
+- **`production-release` environment** (Settings, Environments). As of 2026-10-18 it is set as below: it requires the
+  owner's approval, administrators cannot bypass it, and only `v*` tags can use it. The release gate refuses every
+  release while it requires no reviewer:
   - **Required reviewers:** the owner (`RoySalisbury`).
   - **Prevent self-review:** off while the owner is the only reviewer, because the owner both pushes the tag and
     approves. Turn it on once another reviewer is added.
