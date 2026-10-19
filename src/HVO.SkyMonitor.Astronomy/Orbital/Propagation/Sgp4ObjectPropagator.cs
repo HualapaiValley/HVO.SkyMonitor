@@ -10,7 +10,8 @@ internal enum Sgp4FailureKind
     Propagation,
     NonFiniteTime,
     NonFiniteCoefficients,
-    NonFiniteState
+    NonFiniteState,
+    WorkLimit
 }
 
 /// <summary>Core codes are retained verbatim: 1, 2, 3, 4 or 6; zero means an adapter failure.</summary>
@@ -41,7 +42,8 @@ internal sealed class Sgp4ObjectPropagator
     internal double MeanMotionDdotRadiansPerMinuteCubed => template.nddot;
 
     internal static bool TryCreate(OrbitalRecordV1 record,
-        [NotNullWhen(true)] out Sgp4ObjectPropagator? propagator, out Sgp4Failure failure)
+        [NotNullWhen(true)] out Sgp4ObjectPropagator? propagator, out Sgp4Failure failure,
+        Func<bool>? beforeCoreEvaluation = null)
     {
         propagator = null;
         failure = default;
@@ -84,6 +86,7 @@ internal sealed class Sgp4ObjectPropagator
         }
 
         // The pinned initializer always returns true. Its epoch sgp4 call can still fail.
+        if (!Reserve(beforeCoreEvaluation, out failure)) return false;
         if (!SGP4.sgp4init('a', initialized) || initialized.error != 0)
         {
             failure = new(Sgp4FailureKind.Initialization, initialized.error);
@@ -92,18 +95,19 @@ internal sealed class Sgp4ObjectPropagator
 
         // Initialization can overflow for otherwise finite extreme elements without a core code.
         // Validate an actual epoch state before publishing the private template.
-        if (!TryEvaluate(initialized.Copy(), 0, out _, out failure)) return false;
+        if (!TryEvaluate(initialized.Copy(), 0, out _, out failure, beforeCoreEvaluation)) return false;
         propagator = new(initialized, record.EpochUtc);
         return true;
     }
 
     internal bool TryPropagate(DateTimeOffset utc, [NotNullWhen(true)] out OrbitalTemeState? state,
-        out Sgp4Failure failure)
+        out Sgp4Failure failure, Func<bool>? beforeCoreEvaluation = null)
         => TryPropagateMinutes((utc.UtcTicks - epochUtc.UtcTicks) / (double)TimeSpan.TicksPerMinute,
-            out state, out failure);
+            out state, out failure, beforeCoreEvaluation);
 
     internal bool TryPropagateMinutes(double minutesSinceEpoch,
-        [NotNullWhen(true)] out OrbitalTemeState? state, out Sgp4Failure failure)
+        [NotNullWhen(true)] out OrbitalTemeState? state, out Sgp4Failure failure,
+        Func<bool>? beforeCoreEvaluation = null)
     {
         if (!double.IsFinite(minutesSinceEpoch))
         {
@@ -111,14 +115,15 @@ internal sealed class Sgp4ObjectPropagator
             failure = new(Sgp4FailureKind.NonFiniteTime, 0);
             return false;
         }
-        return TryEvaluate(template.Copy(), minutesSinceEpoch, out state, out failure);
+        return TryEvaluate(template.Copy(), minutesSinceEpoch, out state, out failure, beforeCoreEvaluation);
     }
 
     private static bool TryEvaluate(ElsetRec elements, double minutesSinceEpoch,
-        [NotNullWhen(true)] out OrbitalTemeState? state, out Sgp4Failure failure)
+        [NotNullWhen(true)] out OrbitalTemeState? state, out Sgp4Failure failure, Func<bool>? beforeCoreEvaluation)
     {
         state = null;
         failure = default;
+        if (!Reserve(beforeCoreEvaluation, out failure)) return false;
         var position = new double[3];
         var velocity = new double[3];
         if (!SGP4.sgp4(elements, minutesSinceEpoch, position, velocity) || elements.error != 0)
@@ -134,5 +139,16 @@ internal sealed class Sgp4ObjectPropagator
         }
         state = new(new(position[0], position[1], position[2]), new(velocity[0], velocity[1], velocity[2]));
         return true;
+    }
+
+    private static bool Reserve(Func<bool>? beforeCoreEvaluation, out Sgp4Failure failure)
+    {
+        if (beforeCoreEvaluation is null || beforeCoreEvaluation())
+        {
+            failure = default;
+            return true;
+        }
+        failure = new(Sgp4FailureKind.WorkLimit, 0);
+        return false;
     }
 }

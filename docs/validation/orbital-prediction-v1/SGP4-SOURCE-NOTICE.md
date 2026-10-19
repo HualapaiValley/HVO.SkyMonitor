@@ -23,10 +23,13 @@ relative to `src/HVO.SkyMonitor.Astronomy/Orbital/Propagation/`.
 | `ElsetRec.cs` | `ed45d790765fdd131a41e952efa12b38f83bb66cfec69d4b3719e16912c8b1de` | `d4fd8d3624e3b24c5c4a723ea0f139b34d98b6ba731f3214b3afcad6b323fddd` |
 
 The HVO-authored `Sgp4ObjectPropagator.cs` adapter has SHA256
-`2a2d3f00cc0e51c47d1af314d7330f5c6d6319d6dd8d3593e5f7ee6379bced35`.
+`e11d1a0a8579fdd460e816145aaaaffdf39dd5e1f48c1259bf49eb91df41ec4a`.
 It is repository code under the repository's license, rather than an upstream
-third-party file. These three pins are inputs to the complete prediction
-engine implementation identity. An upstream revision alone omits HVO's adapter
+third-party file. The SHA256 of the exact concatenation `SGP4.cs`, `ElsetRec.cs`, then
+`Sgp4ObjectPropagator.cs` is
+`2B3825FDB322CB816F9EED069DCBB5B2DA457B018532A15985E0FC6B5C472692`.
+`OrbitalPredictionModel.Propagator` retains this propagation identity. Time,
+coordinate and numerical sampling conventions have separate versioned facts. An upstream revision alone omits HVO's adapter
 and adaptations; a platform-specific compiled DLL hash is not the retained
 software implementation identity. The issue owner binds the complete engine,
 including its coordinate, time, sampling and search implementation.
@@ -71,3 +74,12 @@ The adapter preserves midnight and subday ticks separately on input and uses
 UTC tick differences for evaluation times. The inherited combination has not
 been silently replaced. Future source upgrades or algorithm corrections need
 their own reviewed diff, provenance pins and complete numerical qualification.
+
+## Query work accounting
+
+The HVO adapter accepts an internal before-call callback. The query reserves
+one evaluation immediately before `sgp4init` (which internally calls `sgp4`),
+one before epoch-state validation, and one before each subsequent actual
+propagation. A denied reservation produces `WorkLimit` without entering that
+call; cancellation throws. Cache hits do not reserve propagation work. This
+changes work accounting only; the retained upstream numerical core is unchanged.
