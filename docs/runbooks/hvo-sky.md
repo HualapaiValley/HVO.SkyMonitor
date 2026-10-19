@@ -54,7 +54,10 @@ hvo-sky logout                                # removes the saved key; the addre
 - The installer binds CameraAgent to `127.0.0.1` by default, over plain HTTP, so `hvo-sky` runs on the CameraAgent host
   or reaches it through an SSH tunnel. Given a plain `http://` address on another machine, every command warns on
   standard error that the key crosses the network unencrypted, and `hvo-sky ui` shows the same warning in its notice
-  band (`[PLAIN HTTP]`), when signing in and whenever nothing more urgent shows.
+  band (`[PLAIN HTTP]`), when signing in and whenever nothing more urgent shows. This machine is its loopback and every
+  address bound to one of its interfaces: on the CameraAgent host, its own LAN address, such as
+  `http://192.0.2.10:5130/`, is not warned about, because a request to it never leaves the host. A host name is not
+  resolved, so a plain `http://` address given by name is always warned about.
 
 ## Credentials
 
@@ -102,7 +105,7 @@ nothing about CameraAgent's state. A key CameraAgent refuses (HTTP 401 or 403) e
 
 | Command | Key | What it does |
 | --- | --- | --- |
-| `status [--watch [--interval S]]` | Read | The instance's status: capture control, the camera, the raw-ingress, lane, processing and outbox queues, storage, and LogicHost delivery. `--json` is CameraAgent's operations summary as it is. `--watch` reads it again every `--interval` seconds (default 2) and writes one line per change, and a line when CameraAgent stops or starts answering, until Ctrl+C; **`status --watch`**, above this table, gives its deadline and exit codes. |
+| `status [--watch [--interval S]]` | Read | The instance's status: capture control, the camera, the raw-ingress, lane, processing and outbox queues, storage, and LogicHost delivery. `--json` is CameraAgent's operations summary as it is. `--watch` reads it again every `--interval` seconds (default 2) and writes one line per change, and a line when CameraAgent stops or starts answering, until Ctrl+C; **`status --watch`**, above this table, gives its deadline and exit codes. A line ends `(stale)` when CameraAgent last observed that part more than 5 minutes ago, `(not observed yet)` when it has not observed it, and `(disabled)` when it is switched off. `Capture` is CameraAgent's live pause-or-run state and is never stale. |
 | `info` | Read | `hvo-sky`'s own version, then CameraAgent's version, runtime, start time, catalog, whether it can restart itself, and the key in use and where it came from. |
 | `config show [GROUP]` | Read | The settings by group, from CameraAgent's settings catalogue: each value, where it comes from, and whether it can be changed here. |
 | `config get KEY` | Read | One setting: value, default, source, what it accepts, when a change applies, what it affects, and why it is read-only when it is. `KEY` is the full key, or the part after the group when that is unique. |
