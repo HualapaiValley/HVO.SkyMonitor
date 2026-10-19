@@ -5,6 +5,7 @@
 #   skymonitor-cameraagent-<version>-linux-<arch>.oci.tar     an offline image archive per platform
 #   <catalog version>.bundle.tar.gz                           the approved catalog bundle, under its own version
 #   install.sh                                                when --install-script names one (#1311)
+#   THIRD-PARTY-NOTICES.md                                    the third-party notices, the installers' bundled packages among them
 #   release.json, SHA256SUMS                                  the manifest, and every file's SHA-256
 #
 # The CameraAgent image is built once, for every platform, into the OCI archive --image-oci names. That archive is what
@@ -92,6 +93,9 @@ version_error="$(./scripts/release:version --check "$version" 2>&1)" || fail "--
 # A final release carries its CHANGELOG section and upgrade notes (install contract section 3); the release tool copies
 # every release's upgrade notes up to this one's into release.json below.
 notes_error="$(./scripts/release:notes --check "$version" 2>&1)" || fail "${notes_error#release:notes: }"
+# Every release ships the notices of what it bundles, as an asset of their own: a single-file installer carries Terminal.Gui
+# and the packages it brings in, Onigwrap's native Oniguruma library among them, and cannot carry their notices beside it.
+[[ -s THIRD-PARTY-NOTICES.md ]] || fail "THIRD-PARTY-NOTICES.md, the release's third-party notices, is missing or empty."
 created="${created:-$(date -u -d "$(git show -s --format=%cI "$commit")" +%Y-%m-%dT%H:%M:%SZ)}"
 [[ "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
     fail "--created must be a UTC time such as 2026-10-17T18:00:00Z."
@@ -162,6 +166,7 @@ tool_arguments=(
     --installer-linux-x64 "$work/installer-linux-x64/HVO.SkyMonitor.Deployment.Cli"
     --installer-linux-arm64 "$work/installer-linux-arm64/HVO.SkyMonitor.Deployment.Cli"
     --catalog-bundle "$catalog_bundle"
+    --notices THIRD-PARTY-NOTICES.md
     --output "$output"
 )
 [[ ! -d docs/upgrade-notes ]] || tool_arguments+=(--upgrade-notes docs/upgrade-notes)

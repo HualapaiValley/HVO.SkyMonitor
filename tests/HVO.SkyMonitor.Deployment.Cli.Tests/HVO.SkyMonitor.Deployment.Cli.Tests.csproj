@@ -1,4 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- The wizard runs here as the installer ships it: without Terminal.Gui's syntax highlighting (Directory.Build.targets). -->
+    <HvoTerminalProgram>true</HvoTerminalProgram>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="MSTest" />
     <PackageReference Include="coverlet.collector"><PrivateAssets>all</PrivateAssets></PackageReference>

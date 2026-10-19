@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Runtime.InteropServices;
 using HVO.SkyMonitor.Deployment.Contracts;
+using HVO.SkyMonitor.Deployment.Wizard;
 
 namespace HVO.SkyMonitor.Deployment;
 
@@ -74,6 +75,12 @@ internal static class Program
         var jsonErrors = args.Contains("--json", StringComparer.Ordinal);
         try
         {
+            // On a terminal, an install whose command line leaves a question unanswered runs the wizard, which asks it and
+            // then runs this same path with --answers (install contract section 5, #1317). Anywhere else nothing is asked.
+            if (services.Wizard is { } wizard && InstallWizardGate.Wants(args, services.Terminal))
+            {
+                return await wizard(args, services, cancellationToken).ConfigureAwait(false);
+            }
             var command = services.Parse(args);
             // A --config or --answers install can select JSON output without a --json token, so the error stream mode
             // follows the parsed command once parsing succeeds; the argv guess only covers a parse failure.
@@ -402,6 +409,15 @@ internal sealed record ProgramServices(
     Func<OwnerRecoveryRequest, CancellationToken, Task<OwnerRecoveryResult>> OwnerRecovery,
     Func<LifecycleRequest, CancellationToken, Task<LifecycleResult>> Lifecycle)
 {
+    /// <summary>The terminal, if any: the wizard runs only on one (#1317).</summary>
+    public InstallTerminal Terminal { get; init; } = InstallTerminal.Current();
+
+    /// <summary>
+    /// The installer's wizard, which <see cref="Program.RunAsync"/> hands an install to when <see cref="InstallWizardGate"/>
+    /// wants it; null where it must not run, as on the path the wizard itself takes.
+    /// </summary>
+    public Func<string[], ProgramServices, CancellationToken, Task<int>>? Wizard { get; init; } = InstallWizardRunner.RunAsync;
+
     public static ProgramServices Production { get; } = new(
         CommandLine.ParseCommand,
         CameraAgentInstaller.InstallAsync,

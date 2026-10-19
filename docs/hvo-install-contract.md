@@ -104,6 +104,7 @@ Every release carries assets with these names and kinds:
 | `install.sh` | `install-script` | The entry point, with the release version baked in |
 | `<image>-<version>-linux-<arch>.oci.tar` | `image-archive` | An offline image archive per architecture |
 | `<catalog version>.bundle.tar.gz` | `catalog` | A data package the release is tested with, under its own version (section 1): SkyMonitor's approved star catalog, today `hyg-v4.2-p3-s2-r1.bundle.tar.gz` |
+| `THIRD-PARTY-NOTICES.md` | `notices` | The third-party notices of what the release ships, the installer's bundled packages among them (SkyMonitor, #1317) |
 | `release.json` | | The machine-readable release manifest |
 | `SHA256SUMS` | | Covers every asset |
 | `CHANGELOG.md` section and upgrade notes | | In the release body and in `release.json` |
@@ -117,6 +118,7 @@ Every release carries assets with these names and kinds:
   | `install-script` | `install.sh` | `null` | RoofController; SkyMonitor (#1311) |
   | `image-archive` | An offline image archive | the runtime ID of its architecture (`linux-x64` for `amd64`) | both |
   | `catalog` | A data package | `null` | SkyMonitor |
+  | `notices` | `THIRD-PARTY-NOTICES.md` | `null` | SkyMonitor (#1317) |
   | `compose`, `deploy-script`, `kiosk`, `linux-auth`, `mac-app` | RoofController's own files: its Compose file, deploy script, kiosk, Linux authentication worker and Mac app | as written | RoofController |
 
   - A kind is lowercase: a letter, then letters, digits and `-`.

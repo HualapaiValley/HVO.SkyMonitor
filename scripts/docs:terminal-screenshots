@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# The terminal programs' screenshots (#1317): their tests save each screen as ANSI (NAME.ans, TerminalRenders), and
+# tests/cli/ansi-to-svg.py draws each as an SVG.
+#
+#   scripts/docs:terminal-screenshots             run the render tests, draw them, and replace docs/images/terminal
+#                                                 with them, only when they saved at least one screen
+#   scripts/docs:terminal-screenshots --draw DIR  draw every DIR/*.ans as DIR/*.svg (Development v1 CI does this)
+#
+# A screen's window title comes from its name: install-* is hvo-sky-install, ui-* is hvo-sky ui.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# The test projects whose tests save screens. hvo-sky ui's tests add theirs here.
+render_projects=(
+  tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj
+)
+
+usage() {
+  printf 'Usage: scripts/docs:terminal-screenshots [--draw DIR]\n' >&2
+  exit 2
+}
+
+draw() {
+  local folder="$1" ans name title count=0
+  [[ -d "$folder" ]] || { printf 'There is no folder %s.\n' "$folder" >&2; exit 1; }
+  shopt -s nullglob
+  for ans in "$folder"/*.ans; do
+    name="$(basename "$ans" .ans)"
+    case "$name" in
+      install-*) title=hvo-sky-install ;;
+      ui-*) title="hvo-sky ui" ;;
+      *) title="$name" ;;
+    esac
+    python3 "$repo_root/tests/cli/ansi-to-svg.py" "$ans" "${ans%.ans}.svg" --title "$title"
+    count=$((count + 1))
+  done
+  shopt -u nullglob
+  printf 'Drew %s terminal screens in %s.\n' "$count" "$folder"
+}
+
+case "$#:${1:-}" in
+  0:)
+    ;;
+  2:--draw)
+    draw "$2"
+    exit 0
+    ;;
+  *)
+    usage
+    ;;
+esac
+
+work="$(mktemp -d)"
+target="$repo_root/docs/images/terminal"
+staging=""
+retired=""
+cleanup() {
+  rm -rf -- "$work"
+  # A run stopped between the two renames puts the old set back rather than losing it.
+  if [[ -n "$retired" && ! -e "$target" ]]; then mv -- "$retired" "$target" && retired=""; fi
+  if [[ -n "$staging" ]]; then rm -rf -- "$staging"; fi
+  if [[ -n "$retired" ]]; then rm -rf -- "$retired"; fi
+}
+trap cleanup EXIT
+for project in "${render_projects[@]}"; do
+  HVO_TERMINAL_RENDERS_DIR="$work" DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
+    dotnet test "$repo_root/$project" --configuration Release \
+      --filter "TestCategory=Unit&FullyQualifiedName~RenderTests"
+done
+draw "$work"
+
+# The new set is built beside the old one and replaces it only when it holds screens: a run that saved none, or failed,
+# leaves the committed screenshots as they are. The old set is removed only once the new one is in its place; a swap
+# that fails puts it back.
+shopt -s nullglob
+screens=("$work"/*.svg)
+shopt -u nullglob
+if (( ${#screens[@]} == 0 )); then
+  printf 'The render tests saved no screens: docs/images/terminal is left as it is.\n' >&2
+  exit 1
+fi
+mkdir -p -- "$(dirname "$target")"
+staging="$target.staging.$$"
+mkdir -- "$staging"
+cp -- "${screens[@]}" "$staging"/
+if [[ -d "$target" ]]; then
+  retired="$target.old.$$"
+  mv -- "$target" "$retired"
+fi
+if ! mv -- "$staging" "$target"; then
+  if [[ -n "$retired" ]]; then
+    mv -- "$retired" "$target"
+    retired=""
+  fi
+  printf 'The new screenshots could not replace docs/images/terminal, which is left as it was.\n' >&2
+  exit 1
+fi
+staging=""
+if [[ -n "$retired" ]]; then
+  rm -rf -- "$retired"
+  retired=""
+fi
+printf 'Replaced the screenshots in docs/images/terminal with %s screens.\n' "${#screens[@]}"
