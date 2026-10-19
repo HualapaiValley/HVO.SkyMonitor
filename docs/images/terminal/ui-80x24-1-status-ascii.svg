@@ -98,7 +98,7 @@
 <text x="667.20" y="181.50" fill="#3a4a60">|</text>
 <text x="20.40" y="199.50" fill="#3a4a60">|</text>
 <text x="37.20" y="199.50" fill="#98a7bb" textLength="67.20" lengthAdjust="spacingAndGlyphs">Exposure</text>
-<text x="138.00" y="199.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">unknown</text>
+<text x="138.00" y="199.50" fill="#f7f9fc" textLength="151.20" lengthAdjust="spacingAndGlyphs">15000 ms, gain 200</text>
 <text x="331.20" y="199.50" fill="#3a4a60">|</text>
 <text x="348.00" y="199.50" fill="#3a4a60">|</text>
 <text x="364.80" y="199.50" fill="#98a7bb" textLength="92.40" lengthAdjust="spacingAndGlyphs">Quarantined</text>
@@ -106,11 +106,11 @@
 <text x="667.20" y="199.50" fill="#3a4a60">|</text>
 <text x="20.40" y="217.50" fill="#3a4a60">|</text>
 <text x="37.20" y="217.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">Config</text>
-<text x="138.00" y="217.50" fill="#3fb950" textLength="42.00" lengthAdjust="spacingAndGlyphs">Valid</text>
+<text x="138.00" y="217.50" fill="#3fb950" textLength="75.60" lengthAdjust="spacingAndGlyphs">validated</text>
 <text x="331.20" y="217.50" fill="#3a4a60">|</text>
 <text x="348.00" y="217.50" fill="#3a4a60">|</text>
 <text x="364.80" y="217.50" fill="#98a7bb" textLength="75.60" lengthAdjust="spacingAndGlyphs">LogicHost</text>
-<text x="465.60" y="217.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs">Disabled</text>
+<text x="465.60" y="217.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Enabled</text>
 <text x="667.20" y="217.50" fill="#3a4a60">|</text>
 <text x="20.40" y="235.50" fill="#3a4a60" textLength="319.20" lengthAdjust="spacingAndGlyphs">+------------------------------------+</text>
 <text x="348.00" y="235.50" fill="#3a4a60" textLength="327.60" lengthAdjust="spacingAndGlyphs">+-------------------------------------+</text>

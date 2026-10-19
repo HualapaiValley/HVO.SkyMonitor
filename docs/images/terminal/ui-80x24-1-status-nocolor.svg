@@ -49,12 +49,12 @@
 <text x="364.80" y="181.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs">Outbox</text>
 <text x="465.60" y="181.50" fill="#d4d4d4" textLength="159.60" lengthAdjust="spacingAndGlyphs">2 pending (4.0 KiB)</text>
 <text x="37.20" y="199.50" fill="#d4d4d4" textLength="67.20" lengthAdjust="spacingAndGlyphs">Exposure</text>
-<text x="138.00" y="199.50" fill="#d4d4d4" textLength="58.80" lengthAdjust="spacingAndGlyphs">unknown</text>
+<text x="138.00" y="199.50" fill="#d4d4d4" textLength="151.20" lengthAdjust="spacingAndGlyphs">15000 ms, gain 200</text>
 <text x="364.80" y="199.50" fill="#d4d4d4" textLength="109.20" lengthAdjust="spacingAndGlyphs">Quarantined 0</text>
 <text x="37.20" y="217.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs">Config</text>
-<text x="138.00" y="217.50" fill="#d4d4d4" textLength="42.00" lengthAdjust="spacingAndGlyphs">Valid</text>
+<text x="138.00" y="217.50" fill="#d4d4d4" textLength="75.60" lengthAdjust="spacingAndGlyphs">validated</text>
 <text x="364.80" y="217.50" fill="#d4d4d4" textLength="75.60" lengthAdjust="spacingAndGlyphs">LogicHost</text>
-<text x="465.60" y="217.50" fill="#d4d4d4" textLength="67.20" lengthAdjust="spacingAndGlyphs">Disabled</text>
+<text x="465.60" y="217.50" fill="#d4d4d4" textLength="58.80" lengthAdjust="spacingAndGlyphs">Enabled</text>
 <text x="45.60" y="253.50" fill="#d4d4d4" textLength="58.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">STORAGE</text>
 <text x="37.20" y="271.50" fill="#d4d4d4" textLength="25.20" lengthAdjust="spacingAndGlyphs">raw</text>
 <text x="121.20" y="271.50" fill="#d4d4d4" textLength="411.60" lengthAdjust="spacingAndGlyphs">120.0 GiB free of 500.0 GiB (24% free), kept 30 d</text>

@@ -79,37 +79,37 @@
 <text x="364.80" y="127.50" fill="#98a7bb" textLength="92.40" lengthAdjust="spacingAndGlyphs">Raw ingress</text>
 <text x="465.60" y="127.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">0 pending</text>
 <text x="692.40" y="127.50" fill="#98a7bb" textLength="75.60" lengthAdjust="spacingAndGlyphs">Heartbeat</text>
-<text x="801.60" y="127.50" fill="#f7f9fc" textLength="159.60" lengthAdjust="spacingAndGlyphs">Disabled (disabled)</text>
+<text x="801.60" y="127.50" fill="#f7f9fc" textLength="168.00" lengthAdjust="spacingAndGlyphs">Available, 0 pending</text>
 <text x="37.20" y="145.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">Camera</text>
 <text x="138.00" y="145.50" fill="#3fb950" textLength="75.60" lengthAdjust="spacingAndGlyphs">Available</text>
 <text x="364.80" y="145.50" fill="#98a7bb" textLength="42.00" lengthAdjust="spacingAndGlyphs">Lanes</text>
 <text x="465.60" y="145.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">0 pending</text>
 <text x="692.40" y="145.50" fill="#98a7bb" textLength="67.20" lengthAdjust="spacingAndGlyphs">Last ack</text>
-<text x="801.60" y="145.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs">never</text>
+<text x="801.60" y="145.50" fill="#f7f9fc" textLength="168.00" lengthAdjust="spacingAndGlyphs">2026-10-18T19:29:50Z</text>
 <text x="37.20" y="163.50" fill="#98a7bb" textLength="84.00" lengthAdjust="spacingAndGlyphs">Last frame</text>
 <text x="138.00" y="163.50" fill="#f7f9fc" textLength="151.20" lengthAdjust="spacingAndGlyphs">19:29:58Z (7s ago)</text>
 <text x="364.80" y="163.50" fill="#98a7bb" textLength="84.00" lengthAdjust="spacingAndGlyphs">Processing</text>
 <text x="465.60" y="163.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">0 pending</text>
 <text x="692.40" y="163.50" fill="#98a7bb" textLength="92.40" lengthAdjust="spacingAndGlyphs">Environment</text>
-<text x="801.60" y="163.50" fill="#d29922" textLength="58.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">unknown</text>
+<text x="801.60" y="163.50" fill="#f7f9fc" textLength="151.20" lengthAdjust="spacingAndGlyphs">Healthy, 0 pending</text>
 <text x="37.20" y="181.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">Rate</text>
 <text x="138.00" y="181.50" fill="#f7f9fc" textLength="134.40" lengthAdjust="spacingAndGlyphs">4.0 captures/min</text>
 <text x="364.80" y="181.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">Outbox</text>
 <text x="465.60" y="181.50" fill="#f7f9fc" textLength="159.60" lengthAdjust="spacingAndGlyphs">2 pending (4.0 KiB)</text>
 <text x="692.40" y="181.50" fill="#98a7bb" textLength="67.20" lengthAdjust="spacingAndGlyphs">Evidence</text>
-<text x="801.60" y="181.50" fill="#d29922" textLength="58.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">unknown</text>
+<text x="801.60" y="181.50" fill="#f7f9fc" textLength="151.20" lengthAdjust="spacingAndGlyphs">Healthy, 0 pending</text>
 <text x="37.20" y="199.50" fill="#98a7bb" textLength="67.20" lengthAdjust="spacingAndGlyphs">Exposure</text>
-<text x="138.00" y="199.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">unknown</text>
+<text x="138.00" y="199.50" fill="#f7f9fc" textLength="151.20" lengthAdjust="spacingAndGlyphs">15000 ms, gain 200</text>
 <text x="364.80" y="199.50" fill="#98a7bb" textLength="92.40" lengthAdjust="spacingAndGlyphs">Quarantined</text>
 <text x="465.60" y="199.50" fill="#f7f9fc">0</text>
 <text x="692.40" y="199.50" fill="#98a7bb" textLength="84.00" lengthAdjust="spacingAndGlyphs">Transients</text>
-<text x="801.60" y="199.50" fill="#d29922" textLength="58.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">unknown</text>
+<text x="801.60" y="199.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Healthy</text>
 <text x="37.20" y="217.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">Config</text>
-<text x="138.00" y="217.50" fill="#3fb950" textLength="42.00" lengthAdjust="spacingAndGlyphs">Valid</text>
+<text x="138.00" y="217.50" fill="#3fb950" textLength="75.60" lengthAdjust="spacingAndGlyphs">validated</text>
 <text x="364.80" y="217.50" fill="#98a7bb" textLength="75.60" lengthAdjust="spacingAndGlyphs">LogicHost</text>
-<text x="465.60" y="217.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs">Disabled</text>
+<text x="465.60" y="217.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Enabled</text>
 <text x="692.40" y="217.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">Replay</text>
-<text x="801.60" y="217.50" fill="#d29922" textLength="58.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">unknown</text>
+<text x="801.60" y="217.50" fill="#f7f9fc" textLength="151.20" lengthAdjust="spacingAndGlyphs">Healthy, 0 pending</text>
 <text x="45.60" y="271.50" fill="#58a6ff" textLength="58.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">STORAGE</text>
 <text x="37.20" y="289.50" fill="#98a7bb" textLength="25.20" lengthAdjust="spacingAndGlyphs">raw</text>
 <text x="121.20" y="289.50" fill="#f7f9fc" textLength="411.60" lengthAdjust="spacingAndGlyphs">120.0 GiB free of 500.0 GiB (24% free), kept 30 d</text>
@@ -117,7 +117,7 @@
 <text x="20.40" y="343.50" fill="#05070d" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold" text-decoration="underline">[ Refresh ]</text>
 <text x="37.20" y="379.50" fill="#98a7bb" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">RECENT CHANGES</text>
 <text x="28.80" y="397.50" fill="#98a7bb" textLength="75.60" lengthAdjust="spacingAndGlyphs">19:30:05Z</text>
-<text x="121.20" y="397.50" fill="#f7f9fc" textLength="882.00" lengthAdjust="spacingAndGlyphs">capture Running; camera Available; raw 0; lanes 0; processing 0; outbox 2; storage ok; configuration Vali</text>
+<text x="121.20" y="397.50" fill="#f7f9fc" textLength="882.00" lengthAdjust="spacingAndGlyphs">capture Running; camera Available; raw 0; lanes 0; processing 0; outbox 2; storage ok; configuration vali</text>
 <text x="20.40" y="577.50" fill="#98a7bb" textLength="277.20" lengthAdjust="spacingAndGlyphs">Read every 2 s. Ctrl+R reads now.</text>
 <text x="20.40" y="595.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[F1 Status]</text>
 <text x="129.60" y="595.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs">F2 Settings</text>
