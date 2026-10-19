@@ -111,11 +111,15 @@ records that SWPC did not publish. These include:
     record whose `Issue Time` line has a doubled space, a record whose
     message ends in an unpaired surrogate escape, a record whose `Issue Time`
     year is written in Arabic-Indic digits (a JSON `\u` escape, so the pack
-    stays ASCII), a record whose `Issue Time` is in the year 9999, and a
-    record whose `product_id` is a 4,301-digit number (s12);
+    stays ASCII), a record whose `Issue Time` is in the year 9999, a
+    record whose `product_id` is a 4,301-digit number, a record whose
+    `product_id` is the JSON number `1E5`, and records whose
+    `issue_datetime` or `message` is the JSON number `1.5` (s12);
   - records with a renamed header line, and the drifted body served again
     after a newer one (s20);
   - malformed bodies, including bodies nested 64 and 65 levels deep (s12);
+  - the captured Kp forecast with its first row's `kp` rewritten from the
+    JSON number `1.67` to the JSON string `"1.67"` (s16);
   - a 3-day forecast with a renamed table, and one whose solar radiation
     table has no rows (s17).
 

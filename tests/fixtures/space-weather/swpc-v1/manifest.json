@@ -129,8 +129,8 @@
   "files": [
     {
       "path": "SOURCE.md",
-      "bytes": 8136,
-      "sha256": "87C6AF9E8D270E9AD145CF618B45F4EE229D1F1DBDC456D86B0DF4BFA35D1394"
+      "bytes": 8400,
+      "sha256": "898D980E8B872BA5D746880E4DFC08DDCDEA02AC611A39610B30C9ABBB9988D6"
     },
     {
       "path": "capture-20261019T1857Z/3-day-forecast.original.json",
@@ -159,8 +159,8 @@
     },
     {
       "path": "fixtures.py",
-      "bytes": 150450,
-      "sha256": "34AB6B7DFFDFD274EDDD6292CC2F8E7760406BF493E46F36AF7C8D8606D8803E"
+      "bytes": 155593,
+      "sha256": "313E4C85D30574B0EAB8991512277B14599CE6E9382EE702F26A3ECD73CE6A62"
     },
     {
       "path": "ovation-aurora-site-sector.json",
@@ -224,8 +224,8 @@
     },
     {
       "path": "scenarios/s12-malformed-bodies.json",
-      "bytes": 44606,
-      "sha256": "06F21A4553B3B8FA960615ED476A7A8D4DFDEEF98D5F5416184193FB72418B83"
+      "bytes": 46374,
+      "sha256": "820C99B169003D3BB30D4A9BD5327F7D3032BC79937F098AA4AF59961B056DCD"
     },
     {
       "path": "scenarios/s13-outage-backoff-halts.json",
@@ -244,8 +244,8 @@
     },
     {
       "path": "scenarios/s16-kp-estimated-future-bin.json",
-      "bytes": 2999,
-      "sha256": "B448A3F1E7A6F3E5A1843EE42A80B42BE80A63FFC527AB4CB08F1984EA3233C5"
+      "bytes": 13296,
+      "sha256": "EFC8059DA44543B269F6C769B877C045FD692546627DFF699AFA3EC59D1B4673"
     },
     {
       "path": "scenarios/s17-three-day-issue-versus-last-modified.json",

@@ -37,6 +37,15 @@ from zoneinfo import ZoneInfo
 if hasattr(sys, "set_int_max_str_digits"):
     sys.set_int_max_str_digits(0)
 
+
+class JsonNumberText(str):
+    """The source text of a JSON number written with a fraction or an exponent, such as ``4.67`` or ``1E5``.
+
+    Product bodies decode such numbers to this type, so the Kp value keeps its source text, and integers
+    decode to ``int``. Neither is ever a JSON string: string fields are checked with ``type(v) is str``,
+    which this subclass fails (contract: "JSON value types").
+    """
+
 PACK = Path(__file__).resolve().parent
 CAPTURE = "capture-20261019T1857Z"
 SCENARIO_SCHEMA = "hvo-space-weather-swpc-scenario-v1"
@@ -166,7 +175,7 @@ def parse_swpc_time(text):
 
 def parse_stamp(value, layout):
     """A JSON product time: ASCII digits only, within the year bounds. Raises ValueError otherwise."""
-    if not isinstance(value, str) or not re.fullmatch(layout, value):
+    if type(value) is not str or not re.fullmatch(layout, value):
         raise ValueError("time does not parse")
     stamp = dt.datetime.strptime(value, STAMP_FORMATS[layout]).replace(tzinfo=UTC)
     if not FIRST_YEAR <= stamp.year <= LAST_YEAR:
@@ -307,7 +316,8 @@ def parse_record(record, index):
     if not isinstance(record, dict):
         return None, "record-schema"
     for key in ("product_id", "issue_datetime", "message"):
-        if not isinstance(record.get(key), str):
+        # Exact: a JSON number of any form (integer, fraction or exponent, any length) is not a string.
+        if type(record.get(key)) is not str:
             return None, "record-schema"
         try:
             record[key].encode("utf-8")
@@ -507,12 +517,17 @@ def parse_scales(obj):
     for key in ("-1", "0", "1", "2", "3"):
         day = obj[key]
         try:
+            if type(day["DateStamp"]) is not str or type(day["TimeStamp"]) is not str:
+                return None, "schema"
             stamp = parse_stamp(day["DateStamp"] + " " + day["TimeStamp"], SCALES_STAMP)
             entry = {"stampUtc": fmt(stamp),
                      "rScale": day["R"]["Scale"], "rMinorProbPct": day["R"]["MinorProb"],
                      "rMajorProbPct": day["R"]["MajorProb"], "sScale": day["S"]["Scale"],
                      "sProbPct": day["S"]["Prob"], "gScale": day["G"]["Scale"]}
         except (KeyError, TypeError, ValueError):
+            return None, "schema"
+        # Scale values and probabilities are JSON strings or null, as captured; a number is not a string.
+        if any(v is not None and type(v) is not str for k, v in entry.items() if k != "stampUtc"):
             return None, "schema"
         facts[{"-1": "observed24hMax", "0": "current"}.get(key, "predictedDay" + key)] = entry
     return facts, None
@@ -525,10 +540,14 @@ def parse_kp_forecast(obj):
     for row in obj:
         try:
             start = parse_stamp(row["time_tag"], KP_STAMP)
-            kp = row["kp"]
-            if not isinstance(kp, str) or not re.fullmatch(r"[0-9]\.[0-9]{2}", kp):
+            kp, label, scale = row["kp"], row["observed"], row["noaa_scale"]
+            # Kp is a JSON number whose source text is exactly d.dd; a JSON string such as "1.67" is not.
+            if not isinstance(kp, JsonNumberText) or not re.fullmatch(r"[0-9]\.[0-9]{2}", kp):
                 return None, "schema"
-            bins[fmt(start)] = {"kp": kp, "label": row["observed"], "noaaScale": row["noaa_scale"]}
+            if type(label) is not str or (scale is not None and type(scale) is not str):
+                return None, "schema"
+            # The fact keeps the source text as a plain string, so views and restarts show "4.67".
+            bins[fmt(start)] = {"kp": str(kp), "label": label, "noaaScale": scale}
         except (KeyError, TypeError, ValueError):
             return None, "schema"
     return {"rowCount": len(obj), "firstBinStartUtc": min(bins), "lastBinStartUtc": max(bins),
@@ -632,7 +651,12 @@ def ovation_band(grid, site):
 
 
 def parse_ovation(obj, sites):
-    grid = {(c[0], c[1]): c[2] for c in obj["coordinates"]}
+    coordinates = obj["coordinates"]
+    # Each cell is [longitude, latitude, value]: exactly three JSON integers, as captured.
+    if type(coordinates) is not list or any(type(c) is not list or len(c) != 3 or any(type(x) is not int for x in c)
+                                            for c in coordinates):
+        raise ValueError("coordinates are not integer triples")
+    grid = {(c[0], c[1]): c[2] for c in coordinates}
     artifact = sum(1 for (lo, la), v in grid.items() if -2 <= la <= 0 and v > 0)
     observed = parse_stamp(obj["Observation Time"], OVATION_STAMP)
     forecast = parse_stamp(obj["Forecast Time"], OVATION_STAMP)
@@ -888,7 +912,7 @@ class Model:
         if json_depth(text) > JSON_MAX_DEPTH:
             return "rejected", "malformed-json", None
         try:
-            obj = json.loads(text, parse_float=lambda s: s)
+            obj = json.loads(text, parse_float=JsonNumberText)
         except (ValueError, RecursionError):
             return "rejected", "malformed-json", None
         digest = sha256(data)
@@ -1785,32 +1809,43 @@ def scenarios(cap: Capture):
     far_year = dict(a2691, message=a2691["message"].replace("Issue Time: 2026 Oct 16 1939 UTC",
                                                             "Issue Time: 9999 Dec 31 2339 UTC", 1))
     long_number = dict(a2691, product_id="S12LONGNUMBER")
+    # Numbers where strings are required. 1E5 would pass the product_id layout if it were read as text.
+    exponent_id = dict(a2691, product_id="S12EXPONENT")
+    fraction_datetime = dict(a2691, issue_datetime="S12FRACTIONDATETIME")
+    fraction_message = dict(a2691, message="S12FRACTIONMESSAGE")
     if no_serial["message"] == w5436["message"] or long_serial["message"] == a2691["message"] \
             or spaced_issue["message"] == a2691["message"] or indic_year["message"] == a2691["message"] \
             or far_year["message"] == a2691["message"]:
         raise ScenarioError("s12 record damage did not change the message")
     mixed = alerts_ok([unknown, w5436, no_message, iso_datetime, no_serial, mismatch, oversize_record,
                        header_only, long_serial, spaced_issue, surrogate, impossible_day, indic_year, far_year,
-                       long_number], 'W/"fixture-s12-mixed"', "Fri, 16 Oct 2026 19:52:50 GMT", order=False)
+                       long_number, exponent_id, fraction_datetime, fraction_message],
+                      'W/"fixture-s12-mixed"', "Fri, 16 Oct 2026 19:52:50 GMT", order=False)
     # A 4,301-digit integer is valid JSON, one digit beyond the default limit of Python's int conversion.
-    mixed["body"] = mixed["body"].replace('"S12LONGNUMBER"', "1" * 4301, 1)
-    if "S12LONGNUMBER" in mixed["body"]:
-        raise ScenarioError("s12 long number was not substituted")
+    # An exponent and two fractions follow, each a JSON number where a JSON string is required.
+    for placeholder, number in (("S12LONGNUMBER", "1" * 4301), ("S12EXPONENT", "1E5"),
+                                ("S12FRACTIONDATETIME", "1.5"), ("S12FRACTIONMESSAGE", "1.5")):
+        mixed["body"] = mixed["body"].replace(f'"{placeholder}"', number, 1)
+        if placeholder in mixed["body"]:
+            raise ScenarioError(f"s12 placeholder {placeholder} was not substituted")
     non_utf8 = b'[{"product_id":"K04A","issue_datetime":"2026-10-16 19:39:45.267","message":"\xff\xfe"}]'
     b = Builder("s12-malformed-bodies",
                 "Rejected bodies keep last-known-good; record-level faults reject only the record and raise "
                 "record drift once",
-                ["malformed", "quarantine", "format-drift", "record-drift", "unknown-code"], synthetic_records=True,
+                ["malformed", "quarantine", "format-drift", "record-drift", "unknown-code", "json-value-type"],
+                synthetic_records=True,
                 notes=["Every body after step 1 is synthetic or a damaged copy of a real body.",
                        "Step 5's ALTEF3 3754 is the real record with its issue_datetime moved six minutes later; "
                        "its other damaged records are copies of WARK04 5436 and ALTK04 2691, plus a synthetic "
                        "header-only ALTK04 2692. Index 9 doubles the space after 'Issue Time:', and index 10 "
                        "ends its message with the unpaired surrogate escape \\ud800.",
                        "Step 5's WATA20 950 is a synthetic G1 watch with the impossible day line 'Oct 32'. "
-                       "Indexes 12 to 14 are copies of ALTK04 2691: index 12 writes the Issue Time year in "
+                       "Indexes 12 to 17 are copies of ALTK04 2691: index 12 writes the Issue Time year in "
                        "Arabic-Indic digits, as the JSON escapes \\u0662\\u0660\\u0662\\u0666; index 13 has "
-                       "the Issue Time 9999 Dec 31 2339 UTC; and index 14 has a 4,301-digit integer as its "
-                       "product_id."])
+                       "the Issue Time 9999 Dec 31 2339 UTC; index 14 has a 4,301-digit integer as its "
+                       "product_id; index 15 has the JSON number 1E5 as its product_id; index 16 has the "
+                       "JSON number 1.5 as its issue_datetime; and index 17 has the JSON number 1.5 as its "
+                       "message."])
     b.fetch("2026-10-16T19:45:00Z", good, {"outcome": "updated", "product": {"lkgSha256": good_sha}})
     b.fetch("2026-10-16T19:47:00Z", dict(good, body=good["body"][:len(good["body"]) // 2], etag='W/"fixture-s12-trunc"'), {
         "outcome": "rejected", "diagnostics": ["body-rejected:malformed-json"], "attention": [],
@@ -1840,7 +1875,8 @@ def scenarios(cap: Capture):
                         "record-rejected:message-header:7", "record-rejected:message-header:8",
                         "record-rejected:message-header:9", "record-rejected:record-oversize:6",
                         "record-rejected:record-schema:10", "record-rejected:record-schema:14",
-                        "record-rejected:record-schema:2"],
+                        "record-rejected:record-schema:15", "record-rejected:record-schema:16",
+                        "record-rejected:record-schema:17", "record-rejected:record-schema:2"],
         "attention": [{"group": "ALTEF3/3754", "reason": "new", "level": None},
                       {"group": "ALTZZZ/1", "reason": "new", "level": None},
                       {"group": "WARK04/5436", "reason": "new", "level": "K4"},
@@ -1855,7 +1891,7 @@ def scenarios(cap: Capture):
                            "fromUtc": "2026-10-16T19:49:00Z", "untilUtc": "2026-10-17T01:49:00Z"}}),
         "product": {"consecutiveRejected": 0, "lkgSha256": sha256(mixed["body"].encode()),
                     "recordDriftOpen": True, "recordDriftStampUtc": "2026-10-16T19:50:00Z",
-                    "facts": {"records": 15, "acceptedRecords": 4}},
+                    "facts": {"records": 18, "acceptedRecords": 4}},
     })
     b.fetch("2026-10-16T19:55:00Z", dict(good, body="[]"), {
         "outcome": "rejected", "diagnostics": ["body-rejected:suspect-empty"], "attention": [],
@@ -2095,16 +2131,26 @@ def scenarios(cap: Capture):
     out.append(b.build())
 
     # s16 ------------------------------------------------------------------
+    kp_file = CAPTURE + "/noaa-planetary-k-index-forecast.json"
+    kp_text = (PACK / kp_file).read_text("ascii")
+    kp_sha = sha256(kp_text.encode("ascii"))
+    # The first row's Kp, the JSON number 1.67, rewritten as the JSON string "1.67". Nothing else changes.
+    string_kp = kp_text.replace('"kp":1.67,', '"kp":"1.67",', 1)
+    if string_kp == kp_text or not string_kp.startswith('[{"time_tag":"2026-10-12T00:00:00","kp":"1.67",'):
+        raise ScenarioError("s16 string Kp was not substituted in the first row")
     b = Builder("s16-kp-estimated-future-bin",
                 "Kp bins keep the source label verbatim; the time relation is computed from the bin start and end "
-                "when read",
-                ["kp-forecast", "label-versus-time"],
+                "when read; a Kp written as a JSON string rejects the body",
+                ["kp-forecast", "label-versus-time", "malformed", "json-value-type"], synthetic_records=True,
                 notes=["At 18:57:03 the 21:00 bin is labelled estimated by the source but is still in the future.",
-                       "The relation is a read-time view, not a stored fact; step 2 reads the same snapshot later."])
+                       "The relation is a read-time view, not a stored fact; step 2 reads the same snapshot later.",
+                       "Step 3's body is synthetic: the captured Kp forecast with only the first row's kp (bin "
+                       "2026-10-12T00:00:00, the JSON number 1.67) rewritten as the JSON string \"1.67\". It is "
+                       "rejected as schema and the captured body stays last-known-good."])
     b.fetch("2026-10-19T18:57:03Z", {"status": 200, "contentType": "application/json",
                                      "etag": 'W/"1af9-65e361333c7ac"',
                                      "lastModified": "Mon, 19 Oct 2026 18:56:43 GMT",
-                                     "bodyFile": CAPTURE + "/noaa-planetary-k-index-forecast.json"}, {
+                                     "bodyFile": kp_file}, {
         "outcome": "updated",
         "product": {"facts": {
             "rowCount": 81, "firstBinStartUtc": "2026-10-12T00:00:00Z", "lastBinStartUtc": "2026-10-22T00:00:00Z",
@@ -2119,6 +2165,24 @@ def scenarios(cap: Capture):
         "kpBinRelations": {"2026-10-19T18:00:00Z": "past", "2026-10-19T21:00:00Z": "current",
                            "2026-10-20T03:00:00Z": "future"},
         "facts": {"bins": {"2026-10-19T21:00:00Z": {"label": "estimated"}}}}}}, atUtc="2026-10-19T21:30:00Z")
+    b.fetch("2026-10-19T21:45:00Z", {"status": 200, "contentType": "application/json",
+                                     "etag": 'W/"fixture-s16-string-kp"',
+                                     "lastModified": "Mon, 19 Oct 2026 21:44:43 GMT", "body": string_kp}, {
+        "outcome": "rejected", "diagnostics": ["body-rejected:schema"], "attention": [],
+        "request": {"ifNoneMatch": 'W/"1af9-65e361333c7ac"', "ifModifiedSince": "Mon, 19 Oct 2026 18:56:43 GMT"},
+        "product": {
+            "lastOutcome": "rejected", "freshness": "stale", "lkgSha256": kp_sha,
+            "lastSuccessUtc": "2026-10-19T18:57:03Z", "nextAttemptNotBeforeUtc": "2026-10-19T22:00:00Z",
+            "retryNotBeforeUtc": None, "consecutiveTransientFailures": 0, "consecutiveRateLimited": 0,
+            "consecutiveRejected": 1, "recordDriftOpen": False, "recordDriftStampUtc": None, "halt": None,
+            "validators": {"etag": 'W/"1af9-65e361333c7ac"', "lastModified": "Mon, 19 Oct 2026 18:56:43 GMT"},
+            "facts": {"rowCount": 81, "firstBinStartUtc": "2026-10-12T00:00:00Z",
+                      "lastBinStartUtc": "2026-10-22T00:00:00Z",
+                      "bins": {"2026-10-12T00:00:00Z": {"kp": "1.67", "label": "observed", "noaaScale": None},
+                               "2026-10-19T21:00:00Z": {"kp": "5.00", "label": "estimated", "noaaScale": "G1"}}},
+            "kpBinRelations": {"2026-10-19T18:00:00Z": "past", "2026-10-19T21:00:00Z": "current",
+                               "2026-10-20T03:00:00Z": "future"}}},
+        product="kp-forecast")
     out.append(b.build())
 
     # s17 ------------------------------------------------------------------

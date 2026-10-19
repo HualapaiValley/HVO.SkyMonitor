@@ -56,8 +56,8 @@ other than its probabilities, and none is invented.
 | --- | --- | --- |
 | `SourceSnapshot` | provenance | Product key; canonical URL path; fetch start (UTC); HTTP status; media type; decoded byte count; snapshot SHA-256; validators; in-file stamp; outcome |
 | `SwpcMessage` | issued notice version | Identity (message code, serial, issue minute); `product_id` and `issue_datetime` as attributes; headline kind and modifier; corrected flag; link (extension, continuation or cancel target serial); scale token and raw descriptor; impact latitude when stated; parsed time fields; watch day lines; the normalized text and its SHA-256; the original record |
-| `ScaleReading` | observation or forecast | Window (`observed24hMax`, `current`, `predictedDay1..3`), stamp, and the R, S and G scale values and probabilities as SWPC wrote them, including `null` |
-| `KpBin` | observation or forecast | Bin start (UTC); bin end (start plus 3 hours); Kp as the source decimal text (for example `"4.67"`, never rounded to `4+`); the source label verbatim (`observed`, `estimated` or `predicted`); NOAA scale or `null`. The relation to now (`past`, `current` or `future`) is computed when the bin is read and is not stored |
+| `ScaleReading` | observation or forecast | Window (`observed24hMax`, `current`, `predictedDay1..3`), stamp, and the R, S and G scale values and probabilities as SWPC wrote them (JSON strings), including `null` |
+| `KpBin` | observation or forecast | Bin start (UTC); bin end (start plus 3 hours); Kp as the source text of the JSON number (`4.67` is kept as `"4.67"`, never rounded to `4+`); the source label verbatim (`observed`, `estimated` or `predicted`); NOAA scale or `null`. The relation to now (`past`, `current` or `future`) is computed when the bin is read and is not stored |
 | `IssuedForecast` | forecast | `:Issued:` time (UTC); 24 Kp breakdown bins with G marks; the solar radiation (S) and radio blackout (R) probabilities, keyed by the row label as printed and the UTC date; normalized-text SHA-256 |
 | `AuroraNowcast` | forecast model output | Observation time; forecast time; lead in minutes; per site, the band bounds, cell count, expected cell count and maximum value, or `null` for a site without a location; the number of equatorial cells ignored; the original grid SHA-256. Data only: acquisition and wording are unresolved (U3) |
 | `Notice` | derived lifecycle | Group identity; family; level; state; window bounds; end reason; latest version; version count; corrected flag; orphan flag; acknowledgement; per-site relevance; watch days; site-local projection of the window |
@@ -132,8 +132,33 @@ the content does not change (s01, s17). They may be sent as `If-None-Match` and
   outermost array or object is level 1, and brackets inside strings do not
   count (s12).
 - A JSON number is valid whatever its length. A body is never rejected because
-  a number has many digits. A 4,301-digit `product_id` is a number, not a
-  string, so that record is `record-schema` (s12).
+  a number has many digits. A long number is still a number, not a string, so
+  a 4,301-digit `product_id` is `record-schema` (s12; see "JSON value types").
+
+**JSON value types:** every field a rule reads has the JSON type below, as
+observed in the captured bodies. A value of any other JSON type fails that
+field. It is never coerced, and its text is never matched against the field's
+layout: a JSON number is never a string, and a string is never a number.
+"Number" means every JSON number form, of any length: an integer (no fraction
+or exponent), a fraction or an exponent. `true` and `false` are not numbers.
+Fields not listed are not read, and their types are not checked.
+
+| Product | Field | JSON type | Another type is |
+| --- | --- | --- | --- |
+| alerts | the body | array | `schema` |
+| alerts | each record | object | `record-schema` for that record |
+| alerts | `product_id`, `issue_datetime`, `message` | string. A number of any form, such as `1E5`, `1.5` or a 4,301-digit integer, is not a string even when its text would match the layout (s12) | `record-schema` for that record |
+| scales | the body; each day (`-1` to `3`); its `R`, `S` and `G` | object | `schema` |
+| scales | `DateStamp`, `TimeStamp` | string | `schema` |
+| scales | `R.Scale`, `R.MinorProb`, `R.MajorProb`, `S.Scale`, `S.Prob`, `G.Scale` | string or `null`, kept as written | `schema` |
+| Kp forecast | the body | array | `schema` |
+| Kp forecast | each row | object | `schema` |
+| Kp forecast | `time_tag`, `observed` | string | `schema` |
+| Kp forecast | `kp` | number whose source text is exactly `d.dd` in ASCII digits, such as `4.67`, kept as that text (`"4.67"`). The string `"1.67"` is not a number (s16), and number text such as `5`, `5.0`, `4.670` or `4.67E0` is not `d.dd` | `schema` |
+| Kp forecast | `noaa_scale` | string or `null` | `schema` |
+| OVATION | the body | object | `schema` |
+| OVATION | `Observation Time`, `Forecast Time` | string | `schema` |
+| OVATION | `coordinates` | array of cells, each an array of exactly three integers (longitude, latitude, value) | `schema` |
 
 ## Alert records
 
@@ -143,7 +168,7 @@ the order below, and the first failure gives the reason (s12):
 
 | Reason | Condition |
 | --- | --- |
-| `record-schema` | Not an object; `product_id`, `issue_datetime` or `message` missing, not a string, or a string with no UTF-8 form (an unpaired surrogate escape such as `\ud800`); `product_id` not 2 to 8 ASCII uppercase letters or digits (s12) |
+| `record-schema` | Not an object; `product_id`, `issue_datetime` or `message` missing, not a JSON string (a JSON number of any form is not a string; see "JSON value types"), or a string with no UTF-8 form (an unpaired surrogate escape such as `\ud800`); `product_id` not 2 to 8 ASCII uppercase letters or digits (s12) |
 | `issue-datetime` | `issue_datetime` is not `YYYY-MM-DD HH:MM:SS.fff` in ASCII digits |
 | `record-oversize` | The message, before normalization, is larger than 16,384 UTF-8 bytes |
 | `message-header` | After normalization, the message has fewer than four lines (a header-only message is rejected), or its first three lines are not exactly `Space Weather Message Code: <code>` with a code of 4 to 8 ASCII uppercase letters or digits, `Serial Number: <serial>` with 1 to 6 ASCII digits, and `Issue Time: YYYY Mon DD HHMM UTC` in ASCII digits naming a valid UTC time in the year range under "Digits, times and JSON limits". Each line is matched whole, with single spaces and nothing before or after (s12) |
@@ -446,17 +471,20 @@ gives the reason:
    - `too-many-records` for more than 2,000 records;
    - `no-valid-records` when every record fails the per-record checks (s12).
 7. For scales, `schema` when the body is not an object, a day key (`-1` to
-   `3`) or field is missing, or a stamp does not parse in the layout under
-   "Digits, times and JSON limits".
+   `3`) or field is missing, a field has another type than under "JSON value
+   types", or a stamp does not parse in the layout under "Digits, times and
+   JSON limits".
 8. For the Kp forecast:
    - `schema` if the body is not an array;
    - `suspect-empty` for `[]`;
-   - `schema` when a row is incomplete, a `time_tag` does not parse in the
-     layout under "Digits, times and JSON limits", or any `kp` is not a
-     `d.dd` decimal string in ASCII digits. One bad row rejects the whole Kp
-     body.
-9. For OVATION, `schema` when a key is missing or malformed. A site without a
-   location gets a `null` band. That is not a rejection (s18).
+   - `schema` when a row is incomplete or a field has another type than under
+     "JSON value types", a `time_tag` does not parse in the layout under
+     "Digits, times and JSON limits", or any `kp` is not a JSON number whose
+     source text is exactly `d.dd` in ASCII digits (a JSON string such as
+     `"1.67"` is `schema`, s16). One bad row rejects the whole Kp body.
+9. For OVATION, `schema` when a key is missing or malformed, including a field
+   of another type than under "JSON value types". A site without a location
+   gets a `null` band. That is not a rejection (s18).
 
 **Halts:**
 
@@ -667,11 +695,11 @@ A fetch also reports:
 | s09 | CANCEL WARNING (synthetic); a cancel of an absent target never alerts |
 | s10 | Restart, then an extension, without re-alert; acknowledgement kept across both; rolling window; retention purge, including a summary |
 | s11 | Older CDN body after a newer one; stale snapshot with an ignored stale revision; new-notice grace |
-| s12 | Malformed bodies; per-record faults (schema, issue time, mismatch, oversize, header-only, long serial, a doubled space in `Issue Time`, an unpaired surrogate, non-ASCII digits, a year beyond range, a 4,301-digit number); an impossible watch day takes the fallback window; unknown code; record drift; format drift; too many and no valid records; a body nested 64 levels deep passes the depth limit and one nested 65 levels is `malformed-json` |
+| s12 | Malformed bodies; per-record faults (schema, issue time, mismatch, oversize, header-only, long serial, a doubled space in `Issue Time`, an unpaired surrogate, non-ASCII digits, a year beyond range, a 4,301-digit number, and JSON numbers `1E5` and `1.5` where strings are required); an impossible watch day takes the fallback window; unknown code; record drift; format drift; too many and no valid records; a body nested 64 levels deep passes the depth limit and one nested 65 levels is `malformed-json` |
 | s13 | Timeout and 5xx backoff; 304; 429 with both `Retry-After` forms; halting 429 keeps `retryNotBeforeUtc` across a restart and applies it at the resume; halts; manual refusals; restart while halted; resume |
 | s14 | Year rollover on watch day lines and on 3-day forecast columns (synthetic forecast); UTC days shown in the site zone |
 | s15 | Missing scale and impact lines; null predicted scales; site without a location |
-| s16 | Future Kp bin labelled `estimated`; past, current and future relations as time moves |
+| s16 | Future Kp bin labelled `estimated`; past, current and future relations as time moves; a `kp` written as the JSON string `"1.67"` rejects the body as `schema` and keeps the last-known-good snapshot (synthetic body) |
 | s17 | Text normalization; `:Issued:` versus `Last-Modified`; S and R probabilities; a renamed table, or a probability table with no rows, rejects the body |
 | s18 | OVATION site band and equatorial artifact; `null` band for a site without a location (data only) |
 | s19 | An early resume keeps minimum spacing, backoff, `Retry-After` and the 429 count; per-product 429 state |

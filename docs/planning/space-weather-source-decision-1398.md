@@ -177,6 +177,12 @@ Observed facts that shape the policy:
 - The Kp forecast labelled a future bin `estimated`. The label is provisional
   status, not past or future, so the past, current or future relation is
   computed from the bin start and end.
+- JSON value types differ by product. The Kp forecast wrote every `kp` (81
+  rows) as a JSON number with the source text `d.dd`. The scales values and
+  probabilities were JSON strings or `null`, every alert record field was a
+  string, and the OVATION cells were arrays of three integers. The contract
+  states the type of every field it reads, and a value of another type is
+  rejected, never coerced.
 - `noaa-scales.json` and the 3-day forecast disagreed on R probabilities (25/5
   against 30/10). Both are shown with their own stamps and are never merged
   (U6).
