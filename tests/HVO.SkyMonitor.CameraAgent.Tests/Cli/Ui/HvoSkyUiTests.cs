@@ -3,6 +3,7 @@ using System.Runtime.Versioning;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.CameraAgent.Cli.Client;
 using HVO.SkyMonitor.CameraAgent.Cli.Ui;
+using HVO.SkyMonitor.TerminalUi;
 using Terminal.Gui.App;
 using Terminal.Gui.Input;
 using Terminal.Gui.Testing;
@@ -481,6 +482,140 @@ public sealed class HvoSkyUiTests
         driver.WaitIdle("the change");
 
         StringAssert.StartsWith(driver.Ui.Notice.Message, "[REFUSED] skyMap.maximumObjects was not saved: The settings group changed since it was read.", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void Settings_AChangeCameraAgentAnswersWithAServerError_IsUnverifiedAndNeverNotSaved()
+    {
+        // A 5xx says CameraAgent failed while handling the change, not that it refused it: the group may have been saved.
+        using var harness = new CliHarness();
+        harness.Api.Problem("PUT", Fake.SettingsRoute + "/skyMap", HttpStatusCode.ServiceUnavailable, "Service Unavailable");
+        using var driver = SkyUiDriver.Start(harness, pollInterval: Quick);
+        driver.ShowPage(1);
+        var field = driver.Ui.Data.Settings.Value!.FindField("skyMap.maximumObjects", exactOnly: true)!;
+        var prompt = SkyUiSettingChange.Open(driver.Ui, field);
+        prompt.Fields[0].Text = "450";
+
+        prompt.Choose();
+        driver.WaitIdle("the change");
+
+        Assert.HasCount(1, harness.Api.RequestsTo("PUT", Fake.SettingsRoute + "/skyMap"));
+        Assert.AreEqual(
+            "[UNVERIFIED] Service Unavailable (HTTP 503). Whether CameraAgent applied the skyMap settings is not known: check before sending it again.",
+            driver.Ui.Notice.Message);
+        Assert.DoesNotContain("not saved", driver.Ui.Notice.Message, StringComparison.Ordinal);
+        AssertNoticeWhole(driver);
+    }
+
+    [TestMethod]
+    public void Settings_AValueThatChangedElsewhereWhileThePromptWasOpen_IsSentAndCameraAgentDecides()
+    {
+        // Opened at 400; changed to 450 elsewhere and read again; then 400 is chosen. Whether that changes anything is
+        // CameraAgent's to say, against the version the prompt was opened with: never decided here from what was read.
+        using var harness = new CliHarness();
+        using var driver = SkyUiDriver.Start(harness, pollInterval: Quick);
+        driver.ShowPage(1);
+        var field = driver.Ui.Data.Settings.Value!.FindField("skyMap.maximumObjects", exactOnly: true)!;
+        var prompt = SkyUiSettingChange.Open(driver.Ui, field);
+        harness.Api.Json("GET", Fake.SettingsRoute, Fake.Values(maximumObjects: 450, skyMapVersion: "skyMap-v2"));
+        harness.Api.Problem("PUT", Fake.SettingsRoute + "/skyMap", HttpStatusCode.Conflict, "The settings group changed since it was read.", "settings.conflict");
+        driver.Ui.ReadSettings();
+        driver.WaitIdle("the settings read again");
+        Assert.AreEqual("450", driver.Ui.Data.Settings.Value!.FindField("skyMap.maximumObjects", exactOnly: true)!.DisplayValue);
+        Assert.AreSame(prompt, driver.Ui.Prompt);
+
+        prompt.Fields[0].Text = "400";
+        prompt.Choose();
+        driver.WaitIdle("the change");
+
+        var body = harness.Api.RequestsTo("PUT", Fake.SettingsRoute + "/skyMap").Single().BodyJson();
+        Assert.AreEqual("skyMap-v1", body.GetProperty("expectedVersion").GetString());
+        Assert.AreEqual(400, body.GetProperty("values").GetProperty("skyMap.maximumObjects").GetInt32());
+        StringAssert.StartsWith(driver.Ui.Notice.Message, "[REFUSED] skyMap.maximumObjects was not saved: The settings group changed since it was read.", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void Status_CameraAgentsOwnWordsForHealthy_AreNotProblems()
+    {
+        // As CameraAgent words them (CameraAgentOperationsSummary): a configuration "validated", lanes and delivery
+        // "Healthy", raw ingress "Accepting", the camera and the heartbeat "Available".
+        using var harness = new CliHarness();
+        using var driver = SkyUiDriver.Start(harness, 120, 32, pollInterval: Quick);
+        var page = (SkyUiStatusPage)driver.Ui.Pages[0];
+        var summary = driver.Ui.Data.Summary.Value;
+
+        Assert.AreEqual("Capturing; no problem reported.", page.Note);
+        var config = SkyUiStatusPage.Capture(summary, driver.Ui.Now).Single(static field => field.Label == "Config");
+        Assert.AreEqual(("validated", HvoTone.Success), (config.Value, config.Tone));
+        var delivery = SkyUiStatusPage.Delivery(summary);
+        Assert.IsTrue(delivery.All(static field => field.Tone == HvoTone.Text), string.Join("; ", delivery));
+        StringAssert.Contains(delivery.Single(static field => field.Label == "Environment").Value, "Healthy", StringComparison.Ordinal);
+        StringAssert.Contains(driver.Screen, "Capturing; no problem reported.", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void Status_AConfigurationNotValidatedAndADegradedLane_NeedAttention()
+    {
+        using var harness = new CliHarness();
+        harness.Api.Json("GET", Fake.SummaryRoute, Fake.Summary(validation: "unavailable", delivery: "Degraded"));
+        using var driver = SkyUiDriver.Start(harness, 120, 32, pollInterval: Quick);
+        var page = (SkyUiStatusPage)driver.Ui.Pages[0];
+        var summary = driver.Ui.Data.Summary.Value;
+
+        Assert.AreEqual("Attention: the configuration is unavailable.", page.Note);
+        Assert.AreEqual(HvoTone.Warning, SkyUiStatusPage.Capture(summary, driver.Ui.Now).Single(static field => field.Label == "Config").Tone);
+        Assert.AreEqual(HvoTone.Warning, SkyUiStatusPage.Delivery(summary).Single(static field => field.Label == "Environment").Tone);
+    }
+
+    [TestMethod]
+    [DataRow("http://192.0.2.10:5130/", true)]
+    [DataRow("http://127.0.0.1:5130/", false)]
+    [DataRow("https://allsky.example/", false)]
+    public void PlainHttpToAnotherMachine_IsWarnedOfOnTheScreenAndNothingIsWrittenOnTheCommandLine(string address, bool warned)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+        using var harness = new CliHarness();
+        harness.Environment[SkyCredentialStore.UrlVariable] = address;
+        using var driver = SkyUiDriver.Start(harness, pollInterval: Quick);
+
+        StringAssert.Contains(driver.Rows[0], "[LIVE]", StringComparison.Ordinal);
+        if (warned)
+        {
+            Assert.AreEqual(
+                $"[PLAIN HTTP] {address} is plain HTTP to another machine, so the API key crosses the network unencrypted. Use HTTPS, an SSH tunnel, or run hvo-sky on the CameraAgent host.",
+                driver.Ui.Notice.Message);
+            AssertNoticeWhole(driver);
+            driver.ShowPage(2);
+            StringAssert.StartsWith(driver.Ui.Notice.Message, "[PLAIN HTTP] ", StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.DoesNotContain("plain HTTP", driver.Ui.Notice.Message, StringComparison.Ordinal);
+        }
+
+        Assert.IsEmpty(driver.Output);
+    }
+
+    [TestMethod]
+    public void SignIn_ToPlainHttpOnAnotherMachine_WarnsAsTheKeyIsSent()
+    {
+        const string url = "http://192.0.2.10:5130/";
+        using var harness = new CliHarness(signedIn: false);
+        using var driver = SkyUiDriver.Start(harness, pollInterval: Quick);
+        driver.Ui.Pages[4].Press("Sign in");
+        var prompt = driver.Ui.Prompt!;
+        prompt.Fields[0].Text = url;
+        prompt.Fields[1].Text = CliHarness.Key;
+
+        prompt.Choose();
+
+        StringAssert.StartsWith(driver.Ui.Notice.Message, $"[PLAIN HTTP] {url} is plain HTTP to another machine", StringComparison.Ordinal);
+        driver.WaitIdle("the key check");
+        StringAssert.Contains(driver.Ui.Notice.Message, $"Signed in with API key {CliHarness.KeyId}", StringComparison.Ordinal);
+        driver.Press(Key.R.WithCtrl);
+        driver.WaitIdle("the reads");
+        StringAssert.StartsWith(driver.Ui.Notice.Message, $"[PLAIN HTTP] {url} is plain HTTP to another machine", StringComparison.Ordinal);
+        Assert.IsEmpty(driver.Output);
     }
 
     [TestMethod]

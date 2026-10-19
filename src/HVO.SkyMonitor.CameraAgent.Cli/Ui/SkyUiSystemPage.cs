@@ -107,8 +107,17 @@ internal sealed class SkyUiSystemPage : SkyUiPage
                 return $"That is not a CameraAgent API key: one starts with {SkyApiKey.Prefix} and is {SkyApiKey.Length} characters long.";
             }
 
+            // The key goes to CameraAgent now: over plain HTTP to another machine, that is said first, as 'hvo-sky login' says it.
             var context = Ui.Context;
-            Ui.Say(HvoNotice.Info, $"Checking the key with CameraAgent at {url}...");
+            if (SkyCliContext.ClearTextWarning(url!) is { } warning)
+            {
+                Ui.Say(HvoNotice.Warning, warning, "[PLAIN HTTP]");
+            }
+            else
+            {
+                Ui.Say(HvoNotice.Info, $"Checking the key with CameraAgent at {url}...");
+            }
+
             Ui.Run(
                 async token =>
                 {

@@ -392,15 +392,15 @@ internal static class Fake
         }
     };
 
-    public static object Values(bool siteWritable = true) => new
+    public static object Values(bool siteWritable = true, int maximumObjects = 400, string skyMapVersion = "skyMap-v1") => new
     {
         schemaVersion = 1,
         groups = GroupNames
-            .Select(name => GroupState(name, $"{name}-v1", name != "site" || siteWritable))
+            .Select(name => GroupState(name, name == "skyMap" ? skyMapVersion : $"{name}-v1", name != "site" || siteWritable, maximumObjects))
             .ToArray()
     };
 
-    public static object GroupState(string group, string version, bool canWrite = true) => new
+    public static object GroupState(string group, string version, bool canWrite = true, int maximumObjects = 400) => new
     {
         group,
         version,
@@ -410,21 +410,46 @@ internal static class Fake
         {
             "site" => new object[] { State("site.observatoryName", "Hualapai Valley", canWrite) },
             "location" => [State("location.latitudeDegrees", 35.5, canWrite), State("location.longitudeDegrees", -113.9, canWrite)],
-            "skyMap" => [State("skyMap.maximumObjects", 400, canWrite)],
+            "skyMap" => [State("skyMap.maximumObjects", maximumObjects, canWrite)],
             "camera" => [State("camera.skyLighting", "SolarDriven", canWrite)],
             _ => [State("schedule.activeRevision", "schedule-3", canWrite, allowedValues: [Choice("schedule-3"), Choice("schedule-2")])]
         }
     };
 
-    public static object Summary(string capture = "Running", long rawPending = 0, string freshness = "fresh") => new
+    /// <summary>
+    /// The operations summary as CameraAgent serves it (<c>CameraAgentOperationsSummary</c>), in its own words: a configuration
+    /// <c>validated</c>, raw ingress <c>Accepting</c>, the lanes, processing and delivery <c>Healthy</c>, the camera and the
+    /// heartbeat <c>Available</c>, and central integration on, so every section is read.
+    /// </summary>
+    public static object Summary(
+        string capture = "Running",
+        long rawPending = 0,
+        string freshness = "fresh",
+        string validation = "validated",
+        string delivery = "Healthy") => new
     {
         capturedUtc = "2026-10-18T19:30:00Z",
         captureControl = Section(new { state = capture, version = 3, isInitialized = true }, freshness),
-        rawIngress = Section(Queue(rawPending, 1024 * rawPending)),
+        rawIngress = Section(Queue("Accepting", rawPending, 1024 * rawPending)),
         captureLanes = Section(new
         {
-            availability = "Available",
-            lanes = Array.Empty<object>(),
+            availability = "Healthy",
+            lanes = new[]
+            {
+                new
+                {
+                    name = "rawArchive",
+                    required = true,
+                    pendingCount = 0,
+                    pendingBytes = 0,
+                    leasedCount = 0,
+                    retryCount = 0,
+                    quarantineCount = 0,
+                    pressureLevel = 0,
+                    oldestPendingUtc = (string?)null,
+                    pendingCaptures = Array.Empty<object>()
+                }
+            },
             pendingCount = 0,
             pendingBytes = 0,
             leasedCount = 0,
@@ -432,8 +457,8 @@ internal static class Fake
             quarantineCount = 0,
             oldestPendingUtc = (string?)null
         }),
-        captureProcessing = Section(Queue(0, 0)),
-        artifactOutbox = Section(Queue(2, 4096)),
+        captureProcessing = Section(Queue("Healthy", 0, 0)),
+        artifactOutbox = Section(Queue("Healthy", 2, 4096)),
         storage = Section(new[]
         {
             new { alias = "raw", totalBytes = 500L * 1024 * 1024 * 1024, availableBytes = 120L * 1024 * 1024 * 1024, isUnderPressure = false, effectiveRetentionDays = 30, probeSucceeded = true }
@@ -446,16 +471,103 @@ internal static class Fake
             lastRecoveredUtc = (string?)null,
             timings = Array.Empty<object>()
         }),
-        heartbeat = Section(new { availability = "Disabled", lastAcknowledgedUtc = (string?)null }, "disabled"),
-        captureTelemetry = Section(new { sampleCount = 10, latestCaptureStartedUtc = "2026-10-18T19:29:58Z", capturesPerMinute = 4.0 }),
-        configuration = Section(new
+        heartbeat = Section(new
         {
-            isCurrent = true,
-            validationStatus = "Valid",
-            agentId = "allsky01",
-            moduleType = "VirtualSky",
-            centralIntegration = "Disabled",
-            transientDetection = "Disabled"
+            availability = "Available",
+            lastAcknowledgedUtc = "2026-10-18T19:29:50Z",
+            pendingCount = 0,
+            pendingBytes = 0,
+            leasedCount = 0,
+            retryCount = 0,
+            quarantineCount = 0,
+            overflowCount = 0,
+            blockedCount = 0,
+            oldestPendingUtc = (string?)null
+        }),
+        environmentalDelivery = Section(new
+        {
+            availability = delivery,
+            lastAcknowledgedUtc = "2026-10-18T19:29:30Z",
+            storedCount = 120,
+            storedBytes = 61440,
+            pendingCount = 0,
+            pendingBytes = 0,
+            leasedCount = 0,
+            retryCount = 0,
+            quarantineCount = 0,
+            terminalCount = 0,
+            overflowCount = 0,
+            oldestPendingUtc = (string?)null
+        }),
+        executionEvidenceExport = Section(new
+        {
+            availability = "Healthy",
+            reasonCode = "export.drained",
+            pendingCount = 0,
+            pendingBytes = 0,
+            retryCount = 0,
+            quarantineCount = 0,
+            abandonedCount = 0,
+            acknowledgedCount = 42,
+            totalAttempts = 42,
+            conflictCount = 0,
+            rejectCount = 0,
+            drainedCount = 42,
+            resyncRequestCount = 0,
+            sourcePrunedCount = 0,
+            projectionRejectedCount = 0,
+            storageBytes = 8192,
+            highestSequence = 42,
+            acknowledgedThroughSequence = 42,
+            inFlightRequests = 0,
+            storagePressure = false,
+            negotiatedSchemaVersion = "1",
+            lastAcknowledgementUtc = "2026-10-18T19:29:40Z",
+            oldestPendingUtc = (string?)null
+        }),
+        transientWorker = Section(new { availability = "Healthy", pendingFrames = 0, pendingCandidates = 0, maximumCandidates = 64 }),
+        captureTelemetry = Section(new
+        {
+            sampleCount = 10,
+            latestCaptureStartedUtc = "2026-10-18T19:29:58Z",
+            latestMode = "Night",
+            latestExposureMilliseconds = 15000.0,
+            latestGain = 200.0,
+            averageIntervalMilliseconds = 15000.0,
+            averageExposureMilliseconds = 15000.0,
+            averageProcessingMilliseconds = 850.0,
+            averageLoopMilliseconds = 15900.0,
+            capturesPerMinute = 4.0,
+            dutyCycle = 0.94,
+            framesStored = 10,
+            immediateUploadCount = 0
+        }),
+        configuration = new
+        {
+            source = "validated-configuration",
+            observedUtc = (string?)null,
+            freshness = "static",
+            value = new
+            {
+                isCurrent = true,
+                validationStatus = validation,
+                agentId = "allsky01",
+                moduleType = "VirtualSky",
+                centralIntegration = "Enabled",
+                transientDetection = "Edge"
+            }
+        },
+        archivedReplay = Section(new
+        {
+            availability = "Healthy",
+            pendingCount = 0,
+            pendingBytes = 0,
+            leasedCount = 0,
+            retryCount = 0,
+            quarantineCount = 0,
+            terminalCount = 0,
+            oldestPendingUtc = (string?)null,
+            abandonedCount = 0
         })
     };
 
@@ -510,9 +622,9 @@ internal static class Fake
     private static object Section(object value, string freshness = "fresh")
         => new { source = "test", observedUtc = "2026-10-18T19:30:00Z", freshness, value };
 
-    private static object Queue(long pending, long bytes) => new
+    private static object Queue(string availability, long pending, long bytes) => new
     {
-        availability = "Available",
+        availability,
         pendingCount = pending,
         pendingBytes = bytes,
         leasedCount = 0,

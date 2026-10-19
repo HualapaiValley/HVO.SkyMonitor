@@ -15,6 +15,9 @@ internal sealed class SkyUiStatusPage : SkyUiPage
     /// <summary>The queues whose quarantined items the Queues panel adds up.</summary>
     private static readonly string[] QuarantiningQueues = ["rawIngress", "captureLanes", "captureProcessing", "artifactOutbox"];
 
+    /// <summary>The configuration's validation status when CameraAgent validated it (<c>CameraAgentOperationsSummary</c>).</summary>
+    private const string Validated = "validated";
+
     private readonly SkyUiFields _capture;
     private readonly SkyUiFields _queues;
     private readonly SkyUiFields _delivery;
@@ -165,7 +168,7 @@ internal sealed class SkyUiStatusPage : SkyUiPage
         }
 
         var validation = SkyJson.Text(summary, "configuration", "value", "validationStatus") ?? "unknown";
-        if (validation != "Valid")
+        if (validation != Validated)
         {
             problems.Add($"the configuration is {validation}");
         }
@@ -197,7 +200,7 @@ internal sealed class SkyUiStatusPage : SkyUiPage
             new("Last frame", last is { } at ? $"{SkyCliFormat.Time(at)[11..]} ({SkyCliFormat.Duration(now - at)} ago)" : "none yet"),
             new("Rate", SkyJson.Number(summary, "captureTelemetry", "value", "capturesPerMinute") is { } rate ? $"{SkyCliFormat.Number(rate, "0.0")} captures/min" : "unknown"),
             new("Exposure", exposure is { } ms ? $"{SkyCliFormat.Number(ms, "0.###")} ms" + (gain is { } g ? $", gain {SkyCliFormat.Number(g)}" : string.Empty) : "unknown"),
-            new("Config", validation, validation == "Valid" ? HvoTone.Success : HvoTone.Warning)
+            new("Config", validation, validation == Validated ? HvoTone.Success : HvoTone.Warning)
         ];
     }
 
@@ -222,8 +225,10 @@ internal sealed class SkyUiStatusPage : SkyUiPage
         {
             var availability = SkyJson.Text(summary, section, "value", "availability") ?? "unknown";
             var pending = SkyJson.Integer(summary, section, "value", "pendingCount");
+            // In CameraAgent's words: the heartbeat is Available when it is well and the other lanes Healthy; any of them
+            // Disabled when it is switched off. Anything else (starting, degraded, unhealthy, unavailable) is amber.
             return new(label, availability + (pending is { } count ? $", {SkyCliFormat.Count(count)} pending" : string.Empty)
-                + Freshness(summary, section), availability is "Available" or "Disabled" ? HvoTone.Text : HvoTone.Warning);
+                + Freshness(summary, section), availability is "Healthy" or "Available" or "Disabled" ? HvoTone.Text : HvoTone.Warning);
         }
 
         var acknowledged = SkyJson.Time(summary, "heartbeat", "value", "lastAcknowledgedUtc");

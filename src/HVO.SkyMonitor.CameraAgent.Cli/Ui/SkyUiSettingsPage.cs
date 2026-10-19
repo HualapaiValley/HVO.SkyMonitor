@@ -159,7 +159,8 @@ internal sealed class SkyUiSettingsPage : SkyUiPage
 /// The form that changes one setting, built from its catalogue entry: a field for text and numbers, the choices for an
 /// enum, a reason, and an acknowledgement for a change of the location and time basis (safety <c>CaptureGeometry</c>), as
 /// <c>hvo-sky config set</c> confirms it. The value is checked against the catalogue before anything is sent; the group
-/// is sent with the version read, so a change made meanwhile is refused rather than overwritten.
+/// is sent with the version read, so a change made meanwhile is refused rather than overwritten, and CameraAgent says
+/// when nothing changed.
 /// </summary>
 internal static class SkyUiSettingChange
 {
@@ -206,12 +207,8 @@ internal static class SkyUiSettingChange
                 return $"The reason takes at most {SkySettingsContract.MaximumReasonLength} characters.";
             }
 
-            if (SkySettingsForm.SameValue(field.State?.Value, value))
-            {
-                ui.Say(HvoNotice.Info, $"Nothing to change: {setting.Key} is already {SkySettingText.Describe(value)}.");
-                return null;
-            }
-
+            // Sent even when it is the value read: the value may have changed since, so whether this changes anything is
+            // CameraAgent's to say, against the version read (Unchanged, or a conflict), never this prompt's.
             Send(ui, field, group, value, reason.Length == 0 ? null : reason);
             return null;
         })

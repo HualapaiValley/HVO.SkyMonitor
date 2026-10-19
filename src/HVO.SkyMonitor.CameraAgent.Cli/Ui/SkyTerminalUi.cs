@@ -115,6 +115,12 @@ internal sealed class SkyTerminalUi : IDisposable
     /// <summary>Why there is no connection, when there is none.</summary>
     public string? ConnectionProblem { get; private set; }
 
+    /// <summary>
+    /// The warning that the connection carries the key across a network unencrypted (plain HTTP to another machine),
+    /// as the commands give it; null when it does not. The notice band shows it whenever nothing more urgent shows.
+    /// </summary>
+    public string? ClearText { get; private set; }
+
     /// <summary>The client of the connection in use.</summary>
     public SkyApiClient? Client => _client;
 
@@ -204,9 +210,12 @@ internal sealed class SkyTerminalUi : IDisposable
         Data.Clear();
         Connection = null;
         ConnectionProblem = null;
+        ClearText = null;
         try
         {
+            // Not CreateClient(connection), which writes its warning on the command line, under the interface: it shows here.
             Connection = Context.ResolveConnection();
+            ClearText = SkyCliContext.ClearTextWarning(Connection.Url);
             _client = Context.CreateClient(Connection.Url, Connection.ApiKey);
         }
         catch (Exception error) when (error is SkyCliNotConfiguredException or SkyCredentialFileException)
@@ -605,7 +614,7 @@ internal sealed class SkyTerminalUi : IDisposable
             SkyUiFreshness.Offline => (HvoNotice.Warning, $"{summary.Failure} {asOf}", "[OFFLINE]"),
             SkyUiFreshness.Stale => (HvoNotice.Warning,
                 $"Status not current{(summary.Failure is null ? string.Empty : $": {summary.Failure}")}. {asOf}", "[STALE]"),
-            _ => null
+            _ => ClearText is { } warning ? (HvoNotice.Warning, warning, "[PLAIN HTTP]") : null
         };
     }
 

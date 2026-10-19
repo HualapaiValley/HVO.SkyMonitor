@@ -83,6 +83,9 @@ internal sealed class SkyCliOutcomeException : Exception
 
     /// <summary>True when the message already says what CameraAgent accepted before this failure, so it is reported as it is.</summary>
     public bool SaysWhatWasAccepted { get; init; }
+
+    /// <summary>The <c>--json</c> cause of an <c>Unverified</c> outcome: the failure's own kind.</summary>
+    public string? Cause { get; init; }
 }
 
 /// <summary>
@@ -259,13 +262,21 @@ internal sealed class SkyCliContext
 
     public void WarnIfClearText(Uri url)
     {
-        if (!_warnedClearText && SkyAddress.SendsKeyInClear(url))
+        if (!_warnedClearText && ClearTextWarning(url) is { } warning)
         {
             _warnedClearText = true;
-            Error.WriteLine(
-                $"Warning: {url} is plain HTTP to another machine, so the API key crosses the network unencrypted. Use HTTPS, an SSH tunnel, or run {SkyCli.CommandName} on the CameraAgent host.");
+            Error.WriteLine($"Warning: {warning}");
         }
     }
+
+    /// <summary>
+    /// What to say when requests to <paramref name="url"/> carry the key across a network unencrypted (plain HTTP to
+    /// another machine); null when they do not. The commands write it once; the terminal interface shows it.
+    /// </summary>
+    public static string? ClearTextWarning(Uri url)
+        => SkyAddress.SendsKeyInClear(url)
+            ? $"{url} is plain HTTP to another machine, so the API key crosses the network unencrypted. Use HTTPS, an SSH tunnel, or run {SkyCli.CommandName} on the CameraAgent host."
+            : null;
 
     /// <summary>Writes <paramref name="value"/> as one indented JSON document, or as one line with <see cref="JsonLines"/>.</summary>
     public void WriteJson<T>(T value) => Out.WriteLine(JsonSerializer.Serialize(value, JsonLines ? SkyCliJson.Compact : SkyCliJson.Indented));
@@ -361,7 +372,9 @@ internal sealed class SkyCliContext
     /// <summary>
     /// What <paramref name="error"/> means for this command. After CameraAgent accepted a change, a failure exits 1 (kind
     /// <c>Unverified</c>) and says the change was accepted but could not be verified; an interruption still exits 130,
-    /// saying the same. A failure of the change's own request that leaves its fate unknown says so.
+    /// saying the same. A failure of the change's own request that leaves its fate unknown says so: CameraAgent's own
+    /// failure (HTTP 5xx) is <c>Unverified</c> too, since the change may have been made; only a refusal (HTTP 4xx) says
+    /// it was not.
     /// </summary>
     public SkyCliFailure Describe(Exception error)
     {
@@ -376,10 +389,18 @@ internal sealed class SkyCliContext
 
         if (AcceptedChange is not null)
         {
-            return new(code, kind, null, message, true);
+            return new(code, kind, (error as SkyCliOutcomeException)?.Cause, message, true);
         }
 
-        if (_sending is { } sending && code != SkyExitCode.Interrupted && error is not SkyApiException { StatusCode: > 0 })
+        var status = error is SkyApiException answered ? (int)answered.StatusCode : 0;
+        if (_sending is { } failed && status >= 500)
+        {
+            // CameraAgent failed while it handled the change: it may have been made before the failure, or not.
+            return new(SkyExitCode.Failed, "Unverified", kind,
+                $"{error.Message} (HTTP {status}). Whether CameraAgent applied {failed} is not known: check before sending it again.", true);
+        }
+
+        if (_sending is { } sending && code != SkyExitCode.Interrupted && status == 0)
         {
             // The change was sent, and CameraAgent's answer, if any, was not read.
             return new(code, kind, null, $"{message} Whether CameraAgent received {sending} is not known: check before sending it again.", true);

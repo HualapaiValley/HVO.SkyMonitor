@@ -485,6 +485,61 @@ public sealed class SkyCliConfigTests
     }
 
     [TestMethod]
+    [DataRow("config set")]
+    [DataRow("config apply")]
+    public async Task ASettingsChangeCameraAgentAnswersWithAServerError_IsUnverifiedAndNeverNotSavedAsync(string command)
+    {
+        // A 5xx says CameraAgent failed while handling the change, not that it refused it: the group may have been saved.
+        ArgumentNullException.ThrowIfNull(command);
+        using var harness = new CliHarness();
+        harness.Api.Problem("PUT", Fake.SettingsRoute + "/skyMap", HttpStatusCode.ServiceUnavailable, "Service Unavailable");
+        string[] args = command == "config set"
+            ? ["config", "set", "skyMap.maximumObjects=500"]
+            : ["config", "apply", harness.WriteFile("s.json", """{"schemaVersion": 1, "settings": {"skyMap.maximumObjects": 500}}""")];
+
+        var json = await harness.RunAsync([.. args, "--json"]).ConfigureAwait(false);
+        var text = await harness.RunAsync(args).ConfigureAwait(false);
+
+        Assert.AreEqual(1, json.ExitCode, json.ToString());
+        var error = json.Json().GetProperty("error");
+        Assert.AreEqual(1, error.GetProperty("exitCode").GetInt32());
+        Assert.AreEqual("Unverified", error.GetProperty("kind").GetString());
+        Assert.AreEqual("Failed", error.GetProperty("cause").GetString());
+        Assert.AreEqual(503, error.GetProperty("status").GetInt32());
+        Assert.AreEqual(
+            "Service Unavailable (HTTP 503). Whether CameraAgent applied the skyMap settings is not known: check before sending it again.",
+            error.GetProperty("message").GetString());
+        Assert.AreEqual(1, text.ExitCode, text.ToString());
+        StringAssert.Contains(text.Error, "Whether CameraAgent applied the skyMap settings is not known", StringComparison.Ordinal);
+        Assert.DoesNotContain("not saved", text.Error, StringComparison.Ordinal);
+        Assert.HasCount(2, harness.Api.RequestsTo("PUT", Fake.SettingsRoute + "/skyMap"));
+    }
+
+    [TestMethod]
+    public async Task Apply_AServerErrorAfterAGroupWasSaved_IsThatGroupUnverifiedAndNeverNotSavedAsync()
+    {
+        using var harness = new CliHarness();
+        harness.Api.Problem("PUT", Fake.SettingsRoute + "/skyMap", HttpStatusCode.ServiceUnavailable, "Service Unavailable");
+        var file = harness.WriteFile("s.json", """{"schemaVersion": 1, "settings": {"skyMap.maximumObjects": 500, "site.observatoryName": "HVO"}}""");
+
+        var json = await harness.RunAsync("config", "apply", file, "--json").ConfigureAwait(false);
+        var text = await harness.RunAsync("config", "apply", file).ConfigureAwait(false);
+
+        Assert.AreEqual(1, json.ExitCode, json.ToString());
+        var error = json.Json().GetProperty("error");
+        Assert.AreEqual("Unverified", error.GetProperty("kind").GetString());
+        Assert.AreEqual("Failed", error.GetProperty("cause").GetString());
+        Assert.AreEqual(
+            "Whether the skyMap group was saved is not known: Service Unavailable (HTTP 503). The groups before it were saved; run the command again to continue: it sends only what still differs.",
+            error.GetProperty("message").GetString());
+        Assert.AreEqual(1, text.ExitCode, text.ToString());
+        StringAssert.Contains(text.Out, "[site] Saved; in effect now.", StringComparison.Ordinal);
+        StringAssert.Contains(text.Error, "Whether the skyMap group was saved is not known", StringComparison.Ordinal);
+        Assert.DoesNotContain("not saved", text.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("not been saved", text.Error, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task Apply_ALaterGroupWhoseSuccessStatusArrivedButNotItsBody_IsThatGroupAcceptedButUnverifiedAsync()
     {
         using var harness = new CliHarness();

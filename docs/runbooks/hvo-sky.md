@@ -53,7 +53,8 @@ hvo-sky logout                                # removes the saved key; the addre
   replace a key, create the new one, run `login` with it, then revoke the old one.
 - The installer binds CameraAgent to `127.0.0.1` by default, over plain HTTP, so `hvo-sky` runs on the CameraAgent host
   or reaches it through an SSH tunnel. Given a plain `http://` address on another machine, every command warns on
-  standard error that the key crosses the network unencrypted.
+  standard error that the key crosses the network unencrypted, and `hvo-sky ui` shows the same warning in its notice
+  band (`[PLAIN HTTP]`), when signing in and whenever nothing more urgent shows.
 
 ## Credentials
 
@@ -193,7 +194,7 @@ are: character-cell panels, aligned readings, and content bounded by its panel.
 | Key | Page | What it shows, and what it changes |
 | --- | --- | --- |
 | F1 | Status | Capture and the camera, the queues, storage and, from 110 columns, LogicHost delivery; a line that sums the state up; the recent changes of state under a rule. Read every poll interval (2 s). |
-| F2 | Settings | The settings catalogue's groups and settings, each with its value, source and whether it can be changed here, and the chosen one's rules. **Change** builds its form from the catalogue, as `config set` checks it. |
+| F2 | Settings | The settings catalogue's groups and settings, each with its value, source and whether it can be changed here, and the chosen one's rules. **Change** builds its form from the catalogue, as `config set` checks it, and sends the group with the version read: CameraAgent, not the form, says whether anything changed. |
 | F3 | Camera & rig ("Camera" on the tab bar below 110 columns, so every page keeps its name at 80) | The active and staged rig revisions, the revisions, and the camera settings. **Stage** previews and stages a revision, with the acknowledgement `rig stage` asks for; **Apply** restarts CameraAgent and waits, as `rig apply` does. |
 | F4 | Schedule | The active and staged schedule revisions, whether capture is admitted, the revisions and the next capture windows. **Apply staged** and **Activate** activate a revision at the next capture boundary, going forward or back from the revision numbers, as `schedule apply` does. |
 | F5 | System | `hvo-sky`'s own version, the address and key in use and where they come from, and CameraAgent's version, runtime, catalog and restart support. **Sign in** checks a key with CameraAgent before saving it, as `login` does; **Sign out** removes it, as `logout` does; **Restart** restarts CameraAgent and waits for it. |
@@ -216,8 +217,10 @@ are: character-cell panels, aligned readings, and content bounded by its panel.
   time), `[OFFLINE]` (CameraAgent did not answer, or not within `--timeout`), `[SIGNED OUT]` or `[NOT SIGNED IN]`. A
   read that fails keeps the last values on screen, with `LAST KNOWN` in their panels' titles and when they were read:
   nothing is shown as current that CameraAgent has not just said.
-- **Outcomes.** A change ends as the command would end it: done; refused, and nothing changed; or, once CameraAgent has
-  accepted it, `[UNVERIFIED]` with what it accepted and why it could not be verified. The notice band takes up to three
+- **Outcomes.** A change ends as the command would end it: done; refused (HTTP 4xx), and nothing changed; or
+  `[UNVERIFIED]`: once CameraAgent has accepted it, with what it accepted and why it could not be verified, and when
+  CameraAgent failed while handling it (HTTP 5xx) or its answer never came, that whether it was applied is not known.
+  Only a refusal says a change was not made. The notice band takes up to three
   rows, so no outcome is cut at 80 x 24; the last action's outcome takes the band, and the badge and `LAST KNOWN` keep
   marking data that is not current meanwhile.
 - **`--timeout`** bounds each read and change, since the interface runs until F10.
@@ -255,7 +258,10 @@ driver, and `scripts/docs:terminal-screenshots` refreshes the folder.
   change (a restart, a staged rig or schedule, an activation, a settings group), any later failure exits 1 with `kind`
   `Unverified`, saying what was accepted and why it could not be verified; `cause` is the failure's own kind, such as
   `SignedOut` for a key refused while waiting. Ctrl+C then still exits 130, saying the same. When a change's own
-  request fails without an answer, the message says that whether CameraAgent received it is not known.
+  request fails without an answer, the message says that whether CameraAgent received it is not known. When CameraAgent
+  answers a change with a server error (HTTP 5xx), it may have made the change before failing: exit 1 with `kind`
+  `Unverified` and `cause` `Failed`, saying that whether it was applied is not known. Only a refusal (HTTP 4xx) says a
+  change was not made.
 
 ### Exit codes
 

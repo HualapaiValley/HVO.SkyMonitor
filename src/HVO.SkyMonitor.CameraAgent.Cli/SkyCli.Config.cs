@@ -531,15 +531,23 @@ internal static partial class SkyCli
                     && !context.LastChangeAccepted)
                 {
                     // An earlier group was saved and this one was not taken: "not saved" only when CameraAgent refused it
-                    // (HTTP 4xx). A group whose success status arrived is not caught here: whatever failed after it, it was
-                    // accepted, and the command says so (Unverified).
-                    var (_, _, message) = SkyCliContext.Classify(error);
+                    // (HTTP 4xx). CameraAgent's own failure (5xx), or an answer that never came, leaves it unknown
+                    // (Unverified). A group whose success status arrived is not caught here: whatever failed after it, it
+                    // was accepted, and the command says so (Unverified).
+                    var (_, kind, message) = SkyCliContext.Classify(error);
                     var status = error is SkyApiException answered ? (int)answered.StatusCode : 0;
-                    var refused = status is >= 400 and < 500;
+                    if (status is >= 400 and < 500)
+                    {
+                        throw new SkyCliOutcomeException(
+                            $"The {group.Key} group was not saved: {message} The groups before it were saved; run the command again to continue.",
+                            SkyExitCode.Failed, "Failed", error)
+                        { SaysWhatWasAccepted = true };
+                    }
+
                     throw new SkyCliOutcomeException(
-                        $"The {group.Key} group {(refused ? "was not saved" : "may not have been saved")}: {message} The groups before it were saved; run the command again to continue.",
-                        SkyExitCode.Failed, "Failed", error)
-                    { SaysWhatWasAccepted = true };
+                        $"Whether the {group.Key} group was saved is not known: {(status >= 500 ? $"{error.Message} (HTTP {status})." : message)} The groups before it were saved; run the command again to continue: it sends only what still differs.",
+                        SkyExitCode.Failed, "Unverified", error)
+                    { SaysWhatWasAccepted = true, Cause = kind };
                 }
 
                 saved.Add(new
