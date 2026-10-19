@@ -33,6 +33,10 @@ import sys
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+# A JSON number is valid whatever its length (contract: "Digits, times and JSON limits").
+if hasattr(sys, "set_int_max_str_digits"):
+    sys.set_int_max_str_digits(0)
+
 PACK = Path(__file__).resolve().parent
 CAPTURE = "capture-20261019T1857Z"
 SCENARIO_SCHEMA = "hvo-space-weather-swpc-scenario-v1"
@@ -89,6 +93,9 @@ POLICY = {
     "retentionSeconds": 3024000,
 }
 TYPICAL_LATITUDE = {"K4": 65, "G1": 60, "G2": 55, "G3": 50, "G4": 45, "G5": 40}
+# A source time parses only within these years, so every derived time stays representable.
+FIRST_YEAR, LAST_YEAR = 1900, 9998
+JSON_MAX_DEPTH = 64
 
 
 class ScenarioError(Exception):
@@ -126,19 +133,52 @@ def encode_alerts(records) -> str:
     return json.dumps(records, separators=(",", ":"), ensure_ascii=True).replace("/", "\\/")
 
 
+JSON_TOKEN_RE = re.compile(r'"[^"\\]*(?:\\.[^"\\]*)*"|[\[\]{}]', re.DOTALL)
+
+
+def json_depth(text):
+    """The deepest array or object nesting outside strings; the outermost level is 1."""
+    depth = deepest = 0
+    for token in JSON_TOKEN_RE.finditer(text):
+        value = token.group()
+        if value in ("[", "{"):
+            depth += 1
+            deepest = max(deepest, depth)
+        elif value in ("]", "}"):
+            depth -= 1
+    return deepest
+
+
 def dump_json(obj) -> bytes:
     return (json.dumps(obj, indent=2, ensure_ascii=True) + "\n").encode("ascii")
 
 
 def parse_swpc_time(text):
-    m = re.fullmatch(r"(\d{4}) ([A-Z][a-z]{2}) (\d{2}) (\d{2})(\d{2}) UTC", text.strip())
-    if not m or m.group(2) not in MONTHS:
+    m = re.fullmatch(r"([0-9]{4}) ([A-Z][a-z]{2}) ([0-9]{2}) ([0-9]{2})([0-9]{2}) UTC", text.strip())
+    if not m or m.group(2) not in MONTHS or not FIRST_YEAR <= int(m.group(1)) <= LAST_YEAR:
         return None
     try:
         return dt.datetime(int(m.group(1)), MONTHS[m.group(2)], int(m.group(3)),
                            int(m.group(4)), int(m.group(5)), tzinfo=UTC)
     except ValueError:
         return None
+
+
+def parse_stamp(value, layout):
+    """A JSON product time: ASCII digits only, within the year bounds. Raises ValueError otherwise."""
+    if not isinstance(value, str) or not re.fullmatch(layout, value):
+        raise ValueError("time does not parse")
+    stamp = dt.datetime.strptime(value, STAMP_FORMATS[layout]).replace(tzinfo=UTC)
+    if not FIRST_YEAR <= stamp.year <= LAST_YEAR:
+        raise ValueError("time out of range")
+    return stamp
+
+
+SCALES_STAMP = r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}"
+KP_STAMP = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+OVATION_STAMP = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
+STAMP_FORMATS = {SCALES_STAMP: "%Y-%m-%d %H:%M:%S", KP_STAMP: "%Y-%m-%dT%H:%M:%S",
+                 OVATION_STAMP: "%Y-%m-%dT%H:%M:%SZ"}
 
 
 def geomagnetic_latitude(lat, lon):
@@ -153,9 +193,9 @@ def geomagnetic_latitude(lat, lon):
 # alerts.json message parsing
 # ---------------------------------------------------------------------------
 
-ISSUE_DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}")
+ISSUE_DATETIME_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}")
 HEADLINE_RE = re.compile(r"(?:(CANCEL|EXTENDED|CONTINUED) )?(WATCH|WARNING|ALERT|SUMMARY): (.+)")
-WATCH_DAY_RE = re.compile(r"([A-Z][a-z]{2}) (\d{2})\s*:\s+(G[1-5]|None)\b")
+WATCH_DAY_RE = re.compile(r"([A-Z][a-z]{2}) ([0-9]{2})\s*:\s+(G[1-5]|None)\b", re.ASCII)
 
 
 class Message:
@@ -167,7 +207,7 @@ class Message:
         self.sha256 = sha256(text.encode("utf-8"))
         lines = text.split("\n")
         self.code = re.fullmatch(r"Space Weather Message Code: ([A-Z0-9]{4,8})", lines[0]).group(1)
-        self.serial = int(re.fullmatch(r"Serial Number: (\d{1,6})", lines[1]).group(1))
+        self.serial = int(re.fullmatch(r"Serial Number: ([0-9]{1,6})", lines[1]).group(1))
         self.issue = parse_swpc_time(re.fullmatch(r"Issue Time: (.+)", lines[2]).group(1))
         self.identity = f"{self.code}/{self.serial}/{fmt(self.issue)}"
         self.headline = next((line for line in lines[3:] if line.strip()), "")
@@ -180,11 +220,11 @@ class Message:
                             ("Continuation of Serial Number", "continuation"),
                             ("Cancel Serial Number", "cancel")):
             value = self.field(label)
-            if value and re.fullmatch(r"\d{1,6}", value):
+            if value and re.fullmatch(r"[0-9]{1,6}", value):
                 self.link = (kind, int(value))
         self.family = family_of(self.code, self.kind)
         self.poleward = None
-        m = re.search(r"poleward of (\d{1,2}) degrees Geomagnetic Latitude", text)
+        m = re.search(r"poleward of ([0-9]{1,2}) degrees Geomagnetic Latitude", text)
         if m:
             self.poleward = int(m.group(1))
         self.level = level_of(self)
@@ -227,7 +267,7 @@ def level_of(msg):
     if msg.family == "watch":
         m = re.search(r"Category (G[1-5])", msg.headline)
         return m.group(1) if m else None
-    m = re.search(r"(?im)^noaa scale: ([GRS][1-5])\b", msg.text)
+    m = re.search(r"(?aim)^noaa scale: ([GRS][1-5])\b", msg.text)
     return m.group(1).upper() if m else None
 
 
@@ -249,12 +289,16 @@ def infer_year(month, reference):
 
 
 def watch_days(msg):
+    """The listed days, or None when a listed day is not a real date (the day lines do not parse)."""
     result = []
     for line in msg.text.split("\n"):
         for mon, day, level in WATCH_DAY_RE.findall(line):
             if mon not in MONTHS:
                 continue
-            result.append((dt.date(infer_year(MONTHS[mon], msg.issue), MONTHS[mon], int(day)), level))
+            try:
+                result.append((dt.date(infer_year(MONTHS[mon], msg.issue), MONTHS[mon], int(day)), level))
+            except ValueError:
+                return None
     return result
 
 
@@ -280,8 +324,8 @@ def parse_record(record, index):
     lines = text.split("\n")[:-1]
     if (len(lines) < 4
             or not re.fullmatch(r"Space Weather Message Code: [A-Z0-9]{4,8}", lines[0])
-            or not re.fullmatch(r"Serial Number: \d{1,6}", lines[1])
-            or not re.fullmatch(r"Issue Time: \d{4} [A-Z][a-z]{2} \d{2} \d{4} UTC", lines[2])
+            or not re.fullmatch(r"Serial Number: [0-9]{1,6}", lines[1])
+            or not re.fullmatch(r"Issue Time: [0-9]{4} [A-Z][a-z]{2} [0-9]{2} [0-9]{4} UTC", lines[2])
             or parse_swpc_time(lines[2][len("Issue Time: "):]) is None):
         return None, "message-header"
     return Message(record, text), None
@@ -372,8 +416,8 @@ def window(group, groups):
     start = until = None
     if fam == "watch":
         start = group.root.issue
-        days = [d for d, level in nc.days if level != "None"]
         if nc.days:
+            days = [d for d, level in nc.days if level != "None"]
             until = (dt.datetime.combine(max(days), dt.time(), UTC) + dt.timedelta(days=1)) if days else start
     elif fam == "warning":
         start = group.root.time_field("Valid From")
@@ -381,7 +425,7 @@ def window(group, groups):
     elif fam == "k-alert":
         start = nc.time_field("Threshold Reached")
         period = nc.field("Synoptic Period")
-        m = re.fullmatch(r"(\d{2})(\d{2})-(\d{2})(\d{2})", period or "")
+        m = re.fullmatch(r"([0-9]{2})([0-9]{2})-([0-9]{2})([0-9]{2})", period or "")
         if start and m:
             end_minutes = int(m.group(3)) * 60 + int(m.group(4))
             until = dt.datetime.combine(start.date(), dt.time(), UTC) + dt.timedelta(minutes=end_minutes)
@@ -463,8 +507,8 @@ def parse_scales(obj):
     for key in ("-1", "0", "1", "2", "3"):
         day = obj[key]
         try:
-            stamp = dt.datetime.strptime(day["DateStamp"] + " " + day["TimeStamp"], "%Y-%m-%d %H:%M:%S")
-            entry = {"stampUtc": fmt(stamp.replace(tzinfo=UTC)),
+            stamp = parse_stamp(day["DateStamp"] + " " + day["TimeStamp"], SCALES_STAMP)
+            entry = {"stampUtc": fmt(stamp),
                      "rScale": day["R"]["Scale"], "rMinorProbPct": day["R"]["MinorProb"],
                      "rMajorProbPct": day["R"]["MajorProb"], "sScale": day["S"]["Scale"],
                      "sProbPct": day["S"]["Prob"], "gScale": day["G"]["Scale"]}
@@ -480,9 +524,9 @@ def parse_kp_forecast(obj):
     bins = {}
     for row in obj:
         try:
-            start = dt.datetime.strptime(row["time_tag"], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=UTC)
+            start = parse_stamp(row["time_tag"], KP_STAMP)
             kp = row["kp"]
-            if not isinstance(kp, str) or not re.fullmatch(r"\d\.\d{2}", kp):
+            if not isinstance(kp, str) or not re.fullmatch(r"[0-9]\.[0-9]{2}", kp):
                 return None, "schema"
             bins[fmt(start)] = {"kp": kp, "label": row["observed"], "noaaScale": row["noaa_scale"]}
         except (KeyError, TypeError, ValueError):
@@ -491,11 +535,11 @@ def parse_kp_forecast(obj):
             "bins": bins}, None
 
 
-THREE_DAY_COLUMNS_RE = re.compile(r" *([A-Z][a-z]{2}) (\d{2}) +([A-Z][a-z]{2}) (\d{2}) +([A-Z][a-z]{2}) (\d{2})")
-THREE_DAY_KP_ROW_RE = re.compile(r"(\d{2})-\d{2}UT +(.+)")
-THREE_DAY_KP_CELLS_RE = re.compile(r"(\d\.\d{2})(?: \((G[1-5])\))? +(\d\.\d{2})(?: \((G[1-5])\))?"
-                                   r" +(\d\.\d{2})(?: \((G[1-5])\))?")
-THREE_DAY_PROB_ROW_RE = re.compile(r"(\S.*?) {2,}(\d{1,3})% +(\d{1,3})% +(\d{1,3})%")
+THREE_DAY_COLUMNS_RE = re.compile(r" *([A-Z][a-z]{2}) ([0-9]{2}) +([A-Z][a-z]{2}) ([0-9]{2}) +([A-Z][a-z]{2}) ([0-9]{2})")
+THREE_DAY_KP_ROW_RE = re.compile(r"([0-9]{2})-[0-9]{2}UT +(.+)")
+THREE_DAY_KP_CELLS_RE = re.compile(r"([0-9]\.[0-9]{2})(?: \((G[1-5])\))? +([0-9]\.[0-9]{2})(?: \((G[1-5])\))?"
+                                   r" +([0-9]\.[0-9]{2})(?: \((G[1-5])\))?")
+THREE_DAY_PROB_ROW_RE = re.compile(r"(\S.*?) {2,}([0-9]{1,3})% +([0-9]{1,3})% +([0-9]{1,3})%", re.ASCII)
 
 
 def three_day_table(lines, title_re, issued):
@@ -590,8 +634,8 @@ def ovation_band(grid, site):
 def parse_ovation(obj, sites):
     grid = {(c[0], c[1]): c[2] for c in obj["coordinates"]}
     artifact = sum(1 for (lo, la), v in grid.items() if -2 <= la <= 0 and v > 0)
-    observed = ts(obj["Observation Time"])
-    forecast = ts(obj["Forecast Time"])
+    observed = parse_stamp(obj["Observation Time"], OVATION_STAMP)
+    forecast = parse_stamp(obj["Forecast Time"], OVATION_STAMP)
     return {"observationTimeUtc": fmt(observed), "forecastTimeUtc": fmt(forecast),
             "leadMinutes": int((forecast - observed).total_seconds() // 60),
             "siteBands": {site["siteId"]: ovation_band(grid, site) for site in sites},
@@ -671,7 +715,9 @@ class Model:
                 "relevance": {s["siteId"]: relevance(group, s) for s in self.sites},
             }
             if group.family == "watch" and group.latest_nc:
-                entry["days"] = [{"dateUtc": d.isoformat(), "level": level} for d, level in group.latest_nc.days]
+                days = group.latest_nc.days
+                entry["days"] = None if days is None else [{"dateUtc": d.isoformat(), "level": level}
+                                                           for d, level in days]
             site = self.sites[0]
             zone = ZoneInfo(site["timeZoneId"])
             entry["local"] = {"fromLocal": start.astimezone(zone).isoformat(),
@@ -734,9 +780,8 @@ class Model:
             raised = self.group_raised(group)
             node = min(group.nodes)
             if raised is None:
-                just_ended = state == "recent" and t < group.latest_nc.issue + grace
-                if state not in ("pending", "active") and not just_ended:
-                    continue
+                eligible = state in ("pending", "active") or (
+                    state == "recent" and t < group.latest_nc.issue + grace)
                 reason = "new"
                 if group.family == "watch":
                     before = group.root.issue - dt.timedelta(seconds=1)
@@ -746,10 +791,13 @@ class Model:
                              and notice_state(g, groups, before)[0] == "active"]
                     preds = [r for r in preds if r is not None]
                     if preds and rank <= max(preds):
+                        # A same or lower replacement is silent whatever its state, and its rank is recorded.
                         self.raised[node] = rank
                         continue
                     if preds:
                         reason = "escalated"
+                if not eligible:
+                    continue
                 self.raised[node] = rank
                 events.append({"group": gid, "reason": reason, "level": group.level})
             elif rank > raised:
@@ -837,9 +885,11 @@ class Model:
                 return "rejected", reason, None
             return "ok", {"sha256": sha256(normalized.encode("utf-8")), "stamp": facts["issuedUtc"],
                           "facts": facts}, None
+        if json_depth(text) > JSON_MAX_DEPTH:
+            return "rejected", "malformed-json", None
         try:
             obj = json.loads(text, parse_float=lambda s: s)
-        except ValueError:
+        except (ValueError, RecursionError):
             return "rejected", "malformed-json", None
         digest = sha256(data)
         if name == "alerts":
@@ -927,9 +977,9 @@ class Model:
             st.rate_limited += 1
             delay = POLICY["rateLimitedDefaultSeconds"]
             retry = response.get("retryAfter")
-            if retry and re.fullmatch(r"\d{1,9}", retry):
+            if retry and re.fullmatch(r"[0-9]{1,9}", retry):
                 delay = int(retry)
-            elif retry:
+            elif retry and retry.isascii():
                 try:
                     when = dt.datetime.strptime(retry, "%a, %d %b %Y %H:%M:%S GMT").replace(tzinfo=UTC)
                     delay = int((when - t).total_seconds())
@@ -1435,8 +1485,8 @@ def scenarios(cap: Capture):
     ])
     b = Builder("s08-watch-replacement-and-escalation",
                 "A same-level watch replaces silently; a higher-level watch escalates; watches first seen "
-                "together are evaluated in root issue-time order",
-                ["watch-supersession", "escalation", "new-grace"], synthetic_records=True,
+                "together are evaluated in root issue-time order; watches first seen after an outage",
+                ["watch-supersession", "escalation", "new-grace", "outage"], synthetic_records=True,
                 notes=["WATA30 serial 900 is synthetic and models a G2 watch superseding a G1 watch.",
                        "WATA50 serial 100 and WATA30 serial 901 are synthetic. Both are first seen in step 4: the "
                        "G3 watch was issued at 17:00 and replaced by the G2 watch at 17:03. The G3 watch is "
@@ -1477,6 +1527,81 @@ def scenarios(cap: Capture):
                                    "untilUtc": "2026-10-19T17:03:00Z"},
                     "WATA30/901": {"state": "active", "level": "G2", "untilUtc": "2026-10-21T00:00:00Z"}},
     })
+
+    def outage_watch(product_id, issue_datetime, code, serial, category, days):
+        return synthetic(product_id, issue_datetime, code, serial, [
+            f"WATCH: Geomagnetic Storm Category {category} Predicted ",
+            "Highest Storm Level Predicted by Day:",
+            days,
+            "THIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT",
+            "Comment: Synthetic fixture for a watch first seen after an outage; not an SWPC product.",
+        ])
+    p101 = outage_watch("A50F", "2026-10-19 18:00:09.000", "WATA50", 101, "G3",
+                        "Oct 19:  G3 (Strong)   Oct 20:  G3 (Strong)   Oct 21:  G1 (Minor)   ")
+    w902 = outage_watch("A30F", "2026-10-19 18:10:07.000", "WATA30", 902, "G2",
+                        "Oct 19:  G2 (Moderate)   Oct 20:  G2 (Moderate)   Oct 21:  G1 (Minor)   ")
+    w903 = outage_watch("A20F", "2026-10-19 18:20:05.000", "WATA20", 903, "G1",
+                        "Oct 19:  G1 (Minor)   Oct 20:  G1 (Minor)   Oct 21:  G1 (Minor)   ")
+    w104 = outage_watch("A50F", "2026-10-19 18:40:06.000", "WATA50", 104, "G3",
+                        "Oct 19:  G3 (Strong)   Oct 20:  G2 (Moderate)   Oct 21:  G1 (Minor)   ")
+    w905 = outage_watch("A30F", "2026-10-19 18:50:04.000", "WATA30", 905, "G2",
+                        "Oct 19:  G2 (Moderate)   Oct 20:  G2 (Moderate)   Oct 21:  None (Below G1)   ")
+    earlier = [same_merge_g2, same_merge_g3, escalation, w1131, w1130]
+    b.fetch("2026-10-19T18:01:00Z",
+            alerts_ok([p101] + earlier, 'W/"fixture-s08-e"', "Mon, 19 Oct 2026 18:00:50 GMT"), {
+        "outcome": "updated",
+        "attention": [{"group": "WATA50/101", "reason": "escalated", "level": "G3"}],
+        "notices": {"WATA20/1130": {"state": "history"},
+                    "WATA20/1131": {"state": "recent"},
+                    "WATA30/900": {"state": "recent"},
+                    "WATA50/100": {"state": "recent"},
+                    "WATA30/901": {"state": "recent", "endReason": "superseded",
+                                   "untilUtc": "2026-10-19T18:00:00Z"},
+                    "WATA50/101": {"state": "active", "level": "G3", "untilUtc": "2026-10-22T00:00:00Z"}},
+    })
+    for at, after in (("2026-10-19T18:03:00Z", "2026-10-19T18:07:00Z"),
+                      ("2026-10-19T18:07:00Z", "2026-10-19T18:15:00Z"),
+                      ("2026-10-19T18:15:00Z", "2026-10-19T18:31:00Z")):
+        b.fetch(at, {"outcome": "timeout"}, {
+            "outcome": "transient-failure", "product": {"nextAttemptNotBeforeUtc": after}})
+    replaced = {"WATA20/1130": {"state": "history"}, "WATA20/1131": {"state": "recent"},
+                "WATA30/900": {"state": "recent"}, "WATA50/100": {"state": "recent"},
+                "WATA30/901": {"state": "recent"}}
+    b.fetch("2026-10-19T18:31:00Z",
+            alerts_ok([w903, w902, p101] + earlier, 'W/"fixture-s08-f"', "Mon, 19 Oct 2026 18:30:50 GMT"), {
+        "outcome": "updated", "attention": [],
+        "notices": dict(replaced, **{
+            "WATA50/101": {"state": "recent", "endReason": "superseded", "untilUtc": "2026-10-19T18:10:00Z"},
+            "WATA30/902": {"state": "recent", "endReason": "superseded", "level": "G2",
+                           "untilUtc": "2026-10-19T18:20:00Z"},
+            "WATA20/903": {"state": "active", "level": "G1", "untilUtc": "2026-10-22T00:00:00Z"}}),
+    })
+    for at, after in (("2026-10-19T18:33:00Z", "2026-10-19T18:37:00Z"),
+                      ("2026-10-19T18:37:00Z", "2026-10-19T18:45:00Z"),
+                      ("2026-10-19T18:45:00Z", "2026-10-19T19:01:00Z")):
+        b.fetch(at, {"outcome": "timeout"}, {
+            "outcome": "transient-failure", "product": {"nextAttemptNotBeforeUtc": after}})
+    b.fetch("2026-10-19T19:01:00Z",
+            alerts_ok([w905, w104, w903, w902, p101] + earlier, 'W/"fixture-s08-g"',
+                      "Mon, 19 Oct 2026 19:00:50 GMT"), {
+        "outcome": "updated",
+        "attention": [{"group": "WATA30/905", "reason": "new", "level": "G2"}],
+        "notices": dict(replaced, **{
+            "WATA50/101": {"state": "recent"},
+            "WATA30/902": {"state": "recent"},
+            "WATA20/903": {"state": "recent", "endReason": "superseded", "untilUtc": "2026-10-19T18:40:00Z"},
+            "WATA50/104": {"state": "recent", "endReason": "superseded", "level": "G3",
+                           "untilUtc": "2026-10-19T18:50:00Z"},
+            "WATA30/905": {"state": "active", "level": "G2", "untilUtc": "2026-10-21T00:00:00Z"}}),
+    })
+    b.doc["notes"].append(
+        "WATA50 serials 101 and 104, WATA30 serials 902 and 905 and WATA20 serial 903 are synthetic. They model "
+        "watches first seen after alerts outages. In step 9, the G2 and G1 watches issued during the first "
+        "outage were each superseded before the fetch that first saw them. Each is compared with the watch it "
+        "replaced, so both are silent and both ranks are recorded. In step 13, the G3 watch issued during the "
+        "second outage is higher than the G1 watch it replaced, but it ended outside the new-notice grace before "
+        "it was first seen. It raises nothing and has no rank recorded, so the G2 watch that replaced it raises "
+        "'new'.")
     out.append(b.build())
 
     # s09 ------------------------------------------------------------------
@@ -1647,12 +1772,30 @@ def scenarios(cap: Capture):
     spaced_issue = dict(a2691, message=a2691["message"].replace("Issue Time: 2026 Oct 16 1939 UTC",
                                                                 "Issue Time:  2026 Oct 16 1939 UTC", 1))
     surrogate = dict(a2691, message=a2691["message"] + "\ud800")
+    impossible_day = synthetic("A20F", "2026-10-16 19:49:30.000", "WATA20", 950, [
+        "WATCH: Geomagnetic Storm Category G1 Predicted ",
+        "Highest Storm Level Predicted by Day:",
+        "Oct 17:  G1 (Minor)   Oct 32:  G1 (Minor)   Oct 18:  None (Below G1)   ",
+        "THIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT",
+        "Comment: Synthetic fixture with an impossible watch day; not an SWPC product.",
+    ])
+    # Arabic-Indic digits for the year; encode_alerts escapes them, so the body stays ASCII.
+    indic_year = dict(a2691, message=a2691["message"].replace("Issue Time: 2026 ",
+                                                              "Issue Time: \u0662\u0660\u0662\u0666 ", 1))
+    far_year = dict(a2691, message=a2691["message"].replace("Issue Time: 2026 Oct 16 1939 UTC",
+                                                            "Issue Time: 9999 Dec 31 2339 UTC", 1))
+    long_number = dict(a2691, product_id="S12LONGNUMBER")
     if no_serial["message"] == w5436["message"] or long_serial["message"] == a2691["message"] \
-            or spaced_issue["message"] == a2691["message"]:
+            or spaced_issue["message"] == a2691["message"] or indic_year["message"] == a2691["message"] \
+            or far_year["message"] == a2691["message"]:
         raise ScenarioError("s12 record damage did not change the message")
     mixed = alerts_ok([unknown, w5436, no_message, iso_datetime, no_serial, mismatch, oversize_record,
-                       header_only, long_serial, spaced_issue, surrogate], 'W/"fixture-s12-mixed"',
-                      "Fri, 16 Oct 2026 19:52:50 GMT", order=False)
+                       header_only, long_serial, spaced_issue, surrogate, impossible_day, indic_year, far_year,
+                       long_number], 'W/"fixture-s12-mixed"', "Fri, 16 Oct 2026 19:52:50 GMT", order=False)
+    # A 4,301-digit integer is valid JSON, one digit beyond the default limit of Python's int conversion.
+    mixed["body"] = mixed["body"].replace('"S12LONGNUMBER"', "1" * 4301, 1)
+    if "S12LONGNUMBER" in mixed["body"]:
+        raise ScenarioError("s12 long number was not substituted")
     non_utf8 = b'[{"product_id":"K04A","issue_datetime":"2026-10-16 19:39:45.267","message":"\xff\xfe"}]'
     b = Builder("s12-malformed-bodies",
                 "Rejected bodies keep last-known-good; record-level faults reject only the record and raise "
@@ -1662,7 +1805,12 @@ def scenarios(cap: Capture):
                        "Step 5's ALTEF3 3754 is the real record with its issue_datetime moved six minutes later; "
                        "its other damaged records are copies of WARK04 5436 and ALTK04 2691, plus a synthetic "
                        "header-only ALTK04 2692. Index 9 doubles the space after 'Issue Time:', and index 10 "
-                       "ends its message with the unpaired surrogate escape \\ud800."])
+                       "ends its message with the unpaired surrogate escape \\ud800.",
+                       "Step 5's WATA20 950 is a synthetic G1 watch with the impossible day line 'Oct 32'. "
+                       "Indexes 12 to 14 are copies of ALTK04 2691: index 12 writes the Issue Time year in "
+                       "Arabic-Indic digits, as the JSON escapes \\u0662\\u0660\\u0662\\u0666; index 13 has "
+                       "the Issue Time 9999 Dec 31 2339 UTC; and index 14 has a 4,301-digit integer as its "
+                       "product_id."])
     b.fetch("2026-10-16T19:45:00Z", good, {"outcome": "updated", "product": {"lkgSha256": good_sha}})
     b.fetch("2026-10-16T19:47:00Z", dict(good, body=good["body"][:len(good["body"]) // 2], etag='W/"fixture-s12-trunc"'), {
         "outcome": "rejected", "diagnostics": ["body-rejected:malformed-json"], "attention": [],
@@ -1682,25 +1830,32 @@ def scenarios(cap: Capture):
         "product": {"consecutiveRejected": 3, "lkgSha256": good_sha, "freshness": "stale"},
     })
     all_active = {"ALTEF3/3754": {"state": "active"}, "ALTK04/2691": {"state": "active"},
-                  "ALTZZZ/1": {"state": "active"}, "WARK04/5436": {"state": "active"}}
+                  "ALTZZZ/1": {"state": "active"}, "WARK04/5436": {"state": "active"},
+                  "WATA20/950": {"state": "active"}}
     b.fetch("2026-10-16T19:53:00Z", mixed, {
         "outcome": "updated",
         "diagnostics": ["issue-time-mismatch:ALTEF3/3754/2026-10-16T14:19:00Z",
-                        "record-rejected:issue-datetime:3", "record-rejected:message-header:4",
+                        "record-rejected:issue-datetime:3", "record-rejected:message-header:12",
+                        "record-rejected:message-header:13", "record-rejected:message-header:4",
                         "record-rejected:message-header:7", "record-rejected:message-header:8",
                         "record-rejected:message-header:9", "record-rejected:record-oversize:6",
-                        "record-rejected:record-schema:10", "record-rejected:record-schema:2"],
+                        "record-rejected:record-schema:10", "record-rejected:record-schema:14",
+                        "record-rejected:record-schema:2"],
         "attention": [{"group": "ALTEF3/3754", "reason": "new", "level": None},
                       {"group": "ALTZZZ/1", "reason": "new", "level": None},
                       {"group": "WARK04/5436", "reason": "new", "level": "K4"},
+                      {"group": "WATA20/950", "reason": "new", "level": "G1"},
                       {"group": "provider/alerts/record-drift", "reason": "new", "level": None}],
         "notices": dict(all_active, **{
             "ALTZZZ/1": {"family": "unclassified", "state": "active",
                          "fromUtc": "2026-10-16T19:50:00Z", "untilUtc": "2026-10-17T01:50:00Z",
-                         "relevance": {hvo: "Unknown"}}}),
+                         "relevance": {hvo: "Unknown"}},
+            "ALTK04/2691": {"state": "active", "versions": 1},
+            "WATA20/950": {"family": "watch", "level": "G1", "state": "active", "days": None,
+                           "fromUtc": "2026-10-16T19:49:00Z", "untilUtc": "2026-10-17T01:49:00Z"}}),
         "product": {"consecutiveRejected": 0, "lkgSha256": sha256(mixed["body"].encode()),
                     "recordDriftOpen": True, "recordDriftStampUtc": "2026-10-16T19:50:00Z",
-                    "facts": {"records": 11, "acceptedRecords": 3}},
+                    "facts": {"records": 15, "acceptedRecords": 4}},
     })
     b.fetch("2026-10-16T19:55:00Z", dict(good, body="[]"), {
         "outcome": "rejected", "diagnostics": ["body-rejected:suspect-empty"], "attention": [],
@@ -1733,10 +1888,21 @@ def scenarios(cap: Capture):
         "product": {"consecutiveRejected": 5, "recordDriftOpen": True, "lkgSha256": sha256(mixed["body"].encode())},
     })
     many_step = len(b.doc["steps"])
+    b.fetch("2026-10-16T20:05:00Z", dict(good, body="[" * JSON_MAX_DEPTH + "]" * JSON_MAX_DEPTH), {
+        "outcome": "rejected", "diagnostics": ["body-rejected:no-valid-records"], "attention": [],
+        "product": {"consecutiveRejected": 6}})
+    b.fetch("2026-10-16T20:07:00Z",
+            dict(good, body="[" * (JSON_MAX_DEPTH + 1) + "]" * (JSON_MAX_DEPTH + 1)), {
+        "outcome": "rejected", "diagnostics": ["body-rejected:malformed-json"], "attention": [],
+        "notices": all_active,
+        "product": {"consecutiveRejected": 7, "recordDriftOpen": True,
+                    "lkgSha256": sha256(mixed["body"].encode())}})
     b.doc["notes"] += [f"Step {oversize_step} body is described, not embedded: a valid JSON empty array padded "
                        "with spaces to 1 MiB + 1 byte.",
                        f"Step {many_step} body is described, not embedded: 2,001 copies of one small record, "
-                       "within the byte limit."]
+                       "within the byte limit.",
+                       f"Steps {many_step + 1} and {many_step + 2} nest arrays {JSON_MAX_DEPTH} and "
+                       f"{JSON_MAX_DEPTH + 1} levels deep."]
     out.append(b.build())
 
     # s13 ------------------------------------------------------------------
@@ -2101,8 +2267,10 @@ def scenarios(cap: Capture):
                        "the stamp 19:38, because a rejected record does not count towards it, so each is "
                        "'updated'. The clean step 1 body is not newer than the episode, so it does not close it, "
                        "and step 7 raises nothing.",
-                       "Step 9 is clean and newer, so it closes the episode. Step 10 opens a new one. Step 11 "
-                       "serves the step 9 body again at the same stamp and does not close it."])
+                       "Step 9 is clean and newer, so it closes the episode. Step 10 serves the step 8 body "
+                       "again. Its stamp, 19:38, is older than last-known-good's 19:39, so it is a "
+                       "'stale-snapshot' and neither raises, closes nor advances the episode. Step 11 opens a "
+                       "new one. Step 12 serves the step 9 body again at the same stamp and does not close it."])
     first = alerts_ok([w5436], 'W/"fixture-s20-a"', "Fri, 16 Oct 2026 19:44:50 GMT")
     b.fetch("2026-10-16T19:45:00Z", first, {
         "outcome": "updated", "diagnostics": [],
@@ -2131,8 +2299,9 @@ def scenarios(cap: Capture):
         "outcome": "updated", "diagnostics": ["record-rejected:message-header:0"], "attention": [],
         "product": {"recordDriftOpen": True, "recordDriftStampUtc": "2026-10-16T19:38:00Z",
                     "lkgSha256": sha256(drifted["body"].encode())}})
-    b.fetch("2026-10-16T19:57:00Z", alerts_ok([drift_a2691, w5436, drift_ef3754], 'W/"fixture-s20-e"',
-                                              "Fri, 16 Oct 2026 19:56:50 GMT"), {
+    older_drifted = alerts_ok([drift_a2691, w5436, drift_ef3754], 'W/"fixture-s20-e"',
+                              "Fri, 16 Oct 2026 19:56:50 GMT")
+    b.fetch("2026-10-16T19:57:00Z", older_drifted, {
         "outcome": "updated", "attention": [],
         "diagnostics": ["record-rejected:message-header:0", "record-rejected:message-header:2"],
         "notices": {"WARK04/5436": {"state": "active"}},
@@ -2144,15 +2313,23 @@ def scenarios(cap: Capture):
         "notices": {"ALTK04/2691": {"state": "active"}, "WARK04/5436": {"state": "active"}},
         "product": {"recordDriftOpen": False, "recordDriftStampUtc": None,
                     "facts": {"records": 2, "acceptedRecords": 2}}})
-    b.fetch("2026-10-16T20:01:00Z", alerts_ok([drift_ef3754, a2691, w5436], 'W/"fixture-s20-g"',
-                                              "Fri, 16 Oct 2026 20:00:50 GMT"), {
+    b.fetch("2026-10-16T20:01:00Z", older_drifted, {
+        "outcome": "stale-snapshot", "attention": [],
+        "diagnostics": ["record-rejected:message-header:0", "record-rejected:message-header:2",
+                        "stale-snapshot"],
+        "product": {"recordDriftOpen": False, "recordDriftStampUtc": None,
+                    "lkgSha256": sha256(clean["body"].encode()), "lastSuccessUtc": "2026-10-16T19:59:00Z",
+                    "validators": {"etag": 'W/"fixture-s20-f"'},
+                    "facts": {"records": 2, "acceptedRecords": 2}}})
+    b.fetch("2026-10-16T20:03:00Z", alerts_ok([drift_ef3754, a2691, w5436], 'W/"fixture-s20-g"',
+                                              "Fri, 16 Oct 2026 20:02:50 GMT"), {
         "outcome": "updated", "diagnostics": ["record-rejected:message-header:2"],
         "attention": [{"group": "provider/alerts/record-drift", "reason": "new", "level": None}],
         "notices": {"ALTK04/2691": {"state": "active", "versions": 1},
                     "WARK04/5436": {"state": "active", "versions": 1}},
         "product": {"recordDriftOpen": True, "recordDriftStampUtc": "2026-10-16T19:39:00Z",
                     "facts": {"records": 3, "acceptedRecords": 2}}})
-    b.fetch("2026-10-16T20:03:00Z", clean, {
+    b.fetch("2026-10-16T20:05:00Z", clean, {
         "outcome": "updated", "diagnostics": [], "attention": [],
         "product": {"recordDriftOpen": True, "recordDriftStampUtc": "2026-10-16T19:39:00Z"}})
     out.append(b.build())

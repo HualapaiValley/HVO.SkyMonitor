@@ -96,8 +96,11 @@ records that SWPC did not publish. These include:
   CANCEL WARNING was published in the capture window. They are built from the
   documented SWPC rules and the shape of the captured CANCEL WATCH;
 - synthetic watches (s08: a G2 watch, WATA30 900, and a G3 watch, WATA50 100,
-  with a G2 watch, WATA30 901, first seen in the same body), a year-rollover
-  watch (s14, WATA20 1200) and an unknown message code (s12, ALTZZZ 1);
+  with a G2 watch, WATA30 901, first seen in the same body; and watches first
+  seen after outages, WATA50 101 and 104 at G3, WATA30 902 and 905 at G2 and
+  WATA20 903 at G1), a year-rollover watch (s14, WATA20 1200), a watch whose
+  day lines name the impossible date `Oct 32` (s12, WATA20 950) and an unknown
+  message code (s12, ALTZZZ 1);
 - a synthetic warning extension (s10, WARK04 5437) and a synthetic warning
   whose validity exceeds the active cap (s21, WARPX1 200);
 - a synthetic 3-day forecast issued 2026 Dec 31 (s14), whose table columns
@@ -105,10 +108,14 @@ records that SWPC did not publish. These include:
 - altered or damaged copies of real records and bodies, used to model:
   - revisions (s02, s11);
   - malformed, mismatched, oversized, header-only and long-serial records, a
-    record whose `Issue Time` line has a doubled space, and a record whose
-    message ends in an unpaired surrogate escape (s12);
-  - records with a renamed header line (s20);
-  - malformed bodies (s12);
+    record whose `Issue Time` line has a doubled space, a record whose
+    message ends in an unpaired surrogate escape, a record whose `Issue Time`
+    year is written in Arabic-Indic digits (a JSON `\u` escape, so the pack
+    stays ASCII), a record whose `Issue Time` is in the year 9999, and a
+    record whose `product_id` is a 4,301-digit number (s12);
+  - records with a renamed header line, and the drifted body served again
+    after a newer one (s20);
+  - malformed bodies, including bodies nested 64 and 65 levels deep (s12);
   - a 3-day forecast with a renamed table, and one whose solar radiation
     table has no rows (s17).
 

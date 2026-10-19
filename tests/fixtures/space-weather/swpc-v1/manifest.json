@@ -129,8 +129,8 @@
   "files": [
     {
       "path": "SOURCE.md",
-      "bytes": 7610,
-      "sha256": "630D8CA40E4F11E21C9554050C44DEC1E461E3634E32E1BEF51C9299D2AA7A1F"
+      "bytes": 8136,
+      "sha256": "87C6AF9E8D270E9AD145CF618B45F4EE229D1F1DBDC456D86B0DF4BFA35D1394"
     },
     {
       "path": "capture-20261019T1857Z/3-day-forecast.original.json",
@@ -159,8 +159,8 @@
     },
     {
       "path": "fixtures.py",
-      "bytes": 138839,
-      "sha256": "10A25F522BF32C362C066C294A021A9404C0A282EE6169B21D8282BEFDAA7DB1"
+      "bytes": 150450,
+      "sha256": "34AB6B7DFFDFD274EDDD6292CC2F8E7760406BF493E46F36AF7C8D8606D8803E"
     },
     {
       "path": "ovation-aurora-site-sector.json",
@@ -204,8 +204,8 @@
     },
     {
       "path": "scenarios/s08-watch-replacement-and-escalation.json",
-      "bytes": 13015,
-      "sha256": "EEBB8C31D1FDC7023AEAD6F16F8ABC491974DB47A26DF59E38FFBB1A4EB78E91"
+      "bytes": 34159,
+      "sha256": "3E6F9CE9D8E4B152FDFA2A0D6F4C99A4ABDE6ACD1FD68D0C8766E6758FC57F52"
     },
     {
       "path": "scenarios/s09-synthetic-cancel-warning.json",
@@ -224,8 +224,8 @@
     },
     {
       "path": "scenarios/s12-malformed-bodies.json",
-      "bytes": 34702,
-      "sha256": "F51BF9BAF24CDF4116694D6E890C34C9A2B09BC7E109893D1DC146F297C10784"
+      "bytes": 44606,
+      "sha256": "06F21A4553B3B8FA960615ED476A7A8D4DFDEEF98D5F5416184193FB72418B83"
     },
     {
       "path": "scenarios/s13-outage-backoff-halts.json",
@@ -264,8 +264,8 @@
     },
     {
       "path": "scenarios/s20-record-level-drift.json",
-      "bytes": 22705,
-      "sha256": "5BD8C8847050ED781FFCEA7FA61C9461A28B27E579A1D12931213FAD7962C302"
+      "bytes": 25618,
+      "sha256": "AB432602229C8B189B717126B8E44C729D9B03707CDBC786D4A65766AB2D75A2"
     },
     {
       "path": "scenarios/s21-pending-short-window-and-cap.json",

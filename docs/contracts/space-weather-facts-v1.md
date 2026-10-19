@@ -108,6 +108,26 @@ All hashes are 64-character uppercase hexadecimal.
 the content does not change (s01, s17). They may be sent as `If-None-Match` and
 `If-Modified-Since`, but they never decide whether content changed.
 
+**Digits, times and JSON limits:**
+
+- Every letter and digit that a rule matches is ASCII. A "digit" is `0` to `9`
+  only, so a field written with other Unicode digits does not match (s12).
+  Case-insensitive matching folds ASCII letters only.
+- A time printed with a year parses only when the year is 1900 to 9998. Every
+  time derived from it, such as a window bound, the 96-hour cap or the 35-day
+  purge time, is then representable. An `Issue Time` that does not parse
+  rejects the record as `message-header` (s12). Any other time that does not
+  parse counts as unparseable where it is used.
+- The JSON product stamps are matched whole: scales `DateStamp` and
+  `TimeStamp` joined by one space as `YYYY-MM-DD HH:MM:SS`, Kp `time_tag` as
+  `YYYY-MM-DDTHH:MM:SS`, and the OVATION times as `YYYY-MM-DDTHH:MM:SSZ`.
+- A JSON body nested more than 64 levels deep is `malformed-json`. The
+  outermost array or object is level 1, and brackets inside strings do not
+  count (s12).
+- A JSON number is valid whatever its length. A body is never rejected because
+  a number has many digits. A 4,301-digit `product_id` is a number, not a
+  string, so that record is `record-schema` (s12).
+
 ## Alert records
 
 **Per-record checks.** An `alerts.json` body is a JSON array. Each record is
@@ -116,15 +136,15 @@ the order below, and the first failure gives the reason (s12):
 
 | Reason | Condition |
 | --- | --- |
-| `record-schema` | Not an object; `product_id`, `issue_datetime` or `message` missing, not a string, or a string with no UTF-8 form (an unpaired surrogate escape such as `\ud800`); `product_id` not 2 to 8 uppercase letters or digits (s12) |
-| `issue-datetime` | `issue_datetime` is not `YYYY-MM-DD HH:MM:SS.fff` |
+| `record-schema` | Not an object; `product_id`, `issue_datetime` or `message` missing, not a string, or a string with no UTF-8 form (an unpaired surrogate escape such as `\ud800`); `product_id` not 2 to 8 ASCII uppercase letters or digits (s12) |
+| `issue-datetime` | `issue_datetime` is not `YYYY-MM-DD HH:MM:SS.fff` in ASCII digits |
 | `record-oversize` | The message, before normalization, is larger than 16,384 UTF-8 bytes |
-| `message-header` | After normalization, the message has fewer than four lines (a header-only message is rejected), or its first three lines are not exactly `Space Weather Message Code: <code>` with a code of 4 to 8 uppercase letters or digits, `Serial Number: <serial>` with 1 to 6 digits, and `Issue Time: YYYY Mon DD HHMM UTC` naming a valid UTC time. Each line is matched whole, with single spaces and nothing before or after (s12) |
+| `message-header` | After normalization, the message has fewer than four lines (a header-only message is rejected), or its first three lines are not exactly `Space Weather Message Code: <code>` with a code of 4 to 8 ASCII uppercase letters or digits, `Serial Number: <serial>` with 1 to 6 ASCII digits, and `Issue Time: YYYY Mon DD HHMM UTC` in ASCII digits naming a valid UTC time in the year range under "Digits, times and JSON limits". Each line is matched whole, with single spaces and nothing before or after (s12) |
 
 **Identity.** Message identity is `CODE/serial/issue-minute`, all parsed from
 the message text. Link values (`Extension to Serial Number`, `Continuation of
 Serial Number`, `Cancel Serial Number`) are used only when they are 1 to 6
-digits.
+ASCII digits.
 
 **Version handling:**
 
@@ -142,13 +162,18 @@ digits.
   (s12).
 - **Equal stamps.** The alerts in-file stamp is the newest issue time among
   the body's accepted records (see "Freshness"). An in-place revision or a
-  rejected record does not move it. So when an older text of a stored identity
-  is served again with no newer record in between, the body's stamp equals
-  last-known-good's. The body is `updated`, not `stale-snapshot`, the text is
-  stored as a `source-revision`, and it becomes the latest version by ingest
-  order. This cannot be told apart from a genuine revision (s02). When an edge
-  alternates between two equal-stamp bodies, last-known-good follows the latest
-  body and no stored version is removed (s20).
+  rejected record does not move it. So when an edge serves an older body with
+  no newer record in between, the body's stamp equals last-known-good's, and
+  the body is `updated`, not `stale-snapshot`:
+  - A text of a stored identity that was never stored is a `source-revision`.
+    It cannot be told apart from a genuine revision (s02). It is the latest
+    version only if it sorts last in the version order below (issue minute,
+    then `issue_datetime`, then ingest order).
+  - A text that was stored before is a duplicate. It adds no version and no
+    diagnostic, and the latest version does not change.
+
+  When an edge alternates between two equal-stamp bodies, last-known-good
+  follows the latest body and no stored version is removed (s20).
 
 **Grouping.** Records that `Extension to`, `Continuation of` or
 `Cancel Serial Number` link together within the same message code form one
@@ -212,7 +237,9 @@ from the group's latest non-cancel version:
 | `summary` | Root issue time | Never active |
 
 **Fallback.** If a required time is missing or unparseable, the window becomes
-the root issue time to 6 hours later. Both bounds are replaced.
+the root issue time to 6 hours later. Both bounds are replaced. A watch's day
+lines are unparseable when a listed day is not a real date, such as `Oct 32`.
+The watch then takes the fallback window and its watch days are `null` (s12).
 
 **Adjustments.** The following are applied in this order. Each applies only if
 it is earlier than the current `until`, and each sets the end reason:
@@ -260,22 +287,35 @@ the groups to which that body added a version. The groups are evaluated in
 order of root issue time, then group identity, so a group can depend on one
 evaluated before it in the same merge (s08).
 
+- **Eligible.** A group is eligible at a merge when it is `pending` or
+  `active`, or when it is `recent` and the merge happens less than 300 seconds
+  (`newGraceSeconds`) after its latest non-cancel issue time. The grace keeps a
+  short-window alert that ended before the next poll from being silenced (s11,
+  s21).
 - **New.** A group that has never raised attention raises `new` when it is
-  `pending` or `active`. It also raises `new` when it is `recent` and the
-  merge happens less than 300 seconds (`newGraceSeconds`) after its latest
-  non-cancel issue time. That keeps a short-window alert that ended before the
-  next poll from being silenced (s11, s21). Otherwise it raises nothing, which
-  keeps a first run on a 28-day backlog quiet (s04, s11, s15, s21). A group
-  that raised nothing when first seen can still raise `new` at a later merge
-  that adds a version while it is pending, active or within the grace.
+  eligible. Otherwise it raises nothing and no rank is recorded, which keeps a
+  first run on a 28-day backlog quiet (s04, s11, s15, s21). A group that raised
+  nothing when first seen can still raise `new` at a later merge that adds a
+  version while it is eligible. For a watch with a raised predecessor, "Watch
+  replacement" applies instead of this rule.
 - **Escalated.** A group that has raised and later reaches a higher level rank
   raises `escalated`.
 - **Watch replacement.** A watch that has never raised is compared with the
   earlier watches that were active one second before its root issue time and
-  had raised, including any that raised earlier in the same merge. If it is at
-  the same or a lower rank than the highest of them,
-  it raises nothing, and that rank is recorded as raised for it. If it is
-  higher, it raises `escalated` (s08).
+  had raised, including any that raised earlier in the same merge. A rank
+  recorded by a silent replacement counts as raised. If none of them had
+  raised, "New" applies. Otherwise the highest raised rank among them decides,
+  whatever the watch's own state:
+  - At the same or a lower rank, the watch raises nothing, and its own rank is
+    recorded as raised for it.
+  - At a higher rank, the watch raises `escalated` if it is eligible, and its
+    rank is recorded. If it is not eligible, it raises nothing and no rank is
+    recorded.
+
+  So a watch first seen after an outage stays silent, even while active, when a
+  raised watch it replaced was at the same or a higher rank. A higher watch
+  that ended outside the grace during the outage leaves no rank, so a later
+  watch is compared only with the ranks that were raised (s08).
 - **No attention.** Summaries never raise attention, and neither does a group
   that contains only a cancel (s09).
 - **Durability.** Raised ranks are durable. A restart, a refetch, a duplicate
@@ -299,7 +339,7 @@ evaluated before it in the same merge (s08).
   - Each later raise therefore follows a clean body with a newer stamp, and
     successive raises have strictly increasing stamps.
   - `unchanged` and `stale-snapshot` bodies neither raise, close nor advance
-    the episode.
+    the episode, even when they contain rejected records (s20).
   - The episode and its stamp are durable across a restart (s12, s20).
 
   This catches a format change in new messages while the older records in the
@@ -360,10 +400,10 @@ merged. The first matching row applies:
 | --- | --- |
 | Timeout, network error, 5xx, any other status below 300 except 200, or 304 when no validators were sent | `transient-failure`. With n consecutive transient failures, including this one, the next attempt is after min(1,800 s, max(60 s, base × 2ⁿ)). Last-known-good is kept. The 429 and rejected counts are unchanged (s13, s22) |
 | 304, validators sent | `not-modified`. A success. The stored validators are kept |
-| 429 | `rate-limited`. The 429 count rises; the transient and rejected counts are unchanged. The next attempt is after `Retry-After`, otherwise after 1,800 s. `Retry-After` is read as delta-seconds (1 to 9 digits) or an HTTP-date; any other value is ignored. The delay is clamped to between 60 s and 21,600 s. The third consecutive 429 for a product halts the provider (`rate-limited`) instead. That 429's clamped time is kept as `retryNotBeforeUtc` and applied when the halt is resumed (s13, s19) |
-| 403 | Provider halt (`forbidden`) |
-| 3xx other than 304 | Product halt (`endpoint-moved`). Redirects are never followed |
-| 404, 410 or any other 4xx | Product halt (`not-found`, `gone` or `client-error`) (s13, s22) |
+| 429 | `rate-limited`. The 429 count rises; the transient and rejected counts are unchanged. The next attempt is after `Retry-After`, otherwise after 1,800 s. `Retry-After` is read as delta-seconds (1 to 9 ASCII digits) or an ASCII HTTP-date; any other value is ignored. The delay is clamped to between 60 s and 21,600 s. The third consecutive 429 for a product halts the provider (`rate-limited`) instead. That 429's clamped time is kept as `retryNotBeforeUtc` and applied when the halt is resumed (s13, s19) |
+| 403 | Provider halt (`forbidden`). The halt leaves the transient, 429 and rejected counts unchanged |
+| 3xx other than 304 | Product halt (`endpoint-moved`). Redirects are never followed. The halt leaves the transient, 429 and rejected counts unchanged |
+| 404, 410 or any other 4xx | Product halt (`not-found`, `gone` or `client-error`). The halt leaves the transient, 429 and rejected counts unchanged (s13, s22) |
 | 200, body rejected | `rejected`, with a reason. Last-known-good and the validators are kept. The rejected count rises; the transient and 429 counts reset and any backoff ends. The next attempt is at the base interval. The third consecutive rejection raises format-drift attention |
 | 200, accepted, same snapshot hash | `unchanged`. A success. Alert records are not merged again. The validators are replaced |
 | 200, accepted, in-file stamp older than last-known-good's | `stale-snapshot`. Last-known-good, the validators and the last success time are not changed, so freshness does not improve. For the counters and the next attempt it acts as a success. Alert records with new identities are merged; new text for a stored identity is not (s11) |
@@ -399,12 +439,15 @@ gives the reason:
    - `too-many-records` for more than 2,000 records;
    - `no-valid-records` when every record fails the per-record checks (s12).
 7. For scales, `schema` when the body is not an object, a day key (`-1` to
-   `3`) or field is missing, or a stamp does not parse.
+   `3`) or field is missing, or a stamp does not parse in the layout under
+   "Digits, times and JSON limits".
 8. For the Kp forecast:
    - `schema` if the body is not an array;
    - `suspect-empty` for `[]`;
-   - `schema` when a row is incomplete, or any `kp` is not a `d.dd` decimal
-     string. One bad row rejects the whole Kp body.
+   - `schema` when a row is incomplete, a `time_tag` does not parse in the
+     layout under "Digits, times and JSON limits", or any `kp` is not a
+     `d.dd` decimal string in ASCII digits. One bad row rejects the whole Kp
+     body.
 9. For OVATION, `schema` when a key is missing or malformed. A site without a
    location gets a `null` band. That is not a rejection (s18).
 
@@ -455,7 +498,7 @@ A notice still ends by its own window when its source is stale. While
 `mayBeOutOfDate: true` and is not removed (s05, s21).
 
 **Diagnostics** are reason codes, identities and counts only. A fetch reports
-them sorted:
+them sorted in ordinal (code-point) order:
 
 - `record-rejected:<reason>:<index>`, where the index is the record's
   zero-based position in the body
@@ -602,7 +645,7 @@ A fetch also reports:
 - Objects are compared as subsets.
 - The notice group set must match exactly.
 - `attention` and `diagnostics` lists must match exactly, in the order given
-  under "Local attention" and "Alert records".
+  under "Local attention" and "Fetch policy" → "Diagnostics".
 
 | Scenario | Covers |
 | --- | --- |
@@ -613,11 +656,11 @@ A fetch also reports:
 | s05 | Extension chain; half-open expiry; "may be out of date" while alerts are not fresh |
 | s06 | Extension before its root; orphan link resolved |
 | s07 | Same-level watch supersession; CANCEL WATCH |
-| s08 | Silent watch replacement; escalation (synthetic G2 watch); two watches first seen in one merge, evaluated in root issue-time order (synthetic G3 and G2 watches) |
+| s08 | Silent watch replacement; escalation (synthetic G2 watch); two watches first seen in one merge, evaluated in root issue-time order (synthetic G3 and G2 watches); watches first seen after an outage: silent lower replacements with recorded ranks, and a higher watch that ended outside the grace raises and records nothing (synthetic watches) |
 | s09 | CANCEL WARNING (synthetic); a cancel of an absent target never alerts |
 | s10 | Restart, then an extension, without re-alert; acknowledgement kept across both; rolling window; retention purge, including a summary |
 | s11 | Older CDN body after a newer one; stale snapshot with an ignored stale revision; new-notice grace |
-| s12 | Malformed bodies; per-record faults (schema, issue time, mismatch, oversize, header-only, long serial, a doubled space in `Issue Time`, an unpaired surrogate); unknown code; record drift; format drift; too many and no valid records |
+| s12 | Malformed bodies; per-record faults (schema, issue time, mismatch, oversize, header-only, long serial, a doubled space in `Issue Time`, an unpaired surrogate, non-ASCII digits, a year beyond range, a 4,301-digit number); an impossible watch day takes the fallback window; unknown code; record drift; format drift; too many and no valid records; a body nested 64 levels deep passes the depth limit and one nested 65 levels is `malformed-json` |
 | s13 | Timeout and 5xx backoff; 304; 429 with both `Retry-After` forms; halting 429 keeps `retryNotBeforeUtc` across a restart and applies it at the resume; halts; manual refusals; restart while halted; resume |
 | s14 | Year rollover on watch day lines and on 3-day forecast columns (synthetic forecast); UTC days shown in the site zone |
 | s15 | Missing scale and impact lines; null predicted scales; site without a location |
@@ -625,7 +668,7 @@ A fetch also reports:
 | s17 | Text normalization; `:Issued:` versus `Last-Modified`; S and R probabilities; a renamed table, or a probability table with no rows, rejects the body |
 | s18 | OVATION site band and equatorial artifact; `null` band for a site without a location (data only) |
 | s19 | An early resume keeps minimum spacing, backoff, `Retry-After` and the 429 count; per-product 429 state |
-| s20 | Record drift raised once per episode, kept across a restart; equal-stamp bodies alternating neither close nor re-raise it; closed by a clean body with a newer stamp and raised again |
+| s20 | Record drift raised once per episode, kept across a restart; equal-stamp bodies alternating neither close nor re-raise it; a stale-snapshot drifted body neither raises, closes nor advances it; closed by a clean body with a newer stamp and raised again |
 | s21 | Pending before `Valid From`; short-window alert inside and outside the new-notice grace; 96-hour cap |
 | s22 | 410 and 400 product halts; network error backoff; 304 without validators; product resume; an attempt ends the backoff before it |
 
