@@ -56,8 +56,9 @@ hvo-sky logout                                # removes the saved key; the addre
   standard error that the key crosses the network unencrypted, and `hvo-sky ui` shows the same warning in its notice
   band (`[PLAIN HTTP]`), when signing in and whenever nothing more urgent shows. This machine is its loopback and every
   address bound to one of its interfaces: on the CameraAgent host, its own LAN address, such as
-  `http://192.0.2.10:5130/`, is not warned about, because a request to it never leaves the host. A host name is not
-  resolved, so a plain `http://` address given by name is always warned about.
+  `http://192.0.2.10:5130/`, is not warned about when the request goes to it directly, because it never leaves the
+  host. Through a proxy (`http_proxy` and the like) it does leave, so it is warned about unless `no_proxy` names it. A
+  host name is not resolved, so a plain `http://` address given by name is always warned about.
 
 ## Credentials
 

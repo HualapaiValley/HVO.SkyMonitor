@@ -26,7 +26,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - `/etc/hvo-sky/install.json` is written without HTML-safe escaping, so the installer version reads `0.9.0+<commit>`
   rather than `0.9.0\u002B<commit>`. It is the same JSON, read the same way by earlier installers. (#1384)
 - `hvo-sky` no longer warns of plain HTTP to another machine when the address is one bound to this machine, such as the
-  CameraAgent host's own LAN address. (#1384)
+  CameraAgent host's own LAN address, and the request goes to it directly rather than through a proxy. (#1384)
 - `hvo-sky status`, the Operations page and `hvo-sky ui` no longer mark capture `(stale)` five minutes after it was
   last paused or resumed: capture control is CameraAgent's live state, and is always current. (#1384)
 

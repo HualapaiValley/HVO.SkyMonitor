@@ -351,12 +351,15 @@ internal static class SkyAddress
     /// True when requests to <paramref name="address"/> carry the key across a network unencrypted: plain HTTP to a host
     /// other than this machine. This machine is its loopback and every address bound to one of its interfaces
     /// (<paramref name="localAddresses"/>): a request to the CameraAgent host's own LAN address, made on that host, never
-    /// leaves it (#1384). A name is not resolved, so it is never taken for this machine.
+    /// leaves it (#1384), unless it goes through a proxy. Such an address is this machine only when
+    /// <paramref name="proxy"/>, the proxy the request is sent through, bypasses it. A name is not resolved, so it is never
+    /// taken for this machine.
     /// </summary>
-    public static bool SendsKeyInClear(Uri address, Func<IReadOnlyCollection<IPAddress>> localAddresses)
+    public static bool SendsKeyInClear(Uri address, Func<IReadOnlyCollection<IPAddress>> localAddresses, Func<IWebProxy?> proxy)
     {
         ArgumentNullException.ThrowIfNull(address);
         ArgumentNullException.ThrowIfNull(localAddresses);
+        ArgumentNullException.ThrowIfNull(proxy);
         if (address.Scheme != Uri.UriSchemeHttp || address.IsLoopback)
         {
             return false;
@@ -364,7 +367,8 @@ internal static class SkyAddress
 
         return address.HostNameType is not (UriHostNameType.IPv4 or UriHostNameType.IPv6)
             || !IPAddress.TryParse(address.DnsSafeHost, out var host)
-            || !localAddresses().Any(local => SameAddress(local, host));
+            || !localAddresses().Any(local => SameAddress(local, host))
+            || proxy() is { } through && !through.IsBypassed(address);
     }
 
     /// <summary>The addresses bound to this machine's interfaces, or none when they cannot be read.</summary>

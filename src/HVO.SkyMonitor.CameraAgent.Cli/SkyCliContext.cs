@@ -274,7 +274,7 @@ internal sealed class SkyCliContext
     /// another machine); null when they do not. The commands write it once; the terminal interface shows it.
     /// </summary>
     public string? ClearTextWarning(Uri url)
-        => SkyAddress.SendsKeyInClear(url, Host.LocalAddresses)
+        => SkyAddress.SendsKeyInClear(url, Host.LocalAddresses, Host.Proxy)
             ? $"{url} is plain HTTP to another machine, so the API key crosses the network unencrypted. Use HTTPS, an SSH tunnel, or run {SkyCli.CommandName} on the CameraAgent host."
             : null;
 
