@@ -3275,6 +3275,11 @@ public sealed partial class LifecycleContractTests
         /// <summary>The registry a release candidate is read from before it is pulled.</summary>
         public FakeRegistry? Registry { get; set; }
 
+        /// <summary>Whether the daemon reports the containerd image store, which names an image by its index digest.</summary>
+        public bool ContainerdImageStore { get; set; }
+
+        private static readonly string[][] ContainerdDriverStatus = [["driver-type", "io.containerd.snapshotter.v1"]];
+
         /// <summary>Cancels this source while a pull runs, after Docker has the image, as a Ctrl+C mid-pull does.</summary>
         public CancellationTokenSource? CancelDuringPull { get; set; }
 
@@ -3405,7 +3410,8 @@ public sealed partial class LifecycleContractTests
                     PidsLimit,
                     CgroupVersion = "2",
                     NCPU = Cpus,
-                    MemTotal = 64L * 1024 * 1024 * 1024
+                    MemTotal = 64L * 1024 * 1024 * 1024,
+                    DriverStatus = ContainerdImageStore ? ContainerdDriverStatus : null
                 }), string.Empty));
             }
             if (arguments is ["compose", "version", ..]) return Task.FromResult(new ProcessResult(0, "v2", string.Empty));

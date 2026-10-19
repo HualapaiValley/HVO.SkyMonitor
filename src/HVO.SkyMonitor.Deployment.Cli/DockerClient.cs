@@ -252,6 +252,39 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         CancellationToken cancellationToken)
         => ReleaseRegistryImage.ReadAsync(release, RunDockerRawAsync, cancellationToken);
 
+    /// <summary>
+    /// A release's image Docker does not hold yet, as a plan names it (#1384): as it was read and checked before any
+    /// import, under the ID Docker will give it once it is imported, which the install, <c>status</c> and the install record
+    /// then report. A daemon backed by the containerd image store names it by the release's image digest; the classic
+    /// store by its configuration digest, which the checked image already carries.
+    /// </summary>
+    public async Task<ImageInstallationIdentity> PlannedReleaseImageAsync(
+        ReleaseImageSelection release,
+        ImageInstallationIdentity checkedImage,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(release);
+        ArgumentNullException.ThrowIfNull(checkedImage);
+        var daemon = await RunDockerAsync(["info", "--format", "{{json .}}"], cancellationToken).ConfigureAwait(false);
+        using var info = JsonDocument.Parse(daemon.StandardOutput);
+        return UsesContainerdImageStore(info.RootElement)
+            ? checkedImage with { ImageId = release.DigestReference[(release.DigestReference.LastIndexOf('@') + 1)..] }
+            : checkedImage;
+    }
+
+    /// <summary>
+    /// Whether <c>docker info</c> reports the containerd image store, whose storage driver is a containerd snapshotter
+    /// (<c>DriverStatus</c> <c>driver-type</c> <c>io.containerd.snapshotter.v1</c>).
+    /// </summary>
+    internal static bool UsesContainerdImageStore(JsonElement info)
+        => info.ValueKind == JsonValueKind.Object &&
+           info.TryGetProperty("DriverStatus", out var status) && status.ValueKind == JsonValueKind.Array &&
+           status.EnumerateArray().Any(static pair =>
+               pair.ValueKind == JsonValueKind.Array && pair.GetArrayLength() == 2 &&
+               pair[0].ValueKind == JsonValueKind.String && pair[0].GetString() == "driver-type" &&
+               pair[1].ValueKind == JsonValueKind.String &&
+               pair[1].GetString()!.StartsWith("io.containerd.snapshotter.", StringComparison.Ordinal));
+
     /// <summary>Whether Docker already holds the release's image under any name it can have.</summary>
     public async Task<bool> HoldsReleaseImageAsync(ReleaseImageSelection release, CancellationToken cancellationToken)
     {

@@ -603,7 +603,7 @@ internal sealed partial class CameraAgentInstaller
     /// temporary file (#1315): the catalog is inspected where it lies, the image is inspected, and the Compose files are
     /// rendered in memory. Docker renders a Compose model only from files, so a plan reports no model hash. A release
     /// image Docker does not hold yet, which the run would import, is described as it was read and checked from the
-    /// release's archive or registry.
+    /// release's archive or registry, under the ID Docker will give it (<see cref="DockerClient.PlannedReleaseImageAsync"/>).
     /// </summary>
     private static async Task<InstallationResult> PlanAsync(
         InstallRequest request,
@@ -617,7 +617,8 @@ internal sealed partial class CameraAgentInstaller
         var catalog = CatalogInstaller.Inspect(request.CatalogBundle!, finalPaths.CatalogRoot);
         var (daemon, image) = release?.CheckedImage is { } checkedImage &&
                               !await docker.HoldsReleaseImageAsync(release.Image, cancellationToken).ConfigureAwait(false)
-            ? (await docker.PreflightAsync(cancellationToken).ConfigureAwait(false), checkedImage)
+            ? (await docker.PreflightAsync(cancellationToken).ConfigureAwait(false),
+                await docker.PlannedReleaseImageAsync(release.Image, checkedImage, cancellationToken).ConfigureAwait(false))
             : await docker.PrepareImageAsync(request, allowMutation: false, release?.Image, cancellationToken)
                 .ConfigureAwait(false);
         if (!IsValid(image, request.ReplayProfile))
