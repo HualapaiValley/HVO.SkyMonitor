@@ -1,14 +1,15 @@
 {
   "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
   "scenarioId": "s14-year-rollover-and-local-day",
-  "title": "Watch day lines without a year cross 31 December; UTC days shown in site time",
+  "title": "Watch days and 3-day forecast columns without a year cross 31 December; UTC days shown in site time",
   "covers": [
     "timezone-boundary",
     "year-rollover"
   ],
   "containsSyntheticRecords": true,
   "notes": [
-    "The site zone is America/Phoenix (UTC-07:00, no daylight saving)."
+    "The site zone is America/Phoenix (UTC-07:00, no daylight saving).",
+    "WATA20 serial 1200 and the 3-day forecast issued 2026 Dec 31 1230 UTC are synthetic. The forecast's column years come from its :Issued: stamp, not from the year printed in its table titles."
   ],
   "sites": [
     {
@@ -76,6 +77,66 @@
     },
     {
       "step": 2,
+      "kind": "fetch",
+      "atUtc": "2026-12-31T21:03:00Z",
+      "product": "3-day-forecast",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "text/plain",
+        "etag": "\"fixture-s14-3day\"",
+        "lastModified": "Thu, 31 Dec 2026 12:31:00 GMT",
+        "body": ":Product: 3-Day Forecast\n:Issued: 2026 Dec 31 1230 UTC\n# Synthetic fixture for year rollover; not an SWPC product.\n#\nA. NOAA Geomagnetic Activity Observation and Forecast\n\nNOAA Kp index breakdown Dec 31-Jan 02 2027\n\n             Dec 31       Jan 01       Jan 02\n00-03UT       1.33         2.00         3.67\n03-06UT       1.00         2.33         4.00\n06-09UT       1.00         2.67         3.67\n09-12UT       1.33         3.00         3.33\n12-15UT       1.67         3.33         3.00\n15-18UT       2.00         3.67         3.00\n18-21UT       2.00         4.33         2.67\n21-00UT       2.33         5.00 (G1)    2.33\n\nB. NOAA Solar Radiation Activity Observation and Forecast\n\nSolar Radiation Storm Forecast for Dec 31-Jan 02 2027\n\n              Dec 31  Jan 01  Jan 02\nS1 or greater    1%      1%      1%\n\nC. NOAA Radio Blackout Activity and Forecast\n\nRadio Blackout Forecast for Dec 31-Jan 02 2027\n\n              Dec 31        Jan 01        Jan 02\nR1-R2           15%           15%           10%\nR3 or greater    1%            1%            1%\n"
+      },
+      "expect": {
+        "outcome": "updated",
+        "product": {
+          "facts": {
+            "issuedUtc": "2026-12-31T12:30:00Z",
+            "kpBreakdownBins": 24,
+            "kpBreakdown": {
+              "2026-12-31T00:00:00Z": {
+                "kp": "1.33",
+                "noaaScale": null
+              },
+              "2027-01-01T00:00:00Z": {
+                "kp": "2.00",
+                "noaaScale": null
+              },
+              "2027-01-01T21:00:00Z": {
+                "kp": "5.00",
+                "noaaScale": "G1"
+              },
+              "2027-01-02T21:00:00Z": {
+                "kp": "2.33",
+                "noaaScale": null
+              }
+            },
+            "radiationProbabilities": {
+              "S1 or greater": {
+                "2026-12-31": "1",
+                "2027-01-01": "1",
+                "2027-01-02": "1"
+              }
+            },
+            "radioBlackoutProbabilities": {
+              "R1-R2": {
+                "2026-12-31": "15",
+                "2027-01-01": "15",
+                "2027-01-02": "10"
+              },
+              "R3 or greater": {
+                "2026-12-31": "1",
+                "2027-01-01": "1",
+                "2027-01-02": "1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "step": 3,
       "kind": "evaluate",
       "atUtc": "2027-01-02T23:59:59Z",
       "expect": {
@@ -87,7 +148,7 @@
       }
     },
     {
-      "step": 3,
+      "step": 4,
       "kind": "evaluate",
       "atUtc": "2027-01-03T00:00:00Z",
       "expect": {

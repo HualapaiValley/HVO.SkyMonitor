@@ -48,12 +48,12 @@ work once Batch A's #1402 handoff lands, then returns to finish it.
 | Topology | Approved (U13): one CameraAgent-local acquisition authority per deployment. Every other local consumer reads its store | A LogicHost distributor is optional future topology, never a second concurrent poller |
 | Fact model | Approved: typed host-neutral facts that keep SWPC's own kinds, scales and probabilities. No universal severity score | Shared types are a Proposed default (see "Ownership") |
 | Identity and deduplication | Approved: message identity is code, serial and issue minute; deduplication is by normalized content hash. HTTP validators are never used for deduplication | Validators may still be sent as conditional request headers |
-| Lifecycle | Approved: per-family windows; extensions, continuations, corrections, cancels and watch supersession; a 96-hour active cap | Rules are in the contract; s03 to s09 exercise them |
-| Request policy | Approved: per-product cadence, 60 s minimum spacing, bounded transient backoff, `Retry-After`, and persisted halts that need an operator resume | Halt reasons and counts are in the contract; s13 exercises them |
+| Lifecycle | Approved: per-family windows; extensions, continuations, corrections, cancels and watch supersession; a 96-hour active cap | Rules are in the contract; s03 to s11 and s21 exercise them, including the 96-hour cap (s21) |
+| Request policy | Approved: a per-product cadence structure, 60 s minimum spacing, bounded transient backoff, `Retry-After`, and persisted halts that need an operator resume. A resume never bypasses spacing, a backoff or `Retry-After` | The base interval values are Proposed (alerts 120 s under U1, scales 300 s under U15, Kp forecast 900 s, 3-day forecast 1,800 s). Halt reasons and counts are in the contract; s13, s19 and s22 exercise them |
 | Freshness | Approved: freshness is based on retrieval time. The in-file content stamp is a separate fact that is shown next to it | — |
-| Last-known-good and history | Approved: a rejected body never replaces last-known-good. Message history is retained for 35 days after a notice ends. Absence from the rolling upstream window never means cancellation | Raw snapshot retention is Proposed |
+| Last-known-good and history | Approved: a rejected body never replaces last-known-good. Message history is kept locally. Absence from the rolling upstream window never means cancellation | The 35-day history period (U8), raw snapshot retention and the snapshot cap are Proposed |
 | Local relevance | Approved: global facts stay global. Site relevance is a separately typed, derived HVO estimate based on geomagnetic latitude | The dipole model (U10) and the darkness qualifier are Proposed |
-| Attention | Approved: local attention only, raised at most once per notice and level. Acknowledgement is separate from expiry. A restart never re-raises | No external delivery (#455) and no capture or safety action |
+| Attention | Approved: local attention only, raised at most once per notice and level. Acknowledgement is separate from expiry. A restart never re-raises. Format drift and record drift raise provider attention | The 300 s new-notice grace is a Proposed value. No external delivery (#455) and no capture or safety action |
 | Per-frame isolation | Approved: no network or space-weather lookup in capture, recipe or per-frame processing | #1395 measures contention when enabled |
 | Credit and terms | Approved (U5): the credit text below, with no NOAA or NWS logo | — |
 | Fixtures | Approved: `tests/fixtures/space-weather/swpc-v1/`. Real captures are byte-exact or have a recorded transform. Synthetic records are disclosed. Every scenario replays through a reference model | Live probes are external only, not Unit |
@@ -70,10 +70,15 @@ the user does not:
 2. imply NOAA or NWS endorsement or affiliation; or
 3. modify it and present it as official government material.
 
-17 U.S.C. 105 applies, and so does the 17 U.S.C. 403 notice for works that
-consist predominantly of NWS material. The fixture pack's
-[`SOURCE.md`](../../tests/fixtures/space-weather/swpc-v1/SOURCE.md) carries
-that notice.
+The material is a U.S. Government work and is not subject to copyright
+protection in the United States (17 U.S.C. 105). Under 17 U.S.C. 403, a
+copyright notice on a published work that consists predominantly of U.S.
+Government works does not have the evidentiary effect of 17 U.S.C. 401(d) or
+402(d) unless it identifies, affirmatively or negatively, the copyrighted
+portions. The fixture pack's
+[`SOURCE.md`](../../tests/fixtures/space-weather/swpc-v1/SOURCE.md) therefore
+identifies which of its contents are NWS material that is not subject to
+copyright, and which are HVO SkyMonitor's own work.
 
 The same page's "appropriate use" guidance governs the request policy. It tells
 users to:
@@ -102,7 +107,7 @@ rather than block it. No personal contact address is committed.
 | Product | Status | Why |
 | --- | --- | --- |
 | `/products/alerts.json` | Approved, core | The only source of issued notices and their lifecycles: watches, warnings, alerts, summaries, extensions, continuations, corrections and cancels |
-| `/products/noaa-scales.json` | Approved, core | The official current R/S/G levels, the 24-hour observed maximums, and three predicted days. It is the only place R1 appears, because alerts start at R2 |
+| `/products/noaa-scales.json` | Approved, core | The official current R/S/G levels, the 24-hour observed maximums, and three predicted days. Alerts start at R2, so R1 reaches the core set only through this file and the 3-day forecast's R1–R2 probabilities |
 | `/products/noaa-planetary-k-index-forecast.json` | Approved, core | Observed, estimated and predicted 3-hour Kp with G labels, in one small file. It uses the post-SCN 26-21 keyed layout |
 | `/text/3-day-forecast.txt` | Approved, core | The forecaster-issued forecast with a real `:Issued:` time, the Kp breakdown and S/R probabilities |
 | `/json/ovation_aurora_latest.json` | Unresolved (U3): acquisition and wording | 918,460 bytes decoded and 150,748 bytes on the wire per fetch. The values are a model intensity proxy. Data-only fixture s18 records the site band |
@@ -128,15 +133,31 @@ No service change notice for any product in the set was listed between
 and the capture confirms the new keyed layout. The 2026-05-18 notice says SWPC
 is "transitioning to a new internal alerting system", which is a format-drift
 risk for `alerts.json`. The contract therefore keeps unknown codes visible as
-unclassified, rejects unparseable records individually, and raises format-drift
-attention after three consecutive rejected bodies.
+unclassified and rejects unparseable records individually. It raises
+format-drift attention after three consecutive rejected bodies, and
+record-drift attention when an accepted alerts body contains rejected records,
+because new messages may change format while older ones in the rolling window
+still parse.
 
 ## Capture evidence
 
-On 2026-10-19 at 18:57:03Z to 18:57:05Z, one GET per product was made, with
-gzip negotiation and no credentials. The full OVATION grid was downloaded once.
-The fixture manifest records the fetch time, status, validators, transfer size,
-decoded size and SHA-256 for each product.
+The committed bodies come from one GET per product on 2026-10-19 between
+18:57:03Z and 18:57:05Z, with gzip negotiation and no credentials or cookies.
+The full OVATION grid was downloaded once. The fixture manifest records the
+fetch time, status, validators, transfer size, decoded size and SHA-256 for
+each product.
+
+The research session made 31 requests in all, between 18:56:38Z and 19:00:24Z.
+They were:
+
+- three directory indexes;
+- the capture, including seven products that were evaluated and excluded and
+  the `/products/summary/` index;
+- six conditional GETs at 18:57:20Z;
+- three HEAD requests for GOES products;
+- one GOES flare GET and five conditional text GETs at 19:00:23Z.
+
+`SOURCE.md` lists them. No other body is committed.
 
 Observed facts that shape the policy:
 
@@ -193,8 +214,14 @@ implementation PR:
   `HVO.SkyMonitor.Astronomy`.
 - **Refresh and Automations.** Scheduled and manual refresh share one durable
   task. Automations gets a space-weather task kind through the periodic-adapter
-  seam that #528 or #1398 lands once. The persisted kind follows the convention
-  accepted for `orbital-elements-refresh` on #1391.
+  seam, which #528 lands and #1398 reuses. Following the convention Batch A
+  accepted for `OrbitalElementsRefresh` on #1391, the enum value and persisted
+  spelling is `SpaceWeatherRefresh`. `space-weather-refresh` is only a prose
+  and telemetry label.
+- **Rollback.** A binary older than the implementation cannot read an
+  automation store that holds the new kind, and fails that store closed. The
+  database is preserved, and recovery is by upgrading forward. Deleting,
+  archiving or restoring the database is not a routine rollback.
 - **UI.** A `/operations/space-weather` section and a reusable notice panel.
   Batch A can later embed the panel with one line on its Observatory surface.
 - **Sun and twilight.** Site context comes from the existing deployment
@@ -203,8 +230,8 @@ implementation PR:
 **#1092 coordination.** #1092 owns terrestrial weather providers. This work does
 not change `IEnvironmentalSource`, the environmental fact schema or its store.
 The shared pieces are the HTTP client shape, the reason-code redaction helper
-and the periodic Automations seam. Whichever of #528 or #1398 lands that seam
-first lands it once, and #1092 reuses it unchanged.
+and the periodic Automations seam. The #1391 decision assigns that seam to
+#528, which lands it once. #1398 and #1092 reuse it unchanged.
 
 **#455 coordination.** #455 applies only if external multichannel delivery is
 requested later. Local notices do not wait for it, and nothing here activates
@@ -212,8 +239,9 @@ email, SMS or webhooks.
 
 ## Network, cadence and metrics for #1395
 
-These figures use the captured transfer sizes and exclude HTTP header overhead.
-All requests come from one poller per deployment, never one per camera.
+The scheduled baseline uses the captured transfer sizes and excludes HTTP
+header overhead. All requests come from one poller per deployment, never one
+per camera.
 
 | Product | Base interval | Requests per day | Wire bytes per fetch | Wire bytes per day |
 | --- | --- | --- | --- | --- |
@@ -223,7 +251,16 @@ All requests come from one poller per deployment, never one per camera.
 | 3-day forecast | 1,800 s | 48 | 838 | 40,224 |
 | **Core total** | | **1,152** | | **3,876,576** |
 | OVATION, if U3 is ever approved: 600 s for at most 12 dark hours | 600 s | ≤ 72 | 150,748 | ≤ 10,853,856 |
-| **Worst case with OVATION** | | **≤ 1,224** | | **≤ 14,730,432** |
+| **Scheduled with OVATION** | | **≤ 1,224** | | **≤ 14,730,432** |
+
+Uniform ±20% jitter leaves the mean rate unchanged. Even if every draw were
+-20%, the scheduled core total would be 1,440 requests per day.
+
+**Upper bound.** Manual refresh can request a product once every 60 seconds.
+That is at most 1,440 requests per product per day, or 5,760 for the four core
+products. At the captured sizes that is 9,701,280 wire bytes per day. At the
+decoded-body caps below, at most 2,076,180,480 decoded bytes per day are
+accepted for the core products, or 8,115,978,240 with OVATION.
 
 **Proposed limits:**
 
@@ -240,9 +277,14 @@ All requests come from one poller per deployment, never one per camera.
 - Messages are kept until 35 days after their notice ends. That is longer than
   the observed 28-day upstream window.
 - For scales, Kp and the 3-day forecast, each snapshot whose content hash
-  changed is kept for 35 days. If every fetch changed content this would reach
-  1,078,464 bytes per day, or 37,746,240 bytes over 35 days. Real change rates
-  are far lower.
+  changed is kept for 35 days. If every scheduled fetch changed content at the
+  captured sizes this would reach 1,078,464 bytes per day, or 37,746,240 bytes
+  over 35 days. Real change rates are far lower. At the upper bound above,
+  with every manual fetch at its decoded cap and changed, it could reach
+  566,231,040 bytes per day.
+- Raw snapshots are therefore also capped at 256 MiB in total, which can end
+  the 35-day period early. Over the cap, the oldest snapshots that are not
+  last-known-good are pruned first.
 - For alerts, only the last-known-good raw body is kept, plus each distinct
   message version with the snapshot hash and retrieval time that introduced it.
 
@@ -281,6 +323,9 @@ fixtures encode the final form.
   - 403 halts the whole provider;
   - three consecutive 429 responses halt the whole provider;
   - a redirect, 404, 410 or other 4xx halts that product.
+
+  As in #527, a resume remains subject to the next permitted attempt. It never
+  bypasses minimum spacing, a running backoff or a `Retry-After` time (s19).
 - **Empty bodies are rejected.** The draft accepted an empty alert list once
   last-known-good was more than 35 days old. The checkpoint rejects `[]` as
   suspect: an empty rolling window has never been observed, and it cannot be
@@ -313,9 +358,7 @@ fixtures encode the final form.
   ```
 
   It verifies every manifest hash and the recorded capture facts, regenerates
-  all 18 scenarios byte for byte, and replays each one through the reference
+  all 22 scenarios byte for byte, and replays each one through the reference
   model against its expectations.
-- Mutation check: 22 single-rule mutations of the reference model's policy and
-  branches were each detected by at least one scenario.
 - Research notes, raw headers and the request ledger are kept outside the
   repository as reviewer evidence. They are not needed to verify the pack.

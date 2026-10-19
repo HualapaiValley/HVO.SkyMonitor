@@ -1,14 +1,18 @@
 {
   "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
   "scenarioId": "s11-stale-cdn-out-of-order",
-  "title": "An older body after a newer one merges without regression or replacement",
+  "title": "An older body after a newer one neither revises stored records nor replaces last-known-good",
   "covers": [
     "out-of-order",
     "stale-snapshot",
-    "first-run-backlog"
+    "first-run-backlog",
+    "new-grace"
   ],
-  "containsSyntheticRecords": false,
-  "notes": [],
+  "containsSyntheticRecords": true,
+  "notes": [
+    "Step 2's ALTTP4 719 is the real record with its Comment line altered, modelling an older text served by a stale cache. No such text was observed in the capture.",
+    "ALTTP2 1531 has already ended when first seen at 16:47, but its latest version was issued at 16:46, inside the new-notice grace window, so it alerts."
+  ],
   "sites": [
     {
       "siteId": "hvo",
@@ -41,6 +45,11 @@
         "outcome": "updated",
         "attention": [
           {
+            "group": "ALTTP2/1531",
+            "reason": "new",
+            "level": null
+          },
+          {
             "group": "ALTTP4/719",
             "reason": "new",
             "level": null
@@ -71,12 +80,13 @@
         "contentType": "application/json",
         "etag": "W/\"fixture-s11-old\"",
         "lastModified": "Thu, 08 Oct 2026 16:44:55 GMT",
-        "body": "[{\"product_id\":\"TIVA\",\"issue_datetime\":\"2026-10-08 16:44:50.033\",\"message\":\"Space Weather Message Code: ALTTP4\\r\\nSerial Number: 719\\r\\nIssue Time: 2026 Oct 08 1644 UTC\\r\\n\\r\\nALERT: Type IV Radio Emission \\nBegin Time: 2026 Oct 08 1612 UTC\\nComment: Type IV recorded by Sagamore Hill RSTN site\\n\"},{\"product_id\":\"TIIA\",\"issue_datetime\":\"2026-10-08 16:43:45.180\",\"message\":\"Space Weather Message Code: ALTTP2\\r\\nSerial Number: 1531\\r\\nIssue Time: 2026 Oct 08 1643 UTC\\r\\n\\r\\nALERT: Type II Radio Emission \\nBegin Time: 2026 Oct 08 1642 UTC\\nEstimate Velocity: 4125 km\\/s\\nComment: Type II speed recorded by Sagamore Hill RSTN site.\\n\"}]"
+        "body": "[{\"product_id\":\"TIVA\",\"issue_datetime\":\"2026-10-08 16:44:50.033\",\"message\":\"Space Weather Message Code: ALTTP4\\r\\nSerial Number: 719\\r\\nIssue Time: 2026 Oct 08 1644 UTC\\r\\n\\r\\nALERT: Type IV Radio Emission \\nBegin Time: 2026 Oct 08 1612 UTC\\nComment: Fixture older text.\\n\"},{\"product_id\":\"TIIA\",\"issue_datetime\":\"2026-10-08 16:43:45.180\",\"message\":\"Space Weather Message Code: ALTTP2\\r\\nSerial Number: 1531\\r\\nIssue Time: 2026 Oct 08 1643 UTC\\r\\n\\r\\nALERT: Type II Radio Emission \\nBegin Time: 2026 Oct 08 1642 UTC\\nEstimate Velocity: 4125 km\\/s\\nComment: Type II speed recorded by Sagamore Hill RSTN site.\\n\"}]"
       },
       "expect": {
         "outcome": "stale-snapshot",
         "attention": [],
         "diagnostics": [
+          "stale-revision-ignored:ALTTP4/719/2026-10-08T16:44:00Z",
           "stale-snapshot"
         ],
         "notices": {
@@ -86,7 +96,8 @@
             "fromUtc": "2026-10-08T15:42:00Z"
           },
           "ALTTP4/719": {
-            "state": "active"
+            "state": "active",
+            "versions": 1
           }
         },
         "product": {

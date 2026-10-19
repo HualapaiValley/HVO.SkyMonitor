@@ -1,14 +1,16 @@
 {
   "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
   "scenarioId": "s09-synthetic-cancel-warning",
-  "title": "A CANCEL WARNING ends its target at the cancel issue time",
+  "title": "A CANCEL WARNING ends its target at the cancel issue time; a cancel of an absent target never alerts",
   "covers": [
     "retracted",
-    "cancel"
+    "cancel",
+    "orphan-link"
   ],
   "containsSyntheticRecords": true,
   "notes": [
-    "No CANCEL WARNING was captured. Serial 2271 is synthetic, shaped like the captured CANCEL WATCH (WATA30 286) and the documented SWPC rules."
+    "No CANCEL WARNING was captured. Serials 2271 and 2272 are synthetic, shaped like the captured CANCEL WATCH (WATA30 286) and the documented SWPC rules.",
+    "Serial 2272 cancels serial 2265, which this scenario never stores and the capture does not contain."
   ],
   "sites": [
     {
@@ -82,6 +84,44 @@
             "untilUtc": "2026-10-10T16:00:00Z",
             "versions": 2,
             "latest": "WARK05/2271/2026-10-10T16:00:00Z"
+          }
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "fetch",
+      "atUtc": "2026-10-10T16:04:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s09-c\"",
+        "lastModified": "Sat, 10 Oct 2026 16:03:50 GMT",
+        "body": "[{\"product_id\":\"K05W\",\"issue_datetime\":\"2026-10-10 16:03:20.000\",\"message\":\"Space Weather Message Code: WARK05\\r\\nSerial Number: 2272\\r\\nIssue Time: 2026 Oct 10 1603 UTC\\r\\n\\r\\nCANCEL WARNING: Geomagnetic K-index of 5 expected \\nCancel Serial Number: 2265\\nOriginal Issue Time: 2026 Oct 10 1200 UTC\\nComment: Synthetic fixture cancellation of a warning that was never stored; not an SWPC product.\"},{\"product_id\":\"K05W\",\"issue_datetime\":\"2026-10-10 16:00:31.000\",\"message\":\"Space Weather Message Code: WARK05\\r\\nSerial Number: 2271\\r\\nIssue Time: 2026 Oct 10 1600 UTC\\r\\n\\r\\nCANCEL WARNING: Geomagnetic K-index of 5 expected \\nCancel Serial Number: 2270\\nOriginal Issue Time: 2026 Oct 10 1442 UTC\\nComment: Synthetic fixture cancellation; not an SWPC product.\"},{\"product_id\":\"K05W\",\"issue_datetime\":\"2026-10-10 14:42:09.133\",\"message\":\"Space Weather Message Code: WARK05\\r\\nSerial Number: 2270\\r\\nIssue Time: 2026 Oct 10 1442 UTC\\r\\n\\r\\nWARNING: Geomagnetic K-index of 5 expected \\nValid From: 2026 Oct 10 1440 UTC\\nValid To: 2026 Oct 11 0300 UTC\\nWarning Conditions: Onset\\nNoaa Scale: G1 - Minor\\nComment: \\r\\n\\r\\nNOAA Scale: G1 - Minor\\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 60 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nSpacecraft - Minor impact on satellite operations possible.\\r\\nAurora - Aurora may be visible at high latitudes, i.e., northern tier of the U.S. such as northern Michigan and Maine.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [],
+        "diagnostics": [
+          "orphan-link:WARK05/2272/2026-10-10T16:03:00Z"
+        ],
+        "notices": {
+          "WARK05/2265": {
+            "family": "warning",
+            "level": null,
+            "state": "recent",
+            "endReason": "cancelled",
+            "orphan": true,
+            "versions": 1,
+            "fromUtc": "2026-10-10T16:03:00Z",
+            "untilUtc": "2026-10-10T16:03:00Z",
+            "latest": "WARK05/2272/2026-10-10T16:03:00Z"
+          },
+          "WARK05/2270": {
+            "state": "recent",
+            "versions": 2
           }
         }
       }

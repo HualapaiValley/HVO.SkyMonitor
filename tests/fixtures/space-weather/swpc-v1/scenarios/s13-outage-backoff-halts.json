@@ -256,7 +256,9 @@
             "reason": "rate-limited",
             "sinceUtc": "2026-10-19T20:26:00Z"
           },
-          "nextAttemptNotBeforeUtc": null
+          "nextAttemptNotBeforeUtc": null,
+          "retryNotBeforeUtc": "2026-10-19T20:36:00Z",
+          "consecutiveRateLimited": 3
         }
       }
     },
@@ -307,7 +309,8 @@
           "alerts": {
             "halt": null,
             "nextAttemptNotBeforeUtc": "2026-10-19T20:40:00Z",
-            "consecutiveRateLimited": 0
+            "retryNotBeforeUtc": null,
+            "consecutiveRateLimited": 3
           }
         }
       }

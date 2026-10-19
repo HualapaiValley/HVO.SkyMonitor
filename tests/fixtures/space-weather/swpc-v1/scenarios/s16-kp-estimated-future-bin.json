@@ -1,13 +1,16 @@
 {
   "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
   "scenarioId": "s16-kp-estimated-future-bin",
-  "title": "Kp bins keep the source label verbatim; time relation comes from the bin start",
+  "title": "Kp bins keep the source label verbatim; the time relation is computed from the bin start when read",
   "covers": [
     "kp-forecast",
     "label-versus-time"
   ],
   "containsSyntheticRecords": false,
-  "notes": [],
+  "notes": [
+    "At 18:57:03 the 21:00 bin is labelled estimated by the source but is still in the future.",
+    "The relation is a read-time view, not a stored fact; step 2 reads the same snapshot later."
+  ],
   "sites": [
     {
       "siteId": "hvo",
@@ -63,6 +66,35 @@
                 "kp": "4.67",
                 "label": "predicted",
                 "noaaScale": "G1"
+              }
+            }
+          },
+          "kpBinRelations": {
+            "2026-10-19T15:00:00Z": "past",
+            "2026-10-19T18:00:00Z": "current",
+            "2026-10-19T21:00:00Z": "future",
+            "2026-10-20T03:00:00Z": "future"
+          }
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "evaluate",
+      "atUtc": "2026-10-19T21:30:00Z",
+      "expect": {
+        "products": {
+          "kp-forecast": {
+            "kpBinRelations": {
+              "2026-10-19T18:00:00Z": "past",
+              "2026-10-19T21:00:00Z": "current",
+              "2026-10-20T03:00:00Z": "future"
+            },
+            "facts": {
+              "bins": {
+                "2026-10-19T21:00:00Z": {
+                  "label": "estimated"
+                }
               }
             }
           }

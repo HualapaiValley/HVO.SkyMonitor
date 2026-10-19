@@ -130,7 +130,8 @@
       "expect": {
         "notices": {
           "WARK04/5429": {
-            "state": "active"
+            "state": "active",
+            "mayBeOutOfDate": true
           }
         },
         "products": {
@@ -148,7 +149,8 @@
         "notices": {
           "WARK04/5429": {
             "state": "recent",
-            "endReason": "expired"
+            "endReason": "expired",
+            "mayBeOutOfDate": false
           }
         }
       }

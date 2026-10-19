@@ -1,0 +1,228 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s22-gone-client-error-network",
+  "title": "410 and 400 halt one product; a network error backs off; a 304 without validators is transient",
+  "covers": [
+    "outage",
+    "halt",
+    "resume",
+    "backoff",
+    "not-modified",
+    "manual-refresh"
+  ],
+  "containsSyntheticRecords": false,
+  "notes": [],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s22-a\"",
+        "lastModified": "Mon, 19 Oct 2026 18:59:30 GMT",
+        "body": "[{\"product_id\":\"BHIS\",\"issue_datetime\":\"2026-10-19 09:09:16.063\",\"message\":\"Space Weather Message Code: SUM10R\\r\\nSerial Number: 930\\r\\nIssue Time: 2026 Oct 19 0909 UTC\\r\\n\\r\\nSUMMARY: 10cm Radio Burst \\nBegin Time: 2026 Oct 19 0858 UTC\\nMaximum Time: 2026 Oct 19 0859 UTC\\nEnd Time: 2026 Oct 19 0859 UTC\\nPeak Flux: 430 sfu\\nDuration: 1 minutes\\nLatest Penticton Noon Flux: 137 sfu\\nComment: \"}]"
+      },
+      "expect": {
+        "outcome": "updated"
+      }
+    },
+    {
+      "step": 2,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:02:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "outcome": "network-error"
+      },
+      "expect": {
+        "outcome": "transient-failure",
+        "product": {
+          "consecutiveTransientFailures": 1,
+          "nextAttemptNotBeforeUtc": "2026-10-19T19:06:00Z"
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:02:30Z",
+      "product": "scales",
+      "trigger": "scheduled",
+      "response": {
+        "status": 410
+      },
+      "expect": {
+        "outcome": "halted",
+        "product": {
+          "halt": {
+            "scope": "product",
+            "reason": "gone",
+            "sinceUtc": "2026-10-19T19:02:30Z"
+          }
+        }
+      }
+    },
+    {
+      "step": 4,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:03:00Z",
+      "product": "kp-forecast",
+      "trigger": "scheduled",
+      "response": {
+        "status": 400
+      },
+      "expect": {
+        "outcome": "halted",
+        "product": {
+          "halt": {
+            "scope": "product",
+            "reason": "client-error",
+            "sinceUtc": "2026-10-19T19:03:00Z"
+          }
+        }
+      }
+    },
+    {
+      "step": 5,
+      "kind": "resume",
+      "atUtc": "2026-10-19T19:03:10Z",
+      "scope": "product",
+      "product": "scales",
+      "operator": "fixture-operator",
+      "expect": {
+        "products": {
+          "scales": {
+            "halt": null,
+            "nextAttemptNotBeforeUtc": "2026-10-19T19:03:30Z"
+          },
+          "kp-forecast": {
+            "halt": {
+              "scope": "product",
+              "reason": "client-error"
+            }
+          },
+          "alerts": {
+            "halt": null
+          }
+        }
+      }
+    },
+    {
+      "step": 6,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:03:15Z",
+      "product": "scales",
+      "trigger": "manual",
+      "expect": {
+        "refused": "min-interval"
+      }
+    },
+    {
+      "step": 7,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:03:20Z",
+      "product": "3-day-forecast",
+      "trigger": "scheduled",
+      "response": {
+        "status": 304
+      },
+      "expect": {
+        "request": {
+          "ifNoneMatch": null,
+          "ifModifiedSince": null
+        },
+        "outcome": "transient-failure",
+        "product": {
+          "consecutiveTransientFailures": 1,
+          "nextAttemptNotBeforeUtc": "2026-10-19T19:33:20Z",
+          "lkgSha256": null
+        }
+      }
+    },
+    {
+      "step": 8,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:03:30Z",
+      "product": "scales",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": null,
+        "lastModified": null,
+        "bodyFile": "capture-20261019T1857Z/noaa-scales.json"
+      },
+      "expect": {
+        "outcome": "updated",
+        "product": {
+          "halt": null
+        }
+      }
+    },
+    {
+      "step": 9,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:04:00Z",
+      "product": "kp-forecast",
+      "trigger": "manual",
+      "expect": {
+        "refused": "halted"
+      }
+    },
+    {
+      "step": 10,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:06:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s22-b\"",
+        "lastModified": "Mon, 19 Oct 2026 18:59:30 GMT",
+        "body": "[{\"product_id\":\"BHIS\",\"issue_datetime\":\"2026-10-19 09:09:16.063\",\"message\":\"Space Weather Message Code: SUM10R\\r\\nSerial Number: 930\\r\\nIssue Time: 2026 Oct 19 0909 UTC\\r\\n\\r\\nSUMMARY: 10cm Radio Burst \\nBegin Time: 2026 Oct 19 0858 UTC\\nMaximum Time: 2026 Oct 19 0859 UTC\\nEnd Time: 2026 Oct 19 0859 UTC\\nPeak Flux: 430 sfu\\nDuration: 1 minutes\\nLatest Penticton Noon Flux: 137 sfu\\nComment: \"}]"
+      },
+      "expect": {
+        "request": {
+          "ifNoneMatch": "\"fixture-s22-a\""
+        },
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveTransientFailures": 0,
+          "freshness": "fresh"
+        },
+        "products": {
+          "kp-forecast": {
+            "halt": {
+              "scope": "product",
+              "reason": "client-error",
+              "sinceUtc": "2026-10-19T19:03:00Z"
+            }
+          },
+          "scales": {
+            "halt": null
+          }
+        }
+      }
+    }
+  ]
+}

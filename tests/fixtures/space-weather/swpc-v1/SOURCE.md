@@ -21,10 +21,15 @@ NWS disclaimer at https://www.weather.gov/disclaimer applies. It was read on
 > and then present it as official government material.
 
 The captured bodies are U.S. Government works and are not subject to copyright
-protection in the United States (17 U.S.C. 105). Under 17 U.S.C. 403, a
-copyrighted work that consists predominantly of this material must identify
-the NWS material it incorporates and state that it is not subject to copyright
-protection. This notice serves that purpose for this directory.
+protection in the United States (17 U.S.C. 105). 17 U.S.C. 403 concerns
+published works that consist predominantly of U.S. Government works. For such
+a work, a copyright notice does not have the evidentiary effect given by 17
+U.S.C. 401(d) and 402(d) unless the notice also identifies, either
+affirmatively or negatively, the portions that are protected by copyright.
+This statement makes that identification for this directory. The captured
+bodies listed below, and the SWPC record text reused in the scenarios, are NWS
+material and are not subject to copyright protection. Everything else in this
+directory is HVO SkyMonitor's own work.
 
 Credit: "Space weather data: NOAA Space Weather Prediction Center (SWPC)." HVO
 SkyMonitor is not endorsed by or affiliated with NOAA or NWS. The scenario
@@ -34,13 +39,36 @@ forecasts. No NOAA or NWS logo or trademark is used.
 
 ## Capture
 
-The capture ran once, on 2026-10-19 between 18:57:03Z and 18:57:05Z, with
-gzip negotiation and no credentials or cookies. One GET was made per product,
-and the full OVATION grid was downloaded once. `manifest.json` records each
-product's fetch start time, HTTP status, content type, transfer size,
+The committed bodies come from one GET per product made on 2026-10-19 between
+18:57:03.332Z and 18:57:04.464Z, with gzip negotiation and no credentials or
+cookies. The full OVATION grid was downloaded once. `manifest.json` records
+each product's fetch start time, HTTP status, content type, transfer size,
 `Last-Modified`, `ETag`, `Cache-Control`, decoded size and decoded-body
 SHA-256. No other response headers are recorded. CDN request identifiers and
 `Via` values were deliberately left out.
+
+The same research session made 31 requests in all. Every one is listed here.
+None of their other bodies is committed:
+
+- 18:56:38Z to 18:56:39Z: the `/products/`, `/json/` and `/text/` directory
+  indexes.
+- 18:57:03Z to 18:57:05Z: the capture above. The same sweep also fetched seven
+  products that were evaluated and excluded, and then the `/products/summary/`
+  index at 18:57:04.928Z.
+- 18:57:20Z: conditional GETs for six products. Five returned 304: alerts,
+  scales, the Kp forecast, 1-minute Kp and the 3-day geomagnetic forecast.
+  `noaa-planetary-k-index.json` returned 200 with a byte-identical body and new
+  validators.
+- 19:00:11Z to 19:00:13Z: HEAD requests for three GOES JSON products, which are
+  excluded.
+- 19:00:23Z to 19:00:24Z: one GET of `/json/goes/primary/xray-flares-latest.json`,
+  which is excluded, and conditional GETs for five text products, including the
+  3-day forecast. All five returned 200 with byte-identical bodies and new
+  validators.
+
+Scenario s17 step 2 uses the 3-day forecast validators from the 19:00:23Z
+request: `ETag` `"7fe-65e361ddb4bcb-gzip"` and `Last-Modified`
+`Mon, 19 Oct 2026 18:59:42 GMT`. That request's body matched the committed one.
 
 | File | Product | Transform |
 |---|---|---|
@@ -64,12 +92,22 @@ them from the captured bodies. A scenario marks
 `containsSyntheticRecords: true` and explains in `notes` when it contains
 records that SWPC did not publish. These include:
 
-- a synthetic CANCEL WARNING (no CANCEL WARNING was published in the capture
-  window), built from the documented SWPC rules and the shape of the captured
-  CANCEL WATCH;
-- a synthetic G2 watch, a year-rollover watch and an unknown message code;
-- altered or damaged copies of real records and bodies, used to model
-  revisions, malformed records and malformed bodies.
+- synthetic CANCEL WARNING records (s09, serials 2271 and 2272), because no
+  CANCEL WARNING was published in the capture window. They are built from the
+  documented SWPC rules and the shape of the captured CANCEL WATCH;
+- a synthetic G2 watch (s08, WATA30 900), a year-rollover watch (s14, WATA20
+  1200) and an unknown message code (s12, ALTZZZ 1);
+- a synthetic warning extension (s10, WARK04 5437) and a synthetic warning
+  whose validity exceeds the active cap (s21, WARPX1 200);
+- a synthetic 3-day forecast issued 2026 Dec 31 (s14), whose table columns
+  cross the year;
+- altered or damaged copies of real records and bodies, used to model:
+  - revisions (s02, s11);
+  - malformed, mismatched, oversized, header-only and long-serial records
+    (s12);
+  - records with a renamed header line (s20);
+  - malformed bodies (s12);
+  - a 3-day forecast with a renamed table (s17).
 
 No third-party copy of any SWPC message is included.
 

@@ -5,12 +5,14 @@
   "covers": [
     "ovation",
     "location-relevance",
+    "missing-location",
     "data-only"
   ],
   "containsSyntheticRecords": false,
   "notes": [
     "Data only. OVATION acquisition is unresolved (U3) and is not part of the first tranche.",
-    "The body is the committed sector subset, not the full 918,460-byte product."
+    "The body is the committed sector subset, not the full 918,460-byte product.",
+    "A site without a location has no band; its value is null (unknown), never zero."
   ],
   "sites": [
     {
@@ -19,6 +21,11 @@
         "latitudeDeg": 35.5599378,
         "longitudeDeg": -113.9119818
       },
+      "timeZoneId": "America/Phoenix"
+    },
+    {
+      "siteId": "unlocated",
+      "location": null,
       "timeZoneId": "America/Phoenix"
     }
   ],
@@ -47,18 +54,21 @@
             "observationTimeUtc": "2026-10-19T18:47:00Z",
             "forecastTimeUtc": "2026-10-19T20:01:00Z",
             "leadMinutes": 74,
-            "siteBand": {
-              "siteId": "hvo",
-              "latitudes": [
-                36,
-                45
-              ],
-              "longitudes": [
-                236,
-                256
-              ],
-              "cells": 210,
-              "maxValue": 0
+            "siteBands": {
+              "hvo": {
+                "latitudes": [
+                  36,
+                  45
+                ],
+                "longitudes": [
+                  236,
+                  256
+                ],
+                "cells": 210,
+                "expectedCells": 210,
+                "maxValue": 0
+              },
+              "unlocated": null
             },
             "equatorialNonzeroCellsIgnored": 42
           }

@@ -1,15 +1,18 @@
 {
   "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
   "scenarioId": "s17-three-day-issue-versus-last-modified",
-  "title": "The text product's :Issued: stamp is the issue time; HTTP Last-Modified churns",
+  "title": "The text product's :Issued: stamp is the issue time; HTTP Last-Modified churns; a renamed table rejects the body",
   "covers": [
     "text-normalization",
     "issue-time",
-    "etag-churn"
+    "etag-churn",
+    "malformed"
   ],
-  "containsSyntheticRecords": false,
+  "containsSyntheticRecords": true,
   "notes": [
-    "The body is the exact original, including trailing spaces; the snapshot hash is over the normalized text."
+    "The body is the exact original, including trailing spaces; the snapshot hash is over the normalized text.",
+    "Step 2's validators are those of the 19:00:23Z re-request, which returned an identical body.",
+    "Step 3's body is the original with its Kp table title renamed; it is synthetic."
   ],
   "sites": [
     {
@@ -55,6 +58,25 @@
                 "kp": "4.33",
                 "noaaScale": null
               }
+            },
+            "radiationProbabilities": {
+              "S1 or greater": {
+                "2026-10-19": "5",
+                "2026-10-20": "5",
+                "2026-10-21": "5"
+              }
+            },
+            "radioBlackoutProbabilities": {
+              "R1-R2": {
+                "2026-10-19": "30",
+                "2026-10-20": "30",
+                "2026-10-21": "30"
+              },
+              "R3 or greater": {
+                "2026-10-19": "10",
+                "2026-10-20": "10",
+                "2026-10-21": "10"
+              }
             }
           }
         }
@@ -81,6 +103,38 @@
         "outcome": "unchanged",
         "product": {
           "lkgSha256": "548D87ECA9AF7C424B37B27CFABE6B393960207253C9110A31005FC0CE02A2A7",
+          "facts": {
+            "issuedUtc": "2026-10-19T12:30:00Z"
+          }
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:57:03Z",
+      "product": "3-day-forecast",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "text/plain",
+        "etag": "\"fixture-s17-renamed\"",
+        "lastModified": "Mon, 19 Oct 2026 18:55:42 GMT",
+        "body": ":Product: 3-Day Forecast\n:Issued: 2026 Oct 19 1230 UTC\n# Prepared by the U.S. Dept. of Commerce, NOAA, Space Weather Prediction Center\n#\nA. NOAA Geomagnetic Activity Observation and Forecast\n\nThe greatest observed 3 hr Kp over the past 24 hours was 2 (below NOAA\nScale levels).\nThe greatest expected 3 hr Kp for Oct 19-Oct 21 2026 is 4.67 (NOAA Scale\nG1).\n\nNOAA Kp Index Forecast Breakdown Oct 19-Oct 21 2026\n\n             Oct 19       Oct 20       Oct 21\n00-03UT       0.33         4.33         3.33         \n03-06UT       0.33         4.67 (G1)    3.67         \n06-09UT       0.33         3.67         3.00         \n09-12UT       1.00         3.00         2.67         \n12-15UT       3.00         3.00         2.33         \n15-18UT       3.67         3.00         2.00         \n18-21UT       4.67 (G1)    3.33         3.33         \n21-00UT       4.33         3.67         3.00         \n\nRationale: G1 (Minor) geomagnetic storms are likely late 19 Oct and\nearly 20 Oct due to the anticipated influences of a positive CH HSS.\n\nB. NOAA Solar Radiation Activity Observation and Forecast\n\nSolar radiation, as observed by NOAA GOES-18 over the past 24 hours, was\nbelow S-scale storm level thresholds.\n\nSolar Radiation Storm Forecast for Oct 19-Oct 21 2026\n\n              Oct 19  Oct 20  Oct 21\nS1 or greater    5%      5%      5%\n\nRationale: No S1 (Minor) or greater solar radiation storms are expected.\nNo significant active region activity favorable for radiation storm\nproduction is forecast.\n\nC. NOAA Radio Blackout Activity and Forecast\n\nRadio blackouts reaching the R1 levels were observed over the past 24\nhours. The largest was at 19/0903Z UTC.\n\nRadio Blackout Forecast for Oct 19-Oct 21 2026\n\n              Oct 19        Oct 20        Oct 21\nR1-R2           30%           30%           30%\nR3 or greater   10%           10%           10%\n\nRationale: There is a chance for R1-R2 (Minor-Moderate) radio blackouts\nand a slight chance for R3 (Strong) or greater radio blackouts through\n21 Oct, mostly due to the flare potential of Regions 4551 and 4557.\n"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:schema"
+        ],
+        "product": {
+          "lkgSha256": "548D87ECA9AF7C424B37B27CFABE6B393960207253C9110A31005FC0CE02A2A7",
+          "consecutiveRejected": 1,
+          "freshness": "fresh",
+          "lastSuccessUtc": "2026-10-19T19:27:03Z",
+          "validators": {
+            "etag": "\"7fe-65e361ddb4bcb-gzip\""
+          },
           "facts": {
             "issuedUtc": "2026-10-19T12:30:00Z"
           }

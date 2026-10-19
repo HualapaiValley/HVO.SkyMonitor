@@ -117,7 +117,11 @@
       "scenarios/s15-missing-scale-and-location.json",
       "scenarios/s16-kp-estimated-future-bin.json",
       "scenarios/s17-three-day-issue-versus-last-modified.json",
-      "scenarios/s18-ovation-site-band.json"
+      "scenarios/s18-ovation-site-band.json",
+      "scenarios/s19-early-resume-spacing.json",
+      "scenarios/s20-record-level-drift.json",
+      "scenarios/s21-pending-short-window-and-cap.json",
+      "scenarios/s22-gone-client-error-network.json"
     ],
     "generator": "fixtures.py",
     "normalization": "CRLF to LF, trailing spaces/tabs trimmed per line, trailing blank lines removed, every line LF-terminated"
@@ -125,8 +129,8 @@
   "files": [
     {
       "path": "SOURCE.md",
-      "bytes": 5269,
-      "sha256": "E6E9F334AEFB5EED6BCB7E6D55B1A38E8F89ADFD498C60AC9F05335206C808FE"
+      "bytes": 7337,
+      "sha256": "5015C84CB689FFDEB50758BF15B5CA2F9D2C5A413BD0B8AB89553A47B7B1E04E"
     },
     {
       "path": "capture-20261019T1857Z/3-day-forecast.original.json",
@@ -155,8 +159,8 @@
     },
     {
       "path": "fixtures.py",
-      "bytes": 97053,
-      "sha256": "8391832AFDC2DE4BF425AF594007845499530C14BB48973B280A9B1CCFE26EA0"
+      "bytes": 130463,
+      "sha256": "FF759CD9F4BAAB09834186A1C42575491D4557B700EAC9AFAD161EEAF3D8EA1B"
     },
     {
       "path": "ovation-aurora-site-sector.json",
@@ -185,8 +189,8 @@
     },
     {
       "path": "scenarios/s05-extension-chain-expiry.json",
-      "bytes": 8820,
-      "sha256": "90CFFA5BBC862B526E5F042AED1B46EC12802267048226E3FEBC79513EFCC239"
+      "bytes": 8893,
+      "sha256": "9345540C7CCE6B412476F536772DFB9BD1A818DDAE933AFFE8BE90A9BA153D54"
     },
     {
       "path": "scenarios/s06-extension-before-root.json",
@@ -205,33 +209,33 @@
     },
     {
       "path": "scenarios/s09-synthetic-cancel-warning.json",
-      "bytes": 4433,
-      "sha256": "0DD3C7EAC576824B73FD6D03A4E08DDE744B1EA6FAE2F09F58AA6935F36602AB"
+      "bytes": 7333,
+      "sha256": "0FDEEE11F4158CB214A051B67F391838393C7A898B2F6BA5847AD6874D15F637"
     },
     {
       "path": "scenarios/s10-restart-ack-rolling-window.json",
-      "bytes": 7276,
-      "sha256": "08E9C15480CB01D563327B4A04B367F4A3D1C4F5A3880AF7B57CF78D04F67F23"
+      "bytes": 10633,
+      "sha256": "93E9C769649BD2AB7D9519D770460012EFF9E578AD01357EAA12A98755C09DD8"
     },
     {
       "path": "scenarios/s11-stale-cdn-out-of-order.json",
-      "bytes": 6110,
-      "sha256": "97A6F91D96E7D302944693A31C58D9400CE040F2DB3167DE9112BFD6075877C3"
+      "bytes": 6659,
+      "sha256": "1BDC04652DF45D94678D911A6A588CD3DE9448BBE9BD841EA3BC54C6B91737A1"
     },
     {
       "path": "scenarios/s12-malformed-bodies.json",
-      "bytes": 11568,
-      "sha256": "5CE3B62478060442965BC2B49ADD1A621ED370CF12EB5B3EA6E7D0DB9E685A86"
+      "bytes": 33033,
+      "sha256": "2C3886E070E5D56A5E44A43B369A3468FB0079D43F84EB879D6A5809DAF3F9EA"
     },
     {
       "path": "scenarios/s13-outage-backoff-halts.json",
-      "bytes": 11022,
-      "sha256": "3ECDBCCCF74ADDBE3F5042B2D704669FC1F56A7B34BB081080AA5F52C2B9A582"
+      "bytes": 11155,
+      "sha256": "132D3845BEFBCE0A82169A2FD64CA944F1F2E5B35F9380E35A626E826E8C9DFC"
     },
     {
       "path": "scenarios/s14-year-rollover-and-local-day.json",
-      "bytes": 2929,
-      "sha256": "92D1007D60E47EF838B3417F6123BB998402B5BDDC6A3B8B449D829B2424EB9B"
+      "bytes": 5891,
+      "sha256": "27316D27BAC08AA7CE39499D5D6A0338A165656B1FC94C1E3AA0D7675EA3367D"
     },
     {
       "path": "scenarios/s15-missing-scale-and-location.json",
@@ -240,18 +244,38 @@
     },
     {
       "path": "scenarios/s16-kp-estimated-future-bin.json",
-      "bytes": 1992,
-      "sha256": "862F2C83203258FC233C5CC55823436037E3E30052C5609EB54AD43C38147E09"
+      "bytes": 2991,
+      "sha256": "8295BF80EBBEA8889759AE7C111D4653B8119F00CC1C4AE811942F09FFD70D9B"
     },
     {
       "path": "scenarios/s17-three-day-issue-versus-last-modified.json",
-      "bytes": 6701,
-      "sha256": "9E60713E7538F6924A5BFE249E01067D7640EE79EF72C2F0B20E8E137DCEBA84"
+      "bytes": 10521,
+      "sha256": "C9C9506A8C413FDFEA9B7223811FC5FCA5941E5D8610DF4BF4404E17152FB7E7"
     },
     {
       "path": "scenarios/s18-ovation-site-band.json",
-      "bytes": 1825,
-      "sha256": "C9472DEDD9D1CE130107CCF5365A959C941BB05FE78F01A4B17B1737938EC23C"
+      "bytes": 2140,
+      "sha256": "66A5D1B82600564890529574D930F0C8D964ECCF0BB5CD265B0386DBB0009929"
+    },
+    {
+      "path": "scenarios/s19-early-resume-spacing.json",
+      "bytes": 7661,
+      "sha256": "060001F4DDB175F207DE46CF962FE26D7D7F90F2EE09A18805787B2481429F2A"
+    },
+    {
+      "path": "scenarios/s20-record-level-drift.json",
+      "bytes": 16322,
+      "sha256": "5E07EBDEFF50808A0544DBC7C057C099298810D1B22C6945F0A35CE59AE0969D"
+    },
+    {
+      "path": "scenarios/s21-pending-short-window-and-cap.json",
+      "bytes": 10270,
+      "sha256": "345023618F7B6C0A89C2E63C10987C0B47D893C72C78E5586CB40B67A74F13ED"
+    },
+    {
+      "path": "scenarios/s22-gone-client-error-network.json",
+      "bytes": 6121,
+      "sha256": "4318A62FC4E9528B27FD8DAD94F450E42C5D377689B78E85F08C2626A40FD514"
     }
   ]
 }

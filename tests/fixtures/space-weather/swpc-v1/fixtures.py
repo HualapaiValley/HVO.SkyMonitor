@@ -84,6 +84,7 @@ POLICY = {
     "maxRecords": 2000,
     "maxMessageBytes": 16384,
     "recentSeconds": 86400,
+    "newGraceSeconds": 300,
     "activeCapSeconds": 345600,
     "retentionSeconds": 3024000,
 }
@@ -236,19 +237,24 @@ def level_rank(level):
     return int(level[1])
 
 
+def infer_year(month, reference):
+    """The year of a month printed without one: the year that puts it within six months of the reference."""
+    year = reference.year
+    delta = month - reference.month
+    if delta < -6:
+        year += 1
+    elif delta > 6:
+        year -= 1
+    return year
+
+
 def watch_days(msg):
     result = []
     for line in msg.text.split("\n"):
         for mon, day, level in WATCH_DAY_RE.findall(line):
             if mon not in MONTHS:
                 continue
-            year = msg.issue.year
-            delta = MONTHS[mon] - msg.issue.month
-            if delta < -6:
-                year += 1
-            elif delta > 6:
-                year -= 1
-            result.append((dt.date(year, MONTHS[mon], int(day)), level))
+            result.append((dt.date(infer_year(MONTHS[mon], msg.issue), MONTHS[mon], int(day)), level))
     return result
 
 
@@ -266,7 +272,7 @@ def parse_record(record, index):
     if len(record["message"].encode("utf-8")) > POLICY["maxMessageBytes"]:
         return None, "record-oversize"
     text = normalize_text(record["message"])
-    lines = text.split("\n")
+    lines = text.split("\n")[:-1]
     if (len(lines) < 4
             or not re.fullmatch(r"Space Weather Message Code: [A-Z0-9]{4,8}", lines[0])
             or not re.fullmatch(r"Serial Number: \d{1,6}", lines[1])
@@ -365,7 +371,7 @@ def window(group, groups):
         if nc.days:
             until = (dt.datetime.combine(max(days), dt.time(), UTC) + dt.timedelta(days=1)) if days else start
     elif fam == "warning":
-        start = group.root.time_field("Valid From") or nc.time_field("Valid From")
+        start = group.root.time_field("Valid From")
         until = nc.time_field("Now Valid Until") or nc.time_field("Valid To")
     elif fam == "k-alert":
         start = nc.time_field("Threshold Reached")
@@ -480,24 +486,91 @@ def parse_kp_forecast(obj):
             "bins": bins}, None
 
 
+THREE_DAY_COLUMNS_RE = re.compile(r" *([A-Z][a-z]{2}) (\d{2}) +([A-Z][a-z]{2}) (\d{2}) +([A-Z][a-z]{2}) (\d{2})")
+THREE_DAY_KP_ROW_RE = re.compile(r"(\d{2})-\d{2}UT +(.+)")
+THREE_DAY_KP_CELLS_RE = re.compile(r"(\d\.\d{2})(?: \((G[1-5])\))? +(\d\.\d{2})(?: \((G[1-5])\))?"
+                                   r" +(\d\.\d{2})(?: \((G[1-5])\))?")
+THREE_DAY_PROB_ROW_RE = re.compile(r"(\S.*?) {2,}(\d{1,3})% +(\d{1,3})% +(\d{1,3})%")
+
+
+def three_day_table(lines, title_re, issued):
+    """Return (column dates, row lines) for the table whose title matches, or None.
+
+    The column header is the first non-blank line after the title and must name three days. Each column's
+    year comes from the :Issued: stamp, never from the year printed in the title. Rows run to the next
+    blank line.
+    """
+    index = next((i for i, line in enumerate(lines) if re.fullmatch(title_re, line)), None)
+    if index is None:
+        return None
+    index += 1
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    m = THREE_DAY_COLUMNS_RE.fullmatch(lines[index]) if index < len(lines) else None
+    if not m:
+        return None
+    dates = []
+    for mon, day in zip(m.groups()[0::2], m.groups()[1::2]):
+        if mon not in MONTHS:
+            return None
+        try:
+            dates.append(dt.date(infer_year(MONTHS[mon], issued), MONTHS[mon], int(day)))
+        except ValueError:
+            return None
+    rows = []
+    for line in lines[index + 1:]:
+        if not line.strip():
+            break
+        rows.append(line)
+    return dates, rows
+
+
 def parse_three_day(text):
     m = re.search(r"(?m)^:Issued: (.+)$", text)
     issued = parse_swpc_time(m.group(1)) if m else None
     if not text.startswith(":Product: 3-Day Forecast\n") or issued is None:
         return None, "schema"
-    head = re.search(r"(?m)^NOAA Kp index breakdown ([A-Z][a-z]{2}) (\d{2})-[A-Z][a-z]{2} \d{2} (\d{4})$", text)
+    lines = text.split("\n")
+    kp = three_day_table(lines, r"NOAA Kp index breakdown \S.*", issued)
+    radiation = three_day_table(lines, r"Solar Radiation Storm Forecast for \S.*", issued)
+    blackout = three_day_table(lines, r"Radio Blackout Forecast for \S.*", issued)
+    if kp is None or radiation is None or blackout is None:
+        return None, "schema"
+    dates, rows = kp
     bins = {}
-    if head:
-        first = dt.datetime(int(head.group(3)), MONTHS[head.group(1)], int(head.group(2)), tzinfo=UTC)
-        for hh, rest in re.findall(r"(?m)^(\d{2})-\d{2}UT +(.+)$", text):
-            cells = re.findall(r"(\d\.\d{2})(?: \((G[1-5])\))?", rest)
-            for day, (kp, scale) in enumerate(cells[:3]):
-                bins[fmt(first + dt.timedelta(days=day, hours=int(hh)))] = {"kp": kp, "noaaScale": scale or None}
-    return {"issuedUtc": fmt(issued), "kpBreakdownBins": len(bins), "kpBreakdown": bins}, None
+    starts = []
+    for row in rows:
+        rm = THREE_DAY_KP_ROW_RE.fullmatch(row)
+        cm = THREE_DAY_KP_CELLS_RE.fullmatch(rm.group(2)) if rm else None
+        if not cm:
+            return None, "schema"
+        cells = list(zip(cm.groups()[0::2], cm.groups()[1::2]))
+        starts.append(int(rm.group(1)))
+        for day, (value, scale) in zip(dates, cells):
+            start = dt.datetime.combine(day, dt.time(), UTC) + dt.timedelta(hours=int(rm.group(1)))
+            bins[fmt(start)] = {"kp": value, "noaaScale": scale or None}
+    if starts != list(range(0, 24, 3)):
+        return None, "schema"
+    probabilities = {}
+    for key, (prob_dates, prob_rows) in (("radiationProbabilities", radiation),
+                                         ("radioBlackoutProbabilities", blackout)):
+        table = {}
+        for row in prob_rows:
+            pm = THREE_DAY_PROB_ROW_RE.fullmatch(row)
+            if not pm:
+                return None, "schema"
+            table[pm.group(1)] = {d.isoformat(): v for d, v in zip(prob_dates, pm.groups()[1:])}
+        if not table:
+            return None, "schema"
+        probabilities[key] = table
+    return dict({"issuedUtc": fmt(issued), "kpBreakdownBins": len(bins), "kpBreakdown": bins},
+                **probabilities), None
 
 
-def ovation_band(obj, site):
-    grid = {(c[0], c[1]): c[2] for c in obj["coordinates"]}
+def ovation_band(grid, site):
+    """The site's band, or None (unknown) when the site has no location."""
+    if site["location"] is None:
+        return None
     lat, lon = site["location"]["latitudeDeg"], site["location"]["longitudeDeg"]
     centre_lon = round(lon % 360.0) % 360
     base = round(abs(lat))
@@ -505,14 +578,18 @@ def ovation_band(obj, site):
     lats = [sign * la for la in range(base, base + 10)]
     lons = [(centre_lon + d) % 360 for d in range(-10, 11)]
     cells = [grid[(lo, la)] for lo in lons for la in lats if (lo, la) in grid]
+    return {"latitudes": [min(lats), max(lats)], "longitudes": [lons[0], lons[-1]], "cells": len(cells),
+            "expectedCells": 210, "maxValue": max(cells) if cells else None}
+
+
+def parse_ovation(obj, sites):
+    grid = {(c[0], c[1]): c[2] for c in obj["coordinates"]}
     artifact = sum(1 for (lo, la), v in grid.items() if -2 <= la <= 0 and v > 0)
     observed = ts(obj["Observation Time"])
     forecast = ts(obj["Forecast Time"])
     return {"observationTimeUtc": fmt(observed), "forecastTimeUtc": fmt(forecast),
             "leadMinutes": int((forecast - observed).total_seconds() // 60),
-            "siteBand": {"siteId": site["siteId"], "latitudes": [min(lats), max(lats)],
-                         "longitudes": [lons[0], lons[-1]], "cells": len(cells), "expectedCells": 210,
-                         "maxValue": max(cells) if cells else None},
+            "siteBands": {site["siteId"]: ovation_band(grid, site) for site in sites},
             "equatorialNonzeroCellsIgnored": artifact}
 
 
@@ -528,12 +605,14 @@ class ProductState:
         self.last_success = None
         self.last_attempt = None
         self.next_attempt = None
+        self.retry_not_before = None   # Retry-After of a halting 429, applied when the halt is resumed
         self.in_backoff = False
         self.transient = 0
         self.rate_limited = 0
         self.rejected = 0
         self.halt = None
         self.last_outcome = None
+        self.record_drift_open = False
 
 
 class Model:
@@ -573,12 +652,14 @@ class Model:
 
     def notice_view(self, t):
         groups = self.groups()
+        alerts_fresh = self.freshness("alerts", t) == "fresh"
         view = {}
         for gid, group in sorted(groups.items()):
             state, start, until, reason = notice_state(group, groups, t)
             entry = {
                 "family": group.family, "level": group.level, "state": state,
                 "fromUtc": fmt(start), "untilUtc": fmt(until), "endReason": reason,
+                "mayBeOutOfDate": state in ("pending", "active") and not alerts_fresh,
                 "latest": group.latest.identity, "versions": len(group.versions),
                 "corrected": any(v.corrected for v in group.versions),
                 "orphan": group.orphan, "acknowledged": self.group_ack(group),
@@ -593,7 +674,8 @@ class Model:
             view[gid] = entry
         return view
 
-    def ingest_alerts(self, records, t, diagnostics):
+    def ingest_alerts(self, records, t, diagnostics, stale=False):
+        """Merge a body's records. A stale body adds new identities but never a new version of a stored one."""
         touched = set()
         added = []
         seen_in_body = {}
@@ -612,6 +694,9 @@ class Model:
             seen_in_body.setdefault(msg.identity, set()).add(msg.sha256)
             versions = self.store.setdefault(msg.identity, [])
             if any(v.sha256 == msg.sha256 for v, _ in versions):
+                continue
+            if versions and stale:
+                diagnostics.append(f"stale-revision-ignored:{msg.identity}")
                 continue
             if versions:
                 diagnostics.append(f"source-revision:{msg.identity}")
@@ -634,15 +719,17 @@ class Model:
     def attention_for(self, touched, t):
         events = []
         groups = self.groups()
+        grace = dt.timedelta(seconds=POLICY["newGraceSeconds"])
         for gid, group in sorted(groups.items()):
-            if not (group.nodes & touched) or group.family == "summary":
+            if not (group.nodes & touched) or group.family == "summary" or group.root is None:
                 continue
             state, _, _, _ = notice_state(group, groups, t)
             rank = level_rank(group.level)
             raised = self.group_raised(group)
             node = min(group.nodes)
             if raised is None:
-                if state not in ("pending", "active"):
+                just_ended = state == "recent" and t < group.latest_nc.issue + grace
+                if state not in ("pending", "active") and not just_ended:
                     continue
                 reason = "new"
                 if group.family == "watch":
@@ -665,32 +752,44 @@ class Model:
         return events
 
     # -- fetch ------------------------------------------------------------
-    def product_view(self, name, t):
+    def freshness(self, name, t):
         st = self.products[name]
         cfg = POLICY["products"][name]
         if st.last_success is None:
-            freshness = "none"
-        else:
-            age = (t - st.last_success).total_seconds()
-            if age < cfg["baseSeconds"] * POLICY["freshMultiplier"]:
-                freshness = "fresh"
-            elif age < cfg["outdatedSeconds"]:
-                freshness = "stale"
-            else:
-                freshness = "outdated"
+            return "none"
+        age = (t - st.last_success).total_seconds()
+        if age < cfg["baseSeconds"] * POLICY["freshMultiplier"]:
+            return "fresh"
+        if age < cfg["outdatedSeconds"]:
+            return "stale"
+        return "outdated"
+
+    def product_view(self, name, t):
+        st = self.products[name]
         halt = self.provider_halt or st.halt
-        return {
-            "lastOutcome": st.last_outcome, "freshness": freshness,
+        view = {
+            "lastOutcome": st.last_outcome, "freshness": self.freshness(name, t),
             "lkgSha256": st.lkg["sha256"] if st.lkg else None,
             "lastSuccessUtc": fmt(st.last_success),
             "nextAttemptNotBeforeUtc": fmt(st.next_attempt),
+            "retryNotBeforeUtc": fmt(st.retry_not_before),
             "consecutiveTransientFailures": st.transient,
             "consecutiveRateLimited": st.rate_limited,
             "consecutiveRejected": st.rejected,
+            "recordDriftOpen": st.record_drift_open,
             "halt": dict(halt) if halt else None,
             "validators": {"etag": st.etag, "lastModified": st.last_modified},
             "facts": copy.deepcopy(st.lkg["facts"]) if st.lkg else None,
         }
+        if name == "kp-forecast" and st.lkg:
+            # The bin's relation to now is computed when read; the source label is kept verbatim in facts.
+            relations = {}
+            for start_text in st.lkg["facts"]["bins"]:
+                start = ts(start_text)
+                end = start + dt.timedelta(hours=3)
+                relations[start_text] = "past" if end <= t else ("current" if start <= t else "future")
+            view["kpBinRelations"] = relations
+        return view
 
     def body_bytes(self, response):
         if "body" in response:
@@ -703,9 +802,13 @@ class Model:
                 raise ScenarioError("bodyFile escapes the pack")
             return path.read_bytes()
         synth = response.get("bodySynthesis")
-        if synth and synth["kind"] == "padded-empty-array":
+        if synth is None:
+            return b""
+        if synth["kind"] == "padded-empty-array":
             return b"[" + b" " * (synth["totalBytes"] - 2) + b"]"
-        return b""
+        if synth["kind"] == "repeated-record":
+            return encode_alerts([synth["record"]] * synth["count"]).encode("ascii")
+        raise ScenarioError(f"unknown bodySynthesis kind {synth['kind']}")
 
     def validate(self, name, response, t, diagnostics):
         """Return ("ok", snapshot, records) or ("rejected", reason, None)."""
@@ -755,7 +858,7 @@ class Model:
                 if facts else None
         else:
             try:
-                facts, reason = ovation_band(obj, self.sites[0]), None
+                facts, reason = parse_ovation(obj, self.sites), None
             except (KeyError, TypeError, ValueError, IndexError):
                 facts, reason = None, "schema"
             stamp = facts["observationTimeUtc"] if facts else None
@@ -813,24 +916,25 @@ class Model:
             result["outcome"] = "not-modified"
         elif status == 429:
             st.rate_limited += 1
+            delay = POLICY["rateLimitedDefaultSeconds"]
+            retry = response.get("retryAfter")
+            if retry and re.fullmatch(r"\d{1,9}", retry):
+                delay = int(retry)
+            elif retry:
+                try:
+                    when = dt.datetime.strptime(retry, "%a, %d %b %Y %H:%M:%S GMT").replace(tzinfo=UTC)
+                    delay = int((when - t).total_seconds())
+                except ValueError:
+                    pass
+            delay = min(POLICY["retryAfterCapSeconds"], max(POLICY["minimumAttemptSpacingSeconds"], delay))
+            st.in_backoff = True
             if st.rate_limited >= POLICY["rateLimitedHaltCount"]:
                 self.provider_halt = {"scope": "provider", "reason": "rate-limited", "sinceUtc": fmt(t)}
                 st.next_attempt = None
+                st.retry_not_before = t + dt.timedelta(seconds=delay)
                 st.last_outcome = result["outcome"] = "halted"
             else:
-                delay = POLICY["rateLimitedDefaultSeconds"]
-                retry = response.get("retryAfter")
-                if retry and re.fullmatch(r"\d{1,9}", retry):
-                    delay = int(retry)
-                elif retry:
-                    try:
-                        when = dt.datetime.strptime(retry, "%a, %d %b %Y %H:%M:%S GMT").replace(tzinfo=UTC)
-                        delay = int((when - t).total_seconds())
-                    except ValueError:
-                        pass
-                delay = min(POLICY["retryAfterCapSeconds"], max(POLICY["minimumAttemptSpacingSeconds"], delay))
                 st.next_attempt = t + dt.timedelta(seconds=delay)
-                st.in_backoff = True
                 st.last_outcome = result["outcome"] = "rate-limited"
         elif status == 403:
             self.provider_halt = {"scope": "provider", "reason": "forbidden", "sinceUtc": fmt(t)}
@@ -855,10 +959,9 @@ class Model:
                     result["attention"].append({"group": f"provider/{name}/format-drift", "reason": "new",
                                                 "level": None})
             else:
+                # The outcome is decided before any record is merged, so a stale body cannot revise a stored
+                # record.
                 snapshot = detail
-                touched = set()
-                if records is not None:
-                    touched = self.ingest_alerts(records, t, diagnostics)
                 if st.lkg and snapshot["sha256"] == st.lkg["sha256"]:
                     outcome = "unchanged"
                 elif st.lkg and snapshot["stamp"] is not None and st.lkg["stamp"] is not None \
@@ -867,6 +970,10 @@ class Model:
                     diagnostics.append("stale-snapshot")
                 else:
                     outcome = "updated"
+                touched = set()
+                if records is not None and outcome != "unchanged":
+                    touched = self.ingest_alerts(records, t, diagnostics, stale=outcome == "stale-snapshot")
+                if outcome == "updated":
                     st.lkg = snapshot
                 if outcome != "stale-snapshot":
                     st.etag = response.get("etag")
@@ -875,6 +982,15 @@ class Model:
                 result["outcome"] = outcome
                 if name == "alerts":
                     result["attention"] = self.attention_for(touched, t)
+                    if outcome == "updated":
+                        facts = snapshot["facts"]
+                        if facts["records"] > facts["acceptedRecords"]:
+                            if not st.record_drift_open:
+                                st.record_drift_open = True
+                                result["attention"].append({"group": "provider/alerts/record-drift",
+                                                            "reason": "new", "level": None})
+                        else:
+                            st.record_drift_open = False
         result["diagnostics"] = sorted(diagnostics)
         return result
 
@@ -899,12 +1015,15 @@ class Model:
             else:
                 self.products[step["product"]].halt = None
                 targets = [step["product"]]
+            # Resuming lifts the halt only. Counters, backoff and Retry-After stand, and minimum spacing holds.
+            spacing = dt.timedelta(seconds=POLICY["minimumAttemptSpacingSeconds"])
             for name in targets:
                 st = self.products[name]
-                if st.halt is None:
-                    st.next_attempt = t
-                    st.transient = st.rate_limited = 0
-                    st.in_backoff = False
+                if st.halt is None and self.provider_halt is None:
+                    candidates = [t, st.next_attempt, st.retry_not_before,
+                                  st.last_attempt + spacing if st.last_attempt else None]
+                    st.next_attempt = max(c for c in candidates if c is not None)
+                    st.retry_not_before = None
         elif kind == "restart":
             self.restore(json.loads(json.dumps(self.durable_state())))
         elif kind != "evaluate":
@@ -916,8 +1035,8 @@ class Model:
 
     # -- durability -------------------------------------------------------
     PRODUCT_FIELDS = ("lkg", "etag", "last_modified", "in_backoff", "transient", "rate_limited", "rejected",
-                      "halt", "last_outcome")
-    PRODUCT_TIMES = ("last_success", "last_attempt", "next_attempt")
+                      "halt", "last_outcome", "record_drift_open")
+    PRODUCT_TIMES = ("last_success", "last_attempt", "next_attempt", "retry_not_before")
 
     def durable_state(self):
         """Everything a restart keeps. A restart step discards every other field."""
@@ -1067,6 +1186,9 @@ class Builder:
         return self
 
     def fetch(self, at, response, expect, product="alerts", trigger="scheduled"):
+        """A None response marks a step whose request the model must refuse."""
+        if response is None:
+            return self.step("fetch", expect, atUtc=at, product=product, trigger=trigger)
         return self.step("fetch", expect, atUtc=at, product=product, trigger=trigger, response=response)
 
     def build(self):
@@ -1215,9 +1337,10 @@ def scenarios(cap: Capture):
                                     "fromUtc": "2026-10-09T01:28:00Z",
                                     "latest": "WARK04/5432/2026-10-11T04:57:00Z"}},
     })
-    b.step("evaluate", {"notices": {"WARK04/5429": {"state": "active"}},
+    b.step("evaluate", {"notices": {"WARK04/5429": {"state": "active", "mayBeOutOfDate": True}},
                         "products": {"alerts": {"freshness": "outdated"}}}, atUtc="2026-10-11T11:59:59Z")
-    b.step("evaluate", {"notices": {"WARK04/5429": {"state": "recent", "endReason": "expired"}}},
+    b.step("evaluate", {"notices": {"WARK04/5429": {"state": "recent", "endReason": "expired",
+                                                    "mayBeOutOfDate": False}}},
            atUtc="2026-10-11T12:00:00Z")
     out.append(b.build())
 
@@ -1319,11 +1442,19 @@ def scenarios(cap: Capture):
         "Original Issue Time: 2026 Oct 10 1442 UTC",
         "Comment: Synthetic fixture cancellation; not an SWPC product.",
     ])
+    absent_cancel = synthetic("K05W", "2026-10-10 16:03:20.000", "WARK05", 2272, [
+        "CANCEL WARNING: Geomagnetic K-index of 5 expected ",
+        "Cancel Serial Number: 2265",
+        "Original Issue Time: 2026 Oct 10 1200 UTC",
+        "Comment: Synthetic fixture cancellation of a warning that was never stored; not an SWPC product.",
+    ])
     b = Builder("s09-synthetic-cancel-warning",
-                "A CANCEL WARNING ends its target at the cancel issue time",
-                ["retracted", "cancel"], synthetic_records=True,
-                notes=["No CANCEL WARNING was captured. Serial 2271 is synthetic, shaped like the captured "
-                       "CANCEL WATCH (WATA30 286) and the documented SWPC rules."])
+                "A CANCEL WARNING ends its target at the cancel issue time; a cancel of an absent target never alerts",
+                ["retracted", "cancel", "orphan-link"], synthetic_records=True,
+                notes=["No CANCEL WARNING was captured. Serials 2271 and 2272 are synthetic, shaped like the "
+                       "captured CANCEL WATCH (WATA30 286) and the documented SWPC rules.",
+                       "Serial 2272 cancels serial 2265, which this scenario never stores and the capture "
+                       "does not contain."])
     b.fetch("2026-10-10T14:45:00Z", alerts_ok([k2270], 'W/"fixture-s09-a"', "Sat, 10 Oct 2026 14:44:50 GMT"), {
         "outcome": "updated",
         "attention": [{"group": "WARK05/2270", "reason": "new", "level": "G1"}],
@@ -1337,15 +1468,36 @@ def scenarios(cap: Capture):
                                     "untilUtc": "2026-10-10T16:00:00Z", "versions": 2,
                                     "latest": "WARK05/2271/2026-10-10T16:00:00Z"}},
     })
+    b.fetch("2026-10-10T16:04:00Z",
+            alerts_ok([absent_cancel, cancel, k2270], 'W/"fixture-s09-c"', "Sat, 10 Oct 2026 16:03:50 GMT"), {
+        "outcome": "updated", "attention": [],
+        "diagnostics": ["orphan-link:WARK05/2272/2026-10-10T16:03:00Z"],
+        "notices": {"WARK05/2265": {"family": "warning", "level": None, "state": "recent",
+                                    "endReason": "cancelled", "orphan": True, "versions": 1,
+                                    "fromUtc": "2026-10-10T16:03:00Z", "untilUtc": "2026-10-10T16:03:00Z",
+                                    "latest": "WARK05/2272/2026-10-10T16:03:00Z"},
+                    "WARK05/2270": {"state": "recent", "versions": 2}},
+    })
     out.append(b.build())
 
     # s10 ------------------------------------------------------------------
     a2691 = cap.rec("ALTK04/2691/2026-10-16T19:39:00Z")
     w5436 = cap.rec("WARK04/5436/2026-10-16T19:38:00Z")
     s930 = cap.rec("SUM10R/930/2026-10-19T09:09:00Z")
+    extension = synthetic("K04W", "2026-10-16 19:53:40.000", "WARK04", 5437, [
+        "EXTENDED WARNING: Geomagnetic K-index of 4 expected",
+        "Extension to Serial Number: 5436",
+        "Valid From: 2026 Oct 16 1938 UTC",
+        "Now Valid Until: 2026 Oct 17 0900 UTC",
+        "Warning Condition: Persistence",
+        "Comment: Synthetic fixture extension; not an SWPC product.",
+    ])
     b = Builder("s10-restart-ack-rolling-window",
-                "Restart does not re-alert; acknowledgement persists; aged-out records stay; retention purges",
-                ["restart", "acknowledgement", "rolling-window", "retention"])
+                "Restart does not re-alert; acknowledgement persists across a later extension; aged-out records "
+                "stay; retention purges, a summary 35 days after its issue time",
+                ["restart", "acknowledgement", "extension", "rolling-window", "retention"], synthetic_records=True,
+                notes=["WARK04 serial 5437 is synthetic. It extends the real WARK04 5436, which the capture never "
+                       "extended."])
     body = alerts_ok([a2691, w5436], 'W/"fixture-s10-a"', "Fri, 16 Oct 2026 19:44:50 GMT")
     b.fetch("2026-10-16T19:45:00Z", body, {
         "outcome": "updated",
@@ -1363,6 +1515,15 @@ def scenarios(cap: Capture):
                     "WARK04/5436": {"acknowledged": {"operator": "fixture-operator",
                                                      "atUtc": "2026-10-16T19:50:00Z"}}},
     })
+    b.fetch("2026-10-16T19:54:00Z", alerts_ok([extension, a2691, w5436], 'W/"fixture-s10-ext"',
+                                              "Fri, 16 Oct 2026 19:53:50 GMT"), {
+        "outcome": "updated", "attention": [], "diagnostics": [],
+        "notices": {"ALTK04/2691": {"acknowledged": None},
+                    "WARK04/5436": {"state": "active", "untilUtc": "2026-10-17T09:00:00Z", "versions": 2,
+                                    "latest": "WARK04/5437/2026-10-16T19:53:00Z",
+                                    "acknowledged": {"operator": "fixture-operator",
+                                                     "atUtc": "2026-10-16T19:50:00Z"}}},
+    })
     b.fetch("2026-11-13T19:45:00Z", alerts_ok([s930], 'W/"fixture-s10-c"', "Fri, 13 Nov 2026 19:44:50 GMT"), {
         "outcome": "updated", "attention": [],
         "notices": {"ALTK04/2691": {"state": "history"},
@@ -1373,29 +1534,44 @@ def scenarios(cap: Capture):
     })
     b.step("evaluate", {"notices": {"WARK04/5436": {"state": "history"}, "SUM10R/930": {"state": "history"}}},
            atUtc="2026-11-20T21:00:00Z")
-    b.step("evaluate", {"notices": {"SUM10R/930": {"state": "history"}}}, atUtc="2026-11-21T03:00:00Z")
+    b.step("evaluate", {"notices": {"SUM10R/930": {"state": "history"}}}, atUtc="2026-11-21T09:00:00Z")
+    # A summary's retention is anchored at its root issue time (2026-10-19T09:09Z).
+    b.step("evaluate", {"notices": {"SUM10R/930": {"state": "history", "endReason": None}}},
+           atUtc="2026-11-23T09:08:59Z")
+    b.step("evaluate", {"notices": {}}, atUtc="2026-11-23T09:09:00Z")
     out.append(b.build())
 
     # s11 ------------------------------------------------------------------
     tp4 = cap.rec("ALTTP4/719/2026-10-08T16:44:00Z")
     current = alerts_ok([tp2_b, tp4, tp2_a], 'W/"fixture-s11-a"', "Thu, 08 Oct 2026 16:46:55 GMT")
+    tp4_older = copy.deepcopy(tp4)
+    tp4_older["message"] = tp4_older["message"].replace("Comment: Type IV recorded by Sagamore Hill RSTN site",
+                                                        "Comment: Fixture older text.", 1)
+    if tp4_older["message"] == tp4["message"]:
+        raise ScenarioError("s11 older text did not change the message")
     b = Builder("s11-stale-cdn-out-of-order",
-                "An older body after a newer one merges without regression or replacement",
-                ["out-of-order", "stale-snapshot", "first-run-backlog"])
+                "An older body after a newer one neither revises stored records nor replaces last-known-good",
+                ["out-of-order", "stale-snapshot", "first-run-backlog", "new-grace"], synthetic_records=True,
+                notes=["Step 2's ALTTP4 719 is the real record with its Comment line altered, modelling an older "
+                       "text served by a stale cache. No such text was observed in the capture.",
+                       "ALTTP2 1531 has already ended when first seen at 16:47, but its latest version was "
+                       "issued at 16:46, inside the new-notice grace window, so it alerts."])
     b.fetch("2026-10-08T16:47:00Z", current, {
         "outcome": "updated",
-        "attention": [{"group": "ALTTP4/719", "reason": "new", "level": None}],
+        "attention": [{"group": "ALTTP2/1531", "reason": "new", "level": None},
+                      {"group": "ALTTP4/719", "reason": "new", "level": None}],
         "notices": {"ALTTP2/1531": {"state": "recent", "versions": 2,
                                     "latest": "ALTTP2/1531/2026-10-08T16:46:00Z"},
                     "ALTTP4/719": {"state": "active", "fromUtc": "2026-10-08T16:12:00Z",
                                    "untilUtc": "2026-10-08T17:12:00Z"}},
     })
-    stale = alerts_ok([tp4, tp2_a], 'W/"fixture-s11-old"', "Thu, 08 Oct 2026 16:44:55 GMT")
+    stale = alerts_ok([tp4_older, tp2_a], 'W/"fixture-s11-old"', "Thu, 08 Oct 2026 16:44:55 GMT")
     b.fetch("2026-10-08T16:49:00Z", stale, {
-        "outcome": "stale-snapshot", "attention": [], "diagnostics": ["stale-snapshot"],
+        "outcome": "stale-snapshot", "attention": [],
+        "diagnostics": ["stale-revision-ignored:ALTTP4/719/2026-10-08T16:44:00Z", "stale-snapshot"],
         "notices": {"ALTTP2/1531": {"versions": 2, "latest": "ALTTP2/1531/2026-10-08T16:46:00Z",
                                     "fromUtc": "2026-10-08T15:42:00Z"},
-                    "ALTTP4/719": {"state": "active"}},
+                    "ALTTP4/719": {"state": "active", "versions": 1}},
         "product": {"lkgSha256": sha256(current["body"].encode()), "lastSuccessUtc": "2026-10-08T16:47:00Z",
                     "validators": {"etag": 'W/"fixture-s11-a"'}},
     })
@@ -1416,14 +1592,27 @@ def scenarios(cap: Capture):
         "ALERT: Synthetic fixture product with an unknown code ",
         "Comment: Synthetic; not an SWPC product.",
     ])
-    mixed = alerts_ok([unknown, w5436, no_message, iso_datetime, no_serial], 'W/"fixture-s12-mixed"',
-                      "Fri, 16 Oct 2026 19:52:50 GMT", order=False)
+    mismatch = dict(cap.rec("ALTEF3/3754/2026-10-16T14:19:00Z"), issue_datetime="2026-10-16 14:25:49.850")
+    oversize_record = dict(w5436, message=w5436["message"] + "\r\nComment: " + "x" * POLICY["maxMessageBytes"])
+    header_only = {"product_id": "K04A", "issue_datetime": "2026-10-16 19:51:02.000",
+                   "message": "Space Weather Message Code: ALTK04\r\nSerial Number: 2692\r\n"
+                              "Issue Time: 2026 Oct 16 1951 UTC\r\n"}
+    long_serial = dict(a2691, message=a2691["message"].replace("Serial Number: 2691\r\n",
+                                                               "Serial Number: 1234567\r\n", 1))
+    if no_serial["message"] == w5436["message"] or long_serial["message"] == a2691["message"]:
+        raise ScenarioError("s12 record damage did not change the message")
+    mixed = alerts_ok([unknown, w5436, no_message, iso_datetime, no_serial, mismatch, oversize_record,
+                       header_only, long_serial], 'W/"fixture-s12-mixed"', "Fri, 16 Oct 2026 19:52:50 GMT",
+                      order=False)
     non_utf8 = b'[{"product_id":"K04A","issue_datetime":"2026-10-16 19:39:45.267","message":"\xff\xfe"}]'
     b = Builder("s12-malformed-bodies",
-                "Rejected bodies keep last-known-good; record-level faults reject only the record",
-                ["malformed", "quarantine", "format-drift", "unknown-code"], synthetic_records=True,
+                "Rejected bodies keep last-known-good; record-level faults reject only the record and raise "
+                "record drift once",
+                ["malformed", "quarantine", "format-drift", "record-drift", "unknown-code"], synthetic_records=True,
                 notes=["Every body after step 1 is synthetic or a damaged copy of a real body.",
-                       "Step 9 body is described, not embedded: a 1 MiB + 1 byte valid JSON empty array."])
+                       "Step 5's ALTEF3 3754 is the real record with its issue_datetime moved six minutes later; "
+                       "its other damaged records are copies of WARK04 5436 and ALTK04 2691, plus a synthetic "
+                       "header-only ALTK04 2692."])
     b.fetch("2026-10-16T19:45:00Z", good, {"outcome": "updated", "product": {"lkgSha256": good_sha}})
     b.fetch("2026-10-16T19:47:00Z", dict(good, body=good["body"][:len(good["body"]) // 2], etag='W/"fixture-s12-trunc"'), {
         "outcome": "rejected", "diagnostics": ["body-rejected:malformed-json"], "attention": [],
@@ -1442,31 +1631,36 @@ def scenarios(cap: Capture):
         "attention": [{"group": "provider/alerts/format-drift", "reason": "new", "level": None}],
         "product": {"consecutiveRejected": 3, "lkgSha256": good_sha, "freshness": "stale"},
     })
+    all_active = {"ALTEF3/3754": {"state": "active"}, "ALTK04/2691": {"state": "active"},
+                  "ALTZZZ/1": {"state": "active"}, "WARK04/5436": {"state": "active"}}
     b.fetch("2026-10-16T19:53:00Z", mixed, {
         "outcome": "updated",
-        "diagnostics": ["record-rejected:issue-datetime:3", "record-rejected:message-header:4",
-                        "record-rejected:record-schema:2"],
-        "attention": [{"group": "ALTZZZ/1", "reason": "new", "level": None},
-                      {"group": "WARK04/5436", "reason": "new", "level": "K4"}],
-        "notices": {"ALTK04/2691": {"state": "active"},
-                    "ALTZZZ/1": {"family": "unclassified", "state": "active",
-                                 "fromUtc": "2026-10-16T19:50:00Z", "untilUtc": "2026-10-17T01:50:00Z",
-                                 "relevance": {hvo: "Unknown"}},
-                    "WARK04/5436": {"state": "active"}},
+        "diagnostics": ["issue-time-mismatch:ALTEF3/3754/2026-10-16T14:19:00Z",
+                        "record-rejected:issue-datetime:3", "record-rejected:message-header:4",
+                        "record-rejected:message-header:7", "record-rejected:message-header:8",
+                        "record-rejected:record-oversize:6", "record-rejected:record-schema:2"],
+        "attention": [{"group": "ALTEF3/3754", "reason": "new", "level": None},
+                      {"group": "ALTZZZ/1", "reason": "new", "level": None},
+                      {"group": "WARK04/5436", "reason": "new", "level": "K4"},
+                      {"group": "provider/alerts/record-drift", "reason": "new", "level": None}],
+        "notices": dict(all_active, **{
+            "ALTZZZ/1": {"family": "unclassified", "state": "active",
+                         "fromUtc": "2026-10-16T19:50:00Z", "untilUtc": "2026-10-17T01:50:00Z",
+                         "relevance": {hvo: "Unknown"}}}),
         "product": {"consecutiveRejected": 0, "lkgSha256": sha256(mixed["body"].encode()),
-                    "facts": {"records": 5, "acceptedRecords": 2}},
+                    "recordDriftOpen": True, "facts": {"records": 9, "acceptedRecords": 3}},
     })
     b.fetch("2026-10-16T19:55:00Z", dict(good, body="[]"), {
-        "outcome": "rejected", "diagnostics": ["body-rejected:suspect-empty"],
-        "notices": {"ALTK04/2691": {"state": "active"}, "ALTZZZ/1": {"state": "active"},
-                    "WARK04/5436": {"state": "active"}},
-        "product": {"consecutiveRejected": 1},
+        "outcome": "rejected", "diagnostics": ["body-rejected:suspect-empty"], "attention": [],
+        "notices": all_active,
+        "product": {"consecutiveRejected": 1, "recordDriftOpen": True},
     })
     oversize = {"status": 200, "contentType": "application/json", "etag": None, "lastModified": None,
                 "bodySynthesis": {"kind": "padded-empty-array", "totalBytes": 1048577}}
     b.fetch("2026-10-16T19:57:00Z", oversize, {
         "outcome": "rejected", "diagnostics": ["body-rejected:oversize"], "product": {"consecutiveRejected": 2},
     })
+    oversize_step = len(b.doc["steps"])
     b.fetch("2026-10-16T19:59:00Z", {"status": 200, "contentType": "application/json", "etag": None,
                                      "lastModified": None,
                                      "bodyBase64": base64.b64encode(non_utf8).decode("ascii")}, {
@@ -1474,6 +1668,23 @@ def scenarios(cap: Capture):
         "attention": [{"group": "provider/alerts/format-drift", "reason": "new", "level": None}],
         "product": {"consecutiveRejected": 3},
     })
+    b.fetch("2026-10-16T20:01:00Z", dict(good, body=encode_alerts([no_message, header_only])), {
+        "outcome": "rejected", "diagnostics": ["body-rejected:no-valid-records"], "attention": [],
+        "product": {"consecutiveRejected": 4},
+    })
+    small = {"product_id": "ZZZA", "issue_datetime": "2026-10-16 20:00:00.000", "message": "Synthetic"}
+    many = {"status": 200, "contentType": "application/json", "etag": None, "lastModified": None,
+            "bodySynthesis": {"kind": "repeated-record", "record": small, "count": POLICY["maxRecords"] + 1}}
+    b.fetch("2026-10-16T20:03:00Z", many, {
+        "outcome": "rejected", "diagnostics": ["body-rejected:too-many-records"], "attention": [],
+        "notices": all_active,
+        "product": {"consecutiveRejected": 5, "recordDriftOpen": True, "lkgSha256": sha256(mixed["body"].encode())},
+    })
+    many_step = len(b.doc["steps"])
+    b.doc["notes"] += [f"Step {oversize_step} body is described, not embedded: a valid JSON empty array padded "
+                       "with spaces to 1 MiB + 1 byte.",
+                       f"Step {many_step} body is described, not embedded: 2,001 copies of one small record, "
+                       "within the byte limit."]
     out.append(b.build())
 
     # s13 ------------------------------------------------------------------
@@ -1519,7 +1730,8 @@ def scenarios(cap: Capture):
     b.fetch("2026-10-19T20:26:00Z", {"status": 429, "retryAfter": "600"}, {
         "outcome": "halted",
         "product": {"halt": {"scope": "provider", "reason": "rate-limited", "sinceUtc": "2026-10-19T20:26:00Z"},
-                    "nextAttemptNotBeforeUtc": None}})
+                    "nextAttemptNotBeforeUtc": None, "retryNotBeforeUtc": "2026-10-19T20:36:00Z",
+                    "consecutiveRateLimited": 3}})
     b.fetch("2026-10-19T20:30:00Z", None, {"refused": "halted"}, product="scales", trigger="manual")
     b.step("restart")
     b.step("evaluate", {"products": {"alerts": {"halt": {"scope": "provider", "reason": "rate-limited"},
@@ -1527,7 +1739,7 @@ def scenarios(cap: Capture):
                                      "scales": {"halt": {"scope": "provider", "reason": "rate-limited"}}}},
            atUtc="2026-10-19T20:35:00Z")
     b.step("resume", {"products": {"alerts": {"halt": None, "nextAttemptNotBeforeUtc": "2026-10-19T20:40:00Z",
-                                              "consecutiveRateLimited": 0}}},
+                                              "retryNotBeforeUtc": None, "consecutiveRateLimited": 3}}},
            atUtc="2026-10-19T20:40:00Z", scope="provider", operator="fixture-operator")
     b.fetch("2026-10-19T20:40:00Z", {"status": 403}, {
         "outcome": "halted",
@@ -1546,11 +1758,7 @@ def scenarios(cap: Capture):
         "outcome": "halted",
         "product": {"halt": {"scope": "product", "reason": "not-found", "sinceUtc": "2026-10-19T21:00:00Z"},
                     "lkgSha256": sha_ok}})
-    doc = b.build()
-    for step in doc["steps"]:
-        if step.get("response") is None and "response" in step:
-            del step["response"]
-    out.append(doc)
+    out.append(b.build())
 
     # s14 ------------------------------------------------------------------
     rollover = synthetic("A20F", "2026-12-31 21:00:05.000", "WATA20", 1200, [
@@ -1560,10 +1768,49 @@ def scenarios(cap: Capture):
         "THIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT",
         "Comment: Synthetic fixture for year rollover; not an SWPC product.",
     ])
+    rollover_forecast = "\n".join([
+        ":Product: 3-Day Forecast",
+        ":Issued: 2026 Dec 31 1230 UTC",
+        "# Synthetic fixture for year rollover; not an SWPC product.",
+        "#",
+        "A. NOAA Geomagnetic Activity Observation and Forecast",
+        "",
+        "NOAA Kp index breakdown Dec 31-Jan 02 2027",
+        "",
+        "             Dec 31       Jan 01       Jan 02",
+        "00-03UT       1.33         2.00         3.67",
+        "03-06UT       1.00         2.33         4.00",
+        "06-09UT       1.00         2.67         3.67",
+        "09-12UT       1.33         3.00         3.33",
+        "12-15UT       1.67         3.33         3.00",
+        "15-18UT       2.00         3.67         3.00",
+        "18-21UT       2.00         4.33         2.67",
+        "21-00UT       2.33         5.00 (G1)    2.33",
+        "",
+        "B. NOAA Solar Radiation Activity Observation and Forecast",
+        "",
+        "Solar Radiation Storm Forecast for Dec 31-Jan 02 2027",
+        "",
+        "              Dec 31  Jan 01  Jan 02",
+        "S1 or greater    1%      1%      1%",
+        "",
+        "C. NOAA Radio Blackout Activity and Forecast",
+        "",
+        "Radio Blackout Forecast for Dec 31-Jan 02 2027",
+        "",
+        "              Dec 31        Jan 01        Jan 02",
+        "R1-R2           15%           15%           10%",
+        "R3 or greater    1%            1%            1%",
+        "",
+    ])
     b = Builder("s14-year-rollover-and-local-day",
-                "Watch day lines without a year cross 31 December; UTC days shown in site time",
+                "Watch days and 3-day forecast columns without a year cross 31 December; UTC days shown in site "
+                "time",
                 ["timezone-boundary", "year-rollover"], synthetic_records=True,
-                notes=["The site zone is America/Phoenix (UTC-07:00, no daylight saving)."])
+                notes=["The site zone is America/Phoenix (UTC-07:00, no daylight saving).",
+                       "WATA20 serial 1200 and the 3-day forecast issued 2026 Dec 31 1230 UTC are synthetic. "
+                       "The forecast's column years come from its :Issued: stamp, not from the year printed in "
+                       "its table titles."])
     b.fetch("2026-12-31T21:02:00Z", alerts_ok([rollover], 'W/"fixture-s14-a"', "Thu, 31 Dec 2026 21:01:50 GMT"), {
         "outcome": "updated",
         "attention": [{"group": "WATA20/1200", "reason": "new", "level": "G1"}],
@@ -1575,6 +1822,22 @@ def scenarios(cap: Capture):
                                     "local": {"fromLocal": "2026-12-31T14:00:00-07:00",
                                               "untilLocal": "2027-01-02T17:00:00-07:00"}}},
     })
+    b.fetch("2026-12-31T21:03:00Z", {"status": 200, "contentType": "text/plain", "etag": '"fixture-s14-3day"',
+                                     "lastModified": "Thu, 31 Dec 2026 12:31:00 GMT",
+                                     "body": rollover_forecast}, {
+        "outcome": "updated",
+        "product": {"facts": {
+            "issuedUtc": "2026-12-31T12:30:00Z", "kpBreakdownBins": 24,
+            "kpBreakdown": {"2026-12-31T00:00:00Z": {"kp": "1.33", "noaaScale": None},
+                            "2027-01-01T00:00:00Z": {"kp": "2.00", "noaaScale": None},
+                            "2027-01-01T21:00:00Z": {"kp": "5.00", "noaaScale": "G1"},
+                            "2027-01-02T21:00:00Z": {"kp": "2.33", "noaaScale": None}},
+            "radiationProbabilities": {"S1 or greater": {"2026-12-31": "1", "2027-01-01": "1",
+                                                         "2027-01-02": "1"}},
+            "radioBlackoutProbabilities": {"R1-R2": {"2026-12-31": "15", "2027-01-01": "15", "2027-01-02": "10"},
+                                           "R3 or greater": {"2026-12-31": "1", "2027-01-01": "1",
+                                                             "2027-01-02": "1"}}}}},
+        product="3-day-forecast")
     b.step("evaluate", {"notices": {"WATA20/1200": {"state": "active"}}}, atUtc="2027-01-02T23:59:59Z")
     b.step("evaluate", {"notices": {"WATA20/1200": {"state": "recent", "endReason": "expired"}}},
            atUtc="2027-01-03T00:00:00Z")
@@ -1613,8 +1876,10 @@ def scenarios(cap: Capture):
 
     # s16 ------------------------------------------------------------------
     b = Builder("s16-kp-estimated-future-bin",
-                "Kp bins keep the source label verbatim; time relation comes from the bin start",
-                ["kp-forecast", "label-versus-time"])
+                "Kp bins keep the source label verbatim; the time relation is computed from the bin start when read",
+                ["kp-forecast", "label-versus-time"],
+                notes=["At 18:57:03 the 21:00 bin is labelled estimated by the source but is still in the future.",
+                       "The relation is a read-time view, not a stored fact; step 2 reads the same snapshot later."])
     b.fetch("2026-10-19T18:57:03Z", {"status": 200, "contentType": "application/json",
                                      "etag": 'W/"1af9-65e361333c7ac"',
                                      "lastModified": "Mon, 19 Oct 2026 18:56:43 GMT",
@@ -1625,18 +1890,31 @@ def scenarios(cap: Capture):
             "bins": {"2026-10-19T15:00:00Z": {"kp": "0.33", "label": "observed", "noaaScale": None},
                      "2026-10-19T18:00:00Z": {"kp": "0.67", "label": "estimated", "noaaScale": None},
                      "2026-10-19T21:00:00Z": {"kp": "5.00", "label": "estimated", "noaaScale": "G1"},
-                     "2026-10-20T03:00:00Z": {"kp": "4.67", "label": "predicted", "noaaScale": "G1"}}}}},
+                     "2026-10-20T03:00:00Z": {"kp": "4.67", "label": "predicted", "noaaScale": "G1"}}},
+            "kpBinRelations": {"2026-10-19T15:00:00Z": "past", "2026-10-19T18:00:00Z": "current",
+                               "2026-10-19T21:00:00Z": "future", "2026-10-20T03:00:00Z": "future"}}},
         product="kp-forecast")
+    b.step("evaluate", {"products": {"kp-forecast": {
+        "kpBinRelations": {"2026-10-19T18:00:00Z": "past", "2026-10-19T21:00:00Z": "current",
+                           "2026-10-20T03:00:00Z": "future"},
+        "facts": {"bins": {"2026-10-19T21:00:00Z": {"label": "estimated"}}}}}}, atUtc="2026-10-19T21:30:00Z")
     out.append(b.build())
 
     # s17 ------------------------------------------------------------------
     original = json.loads((PACK / THREE_DAY_ORIGINAL).read_text("ascii"))
     normalized_sha = sha256(normalize_text(original["text"]).encode("utf-8"))
+    renamed = original["text"].replace("NOAA Kp index breakdown", "NOAA Kp Index Forecast Breakdown", 1)
+    if renamed == original["text"]:
+        raise ScenarioError("s17 header rename did not change the text")
     b = Builder("s17-three-day-issue-versus-last-modified",
-                "The text product's :Issued: stamp is the issue time; HTTP Last-Modified churns",
-                ["text-normalization", "issue-time", "etag-churn"],
+                "The text product's :Issued: stamp is the issue time; HTTP Last-Modified churns; a renamed table "
+                "rejects the body",
+                ["text-normalization", "issue-time", "etag-churn", "malformed"], synthetic_records=True,
                 notes=["The body is the exact original, including trailing spaces; the snapshot hash is over "
-                       "the normalized text."])
+                       "the normalized text.",
+                       "Step 2's validators are those of the 19:00:23Z re-request, which returned an identical "
+                       "body.",
+                       "Step 3's body is the original with its Kp table title renamed; it is synthetic."])
     text_response = {"status": 200, "contentType": "text/plain", "etag": '"7fe-65e360f9121ca-gzip"',
                      "lastModified": "Mon, 19 Oct 2026 18:55:42 GMT", "body": original["text"]}
     b.fetch("2026-10-19T18:57:03Z", text_response, {
@@ -1644,7 +1922,13 @@ def scenarios(cap: Capture):
         "product": {"lkgSha256": normalized_sha,
                     "facts": {"issuedUtc": "2026-10-19T12:30:00Z", "kpBreakdownBins": 24,
                               "kpBreakdown": {"2026-10-20T03:00:00Z": {"kp": "4.67", "noaaScale": "G1"},
-                                              "2026-10-19T21:00:00Z": {"kp": "4.33", "noaaScale": None}}}}},
+                                              "2026-10-19T21:00:00Z": {"kp": "4.33", "noaaScale": None}},
+                              "radiationProbabilities": {"S1 or greater": {"2026-10-19": "5", "2026-10-20": "5",
+                                                                           "2026-10-21": "5"}},
+                              "radioBlackoutProbabilities": {
+                                  "R1-R2": {"2026-10-19": "30", "2026-10-20": "30", "2026-10-21": "30"},
+                                  "R3 or greater": {"2026-10-19": "10", "2026-10-20": "10",
+                                                    "2026-10-21": "10"}}}}},
         product="3-day-forecast")
     b.fetch("2026-10-19T19:27:03Z", dict(text_response, etag='"7fe-65e361ddb4bcb-gzip"',
                                          lastModified="Mon, 19 Oct 2026 18:59:42 GMT"), {
@@ -1652,14 +1936,23 @@ def scenarios(cap: Capture):
         "outcome": "unchanged", "product": {"lkgSha256": normalized_sha,
                                             "facts": {"issuedUtc": "2026-10-19T12:30:00Z"}}},
         product="3-day-forecast")
+    b.fetch("2026-10-19T19:57:03Z", dict(text_response, etag='"fixture-s17-renamed"', body=renamed), {
+        "outcome": "rejected", "diagnostics": ["body-rejected:schema"],
+        "product": {"lkgSha256": normalized_sha, "consecutiveRejected": 1, "freshness": "fresh",
+                    "lastSuccessUtc": "2026-10-19T19:27:03Z",
+                    "validators": {"etag": '"7fe-65e361ddb4bcb-gzip"'},
+                    "facts": {"issuedUtc": "2026-10-19T12:30:00Z"}}},
+        product="3-day-forecast")
     out.append(b.build())
 
     # s18 ------------------------------------------------------------------
     b = Builder("s18-ovation-site-band",
                 "OVATION site band for HVO; the equatorial artifact is outside the band",
-                ["ovation", "location-relevance", "data-only"],
+                ["ovation", "location-relevance", "missing-location", "data-only"],
+                sites=[HVO_SITE, NO_LOCATION_SITE],
                 notes=["Data only. OVATION acquisition is unresolved (U3) and is not part of the first tranche.",
-                       "The body is the committed sector subset, not the full 918,460-byte product."])
+                       "The body is the committed sector subset, not the full 918,460-byte product.",
+                       "A site without a location has no band; its value is null (unknown), never zero."])
     b.fetch("2026-10-19T18:57:04Z", {"status": 200, "contentType": "application/json",
                                      "etag": 'W/"e03bc-65e360ec17552"',
                                      "lastModified": "Mon, 19 Oct 2026 18:55:29 GMT",
@@ -1667,11 +1960,217 @@ def scenarios(cap: Capture):
         "outcome": "updated",
         "product": {"facts": {"observationTimeUtc": "2026-10-19T18:47:00Z",
                               "forecastTimeUtc": "2026-10-19T20:01:00Z", "leadMinutes": 74,
-                              "siteBand": {"siteId": "hvo", "latitudes": [36, 45], "longitudes": [236, 256],
-                                           "cells": 210, "maxValue": 0},
+                              "siteBands": {"hvo": {"latitudes": [36, 45], "longitudes": [236, 256],
+                                                    "cells": 210, "expectedCells": 210, "maxValue": 0},
+                                            "unlocated": None},
                               "equatorialNonzeroCellsIgnored": 42}}},
         product="ovation")
     out.append(b.build())
+    # s19 ------------------------------------------------------------------
+    calm = alerts_ok([s930], '"fixture-s19-a"', "Mon, 19 Oct 2026 18:59:30 GMT")
+    b = Builder("s19-early-resume-spacing",
+                "An early resume lifts a halt only: spacing, backoff, Retry-After and the 429 count stand",
+                ["halt", "resume", "rate-limit", "manual-refresh", "backoff"])
+    b.fetch("2026-10-19T19:00:00Z", calm, {
+        "outcome": "updated", "product": {"nextAttemptNotBeforeUtc": "2026-10-19T19:02:00Z"}})
+    b.fetch("2026-10-19T19:00:30Z", {"status": 429, "retryAfter": "600"}, {
+        "outcome": "rate-limited",
+        "product": {"consecutiveRateLimited": 1, "nextAttemptNotBeforeUtc": "2026-10-19T19:10:30Z"}},
+        product="scales")
+    b.fetch("2026-10-19T19:02:00Z", {"status": 403}, {
+        "outcome": "halted",
+        "product": {"halt": {"scope": "provider", "reason": "forbidden", "sinceUtc": "2026-10-19T19:02:00Z"},
+                    "nextAttemptNotBeforeUtc": None}})
+    b.step("resume", {"products": {
+        "alerts": {"halt": None, "nextAttemptNotBeforeUtc": "2026-10-19T19:03:00Z"},
+        "scales": {"halt": None, "nextAttemptNotBeforeUtc": "2026-10-19T19:10:30Z", "consecutiveRateLimited": 1}}},
+        atUtc="2026-10-19T19:02:05Z", scope="provider", operator="fixture-operator")
+    b.fetch("2026-10-19T19:02:10Z", None, {"refused": "min-interval"}, trigger="manual")
+    b.fetch("2026-10-19T19:02:10Z", None, {"refused": "backoff"}, product="scales", trigger="manual")
+    b.fetch("2026-10-19T19:03:00Z", {"status": 429, "retryAfter": "120"}, {
+        "outcome": "rate-limited",
+        "product": {"consecutiveRateLimited": 1, "nextAttemptNotBeforeUtc": "2026-10-19T19:05:00Z"}})
+    b.fetch("2026-10-19T19:05:00Z", {"status": 429}, {
+        "outcome": "rate-limited",
+        "product": {"consecutiveRateLimited": 2, "nextAttemptNotBeforeUtc": "2026-10-19T19:35:00Z"}})
+    b.fetch("2026-10-19T19:35:00Z", {"status": 429, "retryAfter": "900"}, {
+        "outcome": "halted",
+        "product": {"halt": {"scope": "provider", "reason": "rate-limited", "sinceUtc": "2026-10-19T19:35:00Z"},
+                    "nextAttemptNotBeforeUtc": None, "retryNotBeforeUtc": "2026-10-19T19:50:00Z",
+                    "consecutiveRateLimited": 3}})
+    b.step("resume", {"products": {
+        "alerts": {"halt": None, "nextAttemptNotBeforeUtc": "2026-10-19T19:50:00Z", "retryNotBeforeUtc": None,
+                   "consecutiveRateLimited": 3},
+        "scales": {"halt": None, "nextAttemptNotBeforeUtc": "2026-10-19T19:35:05Z", "consecutiveRateLimited": 1}}},
+        atUtc="2026-10-19T19:35:05Z", scope="provider", operator="fixture-operator")
+    b.fetch("2026-10-19T19:40:00Z", None, {"refused": "backoff"}, trigger="manual")
+    b.fetch("2026-10-19T19:50:00Z", {"status": 429}, {
+        "outcome": "halted",
+        "product": {"halt": {"scope": "provider", "reason": "rate-limited", "sinceUtc": "2026-10-19T19:50:00Z"},
+                    "retryNotBeforeUtc": "2026-10-19T20:20:00Z", "consecutiveRateLimited": 4}})
+    b.step("resume", {"products": {"alerts": {"halt": None, "nextAttemptNotBeforeUtc": "2026-10-19T20:30:00Z",
+                                              "retryNotBeforeUtc": None}}},
+           atUtc="2026-10-19T20:30:00Z", scope="provider", operator="fixture-operator")
+    b.fetch("2026-10-19T20:30:00Z", dict(calm, etag='"fixture-s19-b"'), {
+        "request": {"ifNoneMatch": '"fixture-s19-a"'},
+        "outcome": "unchanged",
+        "product": {"consecutiveRateLimited": 0, "consecutiveTransientFailures": 0, "halt": None,
+                    "freshness": "fresh", "nextAttemptNotBeforeUtc": "2026-10-19T20:32:00Z"}})
+    out.append(b.build())
+
+    # s20 ------------------------------------------------------------------
+    def header_drift(record):
+        damaged = dict(record, message=record["message"].replace("Space Weather Message Code: ",
+                                                                 "SWPC Message Code: ", 1))
+        if damaged["message"] == record["message"]:
+            raise ScenarioError("s20 header damage did not change the message")
+        return damaged
+    drift_a2691 = header_drift(a2691)
+    drift_ef3754 = header_drift(ef3754)
+    b = Builder("s20-record-level-drift",
+                "Rejected records in an accepted body raise record drift once per episode; restart keeps the "
+                "episode open",
+                ["record-drift", "format-drift", "restart", "malformed"], synthetic_records=True,
+                notes=["The damaged ALTK04 2691 and ALTEF3 3754 records are the real records with their first "
+                       "header line renamed; they are synthetic."])
+    b.fetch("2026-10-16T19:45:00Z", alerts_ok([w5436], 'W/"fixture-s20-a"', "Fri, 16 Oct 2026 19:44:50 GMT"), {
+        "outcome": "updated", "diagnostics": [],
+        "attention": [{"group": "WARK04/5436", "reason": "new", "level": "K4"}],
+        "product": {"recordDriftOpen": False, "facts": {"records": 1, "acceptedRecords": 1}}})
+    drifted = alerts_ok([drift_a2691, w5436], 'W/"fixture-s20-b"', "Fri, 16 Oct 2026 19:46:50 GMT")
+    b.fetch("2026-10-16T19:47:00Z", drifted, {
+        "outcome": "updated", "diagnostics": ["record-rejected:message-header:0"],
+        "attention": [{"group": "provider/alerts/record-drift", "reason": "new", "level": None}],
+        "notices": {"WARK04/5436": {"state": "active", "versions": 1}},
+        "product": {"recordDriftOpen": True, "freshness": "fresh", "consecutiveRejected": 0,
+                    "lkgSha256": sha256(drifted["body"].encode()),
+                    "facts": {"records": 2, "acceptedRecords": 1}}})
+    b.fetch("2026-10-16T19:49:00Z", dict(drifted, etag='W/"fixture-s20-c"'), {
+        "outcome": "unchanged", "diagnostics": [], "attention": [], "product": {"recordDriftOpen": True}})
+    b.step("restart")
+    b.fetch("2026-10-16T19:51:00Z", dict(drifted, etag='W/"fixture-s20-d"'), {
+        "outcome": "unchanged", "diagnostics": [], "attention": [], "product": {"recordDriftOpen": True}})
+    b.fetch("2026-10-16T19:53:00Z", alerts_ok([drift_a2691, w5436, drift_ef3754], 'W/"fixture-s20-e"',
+                                              "Fri, 16 Oct 2026 19:52:50 GMT"), {
+        "outcome": "updated", "attention": [],
+        "diagnostics": ["record-rejected:message-header:0", "record-rejected:message-header:2"],
+        "notices": {"WARK04/5436": {"state": "active"}},
+        "product": {"recordDriftOpen": True, "facts": {"records": 3, "acceptedRecords": 1}}})
+    b.fetch("2026-10-16T19:55:00Z", alerts_ok([a2691, w5436], 'W/"fixture-s20-f"', "Fri, 16 Oct 2026 19:54:50 GMT"), {
+        "outcome": "updated", "diagnostics": [],
+        "attention": [{"group": "ALTK04/2691", "reason": "new", "level": "K4"}],
+        "notices": {"ALTK04/2691": {"state": "active"}, "WARK04/5436": {"state": "active"}},
+        "product": {"recordDriftOpen": False, "facts": {"records": 2, "acceptedRecords": 2}}})
+    b.fetch("2026-10-16T19:57:00Z", alerts_ok([drift_ef3754, a2691, w5436], 'W/"fixture-s20-g"',
+                                              "Fri, 16 Oct 2026 19:56:50 GMT"), {
+        "outcome": "updated", "diagnostics": ["record-rejected:message-header:2"],
+        "attention": [{"group": "provider/alerts/record-drift", "reason": "new", "level": None}],
+        "notices": {"ALTK04/2691": {"state": "active", "versions": 1},
+                    "WARK04/5436": {"state": "active", "versions": 1}},
+        "product": {"recordDriftOpen": True, "facts": {"records": 3, "acceptedRecords": 2}}})
+    out.append(b.build())
+
+    # s21 ------------------------------------------------------------------
+    s259 = cap.rec("WARSUD/259/2026-10-10T14:45:00Z")
+    k219 = cap.rec("ALTK07/219/2026-10-10T17:58:00Z")
+    k727 = cap.rec("ALTK06/727/2026-10-10T17:18:00Z")
+    long_warning = synthetic("PX1W", "2026-10-10 18:55:12.000", "WARPX1", 200, [
+        "WARNING: Proton 10MeV Integral Flux above 10pfu expected ",
+        "Valid From: 2026 Oct 10 1900 UTC",
+        "Valid To: 2026 Oct 15 1900 UTC",
+        "Warning Condition: Onset",
+        "NOAA Scale: S1 - Minor",
+        "Comment: Synthetic fixture with a validity longer than the active cap; not an SWPC product.",
+    ])
+    b = Builder("s21-pending-short-window-and-cap",
+                "A warning is pending before Valid From; an alert first seen just after its end alerts only within "
+                "the grace window; the active cap ends a long validity",
+                ["pending", "expired", "new-grace", "capped", "first-run-backlog"], synthetic_records=True,
+                notes=["WARPX1 serial 200 is synthetic. Its 5-day validity exceeds the 96-hour active cap.",
+                       "ALTK07 219 ended at 18:00 and was issued at 17:58, so at 18:00:30 it is inside the 300-second "
+                       "grace window. ALTK06 727 ended at the same time but was issued at 17:18, so it never "
+                       "alerts."])
+    sud = {"family": "warning", "level": None, "relevance": {hvo: "NoLocalObservingImpact"},
+           "fromUtc": "2026-10-10T15:10:00Z", "untilUtc": "2026-10-10T15:50:00Z"}
+    b.fetch("2026-10-10T14:46:00Z", alerts_ok([s259], 'W/"fixture-s21-a"', "Sat, 10 Oct 2026 14:45:50 GMT"), {
+        "outcome": "updated",
+        "attention": [{"group": "WARSUD/259", "reason": "new", "level": None}],
+        "notices": {"WARSUD/259": dict(sud, state="pending", mayBeOutOfDate=False)}})
+    b.step("evaluate", {"notices": {"WARSUD/259": {"state": "active", "mayBeOutOfDate": True}},
+                        "products": {"alerts": {"freshness": "stale"}}}, atUtc="2026-10-10T15:10:00Z")
+    b.step("evaluate", {"notices": {"WARSUD/259": {"state": "recent", "endReason": "expired",
+                                                   "mayBeOutOfDate": False}}},
+           atUtc="2026-10-10T15:50:00Z")
+    b.fetch("2026-10-10T18:00:30Z", alerts_ok([k219, k727, s259], 'W/"fixture-s21-b"',
+                                              "Sat, 10 Oct 2026 18:00:20 GMT"), {
+        "outcome": "updated",
+        "attention": [{"group": "ALTK07/219", "reason": "new", "level": "G3"}],
+        "notices": {"ALTK06/727": {"state": "recent", "endReason": "expired", "level": "G2",
+                                   "untilUtc": "2026-10-10T18:00:00Z", "relevance": {hvo: "NotExpected"}},
+                    "ALTK07/219": {"state": "recent", "endReason": "expired", "level": "G3",
+                                   "fromUtc": "2026-10-10T17:58:00Z", "untilUtc": "2026-10-10T18:00:00Z",
+                                   "relevance": {hvo: "Unlikely"}},
+                    "WARSUD/259": {"state": "recent"}}})
+    b.fetch("2026-10-10T18:56:00Z", alerts_ok([long_warning, k219, k727, s259], 'W/"fixture-s21-c"',
+                                              "Sat, 10 Oct 2026 18:55:50 GMT"), {
+        "outcome": "updated",
+        "attention": [{"group": "WARPX1/200", "reason": "new", "level": "S1"}],
+        "notices": {"ALTK06/727": {"state": "recent"}, "ALTK07/219": {"state": "recent"},
+                    "WARPX1/200": {"family": "warning", "level": "S1", "state": "pending",
+                                   "fromUtc": "2026-10-10T19:00:00Z", "untilUtc": "2026-10-14T18:55:00Z",
+                                   "relevance": {hvo: "NoLocalObservingImpact"}},
+                    "WARSUD/259": {"state": "recent"}}})
+    b.step("evaluate", {"notices": {"ALTK06/727": {"state": "history"}, "ALTK07/219": {"state": "history"},
+                                    "WARPX1/200": {"state": "active"}, "WARSUD/259": {"state": "history"}}},
+           atUtc="2026-10-14T18:54:59Z")
+    b.step("evaluate", {"notices": {"ALTK06/727": {"state": "history"}, "ALTK07/219": {"state": "history"},
+                                    "WARPX1/200": {"state": "recent", "endReason": "capped",
+                                                   "untilUtc": "2026-10-14T18:55:00Z"},
+                                    "WARSUD/259": {"state": "history"}}},
+           atUtc="2026-10-14T18:55:00Z")
+    out.append(b.build())
+
+    # s22 ------------------------------------------------------------------
+    quiet = alerts_ok([s930], '"fixture-s22-a"', "Mon, 19 Oct 2026 18:59:30 GMT")
+    b = Builder("s22-gone-client-error-network",
+                "410 and 400 halt one product; a network error backs off; a 304 without validators is transient",
+                ["outage", "halt", "resume", "backoff", "not-modified", "manual-refresh"])
+    b.fetch("2026-10-19T19:00:00Z", quiet, {"outcome": "updated"})
+    b.fetch("2026-10-19T19:02:00Z", {"outcome": "network-error"}, {
+        "outcome": "transient-failure",
+        "product": {"consecutiveTransientFailures": 1, "nextAttemptNotBeforeUtc": "2026-10-19T19:06:00Z"}})
+    b.fetch("2026-10-19T19:02:30Z", {"status": 410}, {
+        "outcome": "halted",
+        "product": {"halt": {"scope": "product", "reason": "gone", "sinceUtc": "2026-10-19T19:02:30Z"}}},
+        product="scales")
+    b.fetch("2026-10-19T19:03:00Z", {"status": 400}, {
+        "outcome": "halted",
+        "product": {"halt": {"scope": "product", "reason": "client-error", "sinceUtc": "2026-10-19T19:03:00Z"}}},
+        product="kp-forecast")
+    b.step("resume", {"products": {"scales": {"halt": None, "nextAttemptNotBeforeUtc": "2026-10-19T19:03:30Z"},
+                                   "kp-forecast": {"halt": {"scope": "product", "reason": "client-error"}},
+                                   "alerts": {"halt": None}}},
+           atUtc="2026-10-19T19:03:10Z", scope="product", product="scales", operator="fixture-operator")
+    b.fetch("2026-10-19T19:03:15Z", None, {"refused": "min-interval"}, product="scales", trigger="manual")
+    b.fetch("2026-10-19T19:03:20Z", {"status": 304}, {
+        "request": {"ifNoneMatch": None, "ifModifiedSince": None},
+        "outcome": "transient-failure",
+        "product": {"consecutiveTransientFailures": 1, "nextAttemptNotBeforeUtc": "2026-10-19T19:33:20Z",
+                    "lkgSha256": None}},
+        product="3-day-forecast")
+    b.fetch("2026-10-19T19:03:30Z", {"status": 200, "contentType": "application/json", "etag": None,
+                                     "lastModified": None, "bodyFile": CAPTURE + "/noaa-scales.json"}, {
+        "outcome": "updated", "product": {"halt": None}}, product="scales")
+    b.fetch("2026-10-19T19:04:00Z", None, {"refused": "halted"}, product="kp-forecast", trigger="manual")
+    b.fetch("2026-10-19T19:06:00Z", dict(quiet, etag='"fixture-s22-b"'), {
+        "request": {"ifNoneMatch": '"fixture-s22-a"'},
+        "outcome": "unchanged",
+        "product": {"consecutiveTransientFailures": 0, "freshness": "fresh"},
+        "products": {"kp-forecast": {"halt": {"scope": "product", "reason": "client-error",
+                                              "sinceUtc": "2026-10-19T19:03:00Z"}},
+                     "scales": {"halt": None}}})
+    out.append(b.build())
+
     return out
 
 
@@ -1814,7 +2313,7 @@ def command_check():
     recorded = json.loads(manifest_path.read_text("ascii"))
     on_disk = {p.relative_to(PACK).as_posix() for p in PACK.rglob("*") if p.is_file()}
     on_disk -= {"manifest.json"}
-    on_disk = {p for p in on_disk if "__pycache__" not in p}
+    on_disk = {p for p in on_disk if "__pycache__" not in p.split("/")}
     listed = {e["path"] for e in recorded["files"]}
     if on_disk != listed:
         problems.append(f"unlisted or missing files: {sorted(on_disk ^ listed)}")

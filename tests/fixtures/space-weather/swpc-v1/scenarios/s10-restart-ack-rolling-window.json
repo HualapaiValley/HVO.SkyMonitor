@@ -1,15 +1,18 @@
 {
   "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
   "scenarioId": "s10-restart-ack-rolling-window",
-  "title": "Restart does not re-alert; acknowledgement persists; aged-out records stay; retention purges",
+  "title": "Restart does not re-alert; acknowledgement persists across a later extension; aged-out records stay; retention purges, a summary 35 days after its issue time",
   "covers": [
     "restart",
     "acknowledgement",
+    "extension",
     "rolling-window",
     "retention"
   ],
-  "containsSyntheticRecords": false,
-  "notes": [],
+  "containsSyntheticRecords": true,
+  "notes": [
+    "WARK04 serial 5437 is synthetic. It extends the real WARK04 5436, which the capture never extended."
+  ],
   "sites": [
     {
       "siteId": "hvo",
@@ -109,6 +112,40 @@
     {
       "step": 5,
       "kind": "fetch",
+      "atUtc": "2026-10-16T19:54:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s10-ext\"",
+        "lastModified": "Fri, 16 Oct 2026 19:53:50 GMT",
+        "body": "[{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-16 19:53:40.000\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 5437\\r\\nIssue Time: 2026 Oct 16 1953 UTC\\r\\n\\r\\nEXTENDED WARNING: Geomagnetic K-index of 4 expected\\nExtension to Serial Number: 5436\\nValid From: 2026 Oct 16 1938 UTC\\nNow Valid Until: 2026 Oct 17 0900 UTC\\nWarning Condition: Persistence\\nComment: Synthetic fixture extension; not an SWPC product.\"},{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time: 2026 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-16 19:38:53.387\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 5436\\r\\nIssue Time: 2026 Oct 16 1938 UTC\\r\\n\\r\\nWARNING: Geomagnetic K-index of 4 expected \\nValid From: 2026 Oct 16 1938 UTC\\nValid To: 2026 Oct 17 0300 UTC\\nWarning Conditions: Onset\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [],
+        "diagnostics": [],
+        "notices": {
+          "ALTK04/2691": {
+            "acknowledged": null
+          },
+          "WARK04/5436": {
+            "state": "active",
+            "untilUtc": "2026-10-17T09:00:00Z",
+            "versions": 2,
+            "latest": "WARK04/5437/2026-10-16T19:53:00Z",
+            "acknowledged": {
+              "operator": "fixture-operator",
+              "atUtc": "2026-10-16T19:50:00Z"
+            }
+          }
+        }
+      }
+    },
+    {
+      "step": 6,
+      "kind": "fetch",
       "atUtc": "2026-11-13T19:45:00Z",
       "product": "alerts",
       "trigger": "scheduled",
@@ -142,7 +179,7 @@
       }
     },
     {
-      "step": 6,
+      "step": 7,
       "kind": "evaluate",
       "atUtc": "2026-11-20T21:00:00Z",
       "expect": {
@@ -157,15 +194,36 @@
       }
     },
     {
-      "step": 7,
+      "step": 8,
       "kind": "evaluate",
-      "atUtc": "2026-11-21T03:00:00Z",
+      "atUtc": "2026-11-21T09:00:00Z",
       "expect": {
         "notices": {
           "SUM10R/930": {
             "state": "history"
           }
         }
+      }
+    },
+    {
+      "step": 9,
+      "kind": "evaluate",
+      "atUtc": "2026-11-23T09:08:59Z",
+      "expect": {
+        "notices": {
+          "SUM10R/930": {
+            "state": "history",
+            "endReason": null
+          }
+        }
+      }
+    },
+    {
+      "step": 10,
+      "kind": "evaluate",
+      "atUtc": "2026-11-23T09:09:00Z",
+      "expect": {
+        "notices": {}
       }
     }
   ]
