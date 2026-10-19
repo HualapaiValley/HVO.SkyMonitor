@@ -7,8 +7,8 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
 /// The backup archive and the folder that keeps it (#1353): an archive is whole only when it ends with a manifest naming
-/// exactly what precedes it, byte for byte; a partial or unrecorded archive is never read as a backup; and the root-only
-/// vault's helper accepts exactly one archive name and streams it.
+/// exactly what precedes it, byte for byte; a partial or unrecorded archive is never read as a backup; and the service
+/// account's owner-only folder is checked before anything is written in it.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]

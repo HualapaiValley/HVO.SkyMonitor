@@ -153,7 +153,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (!request.RestoreOnly)
         {
             (signedImage, imported, hostLimits) = await AdmitBeforeWritingAsync(
-                    request, paths, manifest, compose, docker, capabilities, signedImage, error, cancellationToken)
+                    request, paths, manifest, compose, docker, capabilities, signedImage, processRunner, uid, gid, error, cancellationToken)
                 .ConfigureAwait(false);
         }
         else

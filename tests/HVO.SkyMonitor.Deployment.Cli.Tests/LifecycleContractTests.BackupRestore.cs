@@ -7,7 +7,7 @@ using Microsoft.Data.Sqlite;
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
-/// <c>cameraagent backup</c> and <c>cameraagent restore</c> (#1353): a root-only, self-verifying archive of the whole
+/// <c>cameraagent backup</c> and <c>cameraagent restore</c> (#1353): an owner-only, self-verifying archive of the whole
 /// instance, written while the instance is stopped and proved whole before it is committed, and a restore that refuses
 /// anything partial, unrecorded or damaged with nothing changed, puts the databases back through the snapshot restore,
 /// revokes again what the live instance revoked, and resumes after a power loss at any durable step.
@@ -76,7 +76,9 @@ public sealed partial class LifecycleContractTests
         var planned = await BackupAsync(fixture, new FakeLifecycleClient(), plan: true);
 
         Assert.AreEqual("planned", planned.Outcome);
-        Assert.IsTrue(planned.Plan!.Items.Any(static item => item.Kind == "file" && item.Target.EndsWith(".tar.gz", StringComparison.Ordinal)));
+        var archive = planned.Plan!.Items.Single(static item => item.Kind == "file" && item.Target.EndsWith(".tar.gz", StringComparison.Ordinal));
+        // Backups are the service account's own, not root's (owner decision 2026-10-18, PR-1369-R3 F24).
+        StringAssert.StartsWith(archive.Detail, "owner-only archive of ", StringComparison.Ordinal);
         Assert.IsTrue(fixture.Runner.Running);
         FileSystemActivity.AssertUnchanged(before, FileSystemActivity.Snapshot(fixture.Root), "the backup plan changed the product root");
     }

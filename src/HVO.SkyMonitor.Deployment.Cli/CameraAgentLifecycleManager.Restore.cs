@@ -19,8 +19,10 @@ namespace HVO.SkyMonitor.Deployment;
 /// which carries the live counters past everything the replaced instance handed out.</para>
 /// <para>Credentials the live instance revoked after the backup are revoked again (<see cref="RestoredCredentials"/>);
 /// where there is no live store to compare, the restore warns loudly that they are active again. The release records
-/// come back with the archive and are settled for the restored image, and the install record is settled from the
-/// restored manifest, so <c>/etc/hvo-sky/install.json</c> stays a view of the authoritative records.</para>
+/// come back with the archive and are settled for the restored image. The machine install record is left to
+/// <c>cameraagent reinstall</c>, which settles it from the restored manifest (PR-1369-R3 F23).</para>
+/// <para>A restore runs as the instance's service account. Its one privileged step, before it changes anything, is the
+/// creation of an absent instance root through the installer's preparation helper, as <c>install</c> does.</para>
 /// <para>Each step a later one depends on is durable before the next, and the journal records the boundary, so
 /// <c>--resume</c> completes an interrupted restore. Before the swap, a failure or cancellation removes what was staged
 /// and changes nothing else; after it, the restore can only go forward, and <c>--resume</c> finishes it.</para>
@@ -178,7 +180,6 @@ internal sealed partial class CameraAgentLifecycleManager
             {
                 committed = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
             }
-            await SettleInstallRecordAsync(request, paths, committed, operation.Kind, cancellationToken).ConfigureAwait(false);
             RemoveStaging(paths, staging);
             operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
             var warnings = new List<InstallationWarning>(archived.Warnings);
@@ -272,7 +273,9 @@ internal sealed partial class CameraAgentLifecycleManager
     /// Moves back, from the files the swap kept aside, each store that holds a recorded floor and that the backup's snapshot
     /// records as absent, and syncs both directories of each move. A store is one unit with its WAL, journal and
     /// shared-memory files (#1353 PR-1369-R2 F15): it is carried once none of them is left aside, never because its main
-    /// file is back, so a pass that an interruption split between them moves the rest.
+    /// file is back, so a pass that an interruption split between them moves the rest. Every pass syncs both folders of
+    /// every carried store, one an earlier pass moved whole included, since an interruption between a rename and its sync
+    /// leaves it undurable (PR-1369-R3 F22).
     /// </summary>
     private static void CarryLiveStores(
         InstallationPaths paths, InstanceManifest manifest, StateSnapshotManifest snapshot, IReadOnlyList<StateCounterFloor> floors, string previous)
@@ -283,12 +286,18 @@ internal sealed partial class CameraAgentLifecycleManager
             var target = CameraAgentStateSnapshot.StorePath(paths.StateRoot, store);
             var source = CameraAgentStateSnapshot.StorePath(Path.Combine(previous, "state"), store);
             var left = CameraAgentStateLayout.SqliteSidecarSuffixes.Prepend(string.Empty).Where(suffix => File.Exists(source + suffix)).ToArray();
-            if (left.Length == 0) continue;
+            var directory = Path.GetDirectoryName(target)!;
+            var sourceDirectory = Path.GetDirectoryName(source)!;
+            if (left.Length == 0)
+            {
+                // Carried whole by an earlier pass, or never there: a carried store's renames are synced again.
+                if (File.Exists(target)) SyncCarried(sourceDirectory, directory);
+                continue;
+            }
             if (left.FirstOrDefault(suffix => File.Exists(target + suffix)) is { } both)
             {
                 throw new InstallerException($"The restore cannot carry '{store}{both}' over from the live instance: the restored instance has one too.");
             }
-            var directory = Path.GetDirectoryName(target)!;
             var missing = new Stack<string>();
             for (var ancestor = directory; !Directory.Exists(ancestor); ancestor = Path.GetDirectoryName(ancestor)!) missing.Push(ancestor);
             while (missing.TryPop(out var created))
@@ -298,9 +307,15 @@ internal sealed partial class CameraAgentLifecycleManager
             }
             foreach (var suffix in left)
             {
-                Move(source + suffix, target + suffix, Path.GetDirectoryName(source)!, directory);
+                Move(source + suffix, target + suffix, sourceDirectory, directory);
             }
             BackupStepCompleted($"restore-carried:{store}");
+        }
+
+        static void SyncCarried(string sourceDirectory, string directory)
+        {
+            if (Directory.Exists(sourceDirectory)) NativeLinux.FlushDirectory(sourceDirectory);
+            NativeLinux.FlushDirectory(directory);
         }
     }
 

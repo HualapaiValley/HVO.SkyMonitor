@@ -32,6 +32,9 @@ internal sealed partial class CameraAgentLifecycleManager
         DockerClient docker,
         DockerHostCapabilities? capabilities,
         AcquiredImage? signedImage,
+        IProcessRunner processRunner,
+        uint uid,
+        uint gid,
         TextWriter error,
         CancellationToken cancellationToken)
     {
@@ -76,7 +79,7 @@ internal sealed partial class CameraAgentLifecycleManager
             : null;
         if (kind == LifecycleOperationKind.Backup && resumed is null)
         {
-            await AdmitBackupAsync(request, paths, manifest, cancellationToken).ConfigureAwait(false);
+            await AdmitBackupAsync(request, paths, manifest, processRunner, uid, gid, cancellationToken).ConfigureAwait(false);
         }
         if (kind == LifecycleOperationKind.Upgrade && signedImage is not null)
         {

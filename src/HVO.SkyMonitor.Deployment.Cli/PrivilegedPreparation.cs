@@ -8,9 +8,10 @@ internal static class PrivilegedPreparation
 
     /// <summary>
     /// One privileged preparation request: the product root to prepare, the instance whose runtime root it also
-    /// creates (none for product-level catalog operations), and the runtime identity that owns what it creates.
+    /// creates (none for product-level catalog operations), and the runtime identity that owns what it creates. With
+    /// <paramref name="Backups"/> it creates only the backup folder (#1353 PR-1369-R3 F20).
     /// </summary>
-    internal sealed record Invocation(string ProductRoot, Guid? InstanceId, uint Uid, uint Gid);
+    internal sealed record Invocation(string ProductRoot, Guid? InstanceId, uint Uid, uint Gid, bool Backups = false);
 
     /// <summary>
     /// Prepares the product root and one instance root, first without privilege and, only when the kernel denies that,
@@ -68,11 +69,48 @@ internal static class PrivilegedPreparation
         SafeFileSystem.EnsureSafeExistingAncestors(paths.OperationsRoot);
     }
 
+    /// <summary>
+    /// Creates the backup folder <c>&lt;product-root&gt;/backups</c>, owned by the service account
+    /// <paramref name="uid"/>:<paramref name="gid"/> with mode 0700, when it is missing (#1353 PR-1369-R3 F20): first
+    /// without privilege and, only when the kernel denies that because the product root is root's, through the narrow
+    /// <c>sudo</c>-executed helper install uses. It creates nothing else, and a backup calls it before it changes anything.
+    /// </summary>
+    public static async Task PrepareBackupFolderAsync(
+        string productRoot,
+        uint uid,
+        uint gid,
+        IProcessRunner processRunner,
+        CancellationToken cancellationToken)
+    {
+        var folder = Path.Combine(productRoot, BackupVault.FolderName);
+        if (Directory.Exists(folder))
+        {
+            return;
+        }
+        try
+        {
+            SafeFileSystem.CreateOwnerDirectory(folder);
+            NativeLinux.FlushDirectory(productRoot);
+            return;
+        }
+        catch (UnauthorizedAccessException) when (NativeLinux.getuid() != 0)
+        {
+        }
+
+        await RunHelperAsync(new Invocation(productRoot, null, uid, gid, Backups: true), processRunner, cancellationToken)
+            .ConfigureAwait(false);
+        SafeFileSystem.EnsureSafeExistingAncestors(folder);
+    }
+
     internal static IReadOnlyList<string> HelperArguments(Invocation invocation)
     {
         ArgumentNullException.ThrowIfNull(invocation);
         var arguments = new List<string> { "--", $"/proc/{Environment.ProcessId}/exe", CommandName, "--product-root", invocation.ProductRoot };
-        if (invocation.InstanceId is { } instanceId)
+        if (invocation.Backups)
+        {
+            arguments.Add("--backups");
+        }
+        else if (invocation.InstanceId is { } instanceId)
         {
             arguments.Add("--instance-id");
             arguments.Add(instanceId.ToString("D"));
@@ -85,19 +123,25 @@ internal static class PrivilegedPreparation
     }
 
     /// <summary>
-    /// Parses exactly <c>internal-prepare --product-root &lt;root&gt; [--instance-id &lt;uuid&gt;] --uid &lt;uid&gt;
-    /// --gid &lt;gid&gt;</c> with a non-root runtime UID.
+    /// Parses exactly <c>internal-prepare --product-root &lt;root&gt; [--instance-id &lt;uuid&gt; | --backups] --uid
+    /// &lt;uid&gt; --gid &lt;gid&gt;</c> with a non-root runtime UID.
     /// </summary>
     internal static bool TryParse(string[] args, out Invocation invocation)
     {
         ArgumentNullException.ThrowIfNull(args);
         invocation = null!;
         Guid? instanceId = null;
+        var backups = false;
         int uidIndex;
         if (args.Length == 9 && args[3] == "--instance-id" && Guid.TryParseExact(args[4], "D", out var parsed))
         {
             instanceId = parsed;
             uidIndex = 5;
+        }
+        else if (args.Length == 8 && args[3] == "--backups")
+        {
+            backups = true;
+            uidIndex = 4;
         }
         else if (args.Length == 7)
         {
@@ -115,7 +159,7 @@ internal static class PrivilegedPreparation
         {
             return false;
         }
-        invocation = new Invocation(args[2], instanceId, uid, gid);
+        invocation = new Invocation(args[2], instanceId, uid, gid, backups);
         return true;
     }
 
@@ -136,6 +180,15 @@ internal static class PrivilegedPreparation
 
         try
         {
+            if (invocation.Backups)
+            {
+                // A backup's folder alone: the product root is validated as root's, nothing else is created.
+                return PrepareUnderHostPolicy(HostPolicyLocation.Production, invocation.ProductRoot, production =>
+                {
+                    CreateOrValidateRootDirectory(production.Path);
+                    CreateOrValidateRuntimeDirectory(Path.Combine(production.Path, BackupVault.FolderName), invocation.Uid, invocation.Gid);
+                });
+            }
             return PrepareUnderHostPolicy(HostPolicyLocation.Production, invocation.ProductRoot, production => Prepare(
                 InstallationPaths.Create(production.Path, invocation.InstanceId ?? Guid.Empty, ProductionCatalog.DefaultCatalogId),
                 invocation.Uid,

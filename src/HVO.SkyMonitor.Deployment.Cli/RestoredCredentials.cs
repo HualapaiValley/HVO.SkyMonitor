@@ -115,14 +115,15 @@ internal static class RestoredCredentials
     ];
 
     /// <summary>
-    /// Brings the live owner's account into <paramref name="restoredDatabase"/> when the restore keeps a live owner email,
-    /// <paramref name="ownerEmail"/>, that the backup has no account for, as when the live owner was installed after the
-    /// backup (#1353 PR-1369-R2 F14). The installer withdraws the temporary owner password once the owner is seeded, so
-    /// CameraAgent's startup seeder can then only find the owner, never create it, and without the account CameraAgent
-    /// would not start. The account comes as the live store has it, its password, security stamp, site ownership and
-    /// lockout included, as live credentials win for every account (<see cref="Revoke"/>). An account the backup holds
-    /// under its sign-in name, which the live store no longer has and <see cref="Revoke"/> has locked out, is renamed
-    /// <c>removed-&lt;id&gt;</c> first. Returns each change. Running it again changes nothing more.
+    /// Puts the live owner's account in <paramref name="restoredDatabase"/> when the restore keeps a live owner email,
+    /// <paramref name="ownerEmail"/>, that names an account the backup does not hold (#1353 PR-1369-R2 F14): the live owner
+    /// was installed after the backup, under another email or under the same one with a new Identity account
+    /// (PR-1369-R3 F25). The installer withdraws the temporary owner password once the owner is seeded, so CameraAgent's
+    /// startup seeder can then only find the owner, by its email, never create it. One mechanism serves every case: each
+    /// restored account that holds the live owner's normalized email or sign-in name gives them up and is locked out as a
+    /// removed account is, under a sign-in name no other account has, chosen in the same transaction (PR-1369-R3 F21); then
+    /// the live account is carried in as the live store has it, password, security stamp, site ownership and lockout
+    /// included. Returns each change. Running it again changes nothing more.
     /// </summary>
     public static IReadOnlyList<string> CarryLiveOwner(string restoredDatabase, string liveDatabase, string ownerEmail)
     {
@@ -150,34 +151,42 @@ internal static class RestoredCredentials
         using var transaction = restored.BeginTransaction();
         if (!HasTable(restored, transaction, "AspNetUsers")) return [];
         var present = Columns(restored, transaction, "AspNetUsers");
-        if (!present.IsSupersetOf(["NormalizedEmail", "NormalizedUserName"])) return [];
+        if (!present.IsSupersetOf(["NormalizedEmail", "NormalizedUserName", "UserName", "Email"])) return [];
         var id = (string)owner["Id"]!;
-        using (var existing = Command(restored, transaction, "SELECT COUNT(*) FROM AspNetUsers WHERE NormalizedEmail = $email OR Id = $id;",
-                   ("$email", email), ("$id", id)))
+        using (var existing = Command(restored, transaction, "SELECT COUNT(*) FROM AspNetUsers WHERE Id = $id;", ("$id", id)))
         {
+            // The live owner's own account is in the backup: re-revocation has given it its live credentials.
             if (Convert.ToInt64(existing.ExecuteScalar(), CultureInfo.InvariantCulture) > 0) return [];
         }
-        var changes = new List<string>();
-        if (owner.GetValueOrDefault("NormalizedUserName") is string name)
+        var name = owner.GetValueOrDefault("NormalizedUserName") as string;
+        var holders = new List<(string Id, bool Email, bool Name)>();
+        using (var holding = Command(restored, transaction,
+                   "SELECT Id, NormalizedEmail IS $email, NormalizedUserName IS $name FROM AspNetUsers WHERE NormalizedEmail = $email OR NormalizedUserName = $name ORDER BY Id;",
+                   ("$email", email), ("$name", name)))
+        using (var reader = holding.ExecuteReader())
         {
-            string? holder;
-            using (var holding = Command(restored, transaction, "SELECT Id FROM AspNetUsers WHERE NormalizedUserName = $name;", ("$name", name)))
+            while (reader.Read()) holders.Add((reader.GetString(0), reader.GetInt64(1) != 0, reader.GetInt64(2) != 0));
+        }
+        var changes = new List<string>();
+        var before = Read(restored, transaction);
+        foreach (var holder in holders)
+        {
+            if (liveAccounts.Contains(holder.Id))
             {
-                holder = holding.ExecuteScalar() as string;
+                throw new InstallerException(
+                    $"The restore cannot put the live owner's account {id} in place: account {holder.Id}, which the backup holds and the live instance still has, has its email or sign-in name.");
             }
-            if (holder is not null)
-            {
-                if (liveAccounts.Contains(holder))
-                {
-                    throw new InstallerException(
-                        $"The restore cannot bring back the live owner's account {id}: account {holder}, which the backup holds and the live instance still has, has its sign-in name.");
-                }
-                var freed = $"removed-{holder}";
-                var renamed = new List<(string Column, object? Value)> { ("UserName", freed), ("NormalizedUserName", freed.ToUpperInvariant()) };
-                if (present.Contains("ConcurrencyStamp")) renamed.Add(("ConcurrencyStamp", Guid.NewGuid().ToString("D")));
-                Update(restored, transaction, holder, [.. renamed]);
-                changes.Add($"account {holder}, which the live store no longer has, gave up its sign-in name to the live owner and is now '{freed}'");
-            }
+            var freed = holder.Name ? FreeUserName(restored, transaction, holder.Id) : null;
+            var renamed = new List<(string Column, object? Value)>();
+            if (freed is not null) renamed.AddRange([("UserName", freed), ("NormalizedUserName", freed.ToUpperInvariant())]);
+            if (holder.Email) renamed.AddRange([("Email", null), ("NormalizedEmail", null)]);
+            if (present.Contains("ConcurrencyStamp")) renamed.Add(("ConcurrencyStamp", Guid.NewGuid().ToString("D")));
+            Update(restored, transaction, holder.Id, [.. renamed]);
+            RevokeAccount(restored, transaction, before, holder.Id, before.Accounts[holder.Id]);
+            var held = holder.Email && holder.Name ? "email and sign-in name" : holder.Email ? "email" : "sign-in name";
+            changes.Add(freed is null
+                ? $"account {holder.Id} held the live owner's {held}; it gave it up and is locked out"
+                : $"account {holder.Id} held the live owner's {held}; it gave {(holder.Email ? "them" : "it")} up as '{freed}' and is locked out");
         }
         var columns = AccountColumns.Where(column => owner.ContainsKey(column) && present.Contains(column)).ToArray();
         using (var insert = Command(restored, transaction,
@@ -192,6 +201,21 @@ internal static class RestoredCredentials
         transaction.Commit();
         changes.Add($"account {id}, the live owner, which the backup does not hold, was brought over from the live instance with its live credentials");
         return changes;
+    }
+
+    /// <summary>
+    /// The first of <c>removed-&lt;id&gt;</c>, <c>removed-&lt;id&gt;-2</c>, ... that no account in the store has, read in
+    /// <paramref name="transaction"/>, so the account that gives up its name never collides (PR-1369-R3 F21).
+    /// </summary>
+    private static string FreeUserName(SqliteConnection connection, SqliteTransaction transaction, string id)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            var candidate = attempt == 1 ? $"removed-{id}" : string.Create(CultureInfo.InvariantCulture, $"removed-{id}-{attempt}");
+            using var taken = Command(connection, transaction, "SELECT COUNT(*) FROM AspNetUsers WHERE NormalizedUserName = $name;",
+                ("$name", candidate.ToUpperInvariant()));
+            if (Convert.ToInt64(taken.ExecuteScalar(), CultureInfo.InvariantCulture) == 0) return candidate;
+        }
     }
 
     /// <summary>The account <paramref name="normalizedEmail"/> names, by <see cref="AccountColumns"/>, or <see langword="null"/>.</summary>

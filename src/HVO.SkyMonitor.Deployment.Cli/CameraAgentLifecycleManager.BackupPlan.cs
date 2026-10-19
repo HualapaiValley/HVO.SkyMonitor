@@ -28,7 +28,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 "the small databases, verified while the instance is stopped"),
             new(DeploymentPlanAction.Create, "file", Path.Combine(vault.Root, name), string.Create(
                 CultureInfo.InvariantCulture,
-                $"root-only archive of {items.Count(static item => !item.Directory)} files ({FormatBytes(bytes)}) and the snapshot, read back and proved whole before it is committed with its record"))
+                $"owner-only archive of {items.Count(static item => !item.Directory)} files ({FormatBytes(bytes)}) and the snapshot, read back and proved whole before it is committed with its record"))
         };
         plan.AddRange(partials.Select(partial => new DeploymentPlanItem(
             DeploymentPlanAction.Remove, "file", Path.Combine(vault.Root, partial.Name + BackupVaultFiles.PartialSuffix),

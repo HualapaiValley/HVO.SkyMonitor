@@ -890,4 +890,60 @@ jq -e '[.warnings[]? | select(.code == "restore-live-owner-settings-kept")] | le
 printf 'Restore owner settings contract passed for instance %s: the real seeder kept the backup'"'"'s owner demoted and the live owner the site owner.\n' \
   "$instance_id"
 
+# A fresh install that reuses the owner's email makes a new Identity account for it (PR-1369-R3 F25). Restoring a backup
+# taken before puts the live account in the place of the backup's, which held that email and sign-in name, so after the
+# real seeder runs the live owner is still the site owner and can still sign in with its live password.
+archived_owner_id="$(sqlite3 -readonly "$identity_root/cameraagent_identity.db" "SELECT Id FROM AspNetUsers WHERE NormalizedEmail = upper('$live_owner');")"
+[[ -n "$archived_owner_id" ]] || owner_contract_fails "$live_owner has no account before the same-email backup."
+logged "$root/owner2-backup-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent backup \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner2-backup.json"
+[[ "$(jq -er '.outcome' "$root/owner2-backup.json")" == completed ]] || owner_contract_fails "the same-email backup did not complete."
+owner2_archive="$(jq -er '.backup.archive' "$root/owner2-backup.json")"
+for step in uninstall purge; do
+  purge_arguments=()
+  [[ "$step" != purge ]] || purge_arguments=(--confirm-instance-id "$instance_id")
+  "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent "$step" \
+    --instance-id "$instance_id" \
+    "${purge_arguments[@]}" \
+    --product-root "$root/product" \
+    --json >"$root/owner2-$step.json"
+  [[ "$(jq -er '.outcome' "$root/owner2-$step.json")" == completed ]] || owner_contract_fails "the same-email $step did not complete."
+done
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" "${live_owner_install[@]}" >"$root/owner2-install.json"
+[[ "$(jq -er '.healthy' "$root/owner2-install.json")" == true ]] || owner_contract_fails "the same-email fresh install is not healthy."
+live_owner_id="$(sqlite3 -readonly "$identity_root/cameraagent_identity.db" "SELECT Id FROM AspNetUsers WHERE NormalizedEmail = upper('$live_owner');")"
+[[ -n "$live_owner_id" && "$live_owner_id" != "$archived_owner_id" ]] ||
+  owner_contract_fails "the same-email fresh install did not make a new account for $live_owner ($live_owner_id)."
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner2-live-uninstall.json"
+[[ "$(jq -er '.outcome' "$root/owner2-live-uninstall.json")" == completed ]] || owner_contract_fails "the same-email second uninstall did not complete."
+logged "$root/owner2-restore-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent restore "$owner2_archive" \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner2-restore.json"
+[[ "$(jq -er '.outcome' "$root/owner2-restore.json")" == completed ]] || owner_contract_fails "the same-email restore did not complete."
+owner2_reinstall_status=0
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reinstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner2-reinstall.json" 2>"$root/owner2-reinstall-error.json" || owner2_reinstall_status=$?
+site_owner_account="$(sqlite3 -readonly "$identity_root/cameraagent_identity.db" \
+  "SELECT Id || '|' || (PasswordHash IS NOT NULL) || '|' || (LockoutEnd IS NULL) FROM AspNetUsers WHERE IsSiteOwner = 1;")"
+if [[ "$site_owner_account" != "$live_owner_id|1|1" ]]; then
+  owner_contract_fails "after the same-email restore the site owner is not the live owner's account $live_owner_id with its password and not locked out ($site_owner_account; the backup's was $archived_owner_id)."
+fi
+if (( owner2_reinstall_status != 0 )); then
+  cat "$root/owner2-reinstall-error.json" >&2
+  owner_contract_fails "the reinstall after the same-email restore failed (exit $owner2_reinstall_status)."
+fi
+[[ "$(jq -er '.outcome' "$root/owner2-reinstall.json")" == completed ]] || owner_contract_fails "the same-email reinstall did not complete."
+[[ "$(sqlite3 -readonly "$identity_root/cameraagent_identity.db" "SELECT (NormalizedEmail IS NULL) || '|' || IsSiteOwner || '|' || (PasswordHash IS NULL) FROM AspNetUsers WHERE Id = '$archived_owner_id';")" == "1|0|1" ]] ||
+  owner_contract_fails "the backup's account $archived_owner_id still holds the live owner's email, ownership or password."
+printf 'Restore same-email owner contract passed for instance %s: the live owner'"'"'s new account replaced the backup'"'"'s and can still sign in.\n' \
+  "$instance_id"
+
 printf 'Disposable offline installer contract passed for instance %s.\n' "$instance_id"

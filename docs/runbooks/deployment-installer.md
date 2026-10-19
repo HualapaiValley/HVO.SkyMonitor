@@ -1839,29 +1839,36 @@ hvo-sky-install cameraagent restore <archive> --instance-id <uuid> [--plan] [--j
 **Run them as the instance's service account.** Backups are owner-only (owner decision, 2026-10-18). The service
 account already owns every live store and secret a backup copies, its Identity database, Data Protection keys and
 tokens, and it is in the `docker` group, which is root on the host in all but name. An archive kept from it by root
-would protect almost nothing. So both commands run as that account, with no `sudo` and nothing done as root:
+would protect almost nothing. So both commands run as that account, not started with `sudo`, and handle every archive
+and every file of the instance as that account:
 - Run with `sudo`, as root or as another user, they are refused (exit `3`) before anything changes, naming the
   account to run them as.
 - The account is the owner of the instance root, which the installer creates as the account the instance manifest
   records. For an absent instance it is the account the backup's record names, which the backup verified as the
   instance's owner when it ran.
-- Every file they write is that account's. Restoring an absent instance creates its instance root as `install` does:
-  as the account where the product root allows it, otherwise through the same narrow `sudo` helper `install` uses.
+- Every file they write is that account's.
+- **The one exception** (owner decision, 2026-10-18): before they change anything, they may call the installer's own
+  folder-preparation helper, the narrow `sudo` helper `install` uses, only to create two folders, both the service
+  account's: a missing `<product-root>/backups`, and an absent instance root when restoring after a purge. Each is
+  first created as the account, where the product root allows it. Nothing else is privileged: a restore leaves the
+  machine install record (`/etc/hvo-sky/install.json`) to `cameraagent reinstall`.
 
 RoofController's backups run as root, in `/var/backups/hvo-roof`. The install contract (section 5) records why
 SkyMonitor's differ.
 
 **Where backups are kept.** Each backup is one file in `<product-root>/backups`, named
 `hvo-sky-<instance>-<yyyyMMddTHHmmssZ>-<operation>.tar.gz`, with its record `<archive>.json` beside it.
-- The folder is the service account's, mode `0700`, and both files are its own, mode `0600`. The first backup creates
-  the folder.
-- Before a backup writes anything, it checks the folder, even when it does not exist yet, and creates nothing:
+- The folder is the service account's, mode `0700`, and both files are its own, mode `0600`.
+- Before a backup changes anything, it checks the folder, even when it does not exist yet:
   - every existing folder above it must be a folder, not a link, that no group or other user can write, unless its
     sticky bit is set;
-  - the folder itself must be the account's own, mode `0700`.
+  - the folder itself, once it exists, must be the account's own, mode `0700` exactly.
 
   Otherwise the backup is refused (exit `3`), naming the folder and its remedy, because someone else could put another
   folder in its place.
+- The first backup creates the folder, still before it changes anything: as the account where it can, and through the
+  preparation helper when the product root is root's, as the production product root is. If the folder cannot be
+  created, the backup is refused (exit `3`) with nothing changed. A `--plan` creates nothing.
 - Copy a backup off the host as the service account, both files together. Backups are kept until you remove them.
 
 **What a backup holds.** It is a gzip-compressed PAX tar:
@@ -1953,19 +1960,20 @@ The restore then:
    `LocalIdentity__AllowMissingAdminPassword` and `config/owner-bootstrap/temporary-password`. It also keeps the owner
    email the live records name, which `reinstall` verifies the running instance against. So the backup does not give
    back site ownership the live instance moved.
-   - When the live owner has no account in the backup, as after a purge and a fresh install with another owner, the
-     restore brings that account over from the live instance, with its live password. An installed CameraAgent can
-     only find its owner, never create it, because the installer withdraws the temporary password once the owner is
-     seeded.
-   - An account the backup holds under the live owner's sign-in name, one the live store no longer has and the restore
-     has locked out, is renamed `removed-<id>` first.
+   - When the backup does not hold the live owner's own account, as after a purge and a fresh install with another
+     owner, or with the same email but a new account, the restore puts the live account in place, with its live
+     password. An installed CameraAgent can only find its owner, by its email, never create it, because the installer
+     withdraws the temporary password once the owner is seeded.
+   - Every account the backup holds under the live owner's email or sign-in name gives them up first: it gets a
+     sign-in name no other account has (`removed-<id>`, or `removed-<id>-2` and so on), loses the email, and is locked
+     out as an account the live store no longer has is.
    - The restore reports each setting and account it kept, settings by name only (`restore-live-owner-settings-kept`).
      With no live instance it warns loudly that the backup's owner settings are in force again
      (`restore-backup-owner-settings`).
 
-The instance is restored uninstalled, with its release records and install record settled from the restored manifest.
-Start it with `hvo-sky-install cameraagent reinstall --instance-id <uuid>`, which brings it up through the verified
-reinstall path. The Docker image the backup names must still be on the host for that.
+The instance is restored uninstalled, with its release records settled for the restored image. The machine install
+record is not touched: start the instance with `hvo-sky-install cameraagent reinstall --instance-id <uuid>`, which
+brings it up through the verified reinstall path and settles the install record from the restored manifest. The Docker image the backup names must still be on the host for that.
 
 Before the swap, a failure or Ctrl+C removes what was staged and changes nothing else. After it, the restore can only
 go forward: `--resume` finishes it.

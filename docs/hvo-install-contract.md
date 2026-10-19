@@ -223,8 +223,13 @@ HVO.RoofController#127):
   and by no one else:
   - RoofController's are root-only: `sudo hvo-roof-install backup` runs as root and keeps them in `/var/backups/hvo-roof`.
   - SkyMonitor's are **owner-only, the service account's** (owner decision, 2026-10-18, decision 8). `backup` and
-    `restore` run as the instance's service account, with no `sudo` and nothing done as root, and refuse to run as
-    anyone else. The archives are `0600` in `<product-root>/backups`, a `0700` folder that account owns.
+    `restore` run as the instance's service account, not started with `sudo`, and refuse to run as anyone else. The
+    archives are `0600` in `<product-root>/backups`, a `0700` folder that account owns. All archive and data handling
+    stays with the account.
+  - **The single exception:** before changing anything, they may call the installer's existing folder-preparation
+    helper, the one `install` uses, only to create two folders owned by the service account: `<product-root>/backups`,
+    and an absent instance root when restoring after a purge. A restore leaves the machine install record to
+    `reinstall`.
   - Reason: SkyMonitor's service account already owns every live store and secret a backup copies, and it is in the
     `docker` group, which is root on the host in all but name. A root-only archive would add almost no protection, and
     running as root was the riskiest code of the backup. The difference from RoofController stays.
@@ -482,7 +487,9 @@ Owner decisions of 2026-10-18:
 Owner decision of 2026-10-18, on #1353:
 
 8. **SkyMonitor backups are owner-only:** the instance's service account's, not root's (section 5). `backup` and
-   `restore` run as that account with no `sudo`, and keep archives `0600` in its own `0700` folder,
+   `restore` run as that account, not started with `sudo`, and keep archives `0600` in its own `0700` folder,
    `<product-root>/backups`. The account already owns every live store and secret and is in the `docker` group, so a
-   root-only archive adds almost no protection. RoofController keeps running its backups as root. SkyMonitor met this in
-   #1353 (#1369).
+   root-only archive adds almost no protection. Refined the same day: before changing anything they may use the
+   installer's existing folder-preparation helper only to create that folder and an absent instance root, both the
+   account's, and a restore leaves the machine install record to `reinstall`. RoofController keeps running its backups
+   as root. SkyMonitor met this in #1353 (#1369).

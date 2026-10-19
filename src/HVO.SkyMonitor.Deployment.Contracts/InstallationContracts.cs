@@ -88,7 +88,7 @@ public enum LifecycleOperationKind
     CatalogSelect,
     CatalogRollback,
     CatalogGarbageCollect,
-    /// <summary><c>cameraagent backup</c>: the instance copied into one root-only, self-verifying archive (#1353).</summary>
+    /// <summary><c>cameraagent backup</c>: the instance copied into one owner-only, self-verifying archive (#1353).</summary>
     Backup,
     /// <summary><c>cameraagent restore</c>: an uninstalled or absent instance put back from a committed backup (#1353).</summary>
     Restore

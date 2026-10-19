@@ -39,12 +39,18 @@ internal sealed partial class CameraAgentLifecycleManager
     /// <summary>
     /// What a backup decides before anything changes, for the command and its plan alike: that the backup folder can hold
     /// backups (#1353 PR-1369-R2 F18), that every entry of the instance is a file or a folder, and that there is room for
-    /// the archive and the snapshot (#1353).
+    /// the archive and the snapshot (#1353). Before the command changes anything, a missing backup folder is created
+    /// through the installer's preparation helper, the service account's with mode 0700, as the production product root
+    /// is root's (PR-1369-R3 F20); a folder that cannot be made refuses the backup with nothing changed. A plan creates
+    /// nothing.
     /// </summary>
     private static async Task AdmitBackupAsync(
         LifecycleRequest request,
         InstallationPaths paths,
         InstanceManifest manifest,
+        IProcessRunner processRunner,
+        uint uid,
+        uint gid,
         CancellationToken cancellationToken)
     {
         var vault = BackupVault.For(request);
@@ -53,6 +59,22 @@ internal sealed partial class CameraAgentLifecycleManager
         var (items, _) = BackupInventory.CollectInstance(paths, stores);
         var partials = await vault.ListPartialsAsync(manifest.InstanceId, cancellationToken).ConfigureAwait(false);
         EnsureBackupCapacity(paths, manifest, vault, items, stores, partials);
+        // Every check that only reads has passed: a missing folder is made last, still before anything changes.
+        if (!request.DryRun && !Directory.Exists(vault.Root))
+        {
+            try
+            {
+                await PrivilegedPreparation.PrepareBackupFolderAsync(paths.ProductRoot, uid, gid, processRunner, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is InstallerException { IsRefusal: false } or IOException or UnauthorizedAccessException)
+            {
+                throw InstallerException.Refused(
+                    $"The backup folder {vault.Root} could not be created as the service account's: {Redaction.SafeDiagnostic(exception.Message)}. Nothing was changed.",
+                    exception);
+            }
+            vault.Admit();
+        }
     }
 
     /// <summary>

@@ -119,9 +119,7 @@ internal sealed partial class BackupVaultFiles(string root)
 
     private const UnixFileMode GroupOrOtherWrite = UnixFileMode.GroupWrite | UnixFileMode.OtherWrite;
 
-    private const UnixFileMode GroupOrOtherAccess =
-        UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
-        UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+    private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
 
     public const string PartialSuffix = ".partial";
     public const string RecordSuffix = ".json";
@@ -304,11 +302,11 @@ internal sealed partial class BackupVaultFiles(string root)
                 CultureInfo.InvariantCulture,
                 $"{Root} belongs to uid {folder.Uid}, not to the account running the backup, uid {NativeLinux.getuid()}. Give it to the instance's service account");
         }
-        if ((folder.Mode & GroupOrOtherAccess) != 0)
+        if ((folder.Mode & (UnixFileMode)0xFFF) != OwnerOnly)
         {
             return string.Create(
                 CultureInfo.InvariantCulture,
-                $"{Root} has mode {Convert.ToString((int)folder.Mode & 0xFFF, 8)}, so others can read the backups it holds. Make it the service account's alone (chmod 700 {Root})");
+                $"{Root} has mode {Convert.ToString((int)folder.Mode & 0xFFF, 8)}, not 0700, the service account's alone. Make it so (chmod 700 {Root})");
         }
         return null;
     }
