@@ -4,19 +4,26 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
 /// <summary>
 /// Whether a capture's standard processing can still produce its overlays and, while it can, the newest earlier
-/// capture whose standard processing has finished. A capture without standard work is not pending.
+/// captures whose standard processing has ended, newest first. A capture without standard work is not pending.
 /// </summary>
-public sealed record CameraAgentProcessingCompletion(bool Pending, Guid? NewestFinishedCaptureId);
+public sealed record CameraAgentProcessingCompletion(bool Pending, IReadOnlyList<Guid> NewestFinishedCaptureIds);
 
 /// <summary>Reads standard processing completion from the durable lane state, without starting any work.</summary>
 public interface ICameraAgentProcessingCompletion
 {
-    ValueTask<CameraAgentProcessingCompletion> ReadAsync(Guid captureId, CancellationToken cancellationToken);
+    /// <param name="maximumFinished">How many ended earlier captures to name while the capture is pending.</param>
+    ValueTask<CameraAgentProcessingCompletion> ReadAsync(
+        Guid captureId,
+        int maximumFinished,
+        CancellationToken cancellationToken);
 }
 
 internal sealed class CameraAgentProcessingCompletionReader(
     SqliteCaptureProcessingStore store) : ICameraAgentProcessingCompletion
 {
-    public ValueTask<CameraAgentProcessingCompletion> ReadAsync(Guid captureId, CancellationToken cancellationToken)
-        => store.ReadStandardCompletionAsync(captureId, cancellationToken);
+    public ValueTask<CameraAgentProcessingCompletion> ReadAsync(
+        Guid captureId,
+        int maximumFinished,
+        CancellationToken cancellationToken)
+        => store.ReadStandardCompletionAsync(captureId, maximumFinished, cancellationToken);
 }

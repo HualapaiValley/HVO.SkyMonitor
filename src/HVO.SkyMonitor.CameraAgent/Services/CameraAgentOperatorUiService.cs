@@ -836,6 +836,9 @@ internal sealed class CameraAgentOperatorUiService(
     }
 
     private static readonly TimeSpan FactsCacheLifetime = TimeSpan.FromSeconds(60);
+
+    /// <summary>How many ended captures Current Sky tries, newest first, while the newest one is still processing.</summary>
+    internal const int MaximumFinishedCandidates = 4;
     private (CameraAgentCurrentSkyFacts Facts, Guid? CombinedArtifactId, DateTimeOffset ReadUtc)? _cachedFacts;
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
@@ -919,8 +922,9 @@ internal sealed class CameraAgentOperatorUiService(
 
     // Current Sky moves only to a capture whose overlays are settled: retained, or never coming because its processing
     // ended. While the newest displayable capture is still processing, the newest earlier capture whose processing has
-    // ended is displayed instead, and only when there is none is the newest reported as pending. Completion that cannot
-    // be read never holds the page.
+    // ended and that can be displayed is shown instead; an ended capture without a displayable stage is passed over.
+    // Only when none of the bounded candidates can be shown is the newest reported as pending. Every read runs within
+    // the caller's deadline, and completion that cannot be read never holds the page.
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "An unreadable completion state falls back to the newest displayable capture, as before.")]
     private async ValueTask<(CameraAgentCurrentImagePresentation Presentation, bool Pending)> ResolveCompleteDisplayAsync(
         CameraAgentCurrentImagePresentation newest,
@@ -932,31 +936,35 @@ internal sealed class CameraAgentOperatorUiService(
         }
         try
         {
-            var completion = await processingCompletion.ReadAsync(display.CaptureId, cancellationToken).ConfigureAwait(false);
+            var completion = await processingCompletion.ReadAsync(
+                display.CaptureId, MaximumFinishedCandidates, cancellationToken).ConfigureAwait(false);
             if (!completion.Pending)
             {
                 return (newest, false);
             }
-            if (completion.NewestFinishedCaptureId is not { } finishedId ||
-                await gallery.GetCaptureAsync(finishedId, cancellationToken).ConfigureAwait(false) is not { } finished)
+            foreach (var finishedId in completion.NewestFinishedCaptureIds)
             {
-                return (newest, true);
+                if (await gallery.GetCaptureAsync(finishedId, cancellationToken).ConfigureAwait(false) is not { } finished)
+                {
+                    continue;
+                }
+                var projected = await currentImagePresentation.ProjectCaptureAsync(finished, cancellationToken).ConfigureAwait(false);
+                if (projected.SelectedStage is null)
+                {
+                    continue;
+                }
+                var layers = await layeredPresentations.GetAsync(finishedId, cancellationToken).ConfigureAwait(false);
+                return (newest with
+                {
+                    DisplayCapture = new CameraAgentPresentationCapture(finished.CaptureId, finished.CaptureSequence,
+                        finished.ExposureStartedUtc, Math.Max(0, (long)(newest.ObservedUtc - finished.ExposureStartedUtc).TotalSeconds),
+                        finished.EvidenceOrigin),
+                    SelectedStage = projected.SelectedStage,
+                    Stages = projected.Stages,
+                    StructuredLayersAvailable = layers.Status == CameraAgentLayeredPresentationStatus.Found
+                }, false);
             }
-            var projected = await currentImagePresentation.ProjectCaptureAsync(finished, cancellationToken).ConfigureAwait(false);
-            if (projected.SelectedStage is null)
-            {
-                return (newest, true);
-            }
-            var layers = await layeredPresentations.GetAsync(finishedId, cancellationToken).ConfigureAwait(false);
-            return (newest with
-            {
-                DisplayCapture = new CameraAgentPresentationCapture(finished.CaptureId, finished.CaptureSequence,
-                    finished.ExposureStartedUtc, Math.Max(0, (long)(newest.ObservedUtc - finished.ExposureStartedUtc).TotalSeconds),
-                    finished.EvidenceOrigin),
-                SelectedStage = projected.SelectedStage,
-                Stages = projected.Stages,
-                StructuredLayersAvailable = layers.Status == CameraAgentLayeredPresentationStatus.Found
-            }, false);
+            return (newest, true);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

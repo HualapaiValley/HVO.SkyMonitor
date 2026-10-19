@@ -2,6 +2,7 @@ using System.Security.Claims;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Operations;
@@ -14,6 +15,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Settings;
+using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Tests.Components;
 using HVO.SkyMonitor.CameraAgent.Tests.Scheduling;
 using HVO.SkyMonitor.Common.Security;
@@ -22,6 +24,7 @@ using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -614,8 +617,9 @@ public sealed class CameraAgentOperatorUiServiceTests
         var projection = new CameraAgentCapturePresentationProjector(Options.Create(new CameraAgentHostOptions()))
             .ProjectWithRetainedDisplay(finished);
         var (service, presentations, gallery, layers, completion) = CreateCurrentSkyService(newest);
-        completion.Setup(value => value.ReadAsync(newest.DisplayCapture!.CaptureId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new CameraAgentProcessingCompletion(true, finished.CaptureId));
+        completion.Setup(value => value.ReadAsync(newest.DisplayCapture!.CaptureId,
+                CameraAgentOperatorUiService.MaximumFinishedCandidates, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CameraAgentProcessingCompletion(true, [finished.CaptureId]));
         gallery.Setup(value => value.GetCaptureAsync(finished.CaptureId, It.IsAny<CancellationToken>())).ReturnsAsync(finished);
         presentations.Setup(value => value.ProjectCaptureAsync(finished, It.IsAny<CancellationToken>())).ReturnsAsync(projection);
         layers.Setup(value => value.GetAsync(finished.CaptureId, It.IsAny<CancellationToken>()))
@@ -637,6 +641,57 @@ public sealed class CameraAgentOperatorUiServiceTests
     }
 
     [TestMethod]
+    [DoNotParallelize]
+    public async Task CurrentSkyPassesOverAnEndedCaptureItCannotDisplayAsync()
+    {
+        var root = EdgeUpgradeLaneTests.CreateRoot("current-sky-undisplayable");
+        try
+        {
+            // The current-image read reaches the deployment location, whose protector the host registers.
+            using var provider = EdgeUpgradeLaneTests.CreateProvider(
+                root, new EdgeUpgradeLaneTests.MutableTimeProvider(DateTimeOffset.UtcNow),
+                configure: services => services.AddSingleton<IDeploymentLocationProtector>(new PassThroughLocationProtector()));
+            var fixture = await EdgeUpgradeLaneTests.StartAsync(provider, root).ConfigureAwait(false);
+            // A running host has its camera configuration before any page reads a capture's delivery state.
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(fixture.Configuration);
+            var completed = await fixture.AcceptAsync(0).ConfigureAwait(false);
+            var quarantined = await fixture.AcceptAsync(1).ConfigureAwait(false);
+            var pending = await fixture.AcceptAsync(2).ConfigureAwait(false);
+            // The quarantined capture's raw evidence is gone, so it has no stage to display.
+            await EdgeUpgradeLaneTests.ExecuteAsync(root, """
+                UPDATE capture_lane_work SET state = 'completed'
+                WHERE lane_name = 'standard'
+                  AND raw_capture_row_id = (SELECT raw_capture_row_id FROM raw_captures WHERE capture_id = $completed);
+                UPDATE capture_lane_work SET state = 'quarantined', failure_reason = 'evidence-invalid'
+                WHERE lane_name = 'standard'
+                  AND raw_capture_row_id = (SELECT raw_capture_row_id FROM raw_captures WHERE capture_id = $quarantined);
+                UPDATE raw_captures SET state = 'missing_evidence' WHERE capture_id = $quarantined;
+                """, ("$completed", completed.ToString("N")), ("$quarantined", quarantined.ToString("N"))).ConfigureAwait(false);
+            var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
+            var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+            authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
+                .ReturnsAsync(AuthorizationResult.Success());
+            var service = CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object,
+                layers: provider.GetRequiredService<ICameraAgentLayeredPresentationService>(),
+                gallery: provider.GetRequiredService<ICameraAgentGallery>(),
+                presentations: provider.GetRequiredService<ICameraAgentCurrentImagePresentationService>(),
+                processingCompletion: provider.GetRequiredService<ICameraAgentProcessingCompletion>());
+
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var view = (await service.GetCurrentSkyViewAsync(deadline.Token).ConfigureAwait(false)).Value!;
+
+            Assert.AreEqual(pending, view.Presentation.LatestCapture!.CaptureId);
+            Assert.AreEqual(completed, view.Presentation.DisplayCapture!.CaptureId);
+            Assert.IsNotNull(view.Presentation.SelectedStage);
+            Assert.IsFalse(view.ProcessingPending);
+        }
+        finally
+        {
+            EdgeUpgradeLaneTests.Cleanup(root);
+        }
+    }
+
+    [TestMethod]
     [DataRow("pending-alone", true)]
     [DataRow("finished", false)]
     [DataRow("layers-retained", false)]
@@ -647,14 +702,15 @@ public sealed class CameraAgentOperatorUiServiceTests
         var newest = OperatorUiTestData.CurrentImage() with { StructuredLayersAvailable = scenario == "layers-retained" };
         var finishedId = Guid.NewGuid();
         var (service, presentations, gallery, _, completion) = CreateCurrentSkyService(newest);
-        var read = completion.Setup(value => value.ReadAsync(newest.DisplayCapture!.CaptureId, It.IsAny<CancellationToken>()));
+        var read = completion.Setup(value => value.ReadAsync(newest.DisplayCapture!.CaptureId,
+            CameraAgentOperatorUiService.MaximumFinishedCandidates, It.IsAny<CancellationToken>()));
         switch (scenario)
         {
-            case "pending-alone": read.ReturnsAsync(new CameraAgentProcessingCompletion(true, null)); break;
-            case "finished": read.ReturnsAsync(new CameraAgentProcessingCompletion(false, null)); break;
+            case "pending-alone": read.ReturnsAsync(new CameraAgentProcessingCompletion(true, [])); break;
+            case "finished": read.ReturnsAsync(new CameraAgentProcessingCompletion(false, [])); break;
             case "unreadable": read.ThrowsAsync(new InvalidOperationException("private-storage-location")); break;
             case "finished-not-displayable":
-                read.ReturnsAsync(new CameraAgentProcessingCompletion(true, finishedId));
+                read.ReturnsAsync(new CameraAgentProcessingCompletion(true, [finishedId]));
                 var hidden = OperatorUiTestData.Capture(finishedId);
                 gallery.Setup(value => value.GetCaptureAsync(finishedId, It.IsAny<CancellationToken>())).ReturnsAsync(hidden);
                 presentations.Setup(value => value.ProjectCaptureAsync(hidden, It.IsAny<CancellationToken>()))
@@ -798,6 +854,13 @@ public sealed class CameraAgentOperatorUiServiceTests
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private sealed class PassThroughLocationProtector : IDeploymentLocationProtector
+    {
+        public byte[] Protect(byte[] plaintext) => plaintext;
+
+        public byte[] Unprotect(byte[] protectedPayload) => protectedPayload;
     }
 
     private sealed class CountingAuthenticationStateProvider(ClaimsPrincipal principal) : AuthenticationStateProvider

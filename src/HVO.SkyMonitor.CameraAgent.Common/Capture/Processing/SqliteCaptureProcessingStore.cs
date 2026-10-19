@@ -711,14 +711,18 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     }
 
     /// <summary>
-    /// Reads whether the capture's standard work can still produce its outputs and, while it can, the newest earlier
-    /// capture whose standard work has ended. The standard lane is ordered, so that is the first ended one before it.
+    /// Reads whether the capture's standard work can still produce its outputs and, while it can, up to
+    /// <paramref name="maximumFinished"/> earlier captures whose standard work has ended, newest first. The standard lane
+    /// is ordered, so those are the first ended ones before it.
     /// </summary>
     internal async ValueTask<CameraAgentProcessingCompletion> ReadStandardCompletionAsync(
         Guid captureId,
+        int maximumFinished,
         CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(captureId, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maximumFinished, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumFinished, MaximumProductQueryCount);
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
@@ -733,7 +737,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
         if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not long sequence)
         {
-            return new(false, null);
+            return new(false, []);
         }
         command.Parameters.Clear();
         // CROSS JOIN keeps raw_captures outermost, so the newest-first sequence index stops at the first ended work.
@@ -745,12 +749,17 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             WHERE work.raw_capture_row_id = raw.raw_capture_row_id AND work.lane_name = 'standard'
               AND raw.capture_sequence < $sequence AND work.state IN ('completed', 'quarantined', 'abandoned')
             ORDER BY raw.capture_sequence DESC, raw.raw_capture_row_id DESC
-            LIMIT 1;
+            LIMIT $maximum;
             """;
         command.Parameters.AddWithValue("$sequence", sequence);
-        return new(true, await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is string finished
-            ? Guid.ParseExact(finished, "N")
-            : null);
+        command.Parameters.AddWithValue("$maximum", maximumFinished);
+        var finished = new List<Guid>(maximumFinished);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            finished.Add(Guid.ParseExact(reader.GetString(0), "N"));
+        }
+        return new(true, finished);
     }
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The selected query is one of two fixed internal statements and all values remain parameterized.")]

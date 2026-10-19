@@ -28,28 +28,29 @@ public sealed class CameraAgentProcessingCompletionTests
             var fourth = await fixture.AcceptAsync(3).ConfigureAwait(false);
             var completion = provider.GetRequiredService<ICameraAgentProcessingCompletion>();
 
-            Assert.AreEqual(new CameraAgentProcessingCompletion(true, null), await ReadAsync(completion, second).ConfigureAwait(false));
+            AssertCompletion(await ReadAsync(completion, second).ConfigureAwait(false), true);
 
             await SetStandardStateAsync(root, first, "completed").ConfigureAwait(false);
             await SetStandardStateAsync(root, second, "quarantined").ConfigureAwait(false);
             await SetStandardStateAsync(root, third, "leased").ConfigureAwait(false);
-            Assert.AreEqual(new CameraAgentProcessingCompletion(false, null), await ReadAsync(completion, first).ConfigureAwait(false));
-            Assert.AreEqual(new CameraAgentProcessingCompletion(false, null), await ReadAsync(completion, second).ConfigureAwait(false));
-            Assert.AreEqual(new CameraAgentProcessingCompletion(true, second), await ReadAsync(completion, third).ConfigureAwait(false));
-            Assert.AreEqual(new CameraAgentProcessingCompletion(true, second), await ReadAsync(completion, fourth).ConfigureAwait(false));
+            AssertCompletion(await ReadAsync(completion, first).ConfigureAwait(false), false);
+            AssertCompletion(await ReadAsync(completion, second).ConfigureAwait(false), false);
+            AssertCompletion(await ReadAsync(completion, third).ConfigureAwait(false), true, second, first);
+            AssertCompletion(await ReadAsync(completion, fourth).ConfigureAwait(false), true, second, first);
 
-            // Work abandoned without overlays has ended too; retrying work has not.
+            // Work abandoned without overlays has ended too; retrying work has not. The candidates are bounded.
             await SetStandardStateAsync(root, third, "abandoned").ConfigureAwait(false);
             await SetStandardStateAsync(root, fourth, "retry_wait").ConfigureAwait(false);
-            Assert.AreEqual(new CameraAgentProcessingCompletion(false, null), await ReadAsync(completion, third).ConfigureAwait(false));
-            Assert.AreEqual(new CameraAgentProcessingCompletion(true, third), await ReadAsync(completion, fourth).ConfigureAwait(false));
+            AssertCompletion(await ReadAsync(completion, third).ConfigureAwait(false), false);
+            AssertCompletion(await ReadAsync(completion, fourth).ConfigureAwait(false), true, third, second, first);
+            AssertCompletion(await completion.ReadAsync(fourth, 2, CancellationToken.None).ConfigureAwait(false), true, third, second);
 
             // A capture without standard work has nothing to wait for.
             await EdgeUpgradeLaneTests.ExecuteAsync(root, """
                 DELETE FROM capture_lane_work WHERE lane_name = 'standard'
                   AND raw_capture_row_id = (SELECT raw_capture_row_id FROM raw_captures WHERE capture_id = $capture);
                 """, ("$capture", fourth.ToString("N"))).ConfigureAwait(false);
-            Assert.AreEqual(new CameraAgentProcessingCompletion(false, null), await ReadAsync(completion, fourth).ConfigureAwait(false));
+            AssertCompletion(await ReadAsync(completion, fourth).ConfigureAwait(false), false);
         }
         finally
         {
@@ -58,7 +59,13 @@ public sealed class CameraAgentProcessingCompletionTests
     }
 
     private static async Task<CameraAgentProcessingCompletion> ReadAsync(ICameraAgentProcessingCompletion completion, Guid captureId)
-        => await completion.ReadAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+        => await completion.ReadAsync(captureId, 4, CancellationToken.None).ConfigureAwait(false);
+
+    private static void AssertCompletion(CameraAgentProcessingCompletion completion, bool pending, params Guid[] finished)
+    {
+        Assert.AreEqual(pending, completion.Pending);
+        CollectionAssert.AreEqual(finished, completion.NewestFinishedCaptureIds.ToArray());
+    }
 
     private static Task SetStandardStateAsync(string root, Guid captureId, string state)
         => EdgeUpgradeLaneTests.ExecuteAsync(root, """
