@@ -22,7 +22,7 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 public sealed class HvoSkyCliTests
 {
     private const string Url = "http://localhost/";
-    private static readonly string[] GroupOrder = ["site", "location", "skyMap", "camera", "schedule"];
+    private static readonly string[] GroupOrder = ["site", "location", "skyMap", "camera", "schedule", "currentSky"];
 
     [TestMethod]
     [DoNotParallelize]
