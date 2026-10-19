@@ -89,6 +89,12 @@ dotnet_diagnostic.CA1819.severity = none
 [src/HVO.SkyMonitor.LogicHost/Controllers/DiagnosticsController.cs]
 dotnet_diagnostic.CA2000.severity = none
 
+# Terminal.Gui views are owned by the view they are added to, which disposes its subviews when it is disposed; the
+# wizard and hvo-sky's interface dispose their windows (#1317). CA2000 and CA2213 cannot see that ownership.
+[{src/HVO.SkyMonitor.TerminalUi/**.cs,src/HVO.SkyMonitor.Deployment.Cli/Wizard/**.cs}]
+dotnet_diagnostic.CA2000.severity = none
+dotnet_diagnostic.CA2213.severity = none
+
 # Broad exception catching in error boundaries and clock loops is intentional
 # CA1031 warnings suppressed for resilience patterns where we don't want to crash the app
 [src/**/Components/Layout/MainLayoutFooter.razor.cs]

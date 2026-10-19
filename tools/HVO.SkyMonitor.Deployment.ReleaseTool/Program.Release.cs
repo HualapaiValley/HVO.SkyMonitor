@@ -17,6 +17,8 @@ namespace HVO.SkyMonitor.Deployment.ReleaseTool;
 /// <item><c>skymonitor-cameraagent-&lt;version&gt;-linux-&lt;arch&gt;.oci.tar</c>, an offline image archive per platform;</item>
 /// <item><c>&lt;catalog version&gt;.bundle.tar.gz</c>, the catalog bundle, under its own version;</item>
 /// <item><c>install.sh</c>, when given, with the release's version written in (<see cref="StampInstallScript"/>);</item>
+/// <item><c>THIRD-PARTY-NOTICES.md</c>, when given: the notices of what the release ships, the installers' bundled
+/// packages among them, which a single-file installer cannot carry beside itself;</item>
 /// <item><c>release.json</c>, and <c>SHA256SUMS</c> over every file.</item>
 /// </list>
 /// release.json names the image by its key, <c>images.cameraAgent</c>, and repeats the image's state contract label as
@@ -37,6 +39,9 @@ internal static partial class Program
     internal const string CreatedFormat = "yyyy'-'MM'-'dd'T'HH':'mm':'ss'Z'";
     internal const string DefaultCameraAgentRepository = "ghcr.io/hualapaivalley/skymonitor-cameraagent";
 
+    /// <summary>The third-party notices' asset, a copy of the repository's <c>THIRD-PARTY-NOTICES.md</c>.</summary>
+    internal const string NoticesName = "THIRD-PARTY-NOTICES.md";
+
     /// <summary>The longest upgrade note a release carries; the installer prints every note whole before it upgrades.</summary>
     internal const int MaximumUpgradeNoteLength = 16 * 1024;
 
@@ -50,7 +55,7 @@ internal static partial class Program
     {
         RejectUnknown(options, "--version", "--commit", "--created-utc", "--image-repository", "--image-archive", "--platforms",
             "--installer-linux-x64", "--installer-linux-arm64", "--cli-linux-x64", "--cli-linux-arm64", "--catalog-bundle",
-            "--install-script", "--upgrade-notes", "--output");
+            "--install-script", "--notices", "--upgrade-notes", "--output");
         var version = RequireReleaseVersion(options, "--version");
         var commit = RequireGitOid(options, "--commit");
         var created = RequireUtc(options, "--created-utc");
@@ -74,6 +79,9 @@ internal static partial class Program
         var installScript = options.ContainsKey("--install-script")
             ? StampInstallScript(await ReadInstallScriptAsync(RequireExistingFile(options, "--install-script"), cancellationToken)
                 .ConfigureAwait(false), version)
+            : null;
+        var notices = options.ContainsKey("--notices")
+            ? await ReadNoticesAsync(RequireExistingFile(options, "--notices"), cancellationToken).ConfigureAwait(false)
             : null;
         var notes = options.ContainsKey("--upgrade-notes")
             ? ReadUpgradeNotes(RequireExistingDirectory(options, "--upgrade-notes"), version)
@@ -121,6 +129,11 @@ internal static partial class Program
                 await File.WriteAllTextAsync(path, installScript, StrictUtf8, cancellationToken).ConfigureAwait(false);
                 SetExecutable(path);
                 assets.Add(await AssetAsync(output, "install.sh", "install-script", null, null, cancellationToken).ConfigureAwait(false));
+            }
+            if (notices is not null)
+            {
+                await File.WriteAllBytesAsync(Path.Combine(output, NoticesName), notices, cancellationToken).ConfigureAwait(false);
+                assets.Add(await AssetAsync(output, NoticesName, "notices", null, null, cancellationToken).ConfigureAwait(false));
             }
 
             var release = ReleaseDocument(
@@ -322,6 +335,26 @@ internal static partial class Program
             throw new ReleaseToolException($"The upgrade notes for {version} are longer than {MaximumUpgradeNoteLength} characters.");
         }
         return lines;
+    }
+
+    // The notices as they are, byte for byte: UTF-8 text with something in it.
+    private static async Task<byte[]> ReadNoticesAsync(string path, CancellationToken cancellationToken)
+    {
+        var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+        string text;
+        try
+        {
+            text = StrictUtf8.GetString(bytes);
+        }
+        catch (DecoderFallbackException exception)
+        {
+            throw new ReleaseToolException("--notices is not UTF-8 text.", exception);
+        }
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            throw new ReleaseToolException("--notices is empty.");
+        }
+        return bytes;
     }
 
     private static async Task<string> ReadInstallScriptAsync(string path, CancellationToken cancellationToken)

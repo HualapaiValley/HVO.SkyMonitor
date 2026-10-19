@@ -14,4 +14,17 @@
            Condition="'$(InformationalVersion)' != '' and !$([System.String]::Equals('$(InformationalVersion)', '$(Version)', StringComparison.Ordinal))"
            Text="The informational version '$(InformationalVersion)' is not the version '$(Version)': give a build its version as -p:Version, not -p:InformationalVersion." />
   </Target>
+
+  <!--
+    Terminal.Gui brings in TextMateSharp, its grammars and Onigwrap's native Oniguruma for its Code and Markdown views'
+    syntax highlighting, which no terminal program here uses (#1317). A project that builds on HVO.SkyMonitor.TerminalUi
+    (the installer, and hvo-sky), or a test project that runs one in-process (HvoTerminalProgram), takes none of their
+    files, so the published programs do not carry them or their notices. scripts/lib/published-installer-terminal.py
+    runs the published installer to show it works without them.
+  -->
+  <ItemGroup Condition="'$(HvoTerminalProgram)' == 'true' or '@(ProjectReference->WithMetadataValue('Filename', 'HVO.SkyMonitor.TerminalUi'))' != ''">
+    <PackageReference Include="TextMateSharp" ExcludeAssets="all" />
+    <PackageReference Include="TextMateSharp.Grammars" ExcludeAssets="all" />
+    <PackageReference Include="Onigwrap" ExcludeAssets="all" />
+  </ItemGroup>
 </Project>

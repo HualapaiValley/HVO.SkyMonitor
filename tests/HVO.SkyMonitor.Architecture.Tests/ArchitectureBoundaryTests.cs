@@ -32,6 +32,10 @@ public sealed class ArchitectureBoundaryTests
     private const string DeploymentContracts = "HVO.SkyMonitor.Deployment.Contracts";
     private const string DeploymentCli = "HVO.SkyMonitor.Deployment.Cli";
 
+    // What the terminal programs share (#1317): HVO Dark for Terminal.Gui, used by the installer's wizard and hvo-sky.
+    // Its dependency rule is asserted by TerminalUiBoundaryIsNarrow.
+    private const string TerminalUi = "HVO.SkyMonitor.TerminalUi";
+
     // Host-neutral filesystem primitives (#592): mechanisms only, references nothing, consumed
     // by the LogicHost filesystem provider (#585) and later CameraAgent.Common (#587). Its
     // dependency rule is asserted by StorageFileSystemBoundaryIsNarrowWhenPresent.
@@ -80,9 +84,10 @@ public sealed class ArchitectureBoundaryTests
             [CameraAgent] = Set(CameraAgentCommon, CameraAgentZwo, Catalog, Common),
             [LogicHost] = Set(AgentCore, Astronomy, Imaging, Processing, VideoFFmpeg, ProcessingRunnerContracts, FleetContracts, Catalog, Common, StorageFileSystem),
             [DeploymentContracts] = Set(),
+            [TerminalUi] = Set(),
             // The installer verifies releases by release.json and SHA256SUMS (#1309); no project holds a signing trust
-            // root since the signed manifests were retired (#1310).
-            [DeploymentCli] = Set(AgentCore, Catalog, DeploymentContracts)
+            // root since the signed manifests were retired (#1310). Its wizard draws with TerminalUi (#1317).
+            [DeploymentCli] = Set(AgentCore, Catalog, DeploymentContracts, TerminalUi)
         };
 
     private static readonly IReadOnlySet<string> SharedTestProjects = Set(
@@ -207,6 +212,29 @@ public sealed class ArchitectureBoundaryTests
         var permittedConsumers = new[] { CameraAgentCommon, LogicHost, VideoFFmpeg };
         Assert.IsEmpty(consumers.Except(permittedConsumers, StringComparer.Ordinal).ToArray(),
             $"Only {string.Join(" and ", permittedConsumers)} may reference {StorageFileSystem}: {string.Join(", ", consumers)}");
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void TerminalUiBoundaryIsNarrow()
+    {
+        // #1317: what the terminal programs share. It takes Terminal.Gui and nothing else, so the installer and hvo-sky
+        // can both build on it; and no host draws a terminal, so neither CameraAgent nor LogicHost may take it, or
+        // Terminal.Gui with it.
+        var repository = Repository.Value;
+        Assert.IsTrue(repository.Projects.TryGetValue(TerminalUi, out var project), $"{TerminalUi} is in the repository.");
+        Assert.AreEqual(ProjectKind.Production, project.Kind);
+        Assert.IsTrue(AllowedProductionReferences.TryGetValue(TerminalUi, out var allowed) && allowed.Count == 0,
+            $"{TerminalUi} must be documented with an empty reference set.");
+        Assert.IsEmpty(project.References, $"{TerminalUi} must reference no project: {string.Join(", ", project.References)}");
+        CollectionAssert.AreEqual(new[] { "Terminal.Gui" }, project.PackageReferences.ToArray(), $"{TerminalUi} takes Terminal.Gui only.");
+
+        var hosts = repository.Projects.Values
+            .Where(candidate => candidate.Kind == ProjectKind.Production && CameraAgentImplementations.Concat([LogicHost]).Contains(candidate.Name))
+            .Where(candidate => candidate.References.Contains(TerminalUi) || candidate.PackageReferences.Contains("Terminal.Gui"))
+            .Select(candidate => candidate.Name)
+            .ToArray();
+        Assert.IsEmpty(hosts, $"No host draws a terminal: {string.Join(", ", hosts)}");
     }
 
     [TestMethod]

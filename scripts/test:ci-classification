@@ -358,6 +358,7 @@ verify_component_plan "tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTes
 verify_component_plan "src/HVO.SkyMonitor.Deployment.Contracts/Installation.cs"        full true  false false false false false true
 verify_component_plan "tests/HVO.SkyMonitor.Deployment.Cli.Tests/InstallerTests.cs"    full true  false false false false false true
 verify_component_plan "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"         full true  false false false false false true
+verify_component_plan "src/HVO.SkyMonitor.TerminalUi/HvoTheme.cs"                       full true  false false false false false true
 
 verify_deployment_installer_path() {
   local path="$1" deployment_base deployment_head
@@ -378,6 +379,8 @@ verify_deployment_installer_path "scripts/release:publish-prerelease"
 verify_deployment_installer_path "scripts/test:release-install"
 verify_deployment_installer_path "scripts/test:release-scripts"
 verify_deployment_installer_path "scripts/lib/releases.sh"
+# The shared terminal project is compiled into the installer, whose published file the installer suite runs (#1317).
+verify_deployment_installer_path "src/HVO.SkyMonitor.TerminalUi/TerminalText.cs"
 
 # Deployment inputs that are not project directories keep their independent
 # deployment-contract selection and otherwise stay on the complete matrix,
