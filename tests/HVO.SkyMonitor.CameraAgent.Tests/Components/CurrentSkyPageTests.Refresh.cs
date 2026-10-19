@@ -172,6 +172,44 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
+    public async Task ARefreshThatWaitsForTheDispatcherPastItsDeadlineAppliesNothing()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var first = View(WithStructuredBase());
+        var current = first;
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(current));
+        var nextLayers = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var nextLayersRequested = false;
+        service.PresentationHandler = (id, _) =>
+        {
+            if (id != SecondCaptureId)
+                return ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
+            Volatile.Write(ref nextLayersRequested, true);
+            return new ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>>(nextLayers.Task);
+        };
+        var cut = context.Render<CurrentSkyPage>();
+        WaitForFirst(cut, clock, first);
+        current = Next(first, SecondCaptureId, 43);
+        clock.Advance(TimeSpan.FromSeconds(15));
+        cut.WaitForAssertion(() => Assert.IsTrue(Volatile.Read(ref nextLayersRequested)));
+
+        // While the dispatcher is held, the layers arrive in time and the refresh queues its result; the deadline then
+        // passes before the dispatcher runs it.
+        await cut.InvokeAsync(() =>
+        {
+            nextLayers.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(SecondCaptureId, new string('D', 64))));
+            Thread.Sleep(TimeSpan.FromMilliseconds(250));
+            clock.Advance(TimeSpan.FromSeconds(5));
+        }).ConfigureAwait(false);
+
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".state-notice--error").TextContent,
+            "exceeded its five-second deadline", StringComparison.Ordinal));
+        Assert.AreEqual(CaptureLink(first), cut.Find(".layers-link").GetAttribute("href"));
+        cut.WaitForElement(".sky-layer-workspace");
+    }
+
+    [TestMethod]
     public void OverlaysThatCannotBeReadNowLeaveTheCompleteImageUntilALaterRefresh()
     {
         using var context = new BunitContext();

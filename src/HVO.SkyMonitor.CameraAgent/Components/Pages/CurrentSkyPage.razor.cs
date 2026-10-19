@@ -278,6 +278,12 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                     RevokeAccess();
                     return;
                 }
+                // A result that waited for the dispatcher past the deadline is discarded, like one that missed it.
+                if (timeout.IsCancellationRequested)
+                {
+                    ShowRefreshDeadlineExceeded();
+                    return;
+                }
                 if (_viewerOpen) { _refreshing = false; return; }
                 if (result.IsSuccess && result.Value is not null && change == CaptureChange.Hold)
                 {
@@ -350,12 +356,17 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             await InvokeAsync(() =>
             {
                 if (_accessDenied || _disposeStarted != 0) return;
-                _errorMessage = "The current image refresh exceeded its five-second deadline.";
-                _initialLoading = false;
-                _refreshing = false;
-                StateHasChanged();
+                ShowRefreshDeadlineExceeded();
             }).ConfigureAwait(false);
         }
+    }
+
+    private void ShowRefreshDeadlineExceeded()
+    {
+        _errorMessage = "The current image refresh exceeded its five-second deadline.";
+        _initialLoading = false;
+        _refreshing = false;
+        StateHasChanged();
     }
 
     private Guid? _runCaptureId;
