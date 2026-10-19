@@ -131,6 +131,21 @@ public sealed class TimeLapseFrameRendererTests
     }
 
     [TestMethod]
+    public void OverlaysKeepTheirReleasedBytesSoRetainedPresetsStillMatch()
+    {
+        // A retained video job freezes its preset, and the preset identity includes this recipe identity. Frames
+        // therefore keep their released overlays, including the corner text the #1383 producer default no longer draws.
+        var rig = Rig(640, 480, false);
+        var source = Source(rig, 0) with { ArtifactId = Guid.Parse("33333333-3333-3333-3333-333333333333") };
+        var frame = TimeLapseFrameRenderer.Render([source], rig, new(), false, 320, 240);
+        Assert.AreEqual("C797E7DC93A1A089DBBD28EF167FC934A104DF901BC338952D813542B2FE57B9", frame.RecipeIdentitySha256);
+        Assert.AreEqual("A7CF14EBF25EC28848C7CCC705D70915D9EFFD53B683B5D92CD8A58B40A78164", frame.RenderingIdentitySha256);
+        Assert.IsTrue(frame.Layers.SelectMany(static layer => layer.TextBlocks)
+            .Where(static block => block.Anchor != PresentationTextAnchor.Point)
+            .All(static block => block.Color == new PresentationColor(216, 229, 246)));
+    }
+
+    [TestMethod]
     public void IncompatibleStackAndOldGapSourcesAreRejectedAndDayTransferIsPinned()
     {
         var rig = Rig(640, 480, false);
