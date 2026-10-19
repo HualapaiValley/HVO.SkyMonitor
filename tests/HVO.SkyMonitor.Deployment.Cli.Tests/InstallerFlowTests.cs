@@ -1400,7 +1400,6 @@ public sealed partial class InstallerFlowTests
         };
         var host = new FakeHostEnvironment
         {
-            Tar = false,
             Controllers = "cpuset cpu io pids",
             FileSystems =
             {
@@ -1412,7 +1411,7 @@ public sealed partial class InstallerFlowTests
         [
             "docker-memory-limit-unsupported", "docker-cpu-quota-unsupported", "docker-pids-limit-unsupported",
             "docker-host-cpus-insufficient", "docker-host-memory-below-limit",
-            "tar-missing", "product-root-storage-insufficient", "docker-root-storage-insufficient"
+            "product-root-storage-insufficient", "docker-root-storage-insufficient"
         ];
         try
         {

@@ -86,6 +86,12 @@ internal static class CommandLine
         Lifecycle("cameraagent", "reinstall"),
         Lifecycle("cameraagent", "uninstall"),
         Lifecycle("cameraagent", "purge"),
+        new(["cameraagent", "backup"], null, LifecycleValueOptions, LifecycleFlags,
+            "Run it as the instance's service account, not with sudo: it copies the instance, bulk captures included, into one " +
+            "owner-only archive in <product-root>/backups. --plan is --dry-run. " + PlanScratchNote),
+        new(["cameraagent", "restore"], "<archive>", LifecycleValueOptions, LifecycleFlags,
+            "Run it as the instance's service account, not with sudo. <archive> is a backup's name in <product-root>/backups, or its path there. " +
+            "The instance must be uninstalled or absent; it is restored uninstalled, and cameraagent reinstall starts it. --plan is --dry-run. " + PlanScratchNote),
         Lifecycle("catalog", "install"),
         Lifecycle("catalog", "select"),
         Lifecycle("catalog", "rollback"),
@@ -594,12 +600,20 @@ internal static class CommandLine
             ["cameraagent", "reinstall", ..] => (LifecycleOperationKind.Reinstall, 2),
             ["cameraagent", "uninstall", ..] => (LifecycleOperationKind.Uninstall, 2),
             ["cameraagent", "purge", ..] => (LifecycleOperationKind.Purge, 2),
+            ["cameraagent", "backup", ..] => (LifecycleOperationKind.Backup, 2),
+            ["cameraagent", "restore", ..] => (LifecycleOperationKind.Restore, 2),
             ["catalog", "install", ..] => (LifecycleOperationKind.CatalogInstall, 2),
             ["catalog", "select", ..] => (LifecycleOperationKind.CatalogSelect, 2),
             ["catalog", "rollback", ..] => (LifecycleOperationKind.CatalogRollback, 2),
             ["catalog", "gc", ..] => (LifecycleOperationKind.CatalogGarbageCollect, 2),
             _ => throw new InstallUsageException(UnknownCommand(args))
         };
+        string? archive = null;
+        if (operation == LifecycleOperationKind.Restore && optionOffset < args.Length &&
+            !args[optionOffset].StartsWith("--", StringComparison.Ordinal))
+        {
+            archive = args[optionOffset++];
+        }
         var values = new Dictionary<string, string?>(StringComparer.Ordinal);
         var flags = new HashSet<string>(StringComparer.Ordinal);
         for (var index = optionOffset; index < args.Length; index++)
@@ -644,8 +658,19 @@ internal static class CommandLine
             ConfirmRemovedOperationId = ParseGuid(
                 Get(values, "--confirm-removed-operation-id"), "--confirm-removed-operation-id"),
             CatalogBundle = Get(values, "--catalog-bundle"),
-            CatalogVersion = Get(values, "--catalog-version")
+            CatalogVersion = Get(values, "--catalog-version"),
+            Archive = archive
         };
+        if (archive is not null && archive.Contains('/', StringComparison.Ordinal))
+        {
+            // A path names the archive only where the backup folder keeps it.
+            var folder = Path.Combine(request.ProductRoot, BackupVault.FolderName);
+            if (!Path.IsPathFullyQualified(archive) || !string.Equals(Path.GetDirectoryName(Path.GetFullPath(archive)), folder, StringComparison.Ordinal))
+            {
+                throw new InstallUsageException($"restore reads a backup only from {folder}; give its name or its path there.");
+            }
+            request = request with { Archive = Path.GetFileName(archive) };
+        }
         if (operation == LifecycleOperationKind.CatalogSelect && request.CatalogVersion is null)
         {
             throw new InstallUsageException("catalog select requires --catalog-version.");

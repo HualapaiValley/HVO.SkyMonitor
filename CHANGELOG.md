@@ -24,6 +24,19 @@ onward; earlier development is recorded in its pull requests. A release renames 
   (F3), schedule (F4) and system (F5), with the commands' changes and checks behind prompts. It fits 80 x 24 and uses
   120 x 32, says in its header whether what shows is current (`[LIVE]`, `[STALE]`, `[OFFLINE]`), and marks values it
   could not read again `LAST KNOWN`. It is drawn in HVO Dark with 16-colour, `NO_COLOR` and ASCII fallbacks. (#1317)
+- `hvo-sky-install cameraagent backup` copies an instance, bulk captures and a verified snapshot of its databases
+  included, into one owner-only archive in `<product-root>/backups`. The archive is proved whole and recorded before it
+  is kept; it is written with capture paused and the container stopped, after a check of the folder and of free space,
+  with progress reports and no fixed deadline. A failure or Ctrl+C discards the partial archive and restarts the
+  instance. On a host whose Docker cannot enforce every CameraAgent limit, a backup that restarts the instance warns
+  first and restarts it as a rollback does. `hvo-sky-install cameraagent restore <archive>` puts an uninstalled or
+  absent instance back from a backup, after refusing a partial, unrecorded or damaged archive with nothing changed. It
+  never lowers a counter the replaced instance handed out. It revokes again the API keys, passwords and authority
+  revoked since the backup, keeps the live instance's owner settings and owner, or warns loudly when there is nothing to
+  compare. Both run as the instance's service account, not started with `sudo`, and refuse to run as root or as anyone
+  else; like `install`, they ask `sudo` only to create the backup folder or an absent instance root.
+  Both support `--plan` and `--resume`, and a completed backup or restore removes the database snapshots nothing refers
+  to any more. (#1353)
 - On a terminal, `hvo-sky-install cameraagent install` (and `install.sh` with no arguments) opens a wizard for what
   the command line left unanswered: the camera's name, its release and catalog, network, location, container limits
   and the owner's sign-in, each page passed over when the command line answered it. It shows the plan, checked as
@@ -183,6 +196,8 @@ onward; earlier development is recorded in its pull requests. A release renames 
   indexes, SBOM and provenance files, the embedded P-256 trust root, the bootstrap script
   `scripts/install-hvo-sky-install.sh`, and the release tool's signing and train commands. A release is trusted by
   `SHA256SUMS` and its build-provenance attestations. (#1310)
+- The `tar-missing` host prerequisite: `cameraagent install` no longer refuses a host without `tar`, because no
+  `hvo-sky-install` command runs it. `install.sh` still checks for `tar`, which it uses to unpack the catalog. (#1353)
 
 ### Deprecated
 

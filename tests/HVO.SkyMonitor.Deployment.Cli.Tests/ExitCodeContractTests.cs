@@ -22,6 +22,7 @@ public sealed class ExitCodeContractTests
         UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
 
     private const string Id = "5a3f7c1e-2b4d-4e6f-8a9b-0c1d2e3f4a5b";
+    private const string Archive = "hvo-sky-5a3f7c1e2b4d4e6f8a9b0c1d2e3f4a5b-20261018T073000Z-11223344.tar.gz";
     private static readonly string ImageRef = $"sha256:{new string('b', 64)}";
 
     /// <summary>Every command the parser accepts, with arguments it accepts.</summary>
@@ -38,6 +39,8 @@ public sealed class ExitCodeContractTests
         ("cameraagent reinstall", ["cameraagent", "reinstall", "--instance-id", Id]),
         ("cameraagent uninstall", ["cameraagent", "uninstall", "--instance-id", Id]),
         ("cameraagent purge", ["cameraagent", "purge", "--instance-id", Id, "--confirm-instance-id", Id]),
+        ("cameraagent backup", ["cameraagent", "backup", "--instance-id", Id]),
+        ("cameraagent restore", ["cameraagent", "restore", Archive, "--instance-id", Id]),
         ("catalog install", ["catalog", "install", "--catalog-bundle", "/srv/hvo/catalog.bundle"]),
         ("catalog select", ["catalog", "select", "--instance-id", Id, "--catalog-version", "hyg-v4.2-p3-s2-r1"]),
         ("catalog rollback", ["catalog", "rollback", "--instance-id", Id]),
@@ -95,9 +98,17 @@ public sealed class ExitCodeContractTests
     [DataRow("cameraagent uninstall", "refused", 3)]
     [DataRow("cameraagent uninstall", "interrupted", 130)]
     [DataRow("cameraagent purge", "done", 0)]
+    [DataRow("cameraagent backup", "done", 0)]
+    [DataRow("cameraagent restore", "done", 0)]
     [DataRow("cameraagent purge", "failed", 1)]
+    [DataRow("cameraagent backup", "failed", 1)]
+    [DataRow("cameraagent restore", "failed", 1)]
     [DataRow("cameraagent purge", "refused", 3)]
+    [DataRow("cameraagent backup", "refused", 3)]
+    [DataRow("cameraagent restore", "refused", 3)]
     [DataRow("cameraagent purge", "interrupted", 130)]
+    [DataRow("cameraagent backup", "interrupted", 130)]
+    [DataRow("cameraagent restore", "interrupted", 130)]
     [DataRow("catalog install", "done", 0)]
     [DataRow("catalog install", "failed", 1)]
     [DataRow("catalog install", "refused", 3)]
@@ -140,6 +151,8 @@ public sealed class ExitCodeContractTests
     [DataRow("cameraagent reinstall")]
     [DataRow("cameraagent uninstall")]
     [DataRow("cameraagent purge")]
+    [DataRow("cameraagent backup")]
+    [DataRow("cameraagent restore")]
     [DataRow("catalog install")]
     [DataRow("catalog select")]
     [DataRow("catalog rollback")]
@@ -168,6 +181,8 @@ public sealed class ExitCodeContractTests
     [DataRow("cameraagent reinstall")]
     [DataRow("cameraagent uninstall")]
     [DataRow("cameraagent purge")]
+    [DataRow("cameraagent backup")]
+    [DataRow("cameraagent restore")]
     [DataRow("catalog install")]
     [DataRow("catalog select")]
     [DataRow("catalog rollback")]
@@ -197,6 +212,8 @@ public sealed class ExitCodeContractTests
     [DataRow("cameraagent reinstall")]
     [DataRow("cameraagent uninstall")]
     [DataRow("cameraagent purge")]
+    [DataRow("cameraagent backup")]
+    [DataRow("cameraagent restore")]
     [DataRow("catalog install")]
     [DataRow("catalog select")]
     [DataRow("catalog rollback")]

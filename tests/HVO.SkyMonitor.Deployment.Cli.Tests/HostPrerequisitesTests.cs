@@ -76,18 +76,6 @@ public sealed class HostPrerequisitesTests
     }
 
     [TestMethod]
-    public void Evaluate_MissingTar_IsReported()
-    {
-        var report = HostPrerequisites.Evaluate(
-            Supported(), ProductRoot, Required, Required, new FakeHostEnvironment { Tar = false }, Limits);
-
-        var finding = report.Findings.Single();
-        Assert.AreEqual("tar-missing", finding.Code);
-        Assert.IsTrue(finding.Blocking);
-        StringAssert.Contains(finding.Remediation, "apt-get install tar", StringComparison.Ordinal);
-    }
-
-    [TestMethod]
     public void Evaluate_FreeSpace_IsMeasuredOnTheFilesystemsThatHoldEachRoot()
     {
         var host = new FakeHostEnvironment
@@ -222,7 +210,7 @@ public sealed class HostPrerequisitesTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public void LinuxHostEnvironment_MeasuresTheNearestExistingAncestorAndFindsExecutables()
+    public void LinuxHostEnvironment_MeasuresTheNearestExistingAncestor()
     {
         var existing = Path.GetTempPath().TrimEnd('/');
         var missing = Path.Combine(existing, $"hvo-missing-{Guid.NewGuid():N}", "product", "root");
@@ -234,8 +222,6 @@ public sealed class HostPrerequisitesTests
         Assert.AreEqual(direct.FileSystem, measured.FileSystem);
         Assert.IsGreaterThan(0L, measured.AvailableBytes);
         Assert.IsGreaterThan(0L, LinuxHostEnvironment.AvailableBytes(missing));
-        Assert.IsTrue(LinuxHostEnvironment.Instance.HasExecutable("sh"));
-        Assert.IsFalse(LinuxHostEnvironment.Instance.HasExecutable($"hvo-not-a-tool-{Guid.NewGuid():N}"));
     }
 
     [TestMethod]
@@ -279,7 +265,7 @@ public sealed class HostPrerequisitesTests
             CpuCount = 1,
             Warnings = ["WARNING: No memory limit support", "WARNING: No swap limit support"]
         };
-        var host = new FakeHostEnvironment { Tar = false, Controllers = "cpuset cpu io pids" };
+        var host = new FakeHostEnvironment { Controllers = "cpuset cpu io pids" };
 
         var report = HostPrerequisites.EvaluateContainerLimits(docker, ProductRoot, host, Limits, rollback: false);
 
@@ -384,8 +370,6 @@ internal sealed class FakeHostEnvironment : IHostEnvironment
 
     public HostFileSystemMeasurement Fallback { get; init; } = new("/", "8:1", long.MaxValue / 4);
 
-    public bool Tar { get; init; } = true;
-
     public string? Controllers { get; init; }
 
     public List<string> Measured { get; } = [];
@@ -395,8 +379,6 @@ internal sealed class FakeHostEnvironment : IHostEnvironment
         Measured.Add(path);
         return FileSystems.TryGetValue(path, out var measurement) ? measurement : Fallback;
     }
-
-    public bool HasExecutable(string name) => name != "tar" || Tar;
 
     public string? ReadCgroupControllers() => Controllers;
 }

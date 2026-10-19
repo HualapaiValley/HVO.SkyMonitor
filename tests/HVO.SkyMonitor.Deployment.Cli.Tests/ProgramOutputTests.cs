@@ -30,6 +30,8 @@ public sealed class ProgramOutputTests
           cameraagent reinstall
           cameraagent uninstall
           cameraagent purge
+          cameraagent backup
+          cameraagent restore <archive>
           catalog install
           catalog select
           catalog rollback
