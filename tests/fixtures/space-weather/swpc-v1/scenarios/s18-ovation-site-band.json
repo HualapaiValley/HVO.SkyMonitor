@@ -1,0 +1,69 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s18-ovation-site-band",
+  "title": "OVATION site band for HVO; the equatorial artifact is outside the band",
+  "covers": [
+    "ovation",
+    "location-relevance",
+    "data-only"
+  ],
+  "containsSyntheticRecords": false,
+  "notes": [
+    "Data only. OVATION acquisition is unresolved (U3) and is not part of the first tranche.",
+    "The body is the committed sector subset, not the full 918,460-byte product."
+  ],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T18:57:04Z",
+      "product": "ovation",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"e03bc-65e360ec17552\"",
+        "lastModified": "Mon, 19 Oct 2026 18:55:29 GMT",
+        "bodyFile": "ovation-aurora-site-sector.json"
+      },
+      "expect": {
+        "outcome": "updated",
+        "product": {
+          "facts": {
+            "observationTimeUtc": "2026-10-19T18:47:00Z",
+            "forecastTimeUtc": "2026-10-19T20:01:00Z",
+            "leadMinutes": 74,
+            "siteBand": {
+              "siteId": "hvo",
+              "latitudes": [
+                36,
+                45
+              ],
+              "longitudes": [
+                236,
+                256
+              ],
+              "cells": 210,
+              "maxValue": 0
+            },
+            "equatorialNonzeroCellsIgnored": 42
+          }
+        }
+      }
+    }
+  ]
+}

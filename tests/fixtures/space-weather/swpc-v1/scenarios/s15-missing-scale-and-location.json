@@ -1,0 +1,120 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s15-missing-scale-and-location",
+  "title": "Messages without a scale or impact line, null predicted scales, and a site without a location",
+  "covers": [
+    "missing-scale",
+    "missing-location",
+    "location-relevance",
+    "first-run-backlog"
+  ],
+  "containsSyntheticRecords": false,
+  "notes": [],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    },
+    {
+      "siteId": "unlocated",
+      "location": null,
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T14:25:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s15-a\"",
+        "lastModified": "Fri, 16 Oct 2026 14:24:50 GMT",
+        "body": "[{\"product_id\":\"EF3A\",\"issue_datetime\":\"2026-10-16 14:19:49.850\",\"message\":\"Space Weather Message Code: ALTEF3\\r\\nSerial Number: 3754\\r\\nIssue Time: 2026 Oct 16 1419 UTC\\r\\n\\r\\nALERT: Electron 2MeV Integral Flux exceeded 1,000pfu \\nThreshold Reached: 2026 Oct 16 1345 UTC\\nStation: GOES-19\\nComment: \"},{\"product_id\":\"K07W\",\"issue_datetime\":\"2026-10-10 17:42:57.273\",\"message\":\"Space Weather Message Code: WARK07\\r\\nSerial Number: 153\\r\\nIssue Time: 2026 Oct 10 1742 UTC\\r\\n\\r\\nWARNING: Geomagnetic K-index of 7 or greater expected \\nValid From: 2026 Oct 10 1742 UTC\\nValid To: 2026 Oct 10 2359 UTC\\nWarning Conditions: Onset\\nNoaa Scale: G3 - Greater\\nComment: \\r\\n\\r\\nNOAA Scale: G3 - Greater\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [
+          {
+            "group": "ALTEF3/3754",
+            "reason": "new",
+            "level": null
+          }
+        ],
+        "notices": {
+          "ALTEF3/3754": {
+            "level": null,
+            "state": "active",
+            "relevance": {
+              "hvo": "NoLocalObservingImpact",
+              "unlocated": "NoLocalObservingImpact"
+            }
+          },
+          "WARK07/153": {
+            "level": "G3",
+            "state": "history",
+            "relevance": {
+              "hvo": "Unlikely",
+              "unlocated": "Unknown"
+            }
+          }
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T18:57:03Z",
+      "product": "scales",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"44e-65e360fa970f3\"",
+        "lastModified": "Mon, 19 Oct 2026 18:55:44 GMT",
+        "bodyFile": "capture-20261019T1857Z/noaa-scales.json"
+      },
+      "expect": {
+        "outcome": "updated",
+        "product": {
+          "facts": {
+            "current": {
+              "stampUtc": "2026-10-19T18:55:00Z",
+              "rScale": "0",
+              "sScale": "0",
+              "gScale": "0"
+            },
+            "observed24hMax": {
+              "stampUtc": "2026-10-18T18:55:00Z",
+              "rScale": "1"
+            },
+            "predictedDay1": {
+              "stampUtc": "2026-10-19T18:55:00Z",
+              "rScale": null,
+              "sScale": null,
+              "rMinorProbPct": "25",
+              "rMajorProbPct": "5",
+              "sProbPct": "5",
+              "gScale": "1"
+            },
+            "predictedDay3": {
+              "stampUtc": "2026-10-21T00:00:00Z",
+              "gScale": "0"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

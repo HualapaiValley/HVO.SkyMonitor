@@ -1,0 +1,127 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s11-stale-cdn-out-of-order",
+  "title": "An older body after a newer one merges without regression or replacement",
+  "covers": [
+    "out-of-order",
+    "stale-snapshot",
+    "first-run-backlog"
+  ],
+  "containsSyntheticRecords": false,
+  "notes": [],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-08T16:47:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s11-a\"",
+        "lastModified": "Thu, 08 Oct 2026 16:46:55 GMT",
+        "body": "[{\"product_id\":\"TIIA\",\"issue_datetime\":\"2026-10-08 16:46:44.923\",\"message\":\"Space Weather Message Code: ALTTP2\\r\\nSerial Number: 1531\\r\\nIssue Time: 2026 Oct 08 1646 UTC\\r\\n\\r\\nALERT: Type II Radio Emission \\nBegin Time: 2026 Oct 08 1542 UTC\\nEstimate Velocity: 4125 km\\/s\\nComment: ** Corrected for begin time.              Type II speed recorded by Sagamore Hill RSTN site.\\n\\nCORRECTED\"},{\"product_id\":\"TIVA\",\"issue_datetime\":\"2026-10-08 16:44:50.033\",\"message\":\"Space Weather Message Code: ALTTP4\\r\\nSerial Number: 719\\r\\nIssue Time: 2026 Oct 08 1644 UTC\\r\\n\\r\\nALERT: Type IV Radio Emission \\nBegin Time: 2026 Oct 08 1612 UTC\\nComment: Type IV recorded by Sagamore Hill RSTN site\\n\"},{\"product_id\":\"TIIA\",\"issue_datetime\":\"2026-10-08 16:43:45.180\",\"message\":\"Space Weather Message Code: ALTTP2\\r\\nSerial Number: 1531\\r\\nIssue Time: 2026 Oct 08 1643 UTC\\r\\n\\r\\nALERT: Type II Radio Emission \\nBegin Time: 2026 Oct 08 1642 UTC\\nEstimate Velocity: 4125 km\\/s\\nComment: Type II speed recorded by Sagamore Hill RSTN site.\\n\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [
+          {
+            "group": "ALTTP4/719",
+            "reason": "new",
+            "level": null
+          }
+        ],
+        "notices": {
+          "ALTTP2/1531": {
+            "state": "recent",
+            "versions": 2,
+            "latest": "ALTTP2/1531/2026-10-08T16:46:00Z"
+          },
+          "ALTTP4/719": {
+            "state": "active",
+            "fromUtc": "2026-10-08T16:12:00Z",
+            "untilUtc": "2026-10-08T17:12:00Z"
+          }
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "fetch",
+      "atUtc": "2026-10-08T16:49:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s11-old\"",
+        "lastModified": "Thu, 08 Oct 2026 16:44:55 GMT",
+        "body": "[{\"product_id\":\"TIVA\",\"issue_datetime\":\"2026-10-08 16:44:50.033\",\"message\":\"Space Weather Message Code: ALTTP4\\r\\nSerial Number: 719\\r\\nIssue Time: 2026 Oct 08 1644 UTC\\r\\n\\r\\nALERT: Type IV Radio Emission \\nBegin Time: 2026 Oct 08 1612 UTC\\nComment: Type IV recorded by Sagamore Hill RSTN site\\n\"},{\"product_id\":\"TIIA\",\"issue_datetime\":\"2026-10-08 16:43:45.180\",\"message\":\"Space Weather Message Code: ALTTP2\\r\\nSerial Number: 1531\\r\\nIssue Time: 2026 Oct 08 1643 UTC\\r\\n\\r\\nALERT: Type II Radio Emission \\nBegin Time: 2026 Oct 08 1642 UTC\\nEstimate Velocity: 4125 km\\/s\\nComment: Type II speed recorded by Sagamore Hill RSTN site.\\n\"}]"
+      },
+      "expect": {
+        "outcome": "stale-snapshot",
+        "attention": [],
+        "diagnostics": [
+          "stale-snapshot"
+        ],
+        "notices": {
+          "ALTTP2/1531": {
+            "versions": 2,
+            "latest": "ALTTP2/1531/2026-10-08T16:46:00Z",
+            "fromUtc": "2026-10-08T15:42:00Z"
+          },
+          "ALTTP4/719": {
+            "state": "active"
+          }
+        },
+        "product": {
+          "lkgSha256": "306168943F7C5E4323A505206E086595B2F5DA2BFB10E12E7175A0C15C81D1A7",
+          "lastSuccessUtc": "2026-10-08T16:47:00Z",
+          "validators": {
+            "etag": "W/\"fixture-s11-a\""
+          }
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "fetch",
+      "atUtc": "2026-10-08T16:51:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s11-a\"",
+        "lastModified": "Thu, 08 Oct 2026 16:46:55 GMT",
+        "body": "[{\"product_id\":\"TIIA\",\"issue_datetime\":\"2026-10-08 16:46:44.923\",\"message\":\"Space Weather Message Code: ALTTP2\\r\\nSerial Number: 1531\\r\\nIssue Time: 2026 Oct 08 1646 UTC\\r\\n\\r\\nALERT: Type II Radio Emission \\nBegin Time: 2026 Oct 08 1542 UTC\\nEstimate Velocity: 4125 km\\/s\\nComment: ** Corrected for begin time.              Type II speed recorded by Sagamore Hill RSTN site.\\n\\nCORRECTED\"},{\"product_id\":\"TIVA\",\"issue_datetime\":\"2026-10-08 16:44:50.033\",\"message\":\"Space Weather Message Code: ALTTP4\\r\\nSerial Number: 719\\r\\nIssue Time: 2026 Oct 08 1644 UTC\\r\\n\\r\\nALERT: Type IV Radio Emission \\nBegin Time: 2026 Oct 08 1612 UTC\\nComment: Type IV recorded by Sagamore Hill RSTN site\\n\"},{\"product_id\":\"TIIA\",\"issue_datetime\":\"2026-10-08 16:43:45.180\",\"message\":\"Space Weather Message Code: ALTTP2\\r\\nSerial Number: 1531\\r\\nIssue Time: 2026 Oct 08 1643 UTC\\r\\n\\r\\nALERT: Type II Radio Emission \\nBegin Time: 2026 Oct 08 1642 UTC\\nEstimate Velocity: 4125 km\\/s\\nComment: Type II speed recorded by Sagamore Hill RSTN site.\\n\"}]"
+      },
+      "expect": {
+        "request": {
+          "ifNoneMatch": "W/\"fixture-s11-a\""
+        },
+        "outcome": "unchanged",
+        "attention": [],
+        "diagnostics": [],
+        "product": {
+          "lastSuccessUtc": "2026-10-08T16:51:00Z"
+        }
+      }
+    }
+  ]
+}

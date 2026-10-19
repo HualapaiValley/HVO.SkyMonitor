@@ -1,0 +1,95 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s04-continuation-self-reference",
+  "title": "CONTINUED ALERT chain whose later reissues continue their own serial",
+  "covers": [
+    "continuation",
+    "self-reference",
+    "first-run-backlog",
+    "expired"
+  ],
+  "containsSyntheticRecords": false,
+  "notes": [],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-08T05:05:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s04-a\"",
+        "lastModified": "Thu, 08 Oct 2026 05:04:40 GMT",
+        "body": "[{\"product_id\":\"EF3A\",\"issue_datetime\":\"2026-10-08 05:01:00.663\",\"message\":\"Space Weather Message Code: ALTEF3\\r\\nSerial Number: 3752\\r\\nIssue Time: 2026 Oct 08 0501 UTC\\r\\n\\r\\nCONTINUED ALERT: Electron 2MeV Integral Flux exceeded 1,000pfu\\nContinuation of Serial Number: 3752\\nBegin Time: 2026 Oct 05 1830 UTC\\nYesterday Maximum 2MeV Flux: 11911 pfu\\nCORRECTED\"},{\"product_id\":\"EF3A\",\"issue_datetime\":\"2026-10-07 05:04:25.963\",\"message\":\"Space Weather Message Code: ALTEF3\\r\\nSerial Number: 3752\\r\\nIssue Time: 2026 Oct 07 0504 UTC\\r\\n\\r\\nCONTINUED ALERT: Electron 2MeV Integral Flux exceeded 1,000pfu\\nContinuation of Serial Number: 3752\\nBegin Time: 2026 Oct 05 1830 UTC\\nYesterday Maximum 2MeV Flux: 10956 pfu\\nCORRECTED\"},{\"product_id\":\"EF3A\",\"issue_datetime\":\"2026-10-06 05:07:58.703\",\"message\":\"Space Weather Message Code: ALTEF3\\r\\nSerial Number: 3752\\r\\nIssue Time: 2026 Oct 06 0507 UTC\\r\\n\\r\\nCONTINUED ALERT: Electron 2MeV Integral Flux exceeded 1,000pfu\\nContinuation of Serial Number: 3751\\nBegin Time: 2026 Oct 05 1830 UTC\\n\\nYesterday Maximum 2MeV Flux: 2358 pfu\\nMax time: 2026 Oct 05 2010 UTC\"},{\"product_id\":\"EF3A\",\"issue_datetime\":\"2026-10-05 18:47:07.310\",\"message\":\"Space Weather Message Code: ALTEF3\\r\\nSerial Number: 3751\\r\\nIssue Time: 2026 Oct 05 1847 UTC\\r\\n\\r\\nALERT: Electron 2MeV Integral Flux exceeded 1,000pfu \\nThreshold Reached: 2026 Oct 05 1830 UTC\\nStation: GOES-19\\nComment: \"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [
+          {
+            "group": "ALTEF3/3751",
+            "reason": "new",
+            "level": null
+          }
+        ],
+        "diagnostics": [],
+        "notices": {
+          "ALTEF3/3751": {
+            "family": "flux-alert",
+            "level": null,
+            "state": "active",
+            "fromUtc": "2026-10-05T18:30:00Z",
+            "untilUtc": "2026-10-09T11:01:00Z",
+            "latest": "ALTEF3/3752/2026-10-08T05:01:00Z",
+            "versions": 4,
+            "corrected": true,
+            "orphan": false,
+            "relevance": {
+              "hvo": "NoLocalObservingImpact"
+            }
+          }
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "evaluate",
+      "atUtc": "2026-10-09T11:00:59Z",
+      "expect": {
+        "notices": {
+          "ALTEF3/3751": {
+            "state": "active"
+          }
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "evaluate",
+      "atUtc": "2026-10-09T11:01:00Z",
+      "expect": {
+        "notices": {
+          "ALTEF3/3751": {
+            "state": "recent",
+            "endReason": "expired"
+          }
+        }
+      }
+    }
+  ]
+}

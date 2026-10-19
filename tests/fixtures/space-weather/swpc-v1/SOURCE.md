@@ -1,0 +1,95 @@
+# NOAA SWPC space-weather fixture pack, v1 (issue #1398)
+
+This directory is test data for the space-weather source decision in
+`docs/planning/space-weather-source-decision-1398.md` and the fact contract in
+`docs/contracts/space-weather-facts-v1.md`. Nothing here is production
+configuration, and nothing here authorizes network access.
+
+## Source and terms
+
+All captured bodies come from the NOAA Space Weather Prediction Center (SWPC)
+public data service at `https://services.swpc.noaa.gov/`. SWPC is part of the
+National Weather Service (NWS). SWPC publishes no separate usage policy, so the
+NWS disclaimer at https://www.weather.gov/disclaimer applies. It was read on
+2026-10-19 and says, in part:
+
+> The information on National Weather Service (NWS) Web pages are in the public
+> domain, unless specifically noted otherwise, and may be used without charge
+> for any lawful purpose so long as you do not: 1) claim it is your own (e.g.,
+> by claiming copyright for NWS information ...), 2) use it in a manner that
+> implies an endorsement or affiliation with NOAA/NWS, or 3) modify its content
+> and then present it as official government material.
+
+The captured bodies are U.S. Government works and are not subject to copyright
+protection in the United States (17 U.S.C. 105). Under 17 U.S.C. 403, a
+copyrighted work that consists predominantly of this material must identify
+the NWS material it incorporates and state that it is not subject to copyright
+protection. This notice serves that purpose for this directory.
+
+Credit: "Space weather data: NOAA Space Weather Prediction Center (SWPC)." HVO
+SkyMonitor is not endorsed by or affiliated with NOAA or NWS. The scenario
+expectations, derived windows, attention events and local relevance values in
+this pack are HVO SkyMonitor's own policy outputs and are not official
+forecasts. No NOAA or NWS logo or trademark is used.
+
+## Capture
+
+The capture ran once, on 2026-10-19 between 18:57:03Z and 18:57:05Z, with
+gzip negotiation and no credentials or cookies. One GET was made per product,
+and the full OVATION grid was downloaded once. `manifest.json` records each
+product's fetch start time, HTTP status, content type, transfer size,
+`Last-Modified`, `ETag`, `Cache-Control`, decoded size and decoded-body
+SHA-256. No other response headers are recorded. CDN request identifiers and
+`Via` values were deliberately left out.
+
+| File | Product | Transform |
+|---|---|---|
+| `capture-20261019T1857Z/alerts.json` | `/products/alerts.json` | None. Byte-exact (54,064 bytes). |
+| `capture-20261019T1857Z/noaa-scales.json` | `/products/noaa-scales.json` | None. Byte-exact (1,102 bytes). |
+| `capture-20261019T1857Z/noaa-planetary-k-index-forecast.json` | `/products/noaa-planetary-k-index-forecast.json` | None. Byte-exact (6,905 bytes). |
+| `capture-20261019T1857Z/3-day-forecast.original.json` | `/text/3-day-forecast.txt` | The exact decoded text (2,046 bytes) stored as a JSON string, so its trailing spaces survive `git diff --check`. The wrapper records the original size and SHA-256. |
+| `capture-20261019T1857Z/3-day-forecast.txt` | same | The normalized form of the text above. The snapshot hash for text products is taken over this form. |
+| `ovation-aurora-site-sector.json` | `/json/ovation_aurora_latest.json` | A sector subset: longitudes 236 to 256 and latitudes -5 to 90, one cell per line, with the source keys. The 918,460-byte original is not committed; its SHA-256 and size are recorded in the file and in `manifest.json`. |
+
+Normalization for text: CRLF becomes LF, trailing spaces, tabs and carriage
+returns are removed from every line, trailing blank lines are removed, and
+every line ends in LF. The same rule is used for alert message content hashes.
+
+## Scenarios
+
+`scenarios/*.json` (schema `hvo-space-weather-swpc-scenario-v1`) are
+deterministic step sequences of fetches, acknowledgements, restarts, operator
+resumes and evaluations, each with expected outcomes. `fixtures.py` generates
+them from the captured bodies. A scenario marks
+`containsSyntheticRecords: true` and explains in `notes` when it contains
+records that SWPC did not publish. These include:
+
+- a synthetic CANCEL WARNING (no CANCEL WARNING was published in the capture
+  window), built from the documented SWPC rules and the shape of the captured
+  CANCEL WATCH;
+- a synthetic G2 watch, a year-rollover watch and an unknown message code;
+- altered or damaged copies of real records and bodies, used to model
+  revisions, malformed records and malformed bodies.
+
+No third-party copy of any SWPC message is included.
+
+## Verify and regenerate
+
+Run from the repository root with an isolated interpreter:
+
+```bash
+python3 -I tests/fixtures/space-weather/swpc-v1/fixtures.py check
+```
+
+`check` performs four checks:
+
+- It verifies every file against `manifest.json` and rejects unlisted files.
+- It confirms that the captured bodies still match the recorded fetch sizes
+  and hashes.
+- It regenerates every scenario and compares the bytes.
+- It replays every scenario through the reference model in `fixtures.py` and
+  compares the results with the expectations.
+
+`write` regenerates the scenarios and the manifest. It rebuilds the OVATION
+subset only when `--ovation-original` names a file with the recorded size and
+SHA-256.

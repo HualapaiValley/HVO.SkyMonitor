@@ -1,0 +1,103 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s14-year-rollover-and-local-day",
+  "title": "Watch day lines without a year cross 31 December; UTC days shown in site time",
+  "covers": [
+    "timezone-boundary",
+    "year-rollover"
+  ],
+  "containsSyntheticRecords": true,
+  "notes": [
+    "The site zone is America/Phoenix (UTC-07:00, no daylight saving)."
+  ],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-12-31T21:02:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s14-a\"",
+        "lastModified": "Thu, 31 Dec 2026 21:01:50 GMT",
+        "body": "[{\"product_id\":\"A20F\",\"issue_datetime\":\"2026-12-31 21:00:05.000\",\"message\":\"Space Weather Message Code: WATA20\\r\\nSerial Number: 1200\\r\\nIssue Time: 2026 Dec 31 2100 UTC\\r\\n\\r\\nWATCH: Geomagnetic Storm Category G1 Predicted \\nHighest Storm Level Predicted by Day:\\nJan 01:  G1 (Minor)   Jan 02:  G1 (Minor)   Jan 03:  None (Below G1)   \\nTHIS SUPERSEDES ANY\\/ALL PRIOR WATCHES IN EFFECT\\nComment: Synthetic fixture for year rollover; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [
+          {
+            "group": "WATA20/1200",
+            "reason": "new",
+            "level": "G1"
+          }
+        ],
+        "notices": {
+          "WATA20/1200": {
+            "state": "active",
+            "fromUtc": "2026-12-31T21:00:00Z",
+            "untilUtc": "2027-01-03T00:00:00Z",
+            "days": [
+              {
+                "dateUtc": "2027-01-01",
+                "level": "G1"
+              },
+              {
+                "dateUtc": "2027-01-02",
+                "level": "G1"
+              },
+              {
+                "dateUtc": "2027-01-03",
+                "level": "None"
+              }
+            ],
+            "local": {
+              "fromLocal": "2026-12-31T14:00:00-07:00",
+              "untilLocal": "2027-01-02T17:00:00-07:00"
+            }
+          }
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "evaluate",
+      "atUtc": "2027-01-02T23:59:59Z",
+      "expect": {
+        "notices": {
+          "WATA20/1200": {
+            "state": "active"
+          }
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "evaluate",
+      "atUtc": "2027-01-03T00:00:00Z",
+      "expect": {
+        "notices": {
+          "WATA20/1200": {
+            "state": "recent",
+            "endReason": "expired"
+          }
+        }
+      }
+    }
+  ]
+}

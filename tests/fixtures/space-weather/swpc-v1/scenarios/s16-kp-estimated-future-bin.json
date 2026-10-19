@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s16-kp-estimated-future-bin",
+  "title": "Kp bins keep the source label verbatim; time relation comes from the bin start",
+  "covers": [
+    "kp-forecast",
+    "label-versus-time"
+  ],
+  "containsSyntheticRecords": false,
+  "notes": [],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T18:57:03Z",
+      "product": "kp-forecast",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"1af9-65e361333c7ac\"",
+        "lastModified": "Mon, 19 Oct 2026 18:56:43 GMT",
+        "bodyFile": "capture-20261019T1857Z/noaa-planetary-k-index-forecast.json"
+      },
+      "expect": {
+        "outcome": "updated",
+        "product": {
+          "facts": {
+            "rowCount": 81,
+            "firstBinStartUtc": "2026-10-12T00:00:00Z",
+            "lastBinStartUtc": "2026-10-22T00:00:00Z",
+            "bins": {
+              "2026-10-19T15:00:00Z": {
+                "kp": "0.33",
+                "label": "observed",
+                "noaaScale": null
+              },
+              "2026-10-19T18:00:00Z": {
+                "kp": "0.67",
+                "label": "estimated",
+                "noaaScale": null
+              },
+              "2026-10-19T21:00:00Z": {
+                "kp": "5.00",
+                "label": "estimated",
+                "noaaScale": "G1"
+              },
+              "2026-10-20T03:00:00Z": {
+                "kp": "4.67",
+                "label": "predicted",
+                "noaaScale": "G1"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
