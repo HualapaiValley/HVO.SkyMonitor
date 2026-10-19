@@ -14,7 +14,7 @@ using StarTrailComposer = HVO.SkyMonitor.VirtualSkyPoc.Pinned.StarTrailComposer;
 
 namespace HVO.SkyMonitor.VirtualSkyPoc;
 
-internal static class Program
+internal static partial class Program
 {
     private const int Size = 640;
     private const int PathRows = 361;
@@ -35,8 +35,19 @@ internal static class Program
 
     public static async Task Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "satellite-config")
+        {
+            if (File.Exists(args[1])) throw new ArgumentException("Use a new settings path.");
+            WriteJson(args[1], Config("SolarDriven"));
+            return;
+        }
+        if ((args.Length == 7 && args[0] == "satellite-reference") || (args.Length == 11 && args[0] == "satellite-tracks"))
+        {
+            await SatellitePoc(args).ConfigureAwait(false);
+            return;
+        }
         if (args.Length != 3 || args[0] is not ("samples" or "day" or "measure" or "details"))
-            throw new ArgumentException("Usage: VirtualSkyPoc samples|day|measure|details OUTPUT_DIRECTORY VERIFIED_CATALOG_ROOT");
+            throw new ArgumentException("Usage: VirtualSkyPoc samples|day|measure|details OUTPUT_DIRECTORY VERIFIED_CATALOG_ROOT; or satellite-config SETTINGS_PATH; see SATELLITE-POC.md for satellite-tracks and satellite-reference inputs.");
         var output = Path.GetFullPath(args[1]);
         if (Directory.Exists(output) && Directory.EnumerateFileSystemEntries(output).Any())
             throw new ArgumentException("Use a new empty output directory; retained evidence is immutable.");
