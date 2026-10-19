@@ -2029,9 +2029,11 @@ The restore then:
      owner, or with the same email but a new account, the restore puts the live account in place, with its live
      password. An installed CameraAgent can only find its owner, by its email, never create it, because the installer
      withdraws the temporary password once the owner is seeded.
-   - Every account the backup holds under the live owner's email or sign-in name gives them up first: it gets a
-     sign-in name no other account has (`removed-<id>`, or `removed-<id>-2` and so on), loses the email, and is locked
-     out as an account the live store no longer has is.
+   - Every account the backup holds under the live owner's email or sign-in name gives them up first. One the live
+     store no longer has gets a sign-in name no other account has (`removed-<id>`, or `removed-<id>-2` and so on),
+     loses the email, and is locked out. One the live store still has takes the sign-in name, email and lockout the
+     live store gives it, as one an earlier restore of the same backup gave way, so restoring a backup again changes
+     nothing more.
    - The restore reports each setting and account it kept, settings by name only (`restore-live-owner-settings-kept`).
      With no live instance it warns loudly that the backup's owner settings are in force again
      (`restore-backup-owner-settings`).

@@ -890,6 +890,25 @@ fi
   owner_contract_fails "the instance manifest does not name the live owner."
 jq -e '[.warnings[]? | select(.code == "restore-live-owner-settings-kept")] | length == 1' "$root/owner-restore.json" >/dev/null ||
   owner_contract_fails "the restore did not report the owner settings it kept: $(jq -c '.warnings' "$root/owner-restore.json")."
+# Restoring the same archive again changes nothing more (PR-1369-R4 F26): the backup's owner, which the first restore
+# renamed and locked out, is reconciled already, and the live owner stays in place through the real seeder.
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent uninstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-again-uninstall.json"
+[[ "$(jq -er '.outcome' "$root/owner-again-uninstall.json")" == completed ]] || owner_contract_fails "the uninstall before the second restore did not complete."
+logged "$root/owner-again-restore-events.jsonl" "$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent restore "$owner_archive" \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-again-restore.json"
+[[ "$(jq -er '.outcome' "$root/owner-again-restore.json")" == completed ]] || owner_contract_fails "the second restore of the same archive did not complete."
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent reinstall \
+  --instance-id "$instance_id" \
+  --product-root "$root/product" \
+  --json >"$root/owner-again-reinstall.json"
+[[ "$(jq -er '.outcome' "$root/owner-again-reinstall.json")" == completed ]] || owner_contract_fails "the reinstall after the second restore did not complete."
+[[ "$(site_owner "$backup_owner")" == 0 && "$(site_owner "$live_owner")" == 1 ]] ||
+  owner_contract_fails "after the second restore the site owners are $backup_owner $(site_owner "$backup_owner"), $live_owner $(site_owner "$live_owner")."
 printf 'Restore owner settings contract passed for instance %s: the real seeder kept the backup'"'"'s owner demoted and the live owner the site owner.\n' \
   "$instance_id"
 

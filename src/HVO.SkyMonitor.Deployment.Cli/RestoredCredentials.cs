@@ -106,6 +106,9 @@ internal static class RestoredCredentials
         return new Outcome(keys, reset, authority, changes);
     }
 
+    /// <summary>The columns that make an account's identity and lockout, which a colliding account the live store has takes from it.</summary>
+    private static readonly string[] IdentityColumns = ["UserName", "NormalizedUserName", "Email", "NormalizedEmail", "LockoutEnabled", "LockoutEnd"];
+
     /// <summary>The columns of CameraAgent's <c>AspNetUsers</c> table, the only ones an account is copied by.</summary>
     private static readonly string[] AccountColumns =
     [
@@ -120,10 +123,17 @@ internal static class RestoredCredentials
     /// was installed after the backup, under another email or under the same one with a new Identity account
     /// (PR-1369-R3 F25). The installer withdraws the temporary owner password once the owner is seeded, so CameraAgent's
     /// startup seeder can then only find the owner, by its email, never create it. One mechanism serves every case: each
-    /// restored account that holds the live owner's normalized email or sign-in name gives them up and is locked out as a
-    /// removed account is, under a sign-in name no other account has, chosen in the same transaction (PR-1369-R3 F21); then
-    /// the live account is carried in as the live store has it, password, security stamp, site ownership and lockout
-    /// included. Returns each change. Running it again changes nothing more.
+    /// restored account that holds the live owner's normalized email or sign-in name gives them up, before the live
+    /// account is carried in as the live store has it, password, security stamp, site ownership and lockout included.
+    /// <list type="bullet">
+    /// <item>An account the live store no longer has takes a sign-in name no other account has, chosen in the same
+    /// transaction (PR-1369-R3 F21), whatever it held (PR-1369-R4 F27), loses a colliding email, and is locked out as a
+    /// removed account is.</item>
+    /// <item>An account the live store still has takes the sign-in name, email and lockout the live store gives it. One an
+    /// earlier restore of the same archive gave way is in that state already, so restoring the archive again, or resuming,
+    /// changes nothing more (PR-1369-R4 F26).</item>
+    /// </list>
+    /// Returns each change.
     /// </summary>
     public static IReadOnlyList<string> CarryLiveOwner(string restoredDatabase, string liveDatabase, string ownerEmail)
     {
@@ -133,11 +143,11 @@ internal static class RestoredCredentials
         if (!File.Exists(restoredDatabase) || !File.Exists(liveDatabase)) return [];
         var email = ownerEmail.ToUpperInvariant();
         Dictionary<string, object?>? owner;
-        HashSet<string> liveAccounts;
+        Dictionary<string, Dictionary<string, object?>> liveAccounts;
         using (var database = CameraAgentStatePreflight.ReadOnlyDatabase.Open(liveDatabase))
         {
             owner = ReadAccount(database.Connection, null, email);
-            liveAccounts = [.. Read(database.Connection, null).Accounts.Keys];
+            liveAccounts = ReadIdentities(database.Connection);
         }
         if (owner is null) return [];
         using var restored = new SqliteConnection(new SqliteConnectionStringBuilder
@@ -171,22 +181,31 @@ internal static class RestoredCredentials
         var before = Read(restored, transaction);
         foreach (var holder in holders)
         {
-            if (liveAccounts.Contains(holder.Id))
-            {
-                throw new InstallerException(
-                    $"The restore cannot put the live owner's account {id} in place: account {holder.Id}, which the backup holds and the live instance still has, has its email or sign-in name.");
-            }
-            var freed = holder.Name ? FreeUserName(restored, transaction, holder.Id) : null;
-            var renamed = new List<(string Column, object? Value)>();
-            if (freed is not null) renamed.AddRange([("UserName", freed), ("NormalizedUserName", freed.ToUpperInvariant())]);
-            if (holder.Email) renamed.AddRange([("Email", null), ("NormalizedEmail", null)]);
-            if (present.Contains("ConcurrencyStamp")) renamed.Add(("ConcurrencyStamp", Guid.NewGuid().ToString("D")));
-            Update(restored, transaction, holder.Id, [.. renamed]);
-            RevokeAccount(restored, transaction, before, holder.Id, before.Accounts[holder.Id]);
             var held = holder.Email && holder.Name ? "email and sign-in name" : holder.Email ? "email" : "sign-in name";
-            changes.Add(freed is null
-                ? $"account {holder.Id} held the live owner's {held}; it gave it up and is locked out"
-                : $"account {holder.Id} held the live owner's {held}; it gave {(holder.Email ? "them" : "it")} up as '{freed}' and is locked out");
+            var update = new List<(string Column, object? Value)>();
+            if (liveAccounts.TryGetValue(holder.Id, out var live))
+            {
+                // The live store has it under another identity, as one an earlier restore gave way: it takes that again.
+                update.AddRange(IdentityColumns.Where(column => live.ContainsKey(column) && present.Contains(column)).Select(column => (column, live[column])));
+                if (live.GetValueOrDefault("NormalizedUserName") is string liveName && NameTaken(restored, transaction, liveName, holder.Id))
+                {
+                    var free = FreeUserName(restored, transaction, holder.Id);
+                    update.RemoveAll(static entry => entry.Column is "UserName" or "NormalizedUserName");
+                    update.AddRange([("UserName", free), ("NormalizedUserName", free.ToUpperInvariant())]);
+                }
+                if (present.Contains("ConcurrencyStamp")) update.Add(("ConcurrencyStamp", Guid.NewGuid().ToString("D")));
+                Update(restored, transaction, holder.Id, [.. update]);
+                var given = update.FirstOrDefault(static entry => entry.Column == "UserName").Value;
+                changes.Add($"account {holder.Id} held the live owner's {held} only in the backup; it takes the identity the live store gives it, '{given}'");
+                continue;
+            }
+            var freed = FreeUserName(restored, transaction, holder.Id);
+            update.AddRange([("UserName", freed), ("NormalizedUserName", freed.ToUpperInvariant())]);
+            if (holder.Email) update.AddRange([("Email", null), ("NormalizedEmail", null)]);
+            if (present.Contains("ConcurrencyStamp")) update.Add(("ConcurrencyStamp", Guid.NewGuid().ToString("D")));
+            Update(restored, transaction, holder.Id, [.. update]);
+            RevokeAccount(restored, transaction, before, holder.Id, before.Accounts[holder.Id]);
+            changes.Add($"account {holder.Id} held the live owner's {held}; it gave {(holder.Email && holder.Name ? "them" : "it")} up as '{freed}' and is locked out");
         }
         var columns = AccountColumns.Where(column => owner.ContainsKey(column) && present.Contains(column)).ToArray();
         using (var insert = Command(restored, transaction,
@@ -201,6 +220,31 @@ internal static class RestoredCredentials
         transaction.Commit();
         changes.Add($"account {id}, the live owner, which the backup does not hold, was brought over from the live instance with its live credentials");
         return changes;
+    }
+
+    /// <summary>Whether an account other than <paramref name="id"/> has the sign-in name <paramref name="normalizedName"/>.</summary>
+    private static bool NameTaken(SqliteConnection connection, SqliteTransaction transaction, string normalizedName, string id)
+    {
+        using var taken = Command(connection, transaction, "SELECT COUNT(*) FROM AspNetUsers WHERE NormalizedUserName = $name AND Id <> $id;",
+            ("$name", normalizedName), ("$id", id));
+        return Convert.ToInt64(taken.ExecuteScalar(), CultureInfo.InvariantCulture) > 0;
+    }
+
+    /// <summary>Every account of the store, by its <see cref="IdentityColumns"/>.</summary>
+    private static Dictionary<string, Dictionary<string, object?>> ReadIdentities(SqliteConnection connection)
+    {
+        var accounts = new Dictionary<string, Dictionary<string, object?>>(StringComparer.Ordinal);
+        if (!HasTable(connection, null, "AspNetUsers")) return accounts;
+        var columns = IdentityColumns.Where(Columns(connection, null, "AspNetUsers").Contains).ToArray();
+        using var command = Command(connection, null, $"SELECT Id{string.Concat(columns.Select(static column => $", {column}"))} FROM AspNetUsers;");
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var values = new Dictionary<string, object?>(StringComparer.Ordinal);
+            for (var index = 0; index < columns.Length; index++) values[columns[index]] = reader.IsDBNull(index + 1) ? null : reader.GetValue(index + 1);
+            accounts[reader.GetString(0)] = values;
+        }
+        return accounts;
     }
 
     /// <summary>

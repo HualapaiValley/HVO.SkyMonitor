@@ -182,12 +182,8 @@ internal static class PrivilegedPreparation
         {
             if (invocation.Backups)
             {
-                // A backup's folder alone: the product root is validated as root's, nothing else is created.
                 return PrepareUnderHostPolicy(HostPolicyLocation.Production, invocation.ProductRoot, production =>
-                {
-                    CreateOrValidateRootDirectory(production.Path);
-                    CreateOrValidateRuntimeDirectory(Path.Combine(production.Path, BackupVault.FolderName), invocation.Uid, invocation.Gid);
-                });
+                    PrepareBackupFolder(production.Path, invocation.Uid, invocation.Gid));
             }
             return PrepareUnderHostPolicy(HostPolicyLocation.Production, invocation.ProductRoot, production => Prepare(
                 InstallationPaths.Create(production.Path, invocation.InstanceId ?? Guid.Empty, ProductionCatalog.DefaultCatalogId),
@@ -313,6 +309,21 @@ internal static class PrivilegedPreparation
         CreateOrValidateRuntimeDirectory(paths.OperationsRoot, uid, gid);
     }
 
+    /// <summary>
+    /// The helper's backup-folder form (#1353 PR-1369-R3 F20): only <c>&lt;product-root&gt;/backups</c>, the service
+    /// account's with mode 0700. The product root must exist already and is checked as root's without anything being
+    /// created above the folder (PR-1369-R4 F28).
+    /// </summary>
+    internal static void PrepareBackupFolder(string productRoot, uint uid, uint gid)
+    {
+        if (!Directory.Exists(productRoot) || new DirectoryInfo(productRoot).LinkTarget is not null)
+        {
+            throw new InstallerException($"The product root '{productRoot}' does not exist, so no backup folder is created in it.");
+        }
+        ValidateRootDirectory(productRoot);
+        CreateOrValidateRuntimeDirectory(Path.Combine(productRoot, BackupVault.FolderName), uid, gid);
+    }
+
     private static void CreateOrValidateRootDirectory(string path)
     {
         if (!Directory.Exists(path))
@@ -325,6 +336,11 @@ internal static class PrivilegedPreparation
                 UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
                 UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
         }
+        ValidateRootDirectory(path);
+    }
+
+    private static void ValidateRootDirectory(string path)
+    {
         var identity = NativeLinux.GetDirectoryIdentity(path);
         if (identity.Uid != 0 || identity.Gid != 0 ||
             (identity.Mode & (UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) != 0)
