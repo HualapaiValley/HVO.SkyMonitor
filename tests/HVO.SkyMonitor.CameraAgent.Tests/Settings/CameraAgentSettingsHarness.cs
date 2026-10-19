@@ -48,6 +48,7 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
     public CaptureScheduleRuntimeCoordinator Runtime { get; private set; } = default!;
     public CameraModuleConfig CameraConfiguration { get; private set; } = default!;
     public ISceneObjectBound SceneObjectBound { get; private set; } = default!;
+    public CurrentSkyRefreshSetting CurrentSkyRefresh { get; private set; } = default!;
     public CameraAgentSettingsService Service { get; private set; } = default!;
     public string SettingsPath => SettingsFile.FilePath;
 
@@ -123,9 +124,11 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
             harness.Runtime = runtime;
             harness.CameraConfiguration = camera;
             harness.SceneObjectBound = sceneObjects;
+            harness.CurrentSkyRefresh = new CurrentSkyRefreshSetting(configuration);
             harness.Service = new CameraAgentSettingsService(
                 new CameraAgentSettingSources(configuration, local.IsSettingsFileProvider),
                 sceneObjects,
+                harness.CurrentSkyRefresh,
                 site,
                 harness.LocationStore,
                 named,

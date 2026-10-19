@@ -70,6 +70,10 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
     private bool _objectLimitDirty;
     private string? _objectLimitExpectedVersion;
 
+    private string _currentSkyRefreshInput = string.Empty;
+    private bool _currentSkyRefreshDirty;
+    private string? _currentSkyRefreshExpectedVersion;
+
     private string _search = string.Empty;
     private string _magnitudeFilter = string.Empty;
     private SceneSort _sort = SceneSort.Magnitude;
@@ -230,6 +234,7 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
             SeedLocationForm();
             SeedProfileForm();
             SeedObjectLimitForm();
+            SeedCurrentSkyRefreshForm();
         }
         finally
         {
@@ -342,6 +347,22 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
     private void ObjectLimitFormChanged()
     {
         _objectLimitDirty = true;
+        _notice = null;
+    }
+
+    private void SeedCurrentSkyRefreshForm()
+    {
+        if (_currentSkyRefreshDirty || _site?.CurrentSkyRefresh is not { } refresh)
+        {
+            return;
+        }
+        _currentSkyRefreshInput = refresh.SavedValue ?? string.Empty;
+        _currentSkyRefreshExpectedVersion = refresh.Version;
+    }
+
+    private void CurrentSkyRefreshFormChanged()
+    {
+        _currentSkyRefreshDirty = true;
         _notice = null;
     }
 
@@ -535,6 +556,73 @@ public sealed partial class ObservatoryLocationPage : SiteTimeComponent, IAsyncD
         }
         SetNotice(result.Message ?? "The object limit could not be saved.", error: true);
     }
+
+    private async Task SaveCurrentSkyRefreshAsync(bool useDefault)
+    {
+        if (_busy || _currentSkyRefreshExpectedVersion is not { } expectedVersion)
+        {
+            return;
+        }
+        int? seconds = null;
+        if (!useDefault && !string.IsNullOrWhiteSpace(_currentSkyRefreshInput))
+        {
+            if (!int.TryParse(_currentSkyRefreshInput.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ||
+                CurrentSkyRefresh.Check(parsed) is not null)
+            {
+                SetNotice(CurrentSkyRefresh.NumberRule, error: true);
+                return;
+            }
+            seconds = parsed;
+        }
+        _busy = true;
+        OperatorUiResult<CameraAgentCurrentSkyRefreshSetting> result;
+        try
+        {
+            result = await SkyMapService.SaveCurrentSkyRefreshAsync(seconds, expectedVersion, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _busy = false;
+        }
+        if (result.Kind == OperatorUiResultKind.Unauthorized)
+        {
+            NavigationManager.NavigateTo("/Account/AccessDenied");
+            return;
+        }
+        if (result.IsSuccess && result.Value is { } saved)
+        {
+            _currentSkyRefreshDirty = false;
+            await LoadAsync().ConfigureAwait(false);
+            SetNotice(
+                (saved.Unchanged
+                    ? "The minimum image refresh already has this value, so nothing changed."
+                    : seconds is null
+                        ? string.Create(CultureInfo.InvariantCulture,
+                            $"The minimum image refresh is back to its default of {CurrentSkyRefreshPlaceholder} seconds.")
+                        : string.Create(CultureInfo.InvariantCulture,
+                            $"Saved a minimum image refresh of {seconds:N0} seconds. Current Sky uses it from its next refresh."))
+                + (saved.Overridden ? " Another setting source still supplies the interval, so it has no effect yet." : string.Empty),
+                error: false);
+            return;
+        }
+        if (result.Kind == OperatorUiResultKind.Conflict)
+        {
+            await LoadAsync().ConfigureAwait(false);
+            _currentSkyRefreshExpectedVersion = _site?.CurrentSkyRefresh?.Version;
+        }
+        SetNotice(result.Message ?? "The minimum image refresh could not be saved.", error: true);
+    }
+
+    private static CameraAgentSettingDefinition CurrentSkyRefresh => CameraAgentSettingsCatalogue.MinimumRefreshInterval;
+
+    /// <summary>The minimum image refresh field label: the catalogue's title, unit and range.</summary>
+    private static string CurrentSkyRefreshLabel => string.Create(
+        CultureInfo.InvariantCulture,
+        $"{CurrentSkyRefresh.Title} ({CurrentSkyRefresh.Unit}, {CurrentSkyRefresh.Minimum:N0} to {CurrentSkyRefresh.Maximum:N0})");
+
+    private static string CurrentSkyRefreshPlaceholder
+        => Convert.ToString(CurrentSkyRefresh.Default, CultureInfo.InvariantCulture) ?? string.Empty;
 
     private static string ObjectLimitRule => ObjectLimit.NumberRule;
 

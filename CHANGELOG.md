@@ -23,6 +23,11 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   command runs as printed; the bare `hvo-sky-install` is not on PATH. Each command's `--help` says what the command does
   and lists only its own options, each described, and `cameraagent --help`, `catalog --help` and `host --help` list
   that group's commands. An option a command does not take is still a usage error (exit 2). (#1384)
+- Current Sky moves to a newer capture only once its overlays are complete, or once its processing has ended without
+  them, and keeps showing the current capture until then. It changes image at most once per
+  `currentSky.minimumRefreshSeconds` (default 15 seconds, 15 to 3,600), a new operator setting on the Observatory &
+  location page under Operator settings, and then shows the newest complete capture, skipping any in between.
+  Refresh image skips the wait. (#1382)
 
 ### Fixed
 
@@ -35,6 +40,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   CameraAgent host's own LAN address, and the request goes to it directly rather than through a proxy. (#1384)
 - `hvo-sky status`, the Operations page and `hvo-sky ui` no longer mark capture `(stale)` five minutes after it was
   last paused or resumed: capture control is CameraAgent's live state, and is always current. (#1384)
+- Current Sky keeps the overlays an operator turned on or off when a new capture arrives, and the browser remembers
+  them across page loads for each CameraAgent. An archived capture's view keeps its own choices. Restore profile
+  defaults clears the remembered choice of the view it is used in. (#1382)
 
 ## [0.9.0] - 2026-10-19
 

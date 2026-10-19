@@ -393,6 +393,9 @@ public sealed record OperatorSettingsSnapshot(string Version, bool Exists, strin
     /// <summary>Whether the file has an object at this configuration key, even an empty one.</summary>
     public bool HasSection(string key) => Find(key) is JsonObject;
 
+    /// <summary>Whether the file stores anything other than null at this configuration key: a value, an object or an array.</summary>
+    public bool HasValue(string key) => Find(key) is not null;
+
     private JsonNode? Find(string key)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
