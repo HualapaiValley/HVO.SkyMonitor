@@ -63,6 +63,13 @@ public sealed class OrbitalSelectionTests
         Assert.AreEqual(sourceB.RecordSha256, OrbitalRecordSelector.Select(s, newer.ObjectIdentity, interval, higherRankB).SelectedRecord!.RecordSha256);
         var sameRank = new OrbitalSelectionPolicy([new("other:gp:active", 0), new("celestrak:gp:active", 0)]);
         Assert.AreEqual(sourceB.RecordSha256, OrbitalRecordSelector.Select(s, newer.ObjectIdentity, interval, sameRank).SelectedRecord!.RecordSha256);
+        var atStart = OrbitalContractExamples.Record();
+        var oneTickNewer = OrbitalContract.CreateRecord(atStart with { EpochUtc = atStart.EpochUtc.AddTicks(1) });
+        var halfTickInterval = new OrbitalUtcInterval(atStart.EpochUtc, oneTickNewer.EpochUtc);
+        var halfTickSelection = OrbitalRecordSelector.Select(OrbitalContractExamples.Snapshot(atStart, oneTickNewer),
+            atStart.ObjectIdentity, halfTickInterval, OrbitalContractExamples.Policy());
+        Assert.AreEqual(oneTickNewer.RecordSha256, halfTickSelection.SelectedRecord!.RecordSha256,
+            "Equal distance from a half-tick midpoint must use the newest-epoch tie break.");
     }
 
     [TestMethod]

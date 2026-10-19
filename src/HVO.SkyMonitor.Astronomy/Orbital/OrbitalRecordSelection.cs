@@ -60,7 +60,8 @@ public static class OrbitalRecordSelector
         OrbitalContract.Require(OrbitalContract.IsObjectIdentity(objectIdentity), "object-identity");
         interval.Validate();
         var ranks = policy.Sources.ToDictionary(static s => s.SourceDataset, static s => s.Priority, StringComparer.Ordinal);
-        var midpointTicks = interval.StartUtc.UtcTicks + (interval.EndUtc.UtcTicks - interval.StartUtc.UtcTicks) / 2;
+        // Twice the distance preserves a half-tick midpoint; the full DateTimeOffset range fits Int64.
+        var endpointTicksSum = interval.StartUtc.UtcTicks + interval.EndUtc.UtcTicks;
         var assessed = snapshot.RecordsFor(objectIdentity).Select(record =>
         {
             var start = (interval.StartUtc - record.EpochUtc).TotalHours;
@@ -79,7 +80,7 @@ public static class OrbitalRecordSelector
         }).ToArray();
         var selected = assessed.Where(static a => a.Facts.Eligibility == OrbitalSelectionEligibility.Eligible)
             .OrderBy(a => ranks[a.Record.SourceDataset])
-            .ThenBy(a => Math.Abs(a.Record.EpochUtc.UtcTicks - midpointTicks))
+            .ThenBy(a => Math.Abs(2 * a.Record.EpochUtc.UtcTicks - endpointTicksSum))
             .ThenByDescending(static a => a.Record.EpochUtc)
             .ThenBy(static a => a.Record.RecordSha256, StringComparer.Ordinal).FirstOrDefault().Record;
         var outcome = selected is not null ? OrbitalSelectionEligibility.Eligible : assessed.Length == 0
