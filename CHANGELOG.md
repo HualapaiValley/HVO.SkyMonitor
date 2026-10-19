@@ -10,6 +10,18 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ## [Unreleased]
 
+### Changed
+
+- Current Sky moves to a newer capture only once its overlays are complete, or once its processing has ended without
+  them, and keeps showing the current capture until then. It changes image at most once per
+  `currentSky.minimumRefreshSeconds` (default 30 seconds, 15 to 3,600), a new operator setting, and then shows the
+  newest complete capture, skipping any in between. Refresh image skips the wait. (#1382)
+
+### Fixed
+
+- Current Sky keeps the overlays an operator turned on or off when a new capture arrives, and the browser remembers
+  them across page loads for each CameraAgent. Restore profile defaults clears the remembered choice. (#1382)
+
 ## [0.9.0] - 2026-10-19
 
 ### Added

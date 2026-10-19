@@ -57,6 +57,7 @@ internal sealed record CameraAgentSettingsWriteResult(
 internal sealed partial class CameraAgentSettingsService(
     CameraAgentSettingSources sources,
     ISceneObjectBound sceneObjectBound,
+    CurrentSkyRefreshSetting currentSkyRefresh,
     ISiteProfileStore siteProfileStore,
     IDeploymentLocationStore deploymentLocationStore,
     SqliteNamedRigProfileStore rigStore,
@@ -174,8 +175,12 @@ internal sealed partial class CameraAgentSettingsService(
             {
                 CameraAgentSettingsCatalogue.SiteGroup => await WriteSiteAsync(found, values, current.Version, actor,
                     cancellationToken).ConfigureAwait(false),
-                CameraAgentSettingsCatalogue.SkyMapGroup => await WriteSkyMapAsync(found, values, current.Version, actor,
-                    cancellationToken).ConfigureAwait(false),
+                CameraAgentSettingsCatalogue.SkyMapGroup => await WriteFileIntegerAsync(found,
+                    CameraAgentSettingsCatalogue.MaximumSceneObjects, values, current.Version, actor, cancellationToken)
+                    .ConfigureAwait(false),
+                CameraAgentSettingsCatalogue.CurrentSkyGroup => await WriteFileIntegerAsync(found,
+                    CameraAgentSettingsCatalogue.MinimumRefreshInterval, values, current.Version, actor, cancellationToken)
+                    .ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.LocationGroup => await WriteLocationAsync(found, values, request.ExpectedVersion!,
                     actor, command, reason, cancellationToken).ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.CameraGroup => await WriteCameraAsync(found, values, current.Version, actor,
@@ -251,7 +256,12 @@ internal sealed partial class CameraAgentSettingsService(
             return group.Name switch
             {
                 CameraAgentSettingsCatalogue.SiteGroup => await ReadSiteAsync(group, cancellationToken).ConfigureAwait(false),
-                CameraAgentSettingsCatalogue.SkyMapGroup => await ReadSkyMapAsync(group, cancellationToken).ConfigureAwait(false),
+                CameraAgentSettingsCatalogue.SkyMapGroup => await ReadFileIntegerAsync(group,
+                    CameraAgentSettingsCatalogue.MaximumSceneObjects, sceneObjectBound.Current, cancellationToken)
+                    .ConfigureAwait(false),
+                CameraAgentSettingsCatalogue.CurrentSkyGroup => await ReadFileIntegerAsync(group,
+                    CameraAgentSettingsCatalogue.MinimumRefreshInterval, currentSkyRefresh.Seconds, cancellationToken)
+                    .ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.LocationGroup => ReadLocation(group),
                 CameraAgentSettingsCatalogue.CameraGroup => await ReadCameraAsync(group, cancellationToken).ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.ScheduleGroup => await ReadScheduleAsync(group, cancellationToken).ConfigureAwait(false),
@@ -355,19 +365,20 @@ internal sealed partial class CameraAgentSettingsService(
             => values.TryGetValue(definition.Key, out var value) ? (string?)value : existing;
     }
 
-    // Sky map: the settings file, read back through the live configuration so an override is visible.
+    // Sky map and Current Sky: one whole number in the settings file, read back through the live configuration so an
+    // override is visible. The value in effect is what its consumer reads now.
 
-    private async Task<CameraAgentSettingsGroupState> ReadSkyMapAsync(
+    private async Task<CameraAgentSettingsGroupState> ReadFileIntegerAsync(
         CameraAgentSettingsGroup group,
+        CameraAgentSettingDefinition definition,
+        int effective,
         CancellationToken cancellationToken)
     {
-        var definition = CameraAgentSettingsCatalogue.MaximumSceneObjects;
         var snapshot = settingsFile is null ? null : await settingsFile.ReadAsync(cancellationToken).ConfigureAwait(false);
         var source = sources.Find(definition.ConfigurationKey!);
         var canWrite = snapshot is { Problem: null } && !source.Overridden;
         var reason = snapshot is null ? NoSettingsFileReason
             : snapshot.Problem ?? (source.Overridden ? OverriddenReason(source.Source) : null);
-        var effective = sceneObjectBound.Current;
         string? problem = null;
         if (source.Source != CameraAgentSettingSource.Default)
         {
@@ -378,9 +389,9 @@ internal sealed partial class CameraAgentSettingsService(
                 (configured is null || !int.TryParse(configured, NumberStyles.Integer, CultureInfo.InvariantCulture,
                      out var saved) || definition.Check(saved) is not null))
             {
-                problem = $"The settings file value is not a whole number from 1 to " +
-                          $"{CameraAgentSkyMapProjection.MaximumConfigurableObjects.ToString("N0", CultureInfo.InvariantCulture)}, " +
-                          "so the default applies until it is corrected.";
+                problem = string.Create(CultureInfo.InvariantCulture,
+                    $"The settings file value is not a whole number from {definition.Minimum:N0} to {definition.Maximum:N0}, ") +
+                    "so the default applies until it is corrected.";
             }
         }
 
@@ -391,20 +402,20 @@ internal sealed partial class CameraAgentSettingsService(
         ]);
     }
 
-    private async Task<CameraAgentSettingsWriteResult> WriteSkyMapAsync(
+    private async Task<CameraAgentSettingsWriteResult> WriteFileIntegerAsync(
         CameraAgentSettingsGroup group,
+        CameraAgentSettingDefinition definition,
         Dictionary<string, object?> values,
         string expectedVersion,
         string actor,
         CancellationToken cancellationToken)
     {
-        var definition = CameraAgentSettingsCatalogue.MaximumSceneObjects;
-        var limit = (int?)values[definition.Key];
+        var number = (int?)values[definition.Key];
         var result = await settingsFile!.WriteAsync(
             expectedVersion,
             new Dictionary<string, JsonNode?>(StringComparer.Ordinal)
             {
-                [definition.ConfigurationKey!] = limit is { } value ? JsonValue.Create(value) : null
+                [definition.ConfigurationKey!] = number is { } value ? JsonValue.Create(value) : null
             },
             actor,
             cancellationToken).ConfigureAwait(false);

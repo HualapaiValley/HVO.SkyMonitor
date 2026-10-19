@@ -14,7 +14,8 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Settings;
 public sealed class CameraAgentSettingsCatalogueTests
 {
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
-    private static readonly string[] GroupOrder = ["site", "location", "skyMap", "camera", "schedule"];
+    private static CameraAgentSettingDefinition MinimumRefresh => CameraAgentSettingsCatalogue.Find("currentSky.minimumRefreshSeconds")!;
+    private static readonly string[] GroupOrder = ["site", "location", "skyMap", "camera", "schedule", "currentSky"];
 
     [TestMethod]
     public void Catalogue_DescribesEachSettingOnceInOneGroupWithEveryAttribute()
@@ -62,6 +63,12 @@ public sealed class CameraAgentSettingsCatalogueTests
         Assert.AreEqual(SkyMapOptions.MaximumObjectsKey, CameraAgentSettingsCatalogue.MaximumSceneObjects.ConfigurationKey);
         Assert.AreEqual(CameraAgentSkyMapProjection.MaximumConfigurableObjects, CameraAgentSettingsCatalogue.MaximumSceneObjects.Maximum);
         Assert.AreEqual(CameraAgentSkyMapProjection.DefaultMaximumObjects, CameraAgentSettingsCatalogue.MaximumSceneObjects.Default);
+        Assert.AreEqual(CurrentSkyRefreshSetting.ConfigurationKey, MinimumRefresh.ConfigurationKey);
+        Assert.AreEqual(CurrentSkyRefreshSetting.MinimumSeconds, MinimumRefresh.Minimum);
+        Assert.AreEqual(CurrentSkyRefreshSetting.MaximumSeconds, MinimumRefresh.Maximum);
+        Assert.AreEqual(CurrentSkyRefreshSetting.DefaultSeconds, MinimumRefresh.Default);
+        Assert.AreEqual(CameraAgentSettingsCatalogue.SettingsFileStore,
+            CameraAgentSettingsCatalogue.FindGroup(MinimumRefresh.Group)!.Store);
         Assert.AreEqual(ManualDeploymentLocationContract.MinimumElevationMeters, CameraAgentSettingsCatalogue.Elevation.Minimum);
         Assert.AreEqual(ManualDeploymentLocationContract.MaximumElevationMeters, CameraAgentSettingsCatalogue.Elevation.Maximum);
         CollectionAssert.AreEquivalent(
@@ -81,6 +88,9 @@ public sealed class CameraAgentSettingsCatalogueTests
         Assert.AreEqual(CameraAgentSettingSafety.Descriptive, CameraAgentSettingsCatalogue.ObservatoryName.Safety);
         Assert.AreEqual(CameraAgentSettingApplication.Immediate, CameraAgentSettingsCatalogue.MaximumSceneObjects.Application);
         Assert.AreEqual(CameraAgentSettingSafety.CaptureOutput, CameraAgentSettingsCatalogue.MaximumSceneObjects.Safety);
+        // The interval paces the Current Sky page only; captures never read it.
+        Assert.AreEqual(CameraAgentSettingApplication.Immediate, MinimumRefresh.Application);
+        Assert.AreEqual(CameraAgentSettingSafety.Descriptive, MinimumRefresh.Safety);
         Assert.AreEqual(CameraAgentSettingApplication.Restart, CameraAgentSettingsCatalogue.Latitude.Application);
         Assert.AreEqual(CameraAgentSettingSafety.CaptureGeometry, CameraAgentSettingsCatalogue.Latitude.Safety);
         Assert.IsTrue(CameraAgentSettingsCatalogue.SkyLighting.AppliesAfterRestart);
@@ -136,6 +146,31 @@ public sealed class CameraAgentSettingsCatalogueTests
             // The problem names the rule, never the value that was sent.
             CollectionAssert.Contains(
                 new[] { definition.NumberRule, "Scene object limit must be a whole number." },
+                problem);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("30", true, 30)]
+    [DataRow("15", true, 15)]
+    [DataRow("3600", true, 3600)]
+    [DataRow("14", false, null)]
+    [DataRow("3601", false, null)]
+    [DataRow("0", false, null)]
+    [DataRow("-30", false, null)]
+    [DataRow("30.5", false, null)]
+    [DataRow("\"30\"", false, null)]
+    [DataRow("null", true, null)]
+    public void MinimumRefresh_AcceptsOnlyAWholeNumberOfSecondsInRangeOrNull(string json, bool valid, int? expected)
+    {
+        var parsed = MinimumRefresh.TryParse(JsonElement.Parse(json), null, out var value, out var problem);
+
+        Assert.AreEqual(valid, parsed, problem);
+        Assert.AreEqual(expected, (int?)value);
+        if (!valid)
+        {
+            CollectionAssert.Contains(
+                new[] { MinimumRefresh.NumberRule, $"{MinimumRefresh.Title} must be a whole number." },
                 problem);
         }
     }

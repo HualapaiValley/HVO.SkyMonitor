@@ -1036,7 +1036,7 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
-    public async Task LayerSelectionSurvivesPollingAndResetsForNewCapture()
+    public async Task LayerSelectionSurvivesPollingAndANewCapture()
     {
         using var context = new BunitContext();
         var service = Configure(context);
@@ -1056,12 +1056,13 @@ public sealed partial class CurrentSkyPageTests
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         Assert.IsFalse(cut.Find(".sky-layer-controls input[data-layer-target]").HasAttribute("checked"));
 
+        // The next capture's layer of the same kind keeps the operator's choice, not the profile default.
         current = first with { DisplayCapture = first.DisplayCapture! with { CaptureId = secondId } };
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         cut.WaitForAssertion(() =>
         {
             Assert.AreEqual($"/gallery/{secondId:D}", cut.Find(".layers-link").GetAttribute("href"));
-            Assert.IsTrue(cut.Find(".sky-layer-controls input[data-layer-target]").HasAttribute("checked"));
+            Assert.IsFalse(cut.Find(".sky-layer-controls input[data-layer-target]").HasAttribute("checked"));
         });
     }
 
