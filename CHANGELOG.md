@@ -21,7 +21,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 ### Fixed
 
 - Current Sky keeps the overlays an operator turned on or off when a new capture arrives, and the browser remembers
-  them across page loads for each CameraAgent. Restore profile defaults clears the remembered choice. (#1382)
+  them across page loads for each CameraAgent. An archived capture's view keeps its own choices. Restore profile
+  defaults clears the remembered choice of the view it is used in. (#1382)
 
 ## [0.9.0] - 2026-10-19
 

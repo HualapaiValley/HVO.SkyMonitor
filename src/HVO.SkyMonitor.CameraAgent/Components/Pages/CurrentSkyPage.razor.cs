@@ -93,8 +93,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private int _disposeStarted;
 
     // Whether each layer kind is shown, as last shown or chosen. It carries the selection from read to read and capture
-    // to capture, and the operator's choices are kept in browser storage across page loads. A kind not seen yet follows
-    // its profile default.
+    // to capture, and the operator's choices are kept in browser storage across page loads, separately for the live and
+    // the archived view. A kind not seen yet follows its profile default.
     private readonly Dictionary<string, bool> _layerVisibility = new(StringComparer.Ordinal);
     private bool _layerVisibilityRead;
 
@@ -691,9 +691,10 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         return selected;
     }
 
-    // localStorage is already kept per origin; the path base tells apart instances served under one origin.
+    // Live and archived views keep separate choices. localStorage is already kept per origin; the path base tells
+    // apart instances served under one origin.
     private string LayerVisibilityKey =>
-        $"hvo.currentSky.layerVisibility.v1:{new Uri(NavigationManager.BaseUri).AbsolutePath}";
+        $"hvo.{(IsArchived ? "archivedCapture" : "currentSky")}.layerVisibility.v1:{new Uri(NavigationManager.BaseUri).AbsolutePath}";
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Remembered layer choices are optional; any storage or interop failure keeps the profile defaults.")]
     private async Task LoadLayerVisibilityAsync()

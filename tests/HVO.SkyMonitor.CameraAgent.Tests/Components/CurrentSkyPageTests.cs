@@ -677,7 +677,7 @@ public sealed partial class CurrentSkyPageTests
 
     private const string CombinedDisplayUrl = "/api/v1/operations/artifacts/00000000-0000-0000-0000-000000000104/preview?displayReference=00000000-0000-0000-0000-000000000104";
 
-    private static CameraAgentCurrentImagePresentation WithStructuredBase()
+    internal static CameraAgentCurrentImagePresentation WithStructuredBase()
     {
         var source = OperatorUiTestData.CurrentImage();
         return source with
@@ -1155,7 +1155,7 @@ public sealed partial class CurrentSkyPageTests
         Assert.IsFalse(cut.Find(".sky-layer-save button").HasAttribute("disabled"));
     }
 
-    private static CameraAgentLayeredPresentation Layered(Guid captureId, string identity, Guid? baseArtifactId = null) => new(
+    internal static CameraAgentLayeredPresentation Layered(Guid captureId, string identity, Guid? baseArtifactId = null) => new(
         captureId, baseArtifactId ?? Guid.Parse("00000000-0000-0000-0000-000000000104"), new string('A', 64),
         new string('B', 64), new string('C', 64), 640, 480,
         [new(identity, "scene-annotation", "hvo-layer-0", 20, true, 1_000_000, "renderer-v1", "style-v1")],
