@@ -35,10 +35,11 @@ public sealed class CameraAgentFocusUiServiceTests
             ManualFocusSessionLimits.Default with { MinimumSamplePeriod = TimeSpan.Zero }, store);
         var service = Service(coordinator, store, User("alice"), Operator);
         var started = await service.StartAsync(Request, CancellationToken.None).ConfigureAwait(false);
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         long observed = 0;
         for (var reads = 0; reads < 16; reads++)
         {
+            // Each read has its own bound, not one shared by all 16, so a slow runner cannot fail the test (#1374).
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             // Check distinct publications even when the reader skips frames between status reads.
             await FocusWait.UntilAsync(coordinator, snapshot => snapshot.Latest?.Sequence > observed,
                 "a newer publication", TimeSpan.FromSeconds(15)).ConfigureAwait(false);
