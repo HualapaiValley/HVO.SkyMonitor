@@ -1,43 +1,37 @@
-using System.Globalization;
 using System.Text;
-using Wcwidth;
+using Terminal.Gui.Drawing;
+using Terminal.Gui.Text;
 
 namespace HVO.SkyMonitor.TerminalUi;
 
 /// <summary>
-/// Text as a terminal lays it out: in text elements (a letter with its combining marks, a surrogate pair, an emoji
-/// sequence; <see cref="StringInfo"/>), each as wide as its first scalar in display cells, as <c>Wcwidth</c> measures it
-/// (the table Terminal.Gui depends on). A CJK or supplementary-plane character takes two cells and a combining mark
-/// none, so text is measured, cut and padded here rather than by its UTF-16 length, and never inside an element.
+/// Text as Terminal.Gui's renderer lays it out, which is the one measure of how wide text is: in graphemes
+/// (<see cref="GraphemeHelper"/>), each made printable and measured with Terminal.Gui's own <c>GetColumns</c>, and taking
+/// two cells when that is two, or one (<c>OutputBufferImpl.AddGrapheme</c>). So a CJK character, an emoji, a flag, a ZWJ
+/// sequence or an emoji with a skin tone takes two cells and a letter with its combining marks one, and text is measured,
+/// cut and padded here rather than by its UTF-16 length, and never inside a grapheme.
 /// </summary>
 public static class TerminalText
 {
-    /// <summary>The text elements of <paramref name="text"/>, in order.</summary>
+    /// <summary>The graphemes of <paramref name="text"/>, in order, as the renderer splits it.</summary>
     public static IReadOnlyList<string> Elements(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
-        var elements = new List<string>(text.Length);
-        var enumerator = StringInfo.GetTextElementEnumerator(text);
-        while (enumerator.MoveNext())
-        {
-            elements.Add(enumerator.GetTextElement());
-        }
-
-        return elements;
+        return [.. GraphemeHelper.GetGraphemes(text)];
     }
 
-    /// <summary>The cells <paramref name="element"/>, one text element, takes: its first scalar's width; a control none.</summary>
+    /// <summary>The cells the renderer gives <paramref name="element"/>, one grapheme: two, or one.</summary>
     public static int ElementWidth(string element)
     {
         ArgumentNullException.ThrowIfNull(element);
-        return element.Length == 0 ? 0 : Math.Max(0, UnicodeCalculator.GetWidth(Rune.GetRuneAt(element, 0)));
+        return element.Length == 0 ? 0 : element.MakePrintable().GetColumns() > 1 ? 2 : 1;
     }
 
     /// <summary>The cells <paramref name="text"/> takes.</summary>
     public static int Width(string text) => Elements(text).Sum(ElementWidth);
 
     /// <summary>
-    /// <paramref name="text"/> cut to at most <paramref name="cells"/> cells, at the last whole text element that fits.
+    /// <paramref name="text"/> cut to at most <paramref name="cells"/> cells, at the last whole grapheme that fits.
     /// </summary>
     public static string Clip(string text, int cells)
     {

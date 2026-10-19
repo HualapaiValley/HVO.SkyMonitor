@@ -155,6 +155,9 @@ internal sealed class InstallWizard : IDisposable
     /// <summary>Whether the answers so far show beside the page.</summary>
     public bool SummaryShown => _summary.Visible;
 
+    /// <summary>The answers so far as the panel beside the page shows them, wrapped to its width.</summary>
+    internal HvoTextLines SummaryLines => _summaryLines;
+
     /// <summary>The rows the notice band has: two when its text needs them, so it is never cut.</summary>
     public int NoticeRows => _noticeRows;
 

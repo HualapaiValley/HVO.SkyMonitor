@@ -200,21 +200,49 @@ def parse(text):
     return rows
 
 
+REGIONAL_INDICATORS = range(0x1F1E6, 0x1F200)
+EMOJI_MODIFIERS = range(0x1F3FB, 0x1F400)
+ZERO_WIDTH_JOINER = "\u200d"
+VARIATION_SELECTORS = ("\ufe0e", "\ufe0f")
+
+
+def is_flag(text):
+    return len(text) >= 2 and ord(text[0]) in REGIONAL_INDICATORS and ord(text[1]) in REGIONAL_INDICATORS
+
+
 def is_wide(text):
-    """True when a cell's text (a character, with any combining marks after it) takes two columns."""
-    return unicodedata.east_asian_width(text[0]) in ("W", "F")
+    """
+    True when a cell's text (a character, with what joins it) takes two columns, as Terminal.Gui draws it: when any of
+    it is wide, or it is a flag's two regional indicators.
+    """
+    return is_flag(text) or any(unicodedata.east_asian_width(ch) in ("W", "F") for ch in text)
+
+
+def joins(previous, ch, after_joiner):
+    """
+    True when ch belongs to the cell before it, one grapheme as Terminal.Gui draws it: a combining mark, a variation
+    selector, a skin tone, a zero-width joiner and the character it joins, or a flag's second regional indicator.
+    """
+    return (after_joiner or unicodedata.combining(ch) or ch == ZERO_WIDTH_JOINER or ch in VARIATION_SELECTORS
+            or ord(ch) in EMOJI_MODIFIERS
+            or (len(previous) == 1 and ord(previous) in REGIONAL_INDICATORS and ord(ch) in REGIONAL_INDICATORS))
 
 
 def add_text(cells, text, style):
+    after_joiner = False
     for ch in text:
         # Control characters draw nothing, and are not allowed in the SVG.
         if ord(ch) < 0x20 or 0x7f <= ord(ch) < 0xa0:
             continue
-        if unicodedata.combining(ch) and cells:
-            index = -1 if cells[-1] is not None else -2
+        index = -1 if cells and cells[-1] is not None else -2
+        if len(cells) >= -index and joins(cells[index][0], ch, after_joiner):
             previous, previous_style = cells[index]
             cells[index] = (previous + ch, previous_style)
+            if index == -1 and is_wide(cells[-1][0]):
+                cells.append(None)
+            after_joiner = ch == ZERO_WIDTH_JOINER
             continue
+        after_joiner = False
         cells.append((ch, style.copy()))
         if is_wide(ch):
             cells.append(None)
