@@ -22,8 +22,9 @@ internal static partial class Program
 
     private static readonly string[] SatelliteLimitations =
     [
-        "Synthetic optical profile is not inferred physical brightness or object type.",
-        "One engineering fixture; no sensitivity, false-positive rate, identity or #530 measured-association qualification.",
+        "Shared synthetic optical profile is not inferred physical brightness or object type.",
+        "Engineering fixtures only; no sensitivity, false-positive rate, identity or #530 measured-association qualification.",
+        "Multiple-object runs exercise supplied track crowding only; no constellation membership or completeness claim.",
         "640px maximum, accelerated virtual exposures; no five-second full-resolution host cadence or live publication claim.",
         "No catalog star masks; moving stellar residuals can produce confusers.",
         "64 renderer midpoint samples per exposure; input sampling tolerance does not qualify raster integration.",
@@ -42,6 +43,9 @@ internal static partial class Program
 
     private static async Task SatellitePoc(string[] args)
     {
+        var canonical = args[0] == "satellite-tracks";
+        if (canonical && args.Length is not (11 or 16 or 21 or 26))
+            throw new ArgumentException("Supply 1..4 distinct object groups, each with five canonical track files in capture order (5/10/15/20 inputs).");
         var output = Path.GetFullPath(args[1]);
         if (Directory.Exists(output) && Directory.EnumerateFileSystemEntries(output).Any())
             throw new ArgumentException("Use a new empty output directory; evidence is immutable.");
@@ -59,7 +63,6 @@ internal static partial class Program
         var fontNotice = args[5] + ".license";
         if (!File.Exists(args[5]) || !File.Exists(fontNotice))
             throw new ArgumentException("Supply an explicit font plus adjacent FONT_PATH.license for retained redistribution notices.");
-        var canonical = args[0] == "satellite-tracks";
         DateTimeOffset first;
         IReadOnlyList<VirtualTransientSkyTrack> primitives;
         IReadOnlyList<PixelPoint[]>[] predicted;
@@ -70,32 +73,43 @@ internal static partial class Program
             tracks = args.Skip(6).Select(path => OrbitalPredictionJson.ParseTrack(ReadSatelliteInput(path))).ToArray();
             first = tracks[0].RequestedInterval.StartUtc;
             var geometryError = 0d;
-            predicted = new IReadOnlyList<PixelPoint[]>[5];
+            var frameSegments = Enumerable.Range(0, 5).Select(_ => new List<PixelPoint[]>()).ToArray();
             var all = new List<VirtualTransientSkyTrack>();
-            for (var i = 0; i < 5; i++)
+            var objects = new HashSet<OrbitalObjectIdentity>();
+            for (var group = 0; group < tracks.Length / 5; group++)
             {
-                var track = tracks[i];
-                ValidateSatelliteTrack(track, tracks[0], config, first.AddSeconds(i * profile.ExposureSeconds), profile.ExposureSeconds);
-                var projector = ProjectorFactory.Create(track.Geometry.Projection);
-                foreach (var sample in track.Samples.Where(s => s.Pixel is not null))
+                var initial = tracks[group * 5];
+                if (!objects.Add(initial.Lineage.ObjectIdentity))
+                    throw new ArgumentException("Duplicate object groups are not allowed.");
+                ValidateSatelliteGroup(initial, tracks[0]);
+                for (var i = 0; i < 5; i++)
                 {
-                    var source = projector.Project(sample.Horizontal) ?? throw new ArgumentException("Track projects outside its declared geometry.");
-                    // Pixel is already emitted-image geometry. Recompute from horizontal, applying only the remaining transform once.
-                    var actual = ProjectedSceneImageTransform.Apply(track.Geometry.ImageTransform, source);
-                    geometryError = Math.Max(geometryError, double.Hypot(actual.X - sample.Pixel!.Value.X, actual.Y - sample.Pixel.Value.Y));
+                    var track = tracks[group * 5 + i];
+                    ValidateSatelliteTrack(track, initial, config, first.AddSeconds(i * profile.ExposureSeconds), profile.ExposureSeconds);
+                    var projector = ProjectorFactory.Create(track.Geometry.Projection);
+                    foreach (var sample in track.Samples.Where(s => s.Pixel is not null))
+                    {
+                        var source = projector.Project(sample.Horizontal) ?? throw new ArgumentException("Track projects outside its declared geometry.");
+                        // Pixel is already emitted-image geometry. Recompute from horizontal, applying only the remaining transform once.
+                        var actual = ProjectedSceneImageTransform.Apply(track.Geometry.ImageTransform, source);
+                        geometryError = Math.Max(geometryError, double.Hypot(actual.X - sample.Pixel!.Value.X, actual.Y - sample.Pixel.Value.Y));
+                    }
+                    frameSegments[i].AddRange(track.Segments.Select(segment => track.Samples.Skip(segment.StartSampleIndex)
+                        .Take(segment.SampleCount).Select(s => s.Pixel!.Value).ToArray()));
+                    foreach (var segment in track.Segments)
+                        AddSatellitePrimitives(all, track.Samples.Skip(segment.StartSampleIndex).Take(segment.SampleCount)
+                            .Select(s => SatelliteKeyframe(s.Utc, s.Horizontal, first, profile)).ToArray());
                 }
-                predicted[i] = track.Segments.Select(segment => track.Samples.Skip(segment.StartSampleIndex)
-                    .Take(segment.SampleCount).Select(s => s.Pixel!.Value).ToArray()).ToArray();
-                foreach (var segment in track.Segments)
-                    AddSatellitePrimitives(all, track.Samples.Skip(segment.StartSampleIndex).Take(segment.SampleCount)
-                        .Select(s => SatelliteKeyframe(s.Utc, s.Horizontal, first, profile)).ToArray());
             }
             if (geometryError > 1e-8) throw new ArgumentException($"Track projection/readout mismatch: {geometryError:R} pixels.");
+            predicted = frameSegments;
             primitives = all;
             provenance = new
             {
                 mode = "canonical-engine-products",
                 parser = "OrbitalPredictionJson.ParseTrack (exact canonical bytes and content identity)",
+                objectGroupCount = objects.Count,
+                productOrder = "Five capture-ordered products per distinct object group; all groups share the same five intervals.",
                 projectionMaximumResidualPixels = geometryError,
                 products = tracks.Select(t => new { t.ProductSha256, t.Lineage, t.Model, t.Geometry, t.Timing, t.Sampling }),
                 qualification = "Input provenance retained; this harness does not independently qualify the propagator."
@@ -219,6 +233,7 @@ internal static partial class Program
                     exposure.ScenarioEndUtc != exposure.CelestialEndUtc || frame.TimestampUtc != started ||
                     frame.Metadata.Exposure != TimeSpan.FromSeconds(profile.ExposureSeconds))
                     throw new InvalidOperationException("Capture logical exposure does not match requested track timing.");
+                // The first group's frame index is authoritative; all groups have the same geometry/readout.
                 if (canonical && (frame.Layout?.Readout ?? SatelliteReadout(settings)) != tracks[i].Geometry.Readout)
                     throw new InvalidOperationException("Captured readout differs from track facts.");
                 ValidateSatelliteLayout(frame);
@@ -388,6 +403,16 @@ internal static partial class Program
             t.Timing.ExposureBasis != OrbitalTimingBasis.Estimated || t.Timing.ReadoutCompletedUtc is not null ||
             t.Timing.ReadoutBasis != OrbitalTimingBasis.Unknown || t.Model.Refraction != "none-geometric")
             throw new ArgumentException("Track must be a complete configured-rig product matching settings, source/model and estimated logical exposure; readout unknown, no extra image mirrors/rotation.");
+    }
+
+    private static void ValidateSatelliteGroup(OrbitalExposureTrackV1 initial, OrbitalExposureTrackV1 shared)
+    {
+        // Record, source dataset and epoch belong to each object; shared provenance does not substitute for group validation.
+        if (initial.Model != shared.Model || initial.Geometry != shared.Geometry || initial.Observer != shared.Observer ||
+            initial.Lineage.SnapshotManifestSha256 != shared.Lineage.SnapshotManifestSha256 ||
+            initial.Lineage.NormalizedPayloadSha256 != shared.Lineage.NormalizedPayloadSha256 ||
+            initial.Lineage.SelectionPolicySha256 != shared.Lineage.SelectionPolicySha256)
+            throw new ArgumentException("Object groups must share model, geometry, observer, snapshot, payload and selection policy.");
     }
 
     private static FrameReadoutDescriptor SatelliteReadout(CameraModuleConfig config)

@@ -61,8 +61,9 @@ Create `/outside/repository/optical.json` with every field explicitly supplied:
 }
 ```
 
-Magnitude, width, RGB weights and light curve are **synthetic stimulus**, never
-inferred from orbital identity, sunlight or asserted physical type. An empty
+Magnitude, width, RGB weights and light curve are **synthetic stimulus shared by
+every supplied object**, never inferred from orbital identity, sunlight or
+asserted physical type. Individual object brightness is not modeled. An empty
 curve means constant magnitude. A nonempty curve is an ordered array of
 `{"offsetSeconds": 0, "magnitudeDelta": 0}` knots spanning 0 through
 `5 * exposureSeconds`; magnitude deltas interpolate linearly. Knots must occur
@@ -87,8 +88,11 @@ supports that bounded engineering lane; this is not a full sensor matrix.
 
 ## Canonical engine mode: exact input contract
 
-Supply **five individual** `OrbitalExposureTrackV1` files in capture order,
-not an array or `OrbitalPredictionResult` wrapper:
+Supply **1..4 distinct object groups**, each containing **five individual**
+`OrbitalExposureTrackV1` files in capture order: exactly **5, 10, 15 or 20 input
+files**. Each object's five files must be contiguous in the argument list; all
+groups cover the same five exposure intervals. These are individual canonical
+products, not an array or `OrbitalPredictionResult` wrapper. A single group:
 
 ```bash
 dotnet "$poc" satellite-tracks /outside/repository/new-engine-run \
@@ -99,14 +103,32 @@ dotnet "$poc" satellite-tracks /outside/repository/new-engine-run \
   /outside/repository/track-05.json
 ```
 
+For two objects, append the second object's entire five-file group:
+
+```bash
+dotnet "$poc" satellite-tracks /outside/repository/new-two-object-run \
+  /path/to/hyg-v42-production /outside/repository/settings.json \
+  /outside/repository/optical.json /outside/repository/diagnostic.ttf \
+  /outside/repository/object-a/track-01.json /outside/repository/object-a/track-02.json \
+  /outside/repository/object-a/track-03.json /outside/repository/object-a/track-04.json \
+  /outside/repository/object-a/track-05.json \
+  /outside/repository/object-b/track-01.json /outside/repository/object-b/track-02.json \
+  /outside/repository/object-b/track-03.json /outside/repository/object-b/track-04.json \
+  /outside/repository/object-b/track-05.json
+```
+
 In addition to strict shared parsing, the adapter requires:
 
 - `Complete` status, full requested/covered interval, exact exposure endpoints
-  and equal contiguous intervals matching the optical exposure duration.
+  and equal contiguous intervals matching the optical exposure duration. Every
+  group must match the first group's five intervals exactly.
 - `ConfiguredRig` basis; matching observer and rig-profile SHA256 from
   `RigProjectionContextFactory.CreateProfileHashSha256(settings.Rig)`;
-  `GeometricHorizon`; the same geometry, model, selected record/object and
-  snapshot across all five products.
+  `GeometricHorizon`; the same geometry, model, observer, snapshot, normalized
+  payload and selection policy across all groups. Each group must retain its
+  own selected record, object identity, source dataset and epoch throughout its
+  five products. Duplicate object identities across groups are rejected, even
+  if different records are supplied for that object.
 - `Projection` equals `CreateNative(settings.Rig)` for `NativeSensor`, or
   `Create(settings.Rig)` for `ReadoutView`. `Readout` equals the ordinary
   settings' resolved descriptor (or full native identity RGGB descriptor with
@@ -129,12 +151,15 @@ In addition to strict shared parsing, the adapter requires:
   the shared parser enforces its model/time contract. The harness does not
   independently establish their numerical or physical accuracy.
 
-Only each declared segment is injected/drawn: no interpolation across
-horizon/aperture/projection gaps or budget gaps. Single-sample segments fail
-explicitly because they have no integration support. Long continuous segments
+Every object's declared segments are injected/drawn as separate paths. Each
+frame's private predictions include all supplied objects' segments, without
+joining objects or interpolation across horizon/aperture/projection gaps or
+budget gaps. Single-sample segments fail explicitly because they have no
+integration support. Long continuous segments
 split at 128 keyframes with a shared endpoint and half-open temporal support.
-The existing 128-primitives/1,024-total-keyframes scenario bound still applies;
-overflow fails rather than silently dropping/downsampling samples. Diagnostic
+The existing 128-total-primitives/1,024-total-keyframes scenario bound and its
+64-sky-track limit apply to the combined scenario across all objects; overflow
+fails rather than silently dropping/downsampling samples. Diagnostic
 predictions contain the photographed segments only, with no invented full-pass
 arc. This does not support accepted-measured astrometry or #530 association.
 
@@ -164,6 +189,11 @@ Repeat checks compare all raw bytes. Simulator metadata, injected settings,
 original track/fixture files and separate geometric comparisons live under
 `private-truth/`; no oracle corridor, identity, magnitude, label, source path or
 simulator metadata crosses into the detector.
+Every canonical input is copied to a unique `input-01.json` through
+`input-20.json` path there (up to the supplied count), in group/capture order;
+repeated original filenames across object directories cannot overwrite inputs.
+The generic rendering primitives have only sequential `p-001` style IDs,
+without source identities or object labels.
 
 The actual `TransientDetectorInputFactory` converts ordinary raw
 `ProcessingArtifact` pixels, layout, compatibility and estimated logical timing.
@@ -192,9 +222,14 @@ including inputs and HTML; it deliberately excludes itself. Hash that manifest
 separately when handing it off. Sources, binaries' identities and the explicit
 font/license are retained.
 
-One bright engineering fixture cannot establish sensitivity, false-positive
-rates, satellite identity, physical brightness, measured association (#530),
-or five-second full-resolution host cadence/publication (#1395).
+Single- or multiple-object engineering fixtures cannot establish sensitivity,
+false-positive rates, satellite identity, physical brightness, measured
+association (#530), or five-second full-resolution host cadence/publication
+(#1395). Multiple-object runs exercise only the supplied track crowding with a
+shared synthetic optical profile. Constellation-like paths imply neither
+detected identity nor constellation membership, population completeness or
+qualified crowding performance. Overlapping paths can produce merged measured
+components; comparisons do not assign those components to orbital identities.
 
 ## Source notices
 
