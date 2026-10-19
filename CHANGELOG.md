@@ -4,11 +4,13 @@ This file records the changes to HVO.SkyMonitor that operators and users notice.
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-No version has been released yet. `[Unreleased]` starts with the work merged to `development/v1` from 2026-10-16
-onward; earlier development is recorded in its pull requests. A release renames `[Unreleased]` to its version and adds
-`docs/upgrade-notes/X.Y.Z.md` (install contract section 3).
+`[Unreleased]` records the work merged to `development/v1` since the last release. A release renames `[Unreleased]`
+to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 3). 0.9.0, the first release, starts
+with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
 
 ## [Unreleased]
+
+## [0.9.0] - 2026-10-19
 
 ### Added
 
@@ -214,4 +216,5 @@ onward; earlier development is recorded in its pull requests. A release renames 
   `/boot/firmware/cmdline.txt`, adds `cgroup_disable=memory`. There is nothing in that file to change: append
   `cgroup_enable=memory` to its single line and reboot. (#1309)
 
-[Unreleased]: https://github.com/HualapaiValley/HVO.SkyMonitor/commits/development/v1
+[Unreleased]: https://github.com/HualapaiValley/HVO.SkyMonitor/compare/v0.9.0...development/v1
+[0.9.0]: https://github.com/HualapaiValley/HVO.SkyMonitor/releases/tag/v0.9.0
