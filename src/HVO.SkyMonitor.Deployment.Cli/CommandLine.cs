@@ -12,7 +12,7 @@ internal static class CommandLine
     /// <summary>The option that prints the installer's build identity; it is accepted only on its own.</summary>
     internal const string VersionOption = "--version";
 
-    private static readonly string[] InstallValueOptions =
+    internal static readonly string[] InstallValueOptions =
     [
         "--config", "--instance-id", "--friendly-name", "--owner-email", "--bind-address", "--port",
         "--product-root", "--catalog-bundle", "--release", "--image-source", "--image-ref", "--image-archive",
@@ -20,7 +20,7 @@ internal static class CommandLine
         "--elevation", "--time-zone", "--replay-profile", "--cpus", "--memory"
     ];
 
-    private static readonly string[] InstallFlags =
+    internal static readonly string[] InstallFlags =
         ["--plan", "--dry-run", "--resume", "--json", "--generate-password", "--acknowledge-plaintext-http", "--no-download"];
 
     /// <summary>
@@ -35,7 +35,7 @@ internal static class CommandLine
     /// The value options that may accompany an answers file, each replacing the file's member: the container limits a
     /// re-run changes, and the release and catalog <c>install.sh</c> hands the installer (#1311).
     /// </summary>
-    private static readonly string[] AnswersOverrideOptions = ["--cpus", "--memory", "--release", "--image-source", "--catalog-bundle"];
+    internal static readonly string[] AnswersOverrideOptions = ["--cpus", "--memory", "--release", "--image-source", "--catalog-bundle"];
 
     /// <summary>The flag every command with a read-only plan accepts; <c>--dry-run</c> is its older name.</summary>
     internal const string PlanOption = "--plan";
@@ -341,35 +341,7 @@ internal static class CommandLine
         }
 
         string? configPath = null;
-        var values = new Dictionary<string, string?>(StringComparer.Ordinal);
-        var flags = new HashSet<string>(StringComparer.Ordinal);
-        for (var index = 2; index < args.Length; index++)
-        {
-            var option = args[index];
-            if (!option.StartsWith("--", StringComparison.Ordinal))
-            {
-                throw new InstallUsageException("Unexpected positional argument.");
-            }
-
-            if (InstallFlags.Contains(option, StringComparer.Ordinal))
-            {
-                if (!flags.Add(option))
-                {
-                    throw new InstallUsageException($"Duplicate option '{option}'.");
-                }
-                continue;
-            }
-
-            if (index + 1 >= args.Length || args[index + 1].StartsWith("--", StringComparison.Ordinal))
-            {
-                throw new InstallUsageException($"Option '{option}' requires a value.");
-            }
-
-            if (!values.TryAdd(option, args[++index]))
-            {
-                throw new InstallUsageException($"Duplicate option '{option}'.");
-            }
-        }
+        var (values, flags) = ReadInstallOptions(args);
 
         if (values.Remove(AnswersOption, out var answersPath))
         {
@@ -445,7 +417,7 @@ internal static class CommandLine
             request = new InstallRequest
             {
                 InstanceId = ParseGuid(Get(values, "--instance-id"), "--instance-id"),
-                FriendlyName = RequireOrPrompt(values, "--friendly-name", "Friendly name: "),
+                FriendlyName = Require(values, "--friendly-name", "--friendly-name is required."),
                 OwnerEmail = Get(values, "--owner-email") ?? OwnerCredentialDefaults.Email,
                 BindAddress = Get(values, "--bind-address") ?? "127.0.0.1",
                 Port = ParseInt(Get(values, "--port"), 5130, "--port"),
@@ -454,7 +426,7 @@ internal static class CommandLine
                 Release = Get(values, "--release"),
                 ImageSource = ParseImageSource(Get(values, "--image-source")),
                 ImageReference = Get(values, "--release") is null
-                    ? RequireOrPrompt(values, "--image-ref", "Immutable CameraAgent image digest or ID: ")
+                    ? Require(values, "--image-ref", "--release or --image-ref is required.")
                     : Get(values, "--image-ref") ?? string.Empty,
                 ImageArchive = Get(values, "--image-archive"),
                 ImageArchiveSha256 = Get(values, "--image-archive-sha256"),
@@ -484,6 +456,46 @@ internal static class CommandLine
         return request;
     }
 
+    /// <summary>
+    /// The options of <c>cameraagent install</c> after its two words, as given: each value option with its value, and the
+    /// flags. A positional argument, a value option without a value, or an option twice is a usage error. The installer's
+    /// wizard reads the same options to know which questions the command line already answered (#1317).
+    /// </summary>
+    internal static (Dictionary<string, string?> Values, HashSet<string> Flags) ReadInstallOptions(string[] args)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        var values = new Dictionary<string, string?>(StringComparer.Ordinal);
+        var flags = new HashSet<string>(StringComparer.Ordinal);
+        for (var index = 2; index < args.Length; index++)
+        {
+            var option = args[index];
+            if (!option.StartsWith("--", StringComparison.Ordinal))
+            {
+                throw new InstallUsageException("Unexpected positional argument.");
+            }
+
+            if (InstallFlags.Contains(option, StringComparer.Ordinal))
+            {
+                if (!flags.Add(option))
+                {
+                    throw new InstallUsageException($"Duplicate option '{option}'.");
+                }
+                continue;
+            }
+
+            if (index + 1 >= args.Length || args[index + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                throw new InstallUsageException($"Option '{option}' requires a value.");
+            }
+
+            if (!values.TryAdd(option, args[++index]))
+            {
+                throw new InstallUsageException($"Duplicate option '{option}'.");
+            }
+        }
+        return (values, flags);
+    }
+
     private static bool NamesProductRoot(byte[] configuration)
     {
         try
@@ -509,50 +521,37 @@ internal static class CommandLine
         }
     }
 
-    private static string RequireOrPrompt(
-        IReadOnlyDictionary<string, string?> values,
-        string option,
-        string prompt)
-    {
-        var value = Get(values, option);
-        if (value is not null)
-        {
-            return value;
-        }
-        if (Console.IsInputRedirected)
-        {
-            throw new InstallUsageException($"{option} is required.");
-        }
-        Console.Error.Write(prompt);
-        return Console.ReadLine() is { Length: > 0 } entered
-            ? entered
-            : throw new InstallUsageException($"{option} is required.");
-    }
+    /// <summary>
+    /// A value the install cannot go without. It is never asked for here: on a terminal the wizard asks before this
+    /// command line is parsed, and without one nothing is asked, so a missing value is a usage error naming it (#1317).
+    /// </summary>
+    private static string Require(IReadOnlyDictionary<string, string?> values, string option, string missing)
+        => Get(values, option) ?? throw new InstallUsageException(missing);
 
     private static string? Get(IReadOnlyDictionary<string, string?> values, string option)
         => values.TryGetValue(option, out var value) ? value : null;
 
-    private static Guid? ParseGuid(string? value, string option)
+    internal static Guid? ParseGuid(string? value, string option)
         => value is null ? null : Guid.TryParseExact(value, "D", out var parsed)
             ? parsed
             : throw new InstallUsageException($"{option} must be a canonical UUID.");
 
-    private static int ParseInt(string? value, int fallback, string option)
+    internal static int ParseInt(string? value, int fallback, string option)
         => value is null ? fallback : int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed)
             ? parsed
             : throw new InstallUsageException($"{option} must be an integer.");
 
-    private static double ParseDouble(string? value, double fallback, string option)
+    internal static double ParseDouble(string? value, double fallback, string option)
         => value is null ? fallback : double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
             ? parsed
             : throw new InstallUsageException($"{option} must be a number.");
 
-    private static decimal? ParseCpus(string? value)
+    internal static decimal? ParseCpus(string? value)
         => value is null ? null : decimal.TryParse(value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var parsed)
             ? parsed
             : throw new InstallUsageException("--cpus must be a number.");
 
-    private static ReleaseImageSource? ParseImageSource(string? value)
+    internal static ReleaseImageSource? ParseImageSource(string? value)
         => value switch
         {
             null => null,
@@ -561,7 +560,7 @@ internal static class CommandLine
             _ => throw new InstallUsageException("--image-source must be archive or registry.")
         };
 
-    private static CameraAgentReplayProfile ParseReplayProfile(string? value)
+    internal static CameraAgentReplayProfile ParseReplayProfile(string? value)
         => value switch
         {
             null or "in-process" => CameraAgentReplayProfile.InProcess,

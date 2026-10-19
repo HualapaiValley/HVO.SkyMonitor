@@ -17,7 +17,8 @@
 #   scripts/release:check-image-labels   refuses an image archive that is not release.json's CameraAgent image, with
 #                                        its version, commit, created time and state contract;
 #   scripts/release:version              reads the one product version, and refuses a version or tag for another;
-#   scripts/release:assets               refuses bad arguments, and a version that is not the product's, before it builds
+#   scripts/release:assets               refuses bad arguments, a version that is not the product's, and a release without
+#                                        its third-party notices, before it builds
 #                                        anything;
 #   scripts/test:release-install         leaves no container, image or temporary root behind, however far it gets;
 #   install.sh                           the release's entry point (src/HVO.SkyMonitor.Deployment.Cli/install.sh, #1311):
@@ -1221,6 +1222,14 @@ if "$assets_repo/scripts/release:assets" --version 2.5.0 --output "$test_root/ou
 fi
 grep -Fq "docs/upgrade-notes/2.5.0.md is missing or empty" "$test_root/assets.err" ||
     { cat "$test_root/assets.err" >&2; fail "the asset script refused a final release without its notes without saying so."; }
+# Every release ships its third-party notices as an asset of their own (#1317): the asset script refuses a release
+# without them, here a pre-release, which needs no notes, before it builds anything.
+if "$assets_repo/scripts/release:assets" --version 2.5.0-dev.1 --output "$test_root/out" --image-oci "$test_root/out.tar" \
+    --allow-dirty >/dev/null 2>"$test_root/assets.err"; then
+    fail "the asset script admitted a release without its third-party notices."
+fi
+grep -Fq "THIRD-PARTY-NOTICES.md, the release's third-party notices, is missing or empty" "$test_root/assets.err" ||
+    { cat "$test_root/assets.err" >&2; fail "the asset script refused a release without its notices without saying so."; }
 
 # test:release-install leaves nothing behind, however far it gets: an install that fails after loading the release's
 # image, and a stand-in image that fails to be created or committed. A fake Docker keeps its images and containers as

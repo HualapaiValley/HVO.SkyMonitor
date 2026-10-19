@@ -62,6 +62,11 @@ jobs:
           ./scripts/test:pr-review-tools
           ./scripts/test:development-v1-ci
 
+      # tests/cli/ansi-to-svg.py, which draws the terminal programs' screens, and scripts/docs:terminal-screenshots, which
+      # replaces docs/images/terminal with them (#1317).
+      - name: Test the terminal screenshot converter and script
+        run: python3 -m unittest discover -s tests/cli -p 'test_*.py' -v
+
       # The full-history checkout above is what the scan reads (#1321).
       - name: Scan history for secrets
         env:
@@ -146,10 +151,12 @@ jobs:
 
       # Whole-repository ShellCheck and exhaustive category discovery are owned by
       # ci.yml's Quality and Build jobs on the main/release qualification path (#1142).
+      # The terminal programs' render tests save each screen to HVO_TERMINAL_RENDERS_DIR (#1317), inside the evidence.
       - name: Run Docker-disabled Unit selection
         id: unit
         env:
           DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
+          HVO_TERMINAL_RENDERS_DIR: ${{ runner.temp }}/development-v1/terminal-renders
         run: |
           remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
           ((remaining > 0)) || exit 124
@@ -161,6 +168,13 @@ jobs:
               --filter "TestCategory=Unit" \
               --results-directory "$DEV_V1_EVIDENCE_ROOT/unit" \
               --logger trx
+
+      # Those screens drawn as SVG, as docs/images/terminal has them, and kept with the evidence below (#1317).
+      - name: Draw terminal screenshots
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$DEV_V1_EVIDENCE_ROOT/terminal-renders"
+          ./scripts/docs:terminal-screenshots --draw "$DEV_V1_EVIDENCE_ROOT/terminal-renders"
 
       - name: Write evidence summary
         if: always()
