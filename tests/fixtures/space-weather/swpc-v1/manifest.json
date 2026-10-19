@@ -129,8 +129,8 @@
   "files": [
     {
       "path": "SOURCE.md",
-      "bytes": 7337,
-      "sha256": "5015C84CB689FFDEB50758BF15B5CA2F9D2C5A413BD0B8AB89553A47B7B1E04E"
+      "bytes": 7610,
+      "sha256": "630D8CA40E4F11E21C9554050C44DEC1E461E3634E32E1BEF51C9299D2AA7A1F"
     },
     {
       "path": "capture-20261019T1857Z/3-day-forecast.original.json",
@@ -159,8 +159,8 @@
     },
     {
       "path": "fixtures.py",
-      "bytes": 130463,
-      "sha256": "FF759CD9F4BAAB09834186A1C42575491D4557B700EAC9AFAD161EEAF3D8EA1B"
+      "bytes": 138839,
+      "sha256": "10A25F522BF32C362C066C294A021A9404C0A282EE6169B21D8282BEFDAA7DB1"
     },
     {
       "path": "ovation-aurora-site-sector.json",
@@ -204,8 +204,8 @@
     },
     {
       "path": "scenarios/s08-watch-replacement-and-escalation.json",
-      "bytes": 8120,
-      "sha256": "14521B6FBCC0C6C6E5D7EC418535AF7B06C79EAAECDEB846EEAD893495E68C19"
+      "bytes": 13015,
+      "sha256": "EEBB8C31D1FDC7023AEAD6F16F8ABC491974DB47A26DF59E38FFBB1A4EB78E91"
     },
     {
       "path": "scenarios/s09-synthetic-cancel-warning.json",
@@ -219,18 +219,18 @@
     },
     {
       "path": "scenarios/s11-stale-cdn-out-of-order.json",
-      "bytes": 6659,
-      "sha256": "1BDC04652DF45D94678D911A6A588CD3DE9448BBE9BD841EA3BC54C6B91737A1"
+      "bytes": 6662,
+      "sha256": "EAD7970F5EAE147E066D603096E095EF786DB14B98FB8DEAD3244A1C694762C8"
     },
     {
       "path": "scenarios/s12-malformed-bodies.json",
-      "bytes": 33033,
-      "sha256": "2C3886E070E5D56A5E44A43B369A3468FB0079D43F84EB879D6A5809DAF3F9EA"
+      "bytes": 34702,
+      "sha256": "F51BF9BAF24CDF4116694D6E890C34C9A2B09BC7E109893D1DC146F297C10784"
     },
     {
       "path": "scenarios/s13-outage-backoff-halts.json",
-      "bytes": 11155,
-      "sha256": "132D3845BEFBCE0A82169A2FD64CA944F1F2E5B35F9380E35A626E826E8C9DFC"
+      "bytes": 11615,
+      "sha256": "3ACC1D31D4021CCB866C83FF7A8BEA3C599A02D4820D6ABFA8259A0F7AF1D507"
     },
     {
       "path": "scenarios/s14-year-rollover-and-local-day.json",
@@ -244,13 +244,13 @@
     },
     {
       "path": "scenarios/s16-kp-estimated-future-bin.json",
-      "bytes": 2991,
-      "sha256": "8295BF80EBBEA8889759AE7C111D4653B8119F00CC1C4AE811942F09FFD70D9B"
+      "bytes": 2999,
+      "sha256": "B448A3F1E7A6F3E5A1843EE42A80B42BE80A63FFC527AB4CB08F1984EA3233C5"
     },
     {
       "path": "scenarios/s17-three-day-issue-versus-last-modified.json",
-      "bytes": 10521,
-      "sha256": "C9C9506A8C413FDFEA9B7223811FC5FCA5941E5D8610DF4BF4404E17152FB7E7"
+      "bytes": 13568,
+      "sha256": "F5BDDD71ACE5259E583ECC4046E6DA9641515213226B7551C070531235CFDE30"
     },
     {
       "path": "scenarios/s18-ovation-site-band.json",
@@ -264,8 +264,8 @@
     },
     {
       "path": "scenarios/s20-record-level-drift.json",
-      "bytes": 16322,
-      "sha256": "5E07EBDEFF50808A0544DBC7C057C099298810D1B22C6945F0A35CE59AE0969D"
+      "bytes": 22705,
+      "sha256": "5BD8C8847050ED781FFCEA7FA61C9461A28B27E579A1D12931213FAD7962C302"
     },
     {
       "path": "scenarios/s21-pending-short-window-and-cap.json",
@@ -274,8 +274,8 @@
     },
     {
       "path": "scenarios/s22-gone-client-error-network.json",
-      "bytes": 6121,
-      "sha256": "4318A62FC4E9528B27FD8DAD94F450E42C5D377689B78E85F08C2626A40FD514"
+      "bytes": 8894,
+      "sha256": "5D84B53758496ED0CB1D05B6ADC0C7366D99ECD3D2848166EE7C213078D526EA"
     }
   ]
 }

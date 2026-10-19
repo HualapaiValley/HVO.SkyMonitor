@@ -279,7 +279,7 @@
     {
       "step": 16,
       "kind": "evaluate",
-      "atUtc": "2026-10-19T20:35:00Z",
+      "atUtc": "2026-10-19T20:34:50Z",
       "expect": {
         "products": {
           "alerts": {
@@ -287,7 +287,8 @@
               "scope": "provider",
               "reason": "rate-limited"
             },
-            "lkgSha256": "2AEE2ACFFE0F364887D0549D09523117A0F79B5B95C30089BD59BC570F54FD3D"
+            "lkgSha256": "2AEE2ACFFE0F364887D0549D09523117A0F79B5B95C30089BD59BC570F54FD3D",
+            "retryNotBeforeUtc": "2026-10-19T20:36:00Z"
           },
           "scales": {
             "halt": {
@@ -301,14 +302,14 @@
     {
       "step": 17,
       "kind": "resume",
-      "atUtc": "2026-10-19T20:40:00Z",
+      "atUtc": "2026-10-19T20:35:00Z",
       "scope": "provider",
       "operator": "fixture-operator",
       "expect": {
         "products": {
           "alerts": {
             "halt": null,
-            "nextAttemptNotBeforeUtc": "2026-10-19T20:40:00Z",
+            "nextAttemptNotBeforeUtc": "2026-10-19T20:36:00Z",
             "retryNotBeforeUtc": null,
             "consecutiveRateLimited": 3
           }
@@ -318,7 +319,17 @@
     {
       "step": 18,
       "kind": "fetch",
-      "atUtc": "2026-10-19T20:40:00Z",
+      "atUtc": "2026-10-19T20:35:30Z",
+      "product": "alerts",
+      "trigger": "manual",
+      "expect": {
+        "refused": "backoff"
+      }
+    },
+    {
+      "step": 19,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T20:36:00Z",
       "product": "alerts",
       "trigger": "scheduled",
       "response": {
@@ -330,20 +341,30 @@
           "halt": {
             "scope": "provider",
             "reason": "forbidden",
-            "sinceUtc": "2026-10-19T20:40:00Z"
+            "sinceUtc": "2026-10-19T20:36:00Z"
           }
         }
       }
     },
     {
-      "step": 19,
+      "step": 20,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T20:36:30Z",
+      "product": "alerts",
+      "trigger": "manual",
+      "expect": {
+        "refused": "halted"
+      }
+    },
+    {
+      "step": 21,
       "kind": "resume",
       "atUtc": "2026-10-19T20:50:00Z",
       "scope": "provider",
       "operator": "fixture-operator"
     },
     {
-      "step": 20,
+      "step": 22,
       "kind": "fetch",
       "atUtc": "2026-10-19T20:50:00Z",
       "product": "alerts",
@@ -363,7 +384,7 @@
       }
     },
     {
-      "step": 21,
+      "step": 23,
       "kind": "fetch",
       "atUtc": "2026-10-19T20:51:00Z",
       "product": "scales",
@@ -383,7 +404,7 @@
       }
     },
     {
-      "step": 22,
+      "step": 24,
       "kind": "resume",
       "atUtc": "2026-10-19T21:00:00Z",
       "scope": "product",
@@ -391,7 +412,7 @@
       "operator": "fixture-operator"
     },
     {
-      "step": 23,
+      "step": 25,
       "kind": "fetch",
       "atUtc": "2026-10-19T21:00:00Z",
       "product": "alerts",

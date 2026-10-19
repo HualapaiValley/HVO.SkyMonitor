@@ -95,19 +95,22 @@ records that SWPC did not publish. These include:
 - synthetic CANCEL WARNING records (s09, serials 2271 and 2272), because no
   CANCEL WARNING was published in the capture window. They are built from the
   documented SWPC rules and the shape of the captured CANCEL WATCH;
-- a synthetic G2 watch (s08, WATA30 900), a year-rollover watch (s14, WATA20
-  1200) and an unknown message code (s12, ALTZZZ 1);
+- synthetic watches (s08: a G2 watch, WATA30 900, and a G3 watch, WATA50 100,
+  with a G2 watch, WATA30 901, first seen in the same body), a year-rollover
+  watch (s14, WATA20 1200) and an unknown message code (s12, ALTZZZ 1);
 - a synthetic warning extension (s10, WARK04 5437) and a synthetic warning
   whose validity exceeds the active cap (s21, WARPX1 200);
 - a synthetic 3-day forecast issued 2026 Dec 31 (s14), whose table columns
   cross the year;
 - altered or damaged copies of real records and bodies, used to model:
   - revisions (s02, s11);
-  - malformed, mismatched, oversized, header-only and long-serial records
-    (s12);
+  - malformed, mismatched, oversized, header-only and long-serial records, a
+    record whose `Issue Time` line has a doubled space, and a record whose
+    message ends in an unpaired surrogate escape (s12);
   - records with a renamed header line (s20);
   - malformed bodies (s12);
-  - a 3-day forecast with a renamed table (s17).
+  - a 3-day forecast with a renamed table, and one whose solar radiation
+    table has no rows (s17).
 
 No third-party copy of any SWPC message is included.
 

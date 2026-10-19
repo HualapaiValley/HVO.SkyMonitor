@@ -1,16 +1,19 @@
 {
   "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
   "scenarioId": "s20-record-level-drift",
-  "title": "Rejected records in an accepted body raise record drift once per episode; restart keeps the episode open",
+  "title": "Rejected records in an accepted body raise record drift once per episode; only a clean body with a newer stamp closes it; restart keeps the episode open",
   "covers": [
     "record-drift",
     "format-drift",
     "restart",
-    "malformed"
+    "malformed",
+    "stale-snapshot"
   ],
   "containsSyntheticRecords": true,
   "notes": [
-    "The damaged ALTK04 2691 and ALTEF3 3754 records are the real records with their first header line renamed; they are synthetic."
+    "The damaged ALTK04 2691 and ALTEF3 3754 records are the real records with their first header line renamed; they are synthetic.",
+    "Steps 6 and 7 model an edge alternating between the step 1 and step 2 bodies. Both have the stamp 19:38, because a rejected record does not count towards it, so each is 'updated'. The clean step 1 body is not newer than the episode, so it does not close it, and step 7 raises nothing.",
+    "Step 9 is clean and newer, so it closes the episode. Step 10 opens a new one. Step 11 serves the step 9 body again at the same stamp and does not close it."
   ],
   "sites": [
     {
@@ -52,6 +55,7 @@
         ],
         "product": {
           "recordDriftOpen": false,
+          "recordDriftStampUtc": null,
           "facts": {
             "records": 1,
             "acceptedRecords": 1
@@ -92,6 +96,7 @@
         },
         "product": {
           "recordDriftOpen": true,
+          "recordDriftStampUtc": "2026-10-16T19:38:00Z",
           "freshness": "fresh",
           "consecutiveRejected": 0,
           "lkgSha256": "BA2E79E44B2078020A7E85D7E813B44A5998D3503F96126EBC03E86DB59F55E4",
@@ -146,7 +151,8 @@
         "diagnostics": [],
         "attention": [],
         "product": {
-          "recordDriftOpen": true
+          "recordDriftOpen": true,
+          "recordDriftStampUtc": "2026-10-16T19:38:00Z"
         }
       }
     },
@@ -159,8 +165,62 @@
       "response": {
         "status": 200,
         "contentType": "application/json",
+        "etag": "W/\"fixture-s20-a\"",
+        "lastModified": "Fri, 16 Oct 2026 19:44:50 GMT",
+        "body": "[{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-16 19:38:53.387\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 5436\\r\\nIssue Time: 2026 Oct 16 1938 UTC\\r\\n\\r\\nWARNING: Geomagnetic K-index of 4 expected \\nValid From: 2026 Oct 16 1938 UTC\\nValid To: 2026 Oct 17 0300 UTC\\nWarning Conditions: Onset\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "diagnostics": [],
+        "attention": [],
+        "product": {
+          "recordDriftOpen": true,
+          "recordDriftStampUtc": "2026-10-16T19:38:00Z",
+          "lkgSha256": "F499875BA2D5246357AE54660B651BC37BE0CEF2E2183CA539163CFE0065C2E4",
+          "facts": {
+            "records": 1,
+            "acceptedRecords": 1
+          }
+        }
+      }
+    },
+    {
+      "step": 7,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T19:55:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s20-b\"",
+        "lastModified": "Fri, 16 Oct 2026 19:46:50 GMT",
+        "body": "[{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"SWPC Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time: 2026 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-16 19:38:53.387\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 5436\\r\\nIssue Time: 2026 Oct 16 1938 UTC\\r\\n\\r\\nWARNING: Geomagnetic K-index of 4 expected \\nValid From: 2026 Oct 16 1938 UTC\\nValid To: 2026 Oct 17 0300 UTC\\nWarning Conditions: Onset\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "diagnostics": [
+          "record-rejected:message-header:0"
+        ],
+        "attention": [],
+        "product": {
+          "recordDriftOpen": true,
+          "recordDriftStampUtc": "2026-10-16T19:38:00Z",
+          "lkgSha256": "BA2E79E44B2078020A7E85D7E813B44A5998D3503F96126EBC03E86DB59F55E4"
+        }
+      }
+    },
+    {
+      "step": 8,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T19:57:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
         "etag": "W/\"fixture-s20-e\"",
-        "lastModified": "Fri, 16 Oct 2026 19:52:50 GMT",
+        "lastModified": "Fri, 16 Oct 2026 19:56:50 GMT",
         "body": "[{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"SWPC Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time: 2026 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-16 19:38:53.387\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 5436\\r\\nIssue Time: 2026 Oct 16 1938 UTC\\r\\n\\r\\nWARNING: Geomagnetic K-index of 4 expected \\nValid From: 2026 Oct 16 1938 UTC\\nValid To: 2026 Oct 17 0300 UTC\\nWarning Conditions: Onset\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"EF3A\",\"issue_datetime\":\"2026-10-16 14:19:49.850\",\"message\":\"SWPC Message Code: ALTEF3\\r\\nSerial Number: 3754\\r\\nIssue Time: 2026 Oct 16 1419 UTC\\r\\n\\r\\nALERT: Electron 2MeV Integral Flux exceeded 1,000pfu \\nThreshold Reached: 2026 Oct 16 1345 UTC\\nStation: GOES-19\\nComment: \"}]"
       },
       "expect": {
@@ -185,16 +245,16 @@
       }
     },
     {
-      "step": 7,
+      "step": 9,
       "kind": "fetch",
-      "atUtc": "2026-10-16T19:55:00Z",
+      "atUtc": "2026-10-16T19:59:00Z",
       "product": "alerts",
       "trigger": "scheduled",
       "response": {
         "status": 200,
         "contentType": "application/json",
         "etag": "W/\"fixture-s20-f\"",
-        "lastModified": "Fri, 16 Oct 2026 19:54:50 GMT",
+        "lastModified": "Fri, 16 Oct 2026 19:58:50 GMT",
         "body": "[{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time: 2026 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-16 19:38:53.387\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 5436\\r\\nIssue Time: 2026 Oct 16 1938 UTC\\r\\n\\r\\nWARNING: Geomagnetic K-index of 4 expected \\nValid From: 2026 Oct 16 1938 UTC\\nValid To: 2026 Oct 17 0300 UTC\\nWarning Conditions: Onset\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"}]"
       },
       "expect": {
@@ -217,6 +277,7 @@
         },
         "product": {
           "recordDriftOpen": false,
+          "recordDriftStampUtc": null,
           "facts": {
             "records": 2,
             "acceptedRecords": 2
@@ -225,16 +286,16 @@
       }
     },
     {
-      "step": 8,
+      "step": 10,
       "kind": "fetch",
-      "atUtc": "2026-10-16T19:57:00Z",
+      "atUtc": "2026-10-16T20:01:00Z",
       "product": "alerts",
       "trigger": "scheduled",
       "response": {
         "status": 200,
         "contentType": "application/json",
         "etag": "W/\"fixture-s20-g\"",
-        "lastModified": "Fri, 16 Oct 2026 19:56:50 GMT",
+        "lastModified": "Fri, 16 Oct 2026 20:00:50 GMT",
         "body": "[{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time: 2026 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-16 19:38:53.387\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 5436\\r\\nIssue Time: 2026 Oct 16 1938 UTC\\r\\n\\r\\nWARNING: Geomagnetic K-index of 4 expected \\nValid From: 2026 Oct 16 1938 UTC\\nValid To: 2026 Oct 17 0300 UTC\\nWarning Conditions: Onset\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"EF3A\",\"issue_datetime\":\"2026-10-16 14:19:49.850\",\"message\":\"SWPC Message Code: ALTEF3\\r\\nSerial Number: 3754\\r\\nIssue Time: 2026 Oct 16 1419 UTC\\r\\n\\r\\nALERT: Electron 2MeV Integral Flux exceeded 1,000pfu \\nThreshold Reached: 2026 Oct 16 1345 UTC\\nStation: GOES-19\\nComment: \"}]"
       },
       "expect": {
@@ -261,10 +322,34 @@
         },
         "product": {
           "recordDriftOpen": true,
+          "recordDriftStampUtc": "2026-10-16T19:39:00Z",
           "facts": {
             "records": 3,
             "acceptedRecords": 2
           }
+        }
+      }
+    },
+    {
+      "step": 11,
+      "kind": "fetch",
+      "atUtc": "2026-10-16T20:03:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s20-f\"",
+        "lastModified": "Fri, 16 Oct 2026 19:58:50 GMT",
+        "body": "[{\"product_id\":\"K04A\",\"issue_datetime\":\"2026-10-16 19:39:45.267\",\"message\":\"Space Weather Message Code: ALTK04\\r\\nSerial Number: 2691\\r\\nIssue Time: 2026 Oct 16 1939 UTC\\r\\n\\r\\nALERT: Geomagnetic K-index of 4 \\nThreshold Reached: 2026 Oct 16 1940 UTC\\nSynoptic Period: 1800-2100\\nActive Warning: YES\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-16 19:38:53.387\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 5436\\r\\nIssue Time: 2026 Oct 16 1938 UTC\\r\\n\\r\\nWARNING: Geomagnetic K-index of 4 expected \\nValid From: 2026 Oct 16 1938 UTC\\nValid To: 2026 Oct 17 0300 UTC\\nWarning Conditions: Onset\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "diagnostics": [],
+        "attention": [],
+        "product": {
+          "recordDriftOpen": true,
+          "recordDriftStampUtc": "2026-10-16T19:39:00Z"
         }
       }
     }

@@ -1,7 +1,7 @@
 {
   "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
   "scenarioId": "s16-kp-estimated-future-bin",
-  "title": "Kp bins keep the source label verbatim; the time relation is computed from the bin start when read",
+  "title": "Kp bins keep the source label verbatim; the time relation is computed from the bin start and end when read",
   "covers": [
     "kp-forecast",
     "label-versus-time"

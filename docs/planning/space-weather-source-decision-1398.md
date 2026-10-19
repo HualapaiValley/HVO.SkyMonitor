@@ -49,7 +49,7 @@ work once Batch A's #1402 handoff lands, then returns to finish it.
 | Fact model | Approved: typed host-neutral facts that keep SWPC's own kinds, scales and probabilities. No universal severity score | Shared types are a Proposed default (see "Ownership") |
 | Identity and deduplication | Approved: message identity is code, serial and issue minute; deduplication is by normalized content hash. HTTP validators are never used for deduplication | Validators may still be sent as conditional request headers |
 | Lifecycle | Approved: per-family windows; extensions, continuations, corrections, cancels and watch supersession; a 96-hour active cap | Rules are in the contract; s03 to s11 and s21 exercise them, including the 96-hour cap (s21) |
-| Request policy | Approved: a per-product cadence structure, 60 s minimum spacing, bounded transient backoff, `Retry-After`, and persisted halts that need an operator resume. A resume never bypasses spacing, a backoff or `Retry-After` | The base interval values are Proposed (alerts 120 s under U1, scales 300 s under U15, Kp forecast 900 s, 3-day forecast 1,800 s). Halt reasons and counts are in the contract; s13, s19 and s22 exercise them |
+| Request policy | Approved: a per-product cadence structure, 60 s minimum spacing, bounded transient backoff, `Retry-After`, and persisted halts that need an operator resume. A resume never bypasses spacing, a backoff or `Retry-After` | The values are Proposed: the base intervals (alerts 120 s under U1, scales 300 s under U15, Kp forecast 900 s, 3-day forecast 1,800 s), the decoded-byte maximums and the outdated thresholds. Halt reasons and counts are in the contract; s13, s19 and s22 exercise them |
 | Freshness | Approved: freshness is based on retrieval time. The in-file content stamp is a separate fact that is shown next to it | — |
 | Last-known-good and history | Approved: a rejected body never replaces last-known-good. Message history is kept locally. Absence from the rolling upstream window never means cancellation | The 35-day history period (U8), raw snapshot retention and the snapshot cap are Proposed |
 | Local relevance | Approved: global facts stay global. Site relevance is a separately typed, derived HVO estimate based on geomagnetic latitude | The dipole model (U10) and the darkness qualifier are Proposed |
@@ -137,7 +137,9 @@ unclassified and rejects unparseable records individually. It raises
 format-drift attention after three consecutive rejected bodies, and
 record-drift attention when an accepted alerts body contains rejected records,
 because new messages may change format while older ones in the rolling window
-still parse.
+still parse. Record drift raises once per episode. Only a clean body with a
+newer in-file stamp ends the episode, so an edge serving alternating bodies
+cannot raise it repeatedly (s20).
 
 ## Capture evidence
 
@@ -173,7 +175,8 @@ Observed facts that shape the policy:
 - Header lines use CRLF and body lines use LF. Normalization makes hashes
   stable.
 - The Kp forecast labelled a future bin `estimated`. The label is provisional
-  status, not past or future, so timing comes from the bin start.
+  status, not past or future, so the past, current or future relation is
+  computed from the bin start and end.
 - `noaa-scales.json` and the 3-day forecast disagreed on R probabilities (25/5
   against 30/10). Both are shown with their own stamps and are never merged
   (U6).
@@ -259,8 +262,8 @@ Uniform ±20% jitter leaves the mean rate unchanged. Even if every draw were
 **Upper bound.** Manual refresh can request a product once every 60 seconds.
 That is at most 1,440 requests per product per day, or 5,760 for the four core
 products. At the captured sizes that is 9,701,280 wire bytes per day. At the
-decoded-body caps below, at most 2,076,180,480 decoded bytes per day are
-accepted for the core products, or 8,115,978,240 with OVATION.
+Proposed decoded-body caps below, at most 2,076,180,480 decoded bytes per day
+are accepted for the core products, or 8,115,978,240 with OVATION.
 
 **Proposed limits:**
 
@@ -307,7 +310,7 @@ run, provide those.
 | U9 | Unknown codes are shown raw as unclassified, with a coverage metric | Proposed |
 | U10 | Centred-dipole geomagnetic latitude (pole 80.8 N, 72.6 W; error of a few degrees), documented as approximate. At HVO it is 42.2° | Proposed |
 | U11 | CANCEL WARNING is implemented from the documented rules, with a disclosed synthetic fixture | Proposed |
-| U12 | Watch day lines carry no year. The year is inferred from the issue time with a six-month window, so 31 December rolls over | Proposed |
+| U12 | Watch day lines and the 3-day forecast's table columns carry no year. The year is inferred from the watch's issue time, or from the forecast's `:Issued:` time, with a six-month window, so 31 December rolls over (s14) | Proposed |
 | U13 | Placement: one CameraAgent-local poller per deployment | Approved |
 | U14 | K4/G1 items for a low-latitude site are listed under global activity with "not expected locally" | Proposed |
 | U15 | The `noaa-scales.json` production cadence is unverified. It is polled every 300 s | Proposed |

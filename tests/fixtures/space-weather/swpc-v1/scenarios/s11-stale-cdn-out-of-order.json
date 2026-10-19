@@ -1,7 +1,7 @@
 {
   "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
   "scenarioId": "s11-stale-cdn-out-of-order",
-  "title": "An older body after a newer one neither revises stored records nor replaces last-known-good",
+  "title": "A body with an older in-file stamp neither revises stored records nor replaces last-known-good",
   "covers": [
     "out-of-order",
     "stale-snapshot",

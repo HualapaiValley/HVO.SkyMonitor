@@ -265,6 +265,11 @@ def parse_record(record, index):
     for key in ("product_id", "issue_datetime", "message"):
         if not isinstance(record.get(key), str):
             return None, "record-schema"
+        try:
+            record[key].encode("utf-8")
+        except UnicodeEncodeError:
+            # An unpaired surrogate escape such as \ud800 decodes to a string that has no UTF-8 form.
+            return None, "record-schema"
     if not re.fullmatch(r"[A-Z0-9]{2,8}", record["product_id"]):
         return None, "record-schema"
     if not ISSUE_DATETIME_RE.fullmatch(record["issue_datetime"]):
@@ -276,7 +281,7 @@ def parse_record(record, index):
     if (len(lines) < 4
             or not re.fullmatch(r"Space Weather Message Code: [A-Z0-9]{4,8}", lines[0])
             or not re.fullmatch(r"Serial Number: \d{1,6}", lines[1])
-            or not re.fullmatch(r"Issue Time: .+", lines[2])
+            or not re.fullmatch(r"Issue Time: \d{4} [A-Z][a-z]{2} \d{2} \d{4} UTC", lines[2])
             or parse_swpc_time(lines[2][len("Issue Time: "):]) is None):
         return None, "message-header"
     return Message(record, text), None
@@ -612,7 +617,7 @@ class ProductState:
         self.rejected = 0
         self.halt = None
         self.last_outcome = None
-        self.record_drift_open = False
+        self.record_drift_stamp = None  # newest in-file stamp of a drifted body while an episode is open
 
 
 class Model:
@@ -720,9 +725,10 @@ class Model:
         events = []
         groups = self.groups()
         grace = dt.timedelta(seconds=POLICY["newGraceSeconds"])
-        for gid, group in sorted(groups.items()):
-            if not (group.nodes & touched) or group.family == "summary" or group.root is None:
-                continue
+        # Root issue-time order, so a watch replacement sees a predecessor that raised earlier in this merge.
+        candidates = [(gid, group) for gid, group in groups.items()
+                      if group.nodes & touched and group.family != "summary" and group.root is not None]
+        for gid, group in sorted(candidates, key=lambda item: (item[1].root.issue, item[0])):
             state, _, _, _ = notice_state(group, groups, t)
             rank = level_rank(group.level)
             raised = self.group_raised(group)
@@ -749,7 +755,7 @@ class Model:
             elif rank > raised:
                 self.raised[node] = rank
                 events.append({"group": gid, "reason": "escalated", "level": group.level})
-        return events
+        return sorted(events, key=lambda event: event["group"])
 
     # -- fetch ------------------------------------------------------------
     def freshness(self, name, t):
@@ -776,7 +782,8 @@ class Model:
             "consecutiveTransientFailures": st.transient,
             "consecutiveRateLimited": st.rate_limited,
             "consecutiveRejected": st.rejected,
-            "recordDriftOpen": st.record_drift_open,
+            "recordDriftOpen": st.record_drift_stamp is not None,
+            "recordDriftStampUtc": st.record_drift_stamp,
             "halt": dict(halt) if halt else None,
             "validators": {"etag": st.etag, "lastModified": st.last_modified},
             "facts": copy.deepcopy(st.lkg["facts"]) if st.lkg else None,
@@ -899,6 +906,8 @@ class Model:
             raise ScenarioError(f"step {step['step']}: the request was not refused but the step has no response")
         result["request"] = {"ifNoneMatch": st.etag, "ifModifiedSince": st.last_modified}
         st.last_attempt = t
+        # An attempt ends the backoff the previous outcome set; only a transient failure or a 429 starts one.
+        st.in_backoff = False
         response = step["response"]
         status = response.get("status")
         diagnostics = result["diagnostics"]
@@ -984,13 +993,17 @@ class Model:
                     result["attention"] = self.attention_for(touched, t)
                     if outcome == "updated":
                         facts = snapshot["facts"]
+                        drift = st.record_drift_stamp
                         if facts["records"] > facts["acceptedRecords"]:
-                            if not st.record_drift_open:
-                                st.record_drift_open = True
+                            if drift is None:
                                 result["attention"].append({"group": "provider/alerts/record-drift",
                                                             "reason": "new", "level": None})
-                        else:
-                            st.record_drift_open = False
+                            if drift is None or snapshot["stamp"] > drift:
+                                st.record_drift_stamp = snapshot["stamp"]
+                        elif drift is not None and snapshot["stamp"] > drift:
+                            # Only a clean body newer than every drifted body closes the episode, so an edge
+                            # alternating between equal-stamp bodies cannot close and reopen it.
+                            st.record_drift_stamp = None
         result["diagnostics"] = sorted(diagnostics)
         return result
 
@@ -1035,7 +1048,7 @@ class Model:
 
     # -- durability -------------------------------------------------------
     PRODUCT_FIELDS = ("lkg", "etag", "last_modified", "in_backoff", "transient", "rate_limited", "rejected",
-                      "halt", "last_outcome", "record_drift_open")
+                      "halt", "last_outcome", "record_drift_stamp")
     PRODUCT_TIMES = ("last_success", "last_attempt", "next_attempt", "retry_not_before")
 
     def durable_state(self):
@@ -1406,10 +1419,29 @@ def scenarios(cap: Capture):
         "THIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT",
         "Comment: Synthetic fixture escalation; not an SWPC product.",
     ])
+    same_merge_g3 = synthetic("A50F", "2026-10-19 17:00:08.000", "WATA50", 100, [
+        "WATCH: Geomagnetic Storm Category G3 Predicted ",
+        "Highest Storm Level Predicted by Day:",
+        "Oct 19:  G3 (Strong)   Oct 20:  G2 (Moderate)   Oct 21:  G1 (Minor)   ",
+        "THIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT",
+        "Comment: Synthetic fixture for a same-merge replacement; not an SWPC product.",
+    ])
+    same_merge_g2 = synthetic("A30F", "2026-10-19 17:03:11.000", "WATA30", 901, [
+        "WATCH: Geomagnetic Storm Category G2 Predicted ",
+        "Highest Storm Level Predicted by Day:",
+        "Oct 19:  G1 (Minor)   Oct 20:  G2 (Moderate)   Oct 21:  None (Below G1)   ",
+        "THIS SUPERSEDES ANY/ALL PRIOR WATCHES IN EFFECT",
+        "Comment: Synthetic fixture for a same-merge replacement; not an SWPC product.",
+    ])
     b = Builder("s08-watch-replacement-and-escalation",
-                "A same-level watch replaces silently; a higher-level watch escalates",
-                ["watch-supersession", "escalation"], synthetic_records=True,
-                notes=["WATA30 serial 900 is synthetic and models a G2 watch superseding a G1 watch."])
+                "A same-level watch replaces silently; a higher-level watch escalates; watches first seen "
+                "together are evaluated in root issue-time order",
+                ["watch-supersession", "escalation", "new-grace"], synthetic_records=True,
+                notes=["WATA30 serial 900 is synthetic and models a G2 watch superseding a G1 watch.",
+                       "WATA50 serial 100 and WATA30 serial 901 are synthetic. Both are first seen in step 4: the "
+                       "G3 watch was issued at 17:00 and replaced by the G2 watch at 17:03. The G3 watch is "
+                       "evaluated first, escalates within the new-notice grace, and the G2 replacement is then "
+                       "silent because an earlier watch in the same merge raised a higher rank."])
     b.fetch("2026-10-17T20:20:00Z", alerts_ok([w1130], 'W/"fixture-s08-a"', "Sat, 17 Oct 2026 20:19:50 GMT"), {
         "outcome": "updated",
         "attention": [{"group": "WATA20/1130", "reason": "new", "level": "G1"}],
@@ -1431,6 +1463,19 @@ def scenarios(cap: Capture):
                                     "untilUtc": "2026-10-18T20:00:00Z"},
                     "WATA30/900": {"state": "active", "level": "G2", "untilUtc": "2026-10-21T00:00:00Z",
                                    "relevance": {hvo: "NotExpected"}}},
+    })
+    b.fetch("2026-10-19T17:04:00Z",
+            alerts_ok([same_merge_g2, same_merge_g3, escalation, w1131, w1130], 'W/"fixture-s08-d"',
+                      "Mon, 19 Oct 2026 17:03:50 GMT"), {
+        "outcome": "updated",
+        "attention": [{"group": "WATA50/100", "reason": "escalated", "level": "G3"}],
+        "notices": {"WATA20/1130": {"state": "recent"},
+                    "WATA20/1131": {"state": "recent"},
+                    "WATA30/900": {"state": "recent", "endReason": "superseded",
+                                   "untilUtc": "2026-10-19T17:00:00Z"},
+                    "WATA50/100": {"state": "recent", "endReason": "superseded", "level": "G3",
+                                   "untilUtc": "2026-10-19T17:03:00Z"},
+                    "WATA30/901": {"state": "active", "level": "G2", "untilUtc": "2026-10-21T00:00:00Z"}},
     })
     out.append(b.build())
 
@@ -1550,7 +1595,7 @@ def scenarios(cap: Capture):
     if tp4_older["message"] == tp4["message"]:
         raise ScenarioError("s11 older text did not change the message")
     b = Builder("s11-stale-cdn-out-of-order",
-                "An older body after a newer one neither revises stored records nor replaces last-known-good",
+                "A body with an older in-file stamp neither revises stored records nor replaces last-known-good",
                 ["out-of-order", "stale-snapshot", "first-run-backlog", "new-grace"], synthetic_records=True,
                 notes=["Step 2's ALTTP4 719 is the real record with its Comment line altered, modelling an older "
                        "text served by a stale cache. No such text was observed in the capture.",
@@ -1599,11 +1644,15 @@ def scenarios(cap: Capture):
                               "Issue Time: 2026 Oct 16 1951 UTC\r\n"}
     long_serial = dict(a2691, message=a2691["message"].replace("Serial Number: 2691\r\n",
                                                                "Serial Number: 1234567\r\n", 1))
-    if no_serial["message"] == w5436["message"] or long_serial["message"] == a2691["message"]:
+    spaced_issue = dict(a2691, message=a2691["message"].replace("Issue Time: 2026 Oct 16 1939 UTC",
+                                                                "Issue Time:  2026 Oct 16 1939 UTC", 1))
+    surrogate = dict(a2691, message=a2691["message"] + "\ud800")
+    if no_serial["message"] == w5436["message"] or long_serial["message"] == a2691["message"] \
+            or spaced_issue["message"] == a2691["message"]:
         raise ScenarioError("s12 record damage did not change the message")
     mixed = alerts_ok([unknown, w5436, no_message, iso_datetime, no_serial, mismatch, oversize_record,
-                       header_only, long_serial], 'W/"fixture-s12-mixed"', "Fri, 16 Oct 2026 19:52:50 GMT",
-                      order=False)
+                       header_only, long_serial, spaced_issue, surrogate], 'W/"fixture-s12-mixed"',
+                      "Fri, 16 Oct 2026 19:52:50 GMT", order=False)
     non_utf8 = b'[{"product_id":"K04A","issue_datetime":"2026-10-16 19:39:45.267","message":"\xff\xfe"}]'
     b = Builder("s12-malformed-bodies",
                 "Rejected bodies keep last-known-good; record-level faults reject only the record and raise "
@@ -1612,7 +1661,8 @@ def scenarios(cap: Capture):
                 notes=["Every body after step 1 is synthetic or a damaged copy of a real body.",
                        "Step 5's ALTEF3 3754 is the real record with its issue_datetime moved six minutes later; "
                        "its other damaged records are copies of WARK04 5436 and ALTK04 2691, plus a synthetic "
-                       "header-only ALTK04 2692."])
+                       "header-only ALTK04 2692. Index 9 doubles the space after 'Issue Time:', and index 10 "
+                       "ends its message with the unpaired surrogate escape \\ud800."])
     b.fetch("2026-10-16T19:45:00Z", good, {"outcome": "updated", "product": {"lkgSha256": good_sha}})
     b.fetch("2026-10-16T19:47:00Z", dict(good, body=good["body"][:len(good["body"]) // 2], etag='W/"fixture-s12-trunc"'), {
         "outcome": "rejected", "diagnostics": ["body-rejected:malformed-json"], "attention": [],
@@ -1638,7 +1688,8 @@ def scenarios(cap: Capture):
         "diagnostics": ["issue-time-mismatch:ALTEF3/3754/2026-10-16T14:19:00Z",
                         "record-rejected:issue-datetime:3", "record-rejected:message-header:4",
                         "record-rejected:message-header:7", "record-rejected:message-header:8",
-                        "record-rejected:record-oversize:6", "record-rejected:record-schema:2"],
+                        "record-rejected:message-header:9", "record-rejected:record-oversize:6",
+                        "record-rejected:record-schema:10", "record-rejected:record-schema:2"],
         "attention": [{"group": "ALTEF3/3754", "reason": "new", "level": None},
                       {"group": "ALTZZZ/1", "reason": "new", "level": None},
                       {"group": "WARK04/5436", "reason": "new", "level": "K4"},
@@ -1648,7 +1699,8 @@ def scenarios(cap: Capture):
                          "fromUtc": "2026-10-16T19:50:00Z", "untilUtc": "2026-10-17T01:50:00Z",
                          "relevance": {hvo: "Unknown"}}}),
         "product": {"consecutiveRejected": 0, "lkgSha256": sha256(mixed["body"].encode()),
-                    "recordDriftOpen": True, "facts": {"records": 9, "acceptedRecords": 3}},
+                    "recordDriftOpen": True, "recordDriftStampUtc": "2026-10-16T19:50:00Z",
+                    "facts": {"records": 11, "acceptedRecords": 3}},
     })
     b.fetch("2026-10-16T19:55:00Z", dict(good, body="[]"), {
         "outcome": "rejected", "diagnostics": ["body-rejected:suspect-empty"], "attention": [],
@@ -1735,15 +1787,17 @@ def scenarios(cap: Capture):
     b.fetch("2026-10-19T20:30:00Z", None, {"refused": "halted"}, product="scales", trigger="manual")
     b.step("restart")
     b.step("evaluate", {"products": {"alerts": {"halt": {"scope": "provider", "reason": "rate-limited"},
-                                                "lkgSha256": sha_ok},
+                                                "lkgSha256": sha_ok, "retryNotBeforeUtc": "2026-10-19T20:36:00Z"},
                                      "scales": {"halt": {"scope": "provider", "reason": "rate-limited"}}}},
-           atUtc="2026-10-19T20:35:00Z")
-    b.step("resume", {"products": {"alerts": {"halt": None, "nextAttemptNotBeforeUtc": "2026-10-19T20:40:00Z",
+           atUtc="2026-10-19T20:34:50Z")
+    b.step("resume", {"products": {"alerts": {"halt": None, "nextAttemptNotBeforeUtc": "2026-10-19T20:36:00Z",
                                               "retryNotBeforeUtc": None, "consecutiveRateLimited": 3}}},
-           atUtc="2026-10-19T20:40:00Z", scope="provider", operator="fixture-operator")
-    b.fetch("2026-10-19T20:40:00Z", {"status": 403}, {
+           atUtc="2026-10-19T20:35:00Z", scope="provider", operator="fixture-operator")
+    b.fetch("2026-10-19T20:35:30Z", None, {"refused": "backoff"}, trigger="manual")
+    b.fetch("2026-10-19T20:36:00Z", {"status": 403}, {
         "outcome": "halted",
-        "product": {"halt": {"scope": "provider", "reason": "forbidden", "sinceUtc": "2026-10-19T20:40:00Z"}}})
+        "product": {"halt": {"scope": "provider", "reason": "forbidden", "sinceUtc": "2026-10-19T20:36:00Z"}}})
+    b.fetch("2026-10-19T20:36:30Z", None, {"refused": "halted"}, trigger="manual")
     b.step("resume", None, atUtc="2026-10-19T20:50:00Z", scope="provider", operator="fixture-operator")
     b.fetch("2026-10-19T20:50:00Z", {"status": 301}, {
         "outcome": "halted",
@@ -1876,7 +1930,8 @@ def scenarios(cap: Capture):
 
     # s16 ------------------------------------------------------------------
     b = Builder("s16-kp-estimated-future-bin",
-                "Kp bins keep the source label verbatim; the time relation is computed from the bin start when read",
+                "Kp bins keep the source label verbatim; the time relation is computed from the bin start and end "
+                "when read",
                 ["kp-forecast", "label-versus-time"],
                 notes=["At 18:57:03 the 21:00 bin is labelled estimated by the source but is still in the future.",
                        "The relation is a read-time view, not a stored fact; step 2 reads the same snapshot later."])
@@ -1904,17 +1959,20 @@ def scenarios(cap: Capture):
     original = json.loads((PACK / THREE_DAY_ORIGINAL).read_text("ascii"))
     normalized_sha = sha256(normalize_text(original["text"]).encode("utf-8"))
     renamed = original["text"].replace("NOAA Kp index breakdown", "NOAA Kp Index Forecast Breakdown", 1)
-    if renamed == original["text"]:
-        raise ScenarioError("s17 header rename did not change the text")
+    no_radiation_rows = re.sub(r"(?m)^S1 or greater.*\n", "", original["text"], count=1)
+    if renamed == original["text"] or no_radiation_rows == original["text"]:
+        raise ScenarioError("s17 damage did not change the text")
     b = Builder("s17-three-day-issue-versus-last-modified",
                 "The text product's :Issued: stamp is the issue time; HTTP Last-Modified churns; a renamed table "
-                "rejects the body",
+                "or a probability table with no rows rejects the body",
                 ["text-normalization", "issue-time", "etag-churn", "malformed"], synthetic_records=True,
                 notes=["The body is the exact original, including trailing spaces; the snapshot hash is over "
                        "the normalized text.",
                        "Step 2's validators are those of the 19:00:23Z re-request, which returned an identical "
                        "body.",
-                       "Step 3's body is the original with its Kp table title renamed; it is synthetic."])
+                       "Step 3's body is the original with its Kp table title renamed; it is synthetic.",
+                       "Step 4's body is the original with its 'S1 or greater' row removed, so the solar "
+                       "radiation table has a title and a column header but no rows; it is synthetic."])
     text_response = {"status": 200, "contentType": "text/plain", "etag": '"7fe-65e360f9121ca-gzip"',
                      "lastModified": "Mon, 19 Oct 2026 18:55:42 GMT", "body": original["text"]}
     b.fetch("2026-10-19T18:57:03Z", text_response, {
@@ -1941,6 +1999,12 @@ def scenarios(cap: Capture):
         "product": {"lkgSha256": normalized_sha, "consecutiveRejected": 1, "freshness": "fresh",
                     "lastSuccessUtc": "2026-10-19T19:27:03Z",
                     "validators": {"etag": '"7fe-65e361ddb4bcb-gzip"'},
+                    "facts": {"issuedUtc": "2026-10-19T12:30:00Z"}}},
+        product="3-day-forecast")
+    b.fetch("2026-10-19T20:27:03Z", dict(text_response, etag='"fixture-s17-no-rows"', body=no_radiation_rows), {
+        "outcome": "rejected", "diagnostics": ["body-rejected:schema"],
+        "product": {"lkgSha256": normalized_sha, "consecutiveRejected": 2,
+                    "lastSuccessUtc": "2026-10-19T19:27:03Z",
                     "facts": {"issuedUtc": "2026-10-19T12:30:00Z"}}},
         product="3-day-forecast")
     out.append(b.build())
@@ -2028,46 +2092,69 @@ def scenarios(cap: Capture):
     drift_a2691 = header_drift(a2691)
     drift_ef3754 = header_drift(ef3754)
     b = Builder("s20-record-level-drift",
-                "Rejected records in an accepted body raise record drift once per episode; restart keeps the "
-                "episode open",
-                ["record-drift", "format-drift", "restart", "malformed"], synthetic_records=True,
+                "Rejected records in an accepted body raise record drift once per episode; only a clean body with "
+                "a newer stamp closes it; restart keeps the episode open",
+                ["record-drift", "format-drift", "restart", "malformed", "stale-snapshot"], synthetic_records=True,
                 notes=["The damaged ALTK04 2691 and ALTEF3 3754 records are the real records with their first "
-                       "header line renamed; they are synthetic."])
-    b.fetch("2026-10-16T19:45:00Z", alerts_ok([w5436], 'W/"fixture-s20-a"', "Fri, 16 Oct 2026 19:44:50 GMT"), {
+                       "header line renamed; they are synthetic.",
+                       "Steps 6 and 7 model an edge alternating between the step 1 and step 2 bodies. Both have "
+                       "the stamp 19:38, because a rejected record does not count towards it, so each is "
+                       "'updated'. The clean step 1 body is not newer than the episode, so it does not close it, "
+                       "and step 7 raises nothing.",
+                       "Step 9 is clean and newer, so it closes the episode. Step 10 opens a new one. Step 11 "
+                       "serves the step 9 body again at the same stamp and does not close it."])
+    first = alerts_ok([w5436], 'W/"fixture-s20-a"', "Fri, 16 Oct 2026 19:44:50 GMT")
+    b.fetch("2026-10-16T19:45:00Z", first, {
         "outcome": "updated", "diagnostics": [],
         "attention": [{"group": "WARK04/5436", "reason": "new", "level": "K4"}],
-        "product": {"recordDriftOpen": False, "facts": {"records": 1, "acceptedRecords": 1}}})
+        "product": {"recordDriftOpen": False, "recordDriftStampUtc": None,
+                    "facts": {"records": 1, "acceptedRecords": 1}}})
     drifted = alerts_ok([drift_a2691, w5436], 'W/"fixture-s20-b"', "Fri, 16 Oct 2026 19:46:50 GMT")
     b.fetch("2026-10-16T19:47:00Z", drifted, {
         "outcome": "updated", "diagnostics": ["record-rejected:message-header:0"],
         "attention": [{"group": "provider/alerts/record-drift", "reason": "new", "level": None}],
         "notices": {"WARK04/5436": {"state": "active", "versions": 1}},
-        "product": {"recordDriftOpen": True, "freshness": "fresh", "consecutiveRejected": 0,
-                    "lkgSha256": sha256(drifted["body"].encode()),
+        "product": {"recordDriftOpen": True, "recordDriftStampUtc": "2026-10-16T19:38:00Z", "freshness": "fresh",
+                    "consecutiveRejected": 0, "lkgSha256": sha256(drifted["body"].encode()),
                     "facts": {"records": 2, "acceptedRecords": 1}}})
     b.fetch("2026-10-16T19:49:00Z", dict(drifted, etag='W/"fixture-s20-c"'), {
         "outcome": "unchanged", "diagnostics": [], "attention": [], "product": {"recordDriftOpen": True}})
     b.step("restart")
     b.fetch("2026-10-16T19:51:00Z", dict(drifted, etag='W/"fixture-s20-d"'), {
-        "outcome": "unchanged", "diagnostics": [], "attention": [], "product": {"recordDriftOpen": True}})
-    b.fetch("2026-10-16T19:53:00Z", alerts_ok([drift_a2691, w5436, drift_ef3754], 'W/"fixture-s20-e"',
-                                              "Fri, 16 Oct 2026 19:52:50 GMT"), {
+        "outcome": "unchanged", "diagnostics": [], "attention": [],
+        "product": {"recordDriftOpen": True, "recordDriftStampUtc": "2026-10-16T19:38:00Z"}})
+    b.fetch("2026-10-16T19:53:00Z", first, {
+        "outcome": "updated", "diagnostics": [], "attention": [],
+        "product": {"recordDriftOpen": True, "recordDriftStampUtc": "2026-10-16T19:38:00Z",
+                    "lkgSha256": sha256(first["body"].encode()), "facts": {"records": 1, "acceptedRecords": 1}}})
+    b.fetch("2026-10-16T19:55:00Z", drifted, {
+        "outcome": "updated", "diagnostics": ["record-rejected:message-header:0"], "attention": [],
+        "product": {"recordDriftOpen": True, "recordDriftStampUtc": "2026-10-16T19:38:00Z",
+                    "lkgSha256": sha256(drifted["body"].encode())}})
+    b.fetch("2026-10-16T19:57:00Z", alerts_ok([drift_a2691, w5436, drift_ef3754], 'W/"fixture-s20-e"',
+                                              "Fri, 16 Oct 2026 19:56:50 GMT"), {
         "outcome": "updated", "attention": [],
         "diagnostics": ["record-rejected:message-header:0", "record-rejected:message-header:2"],
         "notices": {"WARK04/5436": {"state": "active"}},
         "product": {"recordDriftOpen": True, "facts": {"records": 3, "acceptedRecords": 1}}})
-    b.fetch("2026-10-16T19:55:00Z", alerts_ok([a2691, w5436], 'W/"fixture-s20-f"', "Fri, 16 Oct 2026 19:54:50 GMT"), {
+    clean = alerts_ok([a2691, w5436], 'W/"fixture-s20-f"', "Fri, 16 Oct 2026 19:58:50 GMT")
+    b.fetch("2026-10-16T19:59:00Z", clean, {
         "outcome": "updated", "diagnostics": [],
         "attention": [{"group": "ALTK04/2691", "reason": "new", "level": "K4"}],
         "notices": {"ALTK04/2691": {"state": "active"}, "WARK04/5436": {"state": "active"}},
-        "product": {"recordDriftOpen": False, "facts": {"records": 2, "acceptedRecords": 2}}})
-    b.fetch("2026-10-16T19:57:00Z", alerts_ok([drift_ef3754, a2691, w5436], 'W/"fixture-s20-g"',
-                                              "Fri, 16 Oct 2026 19:56:50 GMT"), {
+        "product": {"recordDriftOpen": False, "recordDriftStampUtc": None,
+                    "facts": {"records": 2, "acceptedRecords": 2}}})
+    b.fetch("2026-10-16T20:01:00Z", alerts_ok([drift_ef3754, a2691, w5436], 'W/"fixture-s20-g"',
+                                              "Fri, 16 Oct 2026 20:00:50 GMT"), {
         "outcome": "updated", "diagnostics": ["record-rejected:message-header:2"],
         "attention": [{"group": "provider/alerts/record-drift", "reason": "new", "level": None}],
         "notices": {"ALTK04/2691": {"state": "active", "versions": 1},
                     "WARK04/5436": {"state": "active", "versions": 1}},
-        "product": {"recordDriftOpen": True, "facts": {"records": 3, "acceptedRecords": 2}}})
+        "product": {"recordDriftOpen": True, "recordDriftStampUtc": "2026-10-16T19:39:00Z",
+                    "facts": {"records": 3, "acceptedRecords": 2}}})
+    b.fetch("2026-10-16T20:03:00Z", clean, {
+        "outcome": "updated", "diagnostics": [], "attention": [],
+        "product": {"recordDriftOpen": True, "recordDriftStampUtc": "2026-10-16T19:39:00Z"}})
     out.append(b.build())
 
     # s21 ------------------------------------------------------------------
@@ -2133,8 +2220,12 @@ def scenarios(cap: Capture):
     # s22 ------------------------------------------------------------------
     quiet = alerts_ok([s930], '"fixture-s22-a"', "Mon, 19 Oct 2026 18:59:30 GMT")
     b = Builder("s22-gone-client-error-network",
-                "410 and 400 halt one product; a network error backs off; a 304 without validators is transient",
-                ["outage", "halt", "resume", "backoff", "not-modified", "manual-refresh"])
+                "410 and 400 halt one product; a network error backs off; a 304 without validators is transient; "
+                "an attempt ends the backoff before it",
+                ["outage", "halt", "resume", "backoff", "not-modified", "manual-refresh"],
+                notes=["Steps 11 to 15 follow a transient failure with a 404. The 404 attempt ends the backoff "
+                       "that the 503 set, so after the resume a manual request is refused as min-interval, not "
+                       "backoff."])
     b.fetch("2026-10-19T19:00:00Z", quiet, {"outcome": "updated"})
     b.fetch("2026-10-19T19:02:00Z", {"outcome": "network-error"}, {
         "outcome": "transient-failure",
@@ -2169,6 +2260,21 @@ def scenarios(cap: Capture):
         "products": {"kp-forecast": {"halt": {"scope": "product", "reason": "client-error",
                                               "sinceUtc": "2026-10-19T19:03:00Z"}},
                      "scales": {"halt": None}}})
+    b.fetch("2026-10-19T19:08:00Z", {"status": 503}, {
+        "outcome": "transient-failure",
+        "product": {"consecutiveTransientFailures": 1, "nextAttemptNotBeforeUtc": "2026-10-19T19:12:00Z"}})
+    b.fetch("2026-10-19T19:12:00Z", {"status": 404}, {
+        "outcome": "halted",
+        "product": {"halt": {"scope": "product", "reason": "not-found", "sinceUtc": "2026-10-19T19:12:00Z"},
+                    "consecutiveTransientFailures": 1, "nextAttemptNotBeforeUtc": None}})
+    b.step("resume", {"products": {"alerts": {"halt": None, "nextAttemptNotBeforeUtc": "2026-10-19T19:13:00Z",
+                                              "consecutiveTransientFailures": 1}}},
+           atUtc="2026-10-19T19:12:05Z", scope="product", product="alerts", operator="fixture-operator")
+    b.fetch("2026-10-19T19:12:10Z", None, {"refused": "min-interval"}, trigger="manual")
+    b.fetch("2026-10-19T19:13:00Z", dict(quiet, etag='"fixture-s22-c"'), {
+        "outcome": "unchanged",
+        "product": {"consecutiveTransientFailures": 0, "halt": None,
+                    "nextAttemptNotBeforeUtc": "2026-10-19T19:15:00Z"}})
     out.append(b.build())
 
     return out

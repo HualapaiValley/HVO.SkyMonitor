@@ -116,10 +116,10 @@ the order below, and the first failure gives the reason (s12):
 
 | Reason | Condition |
 | --- | --- |
-| `record-schema` | Not an object; `product_id`, `issue_datetime` or `message` missing or not a string; `product_id` not 2 to 8 uppercase letters or digits |
+| `record-schema` | Not an object; `product_id`, `issue_datetime` or `message` missing, not a string, or a string with no UTF-8 form (an unpaired surrogate escape such as `\ud800`); `product_id` not 2 to 8 uppercase letters or digits (s12) |
 | `issue-datetime` | `issue_datetime` is not `YYYY-MM-DD HH:MM:SS.fff` |
 | `record-oversize` | The message, before normalization, is larger than 16,384 UTF-8 bytes |
-| `message-header` | After normalization, the message has fewer than four lines (a header-only message is rejected), or its first three lines are not exactly `Space Weather Message Code: <code>` with a code of 4 to 8 uppercase letters or digits, `Serial Number: <serial>` with 1 to 6 digits, and `Issue Time: YYYY Mon DD HHMM UTC` naming a valid UTC time |
+| `message-header` | After normalization, the message has fewer than four lines (a header-only message is rejected), or its first three lines are not exactly `Space Weather Message Code: <code>` with a code of 4 to 8 uppercase letters or digits, `Serial Number: <serial>` with 1 to 6 digits, and `Issue Time: YYYY Mon DD HHMM UTC` naming a valid UTC time. Each line is matched whole, with single spaces and nothing before or after (s12) |
 
 **Identity.** Message identity is `CODE/serial/issue-minute`, all parsed from
 the message text. Link values (`Extension to Serial Number`, `Continuation of
@@ -140,6 +140,15 @@ digits.
 - If the minute of `issue_datetime` disagrees with the text's issue minute, the
   record is kept under the text identity and `issue-time-mismatch` is reported
   (s12).
+- **Equal stamps.** The alerts in-file stamp is the newest issue time among
+  the body's accepted records (see "Freshness"). An in-place revision or a
+  rejected record does not move it. So when an older text of a stored identity
+  is served again with no newer record in between, the body's stamp equals
+  last-known-good's. The body is `updated`, not `stale-snapshot`, the text is
+  stored as a `source-revision`, and it becomes the latest version by ingest
+  order. This cannot be told apart from a genuine revision (s02). When an edge
+  alternates between two equal-stamp bodies, last-known-good follows the latest
+  body and no stored version is removed (s20).
 
 **Grouping.** Records that `Extension to`, `Continuation of` or
 `Cancel Serial Number` link together within the same message code form one
@@ -247,7 +256,9 @@ Attention is a local operator-surface event. It never sends anything outside
 the host and never triggers a capture or safety action.
 
 Notice attention is evaluated after an `alerts` body is merged. It covers only
-the groups to which that body added a version.
+the groups to which that body added a version. The groups are evaluated in
+order of root issue time, then group identity, so a group can depend on one
+evaluated before it in the same merge (s08).
 
 - **New.** A group that has never raised attention raises `new` when it is
   `pending` or `active`. It also raises `new` when it is `recent` and the
@@ -261,7 +272,8 @@ the groups to which that body added a version.
   raises `escalated`.
 - **Watch replacement.** A watch that has never raised is compared with the
   earlier watches that were active one second before its root issue time and
-  had raised. If it is at the same or a lower rank than the highest of them,
+  had raised, including any that raised earlier in the same merge. If it is at
+  the same or a lower rank than the highest of them,
   it raises nothing, and that rank is recorded as raised for it. If it is
   higher, it raises `escalated` (s08).
 - **No attention.** Summaries never raise attention, and neither does a group
@@ -277,11 +289,24 @@ the groups to which that body added a version.
   `stale-snapshot`, resets the count. A resume does not.
 - **Record drift.** An `updated` alerts body with at least one rejected record
   raises `provider/alerts/record-drift` when no record-drift episode is open,
-  and opens one. The next `updated` body with no rejected records closes the
-  episode. Records that are repeats within the body are not rejections.
-  `unchanged` and `stale-snapshot` bodies neither raise nor close it. The open
-  episode is durable across a restart (s12, s20). This catches a format change
-  in new messages while the older records in the rolling window still parse.
+  and opens one. Records that are repeats within the body are not rejections.
+  - The open episode keeps the newest in-file stamp of the drifted `updated`
+    bodies it has seen.
+  - Only an `updated` body with no rejected records and a stamp strictly newer
+    than the kept one closes the episode. A clean body at the same stamp
+    leaves it open, so an edge alternating between equal-stamp bodies raises
+    once (s20).
+  - Each later raise therefore follows a clean body with a newer stamp, and
+    successive raises have strictly increasing stamps.
+  - `unchanged` and `stale-snapshot` bodies neither raise, close nor advance
+    the episode.
+  - The episode and its stamp are durable across a restart (s12, s20).
+
+  This catches a format change in new messages while the older records in the
+  rolling window still parse.
+- **Order.** A fetch reports notice events in ordinal order of group identity,
+  then the provider event, whatever order the groups were evaluated in (s10,
+  s12).
 
 ## Fetch policy
 
@@ -298,9 +323,9 @@ with at most one outbound request in flight.
 | `3-day-forecast` | 1,800 | 65,536 | `text/plain` | 93,600 |
 | `ovation` (U3) | 600 | 4,194,304 | `application/json` | 3,600 |
 
-The per-product structure of this table is Approved. The base intervals are
-Proposed values (U1 for alerts, U15 for scales, and the Kp and 3-day values
-with them).
+The per-product structure of this table is Approved. Its values are Proposed:
+the base intervals (U1 for alerts, U15 for scales, and the Kp and 3-day values
+with them), the decoded-byte maximums and the outdated thresholds.
 
 **Per-product state.** Each product keeps its own last attempt, next permitted
 attempt, backoff, consecutive transient, 429 and rejected counts, and
@@ -321,6 +346,12 @@ Only a provider halt stops every product.
   - `min-interval` within 60 seconds of that product's last attempt.
 
   A refused request sends nothing. Manual refresh never clears a halt.
+- **Backoff.** Only a `transient-failure` or a 429 starts a backoff. A halting
+  429 starts one as well; it takes effect at the resume, when its
+  `retryNotBeforeUtc` sets the next permitted attempt (s13). A backoff ends
+  at the product's next attempt, whatever that attempt's outcome. So after a
+  backoff, a 404 halt and a resume, a manual request within 60 seconds of the
+  404 is refused as `min-interval`, not `backoff` (s22).
 
 **Response handling.** The outcome is decided before any alert record is
 merged. The first matching row applies:
@@ -329,7 +360,7 @@ merged. The first matching row applies:
 | --- | --- |
 | Timeout, network error, 5xx, any other status below 300 except 200, or 304 when no validators were sent | `transient-failure`. With n consecutive transient failures, including this one, the next attempt is after min(1,800 s, max(60 s, base × 2ⁿ)). Last-known-good is kept. The 429 and rejected counts are unchanged (s13, s22) |
 | 304, validators sent | `not-modified`. A success. The stored validators are kept |
-| 429 | `rate-limited`. The next attempt is after `Retry-After`, otherwise after 1,800 s. `Retry-After` is read as delta-seconds (1 to 9 digits) or an HTTP-date; any other value is ignored. The delay is clamped to between 60 s and 21,600 s. The third consecutive 429 for a product halts the provider (`rate-limited`) instead. That 429's clamped time is kept as `retryNotBeforeUtc` and applied when the halt is resumed (s13, s19) |
+| 429 | `rate-limited`. The 429 count rises; the transient and rejected counts are unchanged. The next attempt is after `Retry-After`, otherwise after 1,800 s. `Retry-After` is read as delta-seconds (1 to 9 digits) or an HTTP-date; any other value is ignored. The delay is clamped to between 60 s and 21,600 s. The third consecutive 429 for a product halts the provider (`rate-limited`) instead. That 429's clamped time is kept as `retryNotBeforeUtc` and applied when the halt is resumed (s13, s19) |
 | 403 | Provider halt (`forbidden`) |
 | 3xx other than 304 | Product halt (`endpoint-moved`). Redirects are never followed |
 | 404, 410 or any other 4xx | Product halt (`not-found`, `gone` or `client-error`) (s13, s22) |
@@ -356,6 +387,8 @@ gives the reason:
    - `:Issued:` is missing or not a valid time;
    - a Kp breakdown, solar radiation or radio blackout table is missing (for
      example after a rename);
+   - a solar radiation or radio blackout table has a column header but no
+     rows;
    - the column header does not name three days;
    - a row does not parse;
    - the Kp rows are not exactly 00 to 21 UT in 3-hour steps.
@@ -543,7 +576,7 @@ product:
 - the three counters;
 - the halt;
 - the last outcome;
-- the record-drift flag.
+- the record-drift stamp, which is `null` when no episode is open.
 
 **Observed output.** Every step that has `atUtc` first purges by retention.
 It then reports `notices` and, for every product:
@@ -551,7 +584,7 @@ It then reports `notices` and, for every product:
 - `lastOutcome`, `freshness`, `lkgSha256` and `lastSuccessUtc`;
 - `nextAttemptNotBeforeUtc` and `retryNotBeforeUtc`;
 - the three consecutive counters;
-- `recordDriftOpen` and `halt`;
+- `recordDriftOpen`, `recordDriftStampUtc` and `halt`;
 - `validators` and `facts`;
 - for `kp-forecast`, `kpBinRelations` at the step time.
 
@@ -568,7 +601,8 @@ A fetch also reports:
 
 - Objects are compared as subsets.
 - The notice group set must match exactly.
-- `attention` and `diagnostics` lists must match exactly.
+- `attention` and `diagnostics` lists must match exactly, in the order given
+  under "Local attention" and "Alert records".
 
 | Scenario | Covers |
 | --- | --- |
@@ -579,21 +613,21 @@ A fetch also reports:
 | s05 | Extension chain; half-open expiry; "may be out of date" while alerts are not fresh |
 | s06 | Extension before its root; orphan link resolved |
 | s07 | Same-level watch supersession; CANCEL WATCH |
-| s08 | Silent watch replacement; escalation (synthetic G2 watch) |
+| s08 | Silent watch replacement; escalation (synthetic G2 watch); two watches first seen in one merge, evaluated in root issue-time order (synthetic G3 and G2 watches) |
 | s09 | CANCEL WARNING (synthetic); a cancel of an absent target never alerts |
 | s10 | Restart, then an extension, without re-alert; acknowledgement kept across both; rolling window; retention purge, including a summary |
 | s11 | Older CDN body after a newer one; stale snapshot with an ignored stale revision; new-notice grace |
-| s12 | Malformed bodies; per-record faults (schema, issue time, mismatch, oversize, header-only, long serial); unknown code; record drift; format drift; too many and no valid records |
-| s13 | Timeout and 5xx backoff; 304; 429 with both `Retry-After` forms; halting 429 keeps `retryNotBeforeUtc`; halts; manual refusals; restart while halted; resume |
+| s12 | Malformed bodies; per-record faults (schema, issue time, mismatch, oversize, header-only, long serial, a doubled space in `Issue Time`, an unpaired surrogate); unknown code; record drift; format drift; too many and no valid records |
+| s13 | Timeout and 5xx backoff; 304; 429 with both `Retry-After` forms; halting 429 keeps `retryNotBeforeUtc` across a restart and applies it at the resume; halts; manual refusals; restart while halted; resume |
 | s14 | Year rollover on watch day lines and on 3-day forecast columns (synthetic forecast); UTC days shown in the site zone |
 | s15 | Missing scale and impact lines; null predicted scales; site without a location |
 | s16 | Future Kp bin labelled `estimated`; past, current and future relations as time moves |
-| s17 | Text normalization; `:Issued:` versus `Last-Modified`; S and R probabilities; a renamed table rejects the body |
+| s17 | Text normalization; `:Issued:` versus `Last-Modified`; S and R probabilities; a renamed table, or a probability table with no rows, rejects the body |
 | s18 | OVATION site band and equatorial artifact; `null` band for a site without a location (data only) |
 | s19 | An early resume keeps minimum spacing, backoff, `Retry-After` and the 429 count; per-product 429 state |
-| s20 | Record drift raised once per episode, kept across a restart, closed by a clean body and raised again |
+| s20 | Record drift raised once per episode, kept across a restart; equal-stamp bodies alternating neither close nor re-raise it; closed by a clean body with a newer stamp and raised again |
 | s21 | Pending before `Valid From`; short-window alert inside and outside the new-notice grace; 96-hour cap |
-| s22 | 410 and 400 product halts; network error backoff; 304 without validators; product resume |
+| s22 | 410 and 400 product halts; network error backoff; 304 without validators; product resume; an attempt ends the backoff before it |
 
 **Implementation conformance.** An implementation passes when it reproduces each
 scenario's expectations from the same committed bodies. Unit tests use those

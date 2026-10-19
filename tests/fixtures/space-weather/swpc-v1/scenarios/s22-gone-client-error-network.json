@@ -1,7 +1,7 @@
 {
   "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
   "scenarioId": "s22-gone-client-error-network",
-  "title": "410 and 400 halt one product; a network error backs off; a 304 without validators is transient",
+  "title": "410 and 400 halt one product; a network error backs off; a 304 without validators is transient; an attempt ends the backoff before it",
   "covers": [
     "outage",
     "halt",
@@ -11,7 +11,9 @@
     "manual-refresh"
   ],
   "containsSyntheticRecords": false,
-  "notes": [],
+  "notes": [
+    "Steps 11 to 15 follow a transient failure with a 404. The 404 attempt ends the backoff that the 503 set, so after the resume a manual request is refused as min-interval, not backoff."
+  ],
   "sites": [
     {
       "siteId": "hvo",
@@ -221,6 +223,94 @@
           "scales": {
             "halt": null
           }
+        }
+      }
+    },
+    {
+      "step": 11,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:08:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 503
+      },
+      "expect": {
+        "outcome": "transient-failure",
+        "product": {
+          "consecutiveTransientFailures": 1,
+          "nextAttemptNotBeforeUtc": "2026-10-19T19:12:00Z"
+        }
+      }
+    },
+    {
+      "step": 12,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:12:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 404
+      },
+      "expect": {
+        "outcome": "halted",
+        "product": {
+          "halt": {
+            "scope": "product",
+            "reason": "not-found",
+            "sinceUtc": "2026-10-19T19:12:00Z"
+          },
+          "consecutiveTransientFailures": 1,
+          "nextAttemptNotBeforeUtc": null
+        }
+      }
+    },
+    {
+      "step": 13,
+      "kind": "resume",
+      "atUtc": "2026-10-19T19:12:05Z",
+      "scope": "product",
+      "product": "alerts",
+      "operator": "fixture-operator",
+      "expect": {
+        "products": {
+          "alerts": {
+            "halt": null,
+            "nextAttemptNotBeforeUtc": "2026-10-19T19:13:00Z",
+            "consecutiveTransientFailures": 1
+          }
+        }
+      }
+    },
+    {
+      "step": 14,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:12:10Z",
+      "product": "alerts",
+      "trigger": "manual",
+      "expect": {
+        "refused": "min-interval"
+      }
+    },
+    {
+      "step": 15,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:13:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s22-c\"",
+        "lastModified": "Mon, 19 Oct 2026 18:59:30 GMT",
+        "body": "[{\"product_id\":\"BHIS\",\"issue_datetime\":\"2026-10-19 09:09:16.063\",\"message\":\"Space Weather Message Code: SUM10R\\r\\nSerial Number: 930\\r\\nIssue Time: 2026 Oct 19 0909 UTC\\r\\n\\r\\nSUMMARY: 10cm Radio Burst \\nBegin Time: 2026 Oct 19 0858 UTC\\nMaximum Time: 2026 Oct 19 0859 UTC\\nEnd Time: 2026 Oct 19 0859 UTC\\nPeak Flux: 430 sfu\\nDuration: 1 minutes\\nLatest Penticton Noon Flux: 137 sfu\\nComment: \"}]"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "product": {
+          "consecutiveTransientFailures": 0,
+          "halt": null,
+          "nextAttemptNotBeforeUtc": "2026-10-19T19:15:00Z"
         }
       }
     }
