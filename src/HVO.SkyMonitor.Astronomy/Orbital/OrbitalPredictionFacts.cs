@@ -27,6 +27,12 @@ public sealed record OrbitalGeometryFacts(OrbitalGeometryBasis Basis, string Rig
             Readout.BinX > 0 && Readout.BinY > 0 && Readout.RoiWidth % Readout.BinX == 0 && Readout.RoiHeight % Readout.BinY == 0 &&
             Enum.IsDefined(Readout.BinningAlgorithm), "readout-geometry");
         var r = Readout!;
+        var isBinned = r.BinX != 1 || r.BinY != 1;
+        OrbitalContract.Require(isBinned == (r.BinningAlgorithm != FrameBinningAlgorithm.IdentityV1) &&
+            r.CfaOriginX.HasValue == r.CfaOriginY.HasValue &&
+            r.CfaOriginX is null or >= 0 and <= 1 && r.CfaOriginY is null or >= 0 and <= 1 &&
+            (r.CfaOriginX is null || !isBinned && (r.RoiX - r.CfaOriginX.Value) % 2 == 0 &&
+                (r.RoiY - r.CfaOriginY!.Value) % 2 == 0), "readout-binning-or-cfa");
         if (ProjectionCoordinates == OrbitalProjectionCoordinates.NativeSensor)
         {
             OrbitalContract.Require(Projection.WidthPixels == r.NativeWidth && Projection.HeightPixels == r.NativeHeight &&

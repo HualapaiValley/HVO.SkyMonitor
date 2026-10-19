@@ -69,6 +69,9 @@ public sealed class OrbitalExposureQuery
         {
             OrbitalContract.Require(calibration is not null && assessment is not null, "missing-measured-evidence");
             Geometry.ValidateMeasuredEvidence(calibration!, assessment!);
+            OrbitalContract.Require(assessment!.Frame.ExposureStartUtc == Request.Interval.StartUtc &&
+                assessment.Frame.ExposureEndUtc == Request.Interval.EndUtc && assessment.Frame.Observer == Request.Observer,
+                "measured-evidence-frame-mismatch");
         }
     }
 }
@@ -144,12 +147,29 @@ public sealed class OrbitalPredictionResult<T>
     public IReadOnlyList<OrbitalObjectFailure> Failures { get; }
     public OrbitalPopulationCoverage PopulationCoverage { get; }
 
-    public OrbitalPredictionResult(OrbitalPredictionRequest request, OrbitalExecutionStatus status, OrbitalPredictionReason reason,
+    public OrbitalPredictionResult(OrbitalExposureQuery query, OrbitalExecutionStatus status, OrbitalPredictionReason reason,
         int evaluatedObjects, int propagationEvaluations, double elapsedMilliseconds, IEnumerable<T> products,
         IEnumerable<OrbitalObjectFailure> failures)
+        : this(query?.Request ?? throw new ArgumentNullException(nameof(query)), query, null, status, reason,
+            evaluatedObjects, propagationEvaluations, elapsedMilliseconds, products, failures)
+    { }
+
+    public OrbitalPredictionResult(OrbitalPassQuery query, OrbitalExecutionStatus status, OrbitalPredictionReason reason,
+        int evaluatedObjects, int propagationEvaluations, double elapsedMilliseconds, IEnumerable<T> products,
+        IEnumerable<OrbitalObjectFailure> failures)
+        : this(query?.Request ?? throw new ArgumentNullException(nameof(query)), null, query, status, reason,
+            evaluatedObjects, propagationEvaluations, elapsedMilliseconds, products, failures)
+    { }
+
+    private OrbitalPredictionResult(OrbitalPredictionRequest request, OrbitalExposureQuery? exposureQuery, OrbitalPassQuery? passQuery,
+        OrbitalExecutionStatus status, OrbitalPredictionReason reason, int evaluatedObjects, int propagationEvaluations,
+        double elapsedMilliseconds, IEnumerable<T> products, IEnumerable<OrbitalObjectFailure> failures)
     {
         ArgumentNullException.ThrowIfNull(products); ArgumentNullException.ThrowIfNull(failures);
         ArgumentNullException.ThrowIfNull(request);
+        exposureQuery?.Validate(); passQuery?.Validate();
+        OrbitalContract.Require(exposureQuery is not null ? typeof(T) == typeof(OrbitalExposureTrackV1) :
+            typeof(T) == typeof(OrbitalPassSummaryV1), "result-query-product-kind");
         var populationCoverage = request.Snapshot.Manifest.Coverage;
         var bounds = request.Bounds; var requestedObjects = request.Objects.Count;
         RequestedObjectIdentities = request.Objects; RequestedInterval = request.Interval;
@@ -162,6 +182,7 @@ public sealed class OrbitalPredictionResult<T>
             requestedObjects > 0 && requestedObjects <= bounds.MaximumObjects && evaluatedObjects >= 0 && evaluatedObjects <= requestedObjects &&
             propagationEvaluations >= 0 && propagationEvaluations <= bounds.MaximumEvaluations &&
             double.IsFinite(elapsedMilliseconds) && elapsedMilliseconds >= 0 &&
+            (elapsedMilliseconds <= bounds.MaximumElapsedMilliseconds || status != OrbitalExecutionStatus.Complete && reason == OrbitalPredictionReason.Deadline) &&
             items.Length <= (typeof(T) == typeof(OrbitalExposureTrackV1) ? bounds.MaximumTracks : bounds.MaximumPasses) &&
             items.All(static p => p is not null) && (status != OrbitalExecutionStatus.Unavailable || items.Length == 0) &&
             (typeof(T) == typeof(OrbitalExposureTrackV1) || typeof(T) == typeof(OrbitalPassSummaryV1)) && errors.Length <= requestedObjects &&
@@ -177,6 +198,14 @@ public sealed class OrbitalPredictionResult<T>
         var productIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var item in frozen)
         {
+            if (item is OrbitalExposureTrackV1 track)
+                OrbitalContract.Require(track.Geometry == exposureQuery!.Geometry && track.Timing == exposureQuery.Timing &&
+                    track.Sampling.MaximumStepSeconds <= bounds.MaximumSampleStepSeconds &&
+                    track.Sampling.MaximumChordErrorPixels <= bounds.MaximumChordErrorPixels &&
+                    (request.Use != OrbitalPredictionUse.MeasuredAssociation || track.Geometry.Basis == OrbitalGeometryBasis.AcceptedMeasured),
+                    "result-exposure-query-or-sampling");
+            else if (item is OrbitalPassSummaryV1 pass)
+                OrbitalContract.Require(pass.MinimumElevationDegrees == passQuery!.MinimumElevationDegrees, "result-pass-query");
             var (lineage, interval, observer, model, identity) = item switch
             {
                 OrbitalExposureTrackV1 t => (t.Lineage, t.RequestedInterval, t.Observer, t.Model, t.ProductSha256),
@@ -395,6 +424,9 @@ public static class OrbitalPredictionJson
                 (long)segment.StartSampleIndex + segment.SampleCount <= v.Samples.Count && Enum.IsDefined(segment.StartReason) && Enum.IsDefined(segment.EndReason), "track-segment");
             end = segment!.StartSampleIndex + segment.SampleCount;
             OrbitalContract.Require(v.Samples.Skip(segment.StartSampleIndex).Take(segment.SampleCount).All(static s => s.Pixel is not null), "segment-crosses-projection-gap");
+            OrbitalContract.Require(segment.StartReason != OrbitalClipReason.SamplingBudget && segment.EndReason != OrbitalClipReason.SamplingBudget ||
+                v.Status == OrbitalExecutionStatus.Partial && v.Reason is OrbitalPredictionReason.SampleBudget or
+                    OrbitalPredictionReason.EvaluationBudget or OrbitalPredictionReason.Deadline, "sampling-budget-status");
         }
         OrbitalContract.Require(v.Uncertainty.Orbit is { Unit: "degrees" } && v.Uncertainty.Clock is { Unit: "seconds" } &&
             v.Uncertainty.Calibration is { Unit: "pixels" } && v.Uncertainty.Sampling is { Unit: "pixels" }, "uncertainty-units");

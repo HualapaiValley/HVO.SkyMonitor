@@ -148,6 +148,13 @@ Freeze the following small products/interfaces in #1402; #529 implements them:
   boundary facts, source age/coverage and search/budget/error status. A full
   pass and its photographed segment have distinct intervals and identities.
 
+Result construction consumes the validated exposure or pass query, preserving
+geometry, timing, minimum elevation and requested work/sampling limits. A
+frame-specific accepted astrometric assessment must match the requested
+exposure and observer; no cross-frame reuse policy is approved here. Complete
+results cannot exceed the requested deadline or sampling tolerances, and
+sampling-budget clipping requires an explicit partial budget outcome.
+
 Samples are ordered; a display must not connect separate horizon/aperture,
 sensor or projection runs. Query limits cover objects, time window, propagation
 evaluations, returned passes/tracks/samples and cancellation. Budget/deadline
