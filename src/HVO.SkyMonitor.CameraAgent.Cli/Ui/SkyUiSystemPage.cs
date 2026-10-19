@@ -109,7 +109,7 @@ internal sealed class SkyUiSystemPage : SkyUiPage
 
             // The key goes to CameraAgent now: over plain HTTP to another machine, that is said first, as 'hvo-sky login' says it.
             var context = Ui.Context;
-            if (SkyCliContext.ClearTextWarning(url!) is { } warning)
+            if (context.ClearTextWarning(url!) is { } warning)
             {
                 Ui.Say(HvoNotice.Warning, warning, "[PLAIN HTTP]");
             }

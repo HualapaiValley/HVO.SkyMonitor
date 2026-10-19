@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.NetworkInformation;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -347,11 +349,48 @@ internal static class SkyAddress
 
     /// <summary>
     /// True when requests to <paramref name="address"/> carry the key across a network unencrypted: plain HTTP to a host
-    /// other than this machine's loopback.
+    /// other than this machine. This machine is its loopback and every address bound to one of its interfaces
+    /// (<paramref name="localAddresses"/>): a request to the CameraAgent host's own LAN address, made on that host, never
+    /// leaves it (#1384), unless it goes through a proxy. Such an address is this machine only when
+    /// <paramref name="proxy"/>, the proxy the request is sent through, bypasses it. A name is not resolved, so it is never
+    /// taken for this machine.
     /// </summary>
-    public static bool SendsKeyInClear(Uri address)
+    public static bool SendsKeyInClear(Uri address, Func<IReadOnlyCollection<IPAddress>> localAddresses, Func<IWebProxy?> proxy)
     {
         ArgumentNullException.ThrowIfNull(address);
-        return address.Scheme == Uri.UriSchemeHttp && !address.IsLoopback;
+        ArgumentNullException.ThrowIfNull(localAddresses);
+        ArgumentNullException.ThrowIfNull(proxy);
+        if (address.Scheme != Uri.UriSchemeHttp || address.IsLoopback)
+        {
+            return false;
+        }
+
+        return address.HostNameType is not (UriHostNameType.IPv4 or UriHostNameType.IPv6)
+            || !IPAddress.TryParse(address.DnsSafeHost, out var host)
+            || !localAddresses().Any(local => SameAddress(local, host))
+            || proxy() is { } through && !through.IsBypassed(address);
+    }
+
+    /// <summary>The addresses bound to this machine's interfaces, or none when they cannot be read.</summary>
+    public static IReadOnlyCollection<IPAddress> InterfaceAddresses()
+    {
+        try
+        {
+            return [.. NetworkInterface.GetAllNetworkInterfaces()
+                .SelectMany(static adapter => adapter.GetIPProperties().UnicastAddresses)
+                .Select(static unicast => unicast.Address)];
+        }
+        catch (NetworkInformationException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>The same address, whatever its IPv6 scope or IPv4-mapped form.</summary>
+    private static bool SameAddress(IPAddress first, IPAddress second)
+    {
+        var a = first.IsIPv4MappedToIPv6 ? first.MapToIPv4() : first;
+        var b = second.IsIPv4MappedToIPv6 ? second.MapToIPv4() : second;
+        return a.AddressFamily == b.AddressFamily && a.GetAddressBytes().AsSpan().SequenceEqual(b.GetAddressBytes());
     }
 }

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
 
@@ -7,6 +8,23 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [TestCategory("Unit")]
 public sealed class DockerClientTests
 {
+    /// <summary>
+    /// The image store a plan names a release's image for (#1384): <c>docker info</c> reports the containerd image store
+    /// as a containerd snapshotter driver type, and the classic store reports none.
+    /// </summary>
+    [TestMethod]
+    [DataRow("""{"Driver":"overlayfs","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}""", true)]
+    [DataRow("""{"Driver":"overlay2","DriverStatus":[["Backing Filesystem","extfs"],["Supports d_type","true"]]}""", false)]
+    [DataRow("""{"Driver":"overlay2","DriverStatus":null}""", false)]
+    [DataRow("""{"Driver":"overlay2"}""", false)]
+    [DataRow("""{"DriverStatus":[["driver-type"],"io.containerd.snapshotter.v1",[1,2]]}""", false)]
+    public void UsesContainerdImageStore_ReadsTheDriverTypeDockerInfoReports(string info, bool expected)
+    {
+        using var document = JsonDocument.Parse(info);
+
+        Assert.AreEqual(expected, DockerClient.UsesContainerdImageStore(document.RootElement));
+    }
+
     /// <summary>
     /// The image listing that proves an imported image gone (#1315 PR-1355-R5 R5-1), in the form a real daemon prints it:
     /// the first line was captured from Docker 29.8 with the containerd image store, the second is the classic store's.

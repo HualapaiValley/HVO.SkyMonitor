@@ -217,7 +217,9 @@ public static class TimeLapseFrameRenderer
             throw new ArgumentException("Selected time-lapse geometry overlays are unavailable for this rig.", nameof(projection));
         if (options.CornerMetadata)
         {
-            var metadata = PresentationLayerProducers.FromMetadataFacts(facts, width, height);
+            // A retained job's frozen preset binds RecipeIdentity, so the corner text keeps its released colour instead
+            // of following the corner-text producer default that #1383 restored.
+            var metadata = PresentationLayerProducers.FromMetadataFacts(facts, width, height, new PresentationColor(216, 229, 246));
             result.Add(PresentationLayerPayloadJson.Create(facts.SourceIdentitySha256, width, height,
                 textBlocks: metadata.TextBlocks.Select(block => block with { Inset = block.Backplate!.Padding + 1 }).ToArray()));
         }

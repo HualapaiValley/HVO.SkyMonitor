@@ -209,6 +209,31 @@ public sealed class InstallRecordTests
         Assert.IsEmpty((await InstallRecordStore.ReadAsync(location, CancellationToken.None))!.Instances);
     }
 
+    /// <summary>
+    /// The record is written for people to read (#1384): the installer version's <c>+</c>, and a name's <c>&lt;</c>,
+    /// <c>&amp;</c>, <c>'</c> and <c>+</c>, are written as they are rather than as JSON escapes. It is still JSON, and
+    /// reads back as the same record however an installer reads it.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task SettleInstanceAsync_WritesTheRecordWithoutHtmlSafeEscaping()
+    {
+        const string name = "North <All-Sky> & 'Camera' +1";
+        using var root = new ProductRoot();
+        var location = InstallRecordLocation.For(root.Paths.ProductRoot, "/var/lib/hvo-sky");
+
+        _ = await InstallRecordStore.SettleInstanceAsync(
+            location, root.Paths, root.Manifest(ImageA, null) with { FriendlyName = name }, InstallRecordEvent.Install, CancellationToken.None);
+        var written = await File.ReadAllTextAsync(location.Path);
+
+        StringAssert.Contains(written, $"\"installerVersion\": \"{InstallerBuildIdentity.Current}\"", StringComparison.Ordinal);
+        StringAssert.Contains(written, $"\"friendlyName\": \"{name}\"", StringComparison.Ordinal);
+        Assert.DoesNotContain("\\u", written, StringComparison.Ordinal);
+        var read = JsonSerializer.Deserialize(written, InstallRecordJsonContext.Default.InstallRecord)!;
+        Assert.AreEqual(InstallerBuildIdentity.Current, read.InstallerVersion);
+        Assert.AreEqual(name, read.Instances.Single().FriendlyName);
+    }
+
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task ApplyTrusted_WritesTheRecordBesideThePolicyOwnedByThePolicyOwnerAndReadableByAll()
@@ -229,6 +254,8 @@ public sealed class InstallRecordTests
         var read = await InstallRecordStore.ReadAsync(location, CancellationToken.None);
         Assert.AreEqual(productRoot, read!.ProductRoot);
         Assert.IsTrue(Entry(First).SameAs(read.Instances.Single()));
+        StringAssert.Contains(
+            await File.ReadAllTextAsync(location.Path), $"\"installerVersion\": \"{InstallerBuildIdentity.Current}\"", StringComparison.Ordinal);
     }
 
     [TestMethod]

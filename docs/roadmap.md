@@ -159,8 +159,46 @@ preparation nor a combined run substitutes for standalone qualification.
 
 | ID | Initiative | Decision outcome | Owning issue | Boundary |
 | --- | --- | --- | --- | --- |
-| `RM-008` | Stream-native fireball detection V2 | Produce a reviewed design for buffered streams, temporal evidence, event promotion, clips/stills, and optional accelerated or external assessment. | [#143](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/143) | Research and issue decomposition only; no production implementation or physical sensitivity claim is committed. |
-| `RM-009` | Physical environmental source acquisition | Define CameraAgent-local adapters, schedules, provenance, health, and evidence for weather stations, sky-temperature sensors, SQM devices, and online providers. | [#158](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/158) | No hardware vendor or online provider is selected. LogicHost does not poll local devices or become part of acquisition correctness. |
+| `RM-008` | Stream-native fireball detection V2 | Produce a reviewed design for buffered streams, temporal evidence, event promotion, clips/stills, and optional accelerated or external assessment. | [#143](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/143) | Broader V2 remains research. The bounded satellite software slice below is separately activated; no physical sensitivity claim is committed. |
+| `RM-009` | Physical environmental source acquisition | Define CameraAgent-local adapters, schedules, provenance, health, and evidence for weather stations, sky-temperature sensors, SQM devices, and online providers. | [#158](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/158) | Broader provider selection remains research. The bounded #1398 space-weather source/fixture and approved local-notice software slice below is separately activated. LogicHost does not poll local devices or become part of acquisition correctness. |
+
+### Bounded satellite and sky-context activation — 2026-10-19
+
+The operator issued [Batch A's launch assignment](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1391#issuecomment-6274827157)
+under [#1391](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1391).
+This authorizes the listed software/virtual work and its ordinary
+`development/v1` implementation, review, CI and merge lifecycle. It supersedes
+the scheduling-only requirement to finish all #143 research, promote all
+RM-008, or obtain optional fleet candidate-ready enrollment for this slice.
+It does not resolve the technical decisions by itself.
+
+- #527 remains research-only. Its reviewed source/model/policy/contract
+  checkpoint, with explicit accepted and unresolved decisions, precedes
+  #1402's minimal executable contracts and portable conformance fixtures.
+  Remaining #527 research is retained rather than closed by an early handoff.
+- After that approved checkpoint and #1402 delivery (or an explicitly
+  coordinated stack), #528 acquisition and #529 propagation against frozen
+  fixtures may proceed in parallel. #528 remains a live-integration dependency
+  of #529; it is no longer a start gate on the offline implementation.
+- #1392 consumes #528, and #1393 consumes #529. #530 retains actual
+  snapshot/track and approved measured-geometry prerequisites. #1395 retains
+  integrated, hardware/resolution-specific cadence and accuracy qualification.
+  Configured-rig simulation does not imply accepted measured calibration.
+- Batch A owns #527, #1402, #529, #1393, #530 and #1395 in that dependency-aware
+  queue, claiming each current issue separately. Batch B owns its separately
+  issued #1398 source/policy/fixture checkpoint and #528/#1392 queue; approved
+  #1398 cache/local-notice software is bounded to its selected products.
+  Neither lane creates a general feed or notification platform.
+- Source/data/software terms, numerical reference tolerances, retained-input
+  lineage, existing claims, #1133's hold, and physical/release gates still
+  apply. #523 calibration and #1170 performance ownership do not transfer.
+  Broader V2, other environmental adapters, main promotion, external messaging,
+  automatic camera actions and live deployment are outside this activation.
+
+The [orbital decision checkpoint](planning/orbital-data-decision-527.md)
+records policies, contracts, reference inputs and remaining research. Cross-host
+handoffs use remotely accessible immutable commits/artifacts and hashes, never
+an assumption that a local POC directory exists on the other host.
 
 ## Deferred
 
