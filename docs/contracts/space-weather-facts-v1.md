@@ -113,11 +113,18 @@ the content does not change (s01, s17). They may be sent as `If-None-Match` and
 - Every letter and digit that a rule matches is ASCII. A "digit" is `0` to `9`
   only, so a field written with other Unicode digits does not match (s12).
   Case-insensitive matching folds ASCII letters only.
-- A time printed with a year parses only when the year is 1900 to 9998. Every
-  time derived from it, such as a window bound, the 96-hour cap or the 35-day
-  purge time, is then representable. An `Issue Time` that does not parse
-  rejects the record as `message-header` (s12). Any other time that does not
-  parse counts as unparseable where it is used.
+- A source time with a year parses only when the year is 1900 to 9998. A
+  source time is a message time (`Issue Time`, `Valid From`, `Valid To`,
+  `Now Valid Until`, `Threshold Reached` or `Begin Time`), the 3-day
+  forecast's `:Issued:` time, or a JSON product stamp. Every time derived from
+  one, such as a window bound, the 96-hour cap or the 35-day purge time, is then
+  representable. An `Issue Time` that does not parse rejects the record as
+  `message-header` (s12). Any other source time that does not parse counts as
+  unparseable where it is used.
+- `issue_datetime` is never read as a time. It is checked by its layout, and
+  its minute and its place in version order are compared as text.
+  A `Retry-After` HTTP-date is not limited to those years, because its delay
+  is clamped (see "Fetch policy").
 - The JSON product stamps are matched whole: scales `DateStamp` and
   `TimeStamp` joined by one space as `YYYY-MM-DD HH:MM:SS`, Kp `time_tag` as
   `YYYY-MM-DDTHH:MM:SS`, and the OVATION times as `YYYY-MM-DDTHH:MM:SSZ`.
