@@ -71,7 +71,8 @@ internal sealed class SkyUiRigPage : SkyUiPage
         var top = wide ? 8 : 7;
         Place(_activePanel, 1, 0, left, top);
         Place(_stagedPanel, 2 + left, 0, width - 3 - left, top);
-        var rows = wide ? Math.Max(6, height - top - 6) : 6;
+        // The revisions take what the camera panel and the buttons leave, from three rows up to six at 80 x 24.
+        var rows = wide ? Math.Max(6, height - top - 6) : Math.Clamp(height - top - 5, 3, 6);
         Place(_revisionsPanel, 1, top, width - 2, rows);
         Place(_cameraPanel, 1, top + rows, width - 2, 3);
         PlaceButtons(Math.Min(height - 1, top + rows + 4));
@@ -177,7 +178,7 @@ internal sealed class SkyUiRigPage : SkyUiPage
                 }
 
                 Ui.Say(HvoNotice.Info, $"Rig revision {id} passed CameraAgent's preview against the active schedule.");
-                Ui.OpenPrompt(new SkyUiPromptSpec($"Stage rig {id}",
+                Ui.OpenPrompt(new SkyUiPromptSpec("Rig stage / Review",
                 [
                     new($"Rig revision {id} passed the preview against schedule revision {SkyJson.Text(preview, "scheduleRevisionId")}."),
                     new("It is unvalidated at runtime: it takes effect when CameraAgent next starts, and its camera may fail to initialize then.", HvoTone.Warning)
@@ -214,7 +215,7 @@ internal sealed class SkyUiRigPage : SkyUiPage
             return;
         }
 
-        Ui.OpenPrompt(new SkyUiPromptSpec("Apply the staged rig",
+        Ui.OpenPrompt(new SkyUiPromptSpec("Rig apply / Review",
         [
             new($"Restart CameraAgent at {Ui.Connection?.Url} to apply rig revision {staged}?"),
             new("Capture stops until it is back. The interface waits for the new process, then until the rig is active or its camera fails.", HvoTone.Muted)
@@ -224,7 +225,7 @@ internal sealed class SkyUiRigPage : SkyUiPage
             // until it is, CameraAgent reports a failure, or the deadline passes.
             Ui.Restart(
                 $"the restart that applies rig revision {staged}",
-                (operation, client, token) => SkyCli.WaitForRigAsync(operation, client, staged, token),
+                (operation, client, token) => SkyCli.WaitForRigAsync(operation, client, staged, token, $"waiting for rig revision {staged} to become active"),
                 (outcome, error, operation) => Ui.SayOutcome(operation, error,
                     error is null ? $"Rig revision {staged} is active. CameraAgent restarted at {SkyCliFormat.Time(outcome!.After!.Host.ProcessStartedUtc)}." : string.Empty,
                     "CameraAgent was not restarted"));

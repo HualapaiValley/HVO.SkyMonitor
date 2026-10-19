@@ -29,6 +29,9 @@ internal sealed class SkyUiFields : View
 
     public int LabelWidth { get; set; }
 
+    /// <summary>What the fields are drawn on: a panel's surface (the default), or the page, below the panels.</summary>
+    public HvoGround Ground { get; set; } = HvoGround.Surface;
+
     public IReadOnlyList<SkyUiField> Fields
     {
         get => _fields;
@@ -42,7 +45,7 @@ internal sealed class SkyUiFields : View
     /// <summary>The rows as drawn on a panel <paramref name="width"/> wide, for tests and screen readers.</summary>
     public IReadOnlyList<string> Rows(int width) => [.. _fields.Select(field => Cut(Row(field), width))];
 
-    private string Row(SkyUiField field) => field.Label.Length == 0 ? field.Value : field.Label.PadRight(LabelWidth) + field.Value;
+    private string Row(SkyUiField field) => field.Label.Length == 0 ? field.Value : TerminalText.Pad(field.Label, LabelWidth) + field.Value;
 
     protected override bool OnDrawingContent(DrawContext? context)
     {
@@ -52,14 +55,14 @@ internal sealed class SkyUiFields : View
             var field = _fields[row];
             if (field.Label.Length > 0)
             {
-                SetAttribute(_theme.Label(HvoTone.Muted, HvoGround.Surface).Normal);
-                AddStr(0, row, Cut(field.Label.PadRight(LabelWidth), width));
+                SetAttribute(_theme.Label(HvoTone.Muted, Ground).Normal);
+                AddStr(0, row, Cut(TerminalText.Pad(field.Label, LabelWidth), width));
             }
 
             var column = field.Label.Length == 0 ? 0 : LabelWidth;
             if (column < width)
             {
-                SetAttribute(_theme.Label(field.Tone, HvoGround.Surface, bold: field.Tone is HvoTone.Warning or HvoTone.Danger).Normal);
+                SetAttribute(_theme.Label(field.Tone, Ground, bold: field.Tone is HvoTone.Warning or HvoTone.Danger).Normal);
                 AddStr(column, row, Cut(field.Value, width - column));
             }
         }
@@ -67,7 +70,8 @@ internal sealed class SkyUiFields : View
         return true;
     }
 
-    internal static string Cut(string text, int width) => width <= 0 ? string.Empty : text.Length > width ? text[..width] : text;
+    // Cut to the width in display cells, so a wide character never pushes text past the panel's edge.
+    internal static string Cut(string text, int width) => width <= 0 ? string.Empty : TerminalText.Clip(text, width);
 }
 
 /// <summary>A column of a <see cref="SkyUiTable"/>: its heading and the most it takes; the last column takes the rest.</summary>
@@ -188,7 +192,7 @@ internal sealed class SkyUiTable : View
             SetAttribute(chosen && HasFocus
                 ? _theme.Selected.Normal
                 : _theme.Label(_rows[index].Tone, HvoGround.Surface, bold: chosen).Normal);
-            AddStr(0, row + 1, SkyUiFields.Cut(text, width).PadRight(chosen && HasFocus ? width : 0));
+            AddStr(0, row + 1, TerminalText.Pad(SkyUiFields.Cut(text, width), chosen && HasFocus ? width : 0));
         }
 
         if (_rows.Count > Room && Viewport.Height > 1)
@@ -212,7 +216,7 @@ internal sealed class SkyUiTable : View
         for (var index = 0; index < _columns.Count; index++)
         {
             var last = index == _columns.Count - 1;
-            var widest = _rows.Select(row => index < row.Cells.Count ? row.Cells[index].Length : 0).Append(_columns[index].Heading.Length).Max();
+            var widest = _rows.Select(row => index < row.Cells.Count ? TerminalText.Width(row.Cells[index]) : 0).Append(TerminalText.Width(_columns[index].Heading)).Max();
             widths[index] = last ? Math.Max(0, room - used) : Math.Min(widest, _columns[index].Most);
             used += widths[index] + 2;
         }
@@ -221,7 +225,7 @@ internal sealed class SkyUiTable : View
     }
 
     private static string Join(IReadOnlyList<string> cells, int[] widths)
-        => string.Join("  ", widths.Select((width, index) => SkyUiFields.Cut(index < cells.Count ? cells[index] : string.Empty, width).PadRight(width))).TrimEnd();
+        => string.Join("  ", widths.Select((width, index) => TerminalText.Pad(SkyUiFields.Cut(index < cells.Count ? cells[index] : string.Empty, width), width))).TrimEnd();
 
     private bool? Choose(int index)
     {
@@ -255,5 +259,60 @@ internal sealed class SkyUiTable : View
         }
 
         _top = Math.Clamp(_top, 0, Math.Max(0, _rows.Count - room));
+    }
+}
+
+/// <summary>
+/// A titled rule across the page, as the terminal prototype heads its lists below the panels (<c>RECENT NOTICES</c>):
+/// a line in the panels' frame colour, with the theme's glyph, so it falls back to ASCII, and the title in capitals.
+/// </summary>
+internal sealed class SkyUiRule : View
+{
+    private readonly HvoTheme _theme;
+    private string _title;
+
+    public SkyUiRule(HvoTheme theme, string title)
+    {
+        _theme = theme;
+        _title = title;
+        Height = 1;
+        CanFocus = false;
+    }
+
+    public string Heading
+    {
+        get => _title;
+        set
+        {
+            _title = value ?? string.Empty;
+            SetNeedsDraw();
+        }
+    }
+
+    /// <summary>The rule as drawn <paramref name="width"/> cells wide.</summary>
+    public string Line(int width)
+    {
+        var glyph = _theme.Glyphs.Horizontal;
+        if (width <= 2 || _title.Length == 0)
+        {
+            return new string(glyph, Math.Max(0, width));
+        }
+
+        var title = SkyUiFields.Cut($" {_title.ToUpperInvariant()} ", width - 1);
+        return glyph + title + new string(glyph, Math.Max(0, width - 1 - TerminalText.Width(title)));
+    }
+
+    protected override bool OnDrawingContent(DrawContext? context)
+    {
+        var width = Viewport.Width;
+        SetAttribute(_theme.PanelFrame);
+        AddStr(0, 0, new string(_theme.Glyphs.Horizontal, Math.Max(0, width)));
+        if (_title.Length > 0 && width > 2)
+        {
+            SetAttribute(_theme.Label(HvoTone.Muted, HvoGround.Page, bold: true).Normal);
+            AddStr(1, 0, SkyUiFields.Cut($" {_title.ToUpperInvariant()} ", width - 1));
+        }
+
+        return true;
     }
 }

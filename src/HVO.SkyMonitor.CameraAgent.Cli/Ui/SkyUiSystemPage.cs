@@ -48,10 +48,10 @@ internal sealed class SkyUiSystemPage : SkyUiPage
         }
         else
         {
-            // 80 x 24: one above the other, so the paths and versions have the width.
-            Place(_clientPanel, 1, 0, width - 2, 8);
-            Place(_agentPanel, 1, 8, width - 2, 8);
-            PlaceButtons(Math.Min(height - 1, 17));
+            // 80 x 24: one above the other, so the paths and versions have the width. The address is in the header.
+            Place(_clientPanel, 1, 0, width - 2, 7);
+            Place(_agentPanel, 1, 7, width - 2, 8);
+            PlaceButtons(Math.Min(height - 1, 16));
         }
     }
 
@@ -62,7 +62,6 @@ internal sealed class SkyUiSystemPage : SkyUiPage
         _client.Fields =
         [
             new("Version", Ui.Context.Host.ClientVersion),
-            new("Address", connection?.Url.ToString() ?? "none", connection is null ? HvoTone.Warning : HvoTone.Text),
             new("Key", connection is null ? "none" : connection.KeyId, connection is null ? HvoTone.Warning : HvoTone.Text),
             new("Access", info.Value?.Caller is { } caller ? SkyStatusText.DescribeAccess(caller.Access) : "not read yet"),
             new("From", connection?.KeySource ?? Ui.ConnectionProblem ?? "nowhere", connection is null ? HvoTone.Warning : HvoTone.Text),
@@ -155,7 +154,7 @@ internal sealed class SkyUiSystemPage : SkyUiPage
             return;
         }
 
-        Ui.OpenPrompt(new SkyUiPromptSpec("Sign out",
+        Ui.OpenPrompt(new SkyUiPromptSpec("Sign out / Review",
         [
             new($"Remove API key {connection.KeyId} from {Ui.Context.CredentialsPath}? The address is kept."),
             new("The key itself works until the site owner revokes it in CameraAgent (Account, API keys).", HvoTone.Muted)
@@ -188,7 +187,7 @@ internal sealed class SkyUiSystemPage : SkyUiPage
             return;
         }
 
-        Ui.OpenPrompt(new SkyUiPromptSpec("Restart CameraAgent",
+        Ui.OpenPrompt(new SkyUiPromptSpec("Restart / Review",
         [
             new($"Restart CameraAgent at {Ui.Connection?.Url}? Capture stops until it is back."),
             new("Settings and a staged rig that apply at its next start take effect. The interface waits for the new process.", HvoTone.Muted)

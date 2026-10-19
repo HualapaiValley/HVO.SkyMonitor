@@ -1,4 +1,5 @@
 using System.Runtime.Versioning;
+using HVO.SkyMonitor.CameraAgent.Cli.Ui;
 using HVO.SkyMonitor.TerminalUi;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Cli.Ui;
@@ -49,6 +50,23 @@ public sealed class HvoSkyUiRenderTests
             driver.Render(TestContext, $"ui-{size}-{name}");
             TestContext.WriteLine(driver.Screen);
         }
+    }
+
+    [TestMethod]
+    [DataRow(80, 24, "80x24")]
+    [DataRow(120, 32, "120x32")]
+    public void AReview_IsRenderedOverItsPage(int width, int height, string size)
+    {
+        ArgumentNullException.ThrowIfNull(size);
+        using var harness = Operator();
+        using var driver = SkyUiDriver.Start(harness, width, height);
+        driver.ShowPage(4);
+
+        driver.Ui.Pages[4].Press("Restart");
+
+        Fits(driver, width, height);
+        StringAssert.Contains(driver.Screen, "RESTART / REVIEW", StringComparison.Ordinal);
+        driver.Render(TestContext, $"ui-{size}-5-system-restart-review");
     }
 
     [TestMethod]
@@ -113,6 +131,12 @@ public sealed class HvoSkyUiRenderTests
         StringAssert.Contains(rows[0], "HVO SKYMONITOR", StringComparison.Ordinal);
         StringAssert.Contains(rows[height - 2], "[F", StringComparison.Ordinal);
         StringAssert.Contains(rows[height - 2], "F10 Quit", StringComparison.Ordinal);
-        StringAssert.Contains(rows[height - 1], "Ctrl+R refresh", StringComparison.Ordinal);
+        foreach (var name in width >= SkyTerminalUi.WideWidth ? SkyTerminalUi.PageNames : SkyTerminalUi.NarrowPageNames)
+        {
+            StringAssert.Contains(rows[height - 2], name, StringComparison.Ordinal);
+        }
+
+        StringAssert.Contains(rows[height - 1], "Esc close prompt", StringComparison.Ordinal);
+        StringAssert.EndsWith(rows[height - 1].TrimEnd(), $"{width}x{height}", StringComparison.Ordinal);
     }
 }

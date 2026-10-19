@@ -27,14 +27,23 @@ internal sealed class SkyTerminalUi : IDisposable
     /// <summary>The pages, in F-key order.</summary>
     internal static readonly string[] PageNames = ["Status", "Settings", "Camera & rig", "Schedule", "System"];
 
+    /// <summary>
+    /// The pages' names on the tab bar below <see cref="WideWidth"/> columns, where "Camera & rig" is two cells more than
+    /// the bar has room for: every page keeps its name at 80 columns, as the terminal prototype's do.
+    /// </summary>
+    internal static readonly string[] NarrowPageNames = ["Status", "Settings", "Camera", "Schedule", "System"];
+
     /// <summary>The keys of the key bar, and what each does.</summary>
-    internal static readonly (string Key, string Name)[] Keys = [("Tab", "move"), ("Enter", "select"), ("Esc", "close"), ("Ctrl+R", "refresh")];
+    internal static readonly (string Key, string Name)[] Keys = [("Tab", "move"), ("Enter", "select"), ("Esc", "close prompt"), ("Ctrl+R", "refresh")];
 
     /// <summary>The key of each page.</summary>
     private static readonly Key[] PageKeys = [Key.F1, Key.F2, Key.F3, Key.F4, Key.F5];
 
     /// <summary>The width from which pages lay out for a wide terminal.</summary>
     internal const int WideWidth = 110;
+
+    /// <summary>The most rows the notice band takes, so the longest outcome is never cut at 80 columns.</summary>
+    internal const int NoticeRows = 3;
 
     /// <summary>How many status reads pass between rereads of the shown page's own data.</summary>
     internal const int PageRefreshTicks = 15;
@@ -75,7 +84,7 @@ internal sealed class SkyTerminalUi : IDisposable
         _content = new View { X = 0, Y = 3, Width = Dim.Fill(), Height = Dim.Fill(3), CanFocus = true };
         _message = new Label { X = 1, Y = Pos.AnchorEnd(3), Width = Dim.Fill(1), Height = 1 };
         _message.SetScheme(theme.Label(HvoTone.Muted));
-        _tabs = new HvoTabBar(theme) { X = 0, Y = Pos.AnchorEnd(2), Tabs = [.. PageNames.Select((name, index) => $"F{index + 1} {name}")], Right = "F10 Quit" };
+        _tabs = new HvoTabBar(theme) { X = 0, Y = Pos.AnchorEnd(2), Tabs = TabLabels(wide: false), Right = "F10 Quit" };
         _keys = new HvoKeyBar(theme) { X = 0, Y = Pos.AnchorEnd(1), Keys = Keys };
         Window.Add(_header, _notice, _content, _message, _tabs, _keys);
         Window.FrameChanged += (_, _) => Arrange();
@@ -508,8 +517,9 @@ internal sealed class SkyTerminalUi : IDisposable
         Run(
             async (operation, token) =>
             {
-                var outcome = await SkyCli.RestartAsync(operation, client, wait: true, change, token, operation.Deadline, progress: _ => { })
-                    .ConfigureAwait(false);
+                // The interface shows the status itself, so its timeout says no more than what it waited for: it fits the band.
+                var outcome = await SkyCli.RestartAsync(operation, client, wait: true, change, token, operation.Deadline, progress: _ => { },
+                    waitingFor: "waiting for CameraAgent to come back; it may still be starting").ConfigureAwait(false);
                 if (after is not null)
                 {
                     await after(operation, client, token).ConfigureAwait(false);
@@ -538,26 +548,31 @@ internal sealed class SkyTerminalUi : IDisposable
     /// <summary>Brings the header, the notice band and the foot up to date with the connection and the reads.</summary>
     public void UpdateChrome()
     {
+        // As the terminal prototype's header: the badge and who the key is on the first row, in the badge's tone; where
+        // the data comes from, and when it was read, on the second.
         var freshness = Freshness;
-        (_header.Badge, _header.BadgeTone) = freshness switch
+        var (badge, tone) = freshness switch
         {
             SkyUiFreshness.Live => ("[LIVE]", HvoTone.Success),
             SkyUiFreshness.Stale => ("[STALE]", HvoTone.Warning),
-            SkyUiFreshness.Offline => ("[OFFLINE]", HvoTone.Danger),
+            SkyUiFreshness.Offline => ("[OFFLINE]", HvoTone.Warning),
             SkyUiFreshness.SignedOut => ("[SIGNED OUT]", HvoTone.Danger),
             SkyUiFreshness.NotSignedIn => ("[NOT SIGNED IN]", HvoTone.Warning),
             _ => ("[CONNECTING]", HvoTone.Info)
         };
+        var identity = Connection is null
+            ? string.Empty
+            : $"{(Data.Info.Value?.Caller.Access is { } access ? SkyStatusText.DescribeAccess(access) + " " : string.Empty)}key {Connection.KeyId}";
+        (_header.Badge, _header.BadgeTone) = (identity.Length == 0 ? badge : $"{badge}  {identity}", tone);
         var summary = Data.Summary.Value;
         var agent = Data.Summary.HasValue ? SkyJson.Text(summary, "configuration", "value", "agentId") : null;
         var module = Data.Summary.HasValue ? SkyJson.Text(summary, "configuration", "value", "moduleType") : null;
+        var names = string.Join(", ", new[] { agent, module }.OfType<string>());
         _header.Context = Connection is null
             ? "No CameraAgent address or API key"
-            : $"CameraAgent {Connection.Url}" + (agent is null ? string.Empty : $"  {agent}") + (module is null ? string.Empty : $", {module}");
-        _header.Note = Connection is null
-            ? string.Empty
-            : $"key {Connection.KeyId}" + (Data.Info.Value?.Caller.Access is { } access ? $" {SkyStatusText.DescribeAccess(access)}" : string.Empty);
-        _keys.Right = Data.Summary.ReadAt is { } read ? $"read {SkyCliFormat.Time(read)[11..]}" : string.Empty;
+            : $"CameraAgent: {Connection.Url}" + (names.Length == 0 ? string.Empty : $" ({names})");
+        _header.Note = Connection is null ? string.Empty
+            : Data.Summary.ReadAt is { } read ? $"read {SkyCliFormat.Time(read)[11..]}" : "not read yet";
 
         // What the person just did is answered first; the header's badge and the panels' LAST KNOWN keep marking data
         // that is not current meanwhile, and the band says so again on the next page or Ctrl+R.
@@ -587,19 +602,26 @@ internal sealed class SkyTerminalUi : IDisposable
                 $"{ConnectionProblem ?? "No CameraAgent address or API key."} F5 System, Sign in; or run 'hvo-sky login'.", "[NOT SIGNED IN]"),
             SkyUiFreshness.SignedOut => (HvoNotice.Danger,
                 "CameraAgent did not accept the API key (HTTP 401). F5 System, Sign in with a current key.", "[SIGNED OUT]"),
-            SkyUiFreshness.Offline => (HvoNotice.Danger, $"{summary.Failure} {asOf}", "[OFFLINE]"),
+            SkyUiFreshness.Offline => (HvoNotice.Warning, $"{summary.Failure} {asOf}", "[OFFLINE]"),
             SkyUiFreshness.Stale => (HvoNotice.Warning,
                 $"Status not current{(summary.Failure is null ? string.Empty : $": {summary.Failure}")}. {asOf}", "[STALE]"),
             _ => null
         };
     }
 
-    // A notice that needs two rows takes one from the page, so it is never cut; the pages lay out for the width.
+    // A notice that needs more rows takes them from the page, up to three, so it is never cut; the pages lay out for the
+    // width and the rows left.
     private void Arrange()
     {
         var width = Window.Frame.Width;
-        var rows = _notice.RowsFor(width);
+        var rows = _notice.RowsFor(width, NoticeRows);
         var wide = width >= WideWidth;
+        _keys.Right = $"{width}x{Window.Frame.Height}";
+        if (wide != _wide || _tabs.Tabs.Count == 0)
+        {
+            _tabs.Tabs = TabLabels(wide);
+        }
+
         if (rows != _noticeRows)
         {
             _noticeRows = rows;
@@ -617,6 +639,15 @@ internal sealed class SkyTerminalUi : IDisposable
 
     private void OnKeyDown(object? sender, Key key)
     {
+        // While a prompt is open the page keys and F10 wait, as the terminal prototype's do: Esc or Cancel closes it first,
+        // so a review is never left by a stray key. A signal still ends the interface.
+        if (_prompt is not null && (key == Key.F10 || PageKeys.Any(page => key == page)))
+        {
+            key.Handled = true;
+            Hint("Close the prompt first: Esc, or Cancel.");
+            return;
+        }
+
         for (var index = 0; index < _pages.Length; index++)
         {
             if (key == PageKeys[index])
@@ -645,6 +676,9 @@ internal sealed class SkyTerminalUi : IDisposable
             RefreshNow();
         }
     }
+
+    private static string[] TabLabels(bool wide)
+        => [.. (wide ? PageNames : NarrowPageNames).Select((name, index) => $"F{index + 1} {name}")];
 
     public void Dispose()
     {

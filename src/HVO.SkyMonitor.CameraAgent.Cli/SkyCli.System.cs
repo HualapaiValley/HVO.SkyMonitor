@@ -77,7 +77,8 @@ internal static partial class SkyCli
     /// before anything is sent (exit 3). <paramref name="change"/> names the restart in what the command reports once
     /// CameraAgent has accepted it. The wait ends at the command's deadline, <paramref name="deadline"/>.
     /// <paramref name="progress"/>, when given, is told what it waits for instead of standard error (the terminal
-    /// interface's).
+    /// interface's), and <paramref name="waitingFor"/> words the timeout for a screen with its own status in place of the
+    /// command's pointer to <c>hvo-sky status</c>.
     /// </summary>
     internal static async Task<SkyRestartOutcome> RestartAsync(
         SkyCliContext context,
@@ -86,7 +87,8 @@ internal static partial class SkyCli
         string change,
         CancellationToken cancellationToken,
         SkyCliDeadline? deadline = null,
-        Action<string>? progress = null)
+        Action<string>? progress = null,
+        string? waitingFor = null)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(client);
@@ -125,7 +127,7 @@ internal static partial class SkyCli
         var after = await PollAsync(
             context,
             deadline,
-            $"waiting for CameraAgent to come back. It may still be starting: check with '{CommandName} status'",
+            waitingFor ?? $"waiting for CameraAgent to come back. It may still be starting: check with '{CommandName} status'",
             async token =>
             {
                 var now = await client.GetAsync<SkyInfo>(SkyRoutes.Info, token).ConfigureAwait(false);

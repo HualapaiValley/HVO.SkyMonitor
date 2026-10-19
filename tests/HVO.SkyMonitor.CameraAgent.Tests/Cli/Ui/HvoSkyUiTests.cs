@@ -1,5 +1,6 @@
 using System.Net;
 using System.Runtime.Versioning;
+using System.Text.RegularExpressions;
 using HVO.SkyMonitor.CameraAgent.Cli.Client;
 using HVO.SkyMonitor.CameraAgent.Cli.Ui;
 using Terminal.Gui.App;
@@ -118,10 +119,56 @@ public sealed class HvoSkyUiTests
 
         driver.Ui.Pages[4].Press("Sign in");
         Assert.IsNotNull(driver.Ui.Prompt);
+        driver.Press(Key.F2);
+        driver.Press(Key.F10);
+        Assert.AreEqual(4, driver.Ui.PageIndex, "A page key waits while a prompt is open.");
+        Assert.IsNotNull(driver.Ui.Prompt, "So does F10.");
+        Assert.IsFalse(((IRunnable)driver.Ui.Window).StopRequested);
+        StringAssert.Contains(driver.Ui.Message, "Close the prompt first", StringComparison.Ordinal);
         driver.Press(Key.Esc);
 
         Assert.IsNull(driver.Ui.Prompt, "Esc closed the prompt.");
         Assert.IsFalse(((IRunnable)driver.Ui.Window).StopRequested, "Esc never closes the interface.");
+    }
+
+    [TestMethod]
+    public void At80Columns_EveryPageKeepsItsNameAndTheHeaderSaysWhoTheKeyIs()
+    {
+        using var harness = new CliHarness();
+        using var driver = SkyUiDriver.Start(harness, pollInterval: Quick);
+        driver.ShowPage(4);
+
+        var rows = driver.Rows;
+        foreach (var name in SkyTerminalUi.NarrowPageNames)
+        {
+            StringAssert.Contains(rows[^2], $"F{Array.IndexOf(SkyTerminalUi.NarrowPageNames, name) + 1} {name}", StringComparison.Ordinal);
+        }
+
+        StringAssert.EndsWith(rows[0].TrimEnd(), $"[LIVE]  read-write key {CliHarness.KeyId}", StringComparison.Ordinal);
+        StringAssert.StartsWith(rows[1].Trim(), $"CameraAgent: {CliHarness.Url} (allsky01, VirtualSky)", StringComparison.Ordinal);
+        StringAssert.EndsWith(rows[1].TrimEnd(), "read 19:30:05Z", StringComparison.Ordinal);
+        StringAssert.EndsWith(rows[^1].TrimEnd(), "80x24", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void WhileTheStatusIsNotLive_ChangesWaitAndSayWhy()
+    {
+        using var harness = new CliHarness();
+        using var driver = SkyUiDriver.Start(harness, pollInterval: Quick);
+        driver.ShowPage(4);
+        harness.Api.Unreachable = true;
+
+        driver.Tick();
+
+        foreach (var (page, button) in new[] { (1, "Change"), (3, "Activate"), (4, "Restart") })
+        {
+            driver.ShowPage(page);
+            Assert.IsFalse(driver.Ui.Page.Buttons.Single(candidate => candidate.Text == $"[ {button} ]").Enabled, $"{button} on page {page}");
+        }
+
+        driver.ShowPage(1);
+        StringAssert.Contains(driver.Ui.Message, "Changes need live status", StringComparison.Ordinal);
+        StringAssert.Contains(driver.Rows[0], "[OFFLINE]", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -253,6 +300,7 @@ public sealed class HvoSkyUiTests
             "[UNVERIFIED] CameraAgent accepted the restart, but it could not be verified: Timed out after 1 s (--timeout) waiting for CameraAgent to come back",
             StringComparison.Ordinal);
         Assert.DoesNotContain("was not restarted", driver.Ui.Notice.Message, StringComparison.Ordinal);
+        AssertNoticeWhole(driver);
     }
 
     [TestMethod]
@@ -306,6 +354,25 @@ public sealed class HvoSkyUiTests
         driver.WaitIdle("the rig");
 
         StringAssert.Contains(driver.Ui.Notice.Message, "rig revision rig-2 did not become active: The camera did not initialize.", StringComparison.Ordinal);
+        AssertNoticeWhole(driver);
+    }
+
+    [TestMethod]
+    public void RigApply_ARevisionThatNeverBecomesActive_SaysItWasAcceptedAndShowsItWhole()
+    {
+        using var harness = new CliHarness();
+        harness.Api.Json("GET", Fake.RigRoute, Fake.Rigs(active: "rig-1", pending: "rig-2"));
+        using var driver = SkyUiDriver.Start(harness, timeout: TimeSpan.FromSeconds(1), pollInterval: Quick);
+        driver.ShowPage(2);
+        driver.Ui.Pages[2].Press("Apply");
+
+        driver.Ui.Prompt!.Choose();
+        driver.WaitIdle("the rig");
+
+        StringAssert.StartsWith(driver.Ui.Notice.Message,
+            "[UNVERIFIED] CameraAgent accepted the restart that applies rig revision rig-2, but it could not be verified: Timed out after 1 s (--timeout) waiting for rig revision rig-2 to become active",
+            StringComparison.Ordinal);
+        AssertNoticeWhole(driver);
     }
 
     [TestMethod]
@@ -486,6 +553,17 @@ public sealed class HvoSkyUiTests
 
         string[] highlighting = ["TextMateSharp", "TextMateSharp.Grammars", "Onigwrap"];
         Assert.IsEmpty(AppDomain.CurrentDomain.GetAssemblies().Where(assembly => highlighting.Contains(assembly.GetName().Name)).ToArray());
+    }
+
+    /// <summary>The notice band shows the whole notice at 80 x 24: an outcome is never cut.</summary>
+    private static void AssertNoticeWhole(SkyUiDriver driver)
+    {
+        var rows = driver.Rows;
+        var height = driver.Ui.Notice.Frame.Height;
+        var shown = string.Join(' ', rows.Skip(2).Take(height).Select(row => row.Trim()));
+        Assert.AreEqual(Normalize(driver.Ui.Notice.Message), Normalize(shown), driver.Screen);
+
+        static string Normalize(string text) => Regex.Replace(text, @"\s+", " ").Trim();
     }
 
     [TestMethod]

@@ -81,8 +81,8 @@ internal sealed class SkyUiSettingsPage : SkyUiPage
             return;
         }
 
-        _groups.Show([.. form.Groups.Select(group => new SkyUiRow(group.Name, [group.Descriptor.Title],
-            group.State?.CanWrite == true ? HvoTone.Text : HvoTone.Muted))]);
+        // A group that cannot be changed here says so in words, in its settings' caption and notes: not by colour alone.
+        _groups.Show([.. form.Groups.Select(group => new SkyUiRow(group.Name, [group.Descriptor.Title]))]);
         ShowGroup();
     }
 
@@ -186,7 +186,7 @@ internal static class SkyUiSettingChange
 
         SkySettingsGroupState group = field.Group.State
             ?? throw new InvalidOperationException($"CameraAgent did not return the {field.Group.Name} group's state.");
-        return ui.OpenPrompt(new SkyUiPromptSpec($"Change {setting.Title}", lines, "Save", answers =>
+        return ui.OpenPrompt(new SkyUiPromptSpec("Setting / Review", lines, "Save", answers =>
         {
             JsonElement value;
             try

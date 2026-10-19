@@ -47,7 +47,8 @@ internal sealed class SkyUiPrompt : IDisposable
         Panel = new HvoPanel(theme, spec.Title);
         _spec = spec;
         _close = close;
-        var width = Math.Clamp(screenWidth - 6, 30, 72);
+        // As the terminal prototype's review: at most 66 cells, and eight fewer than the screen.
+        var width = Math.Clamp(screenWidth - 8, 30, 66);
         var inner = width - 4;
         var lines = spec.Lines.SelectMany(line => HvoTextLines.Wrap(line.Text, inner).Select(text => line with { Text = text })).ToArray();
         var text = new HvoTextLines(theme) { X = 0, Y = 0, Width = Dim.Fill(), Height = lines.Length, CanFocus = false };

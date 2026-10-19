@@ -180,7 +180,7 @@ internal sealed class SkyUiSchedulePage : SkyUiPage
             return;
         }
 
-        Ui.OpenPrompt(new SkyUiPromptSpec($"Activate schedule {id}",
+        Ui.OpenPrompt(new SkyUiPromptSpec("Schedule / Review",
         [
             new($"Activate schedule revision {id}{(rollback ? ", going back from the active revision" : string.Empty)}?"),
             new("It takes effect at the next capture boundary: the capture in progress finishes under the active revision.", HvoTone.Muted)

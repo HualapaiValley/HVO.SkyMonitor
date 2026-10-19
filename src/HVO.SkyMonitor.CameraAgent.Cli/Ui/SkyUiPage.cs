@@ -127,11 +127,15 @@ internal abstract class SkyUiPage : View
     protected static string Describe(string title, SkyUiTable table, int width)
         => $"[{title}]\n{string.Join('\n', table.Lines(width))}";
 
-    /// <summary>Whether a change can be sent: signed in with a key whose access is not known to be read-only.</summary>
-    protected bool CanChange => Ui.Connection is not null && Ui.Data.Info.Value?.Caller.Access is not "Read";
+    /// <summary>
+    /// Whether a change can be sent: signed in, with a key not known to be read-only, while the status is live. As the
+    /// terminal prototype's motion needs live status, a change waits while what shows is stale or last known.
+    /// </summary>
+    protected bool CanChange => ChangeRefusal is null;
 
     /// <summary>Why a change cannot be sent, when it cannot.</summary>
-    protected string? ChangeRefusal => Ui.Connection is null
-        ? "Sign in first (F5 System)."
-        : Ui.Data.Info.Value?.Caller.Access == "Read" ? "This key is read-only: changes need a ReadWrite key." : null;
+    protected string? ChangeRefusal => Ui.Connection is null ? "Sign in first (F5 System)."
+        : Ui.Data.Info.Value?.Caller.Access == "Read" ? "This key is read-only: changes need a ReadWrite key."
+        : Ui.Freshness != SkyUiFreshness.Live ? "Changes need live status: what shows is not current. Ctrl+R reads again."
+        : null;
 }

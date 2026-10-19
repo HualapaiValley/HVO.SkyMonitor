@@ -211,11 +211,16 @@ internal static partial class SkyCli
     /// <paramref name="pending"/> is the active revision; until CameraAgent reports that it failed to initialize, or that
     /// it is no longer staged; or until the deadline.
     /// </summary>
-    internal static Task<string> WaitForRigAsync(SkyCliContext context, SkyApiClient client, string pending, CancellationToken cancellationToken)
+    internal static Task<string> WaitForRigAsync(
+        SkyCliContext context,
+        SkyApiClient client,
+        string pending,
+        CancellationToken cancellationToken,
+        string? waitingFor = null)
         => PollAsync(
             context,
             context.Deadline,
-            $"waiting for rig revision {pending} to become active. '{CommandName} rig show' shows the rig in use",
+            waitingFor ?? $"waiting for rig revision {pending} to become active. '{CommandName} rig show' shows the rig in use",
             async token =>
             {
                 var rigs = await client.GetAsync(SkyRoutes.RigProfiles, token).ConfigureAwait(false);
