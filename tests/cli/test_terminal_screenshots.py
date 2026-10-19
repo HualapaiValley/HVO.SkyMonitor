@@ -25,6 +25,18 @@ done
 exit "${FAKE_EXIT:-0}"
 """
 
+FAKE_MV = """#!/usr/bin/env bash
+# With FAKE_MV_FAILS_STAGING set, fails to move the staging folder, as a full or read-only disk would; else moves.
+if [[ -n "${FAKE_MV_FAILS_STAGING:-}" ]]; then
+  for argument in "$@"; do
+    case "$argument" in
+      *.staging.*) printf 'mv: cannot move %s: stand-in failure\\n' "$argument" >&2; exit 1 ;;
+    esac
+  done
+fi
+exec /bin/mv "$@"
+"""
+
 
 class TerminalScreenshotsTests(unittest.TestCase):
     def setUp(self):
@@ -38,16 +50,19 @@ class TerminalScreenshotsTests(unittest.TestCase):
         (self.target / "install-old.svg").write_text("<svg>old</svg>\n")
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
-        dotnet = bin_dir / "dotnet"
-        dotnet.write_text(FAKE_DOTNET)
-        dotnet.chmod(dotnet.stat().st_mode | stat.S_IXUSR)
+        for name, text in (("dotnet", FAKE_DOTNET), ("mv", FAKE_MV)):
+            tool = bin_dir / name
+            tool.write_text(text)
+            tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
         self.environment = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
 
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def run_script(self, *arguments, renders="", exit_code=0):
+    def run_script(self, *arguments, renders="", exit_code=0, staging_move_fails=False):
         environment = dict(self.environment, FAKE_RENDERS=renders, FAKE_EXIT=str(exit_code))
+        if staging_move_fails:
+            environment["FAKE_MV_FAILS_STAGING"] = "1"
         return subprocess.run(
             [str(self.root / "scripts" / "docs:terminal-screenshots"), *arguments],
             env=environment, capture_output=True, text=True, check=False)
@@ -74,6 +89,14 @@ class TerminalScreenshotsTests(unittest.TestCase):
         self.assertIn('aria-label="hvo-sky ui"', (self.target / "ui-80x24-1-status.svg").read_text())
         self.assertEqual([], [path.name for path in self.target.parent.iterdir() if path.name != "terminal"],
                          "no staging folder is left beside the screenshots")
+
+    def test_a_swap_that_fails_puts_the_old_screenshots_back(self):
+        result = self.run_script(renders="install-80x24-1-camera", staging_move_fails=True)
+        self.assertEqual(["install-old.svg"], self.screenshots())
+        self.assertEqual("<svg>old</svg>\n", (self.target / "install-old.svg").read_text())
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertEqual([], [path.name for path in self.target.parent.iterdir() if path.name != "terminal"],
+                         "nothing is left beside the screenshots")
 
     def test_draw_draws_a_folder_in_place(self):
         folder = self.root / "renders"

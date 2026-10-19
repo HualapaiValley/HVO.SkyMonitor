@@ -130,6 +130,9 @@ fi
 dotnet restore "$source_root/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" --runtime "$host_cli_runtime"
 dotnet publish "$source_root/src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj" \
   --no-restore --configuration Release --runtime "$host_cli_runtime" --output "$publish_root"
+# The published installer as an operator runs it, on a terminal and without one, and without Terminal.Gui's syntax
+# highlighting, which it leaves out (#1317).
+python3 "$repo_root/scripts/lib/published-installer-terminal.py" "$publish_root/HVO.SkyMonitor.Deployment.Cli"
 if [[ "${release_archive:-0}" == 1 ]]; then
   cp "$HVO_INSTALLER_RELEASE_ARCHIVE" "$archive"
   loaded_reference="$(docker image load --input "$archive" | sed -n 's/^Loaded image ID: //p;s/^Loaded image: //p' | sed -n '1p')"

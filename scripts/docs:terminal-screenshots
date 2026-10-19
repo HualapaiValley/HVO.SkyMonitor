@@ -58,6 +58,8 @@ staging=""
 retired=""
 cleanup() {
   rm -rf -- "$work"
+  # A run stopped between the two renames puts the old set back rather than losing it.
+  if [[ -n "$retired" && ! -e "$target" ]]; then mv -- "$retired" "$target" && retired=""; fi
   if [[ -n "$staging" ]]; then rm -rf -- "$staging"; fi
   if [[ -n "$retired" ]]; then rm -rf -- "$retired"; fi
 }
@@ -70,7 +72,8 @@ done
 draw "$work"
 
 # The new set is built beside the old one and replaces it only when it holds screens: a run that saved none, or failed,
-# leaves the committed screenshots as they are.
+# leaves the committed screenshots as they are. The old set is removed only once the new one is in its place; a swap
+# that fails puts it back.
 shopt -s nullglob
 screens=("$work"/*.svg)
 shopt -u nullglob
@@ -86,6 +89,17 @@ if [[ -d "$target" ]]; then
   retired="$target.old.$$"
   mv -- "$target" "$retired"
 fi
-mv -- "$staging" "$target"
+if ! mv -- "$staging" "$target"; then
+  if [[ -n "$retired" ]]; then
+    mv -- "$retired" "$target"
+    retired=""
+  fi
+  printf 'The new screenshots could not replace docs/images/terminal, which is left as it was.\n' >&2
+  exit 1
+fi
 staging=""
+if [[ -n "$retired" ]]; then
+  rm -rf -- "$retired"
+  retired=""
+fi
 printf 'Replaced the screenshots in docs/images/terminal with %s screens.\n' "${#screens[@]}"

@@ -82,6 +82,21 @@ class AnsiToSvgTests(unittest.TestCase):
         self.assertEqual(5, len(rows[0]))
         self.assertIsNone(rows[0][1])
 
+    def test_emoji_clusters_take_two_cells_as_terminal_gui_draws_them(self):
+        # A flag's two regional indicators, a ZWJ family, an emoji with a skin tone, and a ZWJ sequence that starts with
+        # a narrow character are each one grapheme in two cells (HvoUnicodeTests), so what follows keeps its column.
+        for screen, cluster in (("\U0001F1FA\U0001F1F8!", "\U0001F1FA\U0001F1F8"),
+                                ("\U0001F468\u200d\U0001F469\u200d\U0001F467!", "\U0001F468\u200d\U0001F469\u200d\U0001F467"),
+                                ("\U0001F44D\U0001F3FD!", "\U0001F44D\U0001F3FD"),
+                                ("\U0001F3F3\ufe0f\u200d\U0001F308!", "\U0001F3F3\ufe0f\u200d\U0001F308")):
+            with self.subTest(cluster=cluster):
+                rows = ansi_to_svg.parse(screen + "\n")
+                self.assertEqual([cluster, None, "!"], [cell and cell[0] for cell in rows[0]])
+
+    def test_two_flags_are_two_clusters(self):
+        rows = ansi_to_svg.parse("\U0001F1FA\U0001F1F8\U0001F1EF\U0001F1F5\n")
+        self.assertEqual(["\U0001F1FA\U0001F1F8", None, "\U0001F1EF\U0001F1F5", None], [cell and cell[0] for cell in rows[0]])
+
     def test_markup_in_text_is_escaped(self):
         svg = draw("<script> & \"x\"\n")
         self.assertTrue(any(re.search(r"<script> & \"x\"", text) for text in texts(svg)))

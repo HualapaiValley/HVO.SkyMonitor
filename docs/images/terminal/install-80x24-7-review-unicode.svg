@@ -74,39 +74,38 @@
 <text x="247.20" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">𠀋</text>
 <text x="272.40" y="145.50" fill="#f7f9fc" textLength="33.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">Café</text>
 <text x="314.40" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">😀</text>
-<text x="339.60" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">北</text>
-<text x="356.40" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">の</text>
-<text x="373.20" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">空</text>
-<text x="398.40" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">東</text>
-<text x="415.20" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">京</text>
-<text x="432.00" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">の</text>
-<text x="448.80" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">全</text>
-<text x="465.60" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">天</text>
-<text x="482.40" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">カ</text>
-<text x="499.20" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">メ</text>
-<text x="516.00" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">ラ</text>
-<text x="541.20" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">𠀋</text>
-<text x="566.40" y="145.50" fill="#f7f9fc" textLength="33.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">Café</text>
-<text x="608.40" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">😀</text>
-<text x="625.20" y="145.50" fill="#f7f9fc" font-weight="bold">,</text>
-<text x="37.20" y="163.50" fill="#f7f9fc" textLength="613.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">instance 6f9b3c1e-2d4a-4e8b-9c7d-1a2b3c4d5e6f, at http://127.0.0.1:5130/:</text>
-<text x="54.00" y="199.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
-<text x="146.40" y="199.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">folder</text>
-<text x="238.80" y="199.50" fill="#3fb950" textLength="420.00" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/cameraagents/6f9b3c1e-2d4a-4e8b-9</text>
-<text x="238.80" y="217.50" fill="#3fb950" textLength="134.40" lengthAdjust="spacingAndGlyphs">c7d-1a2b3c4d5e6f</text>
-<text x="54.00" y="235.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
-<text x="146.40" y="235.50" fill="#3fb950" textLength="33.60" lengthAdjust="spacingAndGlyphs">file</text>
-<text x="238.80" y="235.50" fill="#3fb950" textLength="420.00" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/cameraagents/6f9b3c1e-2d4a-4e8b-9</text>
-<text x="238.80" y="253.50" fill="#3fb950" textLength="336.00" lengthAdjust="spacingAndGlyphs">c7d-1a2b3c4d5e6f/config/cameraagent.json</text>
-<text x="54.00" y="271.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
-<text x="146.40" y="271.50" fill="#3fb950" textLength="42.00" lengthAdjust="spacingAndGlyphs">image</text>
-<text x="238.80" y="271.50" fill="#3fb950" textLength="420.00" lengthAdjust="spacingAndGlyphs">sha256:9c3f6e2b1a7d4c8e5f0a3b6d9e2c5f8a1b4d7e0c3f6</text>
-<text x="238.80" y="289.50" fill="#3fb950" textLength="420.00" lengthAdjust="spacingAndGlyphs">a9b2d5e8f1a4c7b0d3e6f (imported from the release's</text>
-<text x="238.80" y="307.50" fill="#3fb950" textLength="67.20" lengthAdjust="spacingAndGlyphs">archive)</text>
-<text x="54.00" y="325.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
-<text x="146.40" y="325.50" fill="#3fb950" textLength="58.80" lengthAdjust="spacingAndGlyphs">catalog</text>
-<text x="238.80" y="325.50" fill="#3fb950" textLength="285.60" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/catalogs/hyg-v4.2</text>
-<text x="37.20" y="343.50" fill="#58a6ff" textLength="369.60" lengthAdjust="spacingAndGlyphs">-- lines 1-11 of 20: Up, Down, PgUp, PgDn --</text>
+<text x="339.60" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">🇺🇸</text>
+<text x="356.40" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">🇯🇵</text>
+<text x="381.60" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">👨‍👩‍👧</text>
+<text x="406.80" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">👍🏽</text>
+<text x="432.00" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">北</text>
+<text x="448.80" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">の</text>
+<text x="465.60" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">空</text>
+<text x="490.80" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">東</text>
+<text x="507.60" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">京</text>
+<text x="524.40" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">の</text>
+<text x="541.20" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">全</text>
+<text x="558.00" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">天</text>
+<text x="574.80" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">カ</text>
+<text x="591.60" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">メ</text>
+<text x="608.40" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">ラ</text>
+<text x="633.60" y="145.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">𠀋</text>
+<text x="37.20" y="163.50" fill="#f7f9fc" textLength="462.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">Café, instance 6f9b3c1e-2d4a-4e8b-9c7d-1a2b3c4d5e6f, at</text>
+<text x="37.20" y="181.50" fill="#f7f9fc" textLength="193.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">http://127.0.0.1:5130/:</text>
+<text x="54.00" y="217.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
+<text x="146.40" y="217.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">folder</text>
+<text x="238.80" y="217.50" fill="#3fb950" textLength="420.00" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/cameraagents/6f9b3c1e-2d4a-4e8b-9</text>
+<text x="238.80" y="235.50" fill="#3fb950" textLength="134.40" lengthAdjust="spacingAndGlyphs">c7d-1a2b3c4d5e6f</text>
+<text x="54.00" y="253.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
+<text x="146.40" y="253.50" fill="#3fb950" textLength="33.60" lengthAdjust="spacingAndGlyphs">file</text>
+<text x="238.80" y="253.50" fill="#3fb950" textLength="420.00" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/cameraagents/6f9b3c1e-2d4a-4e8b-9</text>
+<text x="238.80" y="271.50" fill="#3fb950" textLength="336.00" lengthAdjust="spacingAndGlyphs">c7d-1a2b3c4d5e6f/config/cameraagent.json</text>
+<text x="54.00" y="289.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
+<text x="146.40" y="289.50" fill="#3fb950" textLength="42.00" lengthAdjust="spacingAndGlyphs">image</text>
+<text x="238.80" y="289.50" fill="#3fb950" textLength="420.00" lengthAdjust="spacingAndGlyphs">sha256:9c3f6e2b1a7d4c8e5f0a3b6d9e2c5f8a1b4d7e0c3f6</text>
+<text x="238.80" y="307.50" fill="#3fb950" textLength="420.00" lengthAdjust="spacingAndGlyphs">a9b2d5e8f1a4c7b0d3e6f (imported from the release's</text>
+<text x="238.80" y="325.50" fill="#3fb950" textLength="67.20" lengthAdjust="spacingAndGlyphs">archive)</text>
+<text x="37.20" y="343.50" fill="#58a6ff" textLength="369.60" lengthAdjust="spacingAndGlyphs">-- lines 1-11 of 21: Up, Down, PgUp, PgDn --</text>
 <text x="37.20" y="379.50" fill="#98a7bb" textLength="126.00" lengthAdjust="spacingAndGlyphs">Save answers to</text>
 <text x="188.40" y="379.50" fill="#f7f9fc" textLength="428.40" lengthAdjust="spacingAndGlyphs">/home/operator/.config/hvo-sky/install-answers.json</text>
 <text x="28.80" y="415.50" fill="#f7f9fc" font-weight="bold">[</text>

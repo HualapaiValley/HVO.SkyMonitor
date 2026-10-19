@@ -157,6 +157,10 @@ is_deployment_path() {
     src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
       return 0
       ;;
+    src/HVO.SkyMonitor.TerminalUi/*)
+      # Compiled into the installer, whose published file the installer suite runs on a terminal (#1317).
+      return 0
+      ;;
     src/HVO.SkyMonitor.CameraAgent/cameraagent.sample.json)
       return 0
       ;;
@@ -204,7 +208,7 @@ select_deployment_suites() {
       deployment_catalog="true"
       deployment_installer="true"
       ;;
-    scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/release:* | scripts/test:release-install | scripts/test:release-scripts | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
+    scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/release:* | scripts/test:release-install | scripts/test:release-scripts | scripts/lib/* | src/HVO.SkyMonitor.Deployment.Cli/* | src/HVO.SkyMonitor.Deployment.Contracts/* | src/HVO.SkyMonitor.TerminalUi/* | tests/HVO.SkyMonitor.Deployment.Cli.Tests/* | tests/HVO.SkyMonitor.Deployment.Distribution.Tests/* | tools/HVO.SkyMonitor.Deployment.ReleaseTool/*)
       deployment_installer="true"
       ;;
     scripts/qualify:filesystem-object-store | scripts/test:filesystem-object-store-qualification)
