@@ -65,7 +65,7 @@ internal sealed partial class CameraAgentLifecycleManager
                     ? "API keys and owner passwords the live instance revoked after the backup are revoked again"
                     : "WARNING: no live credential store to compare; credentials revoked after the backup become valid again"),
             new(DeploymentPlanAction.Change, "file", paths.ManifestPath,
-                $"instance manifest: uninstalled; start it with 'hvo-sky-install cameraagent reinstall --instance-id {archived.Manifest.InstanceId:D}'"),
+                $"instance manifest: uninstalled; start it with '{InstallerProgram.Current} cameraagent reinstall --instance-id {archived.Manifest.InstanceId:D}'"),
             RecordItem(request, paths, archived.Manifest, DeploymentPlanAction.Change)
         ]);
     }

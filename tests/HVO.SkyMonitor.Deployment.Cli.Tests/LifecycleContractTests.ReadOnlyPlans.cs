@@ -86,6 +86,42 @@ public sealed partial class LifecycleContractTests
     }
 
     /// <summary>
+    /// Under Docker's containerd image store the upgrade plan names the candidate by the release's image digest, the ID
+    /// Docker gives it once it is pulled and the one the upgrade and <c>status</c> then report, not by its configuration
+    /// digest (#1384).
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_PlanUnderTheContainerdImageStore_NamesTheCandidateByTheReleasesImageDigest()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(
+            InstanceLifecycleCondition.Installed,
+            HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.LocalRunner);
+        using var release = CandidateRelease(fixture, out var configDigest);
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            release.DigestReference, release.Digest, fixture.Uid, fixture.Gid);
+        fixture.Runner.Registry = new FakeRegistry(release.RegistryContent);
+        fixture.Runner.CandidateHeld = [];
+        fixture.Runner.ContainerdImageStore = true;
+
+        var planned = await CameraAgentLifecycleManager.ExecuteAsync(
+            fixture.Request(LifecycleOperationKind.Upgrade) with
+            {
+                Release = release.Folder,
+                ImageSource = ReleaseImageSource.Registry,
+                DryRun = true
+            },
+            fixture.Runner, _ => new FakeLifecycleClient(), _ => new FakeOwnerClient(fixture.ApplicationIdentity),
+            fixture.Uid, fixture.Gid, CancellationToken.None);
+
+        Assert.AreEqual("planned", planned.Outcome);
+        var container = planned.Plan!.Items.Single(static item => item.Kind == "container").Detail!;
+        StringAssert.Contains(container, release.Digest, StringComparison.Ordinal);
+        Assert.DoesNotContain(configDigest, container, StringComparison.Ordinal);
+        Assert.AreEqual(0, fixture.Runner.PullCount);
+    }
+
+    /// <summary>
     /// A lifecycle command decides every refusal it can before its first write (#1315 PR-1355-R2 R2-3): an upgrade to the
     /// image already active, a rollback with no previous image, a reinstall or purge of an installed instance and an
     /// upgrade of an uninstalled one are each refused with the whole tree unchanged, no lock file and no journal.

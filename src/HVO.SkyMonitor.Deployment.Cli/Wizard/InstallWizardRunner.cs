@@ -81,7 +81,7 @@ internal static class InstallWizardRunner
         }
 
         var arguments = session.Arguments(session.AnswersPath);
-        var command = $"hvo-sky-install {Quote(arguments)}";
+        var command = $"{InstallerProgram.Current} {Quote(arguments)}";
         await interactive.Out.WriteAsync(text.Panel("Installing", Installing(session, command), width) + command + "\n\n").ConfigureAwait(false);
         var exitCode = await Program.RunAsync(arguments, services with { Wizard = null }, cancellationToken).ConfigureAwait(false);
         await interactive.Out.WriteAsync(Outcome(text, exitCode, session, command, width)).ConfigureAwait(false);
@@ -120,7 +120,7 @@ internal static class InstallWizardRunner
             (int)InstallerExitCode.Refused => text.Notice(HvoNotice.Danger, "The installer refused: nothing was changed.", width, "[REFUSED]")
                 + text.Panel("What next", [saved, new("Correct what it says above, then run the command below again.", HvoTone.Muted)], width),
             (int)InstallerExitCode.Usage => text.Notice(HvoNotice.Danger, "The answers are not valid: see above. Nothing was changed.", width)
-                + text.Panel("What next", [saved, new("Correct the answers file, or run hvo-sky-install without --answers to use the wizard again.", HvoTone.Muted)], width),
+                + text.Panel("What next", [saved, new($"Correct the answers file, or run {InstallerProgram.Current} without --answers to use the wizard again.", HvoTone.Muted)], width),
             (int)InstallerExitCode.Interrupted => text.Notice(HvoNotice.Warning, "Interrupted.", width, "[STOPPED]")
                 + text.Panel("What next", [saved, new("What it finished is kept. Run the command below again to carry on.", HvoTone.Muted)], width),
             _ => text.Notice(HvoNotice.Danger, "A step failed: see above.", width, "[STOPPED]")

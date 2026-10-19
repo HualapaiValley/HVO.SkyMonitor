@@ -65,7 +65,7 @@ internal static class UpgradeNotes
         {
             throw InstallerException.Refused(
                 $"{installedVersion} is installed, which is newer than the upgrade target {target.Version}; an upgrade never goes back. " +
-                $"To return to the previous image, run 'hvo-sky-install cameraagent rollback --instance-id {instanceId:D}'.");
+                $"To return to the previous image, run '{InstallerProgram.Current} cameraagent rollback --instance-id {instanceId:D}'.");
         }
         var release = ProductVersion.Release(target.Version);
         var notes = target.UpgradeNotes

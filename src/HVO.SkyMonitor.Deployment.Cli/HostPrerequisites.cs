@@ -149,9 +149,9 @@ internal static class HostPrerequisites
         "The installation proceeds, but a memory limit the host cannot reach does not stop CameraAgent from exhausting " +
         "the host's memory. Add memory, or lower --memory; CameraAgent is never limited to less than 4 GiB.";
 
-    internal const string StorageRemediation =
+    internal static string StorageRemediation =>
         "Free space on that filesystem, or provide a larger one: place the product root there with " +
-        "'hvo-sky-install host set-product-root' before any instance exists, or move Docker's data-root.";
+        $"'{InstallerProgram.Current} host set-product-root' before any instance exists, or move Docker's data-root.";
 
     private const string ResourceLimitsBoundary = "resource-limits";
 

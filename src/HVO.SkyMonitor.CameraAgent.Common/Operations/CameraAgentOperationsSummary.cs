@@ -27,7 +27,8 @@ public sealed record OperationsSection<T>(
 
 /// <summary>
 /// The freshness vocabulary of an operations section. <c>fresh</c>/<c>stale</c> are derived from
-/// the observation time; <c>unknown</c> means an observation was expected and none exists;
+/// the observation time, except capture control, which is live state and always <c>fresh</c>;
+/// <c>unknown</c> means an observation was expected and none exists;
 /// <c>disabled</c> means the subsystem is switched off by configuration; <c>static</c> means the
 /// value is a startup fact that is never re-observed.
 /// </summary>
@@ -269,7 +270,9 @@ public sealed class CameraAgentOperationsSummaryProvider(
 
         return new CameraAgentOperationsSummary(
             now,
-            Section("durable-capture-control", control.UpdatedUtc, now, new OperationsCaptureControlState(
+            // Capture control is the coordinator's live state, read now, so it is always current; its time is when the
+            // state last changed, which a camera left running for hours never does, not when it was observed (#1384).
+            Section("durable-capture-control", OperationsFreshness.Fresh, control.UpdatedUtc, new OperationsCaptureControlState(
                 control.State.ToString(), control.Version, control.IsInitialized)),
             Section("raw-ingress-state", ingress.EvaluatedUtc, now, new OperationsQueueState(
                 ingress.Availability.ToString(), ingress.PendingCount, ingress.PendingBytes, 0, 0,

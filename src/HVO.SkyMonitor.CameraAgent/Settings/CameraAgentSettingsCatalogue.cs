@@ -21,6 +21,7 @@ internal static class CameraAgentSettingsCatalogue
     public const string SkyMapGroup = "skyMap";
     public const string CameraGroup = "camera";
     public const string ScheduleGroup = "schedule";
+    public const string CurrentSkyGroup = "currentSky";
 
     public const string SettingsFileStore = "settingsFile";
     public const string DeploymentLocationStore = "deploymentLocation";
@@ -144,6 +145,26 @@ internal static class CameraAgentSettingsCatalogue
         Application = CameraAgentSettingApplication.NextCaptureBoundary
     };
 
+    public static CameraAgentSettingDefinition MinimumRefreshInterval { get; } = new()
+    {
+        Key = "currentSky.minimumRefreshSeconds",
+        Group = CurrentSkyGroup,
+        Title = "Minimum image refresh",
+        Description = "The shortest time the Current Sky page shows one capture before it moves to a newer one. It moves " +
+                      "only to a capture whose overlays are complete, and once this time has passed it shows the newest " +
+                      "such capture, skipping any in between. Refresh image moves at once. Captures are not affected. " +
+                      "Clear it to use the default.",
+        Type = CameraAgentSettingType.Integer,
+        Safety = CameraAgentSettingSafety.Descriptive,
+        Application = CameraAgentSettingApplication.Immediate,
+        Nullable = true,
+        Minimum = CurrentSkyRefreshSetting.MinimumSeconds,
+        Maximum = CurrentSkyRefreshSetting.MaximumSeconds,
+        Unit = "seconds",
+        Default = CurrentSkyRefreshSetting.DefaultSeconds,
+        ConfigurationKey = CurrentSkyRefreshSetting.ConfigurationKey
+    };
+
     /// <summary>Groups in display order.</summary>
     public static IReadOnlyList<CameraAgentSettingsGroup> Groups { get; } =
     [
@@ -165,7 +186,10 @@ internal static class CameraAgentSettingsCatalogue
             RigRevisionStore, [SkyLighting]),
         new(ScheduleGroup, "Capture schedule",
             "Which capture schedule revision is in effect. Schedules are edited and saved as drafts on the Schedule page.",
-            ScheduleRevisionStore, [ActiveScheduleRevision])
+            ScheduleRevisionStore, [ActiveScheduleRevision]),
+        new(CurrentSkyGroup, "Current sky",
+            "How the Current Sky page follows new captures. It changes only what the page shows.",
+            SettingsFileStore, [MinimumRefreshInterval])
     ];
 
     public static IReadOnlyList<CameraAgentSettingDefinition> All { get; } = [.. Groups.SelectMany(group => group.Settings)];
