@@ -68,11 +68,14 @@ public static class OrbitalContract
             Elements = e with
             {
                 MeanMotionRevolutionsPerDay = Zero(e.MeanMotionRevolutionsPerDay),
-                Eccentricity = Zero(e.Eccentricity), InclinationDegrees = Zero(e.InclinationDegrees),
+                Eccentricity = Zero(e.Eccentricity),
+                InclinationDegrees = Zero(e.InclinationDegrees),
                 AscendingNodeDegrees = Angle(e.AscendingNodeDegrees),
                 ArgumentOfPericenterDegrees = Angle(e.ArgumentOfPericenterDegrees),
-                MeanAnomalyDegrees = Angle(e.MeanAnomalyDegrees), BStarInverseEarthRadii = Zero(e.BStarInverseEarthRadii),
-                MeanMotionDot = Zero(e.MeanMotionDot), MeanMotionDdot = Zero(e.MeanMotionDdot)
+                MeanAnomalyDegrees = Angle(e.MeanAnomalyDegrees),
+                BStarInverseEarthRadii = Zero(e.BStarInverseEarthRadii),
+                MeanMotionDot = Zero(e.MeanMotionDot),
+                MeanMotionDdot = Zero(e.MeanMotionDdot)
             }
         };
         return record with { RecordSha256 = ComputeRecordIdentity(record) };
@@ -93,10 +96,19 @@ public static class OrbitalContract
     {
         ArgumentNullException.ThrowIfNull(value);
         return Hash(new
-    {
-        value.ObjectIdentity, value.SourceDataset, value.SourceRecordId, value.ObjectName, value.InternationalDesignator,
-        value.SourceAssertedType, value.SourceAssertedStatus, value.EpochUtc, value.ValidFromUtc, value.ValidToUtc,
-        value.Model, value.Elements
+        {
+            value.ObjectIdentity,
+            value.SourceDataset,
+            value.SourceRecordId,
+            value.ObjectName,
+            value.InternationalDesignator,
+            value.SourceAssertedType,
+            value.SourceAssertedStatus,
+            value.EpochUtc,
+            value.ValidFromUtc,
+            value.ValidToUtc,
+            value.Model,
+            value.Elements
         });
     }
 

@@ -103,9 +103,17 @@ public sealed class OrbitalSnapshot
     {
         ArgumentNullException.ThrowIfNull(value);
         return OrbitalContract.Hash(new
-    {
-        value.SchemaVersion, value.ProfileVersion, value.NormalizedPayloadSha256, value.NormalizedPayloadLengthBytes,
-        value.RecordCount, value.ObjectCount, value.MinimumEpochUtc, value.MaximumEpochUtc, value.Coverage, value.Sources
+        {
+            value.SchemaVersion,
+            value.ProfileVersion,
+            value.NormalizedPayloadSha256,
+            value.NormalizedPayloadLengthBytes,
+            value.RecordCount,
+            value.ObjectCount,
+            value.MinimumEpochUtc,
+            value.MaximumEpochUtc,
+            value.Coverage,
+            value.Sources
         });
     }
 

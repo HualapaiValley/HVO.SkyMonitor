@@ -295,13 +295,36 @@ public static class OrbitalPredictionJson
 
     private static string TrackIdentity(OrbitalExposureTrackV1 v) => OrbitalContract.Hash(new
     {
-        v.SchemaVersion, v.Lineage, v.RequestedInterval, v.CoveredInterval, v.Observer, v.Geometry, v.Timing,
-        v.Model, v.Samples, v.Segments, v.Uncertainty, v.Sampling, v.Status, v.Reason
+        v.SchemaVersion,
+        v.Lineage,
+        v.RequestedInterval,
+        v.CoveredInterval,
+        v.Observer,
+        v.Geometry,
+        v.Timing,
+        v.Model,
+        v.Samples,
+        v.Segments,
+        v.Uncertainty,
+        v.Sampling,
+        v.Status,
+        v.Reason
     });
     private static string PassIdentity(OrbitalPassSummaryV1 v) => OrbitalContract.Hash(new
     {
-        v.SchemaVersion, v.Lineage, v.SearchInterval, v.PassInterval, v.PeakUtc, v.MaximumElevationDegrees,
-        v.MinimumElevationDegrees, v.StartBoundary, v.EndBoundary, v.Observer, v.Model, v.Status, v.Reason
+        v.SchemaVersion,
+        v.Lineage,
+        v.SearchInterval,
+        v.PassInterval,
+        v.PeakUtc,
+        v.MaximumElevationDegrees,
+        v.MinimumElevationDegrees,
+        v.StartBoundary,
+        v.EndBoundary,
+        v.Observer,
+        v.Model,
+        v.Status,
+        v.Reason
     });
     private static OrbitalProductLineage CopyLineage(OrbitalProductLineage value)
     {

@@ -237,8 +237,12 @@ limits are host-owned. No change token or public lease framework is added.
 
 A repeat acquisition with unchanged payload gets its own manifest/history row;
 normalized bytes may be deduplicated by payload hash. B owns the
-`unchanged-payload` activation-history representation, durable refresh kind
-`orbital-elements-refresh`, task/DI registration and rollback guidance.
+`unchanged-payload` activation-history representation, durable refresh enum/persisted kind
+`OrbitalElementsRefresh` (the kebab-case wording is a prose/telemetry label),
+task/DI registration and rollback guidance. Existing immutable revisions keep
+new task kinds even after disable/removal: an older binary fails that store
+closed. Preserve history; #528 must state the supported recovery boundary and
+must not silently discard history or lower durable counters during downgrade.
 
 `OrbitalSelectionPolicy` defaults to withholding stale records. Its hashed
 `AllowStaleDiagnostics` opt-in is for explicitly qualified diagnostic use;
