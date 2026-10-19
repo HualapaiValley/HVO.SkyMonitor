@@ -12,6 +12,42 @@ public sealed class OrbitalPredictionEngineTests
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
+    [DataRow(AstrometricClockSynchronization.NotSupplied)]
+    [DataRow(AstrometricClockSynchronization.Unknown)]
+    [DataRow(AstrometricClockSynchronization.Unsynchronized)]
+    [DataRow(AstrometricClockSynchronization.Synchronized)]
+    public async Task ClockUncertaintyRequiresSynchronizationAndReportedMaximum(AstrometricClockSynchronization synchronization)
+    {
+        var (query, time) = SimpleQuery();
+        foreach (var maximum in new double?[] { .25, null })
+        {
+            var clock = new AstrometricClockFacts("capture-host-clock", synchronization, maximum, .1);
+            var timing = query.Timing with { Clock = clock };
+            var result = await new OrbitalPredictionEngine(time).PredictExposureAsync(new(query.Request, query.Geometry, timing),
+                TestContext.CancellationToken).ConfigureAwait(false);
+            Assert.AreEqual(OrbitalExecutionStatus.Complete, result.Status);
+            var track = result.Products.Single();
+            var expected = synchronization == AstrometricClockSynchronization.Synchronized ? maximum : null;
+            Assert.AreEqual(expected, track.Uncertainty.Clock.Value);
+            Assert.AreEqual(expected is null ? "clock-error-unknown; capture-host-clock" : "reported-clock-maximum-error; capture-host-clock",
+                track.Uncertainty.Clock.Reason);
+            Assert.AreEqual(clock, track.Timing.Clock);
+        }
+    }
+
+    [TestMethod]
+    public async Task NominalZeroEarthOrientationRetainsExplicitDiagnosticDegradation()
+    {
+        var (query, time) = SimpleQuery(OrbitalTimeData.CreateNominalZeroDiagnostic(OrbitalCoordinateTestData.Leaps));
+        var result = await new OrbitalPredictionEngine(time).PredictExposureAsync(query, TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalExecutionStatus.Complete, result.Status);
+        var track = result.Products.Single();
+        Assert.IsTrue(track.Model.NominalZeroEarthOrientation);
+        Assert.IsNull(track.Uncertainty.Orbit.Value);
+        Assert.AreEqual("physical-orbit-error-unknown; zero-eop-diagnostic-approximation", track.Uncertainty.Orbit.Reason);
+    }
+
+    [TestMethod]
     public async Task IndependentConsumersAndConcurrentCallsReproduceCanonicalProducts()
     {
         var (query, time) = SimpleQuery();
@@ -212,9 +248,9 @@ public sealed class OrbitalPredictionEngineTests
         return null;
     }
 
-    private static (OrbitalExposureQuery Query, OrbitalTimeData Time) SimpleQuery()
+    private static (OrbitalExposureQuery Query, OrbitalTimeData Time) SimpleQuery(OrbitalTimeData? inputTime = null)
     {
-        var time = OrbitalCoordinateTestData.Load("predicted-2026.finals2000A");
+        var time = inputTime ?? OrbitalCoordinateTestData.Load("predicted-2026.finals2000A");
         var snapshot = OrbitalContractExamples.Snapshot(OrbitalContractExamples.Record());
         var geometry = OrbitalContractExamples.Geometry with { HorizonPolicy = HorizonPolicy.ProjectionOnly };
         var interval = OrbitalContractExamples.Exposure;

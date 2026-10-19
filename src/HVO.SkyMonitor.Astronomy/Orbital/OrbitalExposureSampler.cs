@@ -78,10 +78,11 @@ internal static class OrbitalExposureSampler
                 reason = OrbitalPredictionReason.IncompleteInterval;
             var segments = Segments(points, reason);
             var clock = query.Timing.Clock;
-            var uncertainty = new OrbitalPredictionUncertainty(new(null, "degrees", "physical-orbit-error-unknown"),
-                new(clock.MaximumErrorSeconds ?? clock.EstimatedErrorSeconds, "seconds",
-                    clock.MaximumErrorSeconds is not null ? "reported-clock-maximum-error; " + clock.Source :
-                    clock.EstimatedErrorSeconds is not null ? "reported-clock-estimated-error; " + clock.Source : "clock-error-unknown; " + clock.Source),
+            var clockBound = clock.Synchronization == AstrometricClockSynchronization.Synchronized ? clock.MaximumErrorSeconds : null;
+            var orbitReason = query.Request.Model.NominalZeroEarthOrientation
+                ? "physical-orbit-error-unknown; zero-eop-diagnostic-approximation" : "physical-orbit-error-unknown";
+            var uncertainty = new OrbitalPredictionUncertainty(new(null, "degrees", orbitReason),
+                new(clockBound, "seconds", clockBound is not null ? "reported-clock-maximum-error; " + clock.Source : "clock-error-unknown; " + clock.Source),
                 new(null, "pixels", query.Geometry.Basis == OrbitalGeometryBasis.AcceptedMeasured
                     ? "accepted-measured-geometry; pixel-calibration-error-not-supplied" : "configured-rig; pixel-calibration-error-unknown"),
                 new(achievedError, "pixels", OrbitalNumericalPath.EstimatorVersion + "; numerical estimate, not a global proof"));

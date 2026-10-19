@@ -47,6 +47,7 @@ frame-available-to-publication acceptance remain #1395.
 - [SGP4 qualification and source pins](sgp4-qualification.md)
 - [Resolved time and independent coordinate/pass references](coordinate-reference.md)
 - [Numerical exposure sampling](exposure-sampling.md) and [future-pass search](pass-search.md)
+- [Additional high-eccentricity/resonant pass qualification](additional-pass-qualification.md)
 - [Independent dense calibration/held-out checks](sampling-reference.md)
 - [Canonical camera reproduction, source context and labeled samples](virtual-camera.md)
 - [Bounded full-population component resource baseline](component-resources.md)
@@ -58,3 +59,10 @@ outside frame processing, constructs a bounded shared query and calls the same
 producer; no host-specific propagation or automatic registration is introduced.
 Final candidate, independent review and target-branch CI evidence are recorded
 on #529 and its PR. Software integration is separate from physical qualification.
+
+Clock uncertainty publishes a maximum bound only when the capture host reports
+both synchronization and a maximum error. Other clock facts, including an
+estimate without a synchronized maximum, remain in timing provenance but yield
+an unknown bound. Explicit nominal-zero-EOP diagnostic tracks retain their
+degraded approximation in the orbit-uncertainty reason; sampling accuracy never
+fills the unknown physical orbit uncertainty.

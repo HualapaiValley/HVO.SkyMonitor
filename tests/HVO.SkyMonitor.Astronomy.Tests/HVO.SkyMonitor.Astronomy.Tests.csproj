@@ -18,7 +18,10 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="../fixtures/orbital/contract-v1/*" Link="Fixtures/orbital/contract-v1/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="../../docs/validation/orbital-reference-v1/*.json;../../docs/validation/orbital-reference-v1/*.TLE" Link="Fixtures/orbital-reference-v1/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../docs/validation/orbital-reference-v1/manifest.json" Link="Fixtures/orbital-reference-v1/manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../docs/validation/orbital-reference-v1/gp-source-facts.json" Link="Fixtures/orbital-reference-v1/gp-source-facts.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../docs/validation/orbital-reference-v1/vallado-afspc-vectors.json" Link="Fixtures/orbital-reference-v1/vallado-afspc-vectors.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../docs/validation/orbital-reference-v1/SGP4-VER.TLE" Link="Fixtures/orbital-reference-v1/SGP4-VER.TLE" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/orbital-prediction-v1/**/*" Link="Fixtures/orbital-prediction-v1/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
