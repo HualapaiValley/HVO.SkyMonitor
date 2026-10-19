@@ -426,150 +426,153 @@ internal static class Fake
         long rawPending = 0,
         string freshness = "fresh",
         string validation = "validated",
-        string delivery = "Healthy") => new
+        string delivery = "Healthy")
     {
-        capturedUtc = "2026-10-18T19:30:00Z",
-        captureControl = Section(new { state = capture, version = 3, isInitialized = true }, freshness),
-        rawIngress = Section(Queue("Accepting", rawPending, 1024 * rawPending)),
-        captureLanes = Section(new
+        return new
         {
-            availability = "Healthy",
-            lanes = new[]
+            capturedUtc = "2026-10-18T19:30:00Z",
+            captureControl = Section(new { state = capture, version = 3, isInitialized = true }, freshness),
+            rawIngress = Section(Queue("Accepting", rawPending, 1024 * rawPending)),
+            captureLanes = Section(new
             {
-                new
+                availability = "Healthy",
+                lanes = new[]
                 {
-                    name = "rawArchive",
-                    required = true,
-                    pendingCount = 0,
-                    pendingBytes = 0,
-                    leasedCount = 0,
-                    retryCount = 0,
-                    quarantineCount = 0,
-                    pressureLevel = 0,
-                    oldestPendingUtc = (string?)null,
-                    pendingCaptures = Array.Empty<object>()
+                    new
+                    {
+                        name = "rawArchive",
+                        required = true,
+                        pendingCount = 0,
+                        pendingBytes = 0,
+                        leasedCount = 0,
+                        retryCount = 0,
+                        quarantineCount = 0,
+                        pressureLevel = 0,
+                        oldestPendingUtc = (string?)null,
+                        pendingCaptures = Array.Empty<object>()
+                    }
+                },
+                pendingCount = 0,
+                pendingBytes = 0,
+                leasedCount = 0,
+                retryCount = 0,
+                quarantineCount = 0,
+                oldestPendingUtc = (string?)null
+            }),
+            captureProcessing = Section(Queue("Healthy", 0, 0)),
+            artifactOutbox = Section(Queue("Healthy", 2, 4096)),
+            storage = Section(new[]
+            {
+                new { alias = "raw", totalBytes = 500L * 1024 * 1024 * 1024, availableBytes = 120L * 1024 * 1024 * 1024, isUnderPressure = false, effectiveRetentionDays = 30, probeSucceeded = true }
+            }),
+            captureRuntime = Section(new
+            {
+                availability = "Available",
+                lastSucceededUtc = "2026-10-18T19:29:58Z",
+                lastFailedUtc = (string?)null,
+                lastRecoveredUtc = (string?)null,
+                timings = Array.Empty<object>()
+            }),
+            heartbeat = Section(new
+            {
+                availability = "Available",
+                lastAcknowledgedUtc = "2026-10-18T19:29:50Z",
+                pendingCount = 0,
+                pendingBytes = 0,
+                leasedCount = 0,
+                retryCount = 0,
+                quarantineCount = 0,
+                overflowCount = 0,
+                blockedCount = 0,
+                oldestPendingUtc = (string?)null
+            }),
+            environmentalDelivery = Section(new
+            {
+                availability = delivery,
+                lastAcknowledgedUtc = "2026-10-18T19:29:30Z",
+                storedCount = 120,
+                storedBytes = 61440,
+                pendingCount = 0,
+                pendingBytes = 0,
+                leasedCount = 0,
+                retryCount = 0,
+                quarantineCount = 0,
+                terminalCount = 0,
+                overflowCount = 0,
+                oldestPendingUtc = (string?)null
+            }),
+            executionEvidenceExport = Section(new
+            {
+                availability = "Healthy",
+                reasonCode = "export.drained",
+                pendingCount = 0,
+                pendingBytes = 0,
+                retryCount = 0,
+                quarantineCount = 0,
+                abandonedCount = 0,
+                acknowledgedCount = 42,
+                totalAttempts = 42,
+                conflictCount = 0,
+                rejectCount = 0,
+                drainedCount = 42,
+                resyncRequestCount = 0,
+                sourcePrunedCount = 0,
+                projectionRejectedCount = 0,
+                storageBytes = 8192,
+                highestSequence = 42,
+                acknowledgedThroughSequence = 42,
+                inFlightRequests = 0,
+                storagePressure = false,
+                negotiatedSchemaVersion = "1",
+                lastAcknowledgementUtc = "2026-10-18T19:29:40Z",
+                oldestPendingUtc = (string?)null
+            }),
+            transientWorker = Section(new { availability = "Healthy", pendingFrames = 0, pendingCandidates = 0, maximumCandidates = 64 }),
+            captureTelemetry = Section(new
+            {
+                sampleCount = 10,
+                latestCaptureStartedUtc = "2026-10-18T19:29:58Z",
+                latestMode = "Night",
+                latestExposureMilliseconds = 15000.0,
+                latestGain = 200.0,
+                averageIntervalMilliseconds = 15000.0,
+                averageExposureMilliseconds = 15000.0,
+                averageProcessingMilliseconds = 850.0,
+                averageLoopMilliseconds = 15900.0,
+                capturesPerMinute = 4.0,
+                dutyCycle = 0.94,
+                framesStored = 10,
+                immediateUploadCount = 0
+            }),
+            configuration = new
+            {
+                source = "validated-configuration",
+                observedUtc = (string?)null,
+                freshness = "static",
+                value = new
+                {
+                    isCurrent = true,
+                    validationStatus = validation,
+                    agentId = "allsky01",
+                    moduleType = "VirtualSky",
+                    centralIntegration = "Enabled",
+                    transientDetection = "Edge"
                 }
             },
-            pendingCount = 0,
-            pendingBytes = 0,
-            leasedCount = 0,
-            retryCount = 0,
-            quarantineCount = 0,
-            oldestPendingUtc = (string?)null
-        }),
-        captureProcessing = Section(Queue("Healthy", 0, 0)),
-        artifactOutbox = Section(Queue("Healthy", 2, 4096)),
-        storage = Section(new[]
-        {
-            new { alias = "raw", totalBytes = 500L * 1024 * 1024 * 1024, availableBytes = 120L * 1024 * 1024 * 1024, isUnderPressure = false, effectiveRetentionDays = 30, probeSucceeded = true }
-        }),
-        captureRuntime = Section(new
-        {
-            availability = "Available",
-            lastSucceededUtc = "2026-10-18T19:29:58Z",
-            lastFailedUtc = (string?)null,
-            lastRecoveredUtc = (string?)null,
-            timings = Array.Empty<object>()
-        }),
-        heartbeat = Section(new
-        {
-            availability = "Available",
-            lastAcknowledgedUtc = "2026-10-18T19:29:50Z",
-            pendingCount = 0,
-            pendingBytes = 0,
-            leasedCount = 0,
-            retryCount = 0,
-            quarantineCount = 0,
-            overflowCount = 0,
-            blockedCount = 0,
-            oldestPendingUtc = (string?)null
-        }),
-        environmentalDelivery = Section(new
-        {
-            availability = delivery,
-            lastAcknowledgedUtc = "2026-10-18T19:29:30Z",
-            storedCount = 120,
-            storedBytes = 61440,
-            pendingCount = 0,
-            pendingBytes = 0,
-            leasedCount = 0,
-            retryCount = 0,
-            quarantineCount = 0,
-            terminalCount = 0,
-            overflowCount = 0,
-            oldestPendingUtc = (string?)null
-        }),
-        executionEvidenceExport = Section(new
-        {
-            availability = "Healthy",
-            reasonCode = "export.drained",
-            pendingCount = 0,
-            pendingBytes = 0,
-            retryCount = 0,
-            quarantineCount = 0,
-            abandonedCount = 0,
-            acknowledgedCount = 42,
-            totalAttempts = 42,
-            conflictCount = 0,
-            rejectCount = 0,
-            drainedCount = 42,
-            resyncRequestCount = 0,
-            sourcePrunedCount = 0,
-            projectionRejectedCount = 0,
-            storageBytes = 8192,
-            highestSequence = 42,
-            acknowledgedThroughSequence = 42,
-            inFlightRequests = 0,
-            storagePressure = false,
-            negotiatedSchemaVersion = "1",
-            lastAcknowledgementUtc = "2026-10-18T19:29:40Z",
-            oldestPendingUtc = (string?)null
-        }),
-        transientWorker = Section(new { availability = "Healthy", pendingFrames = 0, pendingCandidates = 0, maximumCandidates = 64 }),
-        captureTelemetry = Section(new
-        {
-            sampleCount = 10,
-            latestCaptureStartedUtc = "2026-10-18T19:29:58Z",
-            latestMode = "Night",
-            latestExposureMilliseconds = 15000.0,
-            latestGain = 200.0,
-            averageIntervalMilliseconds = 15000.0,
-            averageExposureMilliseconds = 15000.0,
-            averageProcessingMilliseconds = 850.0,
-            averageLoopMilliseconds = 15900.0,
-            capturesPerMinute = 4.0,
-            dutyCycle = 0.94,
-            framesStored = 10,
-            immediateUploadCount = 0
-        }),
-        configuration = new
-        {
-            source = "validated-configuration",
-            observedUtc = (string?)null,
-            freshness = "static",
-            value = new
+            archivedReplay = Section(new
             {
-                isCurrent = true,
-                validationStatus = validation,
-                agentId = "allsky01",
-                moduleType = "VirtualSky",
-                centralIntegration = "Enabled",
-                transientDetection = "Edge"
-            }
-        },
-        archivedReplay = Section(new
-        {
-            availability = "Healthy",
-            pendingCount = 0,
-            pendingBytes = 0,
-            leasedCount = 0,
-            retryCount = 0,
-            quarantineCount = 0,
-            terminalCount = 0,
-            oldestPendingUtc = (string?)null,
-            abandonedCount = 0
-        })
-    };
+                availability = "Healthy",
+                pendingCount = 0,
+                pendingBytes = 0,
+                leasedCount = 0,
+                retryCount = 0,
+                quarantineCount = 0,
+                terminalCount = 0,
+                oldestPendingUtc = (string?)null,
+                abandonedCount = 0
+            })
+        };
+    }
 
     public static object Info(DateTimeOffset started, bool supervised = true, bool requested = false, string access = "ReadWrite") => new
     {
