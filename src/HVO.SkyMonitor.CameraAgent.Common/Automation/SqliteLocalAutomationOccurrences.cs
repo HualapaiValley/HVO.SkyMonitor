@@ -305,8 +305,122 @@ public sealed partial class SqliteLocalAutomationStore
             return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Conflict,
                 "automation.retry-limit-or-stale-attempt", token).ConfigureAwait(false);
         }
+        // A retried run-now is still a run-now, so it keeps the one-pending-run-now bound.
+        if (LocalAutomationRunKeys.IsRunNow(occurrence.RunKey) &&
+            await HasPendingRunNowAsync(connection, transaction, request.DefinitionId, token).ConfigureAwait(false))
+        {
+            return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Conflict,
+                LocalAutomationContract.RunNowPendingReasonCode, token).ConfigureAwait(false);
+        }
         return await QueueOccurrenceAsync(connection, transaction, occurrence, checked((int)latest + 1),
             request.IdempotencyKey, payload, "retry", request.Actor, request.Reason, token).ConfigureAwait(false);
+    }
+
+    public async ValueTask<LocalAutomationCommandResult> RunNowAsync(
+        LocalAutomationRunNowRequest request, CancellationToken cancellationToken)
+    {
+        using var operation = RetainOperationAuthority();
+        ArgumentNullException.ThrowIfNull(request);
+        using var activity = LocalAutomationTelemetry.ActivitySource.StartActivity("automation.run-now");
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureSchemaAsync(connection, false, cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            var result = await RunNowCoreAsync(connection, transaction, request, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            Record(activity, "run-now", result.Status);
+            return result;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Queues one explicit run-now occurrence through the same journal, claim, retry, and restart path as
+    /// every other prepared occurrence. It writes no progress row, so the periodic cadence, the next
+    /// scheduled boundary, and missed-occurrence accounting are exactly what they would have been.
+    /// </summary>
+    private async ValueTask<LocalAutomationCommandResult> RunNowCoreAsync(SqliteConnection connection,
+        SqliteTransaction transaction, LocalAutomationRunNowRequest request, CancellationToken token)
+    {
+        if (!ValidOccurrenceCommand(request.DefinitionId, request.ExpectedVersion, request.IdempotencyKey,
+                request.Actor, request.Reason))
+        {
+            return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Invalid,
+                LocalAutomationContract.InvalidCommandReasonCode, token).ConfigureAwait(false);
+        }
+        var payload = CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            Schema = LocalAutomationContract.SchemaLabel,
+            Operation = "run-now",
+            Request = request with { IdempotencyKey = string.Empty }
+        });
+        if (await ReplayAsync(connection, transaction, request.IdempotencyKey, payload, null, token)
+                .ConfigureAwait(false) is { } replay)
+        {
+            return replay;
+        }
+        var definition = await ReadDefinitionAsync(connection, transaction, request.DefinitionId, token).ConfigureAwait(false);
+        if (definition is null)
+        {
+            return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.NotFound,
+                LocalAutomationContract.UnknownDefinitionReasonCode, token).ConfigureAwait(false);
+        }
+        if (definition.Version != request.ExpectedVersion)
+        {
+            return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Conflict,
+                LocalAutomationContract.ExpectedVersionConflictReasonCode, token).ConfigureAwait(false);
+        }
+        if (!definition.Definition.Enabled || definition.Definition.TriggerKind != LocalAutomationTriggerKind.Periodic ||
+            definition.Definition.SourceWindow is not null || !_registry.SupportsRunNow(definition.Definition) ||
+            _registry.Validate(definition.Definition) is not null)
+        {
+            return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Conflict,
+                LocalAutomationContract.RunNowUnavailableReasonCode, token).ConfigureAwait(false);
+        }
+        if (await HasPendingRunNowAsync(connection, transaction, request.DefinitionId, token).ConfigureAwait(false))
+        {
+            return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Conflict,
+                LocalAutomationContract.RunNowPendingReasonCode, token).ConfigureAwait(false);
+        }
+        // The journal sequence is monotonic and never reused, even after retention, so the next value
+        // makes the run key unique within the revision line without depending on clock resolution.
+        var sequence = await ScalarLongAsync(connection, transaction,
+            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'automation_runs'), 0) + 1;",
+            token).ConfigureAwait(false);
+        var entry = new LocalAutomationRunnerEntry(definition.Definition, definition.Version,
+            definition.RevisionSha256, null, null);
+        var occurrence = LocalAutomationOccurrence.Create(entry, LocalAutomationRunKeys.CreateRunNow(entry, sequence),
+            Truncate(Now()));
+        return await QueueOccurrenceAsync(connection, transaction, occurrence, 1, request.IdempotencyKey,
+            payload, "run-now", request.Actor, request.Reason, token).ConfigureAwait(false);
+    }
+
+    /// <summary>Whether a run-now occurrence of this definition, or a retry of one, is queued or running.</summary>
+    private static async ValueTask<bool> HasPendingRunNowAsync(SqliteConnection connection,
+        SqliteTransaction transaction, string definitionId, CancellationToken token)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        // Queue capacity and single-flight bound these rows, so the scan stays small.
+        command.CommandText = """
+            SELECT run_key FROM automation_runs
+            WHERE definition_id = $id AND outcome IN ('Queued', 'Running');
+            """;
+        command.Parameters.AddWithValue("$id", definitionId);
+        using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+        while (await reader.ReadAsync(token).ConfigureAwait(false))
+        {
+            if (LocalAutomationRunKeys.IsRunNow(LocalAutomationRunKeys.OccurrenceRunKey(reader.GetString(0))))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private async ValueTask<LocalAutomationCommandResult> QueueOccurrenceAsync(SqliteConnection connection,
