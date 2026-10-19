@@ -159,7 +159,7 @@ SOFTWARE.
 are each one self-contained file. The installer's wizard and `hvo-sky ui`
 (#1317) draw with Terminal.Gui, and both files contain Terminal.Gui and the
 packages listed here, which Terminal.Gui brings in; `hvo-sky` also contains
-System.CommandLine. Every release ships this file beside them as an asset of its
+`System.CommandLine` 2.0.13. Every release ships this file beside them as an asset of its
 own, `THIRD-PARTY-NOTICES.md` (install contract section 4).
 
 Terminal.Gui also depends on TextMateSharp, its grammars and Onigwrap's native
@@ -190,7 +190,7 @@ them out and none of their files are in either (`Directory.Build.targets`).
 | `Microsoft.Extensions.Logging.Abstractions` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
 | `Microsoft.Extensions.Options` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
 | `Microsoft.Extensions.Primitives` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
-| `System.CommandLine` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/command-line-api |
+| `System.CommandLine` | MIT | Copyright (c) Microsoft Corporation | https://github.com/dotnet/command-line-api |
 
 The following MIT terms apply to each package above that is under the MIT
 License, with its copyright notice:

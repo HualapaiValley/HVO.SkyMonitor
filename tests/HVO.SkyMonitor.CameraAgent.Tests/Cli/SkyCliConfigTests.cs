@@ -455,6 +455,54 @@ public sealed class SkyCliConfigTests
     }
 
     [TestMethod]
+    [DataRow("config set", "malformed")]
+    [DataRow("config set", "stalled")]
+    [DataRow("config apply", "malformed")]
+    [DataRow("config apply", "stalled")]
+    public async Task ASettingsChangeWhoseSuccessStatusArrivedButNotItsBody_IsAcceptedButUnverifiedAsync(string command, string body)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        ArgumentNullException.ThrowIfNull(body);
+        using var harness = new CliHarness();
+        harness.Api.Handle("PUT", Fake.SettingsRoute + "/skyMap", _ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = body == "stalled" ? new StalledContent() : new StringContent("{\"status\": ", System.Text.Encoding.UTF8, "application/json")
+        });
+        string[] args = command == "config set"
+            ? ["config", "set", "skyMap.maximumObjects=500"]
+            : ["config", "apply", harness.WriteFile("s.json", """{"schemaVersion": 1, "settings": {"skyMap.maximumObjects": 500}}""")];
+
+        var result = await harness.RunAsync([.. args, "--timeout", "1", "--json"]).ConfigureAwait(false);
+
+        Assert.AreEqual(1, result.ExitCode, result.ToString());
+        var error = result.Json().GetProperty("error");
+        Assert.AreEqual("Unverified", error.GetProperty("kind").GetString());
+        Assert.AreEqual(body == "stalled" ? "TimedOut" : "Failed", error.GetProperty("cause").GetString());
+        var message = error.GetProperty("message").GetString()!;
+        StringAssert.StartsWith(message, "CameraAgent accepted the skyMap settings, but it could not be verified: ", StringComparison.Ordinal);
+        Assert.DoesNotContain("was not saved", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("is not known", message, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task Apply_ALaterGroupWhoseSuccessStatusArrivedButNotItsBody_IsThatGroupAcceptedButUnverifiedAsync()
+    {
+        using var harness = new CliHarness();
+        harness.Api.Handle("PUT", Fake.SettingsRoute + "/skyMap", _ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"status\": ", System.Text.Encoding.UTF8, "application/json")
+        });
+        var file = harness.WriteFile("s.json", """{"schemaVersion": 1, "settings": {"skyMap.maximumObjects": 500, "site.observatoryName": "HVO"}}""");
+
+        var result = await harness.RunAsync("config", "apply", file).ConfigureAwait(false);
+
+        Assert.AreEqual(1, result.ExitCode, result.ToString());
+        StringAssert.Contains(result.Out, "[site] Saved; in effect now.", StringComparison.Ordinal);
+        StringAssert.StartsWith(result.Error, "CameraAgent accepted the skyMap settings, but it could not be verified: ", StringComparison.Ordinal);
+        Assert.DoesNotContain("was not saved", result.Error, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task Apply_NoDifference_SaysNothingToChangeAsync()
     {
         using var harness = new CliHarness();
