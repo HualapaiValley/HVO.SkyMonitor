@@ -96,15 +96,15 @@ public sealed record PresentationMetadataFactsProductV1(
 /// <summary>Host-neutral producers that consume canonical facts, never base image pixels.</summary>
 public static class PresentationLayerProducers
 {
-    public const string SceneProducerVersion = "projected-scene-presentation-v10-resolved-footprints";
+    public const string SceneProducerVersion = "projected-scene-presentation-v11-original-colours";
 
     /// <summary>
     /// Output-pixel clearance between a resolved footprint's limb and its drawn outline, and the floor of the
     /// clearance its label keeps. The outline therefore frames the rendered disc instead of covering its limb.
     /// </summary>
     public const double ResolvedFootprintPaddingPixels = AnnotationRenderer.ResolvedFootprintPaddingPixels;
-    public const string MetadataProducerVersion = "metadata-corner-presentation-v5-heading-rules";
-    public const string CloudProducerVersion = "cloud-presentation-v4-payload-v3";
+    public const string MetadataProducerVersion = "metadata-corner-presentation-v6-original-colours";
+    public const string CloudProducerVersion = "cloud-presentation-v5-original-colours";
 
     /// <summary>Creates one combined typed scene payload without reading or copying base pixels.</summary>
     public static PresentationLayerPayloadV1 FromProjectedScene(
@@ -166,11 +166,11 @@ public static class PresentationLayerProducers
             style.SegmentThickness is < 1 or > 8 || style.CardinalScale is < 1 or > 8 || style.ConstellationIds is null ||
             style.ConstellationIds.Count > 256 || style.ConstellationIds.Any(string.IsNullOrWhiteSpace))
             throw new ArgumentOutOfRangeException(nameof(style));
-        var markerColor = style.MarkerColor ?? new(210, 184, 244);
-        var labelColor = style.LabelColor ?? new(210, 184, 244);
-        var segmentColor = style.SegmentColor ?? new(188, 140, 255);
-        var imageCircleColor = style.ImageCircleColor ?? new(116, 209, 255);
-        var cardinalColor = style.CardinalColor ?? new(195, 236, 255);
+        var markerColor = style.MarkerColor ?? new(144, 144, 144);
+        var labelColor = style.LabelColor ?? new(255, 255, 255);
+        var segmentColor = style.SegmentColor ?? new(96, 160, 255);
+        var imageCircleColor = style.ImageCircleColor ?? new(96, 96, 96);
+        var cardinalColor = style.CardinalColor ?? new(255, 255, 255);
         var annotatedObjects = scene.Objects.Where(item => IsNamed(item.Id, item.DisplayName) &&
             (item.Kind == CelestialObjectKind.SolarSystemBody || item.Magnitude <= style.MaximumLabelMagnitude)).ToArray();
         var width = scene.ImageTransform.OutputWidthPixels;
@@ -196,22 +196,10 @@ public static class PresentationLayerProducers
             .Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor, Crosshair: true))
             .Concat(footprintOnly.Where(item => PaddedHalfExtent(item.Footprint, scene.ImageTransform) <= style.MarkerRadius)
                 .Select(item => new PresentationMarkerV1(item.Anchor, style.MarkerRadius, markerColor, Crosshair: true))).ToArray() : [];
-        var segments = new List<PresentationSegmentV1>();
-        PixelPoint? previousEnd = null;
-        var dashOffset = 0d;
-        if (includeConstellations)
-            foreach (var segment in scene.Segments.Where(item => style.ConstellationIds.Count == 0 ||
-                style.ConstellationIds.Contains(item.ConstellationId, StringComparer.OrdinalIgnoreCase)))
-            {
-                // Great-circle arcs arrive tessellated; restarting each short piece would erase the gaps.
-                if (previousEnd != segment.FromPixel) dashOffset = 0;
-                segments.Add(new(segment.FromPixel, segment.ToPixel, style.SegmentThickness, segmentColor,
-                    new(10, 8, 1_000_000, dashOffset)));
-                var dx = segment.ToPixel.X - segment.FromPixel.X;
-                var dy = segment.ToPixel.Y - segment.FromPixel.Y;
-                dashOffset = (dashOffset + Math.Sqrt(dx * dx + dy * dy)) % 18;
-                previousEnd = segment.ToPixel;
-            }
+        var segments = includeConstellations ? scene.Segments.Where(item => style.ConstellationIds.Count == 0 ||
+            style.ConstellationIds.Contains(item.ConstellationId, StringComparer.OrdinalIgnoreCase))
+            .Select(item => new PresentationSegmentV1(item.FromPixel, item.ToPixel, style.SegmentThickness, segmentColor))
+            .ToList() : [];
         var footprintSegments = new List<PresentationSegmentV1>();
         if (includeMarkers)
             foreach (var footprint in footprints.Values.OrderBy(static item => item.Id, StringComparer.Ordinal))
@@ -241,7 +229,7 @@ public static class PresentationLayerProducers
                     var radiusX = Math.Max(Math.Abs(xVector.X), Math.Abs(yVector.X));
                     var radiusY = Math.Max(Math.Abs(xVector.Y), Math.Abs(yVector.Y));
                     if (radiusX > 0 && radiusY > 0)
-                        ellipses.Add(new(center, radiusX, radiusY, imageCircleColor, new(0, 0, 450_000), 2_000));
+                        ellipses.Add(new(center, radiusX, radiusY, imageCircleColor, ThicknessMilliPixels: 2_000));
                 }
             }
             if (includeCardinalDirections)
@@ -462,10 +450,10 @@ public static class PresentationLayerProducers
         return PresentationLayerPayloadJson.Create(facts.SourceIdentitySha256, widthPixels, heightPixels, textBlocks: blocks);
 
         PresentationTextBlockV1 Block(PresentationTextAnchor anchor, IReadOnlyList<string> lines, int? candidate = null) =>
-            new(anchor, default, lines, candidate ?? textScale, inset, Math.Max(lineSpacing, 4), color ?? new(216, 229, 246),
+            new(anchor, default, lines, candidate ?? textScale, inset, Math.Max(lineSpacing, 4), color ?? new(255, 255, 255),
                 new(new(5, 10, 17), 780_000, new(88, 166, 255), Math.Min(8, inset / 2), 2, new(0, 0, HeadingRule: true)),
                 new(new(PresentationFontFaceV3.MonoRegular, 3_500 * (candidate ?? textScale), 0,
-                        color ?? new(216, 229, 246), default, 0, 0),
+                        color ?? new(255, 255, 255), default, 0, 0),
                     new(PresentationFontFaceV3.MonoBold, 4_140 * (candidate ?? textScale), 0, new(255, 255, 255), default, 0, 0)));
 
         bool Fits(int candidate)
@@ -528,7 +516,7 @@ public static class PresentationLayerProducers
         return new(
             PresentationLayerPayloadJson.Create(sourceIdentity, widthPixels, heightPixels,
                 tileMask: new(assessment.Grid.Columns, assessment.Grid.Rows, PresentationTileMaskV1.RowMajorLsbFirst,
-                    bits, lineThickness, color ?? new PresentationColor(57, 197, 207))),
+                    bits, lineThickness, color ?? new PresentationColor(255, 64, 32))),
             PresentationLayerPayloadJson.Create(sourceIdentity, widthPixels, heightPixels, textBlocks: texts));
     }
 }
