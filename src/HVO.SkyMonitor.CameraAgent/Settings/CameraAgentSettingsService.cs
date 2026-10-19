@@ -379,21 +379,22 @@ internal sealed partial class CameraAgentSettingsService(
         var canWrite = snapshot is { Problem: null } && !source.Overridden;
         var reason = snapshot is null ? NoSettingsFileReason
             : snapshot.Problem ?? (source.Overridden ? OverriddenReason(source.Source) : null);
-        string? problem = null;
-        if (source.Source != CameraAgentSettingSource.Default)
+        var configured = snapshot?.GetValue(definition.ConfigurationKey!);
+        var unusable = source.Source switch
         {
-            var configured = source.Source == CameraAgentSettingSource.SettingsFile
-                ? snapshot?.GetValue(definition.ConfigurationKey!)
-                : null;
-            if (source.Source == CameraAgentSettingSource.SettingsFile &&
-                (configured is null || !int.TryParse(configured, NumberStyles.Integer, CultureInfo.InvariantCulture,
-                     out var saved) || definition.Check(saved) is not null))
-            {
-                problem = string.Create(CultureInfo.InvariantCulture,
-                    $"The settings file value is not a whole number from {definition.Minimum:N0} to {definition.Maximum:N0}, ") +
-                    "so the default applies until it is corrected.";
-            }
-        }
+            CameraAgentSettingSource.SettingsFile => configured is null ||
+                !int.TryParse(configured, NumberStyles.Integer, CultureInfo.InvariantCulture, out var saved) ||
+                definition.Check(saved) is not null,
+            // An object or array at the key gives the configuration no value there, so the default applies; it is
+            // still a stored value the host cannot use.
+            CameraAgentSettingSource.Default => configured is null && snapshot?.HasValue(definition.ConfigurationKey!) == true,
+            _ => false
+        };
+        var problem = unusable
+            ? string.Create(CultureInfo.InvariantCulture,
+                $"The settings file value is not a whole number from {definition.Minimum:N0} to {definition.Maximum:N0}, ") +
+              "so the default applies until it is corrected."
+            : null;
 
         return new(group.Name, snapshot?.Version ?? UnavailableVersion, canWrite, reason,
         [

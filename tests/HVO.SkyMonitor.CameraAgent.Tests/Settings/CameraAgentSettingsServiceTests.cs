@@ -232,6 +232,29 @@ public sealed class CameraAgentSettingsServiceTests
     }
 
     [TestMethod]
+    [DataRow("currentSky", "{ \"value\": 5 }", "15 to 3,600", "Default")]
+    [DataRow("currentSky", "[ 30 ]", "15 to 3,600", "Default")]
+    [DataRow("currentSky", "\"soon\"", "15 to 3,600", "SettingsFile")]
+    [DataRow("skyMap", "{ \"value\": 400 }", "1 to 5,000", "Default")]
+    public async Task FileInteger_AStoredValueOfAnotherShape_IsReportedAsAProblemAsync(
+        string group, string stored, string range, string source)
+    {
+        using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
+        var (section, name) = group == "skyMap" ? ("SkyMap", "MaximumObjects") : ("CurrentSky", "MinimumRefreshSeconds");
+        await File.WriteAllTextAsync(harness.SettingsPath,
+            $"{{ \"CameraAgent\": {{ \"{section}\": {{ \"{name}\": {stored} }} }} }}").ConfigureAwait(false);
+        ((Microsoft.Extensions.Configuration.IConfigurationRoot)harness.Configuration).Reload();
+
+        var setting = (await harness.GroupAsync(group).ConfigureAwait(false)).Settings.Single();
+
+        // The default applies, and the stored value is still named as one the host cannot use.
+        var expected = group == "skyMap" ? CameraAgentSkyMapProjection.DefaultMaximumObjects : CurrentSkyRefreshSetting.DefaultSeconds;
+        Assert.AreEqual(expected, setting.Value!.Value.GetInt32());
+        Assert.AreEqual(Enum.Parse<CameraAgentSettingSource>(source), setting.Source);
+        StringAssert.StartsWith(setting.Problem, $"The settings file value is not a whole number from {range}", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task Site_MergesTheChangedFieldsAndKeepsTheRestAsync()
     {
         using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
