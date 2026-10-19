@@ -2102,10 +2102,23 @@ def scenarios(cap: Capture):
     # s15 ------------------------------------------------------------------
     ef3754 = cap.rec("ALTEF3/3754/2026-10-16T14:19:00Z")
     k153 = cap.rec("WARK07/153/2026-10-10T17:42:00Z")
+    scales_file = CAPTURE + "/noaa-scales.json"
+    scales_text = (PACK / scales_file).read_text("ascii")
+    scales_sha = sha256(scales_text.encode("ascii"))
+    # Day 1's G scale, the JSON string "1", rewritten as the JSON number 1. Nothing else changes.
+    day1_g = '"G": {"Scale": "1", "Text": "minor"}}, "2": '
+    if scales_text.count(day1_g) != 1:
+        raise ScenarioError("s15 day 1 G scale is not unique in the scales capture")
+    number_scale = scales_text.replace(day1_g, '"G": {"Scale": 1, "Text": "minor"}}, "2": ', 1)
     b = Builder("s15-missing-scale-and-location",
-                "Messages without a scale or impact line, null predicted scales, and a site without a location",
-                ["missing-scale", "missing-location", "location-relevance", "first-run-backlog"],
-                sites=[HVO_SITE, NO_LOCATION_SITE])
+                "Messages without a scale or impact line, null predicted scales, and a site without a location; "
+                "a scale value written as a JSON number rejects the scales body",
+                ["missing-scale", "missing-location", "location-relevance", "first-run-backlog", "malformed",
+                 "json-value-type"],
+                sites=[HVO_SITE, NO_LOCATION_SITE], synthetic_records=True,
+                notes=["Step 3's body is synthetic: the captured scales with only day 1's G scale (the JSON "
+                       "string \"1\") rewritten as the JSON number 1. It is rejected as schema and the captured "
+                       "body stays last-known-good."])
     b.fetch("2026-10-16T14:25:00Z", alerts_ok([ef3754, k153], 'W/"fixture-s15-a"',
                                               "Fri, 16 Oct 2026 14:24:50 GMT"), {
         "outcome": "updated",
@@ -2128,6 +2141,20 @@ def scenarios(cap: Capture):
                               "rMinorProbPct": "25", "rMajorProbPct": "5", "sProbPct": "5", "gScale": "1"},
             "predictedDay3": {"stampUtc": "2026-10-21T00:00:00Z", "gScale": "0"}}}},
         product="scales")
+    b.fetch("2026-10-19T19:02:03Z", {"status": 200, "contentType": "application/json",
+                                     "etag": 'W/"fixture-s15-number-scale"',
+                                     "lastModified": "Mon, 19 Oct 2026 19:00:44 GMT", "body": number_scale}, {
+        "outcome": "rejected", "diagnostics": ["body-rejected:schema"], "attention": [],
+        "request": {"ifNoneMatch": 'W/"44e-65e360fa970f3"', "ifModifiedSince": "Mon, 19 Oct 2026 18:55:44 GMT"},
+        "product": {
+            "lastOutcome": "rejected", "freshness": "fresh", "lkgSha256": scales_sha,
+            "lastSuccessUtc": "2026-10-19T18:57:03Z", "nextAttemptNotBeforeUtc": "2026-10-19T19:07:03Z",
+            "retryNotBeforeUtc": None, "consecutiveTransientFailures": 0, "consecutiveRateLimited": 0,
+            "consecutiveRejected": 1, "recordDriftOpen": False, "recordDriftStampUtc": None, "halt": None,
+            "validators": {"etag": 'W/"44e-65e360fa970f3"', "lastModified": "Mon, 19 Oct 2026 18:55:44 GMT"},
+            "facts": {"current": {"stampUtc": "2026-10-19T18:55:00Z"},
+                      "predictedDay1": {"stampUtc": "2026-10-19T18:55:00Z", "gScale": "1"}}}},
+        product="scales")
     out.append(b.build())
 
     # s16 ------------------------------------------------------------------
@@ -2138,15 +2165,30 @@ def scenarios(cap: Capture):
     string_kp = kp_text.replace('"kp":1.67,', '"kp":"1.67",', 1)
     if string_kp == kp_text or not string_kp.startswith('[{"time_tag":"2026-10-12T00:00:00","kp":"1.67",'):
         raise ScenarioError("s16 string Kp was not substituted in the first row")
+    # The first row's noaa_scale (null) rewritten as the JSON number 1, and, separately, its observed label
+    # (the JSON string "observed") rewritten as null. Each body changes nothing else.
+    first_row = '[{"time_tag":"2026-10-12T00:00:00","kp":1.67,"observed":"observed","noaa_scale":null},'
+    if not kp_text.startswith(first_row):
+        raise ScenarioError("s16 first Kp row is not as captured")
+    number_scale_kp = kp_text.replace('"noaa_scale":null}', '"noaa_scale":1}', 1)
+    null_label_kp = kp_text.replace('"observed":"observed"', '"observed":null', 1)
+    if not number_scale_kp.startswith(first_row.replace('"noaa_scale":null', '"noaa_scale":1')) \
+            or not null_label_kp.startswith(first_row.replace('"observed":"observed"', '"observed":null')):
+        raise ScenarioError("s16 Kp label or scale was not substituted in the first row")
     b = Builder("s16-kp-estimated-future-bin",
                 "Kp bins keep the source label verbatim; the time relation is computed from the bin start and end "
-                "when read; a Kp written as a JSON string rejects the body",
-                ["kp-forecast", "label-versus-time", "malformed", "json-value-type"], synthetic_records=True,
+                "when read; a Kp written as a JSON string, a numeric scale or a null label rejects the body",
+                ["kp-forecast", "label-versus-time", "malformed", "json-value-type", "format-drift"],
+                synthetic_records=True,
                 notes=["At 18:57:03 the 21:00 bin is labelled estimated by the source but is still in the future.",
                        "The relation is a read-time view, not a stored fact; step 2 reads the same snapshot later.",
                        "Step 3's body is synthetic: the captured Kp forecast with only the first row's kp (bin "
                        "2026-10-12T00:00:00, the JSON number 1.67) rewritten as the JSON string \"1.67\". It is "
-                       "rejected as schema and the captured body stays last-known-good."])
+                       "rejected as schema and the captured body stays last-known-good.",
+                       "Steps 4 and 5 are synthetic too: the captured Kp forecast with only the first row's "
+                       "noaa_scale (null) rewritten as the JSON number 1, and then with only its observed label "
+                       "(the JSON string \"observed\") rewritten as null. Both are rejected as schema; step 5 is "
+                       "the third consecutive rejection, so it raises format-drift attention."])
     b.fetch("2026-10-19T18:57:03Z", {"status": 200, "contentType": "application/json",
                                      "etag": 'W/"1af9-65e361333c7ac"',
                                      "lastModified": "Mon, 19 Oct 2026 18:56:43 GMT",
@@ -2183,6 +2225,28 @@ def scenarios(cap: Capture):
             "kpBinRelations": {"2026-10-19T18:00:00Z": "past", "2026-10-19T21:00:00Z": "current",
                                "2026-10-20T03:00:00Z": "future"}}},
         product="kp-forecast")
+    for at, etag, last_modified, body, rejected, attention, next_at in (
+            ("2026-10-19T22:00:00Z", 'W/"fixture-s16-number-scale"', "Mon, 19 Oct 2026 21:59:43 GMT",
+             number_scale_kp, 2, [], "2026-10-19T22:15:00Z"),
+            ("2026-10-19T22:15:00Z", 'W/"fixture-s16-null-label"', "Mon, 19 Oct 2026 22:14:43 GMT",
+             null_label_kp, 3, [{"group": "provider/kp-forecast/format-drift", "reason": "new", "level": None}],
+             "2026-10-19T22:30:00Z")):
+        b.fetch(at, {"status": 200, "contentType": "application/json", "etag": etag,
+                     "lastModified": last_modified, "body": body}, {
+            "outcome": "rejected", "diagnostics": ["body-rejected:schema"], "attention": attention,
+            "request": {"ifNoneMatch": 'W/"1af9-65e361333c7ac"',
+                        "ifModifiedSince": "Mon, 19 Oct 2026 18:56:43 GMT"},
+            "product": {
+                "lastOutcome": "rejected", "freshness": "stale", "lkgSha256": kp_sha,
+                "lastSuccessUtc": "2026-10-19T18:57:03Z", "nextAttemptNotBeforeUtc": next_at,
+                "retryNotBeforeUtc": None, "consecutiveTransientFailures": 0, "consecutiveRateLimited": 0,
+                "consecutiveRejected": rejected, "recordDriftOpen": False, "recordDriftStampUtc": None,
+                "halt": None,
+                "validators": {"etag": 'W/"1af9-65e361333c7ac"', "lastModified": "Mon, 19 Oct 2026 18:56:43 GMT"},
+                "facts": {"rowCount": 81,
+                          "bins": {"2026-10-12T00:00:00Z": {"kp": "1.67", "label": "observed",
+                                                            "noaaScale": None}}}}},
+            product="kp-forecast")
     out.append(b.build())
 
     # s17 ------------------------------------------------------------------
@@ -2240,13 +2304,24 @@ def scenarios(cap: Capture):
     out.append(b.build())
 
     # s18 ------------------------------------------------------------------
+    ovation_text = (PACK / OVATION_SUBSET).read_text("ascii")
+    ovation_sha = sha256(ovation_text.encode("ascii"))
+    # One cell outside the site band and the equatorial rows, [236, 60, 0], gets the JSON number 0.5 as its
+    # value. Nothing else changes, so the body stays the size of the committed subset.
+    if ovation_text.count("\n    [236, 60, 0],\n") != 1:
+        raise ScenarioError("s18 cell [236, 60, 0] is not unique in the OVATION subset")
+    fraction_cell = ovation_text.replace("\n    [236, 60, 0],\n", "\n    [236, 60, 0.5],\n", 1)
     b = Builder("s18-ovation-site-band",
-                "OVATION site band for HVO; the equatorial artifact is outside the band",
-                ["ovation", "location-relevance", "missing-location", "data-only"],
-                sites=[HVO_SITE, NO_LOCATION_SITE],
+                "OVATION site band for HVO; the equatorial artifact is outside the band; a cell that is not three "
+                "integers rejects the body",
+                ["ovation", "location-relevance", "missing-location", "data-only", "malformed", "json-value-type"],
+                sites=[HVO_SITE, NO_LOCATION_SITE], synthetic_records=True,
                 notes=["Data only. OVATION acquisition is unresolved (U3) and is not part of the first tranche.",
                        "The body is the committed sector subset, not the full 918,460-byte product.",
-                       "A site without a location has no band; its value is null (unknown), never zero."])
+                       "A site without a location has no band; its value is null (unknown), never zero.",
+                       "Step 2's body is synthetic: the committed sector subset with only the cell [236, 60, 0], "
+                       "outside the HVO band and the equatorial rows, rewritten as [236, 60, 0.5]. It is rejected "
+                       "as schema and the subset stays last-known-good."])
     b.fetch("2026-10-19T18:57:04Z", {"status": 200, "contentType": "application/json",
                                      "etag": 'W/"e03bc-65e360ec17552"',
                                      "lastModified": "Mon, 19 Oct 2026 18:55:29 GMT",
@@ -2258,6 +2333,20 @@ def scenarios(cap: Capture):
                                                     "cells": 210, "expectedCells": 210, "maxValue": 0},
                                             "unlocated": None},
                               "equatorialNonzeroCellsIgnored": 42}}},
+        product="ovation")
+    b.fetch("2026-10-19T19:07:04Z", {"status": 200, "contentType": "application/json",
+                                     "etag": 'W/"fixture-s18-fraction-cell"',
+                                     "lastModified": "Mon, 19 Oct 2026 19:05:29 GMT", "body": fraction_cell}, {
+        "outcome": "rejected", "diagnostics": ["body-rejected:schema"], "attention": [],
+        "request": {"ifNoneMatch": 'W/"e03bc-65e360ec17552"', "ifModifiedSince": "Mon, 19 Oct 2026 18:55:29 GMT"},
+        "product": {
+            "lastOutcome": "rejected", "freshness": "fresh", "lkgSha256": ovation_sha,
+            "lastSuccessUtc": "2026-10-19T18:57:04Z", "nextAttemptNotBeforeUtc": "2026-10-19T19:17:04Z",
+            "retryNotBeforeUtc": None, "consecutiveTransientFailures": 0, "consecutiveRateLimited": 0,
+            "consecutiveRejected": 1, "recordDriftOpen": False, "recordDriftStampUtc": None, "halt": None,
+            "validators": {"etag": 'W/"e03bc-65e360ec17552"', "lastModified": "Mon, 19 Oct 2026 18:55:29 GMT"},
+            "facts": {"observationTimeUtc": "2026-10-19T18:47:00Z",
+                      "siteBands": {"hvo": {"cells": 210, "maxValue": 0}, "unlocated": None}}}},
         product="ovation")
     out.append(b.build())
     # s19 ------------------------------------------------------------------

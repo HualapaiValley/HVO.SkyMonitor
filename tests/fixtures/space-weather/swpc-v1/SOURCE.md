@@ -118,8 +118,15 @@ records that SWPC did not publish. These include:
   - records with a renamed header line, and the drifted body served again
     after a newer one (s20);
   - malformed bodies, including bodies nested 64 and 65 levels deep (s12);
+  - the captured scales with day 1's G scale rewritten from the JSON string
+    `"1"` to the JSON number `1` (s15);
   - the captured Kp forecast with its first row's `kp` rewritten from the
-    JSON number `1.67` to the JSON string `"1.67"` (s16);
+    JSON number `1.67` to the JSON string `"1.67"`, then, separately, with
+    that row's `noaa_scale` rewritten from `null` to the JSON number `1`, and
+    with its `observed` label rewritten from the JSON string `"observed"` to
+    `null` (s16);
+  - the committed OVATION sector subset with the cell `[236, 60, 0]`
+    rewritten as `[236, 60, 0.5]` (s18);
   - a 3-day forecast with a renamed table, and one whose solar radiation
     table has no rows (s17).
 

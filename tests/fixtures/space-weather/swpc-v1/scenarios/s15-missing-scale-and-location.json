@@ -1,15 +1,19 @@
 {
   "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
   "scenarioId": "s15-missing-scale-and-location",
-  "title": "Messages without a scale or impact line, null predicted scales, and a site without a location",
+  "title": "Messages without a scale or impact line, null predicted scales, and a site without a location; a scale value written as a JSON number rejects the scales body",
   "covers": [
     "missing-scale",
     "missing-location",
     "location-relevance",
-    "first-run-backlog"
+    "first-run-backlog",
+    "malformed",
+    "json-value-type"
   ],
-  "containsSyntheticRecords": false,
-  "notes": [],
+  "containsSyntheticRecords": true,
+  "notes": [
+    "Step 3's body is synthetic: the captured scales with only day 1's G scale (the JSON string \"1\") rewritten as the JSON number 1. It is rejected as schema and the captured body stays last-known-good."
+  ],
   "sites": [
     {
       "siteId": "hvo",
@@ -111,6 +115,58 @@
             "predictedDay3": {
               "stampUtc": "2026-10-21T00:00:00Z",
               "gScale": "0"
+            }
+          }
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "fetch",
+      "atUtc": "2026-10-19T19:02:03Z",
+      "product": "scales",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s15-number-scale\"",
+        "lastModified": "Mon, 19 Oct 2026 19:00:44 GMT",
+        "body": "{\"0\": {\"DateStamp\": \"2026-10-19\", \"TimeStamp\": \"18:55:00\", \"R\": {\"Scale\": \"0\", \"Text\": \"none\", \"MinorProb\": null, \"MajorProb\": null}, \"S\": {\"Scale\": \"0\", \"Text\": \"none\", \"Prob\": null}, \"G\": {\"Scale\": \"0\", \"Text\": \"none\"}}, \"1\": {\"DateStamp\": \"2026-10-19\", \"TimeStamp\": \"18:55:00\", \"R\": {\"Scale\": null, \"Text\": null, \"MinorProb\": \"25\", \"MajorProb\": \"5\"}, \"S\": {\"Scale\": null, \"Text\": null, \"Prob\": \"5\"}, \"G\": {\"Scale\": 1, \"Text\": \"minor\"}}, \"2\": {\"DateStamp\": \"2026-10-20\", \"TimeStamp\": \"00:00:00\", \"R\": {\"Scale\": null, \"Text\": null, \"MinorProb\": \"25\", \"MajorProb\": \"5\"}, \"S\": {\"Scale\": null, \"Text\": null, \"Prob\": \"5\"}, \"G\": {\"Scale\": \"1\", \"Text\": \"minor\"}}, \"3\": {\"DateStamp\": \"2026-10-21\", \"TimeStamp\": \"00:00:00\", \"R\": {\"Scale\": null, \"Text\": null, \"MinorProb\": \"25\", \"MajorProb\": \"5\"}, \"S\": {\"Scale\": null, \"Text\": null, \"Prob\": \"5\"}, \"G\": {\"Scale\": \"0\", \"Text\": \"none\"}}, \"-1\": {\"DateStamp\": \"2026-10-18\", \"TimeStamp\": \"18:55:00\", \"R\": {\"Scale\": \"1\", \"Text\": \"minor\", \"MinorProb\": null, \"MajorProb\": null}, \"S\": {\"Scale\": \"0\", \"Text\": \"none\", \"Prob\": null}, \"G\": {\"Scale\": \"0\", \"Text\": \"none\"}}}"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:schema"
+        ],
+        "attention": [],
+        "request": {
+          "ifNoneMatch": "W/\"44e-65e360fa970f3\"",
+          "ifModifiedSince": "Mon, 19 Oct 2026 18:55:44 GMT"
+        },
+        "product": {
+          "lastOutcome": "rejected",
+          "freshness": "fresh",
+          "lkgSha256": "D1CB0BD994FF2E0020DC44BA4F10F54E7A409D2C65DC49EAA2249A21C7FC8941",
+          "lastSuccessUtc": "2026-10-19T18:57:03Z",
+          "nextAttemptNotBeforeUtc": "2026-10-19T19:07:03Z",
+          "retryNotBeforeUtc": null,
+          "consecutiveTransientFailures": 0,
+          "consecutiveRateLimited": 0,
+          "consecutiveRejected": 1,
+          "recordDriftOpen": false,
+          "recordDriftStampUtc": null,
+          "halt": null,
+          "validators": {
+            "etag": "W/\"44e-65e360fa970f3\"",
+            "lastModified": "Mon, 19 Oct 2026 18:55:44 GMT"
+          },
+          "facts": {
+            "current": {
+              "stampUtc": "2026-10-19T18:55:00Z"
+            },
+            "predictedDay1": {
+              "stampUtc": "2026-10-19T18:55:00Z",
+              "gScale": "1"
             }
           }
         }

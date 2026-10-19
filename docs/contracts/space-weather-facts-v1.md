@@ -150,15 +150,15 @@ Fields not listed are not read, and their types are not checked.
 | alerts | `product_id`, `issue_datetime`, `message` | string. A number of any form, such as `1E5`, `1.5` or a 4,301-digit integer, is not a string even when its text would match the layout (s12) | `record-schema` for that record |
 | scales | the body; each day (`-1` to `3`); its `R`, `S` and `G` | object | `schema` |
 | scales | `DateStamp`, `TimeStamp` | string | `schema` |
-| scales | `R.Scale`, `R.MinorProb`, `R.MajorProb`, `S.Scale`, `S.Prob`, `G.Scale` | string or `null`, kept as written | `schema` |
+| scales | `R.Scale`, `R.MinorProb`, `R.MajorProb`, `S.Scale`, `S.Prob`, `G.Scale` | string or `null`, kept as written. The number `1` is not a string (s15) | `schema` |
 | Kp forecast | the body | array | `schema` |
 | Kp forecast | each row | object | `schema` |
-| Kp forecast | `time_tag`, `observed` | string | `schema` |
+| Kp forecast | `time_tag`, `observed` | string. An `observed` of `null` is not a string (s16) | `schema` |
 | Kp forecast | `kp` | number whose source text is exactly `d.dd` in ASCII digits, such as `4.67`, kept as that text (`"4.67"`). The string `"1.67"` is not a number (s16), and number text such as `5`, `5.0`, `4.670` or `4.67E0` is not `d.dd` | `schema` |
-| Kp forecast | `noaa_scale` | string or `null` | `schema` |
+| Kp forecast | `noaa_scale` | string or `null`. The number `1` is neither (s16) | `schema` |
 | OVATION | the body | object | `schema` |
 | OVATION | `Observation Time`, `Forecast Time` | string | `schema` |
-| OVATION | `coordinates` | array of cells, each an array of exactly three integers (longitude, latitude, value) | `schema` |
+| OVATION | `coordinates` | array of cells, each an array of exactly three integers (longitude, latitude, value). One cell outside every site band with the value `0.5` still rejects the body (s18) | `schema` |
 
 ## Alert records
 
@@ -357,8 +357,8 @@ evaluated before it in the same merge (s08).
   it is durable. It does not change lifecycle state and does not suppress a
   later escalation. Acknowledgement and expiry are separate facts (s10).
 - **Format drift.** The third consecutive rejected body for a product raises
-  `provider/<product>/format-drift` once (s12). A success, including a
-  `stale-snapshot`, resets the count. A resume does not.
+  `provider/<product>/format-drift` once (s12; for the Kp forecast, s16). A
+  success, including a `stale-snapshot`, resets the count. A resume does not.
 - **Record drift.** An `updated` alerts body with at least one rejected record
   raises `provider/alerts/record-drift` when no record-drift episode is open,
   and opens one. Records that are repeats within the body are not rejections.
@@ -698,10 +698,10 @@ A fetch also reports:
 | s12 | Malformed bodies; per-record faults (schema, issue time, mismatch, oversize, header-only, long serial, a doubled space in `Issue Time`, an unpaired surrogate, non-ASCII digits, a year beyond range, a 4,301-digit number, and JSON numbers `1E5` and `1.5` where strings are required); an impossible watch day takes the fallback window; unknown code; record drift; format drift; too many and no valid records; a body nested 64 levels deep passes the depth limit and one nested 65 levels is `malformed-json` |
 | s13 | Timeout and 5xx backoff; 304; 429 with both `Retry-After` forms; halting 429 keeps `retryNotBeforeUtc` across a restart and applies it at the resume; halts; manual refusals; restart while halted; resume |
 | s14 | Year rollover on watch day lines and on 3-day forecast columns (synthetic forecast); UTC days shown in the site zone |
-| s15 | Missing scale and impact lines; null predicted scales; site without a location |
-| s16 | Future Kp bin labelled `estimated`; past, current and future relations as time moves; a `kp` written as the JSON string `"1.67"` rejects the body as `schema` and keeps the last-known-good snapshot (synthetic body) |
+| s15 | Missing scale and impact lines; null predicted scales; site without a location; a scales value written as the JSON number `1` rejects the body as `schema` and keeps the last-known-good snapshot (synthetic body) |
+| s16 | Future Kp bin labelled `estimated`; past, current and future relations as time moves; a `kp` written as the JSON string `"1.67"`, a `noaa_scale` written as the JSON number `1`, or an `observed` of `null` rejects the body as `schema` and keeps the last-known-good snapshot; the third consecutive rejection raises format drift (synthetic bodies) |
 | s17 | Text normalization; `:Issued:` versus `Last-Modified`; S and R probabilities; a renamed table, or a probability table with no rows, rejects the body |
-| s18 | OVATION site band and equatorial artifact; `null` band for a site without a location (data only) |
+| s18 | OVATION site band and equatorial artifact; `null` band for a site without a location; a cell whose value is the JSON number `0.5` rejects the body as `schema` and keeps the last-known-good snapshot (data only; synthetic body) |
 | s19 | An early resume keeps minimum spacing, backoff, `Retry-After` and the 429 count; per-product 429 state |
 | s20 | Record drift raised once per episode, kept across a restart; equal-stamp bodies alternating neither close nor re-raise it; a stale-snapshot drifted body neither raises, closes nor advances it; closed by a clean body with a newer stamp and raised again |
 | s21 | Pending before `Valid From`; short-window alert inside and outside the new-notice grace; 96-hour cap |

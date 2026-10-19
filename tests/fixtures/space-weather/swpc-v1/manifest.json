@@ -129,8 +129,8 @@
   "files": [
     {
       "path": "SOURCE.md",
-      "bytes": 8400,
-      "sha256": "898D980E8B872BA5D746880E4DFC08DDCDEA02AC611A39610B30C9ABBB9988D6"
+      "bytes": 8816,
+      "sha256": "2171007704A2EB33A798DC0E9C204A2D64755CA3094E8DF0D5EB4293E7DC9404"
     },
     {
       "path": "capture-20261019T1857Z/3-day-forecast.original.json",
@@ -159,8 +159,8 @@
     },
     {
       "path": "fixtures.py",
-      "bytes": 155593,
-      "sha256": "313E4C85D30574B0EAB8991512277B14599CE6E9382EE702F26A3ECD73CE6A62"
+      "bytes": 163031,
+      "sha256": "7F8DFA5AAF1300F9DAC0876DEE8448199952302A874FDC6432539DC43722FA20"
     },
     {
       "path": "ovation-aurora-site-sector.json",
@@ -239,13 +239,13 @@
     },
     {
       "path": "scenarios/s15-missing-scale-and-location.json",
-      "bytes": 3833,
-      "sha256": "771AE4F65885F95B7E89E728A653DB25FCBC348557B1D03292A7A19909B1842B"
+      "bytes": 7084,
+      "sha256": "AFC92D62B0F0893543370F16347D2AA6AFA9A9FDFF67AAB259492828E3A68757"
     },
     {
       "path": "scenarios/s16-kp-estimated-future-bin.json",
-      "bytes": 13296,
-      "sha256": "EFC8059DA44543B269F6C769B877C045FD692546627DFF699AFA3EC59D1B4673"
+      "bytes": 32848,
+      "sha256": "F63B13754D90C139F1E66CB8224795959A4541286953D7793FC9B837CE80C866"
     },
     {
       "path": "scenarios/s17-three-day-issue-versus-last-modified.json",
@@ -254,8 +254,8 @@
     },
     {
       "path": "scenarios/s18-ovation-site-band.json",
-      "bytes": 2140,
-      "sha256": "66A5D1B82600564890529574D930F0C8D964ECCF0BB5CD265B0386DBB0009929"
+      "bytes": 42692,
+      "sha256": "9695AFFF834D6271F4D10B4F1459EB0C3A7A06904E0571148184243903816310"
     },
     {
       "path": "scenarios/s19-early-resume-spacing.json",
