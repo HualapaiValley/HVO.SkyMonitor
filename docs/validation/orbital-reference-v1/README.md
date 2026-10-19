@@ -44,6 +44,7 @@ Use Python 3 with `sgp4==2.27` installed in a dedicated environment, then:
 
 ```bash
 python docs/validation/orbital-reference-v1/verify.py
+python -B -m unittest discover -s docs/validation/orbital-reference-v1 -p test_verify.py
 ```
 
 The verification checks every manifest length/hash, inventory, expected error
@@ -51,6 +52,9 @@ and both near-Earth/deep-space branches, then enforces position-vector residual
 at most 1e-6 km and velocity-vector residual at most 1e-8 km/s. It has no
 download path. Do not regenerate expected vectors with the implementation under
 test. Report output with `--output <new-file>`; retained reports are immutable.
+The failure regressions mutate and re-pin vectors entirely in memory, checking
+NaN/infinity, numeric overflow and nonfinite residual rejection. A matching
+checksum alone cannot make invalid numeric reference data acceptable.
 
 The existing ISS POC separately used improved mode `i`, Skyfield 1.55, retained
 EOP and DE421, and synthetic brightness. Preserve its lineage. These TEME

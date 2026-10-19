@@ -38,8 +38,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 3514,
-      "sha256": "0e515a459c6e8e6a7e3bb889c089b6a0d95e93d3e3b3da54acda929312f27d18"
+      "bytes": 3828,
+      "sha256": "2b6a64043c5793e2b12202714626f0c15d045704518597608d43c4a11b1ca26a"
     },
     {
       "path": "SGP4-VER.TLE",
@@ -52,14 +52,19 @@
       "sha256": "2fca7ac8926e890d271e5bc4ae1e018cf21bdfe4cfab535deddffb28cc93c134"
     },
     {
+      "path": "test_verify.py",
+      "bytes": 2949,
+      "sha256": "f2e9bce85767cc52fa8d57eb9265b98c609b12df7a41bb24c7e465667483c8f7"
+    },
+    {
       "path": "vallado-afspc-vectors.json",
       "bytes": 224084,
       "sha256": "2ae742b494fe4106c6373d4b63fce82e3a85e8a22ac7cfb05478a5d12baff408"
     },
     {
       "path": "verify.py",
-      "bytes": 3947,
-      "sha256": "82a5a34cf51b8ce3a1f5776425907c3a7a335902f64b7adb0fabb0896ce66e37"
+      "bytes": 4910,
+      "sha256": "ff678755c2752b2ec22b93c62b2ecc9d5519f92ee5bf93fba0c402164990a825"
     }
   ]
 }
