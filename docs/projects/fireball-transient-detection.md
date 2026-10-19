@@ -16,6 +16,26 @@ The initial implementation is not a generic machine-learning platform. It starts
 with deterministic image algorithms, measured heuristics, retained source
 evidence, and reviewable reason-coded classifications.
 
+### Satellite software activation (2026-10-19)
+
+The operator-issued two-host assignment under #1391 activates a bounded satellite
+software slice independently of broader stream-native V2 research. The
+[roadmap activation](../roadmap.md#bounded-satellite-and-sky-context-activation--2026-10-19)
+and [#527 decision checkpoint](../planning/orbital-data-decision-527.md) govern
+its actual start, integration and release gates. #527 remains research; #1402
+delivers approved shared executable contracts. #528 acquisition and #529
+frozen-fixture propagation can then develop in parallel, with refreshed
+snapshot integration still required before supported live use.
+
+#530 additionally requires the approved measured-geometry and transient inputs;
+the assignment does not transfer calibration work from #523. Detect from pixels
+before orbital association, preserve uncertain/multiple/no matches and original
+evidence, and keep predicted and measured layers distinct. #1395 measures the
+entire required live result before the next completed image at five-second
+arrivals. Causal processing uses available history; centered future-frame
+refinement is a separately identified later result. This software activation
+provides no physical sensitivity, clock, calibration or orbital-accuracy claim.
+
 ## 2. Compatibility Constraints
 
 Migration from the existing serial CameraAgent pipeline preserves configured
