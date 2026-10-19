@@ -434,7 +434,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (!Directory.Exists(manifest.Catalog.InstallRoot))
         {
             throw InstallerException.Refused(
-                $"The restored instance needs catalog {manifest.Catalog.CatalogId} {manifest.Catalog.PackageVersion}, which is not installed. Install it with 'hvo-sky-install catalog install --catalog-bundle <bundle>', then run the restore again.");
+                $"The restored instance needs catalog {manifest.Catalog.CatalogId} {manifest.Catalog.PackageVersion}, which is not installed. Install it with '{InstallerProgram.Current} catalog install --catalog-bundle <bundle>', then run the restore again.");
         }
         var daemon = await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -475,7 +475,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (live.LifecycleCondition != InstanceLifecycleCondition.Uninstalled)
         {
             throw InstallerException.Refused(
-                $"Instance {instanceId:D} is installed; a restore never replaces an installed instance. Uninstall it first with 'hvo-sky-install cameraagent uninstall --instance-id {instanceId:D}'.");
+                $"Instance {instanceId:D} is installed; a restore never replaces an installed instance. Uninstall it first with '{InstallerProgram.Current} cameraagent uninstall --instance-id {instanceId:D}'.");
         }
     }
 

@@ -695,7 +695,7 @@ internal sealed class ReviewPage : WizardPage
         _check = null;
         _checking = true;
         var visit = ++_visit;
-        Show([new("Checking this machine against the plan, as hvo-sky-install cameraagent install --answers FILE --plan does...", HvoTone.Muted)]);
+        Show([new($"Checking this machine against the plan, as {InstallerProgram.Current} cameraagent install --answers FILE --plan does...", HvoTone.Muted)]);
         Wizard.Notice.Show(HvoNotice.Info, "Checking the plan. Nothing is changed.", "[CHECKING]");
         Wizard.Run(
             Session.CheckAsync,
@@ -772,7 +772,7 @@ internal sealed class ReviewPage : WizardPage
             }
 
             lines.Add(new(string.Empty));
-            lines.Add(new($"Install saves the answers and runs: hvo-sky-install {InstallWizardRunner.Quote(Session.Arguments(Session.AnswersPath))}", HvoTone.Muted));
+            lines.Add(new($"Install saves the answers and runs: {InstallerProgram.Current} {InstallWizardRunner.Quote(Session.Arguments(Session.AnswersPath))}", HvoTone.Muted));
         }
         else
         {

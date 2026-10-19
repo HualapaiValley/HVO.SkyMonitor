@@ -78,7 +78,7 @@ internal sealed partial class CameraAgentInstaller
     }
 
     private static string DifferentImage(InstanceManifest manifest, ImageInstallationIdentity requested)
-        => $"Instance {manifest.InstanceId:D} runs image {manifest.Image.ImageId}, not the requested {requested.ImageId}. A re-run keeps the image; change it with 'hvo-sky-install cameraagent upgrade --instance-id {manifest.InstanceId:D}', or re-run naming the image it runs.";
+        => $"Instance {manifest.InstanceId:D} runs image {manifest.Image.ImageId}, not the requested {requested.ImageId}. A re-run keeps the image; change it with '{InstallerProgram.Current} cameraagent upgrade --instance-id {manifest.InstanceId:D}', or re-run naming the image it runs.";
 
     /// <summary>
     /// A completed instance as a re-run finds it, read without changing anything: what the re-run and its plan both
