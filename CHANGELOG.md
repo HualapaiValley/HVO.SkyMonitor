@@ -10,6 +10,15 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ## [Unreleased]
 
+### Changed
+
+- Sky overlays are drawn in their original colours again, instead of the purple and cyan theme that did not read well on
+  the sky image: solid 2 px blue (`#60A0FF`) constellation lines, grey (`#909090`) star markers, white star names,
+  cardinal letters and corner text, a 1 px grey (`#606060`) image circle at full opacity and an orange-red (`#FF4020`)
+  cloud mask. The dark badge behind N, E, S and W, the dark corner-text panel and the crosshair star marker stay, and
+  the Current Sky layer swatches match the overlays. Captures already retained keep the overlays they were drawn with,
+  and time-lapse frames are unchanged. (#1383)
+
 ## [0.9.0] - 2026-10-19
 
 ### Added

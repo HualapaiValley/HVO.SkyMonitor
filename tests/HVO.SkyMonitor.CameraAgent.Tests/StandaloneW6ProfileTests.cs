@@ -74,7 +74,7 @@ public sealed class StandaloneW6ProfileTests
             preview.DesiredSha256,
             preview.DesiredSha256);
         Assert.AreEqual(
-            "114F1E0A994BAE76B0D5B6B9D2A7145F9D7B624E65436192D2B3FA28BEA3B339",
+            "0A64A0DD5152331249A9585B9E1777EEBBC2A887A52B216130E19F286673159E",
             preview.EffectiveSha256,
             preview.EffectiveSha256);
         Assert.HasCount(14, preview.EffectiveNodes);
@@ -424,7 +424,7 @@ public sealed class StandaloneW6ProfileTests
                 ? ReconstructSceneConsumerHash(node, removeV3: true) : node.PlanSha256).ToArray()
         }));
         Assert.AreEqual(preview.EffectiveSha256, Aggregate(removeV3: false));
-        Assert.AreEqual("A3ADF0AA0B463EC5FBE07F55A1DE913A21C77E22F049DCC0324E4CB52EA9EB53", Aggregate(removeV3: true),
+        Assert.AreEqual("5B7CAC2D9A1344BD211BA95CDA32ECCE8BA0DA5687449E2ABADC8DE37A00F0BF", Aggregate(removeV3: true),
             "The versioned effective graph without v3 requirements is pinned independently of the current graph.");
     }
 
