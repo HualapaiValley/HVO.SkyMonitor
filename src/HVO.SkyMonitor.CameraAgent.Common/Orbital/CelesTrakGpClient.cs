@@ -107,8 +107,16 @@ public sealed class CelesTrakGpClient : IOrbitalElementsProviderClient
             CelesTrakGpSource.SingleHeaderValue(response.Content.Headers, "Last-Modified"),
             CelesTrakGpSource.MaximumLastModifiedLength);
 
-        // Every non-200, including 1xx leftovers, other 2xx, 304 and every 3xx, is a provider-wide halt. The body is
-        // not read: the response is disposed without touching its content stream.
+        // RFC 9110 defines status codes only in 100..599; anything else is an invalid response, not a provider status
+        // the halt policy can name. It is rejected (and quarantined by the caller) without reading the body.
+        if (status is < 100 or > 599)
+        {
+            return state.Complete(this, OrbitalFetchDisposition.ResponseRejected, "orbital.invalid-http-status",
+                FormattableString.Invariant($"status={status}"));
+        }
+
+        // Every other non-200, including 1xx leftovers, other 2xx, 304 and every 3xx, is a provider-wide halt. The
+        // body is not read: the response is disposed without touching its content stream.
         if (status != (int)HttpStatusCode.OK)
         {
             return state.Complete(this, OrbitalFetchDisposition.HttpStatusHalt, "orbital.non-200-response",

@@ -72,6 +72,40 @@ public sealed class CelesTrakGpClientTests
     }
 
     [TestMethod]
+    [DataRow(0)]
+    [DataRow(99)]
+    [DataRow(600)]
+    [DataRow(999)]
+    public async Task StatusOutsideTheRfc9110RangeIsARejectedResponseNotAHalt(int status)
+    {
+        var content = new TrackingContent(SmallJson);
+        var (result, handler) = await FetchAsync(content, (HttpStatusCode)status).ConfigureAwait(false);
+
+        Assert.AreEqual(OrbitalFetchDisposition.ResponseRejected, result.Disposition);
+        Assert.AreEqual(status, result.HttpStatusCode);
+        Assert.AreEqual("orbital.invalid-http-status", result.ReasonCode);
+        Assert.AreEqual($"status={status}", result.Detail);
+        Assert.IsNull(result.RawBytes);
+        Assert.IsNull(result.RawSha256);
+        Assert.IsFalse(content.BodyRead, "An invalid-status body is never read.");
+        Assert.HasCount(1, handler.Requests, "No retry is made.");
+    }
+
+    [TestMethod]
+    [DataRow(100)]
+    [DataRow(599)]
+    public async Task BoundaryValidStatusesStillHaltAndFitTheHaltContract(int status)
+    {
+        var (result, _) = await FetchAsync(new TrackingContent(SmallJson), (HttpStatusCode)status).ConfigureAwait(false);
+
+        Assert.AreEqual(OrbitalFetchDisposition.HttpStatusHalt, result.Disposition);
+        var halt = new OrbitalProviderHalt(CelesTrakGpTestData.RetrievedUtc, result.HttpStatusCode!.Value, result.ReasonCode);
+        new OrbitalRefreshStatus(OrbitalRefreshStatus.CurrentVersion, CelesTrakGpTestData.RetrievedUtc, 1, true, null, null,
+            CelesTrakGpTestData.RetrievedUtc, null, null, null, null, null, halt, null, "halted",
+            OrbitalRefreshRecoveryAction.ResumeProvider).Validate();
+    }
+
+    [TestMethod]
     public async Task RequestIsOneUnconditionalGetOfTheApprovedUriWithExactlyThreeHeaders()
     {
         var (result, handler) = await FetchAsync(new TrackingContent(SmallJson)).ConfigureAwait(false);

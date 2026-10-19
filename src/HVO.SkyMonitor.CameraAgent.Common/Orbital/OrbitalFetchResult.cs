@@ -8,7 +8,9 @@ public enum OrbitalFetchDisposition
     /// <summary>HTTP 200 with an accepted media type, encoding and size; the raw bytes are present.</summary>
     Retrieved,
 
-    /// <summary>Any status other than 200. The provider policy halts on it; the body was not read.</summary>
+    /// <summary>
+    /// Any valid status (100..599) other than 200. The provider policy halts on it; the body was not read.
+    /// </summary>
     HttpStatusHalt,
 
     /// <summary>TLS, authentication, connection, protocol or I/O failure. Keep last-known-good; no retry.</summary>
@@ -17,7 +19,10 @@ public enum OrbitalFetchDisposition
     /// <summary>The bounded request timeout elapsed. Keep last-known-good; no retry.</summary>
     TimedOut,
 
-    /// <summary>A 200 response whose media type, encoding, declared length or size bounds were not accepted.</summary>
+    /// <summary>
+    /// A 200 response whose media type, encoding, declared length or size bounds were not accepted, or a response
+    /// whose status lies outside the RFC 9110 range 100..599 (<c>orbital.invalid-http-status</c>; body not read).
+    /// </summary>
     ResponseRejected
 }
 
