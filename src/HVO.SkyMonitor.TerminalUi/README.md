@@ -7,8 +7,14 @@ look the terminal prototype of RoofController #158, which redraws every RoofCont
 CameraAgent's clean HVO Dark styling (`docs/prototypes/roofcontroller-terminal.html` and `docs/prototypes/README.md`
 in HVO.RoofController at `9cc8f2bbc677f41a9e30217a9881ded0c47860a9`).
 
-The project references Terminal.Gui and `Wcwidth` (the width table Terminal.Gui depends on) and nothing else. The
-architecture test `TerminalUiBoundaryIsNarrow` keeps it so.
+The project references Terminal.Gui and nothing else. The architecture test `TerminalUiBoundaryIsNarrow` keeps it so.
+
+A program built on this project ships without Terminal.Gui's syntax highlighting: TextMateSharp, its grammars and
+Onigwrap's native Oniguruma, which Terminal.Gui brings in for its `Code` and `Markdown` views. `Directory.Build.targets`
+leaves them out of any project that references this one, and of a test project that sets `HvoTerminalProgram`, so
+neither the files nor their notices ship. So a terminal program here does not use Terminal.Gui's `Code`, `Markdown`
+or `Wizard` views, which highlight text; the installer's published file is run on a terminal to show it works without
+them (`scripts/lib/published-installer-terminal.py`, from `scripts/test:deployment-installer`).
 
 ## The design
 
@@ -24,8 +30,9 @@ As the prototype draws it:
 - **Actions.** Bracketed, `[ Next ]`, the primary one on the strong accent (`HvoTheme.CreateButton`).
 - **Bounded content.** Text wraps inside its box, a column's continuation lines indented under the column
   (`HvoTextLines`); when there is more than fits, the last row says which lines show and which keys scroll. Text is
-  measured in display cells, on text-element boundaries (`TerminalText`, with `Wcwidth`): a CJK or supplementary-plane
-  character takes two cells and a combining mark none, so nothing runs past its box or is cut inside a character.
+  measured as Terminal.Gui's renderer draws it (`TerminalText`, with Terminal.Gui's own grapheme splitting and
+  `GetColumns`): a CJK character, an emoji, a flag, a ZWJ sequence or an emoji with a skin tone takes two cells and a
+  letter with its combining marks one, so nothing runs past its box or is cut inside a character.
 - **Sizes.** Usable at 80 x 24. At 120 x 32 there is room for more: the wizard shows every answer so far beside the page.
 - **Keyboard.** Tab moves, Enter does what the primary action says, and Esc closes (the wizard: cancels).
 - **Never colour alone.** Every state also has a word or a mark: a notice starts with `[ERROR]`, `[WARNING]`, `[OK]` or
@@ -96,7 +103,7 @@ have Terminal.Gui's decorations turned off.
 | `HvoTextLines`, `HvoLine` | Bounded, wrapped, scrollable lines in any role |
 | `HvoChoiceList`, `HvoToggle` | One of several answers, and a yes-or-no question |
 | `HvoConsoleText` | The same panels and notices as plain terminal output, for what a program prints outside Terminal.Gui |
-| `TerminalText` | Width, clipping and padding in display cells, on text-element boundaries |
+| `TerminalText` | Width, clipping and padding in cells, by grapheme, exactly as Terminal.Gui's renderer measures |
 | `TerminalRenders` | Saves a screen as ANSI for the screenshots |
 
 ## Screenshots

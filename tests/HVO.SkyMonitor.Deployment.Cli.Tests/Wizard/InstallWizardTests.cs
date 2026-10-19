@@ -665,11 +665,16 @@ public sealed class InstallWizardTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public void TheWizard_NeverLoadsTheNativeOnigurumaLibrary()
+    public void TheWizard_RunsWithoutTerminalGuisSyntaxHighlighting()
     {
-        // Terminal.Gui loads TextMateSharp's and Onigwrap's managed assemblies as it reads its own types, but only its
-        // syntax highlighting calls into Onigwrap's native Oniguruma, and no page highlights text. The library is in the
-        // installer all the same, so its notice ships (THIRD-PARTY-NOTICES.md).
+        // Terminal.Gui brings in TextMateSharp, its grammars and Onigwrap's native Oniguruma for its Code and Markdown
+        // views. The installer ships without them (Directory.Build.targets), and this test project runs without them too,
+        // so every page here, and every other wizard test, shows they are not needed.
+        var here = AppContext.BaseDirectory;
+        string[] left = ["TextMateSharp.dll", "TextMateSharp.Grammars.dll", "Onigwrap.dll"];
+        Assert.IsEmpty(left.Where(file => File.Exists(Path.Combine(here, file))).ToArray());
+        Assert.IsEmpty(Directory.EnumerateFiles(here, "*onigwrap*", SearchOption.AllDirectories).ToArray());
+
         using (var host = new WizardHost())
         using (var driver = WizardDriver.Start(host, []))
         {
@@ -681,11 +686,11 @@ public sealed class InstallWizardTests
             driver.Type(Catalog);
             driver.NextTo<ReviewPage>();
             driver.WaitIdle("the plan check");
-            _ = driver.Screen;
+            Assert.IsTrue(driver.PageOf<ReviewPage>().Check!.CanInstall, driver.Screen);
         }
 
-        // The managed Onigwrap.dll is mapped; the native library, libonigwrap.so, never is.
-        Assert.DoesNotContain("libonigwrap", File.ReadAllText("/proc/self/maps"), StringComparison.Ordinal);
+        string[] highlighting = ["TextMateSharp", "TextMateSharp.Grammars", "Onigwrap"];
+        Assert.IsEmpty(AppDomain.CurrentDomain.GetAssemblies().Where(assembly => highlighting.Contains(assembly.GetName().Name)).ToArray());
     }
 
     private static void Stays(WizardDriver driver, string? problem)
