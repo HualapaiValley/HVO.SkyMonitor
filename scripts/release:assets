@@ -144,6 +144,9 @@ for rid in linux-x64 linux-arm64; do
     if [[ "$rid" == "$host_rid" ]]; then
         actual="$(env -i HOME="$work" PATH=/usr/bin:/bin "$client" --version)"
         [[ "$actual" == "$version+$commit" ]] || fail "the $rid hvo-sky reports '$actual', not '$version+$commit'."
+        # Its terminal interface, run as an operator runs it, without Terminal.Gui's syntax highlighting (#1317).
+        python3 scripts/lib/published-hvo-sky-terminal.py "$client" >&2 \
+            || fail "the $rid hvo-sky's terminal interface did not run as published."
     else
         grep -aqF "$version+$commit" "$client" || fail "the $rid hvo-sky does not carry '$version+$commit'."
     fi
