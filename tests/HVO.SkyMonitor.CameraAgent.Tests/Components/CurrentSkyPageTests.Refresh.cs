@@ -122,6 +122,143 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
+    public void TheCurrentSkyReadAndTheNextCapturesLayersShareOneDeadline()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var first = View(WithStructuredBase());
+        var current = first;
+        var slow = false;
+        service.CurrentSkyHandler = async token =>
+        {
+            if (slow) await Task.Delay(TimeSpan.FromSeconds(3), clock, token).ConfigureAwait(false);
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(current);
+        };
+        var layersCancelled = false;
+        service.PresentationHandler = async (id, token) =>
+        {
+            if (id == SecondCaptureId)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(3), clock, token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    layersCancelled = true;
+                    throw;
+                }
+            }
+            return OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64)));
+        };
+        var cut = context.Render<CurrentSkyPage>();
+        WaitForFirst(cut, clock, first);
+        var start = clock.GetUtcNow();
+
+        // A 3 s read and a 3 s layer read cannot both fit in the 5 s refresh deadline.
+        slow = true;
+        current = Next(first, SecondCaptureId, 43);
+        clock.Advance(TimeSpan.FromSeconds(15));
+        cut.WaitForAssertion(() => Assert.IsTrue(clock.HasTimerDue(start.AddSeconds(18))));
+        clock.Advance(TimeSpan.FromSeconds(3));
+        cut.WaitForAssertion(() => Assert.IsTrue(clock.HasTimerDue(start.AddSeconds(21))));
+        clock.Advance(TimeSpan.FromSeconds(3));
+
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".state-notice--error").TextContent,
+            "exceeded its five-second deadline", StringComparison.Ordinal));
+        Assert.IsTrue(Volatile.Read(ref layersCancelled));
+        Assert.AreEqual(CaptureLink(first), cut.Find(".layers-link").GetAttribute("href"));
+        cut.WaitForElement(".sky-layer-workspace");
+    }
+
+    [TestMethod]
+    public void OverlaysThatCannotBeReadNowLeaveTheCompleteImageUntilALaterRefresh()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var first = View(WithStructuredBase());
+        var current = first;
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(current));
+        var secondReads = 0;
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(id == SecondCaptureId && Interlocked.Increment(ref secondReads) == 1
+            ? OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable, "Structured layers are temporarily unavailable.")
+            : OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
+        var cut = context.Render<CurrentSkyPage>();
+        WaitForFirst(cut, clock, first);
+        cut.WaitForElement(".sky-layer-workspace");
+
+        current = Next(first, SecondCaptureId, 43);
+        clock.Advance(TimeSpan.FromSeconds(15));
+        cut.WaitForAssertion(() => Assert.AreEqual(1, Volatile.Read(ref secondReads)));
+
+        Assert.AreEqual(CaptureLink(first), cut.Find(".layers-link").GetAttribute("href"));
+        Assert.HasCount(1, cut.FindAll(".sky-layer-workspace"));
+        Assert.IsEmpty(cut.FindAll(".sky-layer-unavailable"));
+
+        clock.Advance(TimeSpan.FromSeconds(15));
+        cut.WaitForAssertion(() => Assert.AreEqual(CaptureLink(current), cut.Find(".layers-link").GetAttribute("href")));
+        cut.WaitForElement(".sky-layer-workspace");
+    }
+
+    [TestMethod]
+    public void ACaptureWhoseProcessingEndedWithoutReadableOverlaysStillReplacesTheImage()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var first = View(WithStructuredBase());
+        var current = first;
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(current));
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(id == SecondCaptureId
+            ? OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable, "Structured layers are temporarily unavailable.")
+            : OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
+        var cut = context.Render<CurrentSkyPage>();
+        WaitForFirst(cut, clock, first);
+
+        // The read found no layers for the capture, so they are not waited for.
+        var ended = Next(first, SecondCaptureId, 43);
+        current = ended with { Presentation = ended.Presentation with { StructuredLayersAvailable = false } };
+        clock.Advance(TimeSpan.FromSeconds(15));
+
+        cut.WaitForAssertion(() => Assert.AreEqual(CaptureLink(current), cut.Find(".layers-link").GetAttribute("href")));
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".sky-layer-unavailable").TextContent,
+            "temporarily unavailable", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public async Task ADenialOfTheNextCapturesLayersIsNotDeferredByFullScreen()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context, module => module.Setup<bool>("requestFullScreen", _ => true).SetResult(true));
+        var first = View(WithStructuredBase());
+        var current = first;
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(current));
+        var denied = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondRead = false;
+        service.PresentationHandler = (id, _) =>
+        {
+            if (id != SecondCaptureId)
+                return ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
+            Volatile.Write(ref secondRead, true);
+            return new ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>>(denied.Task);
+        };
+        var cut = context.Render<CurrentSkyPage>();
+        WaitForFirst(cut, clock, first);
+        current = Next(first, SecondCaptureId, 43);
+        clock.Advance(TimeSpan.FromSeconds(15));
+        cut.WaitForAssertion(() => Assert.IsTrue(Volatile.Read(ref secondRead)));
+
+        await cut.Find("#current-sky-view-large").ClickAsync().ConfigureAwait(false);
+        var navigation = context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+        var redirected = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        navigation.LocationChanged += (_, args) => redirected.TrySetResult(args.Location);
+        denied.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unauthorized, "Denied"));
+
+        var location = await redirected.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.IsTrue(location.EndsWith("/Account/AccessDenied", StringComparison.Ordinal));
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll(".sky-image-stage img")));
+    }
+
+    [TestMethod]
     public void ACaptureWhoseOverlaysNeverComeIsShownOnceItsProcessingEnds()
     {
         using var context = new BunitContext();
@@ -199,15 +336,18 @@ public sealed partial class CurrentSkyPageTests
             module.Invocations["writeLayerVisibility"].Single().Arguments.ToArray()));
     }
 
-    private static (TestOperatorUiService Service, ManualTimeProvider Clock) ConfigurePolling(BunitContext context)
+    private static (TestOperatorUiService Service, ManualTimeProvider Clock) ConfigurePolling(
+        BunitContext context,
+        Action<BunitJSModuleInterop>? module = null)
     {
         var service = Configure(context);
         var clock = new ManualTimeProvider(OperatorUiTestData.Now);
         context.Services.AddSingleton<TimeProvider>(clock);
         service.PresentationHandler = (id, _) => ValueTask.FromResult(
             OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
-        context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
-            .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        var interop = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+        interop.Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        module?.Invoke(interop);
         return (service, clock);
     }
 
@@ -263,6 +403,14 @@ public sealed partial class CurrentSkyPageTests
             lock (_gate)
             {
                 return _timers.Any(timer => timer.Period == period);
+            }
+        }
+
+        internal bool HasTimerDue(DateTimeOffset due)
+        {
+            lock (_gate)
+            {
+                return _timers.Any(timer => timer.DueUtc == due);
             }
         }
 

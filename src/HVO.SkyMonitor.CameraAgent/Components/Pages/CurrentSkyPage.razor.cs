@@ -239,8 +239,10 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     {
         var manual = Interlocked.Exchange(ref _manualRefreshRequested, 0) != 0;
         var started = TimeProvider.GetTimestamp();
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(RefreshTimeout);
+        // One deadline covers the whole refresh: the current-sky read with its completion reads, and the next capture's
+        // layers. A refresh that runs past it applies nothing and keeps the capture shown.
+        using var deadline = new CancellationTokenSource(RefreshTimeout, TimeProvider);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
         await InvokeAsync(() => _refreshing = true);
         try
         {
@@ -256,17 +258,27 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 await InvokeAsync(() => change = ClassifyCaptureChange(view, manual, started)).ConfigureAwait(false);
             // The next capture arrives with its overlays in hand, so a change never shows a half-loaded page.
             var layers = change == CaptureChange.Switch && displayCaptureId is { } nextCaptureId
-                ? await ReadLayersAsync(nextCaptureId, cancellationToken).ConfigureAwait(false)
+                ? await ReadLayersAsync(nextCaptureId, timeout.Token).ConfigureAwait(false)
                 : null;
+            timeout.Token.ThrowIfCancellationRequested();
+            // Overlays the read advertised but that could not be read now leave the complete image in place until a
+            // later refresh reads them. A capture whose processing ended without overlays still replaces it.
+            if (change == CaptureChange.Switch && layers is { IsSuccess: false, Kind: not OperatorUiResultKind.Unauthorized } &&
+                result.Value!.Presentation.StructuredLayersAvailable)
+            {
+                change = CaptureChange.Hold;
+            }
             var refreshedCaptureId = displayCaptureId;
             await InvokeAsync(() =>
             {
-                if (_accessDenied || _disposeStarted != 0 || _viewerOpen) { _refreshing = false; return; }
+                if (_accessDenied || _disposeStarted != 0) { _refreshing = false; return; }
+                // A denial is never deferred, not even behind the full-screen viewer.
                 if (layers?.Kind == OperatorUiResultKind.Unauthorized)
                 {
                     RevokeAccess();
                     return;
                 }
+                if (_viewerOpen) { _refreshing = false; return; }
                 if (result.IsSuccess && result.Value is not null && change == CaptureChange.Hold)
                 {
                     HoldDisplayedCapture(result.Value);
