@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- The product version is `0.9.1`, the next release (owner decision 2026-10-19). Integration pre-releases are
+  `0.9.1-dev.<n>`, and a build given no version is `0.9.1-dev`. (#1406)
 - Sky overlays are drawn in their original colours again, instead of the purple and cyan theme that did not read well on
   the sky image: solid 2 px blue (`#60A0FF`) constellation lines, grey (`#909090`) star markers, white star names,
   cardinal letters and corner text, a 1 px grey (`#606060`) image circle at full opacity and an orange-red (`#FF4020`)
