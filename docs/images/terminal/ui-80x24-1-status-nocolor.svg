@@ -7,11 +7,10 @@
 <circle cx="36" cy="15.0" r="6" fill="#febc2e"/>
 <circle cx="56" cy="15.0" r="6" fill="#28c840"/>
 <text x="348.00" y="20.0" fill="#cccccc" text-anchor="middle" font-size="13">hvo-sky ui</text>
-<rect x="20.40" y="402" width="92.80" height="18.4" fill="#d4d4d4"/>
+<rect x="20.40" y="312" width="92.80" height="18.4" fill="#d4d4d4"/>
 <rect x="20.40" y="438" width="92.80" height="18.4" fill="#d4d4d4"/>
 <line x1="24.60" y1="104.40" x2="24.60" y2="231.60" stroke="#d4d4d4" stroke-width="1.2"/>
 <line x1="24.60" y1="248.40" x2="24.60" y2="285.60" stroke="#d4d4d4" stroke-width="1.2"/>
-<line x1="24.60" y1="302.40" x2="24.60" y2="375.60" stroke="#d4d4d4" stroke-width="1.2"/>
 <line x1="24.00" y1="105.00" x2="37.80" y2="105.00" stroke="#d4d4d4" stroke-width="1.2"/>
 <line x1="112.20" y1="105.00" x2="336.00" y2="105.00" stroke="#d4d4d4" stroke-width="1.2"/>
 <line x1="351.60" y1="105.00" x2="365.40" y2="105.00" stroke="#d4d4d4" stroke-width="1.2"/>
@@ -20,19 +19,18 @@
 <line x1="352.20" y1="104.40" x2="352.20" y2="231.60" stroke="#d4d4d4" stroke-width="1.2"/>
 <line x1="671.40" y1="104.40" x2="671.40" y2="231.60" stroke="#d4d4d4" stroke-width="1.2"/>
 <line x1="671.40" y1="248.40" x2="671.40" y2="285.60" stroke="#d4d4d4" stroke-width="1.2"/>
-<line x1="671.40" y1="302.40" x2="671.40" y2="375.60" stroke="#d4d4d4" stroke-width="1.2"/>
 <line x1="24.00" y1="231.00" x2="336.00" y2="231.00" stroke="#d4d4d4" stroke-width="1.2"/>
 <line x1="351.60" y1="231.00" x2="672.00" y2="231.00" stroke="#d4d4d4" stroke-width="1.2"/>
 <line x1="24.00" y1="249.00" x2="37.80" y2="249.00" stroke="#d4d4d4" stroke-width="1.2"/>
 <line x1="112.20" y1="249.00" x2="672.00" y2="249.00" stroke="#d4d4d4" stroke-width="1.2"/>
 <line x1="24.00" y1="285.00" x2="672.00" y2="285.00" stroke="#d4d4d4" stroke-width="1.2"/>
-<line x1="24.00" y1="303.00" x2="37.80" y2="303.00" stroke="#d4d4d4" stroke-width="1.2"/>
-<line x1="171.00" y1="303.00" x2="672.00" y2="303.00" stroke="#d4d4d4" stroke-width="1.2"/>
-<line x1="24.00" y1="375.00" x2="672.00" y2="375.00" stroke="#d4d4d4" stroke-width="1.2"/>
+<line x1="19.80" y1="357.00" x2="29.40" y2="357.00" stroke="#d4d4d4" stroke-width="1.2"/>
+<line x1="162.60" y1="357.00" x2="676.20" y2="357.00" stroke="#d4d4d4" stroke-width="1.2"/>
 <text x="20.40" y="55.50" fill="#d4d4d4" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">HVO SKYMONITOR</text>
-<text x="625.20" y="55.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[LIVE]</text>
-<text x="20.40" y="73.50" fill="#d4d4d4" textLength="285.60" lengthAdjust="spacingAndGlyphs">CameraAgent http://127.0.0.1:5130/</text>
-<text x="322.80" y="73.50" fill="#d4d4d4" textLength="168.00" lengthAdjust="spacingAndGlyphs">allsky01, VirtualSky</text>
+<text x="348.00" y="55.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[LIVE]</text>
+<text x="415.20" y="55.50" fill="#d4d4d4" textLength="260.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">read-write key 0123456789abcdef</text>
+<text x="20.40" y="73.50" fill="#d4d4d4" textLength="487.20" lengthAdjust="spacingAndGlyphs">CameraAgent: http://127.0.0.1:5130/ (allsky01, VirtualSky)</text>
+<text x="558.00" y="73.50" fill="#d4d4d4" textLength="117.60" lengthAdjust="spacingAndGlyphs">read 19:30:05Z</text>
 <text x="45.60" y="109.50" fill="#d4d4d4" textLength="58.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">CAPTURE</text>
 <text x="373.20" y="109.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">QUEUES</text>
 <text x="37.20" y="127.50" fill="#d4d4d4" textLength="58.80" lengthAdjust="spacingAndGlyphs">Control</text>
@@ -60,24 +58,26 @@
 <text x="45.60" y="253.50" fill="#d4d4d4" textLength="58.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">STORAGE</text>
 <text x="37.20" y="271.50" fill="#d4d4d4" textLength="25.20" lengthAdjust="spacingAndGlyphs">raw</text>
 <text x="121.20" y="271.50" fill="#d4d4d4" textLength="411.60" lengthAdjust="spacingAndGlyphs">120.0 GiB free of 500.0 GiB (24% free), kept 30 d</text>
-<text x="45.60" y="307.50" fill="#d4d4d4" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">RECENT CHANGES</text>
-<text x="37.20" y="325.50" fill="#d4d4d4" textLength="621.60" lengthAdjust="spacingAndGlyphs">19:30:05Z capture Running; camera Available; raw 0; lanes 0; processing 0;</text>
-<text x="20.40" y="415.50" fill="#1e1e1e" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold" text-decoration="underline">[ Refresh ]</text>
+<text x="28.80" y="307.50" fill="#d4d4d4" textLength="260.40" lengthAdjust="spacingAndGlyphs">Capturing; no problem reported.</text>
+<text x="20.40" y="325.50" fill="#1e1e1e" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold" text-decoration="underline">[ Refresh ]</text>
+<text x="37.20" y="361.50" fill="#d4d4d4" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">RECENT CHANGES</text>
+<text x="28.80" y="379.50" fill="#d4d4d4" textLength="75.60" lengthAdjust="spacingAndGlyphs">19:30:05Z</text>
+<text x="121.20" y="379.50" fill="#d4d4d4" textLength="537.60" lengthAdjust="spacingAndGlyphs">capture Running; camera Available; raw 0; lanes 0; processing 0;</text>
 <text x="20.40" y="433.50" fill="#d4d4d4" textLength="277.20" lengthAdjust="spacingAndGlyphs">Read every 2 s. Ctrl+R reads now.</text>
 <text x="20.40" y="451.50" fill="#1e1e1e" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[F1 Status]</text>
-<text x="129.60" y="451.50" fill="#d4d4d4" textLength="16.80" lengthAdjust="spacingAndGlyphs">F2</text>
-<text x="171.60" y="451.50" fill="#d4d4d4" textLength="16.80" lengthAdjust="spacingAndGlyphs">F3</text>
-<text x="213.60" y="451.50" fill="#d4d4d4" textLength="16.80" lengthAdjust="spacingAndGlyphs">F4</text>
-<text x="255.60" y="451.50" fill="#d4d4d4" textLength="16.80" lengthAdjust="spacingAndGlyphs">F5</text>
+<text x="129.60" y="451.50" fill="#d4d4d4" textLength="92.40" lengthAdjust="spacingAndGlyphs">F2 Settings</text>
+<text x="247.20" y="451.50" fill="#d4d4d4" textLength="75.60" lengthAdjust="spacingAndGlyphs">F3 Camera</text>
+<text x="348.00" y="451.50" fill="#d4d4d4" textLength="92.40" lengthAdjust="spacingAndGlyphs">F4 Schedule</text>
+<text x="465.60" y="451.50" fill="#d4d4d4" textLength="75.60" lengthAdjust="spacingAndGlyphs">F5 System</text>
 <text x="600.00" y="451.50" fill="#d4d4d4" textLength="67.20" lengthAdjust="spacingAndGlyphs">F10 Quit</text>
 <text x="20.40" y="469.50" fill="#d4d4d4" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Tab</text>
 <text x="54.00" y="469.50" fill="#d4d4d4" textLength="33.60" lengthAdjust="spacingAndGlyphs">move</text>
 <text x="104.40" y="469.50" fill="#d4d4d4" textLength="42.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">Enter</text>
 <text x="154.80" y="469.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs">select</text>
 <text x="222.00" y="469.50" fill="#d4d4d4" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Esc</text>
-<text x="255.60" y="469.50" fill="#d4d4d4" textLength="42.00" lengthAdjust="spacingAndGlyphs">close</text>
-<text x="314.40" y="469.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">Ctrl+R</text>
-<text x="373.20" y="469.50" fill="#d4d4d4" textLength="58.80" lengthAdjust="spacingAndGlyphs">refresh</text>
-<text x="558.00" y="469.50" fill="#d4d4d4" textLength="117.60" lengthAdjust="spacingAndGlyphs">read 19:30:05Z</text>
+<text x="255.60" y="469.50" fill="#d4d4d4" textLength="100.80" lengthAdjust="spacingAndGlyphs">close prompt</text>
+<text x="373.20" y="469.50" fill="#d4d4d4" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">Ctrl+R</text>
+<text x="432.00" y="469.50" fill="#d4d4d4" textLength="58.80" lengthAdjust="spacingAndGlyphs">refresh</text>
+<text x="633.60" y="469.50" fill="#d4d4d4" textLength="42.00" lengthAdjust="spacingAndGlyphs">80x24</text>
 </g>
 </svg>

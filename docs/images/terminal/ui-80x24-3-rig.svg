@@ -60,7 +60,7 @@
 <rect x="364.80" y="402" width="92.80" height="18.4" fill="#111c2a"/>
 <rect x="457.20" y="402" width="227.20" height="18.4" fill="#05070d"/>
 <rect x="12.00" y="420" width="672.40" height="18.4" fill="#05070d"/>
-<rect x="104.40" y="438" width="143.20" height="18.4" fill="#2563eb"/>
+<rect x="238.80" y="438" width="92.80" height="18.4" fill="#2563eb"/>
 <rect x="12.00" y="456" width="672.40" height="18.4" fill="#05070d"/>
 <line x1="24.60" y1="104.40" x2="24.60" y2="213.60" stroke="#3a4a60" stroke-width="1.2"/>
 <line x1="24.60" y1="230.40" x2="24.60" y2="321.60" stroke="#3a4a60" stroke-width="1.2"/>
@@ -83,9 +83,10 @@
 <line x1="179.40" y1="339.00" x2="672.00" y2="339.00" stroke="#3a4a60" stroke-width="1.2"/>
 <line x1="24.00" y1="375.00" x2="672.00" y2="375.00" stroke="#3a4a60" stroke-width="1.2"/>
 <text x="20.40" y="55.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">HVO SKYMONITOR</text>
-<text x="625.20" y="55.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[LIVE]</text>
-<text x="20.40" y="73.50" fill="#98a7bb" textLength="285.60" lengthAdjust="spacingAndGlyphs">CameraAgent http://127.0.0.1:5130/</text>
-<text x="322.80" y="73.50" fill="#98a7bb" textLength="168.00" lengthAdjust="spacingAndGlyphs">allsky01, VirtualSky</text>
+<text x="348.00" y="55.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[LIVE]</text>
+<text x="415.20" y="55.50" fill="#3fb950" textLength="260.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">read-write key 0123456789abcdef</text>
+<text x="20.40" y="73.50" fill="#98a7bb" textLength="487.20" lengthAdjust="spacingAndGlyphs">CameraAgent: http://127.0.0.1:5130/ (allsky01, VirtualSky)</text>
+<text x="558.00" y="73.50" fill="#98a7bb" textLength="117.60" lengthAdjust="spacingAndGlyphs">read 19:30:05Z</text>
 <text x="45.60" y="109.50" fill="#58a6ff" textLength="84.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">ACTIVE RIG</text>
 <text x="373.20" y="109.50" fill="#58a6ff" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">STAGED</text>
 <text x="37.20" y="127.50" fill="#98a7bb" textLength="67.20" lengthAdjust="spacingAndGlyphs">Revision</text>
@@ -110,11 +111,6 @@
 <text x="238.80" y="271.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">VirtualSky</text>
 <text x="339.60" y="271.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">ASI676MC</text>
 <text x="423.60" y="271.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">active</text>
-<text x="54.00" y="289.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs">rig-2</text>
-<text x="138.00" y="289.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs">allsky</text>
-<text x="213.60" y="289.50" fill="#f7f9fc">2</text>
-<text x="238.80" y="289.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs">VirtualSky</text>
-<text x="339.60" y="289.50" fill="#f7f9fc" textLength="67.20" lengthAdjust="spacingAndGlyphs">ASI676MC</text>
 <text x="45.60" y="343.50" fill="#58a6ff" textLength="126.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">CAMERA SETTINGS</text>
 <text x="37.20" y="361.50" fill="#98a7bb" textLength="100.80" lengthAdjust="spacingAndGlyphs">Sky lighting</text>
 <text x="154.80" y="361.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs">SolarDriven</text>
@@ -124,20 +120,20 @@
 <text x="205.20" y="415.50" fill="#f7f9fc" textLength="142.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Change camera ]</text>
 <text x="364.80" y="415.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Refresh ]</text>
 <text x="20.40" y="433.50" fill="#98a7bb" textLength="604.80" lengthAdjust="spacingAndGlyphs">Choose a revision and Stage it; it applies when CameraAgent next starts.</text>
-<text x="28.80" y="451.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs">F1</text>
-<text x="70.80" y="451.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs">F2</text>
-<text x="104.40" y="451.50" fill="#f7f9fc" textLength="142.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">[F3 Camera &amp; rig]</text>
-<text x="264.00" y="451.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs">F4</text>
-<text x="306.00" y="451.50" fill="#f7f9fc" textLength="16.80" lengthAdjust="spacingAndGlyphs">F5</text>
+<text x="28.80" y="451.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">F1 Status</text>
+<text x="129.60" y="451.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs">F2 Settings</text>
+<text x="238.80" y="451.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[F3 Camera]</text>
+<text x="348.00" y="451.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs">F4 Schedule</text>
+<text x="465.60" y="451.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">F5 System</text>
 <text x="600.00" y="451.50" fill="#98a7bb" textLength="67.20" lengthAdjust="spacingAndGlyphs">F10 Quit</text>
 <text x="20.40" y="469.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Tab</text>
 <text x="54.00" y="469.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">move</text>
 <text x="104.40" y="469.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">Enter</text>
 <text x="154.80" y="469.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">select</text>
 <text x="222.00" y="469.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Esc</text>
-<text x="255.60" y="469.50" fill="#98a7bb" textLength="42.00" lengthAdjust="spacingAndGlyphs">close</text>
-<text x="314.40" y="469.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">Ctrl+R</text>
-<text x="373.20" y="469.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">refresh</text>
-<text x="558.00" y="469.50" fill="#98a7bb" textLength="117.60" lengthAdjust="spacingAndGlyphs">read 19:30:05Z</text>
+<text x="255.60" y="469.50" fill="#98a7bb" textLength="100.80" lengthAdjust="spacingAndGlyphs">close prompt</text>
+<text x="373.20" y="469.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">Ctrl+R</text>
+<text x="432.00" y="469.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">refresh</text>
+<text x="633.60" y="469.50" fill="#98a7bb" textLength="42.00" lengthAdjust="spacingAndGlyphs">80x24</text>
 </g>
 </svg>

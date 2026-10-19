@@ -93,10 +93,10 @@
 <line x1="271.80" y1="321.00" x2="1008.00" y2="321.00" stroke="#3a4a60" stroke-width="1.2"/>
 <line x1="24.00" y1="483.00" x2="1008.00" y2="483.00" stroke="#3a4a60" stroke-width="1.2"/>
 <text x="20.40" y="55.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">HVO SKYMONITOR</text>
-<text x="961.20" y="55.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[LIVE]</text>
-<text x="20.40" y="73.50" fill="#98a7bb" textLength="285.60" lengthAdjust="spacingAndGlyphs">CameraAgent http://127.0.0.1:5130/</text>
-<text x="322.80" y="73.50" fill="#98a7bb" textLength="168.00" lengthAdjust="spacingAndGlyphs">allsky01, VirtualSky</text>
-<text x="751.20" y="73.50" fill="#98a7bb" textLength="260.40" lengthAdjust="spacingAndGlyphs">key 0123456789abcdef read-write</text>
+<text x="684.00" y="55.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[LIVE]</text>
+<text x="751.20" y="55.50" fill="#3fb950" textLength="260.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">read-write key 0123456789abcdef</text>
+<text x="20.40" y="73.50" fill="#98a7bb" textLength="487.20" lengthAdjust="spacingAndGlyphs">CameraAgent: http://127.0.0.1:5130/ (allsky01, VirtualSky)</text>
+<text x="894.00" y="73.50" fill="#98a7bb" textLength="117.60" lengthAdjust="spacingAndGlyphs">read 19:30:05Z</text>
 <text x="45.60" y="109.50" fill="#58a6ff" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">GROUPS</text>
 <text x="306.00" y="109.50" fill="#58a6ff" textLength="100.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">SITE PROFILE</text>
 <text x="54.00" y="127.50" fill="#98a7bb" textLength="42.00" lengthAdjust="spacingAndGlyphs">GROUP</text>
@@ -105,13 +105,6 @@
 <text x="608.40" y="127.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">SOURCE</text>
 <text x="726.00" y="127.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">NOTE</text>
 <text x="37.20" y="145.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">&gt; Site profile</text>
-<text x="297.60" y="145.50" fill="#f7f9fc" textLength="151.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">&gt; Observatory name</text>
-<text x="465.60" y="145.50" fill="#f7f9fc" textLength="126.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">Hualapai Valley</text>
-<text x="608.40" y="145.50" fill="#f7f9fc" textLength="100.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">SettingsFile</text>
-<text x="54.00" y="163.50" fill="#f7f9fc" textLength="159.60" lengthAdjust="spacingAndGlyphs">Deployment location</text>
-<text x="54.00" y="181.50" fill="#f7f9fc" textLength="58.80" lengthAdjust="spacingAndGlyphs">Sky map</text>
-<text x="54.00" y="199.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs">Camera</text>
-<text x="54.00" y="217.50" fill="#f7f9fc" textLength="134.40" lengthAdjust="spacingAndGlyphs">Capture schedule</text>
 <text x="45.60" y="325.50" fill="#58a6ff" textLength="218.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">ABOUT SITE.OBSERVATORYNAME</text>
 <text x="37.20" y="343.50" fill="#f7f9fc" textLength="243.60" lengthAdjust="spacingAndGlyphs">Observatory name of the site.</text>
 <text x="37.20" y="361.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">Accepts</text>
@@ -134,9 +127,9 @@
 <text x="104.40" y="613.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">Enter</text>
 <text x="154.80" y="613.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">select</text>
 <text x="222.00" y="613.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Esc</text>
-<text x="255.60" y="613.50" fill="#98a7bb" textLength="42.00" lengthAdjust="spacingAndGlyphs">close</text>
-<text x="314.40" y="613.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">Ctrl+R</text>
-<text x="373.20" y="613.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">refresh</text>
-<text x="894.00" y="613.50" fill="#98a7bb" textLength="117.60" lengthAdjust="spacingAndGlyphs">read 19:30:05Z</text>
+<text x="255.60" y="613.50" fill="#98a7bb" textLength="100.80" lengthAdjust="spacingAndGlyphs">close prompt</text>
+<text x="373.20" y="613.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">Ctrl+R</text>
+<text x="432.00" y="613.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">refresh</text>
+<text x="961.20" y="613.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">120x32</text>
 </g>
 </svg>

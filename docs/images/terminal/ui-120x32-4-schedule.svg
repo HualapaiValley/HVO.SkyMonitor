@@ -112,10 +112,10 @@
 <line x1="24.00" y1="501.00" x2="504.00" y2="501.00" stroke="#3a4a60" stroke-width="1.2"/>
 <line x1="519.60" y1="501.00" x2="1008.00" y2="501.00" stroke="#3a4a60" stroke-width="1.2"/>
 <text x="20.40" y="55.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">HVO SKYMONITOR</text>
-<text x="961.20" y="55.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[LIVE]</text>
-<text x="20.40" y="73.50" fill="#98a7bb" textLength="285.60" lengthAdjust="spacingAndGlyphs">CameraAgent http://127.0.0.1:5130/</text>
-<text x="322.80" y="73.50" fill="#98a7bb" textLength="168.00" lengthAdjust="spacingAndGlyphs">allsky01, VirtualSky</text>
-<text x="751.20" y="73.50" fill="#98a7bb" textLength="260.40" lengthAdjust="spacingAndGlyphs">key 0123456789abcdef read-write</text>
+<text x="684.00" y="55.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[LIVE]</text>
+<text x="751.20" y="55.50" fill="#3fb950" textLength="260.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">read-write key 0123456789abcdef</text>
+<text x="20.40" y="73.50" fill="#98a7bb" textLength="487.20" lengthAdjust="spacingAndGlyphs">CameraAgent: http://127.0.0.1:5130/ (allsky01, VirtualSky)</text>
+<text x="894.00" y="73.50" fill="#98a7bb" textLength="117.60" lengthAdjust="spacingAndGlyphs">read 19:30:05Z</text>
 <text x="45.60" y="109.50" fill="#58a6ff" textLength="126.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">ACTIVE SCHEDULE</text>
 <text x="541.20" y="109.50" fill="#58a6ff" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">CAPTURE NOW</text>
 <text x="37.20" y="127.50" fill="#98a7bb" textLength="67.20" lengthAdjust="spacingAndGlyphs">Revision</text>
@@ -145,13 +145,6 @@
 <text x="37.20" y="253.50" fill="#f7f9fc" textLength="100.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">&gt; schedule-3</text>
 <text x="154.80" y="253.50" fill="#f7f9fc" font-weight="bold">3</text>
 <text x="180.00" y="253.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">active</text>
-<text x="532.80" y="253.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">&gt; 10-19 01:00Z</text>
-<text x="667.20" y="253.50" fill="#f7f9fc" textLength="100.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">10-19 12:00Z</text>
-<text x="784.80" y="253.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">night</text>
-<text x="54.00" y="271.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs">schedule-2</text>
-<text x="154.80" y="271.50" fill="#f7f9fc">2</text>
-<text x="54.00" y="289.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs">schedule-1</text>
-<text x="154.80" y="289.50" fill="#f7f9fc">1</text>
 <text x="20.40" y="541.50" fill="#98a7bb" textLength="134.40" lengthAdjust="spacingAndGlyphs" opacity="0.6">[ Apply staged ]</text>
 <text x="171.60" y="541.50" fill="#98a7bb" textLength="100.80" lengthAdjust="spacingAndGlyphs" opacity="0.6">[ Activate ]</text>
 <text x="289.20" y="541.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Refresh ]</text>
@@ -167,9 +160,9 @@
 <text x="104.40" y="613.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">Enter</text>
 <text x="154.80" y="613.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">select</text>
 <text x="222.00" y="613.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Esc</text>
-<text x="255.60" y="613.50" fill="#98a7bb" textLength="42.00" lengthAdjust="spacingAndGlyphs">close</text>
-<text x="314.40" y="613.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">Ctrl+R</text>
-<text x="373.20" y="613.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">refresh</text>
-<text x="894.00" y="613.50" fill="#98a7bb" textLength="117.60" lengthAdjust="spacingAndGlyphs">read 19:30:05Z</text>
+<text x="255.60" y="613.50" fill="#98a7bb" textLength="100.80" lengthAdjust="spacingAndGlyphs">close prompt</text>
+<text x="373.20" y="613.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">Ctrl+R</text>
+<text x="432.00" y="613.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">refresh</text>
+<text x="961.20" y="613.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">120x32</text>
 </g>
 </svg>
