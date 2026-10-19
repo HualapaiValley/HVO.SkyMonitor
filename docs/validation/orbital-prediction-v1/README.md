@@ -1,6 +1,6 @@
 # Orbital prediction qualification (#529)
 
-Work in progress. This directory records component qualification; it does not
+This directory records component qualification; it does not
 claim physical accuracy, optical visibility or five-second integrated cadence.
 The approved [decision checkpoint](../../planning/orbital-data-decision-527.md)
 and [shared contract](../../contracts/orbital-elements-v1.md) govern this work.
@@ -41,3 +41,20 @@ resource evidence records cold/warm CPU, allocations, working set, elapsed time,
 evaluation counts and partial outcomes. Existing W1/W2 geometry and the supplied
 population workload guide scale. Integrated contention and complete
 frame-available-to-publication acceptance remain #1395.
+
+## Evidence index
+
+- [SGP4 qualification and source pins](sgp4-qualification.md)
+- [Resolved time and independent coordinate/pass references](coordinate-reference.md)
+- [Numerical exposure sampling](exposure-sampling.md) and [future-pass search](pass-search.md)
+- [Independent dense calibration/held-out checks](sampling-reference.md)
+- [Canonical camera reproduction, source context and labeled samples](virtual-camera.md)
+- [Bounded full-population component resource baseline](component-resources.md)
+
+The public producer is `OrbitalPredictionEngine`, constructed with already
+materialized `OrbitalTimeData`. `OrbitalPredictionModel.Create` binds the actual
+resolved hashes and declared conventions. A host resolves/pins its snapshot
+outside frame processing, constructs a bounded shared query and calls the same
+producer; no host-specific propagation or automatic registration is introduced.
+Final candidate, independent review and target-branch CI evidence are recorded
+on #529 and its PR. Software integration is separate from physical qualification.
