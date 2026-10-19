@@ -101,6 +101,27 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
+    public void AnIntervalOfOnePollPeriodHoldsWhenTimerWakeUpsDrift()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var first = View(WithStructuredBase()) with { MinimumRefreshInterval = TimeSpan.FromSeconds(15) };
+        var current = first;
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(current));
+        var cut = context.Render<CurrentSkyPage>();
+        WaitForFirst(cut, clock, first);
+
+        // This poll wakes half a second late and shows the next capture; the one after wakes on time, 14.5 s later.
+        current = Next(first, SecondCaptureId, 43);
+        clock.Advance(TimeSpan.FromSeconds(15.5));
+        cut.WaitForAssertion(() => Assert.AreEqual(CaptureLink(current), cut.Find(".layers-link").GetAttribute("href")));
+        current = Next(first, ThirdCaptureId, 44);
+        clock.Advance(TimeSpan.FromSeconds(14.5));
+
+        cut.WaitForAssertion(() => Assert.AreEqual(CaptureLink(current), cut.Find(".layers-link").GetAttribute("href")));
+    }
+
+    [TestMethod]
     public void ACaptureWhoseOverlaysNeverComeIsShownOnceItsProcessingEnds()
     {
         using var context = new BunitContext();
@@ -263,7 +284,8 @@ public sealed partial class CurrentSkyPageTests
                 {
                     if (timer.Period > TimeSpan.Zero && timer.Period != Timeout.InfiniteTimeSpan)
                     {
-                        timer.DueUtc = _now + timer.Period;
+                        // A periodic timer keeps its schedule, as the runtime's does, however late it fired.
+                        while (timer.DueUtc <= _now) timer.DueUtc += timer.Period;
                     }
                     else
                     {

@@ -16,7 +16,8 @@ internal sealed class CurrentSkyRefreshSetting(IConfiguration configuration)
 
     public const int MaximumSeconds = 3600;
 
-    public const int DefaultSeconds = 30;
+    /// <summary>One poll period: by default the page changes image at most once per refresh.</summary>
+    public const int DefaultSeconds = 15;
 
     public int Seconds => TryParse(configuration[ConfigurationKey], out var seconds) ? seconds : DefaultSeconds;
 

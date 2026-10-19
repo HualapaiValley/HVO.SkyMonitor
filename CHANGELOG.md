@@ -14,7 +14,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Current Sky moves to a newer capture only once its overlays are complete, or once its processing has ended without
   them, and keeps showing the current capture until then. It changes image at most once per
-  `currentSky.minimumRefreshSeconds` (default 30 seconds, 15 to 3,600), a new operator setting, and then shows the
+  `currentSky.minimumRefreshSeconds` (default 15 seconds, 15 to 3,600), a new operator setting, and then shows the
   newest complete capture, skipping any in between. Refresh image skips the wait. (#1382)
 
 ### Fixed

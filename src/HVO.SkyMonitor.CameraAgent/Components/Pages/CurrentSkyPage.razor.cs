@@ -11,6 +11,9 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 {
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(5);
+    // The interval is measured between refresh starts, which the poll timer's wake-ups move by milliseconds; this slack
+    // keeps an interval of one poll period from being missed on every other poll.
+    private static readonly TimeSpan CaptureChangeSlack = TimeSpan.FromSeconds(1);
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private CancellationTokenSource? _lifetime;
     private PeriodicTimer? _timer;
@@ -235,6 +238,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private async Task RefreshCoreAsync(CancellationToken cancellationToken)
     {
         var manual = Interlocked.Exchange(ref _manualRefreshRequested, 0) != 0;
+        var started = TimeProvider.GetTimestamp();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(RefreshTimeout);
         await InvokeAsync(() => _refreshing = true);
@@ -249,7 +253,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             var displayCaptureId = result.IsSuccess ? result.Value?.Presentation.DisplayCapture?.CaptureId : null;
             var change = CaptureChange.None;
             if (result.IsSuccess && result.Value is { } view)
-                await InvokeAsync(() => change = ClassifyCaptureChange(view, manual)).ConfigureAwait(false);
+                await InvokeAsync(() => change = ClassifyCaptureChange(view, manual, started)).ConfigureAwait(false);
             // The next capture arrives with its overlays in hand, so a change never shows a half-loaded page.
             var layers = change == CaptureChange.Switch && displayCaptureId is { } nextCaptureId
                 ? await ReadLayersAsync(nextCaptureId, cancellationToken).ConfigureAwait(false)
@@ -286,7 +290,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                         _lineageArtifactId = null;
                         _lineageMessage = null;
                         ResetLayers(displayCaptureId, cancellationToken);
-                        _lastCaptureChangeTimestamp = TimeProvider.GetTimestamp();
+                        _lastCaptureChangeTimestamp = started;
                         if (layers is not null && displayCaptureId is { } shownCaptureId)
                             ApplyLayerResult(shownCaptureId, Volatile.Read(ref _layerGeneration), layers);
                     }
@@ -346,7 +350,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     // A newer capture replaces the displayed one only once its overlays are complete and the operator's minimum interval
     // has passed since the last change; Refresh image skips the interval. A live view never steps back to an older one.
-    private CaptureChange ClassifyCaptureChange(CameraAgentCurrentSkyView view, bool manual)
+    private CaptureChange ClassifyCaptureChange(CameraAgentCurrentSkyView view, bool manual, long started)
     {
         if (_presentation?.DisplayCapture is not { } shown || view.Presentation.DisplayCapture is not { } next ||
             next.CaptureId == shown.CaptureId)
@@ -354,7 +358,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             return CaptureChange.None;
         }
         return view.ProcessingPending || next.CaptureSequence < shown.CaptureSequence ||
-               (!manual && TimeProvider.GetElapsedTime(_lastCaptureChangeTimestamp) < view.MinimumRefreshInterval)
+               (!manual && TimeProvider.GetElapsedTime(_lastCaptureChangeTimestamp, started) + CaptureChangeSlack <
+                   view.MinimumRefreshInterval)
             ? CaptureChange.Hold
             : CaptureChange.Switch;
     }

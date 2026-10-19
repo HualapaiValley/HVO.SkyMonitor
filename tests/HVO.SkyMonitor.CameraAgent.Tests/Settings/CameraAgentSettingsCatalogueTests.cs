@@ -119,6 +119,18 @@ public sealed class CameraAgentSettingsCatalogueTests
         Assert.IsFalse(limit.GetProperty("appliesAfterRestart").GetBoolean());
         Assert.IsFalse(limit.GetProperty("secret").GetBoolean());
         Assert.AreEqual("CameraAgent:SkyMap:MaximumObjects", limit.GetProperty("configurationKey").GetString());
+        var currentSky = json.GetProperty("groups").EnumerateArray().Single(group => group.GetProperty("name").GetString() == "currentSky");
+        Assert.AreEqual("settingsFile", currentSky.GetProperty("store").GetString());
+        var refresh = currentSky.GetProperty("settings")[0];
+        Assert.AreEqual("currentSky.minimumRefreshSeconds", refresh.GetProperty("key").GetString());
+        Assert.AreEqual("Integer", refresh.GetProperty("type").GetString());
+        Assert.AreEqual(15, refresh.GetProperty("minimum").GetDouble());
+        Assert.AreEqual(3600, refresh.GetProperty("maximum").GetDouble());
+        Assert.AreEqual(15, refresh.GetProperty("default").GetInt32());
+        Assert.AreEqual("seconds", refresh.GetProperty("unit").GetString());
+        Assert.AreEqual("Descriptive", refresh.GetProperty("safety").GetString());
+        Assert.AreEqual("Immediate", refresh.GetProperty("application").GetString());
+        Assert.AreEqual("CameraAgent:CurrentSky:MinimumRefreshSeconds", refresh.GetProperty("configurationKey").GetString());
         var schedule = json.GetProperty("groups").EnumerateArray().Single(group => group.GetProperty("name").GetString() == "schedule");
         Assert.AreEqual(JsonValueKind.Null, schedule.GetProperty("settings")[0].GetProperty("allowedValues").ValueKind);
     }
