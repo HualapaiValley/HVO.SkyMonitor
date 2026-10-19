@@ -12,7 +12,7 @@ public sealed class PresentationLayerGoldenTests
     // Captured for projected-scene-presentation-v11-original-colours (#1383), which restored the overlay colours
     // #1035 replaced. A scene without resolved footprints keeps producing these payload bytes; a change to them must
     // also bump PresentationLayerProducers.SceneProducerVersion, so retained layers stay distinguishable.
-    private const string ExpectedPayloadsSha256 = "400C8675169B3B1328AA1978A197854C04EF41D263FEDDCD8D4D212A0525D48D";
+    private const string ExpectedPayloadsSha256 = "5933EFD082FF77976C9FA73EC640FF41992C172B5093FCCB94383BCA82698C79";
 
     [TestMethod]
     public async Task FootprintFreeScenesProduceThePinnedPayloadBytes()

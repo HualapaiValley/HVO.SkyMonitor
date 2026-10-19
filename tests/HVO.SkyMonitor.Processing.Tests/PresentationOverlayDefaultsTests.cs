@@ -9,7 +9,8 @@ namespace HVO.SkyMonitor.Processing.Tests;
 
 /// <summary>
 /// #1383: the overlay defaults are the ones #1035 replaced (as at 08b79fb7^), with solid constellation lines and the
-/// image circle at full opacity. The cardinal badge, the corner-text panel and the crosshair marker from #1035 stay.
+/// image circle at full opacity and their original widths. The cardinal badge, the corner-text panel and the crosshair
+/// marker from #1035 stay.
 /// LogicHost draws these payloads with both the grouped SVG renderer and the raster compositor, so both are checked.
 /// </summary>
 [TestClass]
@@ -50,10 +51,12 @@ public sealed class PresentationOverlayDefaultsTests
         {
             Assert.AreEqual(Constellation, segment.Color);
             Assert.IsNull(segment.Stroke, "Constellation lines are solid at full stroke opacity.");
+            Assert.AreEqual(1, segment.Thickness);
         }
         var circle = groups.ImageCircle.Ellipses.Single();
         Assert.AreEqual(ImageCircle, circle.Color);
         Assert.IsNull(circle.Stroke, "The image circle is drawn at full opacity.");
+        Assert.IsNull(circle.ThicknessMilliPixels, "The image circle keeps the renderers' 1 px default.");
         Assert.HasCount(4, groups.CardinalDirections.TextBlocks);
         foreach (var cardinal in groups.CardinalDirections.TextBlocks)
         {
@@ -119,11 +122,13 @@ public sealed class PresentationOverlayDefaultsTests
         var ellipse = Elements(svg, "scene-image-circle", "ellipse").Single();
         Assert.AreEqual("#606060", (string?)ellipse.Attribute("stroke"));
         Assert.IsNull(ellipse.Attribute("stroke-opacity"));
+        Assert.IsNull(ellipse.Attribute("stroke-width"));
         var lines = Elements(svg, "scene-constellations", "line");
         Assert.IsNotEmpty(lines);
         foreach (var line in lines)
         {
             Assert.AreEqual("#60A0FF", (string?)line.Attribute("stroke"));
+            Assert.AreEqual("1", (string?)line.Attribute("stroke-width"));
             Assert.IsNull(line.Attribute("stroke-dasharray"));
             Assert.IsNull(line.Attribute("stroke-opacity"));
         }

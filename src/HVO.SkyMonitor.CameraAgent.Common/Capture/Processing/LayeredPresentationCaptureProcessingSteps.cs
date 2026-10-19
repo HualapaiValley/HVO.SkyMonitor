@@ -475,7 +475,7 @@ internal sealed class ScenePresentationLayerProcessingStepOptions : IValidatable
     [Range(1, 8)] public int LabelScale { get; init; } = 2;
     [Range(0, 64)] public int MaximumLabelCharacters { get; init; } = 24;
     [Range(-30, 30)] public double MaximumLabelMagnitude { get; init; } = 2.5;
-    [Range(1, 8)] public int ConstellationLineThickness { get; init; } = 3;
+    [Range(1, 8)] public int ConstellationLineThickness { get; init; } = 2;
     public IReadOnlyList<string> ConstellationIds { get; init; } = [];
     public bool DrawMarkers { get; init; } = true;
     public bool DrawLabels { get; init; } = true;

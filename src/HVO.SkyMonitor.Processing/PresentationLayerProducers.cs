@@ -17,7 +17,7 @@ public sealed record PresentationAnnotationStyleV1(
     int LabelScale = 1,
     int MaximumLabelCharacters = 24,
     double MaximumLabelMagnitude = 2.5,
-    int SegmentThickness = 3,
+    int SegmentThickness = 1,
     IReadOnlyList<string>? ConstellationIds = null,
     PresentationColor? MarkerColor = null,
     PresentationColor? LabelColor = null,
@@ -229,7 +229,7 @@ public static class PresentationLayerProducers
                     var radiusX = Math.Max(Math.Abs(xVector.X), Math.Abs(yVector.X));
                     var radiusY = Math.Max(Math.Abs(xVector.Y), Math.Abs(yVector.Y));
                     if (radiusX > 0 && radiusY > 0)
-                        ellipses.Add(new(center, radiusX, radiusY, imageCircleColor, ThicknessMilliPixels: 2_000));
+                        ellipses.Add(new(center, radiusX, radiusY, imageCircleColor));
                 }
             }
             if (includeCardinalDirections)
