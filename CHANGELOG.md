@@ -10,6 +10,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ## [Unreleased]
 
+### Added
+
+- Bounded local satellite exposure tracks and future-pass predictions, with reproducible virtual-camera satellite fixtures, explicit source/time/geometry provenance and unavailable or partial outcomes when inputs or work limits prevent completion. (#529)
+
 ### Changed
 
 - The product version is `0.9.1`, the next release (owner decision 2026-10-19). Integration pre-releases are

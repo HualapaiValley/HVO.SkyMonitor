@@ -35,13 +35,18 @@ internal static partial class Program
 
     public static async Task Main(string[] args)
     {
+        if (args.Length == 10 && args[0] == "satellite-predict")
+        {
+            await OrbitalPredictPoc(args).ConfigureAwait(false);
+            return;
+        }
         if (args.Length == 2 && args[0] == "satellite-config")
         {
             if (File.Exists(args[1])) throw new ArgumentException("Use a new settings path.");
             WriteJson(args[1], Config("SolarDriven"));
             return;
         }
-        if ((args.Length == 7 && args[0] == "satellite-reference") || (args.Length == 11 && args[0] == "satellite-tracks"))
+        if ((args.Length == 7 && args[0] == "satellite-reference") || ((args.Length is 11 or 16 or 21 or 26) && args[0] == "satellite-tracks"))
         {
             await SatellitePoc(args).ConfigureAwait(false);
             return;

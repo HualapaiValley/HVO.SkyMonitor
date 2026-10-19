@@ -72,6 +72,13 @@ internal sealed class OrbitalWorkBudget
         return true;
     }
 
+    /// <summary>Sequential owner returns an output reservation when no product was created.</summary>
+    internal void ReleaseUnusedTrack()
+    {
+        if (Tracks == 0) throw new InvalidOperationException("No track reservation can be released.");
+        Tracks--;
+    }
+
     private bool Stop(OrbitalPredictionReason failure)
     {
         reason = failure;

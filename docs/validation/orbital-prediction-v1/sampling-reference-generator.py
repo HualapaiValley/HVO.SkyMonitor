@@ -48,6 +48,8 @@ def main():
         fact = dict(facts[2], NORAD_CAT_ID=200001+i, OBJECT_NAME=f'SYNTHETIC NUMERICAL STRESS {i}', MEAN_MOTION=n, ECCENTRICITY=e, INCLINATION=inc, BSTAR=bstar, MEAN_MOTION_DOT=0, MEAN_MOTION_DDOT=0, MEAN_ANOMALY=0)
         epoch = datetime.fromisoformat(fact['EPOCH']).replace(tzinfo=UTC)
         plans.append((f'synthetic-{i}', fact, epoch, sites[i % 4], 20, True, i % 2 == 1))
+    plans.append(('ISS-Seattle-fast', facts[2], datetime(2026,10,20,13,3,32,287674,tzinfo=UTC), sites[0], 100, False, True))
+    plans.append(('ISS-HVO-near-zenith', facts[2], datetime(2026,10,20,17,58,34,82209,tzinfo=UTC), sites[1], 20, False, True))
     cases = []
     for name, fact, start, site, duration, zero, heldout in plans:
         sat = oracle.make_sat(fact)
@@ -77,15 +79,17 @@ def main():
     output = OUT / 'dense-directions.json'
     output.write_text(json.dumps(dict(schema='hvo-independent-sampling-oracle-v1', gravity='WGS72', mode='a',
         phases='257 off-node phases (i+0.371)/257 plus endpoints and midpoint; UTC microsecond quantization retained',
-        cases=cases), separators=(',',':'), allow_nan=False)+'\n')
+        cases=cases[:36]), separators=(',',':'), allow_nan=False)+'\n')
+    extra = OUT / 'fast-directions.json'
+    extra.write_text(json.dumps(dict(schema='hvo-independent-sampling-oracle-v1', gravity='WGS72', mode='a', cases=cases[36:]), separators=(',',':'), allow_nan=False)+'\n')
     manifest = dict(schema='hvo-independent-sampling-oracle-manifest-v1', sources=[digest(DOC/'sampling-reference-generator.py'),
         digest(DOC/'coordinate-reference-generator.py'), digest(ROOT/'docs/validation/orbital-reference-v1/gp-source-facts.json'),
-        digest(oracle.TIME/'predicted-2026.finals2000A'),digest(oracle.TIME/'leap-seconds.list')], output=digest(output),
+        digest(oracle.TIME/'predicted-2026.finals2000A'),digest(oracle.TIME/'leap-seconds.list')], output=digest(output), supplementalOutput=digest(extra),
         software=dict(sgp4=sgp4.__version__,skyfield=skyfield.__version__,numpy=np.__version__,jplephem=jplephem.__version__),
         sourceLicenses='MIT oracle libraries: coordinate-PYTHON-SGP4-LICENSE.txt and coordinate-SKYFIELD-LICENSE.txt; HVO-authored generator; scientific facts credited by existing source manifests.',
         qualification='Dense independent numerical checks are empirical evidence, not an all-times or all-input interval proof. Synthetic stress cases have no physical object assertion.')
     (DOC/'sampling-source-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
-    print(len(cases),'cases;',sum(len(c['samples']) for c in cases),'off-node/end/midpoint rows;',digest(output))
+    print(len(cases),'cases including supplemental fast passes;',sum(len(c['samples']) for c in cases),'off-node/end/midpoint rows;',digest(output))
 
 
 if __name__ == '__main__':

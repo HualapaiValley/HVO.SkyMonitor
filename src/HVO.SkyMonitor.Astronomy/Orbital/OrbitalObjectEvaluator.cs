@@ -51,7 +51,7 @@ internal sealed class OrbitalObjectEvaluator
 
     internal OrbitalTopocentricState? Evaluate(DateTimeOffset utc)
     {
-        if (!budget.CanContinue() || FailureReason != OrbitalPredictionReason.None) return null;
+        if (!budget.CanContinue()) return null;
         if (utc < interval.StartUtc || utc > interval.EndUtc)
             throw new ArgumentOutOfRangeException(nameof(utc), "Evaluation must stay in the query interval.");
         if (cache.TryGetValue(utc.UtcTicks, out var existing)) return existing;

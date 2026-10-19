@@ -3,8 +3,8 @@
   "sources": [
     {
       "path": "docs/validation/orbital-prediction-v1/sampling-reference-generator.py",
-      "bytes": 5745,
-      "sha256": "6FE391504A0CBADEC57D90854F6602B0E7AE6733EAD45F2B2C53DCA0D250DA5B"
+      "bytes": 6285,
+      "sha256": "F1156313E19D587D90330DC01607E1D6E7929CDA121D91D0255E70BAD2DD8C84"
     },
     {
       "path": "docs/validation/orbital-prediction-v1/coordinate-reference-generator.py",
@@ -31,6 +31,11 @@
     "path": "tests/fixtures/orbital-prediction-v1/sampling/dense-directions.json",
     "bytes": 2031119,
     "sha256": "8B9B12052455E06947AE44226151329D0480A895102CBF67025BF32210F22EBC"
+  },
+  "supplementalOutput": {
+    "path": "tests/fixtures/orbital-prediction-v1/sampling/fast-directions.json",
+    "bytes": 112189,
+    "sha256": "397235B677EDED5BD08D6EA9C85E5E47184D727D758B2A642C8B513B1252BDFA"
   },
   "software": {
     "sgp4": "2.27",

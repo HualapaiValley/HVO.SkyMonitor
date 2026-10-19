@@ -44,6 +44,36 @@ qualification chart. Narrow-field and clipping adversaries are separate
 sampler-kernel tests. An empirical remainder estimate and dense qualification
 are not a formal all-time SGP4 enclosure or orbit-confidence bound.
 
-Integrated numerical results are pending; this document does not yet claim
-that the engine passed these references. Full population resource evidence,
-canonical camera captures and independent review remain required before merge.
+The original 36-case file and its hash remain unchanged. Two supplemental held-out
+ISS passes at Seattle and near zenith at HVO add 520 rows in
+`fast-directions.json`, SHA256
+`397235B677EDED5BD08D6EA9C85E5E47184D727D758B2A642C8B513B1252BDFA`.
+The supplemental generator/output pins are recorded in the same manifest.
+
+The integrated engine passed 38 cases and 9,880 independent phases for each
+of the five optical families (49,400 comparisons). All queries completed;
+maximum time step was at most the separately requested 0.37 seconds and the
+requested chord tolerance was 0.01 pixels. Crop, bin2, both mirrors and 270-degree
+rotation were applied through the existing transform exactly once.
+
+| Projection | Worst measured off-phase chord error (pixels) |
+| --- | ---: |
+| Perspective | 0.000031362 |
+| Equidistant | 0.000070898 |
+| Equisolid | 0.000077822 |
+| Orthographic | 0.000157408 |
+| Stereographic | 0.000056172 |
+
+Every comparison met the returned error estimate plus the predeclared
+1e-5-pixel reference allowance; the largest ratio to that total was 0.713.
+These are numerical sampling/coordinate results, not physical orbit accuracy.
+The integrated focused run passed 53 tests, including independent-instance and
+concurrent determinism, model/time mismatch, missing objects, actual initializer
+work, finalization deadline, pass events and sampling adversaries. The affected
+Release test/tool builds subsequently passed with zero warnings/errors after
+ordinary analyzer corrections. An initial chart setup used an invalid circular
+perspective/anisotropic fisheye combination; fixing chart configuration did not
+change reference inputs, production projection or numerical tolerances.
+
+Full population resource evidence, canonical camera captures and independent
+review remain required before merge.
