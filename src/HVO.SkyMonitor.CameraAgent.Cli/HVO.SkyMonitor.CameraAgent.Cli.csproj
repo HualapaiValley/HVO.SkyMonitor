@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <AssemblyName>HVO.SkyMonitor.CameraAgent.Cli</AssemblyName>
     <RootNamespace>HVO.SkyMonitor.CameraAgent.Cli</RootNamespace>
-    <Description>hvo-sky: the command-line client of a running CameraAgent, over its operations API (install contract section 8).</Description>
+    <Description>hvo-sky: the command-line client and terminal interface of a running CameraAgent, over its operations API (install contract section 8).</Description>
     <InvariantGlobalization>true</InvariantGlobalization>
     <!-- The generated marshalling of statx, which checks who owns the credentials file (Client/SkyFileSystem.cs). -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -37,6 +37,8 @@
   </Target>
   <ItemGroup>
     <PackageReference Include="System.CommandLine" />
+    <!-- hvo-sky ui draws with what the terminal programs share (#1317): HVO Dark for Terminal.Gui, and Terminal.Gui. -->
+    <ProjectReference Include="..\HVO.SkyMonitor.TerminalUi\HVO.SkyMonitor.TerminalUi.csproj" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="HVO.SkyMonitor.CameraAgent.Tests" />

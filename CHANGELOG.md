@@ -20,6 +20,10 @@ onward; earlier development is recorded in its pull requests. A release renames 
   that `hvo-sky login` reads from the terminal and keeps in a `0600` file, or from `HVO_SKY_API_KEY`; it never takes a
   key on the command line. CameraAgent's operations API gains `GET info` and `POST restart`, the Camera & rig page's
   restart for API clients. (#1317)
+- `hvo-sky ui` opens a full-screen terminal interface over the same API: status (F1), settings (F2), camera and rig
+  (F3), schedule (F4) and system (F5), with the commands' changes and checks behind prompts. It fits 80 x 24 and uses
+  120 x 32, says in its header whether what shows is current (`[LIVE]`, `[STALE]`, `[OFFLINE]`), and marks values it
+  could not read again `LAST KNOWN`. It is drawn in HVO Dark with 16-colour, `NO_COLOR` and ASCII fallbacks. (#1317)
 - `hvo-sky-install cameraagent backup` copies an instance, bulk captures and a verified snapshot of its databases
   included, into one owner-only archive in `<product-root>/backups`. The archive is proved whole and recorded before it
   is kept; it is written with capture paused and the container stopped, after a check of the folder and of free space,

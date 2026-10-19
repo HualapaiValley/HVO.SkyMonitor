@@ -25,7 +25,7 @@ public sealed class SkyCliStatusTests
         StringAssert.Contains(result.Out, "Storage raw:", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "120.0 GiB free of 500.0 GiB", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "LogicHost:", StringComparison.Ordinal);
-        StringAssert.Contains(result.Out, "(disabled)", StringComparison.Ordinal);
+        StringAssert.Contains(result.Out, "Enabled; heartbeat Available, last acknowledged 2026-10-18T19:29:50Z", StringComparison.Ordinal);
         StringAssert.Contains(result.Out, "As of:", StringComparison.Ordinal);
         CollectionAssert.AreEqual(new[] { "GET " + Fake.SummaryRoute }, harness.Api.Requests.Select(static r => $"{r.Method} {r.PathAndQuery}").ToArray());
     }

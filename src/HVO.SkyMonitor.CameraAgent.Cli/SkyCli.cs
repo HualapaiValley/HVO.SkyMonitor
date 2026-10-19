@@ -190,6 +190,7 @@ internal static partial class SkyCli
             yield return CreateLogoutCommand();
             yield return CreateRigCommand();
             yield return CreateScheduleCommand();
+            yield return CreateUiCommand();
         }
 
         private void SetAction(Command command, Func<SkyCliContext, ParseResult, CancellationToken, Task<int>> action)

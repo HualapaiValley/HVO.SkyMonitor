@@ -76,6 +76,9 @@ internal static partial class SkyCli
     /// another start time than the process that took the request. A CameraAgent that nothing would start again refuses
     /// before anything is sent (exit 3). <paramref name="change"/> names the restart in what the command reports once
     /// CameraAgent has accepted it. The wait ends at the command's deadline, <paramref name="deadline"/>.
+    /// <paramref name="progress"/>, when given, is told what it waits for instead of standard error (the terminal
+    /// interface's), and <paramref name="waitingFor"/> words the timeout for a screen with its own status in place of the
+    /// command's pointer to <c>hvo-sky status</c>.
     /// </summary>
     internal static async Task<SkyRestartOutcome> RestartAsync(
         SkyCliContext context,
@@ -83,7 +86,9 @@ internal static partial class SkyCli
         bool wait,
         string change,
         CancellationToken cancellationToken,
-        SkyCliDeadline? deadline = null)
+        SkyCliDeadline? deadline = null,
+        Action<string>? progress = null,
+        string? waitingFor = null)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(client);
@@ -105,16 +110,24 @@ internal static partial class SkyCli
             return new SkyRestartOutcome(before, response, null, TimeSpan.Zero);
         }
 
-        if (!context.Json && deadline is not null)
+        if (deadline is not null)
         {
-            await context.Error.WriteLineAsync(
-                $"Restart requested; waiting up to {SkyCliDeadline.Seconds(deadline.Remaining)} s for CameraAgent to come back.");
+            var waiting = $"Restart requested; waiting up to {SkyCliDeadline.Seconds(deadline.Remaining)} s for CameraAgent to come back.";
+            if (progress is not null)
+            {
+                // The terminal interface says it on its own screen; standard error belongs to Terminal.Gui there.
+                progress(waiting);
+            }
+            else if (!context.Json)
+            {
+                await context.Error.WriteLineAsync(waiting);
+            }
         }
 
         var after = await PollAsync(
             context,
             deadline,
-            $"waiting for CameraAgent to come back. It may still be starting: check with '{CommandName} status'",
+            waitingFor ?? $"waiting for CameraAgent to come back. It may still be starting: check with '{CommandName} status'",
             async token =>
             {
                 var now = await client.GetAsync<SkyInfo>(SkyRoutes.Info, token).ConfigureAwait(false);

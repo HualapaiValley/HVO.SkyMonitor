@@ -153,19 +153,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-## The single-file programs' packages
+## The terminal programs' packages
 
-`hvo-sky-install`, the installer, and `hvo-sky`, CameraAgent's command line
-(#1317), are each one self-contained file. The installer's wizard draws with
-Terminal.Gui, and the installer contains Terminal.Gui and the packages listed
-here that Terminal.Gui brings in. `hvo-sky` contains `System.CommandLine`
-2.0.13, listed with them. Every release ships this file beside them as an asset
-of its own, `THIRD-PARTY-NOTICES.md` (install contract section 4).
+`hvo-sky-install`, the installer, and `hvo-sky`, CameraAgent's command line,
+are each one self-contained file. The installer's wizard and `hvo-sky ui`
+(#1317) draw with Terminal.Gui, and both files contain Terminal.Gui and the
+packages listed here, which Terminal.Gui brings in; `hvo-sky` also contains
+`System.CommandLine` 2.0.13. Every release ships this file beside them as an asset of its
+own, `THIRD-PARTY-NOTICES.md` (install contract section 4).
 
 Terminal.Gui also depends on TextMateSharp, its grammars and Onigwrap's native
 Oniguruma library, for the syntax highlighting of its Code and Markdown views.
-No terminal program here highlights text, so the installer leaves them out and
-none of their files are in it (`Directory.Build.targets`).
+No terminal program here highlights text, so the installer and `hvo-sky` leave
+them out and none of their files are in either (`Directory.Build.targets`).
 
 | Package | Licence | Copyright | Source |
 | --- | --- | --- | --- |

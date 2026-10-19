@@ -3,6 +3,8 @@
   <PropertyGroup>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <DefineConstants>$(DefineConstants);CAMERAAGENT_FLEET_PERFORMANCE_TESTS</DefineConstants>
+    <!-- hvo-sky ui runs here as hvo-sky ships it: without Terminal.Gui's syntax highlighting (Directory.Build.targets). -->
+    <HvoTerminalProgram>true</HvoTerminalProgram>
   </PropertyGroup>
 
   <ItemGroup>

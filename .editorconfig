@@ -91,7 +91,7 @@ dotnet_diagnostic.CA2000.severity = none
 
 # Terminal.Gui views are owned by the view they are added to, which disposes its subviews when it is disposed; the
 # wizard and hvo-sky's interface dispose their windows (#1317). CA2000 and CA2213 cannot see that ownership.
-[{src/HVO.SkyMonitor.TerminalUi/**.cs,src/HVO.SkyMonitor.Deployment.Cli/Wizard/**.cs}]
+[{src/HVO.SkyMonitor.TerminalUi/**.cs,src/HVO.SkyMonitor.Deployment.Cli/Wizard/**.cs,src/HVO.SkyMonitor.CameraAgent.Cli/Ui/**.cs}]
 dotnet_diagnostic.CA2000.severity = none
 dotnet_diagnostic.CA2213.severity = none
 

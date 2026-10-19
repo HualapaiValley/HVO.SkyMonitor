@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1032" height="630" viewBox="0 0 1032.00 630.00" role="img" aria-label="hvo-sky ui">
+<g font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', 'DejaVu Sans Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" xml:space="preserve" style="white-space: pre">
+<rect x="0" y="0" width="1032.00" height="630.00" rx="8" fill="#05070d"/>
+<rect x="0" y="0" width="1032.00" height="30" rx="8" fill="#323233"/>
+<rect x="0" y="22" width="1032.00" height="8" fill="#323233"/>
+<circle cx="16" cy="15.0" r="6" fill="#ff5f57"/>
+<circle cx="36" cy="15.0" r="6" fill="#febc2e"/>
+<circle cx="56" cy="15.0" r="6" fill="#28c840"/>
+<text x="516.00" y="20.0" fill="#cccccc" text-anchor="middle" font-size="13">hvo-sky ui</text>
+<rect x="12.00" y="42" width="1008.40" height="18.4" fill="#0d1420"/>
+<rect x="20.40" y="96" width="487.60" height="18.4" fill="#0d1420"/>
+<rect x="516.00" y="96" width="496.00" height="18.4" fill="#0d1420"/>
+<rect x="20.40" y="114" width="487.60" height="18.4" fill="#0d1420"/>
+<rect x="516.00" y="114" width="496.00" height="18.4" fill="#0d1420"/>
+<rect x="20.40" y="132" width="487.60" height="18.4" fill="#0d1420"/>
+<rect x="516.00" y="132" width="496.00" height="18.4" fill="#0d1420"/>
+<rect x="20.40" y="150" width="487.60" height="18.4" fill="#0d1420"/>
+<rect x="516.00" y="150" width="496.00" height="18.4" fill="#0d1420"/>
+<rect x="20.40" y="168" width="487.60" height="18.4" fill="#0d1420"/>
+<rect x="516.00" y="168" width="496.00" height="18.4" fill="#0d1420"/>
+<rect x="20.40" y="186" width="487.60" height="18.4" fill="#0d1420"/>
+<rect x="516.00" y="186" width="496.00" height="18.4" fill="#0d1420"/>
+<rect x="20.40" y="204" width="487.60" height="18.4" fill="#0d1420"/>
+<rect x="516.00" y="204" width="496.00" height="18.4" fill="#0d1420"/>
+<rect x="20.40" y="222" width="487.60" height="18.4" fill="#0d1420"/>
+<rect x="516.00" y="222" width="496.00" height="18.4" fill="#0d1420"/>
+<rect x="20.40" y="240" width="487.60" height="18.4" fill="#0d1420"/>
+<rect x="516.00" y="240" width="496.00" height="18.4" fill="#0d1420"/>
+<rect x="20.40" y="276" width="92.80" height="18.4" fill="#58a6ff"/>
+<rect x="129.60" y="276" width="101.20" height="18.4" fill="#111c2a"/>
+<rect x="247.20" y="276" width="92.80" height="18.4" fill="#111c2a"/>
+<rect x="356.40" y="276" width="92.80" height="18.4" fill="#111c2a"/>
+<rect x="12.00" y="582" width="496.00" height="18.4" fill="#0d1420"/>
+<rect x="507.60" y="582" width="92.80" height="18.4" fill="#2563eb"/>
+<rect x="600.00" y="582" width="420.40" height="18.4" fill="#0d1420"/>
+<line x1="24.60" y1="104.40" x2="24.60" y2="249.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="24.00" y1="105.00" x2="37.80" y2="105.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="112.20" y1="105.00" x2="504.00" y2="105.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="519.60" y1="105.00" x2="533.40" y2="105.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="641.40" y1="105.00" x2="1008.00" y2="105.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="503.40" y1="104.40" x2="503.40" y2="249.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="520.20" y1="104.40" x2="520.20" y2="249.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="1007.40" y1="104.40" x2="1007.40" y2="249.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="24.00" y1="249.00" x2="504.00" y2="249.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="519.60" y1="249.00" x2="1008.00" y2="249.00" stroke="#3a4a60" stroke-width="1.2"/>
+<text x="20.40" y="55.50" fill="#f7f9fc" textLength="117.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">HVO SKYMONITOR</text>
+<text x="684.00" y="55.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[LIVE]</text>
+<text x="751.20" y="55.50" fill="#3fb950" textLength="260.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">read-write key 0123456789abcdef</text>
+<text x="20.40" y="73.50" fill="#98a7bb" textLength="487.20" lengthAdjust="spacingAndGlyphs">CameraAgent: http://127.0.0.1:5130/ (allsky01, VirtualSky)</text>
+<text x="894.00" y="73.50" fill="#98a7bb" textLength="117.60" lengthAdjust="spacingAndGlyphs">read 19:30:05Z</text>
+<text x="45.60" y="109.50" fill="#58a6ff" textLength="58.80" lengthAdjust="spacingAndGlyphs" font-weight="bold">HVO-SKY</text>
+<text x="541.20" y="109.50" fill="#58a6ff" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">CAMERAAGENT</text>
+<text x="37.20" y="127.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">Version</text>
+<text x="121.20" y="127.50" fill="#f7f9fc" textLength="369.60" lengthAdjust="spacingAndGlyphs">0.9.0-test+ccccccccccccccccccccccccccccccccc</text>
+<text x="532.80" y="127.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">Version</text>
+<text x="616.80" y="127.50" fill="#f7f9fc" textLength="378.00" lengthAdjust="spacingAndGlyphs">0.9.0-test+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</text>
+<text x="37.20" y="145.50" fill="#98a7bb" textLength="25.20" lengthAdjust="spacingAndGlyphs">Key</text>
+<text x="121.20" y="145.50" fill="#f7f9fc" textLength="134.40" lengthAdjust="spacingAndGlyphs">0123456789abcdef</text>
+<text x="532.80" y="145.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">Runtime</text>
+<text x="616.80" y="145.50" fill="#f7f9fc" textLength="218.40" lengthAdjust="spacingAndGlyphs">.NET 10.0.13 (linux-arm64)</text>
+<text x="37.20" y="163.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">Access</text>
+<text x="121.20" y="163.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs">read-write</text>
+<text x="532.80" y="163.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">Started</text>
+<text x="616.80" y="163.50" fill="#f7f9fc" textLength="168.00" lengthAdjust="spacingAndGlyphs">2026-10-18T18:00:00Z</text>
+<text x="37.20" y="181.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">From</text>
+<text x="121.20" y="181.50" fill="#f7f9fc" textLength="243.60" lengthAdjust="spacingAndGlyphs">environment (HVO_SKY_API_KEY)</text>
+<text x="532.80" y="181.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">Uptime</text>
+<text x="616.80" y="181.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs">10m 0s</text>
+<text x="37.20" y="199.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">File</text>
+<text x="121.20" y="199.50" fill="#98a7bb" textLength="369.60" lengthAdjust="spacingAndGlyphs">/home/operator/.config/hvo-sky/credentials.j</text>
+<text x="532.80" y="199.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">Catalog</text>
+<text x="616.80" y="199.50" fill="#f7f9fc" textLength="184.80" lengthAdjust="spacingAndGlyphs">hyg-v42-production 4.2</text>
+<text x="532.80" y="217.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">Restart</text>
+<text x="616.80" y="217.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs">supervised</text>
+<text x="20.40" y="289.50" fill="#05070d" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold" text-decoration="underline">[ Sign in ]</text>
+<text x="129.60" y="289.50" fill="#98a7bb" textLength="100.80" lengthAdjust="spacingAndGlyphs" opacity="0.6">[ Sign out ]</text>
+<text x="247.20" y="289.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Restart ]</text>
+<text x="356.40" y="289.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Refresh ]</text>
+<text x="20.40" y="577.50" fill="#98a7bb" textLength="546.00" lengthAdjust="spacingAndGlyphs">hvo-sky's own version shows even when CameraAgent cannot be read.</text>
+<text x="28.80" y="595.50" fill="#f7f9fc" textLength="75.60" lengthAdjust="spacingAndGlyphs">F1 Status</text>
+<text x="129.60" y="595.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs">F2 Settings</text>
+<text x="247.20" y="595.50" fill="#f7f9fc" textLength="126.00" lengthAdjust="spacingAndGlyphs">F3 Camera &amp; rig</text>
+<text x="398.40" y="595.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs">F4 Schedule</text>
+<text x="507.60" y="595.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[F5 System]</text>
+<text x="936.00" y="595.50" fill="#98a7bb" textLength="67.20" lengthAdjust="spacingAndGlyphs">F10 Quit</text>
+<text x="20.40" y="613.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Tab</text>
+<text x="54.00" y="613.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">move</text>
+<text x="104.40" y="613.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">Enter</text>
+<text x="154.80" y="613.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">select</text>
+<text x="222.00" y="613.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Esc</text>
+<text x="255.60" y="613.50" fill="#98a7bb" textLength="100.80" lengthAdjust="spacingAndGlyphs">close prompt</text>
+<text x="373.20" y="613.50" fill="#f7f9fc" textLength="50.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">Ctrl+R</text>
+<text x="432.00" y="613.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">refresh</text>
+<text x="961.20" y="613.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">120x32</text>
+</g>
+</svg>
