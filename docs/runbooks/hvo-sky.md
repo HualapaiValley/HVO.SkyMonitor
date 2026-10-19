@@ -89,13 +89,18 @@ Every command takes `--json`, `--url`, `--credentials-file` and `--timeout`; `--
 **`--timeout S`** (1 to 3600, default 30) is the one deadline of a command: the time it may spend waiting for
 CameraAgent, across every request, every answer's body and every wait between reads, a restart's and a rig's included.
 Time spent answering a prompt does not count. A command that runs out of time exits 1 and says it timed out
-(`kind` `TimedOut`), which Ctrl+C (130) never does. `status --watch` runs until it is interrupted, so there it bounds
-each read, and a read that runs out of time is a failed read. A restart on a slow host may need longer than 30 s:
+(`kind` `TimedOut`), which Ctrl+C (130) never does. A restart on a slow host may need longer than 30 s:
 `hvo-sky restart --timeout 180`.
+
+**`status --watch`** runs until Ctrl+C, or until CameraAgent refuses the key. One deadline would end every watch after
+30 s, so there `--timeout` bounds each sample instead: its request and the reading of its answer. A sample that fails,
+or runs out of time, is written as a line (`NOT READ: ...`) and the watch goes on to the next. Ctrl+C ends the watch at
+once, even between samples: it exits 0 when its last sample was read and 1 when it was not, since a failed read says
+nothing about CameraAgent's state. A key CameraAgent refuses (HTTP 401 or 403) ends it with exit 3.
 
 | Command | Key | What it does |
 | --- | --- | --- |
-| `status [--watch [--interval S]]` | Read | The instance's status: capture control, the camera, the raw-ingress, lane, processing and outbox queues, storage, and LogicHost delivery. `--json` is CameraAgent's operations summary as it is. `--watch` reads it again every `--interval` seconds (default 2) and writes one line per change, and a line when CameraAgent stops or starts answering. |
+| `status [--watch [--interval S]]` | Read | The instance's status: capture control, the camera, the raw-ingress, lane, processing and outbox queues, storage, and LogicHost delivery. `--json` is CameraAgent's operations summary as it is. `--watch` reads it again every `--interval` seconds (default 2) and writes one line per change, and a line when CameraAgent stops or starts answering, until Ctrl+C; **`status --watch`**, above this table, gives its deadline and exit codes. |
 | `info` | Read | `hvo-sky`'s own version, then CameraAgent's version, runtime, start time, catalog, whether it can restart itself, and the key in use and where it came from. |
 | `config show [GROUP]` | Read | The settings by group, from CameraAgent's settings catalogue: each value, where it comes from, and whether it can be changed here. |
 | `config get KEY` | Read | One setting: value, default, source, what it accepts, when a change applies, what it affects, and why it is read-only when it is. `KEY` is the full key, or the part after the group when that is unique. |

@@ -75,7 +75,7 @@ internal sealed class SkyApiClient : IDisposable
 
     /// <summary>Reads <paramref name="route"/> as a JSON document.</summary>
     public Task<JsonElement> GetAsync(string route, CancellationToken cancellationToken)
-        => SendAsync(HttpMethod.Get, route, body: null, idempotent: false, cancellationToken);
+        => SendAsync(HttpMethod.Get, route, body: null, idempotent: false, accepted: null, cancellationToken);
 
     /// <summary>Reads <paramref name="route"/> as <typeparamref name="T"/>.</summary>
     public async Task<T> GetAsync<T>(string route, CancellationToken cancellationToken)
@@ -86,7 +86,18 @@ internal sealed class SkyApiClient : IDisposable
     /// <c>Idempotency-Key</c>, which CameraAgent records with location and schedule commands.
     /// </summary>
     public Task<JsonElement> SendAsync(HttpMethod method, string route, object? body, CancellationToken cancellationToken)
-        => SendAsync(method, route, body, idempotent: true, cancellationToken);
+        => SendAsync(method, route, body, idempotent: true, accepted: null, cancellationToken);
+
+    /// <summary>
+    /// Sends a change, as <see cref="SendAsync(HttpMethod, string, object?, CancellationToken)"/> does, and calls
+    /// <paramref name="accepted"/> as soon as CameraAgent's success status line arrives, before its body is read: from
+    /// then on CameraAgent has taken the change, whatever becomes of the body.
+    /// </summary>
+    public Task<JsonElement> SendAsync(HttpMethod method, string route, object? body, Action accepted, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(accepted);
+        return SendAsync(method, route, body, idempotent: true, accepted, cancellationToken);
+    }
 
     public static T Read<T>(JsonElement element)
     {
@@ -105,6 +116,7 @@ internal sealed class SkyApiClient : IDisposable
         string route,
         object? body,
         bool idempotent,
+        Action? accepted,
         CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(method, new Uri(route, UriKind.Relative));
@@ -120,6 +132,11 @@ internal sealed class SkyApiClient : IDisposable
 
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
             .ConfigureAwait(false);
+        if (response.IsSuccessStatusCode)
+        {
+            accepted?.Invoke();
+        }
+
         var text = await ReadBodyAsync(response, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {

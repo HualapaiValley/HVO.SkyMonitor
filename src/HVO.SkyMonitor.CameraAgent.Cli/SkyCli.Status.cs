@@ -12,13 +12,13 @@ internal static partial class SkyCli
         {
             var watch = new Option<bool>("--watch", "-w")
             {
-                Description = "Read the status again every --interval seconds and write one line per change, until Ctrl+C."
+                Description = "Read the status again every --interval seconds and write one line per change, and a line when a read fails, until Ctrl+C or a refused key (exit 3). --timeout bounds each read, its request and its answer, not the watch. Ctrl+C ends it at once: exit 0 when its last read succeeded, 1 when it did not."
             };
             var interval = new Option<int?>("--interval")
             {
                 Description = "With --watch: seconds between reads, 1 to 3600 (default 2)."
             };
-            var command = new Command("status", "Show the running CameraAgent's status: capture, queues, storage and LogicHost delivery.")
+            var command = new Command("status", "Show the running CameraAgent's status: capture, queues, storage and LogicHost delivery. With --watch, follow it until Ctrl+C.")
             {
                 watch,
                 interval
