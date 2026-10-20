@@ -1372,7 +1372,8 @@ internal sealed partial class CameraAgentLifecycleManager
         var carry = CameraAgentStateCounters.PlanCarry(
             floors,
             relative => CameraAgentStateSnapshot.StoreFile(paths, snapshot, target, relative),
-            Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"), "carry-trial"));
+            Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"), "carry-trial"),
+            target.Databases.Sum(static database => database.Length));
         if (carry.Uncarried.Count > 0)
             await CameraAgentStateSnapshot.ShowRestoreUncarriedAsync(snapshot, carry.Uncarried, json, error).ConfigureAwait(false);
         return (operation, carry);
@@ -2715,9 +2716,9 @@ internal sealed partial class CameraAgentLifecycleManager
     }
 
     /// <summary>
-    /// Room for the staged image archive and for two copies of the small databases: the operation's snapshot, and the
-    /// temporary copy a restore writes beside each store. Bulk data is never copied, so it is never counted, and the
-    /// check reads only the stores' sizes rather than walking the instance tree.
+    /// Estimated room for the staged image archive, the operation's snapshot, a temporary database copy, its
+    /// concurrent rollback journal and a separate restore-copy allowance. Triggers may grow the trial beyond its current-size estimate; every trial checks
+    /// capacity again while keeping space for the restore. Bulk data is never copied or counted.
     /// </summary>
     private static void EnsureUpgradeStorage(
         InstallationPaths paths, string? imageArchive, HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile replayProfile,
@@ -2725,7 +2726,7 @@ internal sealed partial class CameraAgentLifecycleManager
     {
         var databaseBytes = CameraAgentStateSnapshot.StoreBytes(paths.StateRoot, SnapshotInventory(paths, replayProfile, rollback));
         var archiveBytes = imageArchive is null ? 0 : new FileInfo(imageArchive).Length;
-        var required = checked(2 * databaseBytes + archiveBytes + 256L * 1024 * 1024);
+        var required = checked(4 * databaseBytes + CameraAgentStateCounters.JournalRecordBytes(databaseBytes) + archiveBytes + 256L * 1024 * 1024);
         // The snapshot and staged archive land on the filesystem that holds the product root, which need not be '/'.
         var available = LinuxHostEnvironment.AvailableBytes(paths.ProductRoot);
         if (available < required)

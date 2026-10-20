@@ -9,6 +9,10 @@ to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 
 with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
 
 ## [Unreleased]
+
+### Fixed
+
+- CameraAgent restore warnings identify every omitted counter and its escaped key; carry trials budget for rollback journals while keeping space for the restore. (#1347)
 - LogicHost uses stable bounded query ordering for projected-scene checks, diagnostics and transient submission conflicts, and keeps publication event and version identities paired when reading history. (#1444)
 
 

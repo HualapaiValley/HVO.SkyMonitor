@@ -363,7 +363,8 @@ internal static class CameraAgentStateSnapshot
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            uncarried.Add(($"the counters of '{database.RelativePath}'", exception.Message));
+            uncarried.AddRange(carry.Where(floor => floor.Store == database.RelativePath)
+                .Select(floor => (CameraAgentStateCounters.Describe(floor), exception.Message)));
         }
         DiscardStaged(temporary);
         StepCompleted($"restore-recopy:{database.RelativePath}");
