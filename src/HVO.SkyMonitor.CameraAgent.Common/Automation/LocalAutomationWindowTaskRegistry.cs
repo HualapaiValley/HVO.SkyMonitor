@@ -147,6 +147,12 @@ public sealed class LocalAutomationTaskRegistry : ILocalAutomationTaskRegistry
         return PeriodicAdapter(definition.TaskKind) is { SupportsRunNow: true };
     }
 
+    public bool RunsOffSweep(LocalAutomationDefinition definition)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        return PeriodicAdapter(definition.TaskKind) is { RunsOffSweep: true };
+    }
+
     private ILocalAutomationPeriodicTaskAdapter? PeriodicAdapter(LocalAutomationTaskKind kind)
         => _periodicAdapters.SingleOrDefault(item => item.TaskKind == kind);
 
