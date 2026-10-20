@@ -906,10 +906,14 @@ output, including the shared assemblies a host references, so without the
 filter shared code the host's tests never call would count against the host's
 floor. #1408's orbital contracts took the LogicHost lane below its floor that
 way (#1420). Shared code is measured by the shared lane and the aggregate
-rollup. The shared and combined lanes keep every assembly their reports carry:
-the shared suites reference only shared assemblies, and the combined baseline
-floors the shared contracts both hosts compose. A filter that drops a floored
-file, or leaves a report with no classes, fails the lane rather than passing it.
+rollup, with one gap: the `ProcessingRunner` and `ProcessingRunner.Contracts`
+files LogicHost's tests reach are not in the shared lane, because the
+ProcessingRunner suite is not a coverage slot (below). The aggregate rollup
+still measures both, and the combined lane measures the contracts. The shared
+and combined lanes keep every assembly their reports carry: the shared suites
+reference only shared assemblies, and the combined baseline floors the shared
+contracts both hosts compose. A filter that drops a floored file, or leaves a
+report with no classes, fails the lane rather than passing it.
 
 A lane merges fewer reports than the aggregate rollup, so its measured rates are
 its own. To keep component gating from relaxing risk coverage, `Coverage Policy`
