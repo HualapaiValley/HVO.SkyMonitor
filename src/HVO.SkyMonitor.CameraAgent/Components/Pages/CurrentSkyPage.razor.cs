@@ -12,6 +12,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 {
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan RefreshTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan FirstLoadRefreshTimeout = TimeSpan.FromSeconds(30);
     // The interval is measured between refresh starts, which the poll timer's wake-ups move by milliseconds; this slack
     // keeps an interval of one poll period from being missed on every other poll.
     private static readonly TimeSpan CaptureChangeSlack = TimeSpan.FromSeconds(1);
@@ -84,6 +85,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private string? _factsUnavailableReason;
     private CameraAgentPresentationStage? _selectedStage;
     private string? _errorMessage;
+    private string? _refreshDeadlineMessage;
+    private bool _firstRefresh = true;
     private string? _technicalEvidenceError;
     private bool _initialLoading = true;
     private bool _refreshing;
@@ -108,6 +111,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
     [Inject] internal ICameraAgentProcessingGraphUiService GraphService { get; set; } = default!;
+    [Inject] internal ILogger<CurrentSkyPage> Logger { get; set; } = default!;
     [Inject] internal TimeProvider TimeProvider { get; set; } = default!;
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
     [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
@@ -242,12 +246,18 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         var started = TimeProvider.GetTimestamp();
         // One deadline covers the whole refresh: the current-sky read with its completion reads, and the next capture's
         // layers. A refresh that runs past it applies nothing and keeps the capture shown.
-        using var deadline = new CancellationTokenSource(RefreshTimeout, TimeProvider);
+        var firstRefresh = _firstRefresh;
+        _firstRefresh = false;
+        var bound = firstRefresh ? FirstLoadRefreshTimeout : RefreshTimeout;
+        using var timings = new CameraAgentCurrentSkyRefreshDiagnostics(TimeProvider, Logger);
+        using var deadline = new CancellationTokenSource(bound, TimeProvider);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
         await InvokeAsync(() => _refreshing = true);
         try
         {
-            var result = await OperatorService.GetCurrentSkyViewAsync(timeout.Token).ConfigureAwait(false);
+            OperatorUiResult<CameraAgentCurrentSkyView> result;
+            using (CameraAgentCurrentSkyRefreshDiagnostics.Measure(TimeProvider, "view-read"))
+                result = await OperatorService.GetCurrentSkyViewAsync(timeout.Token).ConfigureAwait(false);
             if (result.Kind == OperatorUiResultKind.Unauthorized)
             {
                 await InvokeAsync(RevokeAccess).ConfigureAwait(false);
@@ -282,7 +292,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 // A result that waited for the dispatcher past the deadline is discarded, like one that missed it.
                 if (timeout.IsCancellationRequested)
                 {
-                    ShowRefreshDeadlineExceeded();
+                    ShowRefreshDeadlineExceeded(timings, bound, firstRefresh);
                     return;
                 }
                 if (_viewerOpen) { _refreshing = false; return; }
@@ -340,6 +350,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 {
                     _errorMessage = result.Message ?? "The current image projection is unavailable.";
                 }
+                _refreshDeadlineMessage = null;
                 _initialLoading = false;
                 _refreshing = false;
                 StateHasChanged();
@@ -357,14 +368,17 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             await InvokeAsync(() =>
             {
                 if (_accessDenied || _disposeStarted != 0) return;
-                ShowRefreshDeadlineExceeded();
+                ShowRefreshDeadlineExceeded(timings, bound, firstRefresh);
             }).ConfigureAwait(false);
         }
     }
 
-    private void ShowRefreshDeadlineExceeded()
+    private void ShowRefreshDeadlineExceeded(CameraAgentCurrentSkyRefreshDiagnostics timings, TimeSpan bound, bool firstRefresh)
     {
-        _errorMessage = "The current image refresh exceeded its five-second deadline.";
+        timings.LogDeadline(bound, firstRefresh);
+        _refreshDeadlineMessage = _presentation?.DisplayCapture is not null
+            ? $"Current Sky couldn’t refresh within {bound.TotalSeconds:0} s; showing the last image; retrying automatically."
+            : "The current image is still loading. Retrying automatically.";
         _initialLoading = false;
         _refreshing = false;
         StateHasChanged();
@@ -566,9 +580,10 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     {
         try
         {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
-            timeout.CancelAfter(TimeSpan.FromSeconds(5));
-            return await OperatorService.GetLayeredPresentationAsync(captureId, timeout.Token).ConfigureAwait(false);
+            using var deadline = new CancellationTokenSource(RefreshTimeout, TimeProvider);
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
+            using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure(TimeProvider, "layer-read");
+            return await OperatorService.GetLayeredPresentationAsync(captureId, bounded.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {

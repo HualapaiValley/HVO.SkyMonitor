@@ -629,3 +629,53 @@ Next: classify the actual base-sync delta, run its affected local candidate and
 CI-control guards, obtain independent deep conflict/interaction review, then
 start protected CI on the reviewed head. This entry records preparation, not
 a green union gate or a merge of the PR.
+
+
+## First-load grace and page refresh diagnostics (#1472)
+
+The first live-page refresh has a named 30-second bound, allowing six times the
+steady-state read budget for cold preview validation, database opens and startup
+contention. This is a bounded candidate for the next Pi smoke test, not a claim
+of measured Pi startup latency. It is based on the first attempt of this page,
+not inferred container-restart state. Later attempts retain the five-second
+bound, including retries after the first attempt times out.
+
+Loading and deadline notices sit inside the image card below CameraAgent status,
+with `role="status"` and neutral styling. Initial loading and an image-less retry
+say “The current image is still loading. Retrying automatically.” With a retained
+image, a missed steady-state bound says “Current Sky couldn’t refresh within 5 s;
+showing the last image; retrying automatically.” Capture state and facts stay in
+their existing positions. These notices describe page reads, never exposure or
+processing duration. The 15-second poll continues and the next applied read
+clears the notice. No capture-control command is issued by a deadline miss.
+
+`CurrentSkyPageTests.Refresh.cs` advances the injected clock to prove loading
+past five seconds and completion at twenty seconds, first-attempt cancellation
+at thirty seconds, automatic next-poll recovery and the steady-state retained
+image/status contract. The shared view/layer deadline regressions keep their
+existing retained-image checks. No fixture is constructed inside an exception
+assertion. No tracked screenshot or SVG contains the replaced deadline banner;
+normal completed-image visuals are unaffected.
+
+Runtime signal manifest:
+
+- Debug: `Current Sky page refresh phase {Phase} took {ElapsedMs} ms.` The bounded
+  phase names are `view-read`, `preview-validation`, `layer-availability` and
+  `layer-read`; phases that do not run emit no sample. Cancellation records the
+  elapsed phase in its `Dispose` path.
+- Information: one `Current Sky page refresh missed {BoundSeconds} s bound` line
+  per missed refresh, with `FirstRefresh`, `ElapsedMs` and `SlowestPhase`. The
+  slowest phase compares exclusive view time against its nested preview and
+  availability timings, layer-read time and dispatcher wait, avoiding an outer
+  read that always obscures its slow nested operation. Successful reads do not
+  emit warnings. Fields contain no capture payload, paths or credentials.
+- Scope: request-local timing context flows through the nested asynchronous
+  presentation reads. An internal activity supplies correlation; there is no
+  new exporter requirement, metric or health transition. Capture and storage
+  lifecycle signals remain owned by their existing services.
+
+Release smoke checkpoint: after a restart, visit Current Sky without pausing
+capture. Confirm the neutral image-card loading text and capture status remain
+separate, retain Debug phase logs and any Information deadline line, then verify
+automatic recovery. Measure initial latency on the Pi before treating the
+30-second candidate as hardware qualification. Storage-lock work is #1471.

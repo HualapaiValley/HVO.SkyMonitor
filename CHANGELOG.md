@@ -82,6 +82,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Current Sky gives its first page read up to 30 seconds, identifies later five-second page refresh misses beside the image, retries automatically and logs the slow refresh phase without implying a capture fault. (#1472)
+
 - Host policy mount metadata can be repaired under the shared policy lock with `host set-product-root <same-root> --repair`, preserving the existing root and its instances. Privileged helper refusals keep exit 3 and the public refusal diagnostics. (#1292)
 
 - Retained time-lapse jobs keep their released renderer and recipe identity across upgrades; new jobs restore white cardinal and corner text and the grey image circle under a distinct renderer version. (#1401)

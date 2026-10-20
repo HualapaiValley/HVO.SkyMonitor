@@ -103,6 +103,14 @@
                 </div>
             </header>
 
+            @if (!IsArchived && (_initialLoading || _refreshDeadlineMessage is not null))
+            {
+                <div class="state-notice sky-refresh-notice" role="status" aria-live="polite">
+                    <strong>Current Sky page refresh</strong>
+                    <span>@(_refreshDeadlineMessage ?? "The current image is still loading. Retrying automatically.")</span>
+                </div>
+            }
+
             <figure class="sky-figure @(ShowLayeredHero ? "" : "layers-suppressed")" @ref="_figure">
                 <div class="sky-image-stage" style="@StageAspectStyle">
                     @if (ShowLayeredHero)
