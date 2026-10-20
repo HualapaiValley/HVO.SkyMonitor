@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Numerics;
 using System.Reflection;
+using System.Runtime;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
@@ -42,11 +43,15 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
     private const string SourceCommit = "939b46d6";
     private static readonly TimeSpan Floor = SqliteOrbitalElementsStore.MinimumProviderAttemptInterval;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+    private static readonly long ClockTicksPerSecond = ReadClockTicksPerSecond();
     private readonly Dictionary<string, List<Sample>> _samples = new(StringComparer.Ordinal);
     private readonly object _sampleSync = new();
     private readonly List<object> _facts = [];
     private readonly List<object> _boundaries = [];
     private readonly List<WeakReference<OrbitalSnapshotReader>> _disposedReaders = [];
+    private readonly List<ThreadBoundary> _threadBoundaries = [];
+    private readonly List<object> _settles = [];
+    private bool _attributingChangedJob;
     private bool _recording;
     private int _repeat;
 
@@ -61,6 +66,10 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
         {
             _recording = repeat >= 0;
             _repeat = repeat;
+            if (Environment.GetEnvironmentVariable("HVO_ORBITAL_PERF_SETTLE") == "1")
+            {
+                await SettleAsync(repeat).ConfigureAwait(false);
+            }
             await MeasureConsumerAsync(workload, repeat).ConfigureAwait(false);
             await MeasureUnavailableAsync(repeat).ConfigureAwait(false);
             foreach (var scenario in Enum.GetValues<SweepCase>())
@@ -71,7 +80,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
             TestContext.WriteLine($"Completed repeat {repeat + 1}/{Repeats} (zero is warmup).");
         }
         // All per-root async methods have returned and all their stores/workers have been disposed.
-        // This is diagnostic only, after every timed sample; never collect at repetition boundaries.
+        // This final diagnostic is outside every timed sample; the opt-in control also collects before repetitions.
         GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
         GC.WaitForPendingFinalizers();
         GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
@@ -91,6 +100,19 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
             framework = RuntimeInformation.FrameworkDescription,
             os = RuntimeInformation.OSDescription,
             processors = Environment.ProcessorCount,
+            gcConfiguration = new
+            {
+                GCSettings.IsServerGC,
+                latencyMode = GCSettings.LatencyMode.ToString(),
+                concurrent = ReadGcSwitch("System.GC.Concurrent"),
+                server = ReadGcSwitch("System.GC.Server"),
+                linuxClockTicksPerSecond = ClockTicksPerSecond,
+                effectiveRuntimeConfig = ReadEffectiveRuntimeConfig(),
+                runtimeConfigs = ReadRuntimeConfigs()
+            },
+            settleEnabled = Environment.GetEnvironmentVariable("HVO_ORBITAL_PERF_SETTLE") == "1",
+            settles = _settles,
+            threadBoundaries = _threadBoundaries,
             workload = new
             {
                 records = OrbitalPerformanceWorkload.RecordCount,
@@ -112,6 +134,9 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
                 "The diagnostic follow-up also samples allocation-free integer and SHA-256 CPU controls at repetition boundaries; these are outside all timed workload windows.",
                 "Boundary diagnostics and the final forced full collection are outside all timed windows; CPU frequency is sampled from readable Linux policies.",
                 "Phase intervals: provider fetch; fetch return to settled event (retrieval/normalize/publish); settled to retention event; reader 7722/7723 preparation.",
+                "Changed-job thread boundaries read Linux schedstat (ns), falling back to stat CPU ticks; counters are sequential, with per-read timestamps and measured instrumentation cost.",
+                "GC-background includes GC-named threads; foreground GC executed on a mutator remains in mutator CPU. CPU classes overlap wall/pause and are not additive causal wall attribution.",
+                "HVO_ORBITAL_PERF_SETTLE=1 forces compacting full collections and waits for less than 5 ms GC-thread CPU per 500 ms, bounded at 10 s, before each repetition outside timed windows; default off.",
                 "Virtual timers are advanced only after timer registration (and request entry for timeout); real wall cost excludes simulated passage of time."
             },
             measurements = _samples.OrderBy(static pair => pair.Key, StringComparer.Ordinal).ToDictionary(
@@ -437,11 +462,166 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
 
     private async Task<T> MeasureAsync<T>(string name, Func<ValueTask<T>> action)
     {
+        if (name == "M1.job.changed")
+        {
+            _attributingChangedJob = true;
+            ObserveThreadBoundary("job-start");
+        }
         var start = Capture();
         var result = await action().ConfigureAwait(false);
         Record(name, start);
+        if (name == "M1.job.changed")
+        {
+            ObserveThreadBoundary("job-end");
+            _attributingChangedJob = false;
+        }
         return result;
     }
+
+    private static object ReadGcSwitch(string name) => new
+    {
+        found = AppContext.TryGetSwitch(name, out var enabled),
+        enabled,
+        data = AppContext.GetData(name)?.ToString()
+    };
+
+    private static object[] ReadRuntimeConfigs() => Directory.GetFiles(AppContext.BaseDirectory, "*.runtimeconfig.json")
+        .Select(static path => (object)new { name = Path.GetFileName(path), contents = File.ReadAllText(path) }).ToArray();
+
+    private static object? ReadEffectiveRuntimeConfig()
+    {
+        if (!OperatingSystem.IsLinux()) { return null; }
+        var arguments = File.ReadAllText("/proc/self/cmdline").Split('\0');
+        var index = Array.IndexOf(arguments, "--runtimeconfig");
+        return index >= 0 && index + 1 < arguments.Length
+            ? new { name = Path.GetFileName(arguments[index + 1]), contents = File.ReadAllText(arguments[index + 1]) }
+            : null;
+    }
+
+    private void ObserveThreadBoundary(string name)
+    {
+        if (!_attributingChangedJob) { return; }
+        var started = Stopwatch.GetTimestamp();
+        var allocated = GC.GetTotalAllocatedBytes(precise: true);
+        var current = ReadThreadCounter("/proc/thread-self");
+        var threads = ReadThreadCounters(current?.Tid);
+        var end = ReadThreadCounter("/proc/thread-self");
+        if (end is not null) { threads.Add(end); }
+        var timestamp = Stopwatch.GetTimestamp();
+        var gc = CaptureGc();
+        _threadBoundaries.Add(new(name, _repeat, timestamp, DateTimeOffset.UtcNow, gc,
+            Environment.CpuUsage.TotalTime.TotalMilliseconds, threads,
+            Stopwatch.GetElapsedTime(started, timestamp).TotalMilliseconds,
+            current is not null && end is not null && current.Tid == end.Tid ? (end.CpuNs - current.CpuNs) / 1_000_000d : null,
+            GC.GetTotalAllocatedBytes(precise: true) - allocated, end?.Tid));
+    }
+
+    private static List<ThreadCounter> ReadThreadCounters(int? excludingTid = null)
+    {
+        List<ThreadCounter> result = [];
+        if (!OperatingSystem.IsLinux()) { return result; }
+        foreach (var path in Directory.EnumerateDirectories("/proc/self/task"))
+        {
+            if (int.TryParse(Path.GetFileName(path), CultureInfo.InvariantCulture, out var tid) && tid != excludingTid
+                && ReadThreadCounter(path) is { } counter)
+            {
+                result.Add(counter);
+            }
+        }
+        return result;
+    }
+
+    private static ThreadCounter? ReadThreadCounter(string path)
+    {
+        if (!OperatingSystem.IsLinux()) { return null; }
+        try
+        {
+            var stat = File.ReadAllText(Path.Combine(path, "stat"));
+            var tid = int.Parse(stat.AsSpan(0, stat.IndexOf(' ', StringComparison.Ordinal)), CultureInfo.InvariantCulture);
+            var fields = stat[(stat.LastIndexOf(')') + 2)..].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var name = File.ReadAllText(Path.Combine(path, "comm")).Trim();
+            long cpuNs;
+            var source = "schedstat";
+            try
+            {
+                var schedstat = File.ReadAllText(Path.Combine(path, "schedstat"));
+                cpuNs = long.Parse(schedstat.AsSpan(0, schedstat.IndexOf(' ', StringComparison.Ordinal)), CultureInfo.InvariantCulture);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                source = "stat";
+                if (ClockTicksPerSecond <= 0) { return null; }
+                cpuNs = (long.Parse(fields[11], CultureInfo.InvariantCulture) + long.Parse(fields[12], CultureInfo.InvariantCulture))
+                    * 1_000_000_000 / ClockTicksPerSecond;
+            }
+            return new(tid, name, ClassifyThread(name), cpuNs,
+                long.Parse(fields[19], CultureInfo.InvariantCulture), Stopwatch.GetTimestamp(), source);
+        }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
+        catch (InvalidOperationException) { return null; }
+    }
+
+    private static long ReadClockTicksPerSecond()
+    {
+        if (!OperatingSystem.IsLinux()) { return 0; }
+        try
+        {
+            // Linux AT_CLKTCK (17) supplies the stat utime/stime clock tick in the process auxiliary vector.
+            var auxv = File.ReadAllBytes("/proc/self/auxv");
+            for (var offset = 0; offset + 2 * IntPtr.Size <= auxv.Length; offset += 2 * IntPtr.Size)
+            {
+                var kind = IntPtr.Size == 8 ? BitConverter.ToUInt64(auxv, offset) : BitConverter.ToUInt32(auxv, offset);
+                if (kind == 17)
+                {
+                    return (long)(IntPtr.Size == 8 ? BitConverter.ToUInt64(auxv, offset + IntPtr.Size)
+                        : BitConverter.ToUInt32(auxv, offset + IntPtr.Size));
+                }
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        return 0;
+    }
+
+    private static string ClassifyThread(string name)
+    {
+        if (name.Contains("GC", StringComparison.OrdinalIgnoreCase)) { return "gc-background"; }
+        if (name.Contains("Finalizer", StringComparison.OrdinalIgnoreCase)) { return "finalizer"; }
+        if (name.Contains("Tiered", StringComparison.OrdinalIgnoreCase) || name.Contains("JIT", StringComparison.OrdinalIgnoreCase)) { return "jit"; }
+        return "mutator";
+    }
+
+    private async Task SettleAsync(int repeat)
+    {
+        var started = Stopwatch.GetTimestamp();
+        GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+        var collectionMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        var waitStart = Stopwatch.GetTimestamp();
+        List<object> windows = [];
+        var quiet = false;
+        do
+        {
+            var before = ReadThreadCounters().Where(static thread => thread.Class == "gc-background").ToArray();
+            var window = Stopwatch.GetTimestamp();
+            await Task.Delay(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
+            var after = ReadThreadCounters().Where(static thread => thread.Class == "gc-background").ToArray();
+            var cpuMs = after.Sum(thread => Math.Max(0, thread.CpuNs - (before.FirstOrDefault(previous =>
+                previous.Tid == thread.Tid && previous.StartTimeTicks == thread.StartTimeTicks)?.CpuNs ?? 0))) / 1_000_000d;
+            quiet = cpuMs < 5;
+            windows.Add(new { wallMs = Stopwatch.GetElapsedTime(window).TotalMilliseconds, cpuMs, quiet, before, after });
+        } while (!quiet && Stopwatch.GetElapsedTime(waitStart) < TimeSpan.FromSeconds(10));
+        _settles.Add(new { repeat, collectionMs, waitMs = Stopwatch.GetElapsedTime(waitStart).TotalMilliseconds, quiet, windows });
+        Assert.IsTrue(quiet, "GC background did not settle within the bounded control window.");
+    }
+
+    private sealed record ThreadCounter(int Tid, string Name, string Class, long CpuNs, long StartTimeTicks, long Timestamp, string Source);
+    private sealed record ThreadBoundary(string Name, int Repeat, long Timestamp, DateTimeOffset Utc, GcStamp Gc,
+        double ProcessCpuMs, List<ThreadCounter> Threads, double InstrumentationWallMs, double? InstrumentationCpuMs,
+        long InstrumentationAllocatedBytes, int? InstrumentationTid);
 
     private static Stamp Capture()
     {
@@ -646,12 +826,17 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
 
         public void Fetched(Stamp start)
         {
+            owner.ObserveThreadBoundary("fetch-return");
             owner.Record(series + ".phase.fetch", start);
             _normalization = Capture();
         }
 
         public void Log(int eventId)
         {
+            if (eventId is 7741 or 7749 or 7722 or 7723)
+            {
+                owner.ObserveThreadBoundary("event-" + eventId.ToString(CultureInfo.InvariantCulture));
+            }
             switch (eventId)
             {
                 case 7741:
