@@ -69,7 +69,6 @@ public sealed partial class OrbitalPredictionEngine
                 reason = OrbitalPredictionReason.Deadline;
                 result = Freeze();
             }
-            budget.CanContinue();
             cancellationToken.ThrowIfCancellationRequested();
             return result;
         }

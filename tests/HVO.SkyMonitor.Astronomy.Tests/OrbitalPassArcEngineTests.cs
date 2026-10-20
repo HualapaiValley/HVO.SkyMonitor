@@ -205,11 +205,17 @@ public sealed class OrbitalPassArcEngineTests
     }
 
     [TestMethod]
-    public async Task DeadlineDuringResultPreparationCannotReturnComplete()
+    [DataRow(0)]
+    [DataRow(1)]
+    [DataRow(2)]
+    [DataRow(3)]
+    [DataRow(4)]
+    [DataRow(5)]
+    public async Task DeadlineDuringResultPreparationCannotReturnComplete(int readsBeforeLastCheckpoint)
     {
         var (query, time) = Query(); var clock = new CountingClock();
         _ = await new OrbitalPredictionEngine(time, clock).PredictPassArcAsync(query, TestContext.CancellationToken).ConfigureAwait(false);
-        var deadline = new CountingClock { DeadlineAt = clock.Reads - 3 };
+        var deadline = new CountingClock { DeadlineAt = clock.Reads - readsBeforeLastCheckpoint };
         var result = await new OrbitalPredictionEngine(time, deadline).PredictPassArcAsync(query, TestContext.CancellationToken).ConfigureAwait(false);
         Assert.AreEqual(OrbitalExecutionStatus.Partial, result.Status); Assert.AreEqual(OrbitalPredictionReason.Deadline, result.Reason);
         Assert.AreEqual(OrbitalExecutionStatus.Partial, result.Products.Single().Status);

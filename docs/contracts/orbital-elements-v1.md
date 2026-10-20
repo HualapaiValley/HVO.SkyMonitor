@@ -162,6 +162,15 @@ exhaustion yields explicit partial/unavailable status, not a complete empty
 list. No `Visible` or `Detected` boolean and no synthetic magnitude belongs
 in the orbital geometry product.
 
+The exposure, future-pass and pass-arc producer methods honor caller cancellation
+by throwing `OperationCanceledException`, including during final freezing. They
+do not return a prefix after cancellation. Useful prefixes belong to explicit
+budget/deadline or unresolved numerical outcomes while the request remains active;
+this differs from cancellation of the request itself. Consumers may retain a
+previous independently completed result, but cannot treat a canceled request as
+a newly completed or partial result. The sampler/pass-search qualification and
+existing cancellation tests already exercise this exception behavior.
+
 Reuse `ObserverLocation`, `AltAzPoint`, `PixelPoint`, `ProjectionContext`,
 `ProjectedSceneImageTransformV1` and `AstrometricClockFacts`. Geometry facts bind
 configured-rig versus accepted-measured basis, rig/readout/calibration identity

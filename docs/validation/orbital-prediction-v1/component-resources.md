@@ -218,6 +218,13 @@ Projected objects count only returned objects with non-null emitted pixels;
 internal projection attempts are unknown. The static domain mirror performs
 no initialization, EOP-span validation, propagation or geometric exclusion.
 
+Exact object counts for initialization, point propagation and internal projection
+remain **open #529 resource-accounting acceptance**. This frozen-input baseline
+does not complete that broader criterion: lower bounds and emitted-product counts
+must not be relabeled as exact work counts. Completing the criterion requires
+instrumenting the actual query boundaries, retaining their definitions and
+reproducing the bounded population workload before claiming #529 complete.
+
 ## Ordinary one-object completion
 
 The snapshot remains the full 16,754-object materialized snapshot even for a
