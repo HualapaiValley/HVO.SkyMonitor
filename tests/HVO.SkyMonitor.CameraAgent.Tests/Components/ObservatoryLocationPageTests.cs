@@ -1373,6 +1373,32 @@ public sealed class ObservatoryLocationPageTests
             cut.WaitForElement("#observatory-orbital-data-notice").TextContent, StringComparison.Ordinal);
     }
 
+    [TestMethod]
+    public void OrbitalDataNotice_WhenTheReadIsCanceledWhileMounted_SaysTheStatusIsUnavailable()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState()));
+        var pending = new TaskCompletionSource<OperatorUiResult<OrbitalDataStatusView>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        context.Services.AddSingleton<ICameraAgentOrbitalUiService>(new TestOrbitalUiService
+        {
+            GetHandler = _ => new ValueTask<OperatorUiResult<OrbitalDataStatusView>>(pending.Task),
+        });
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        // While the read is outstanding the notice makes no claim.
+        cut.WaitForElement("#satellite-planner-heading");
+        Assert.IsEmpty(cut.FindAll("#observatory-orbital-data-notice"));
+
+        // The read is canceled by something other than the notice's own disposal, while the page is still mounted.
+        pending.SetCanceled();
+
+        var notice = cut.WaitForElement("#observatory-orbital-data-notice");
+        Assert.Contains(OrbitalDataStatusNotice.StatusUnavailableText, notice.TextContent, StringComparison.Ordinal);
+        Assert.AreEqual("Observatory & location", cut.Find("h1").TextContent.Trim());
+        Assert.HasCount(1, cut.FindAll("#satellite-planner-heading"));
+    }
+
     private static BunitContext CreateContext(OperatorUiResultKind? rigFailure = null)
     {
         var context = new BunitContext();
