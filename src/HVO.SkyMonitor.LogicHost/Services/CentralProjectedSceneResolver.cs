@@ -78,6 +78,7 @@ internal sealed class CentralProjectedSceneResolver(
                 item.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType &&
                 item.ObjectState == CentralArtifactObjectState.Available &&
                 item.ReconstructionState == CentralReconstructionState.Complete)
+            .OrderBy(item => item.Id)
             .Take(2).ToArrayAsync(cancellationToken).ConfigureAwait(false);
         if (candidates.Length == 0) return null;
         if (candidates.Length != 1) throw new CentralArtifactIntegrityException("projected-scene.ambiguous");
@@ -114,6 +115,7 @@ internal sealed class CentralProjectedSceneResolver(
                 item.MediaType == StructuredProcessingProductContracts.ProjectedSceneMediaType &&
                 item.ObjectState == CentralArtifactObjectState.Available &&
                 item.ReconstructionState != CentralReconstructionState.Quarantined)
+            .OrderBy(item => item.Id)
             .Take(2).ToArrayAsync(cancellationToken).ConfigureAwait(false);
         if (candidates.Length == 0)
             throw new ArtifactSceneReferencePendingException("Mixed scene provenance awaits its canonical projected scene.");

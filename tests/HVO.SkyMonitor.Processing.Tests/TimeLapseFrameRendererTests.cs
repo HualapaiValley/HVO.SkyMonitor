@@ -131,18 +131,57 @@ public sealed class TimeLapseFrameRendererTests
     }
 
     [TestMethod]
+    public void NewOverlaysUseOriginalColoursAndKeepTheDarkBadgesAndPanels()
+    {
+        var frame = TimeLapseFrameRenderer.Render([Source(Rig(630, 630, false), 0)], Rig(630, 630, false), new(), false, 630, 630);
+        var circle = frame.Layers.SelectMany(static layer => layer.Ellipses).Single();
+        Assert.AreEqual(new PresentationColor(96, 96, 96), circle.Color);
+        Assert.AreEqual(1_000_000, circle.Stroke!.OpacityMillionths);
+        Assert.AreEqual(1000, circle.ThicknessMilliPixels);
+        var blocks = frame.Layers.SelectMany(static layer => layer.TextBlocks).ToArray();
+        Assert.HasCount(8, blocks);
+        Assert.IsTrue(blocks.All(static block => block.Color == new PresentationColor(255, 255, 255)));
+        Assert.IsTrue(blocks.Where(static block => block.Anchor == PresentationTextAnchor.Point)
+            .All(static block => block.Backplate is { Fill: { Red: 2, Green: 8, Blue: 14 }, OpacityMillionths: 840000 }));
+        Assert.IsTrue(blocks.Where(static block => block.Anchor != PresentationTextAnchor.Point)
+            .All(static block => block.Backplate is { Fill: { Red: 5, Green: 10, Blue: 17 }, OpacityMillionths: 780000 }));
+    }
+
+    [TestMethod]
     public void OverlaysKeepTheirReleasedBytesSoRetainedPresetsStillMatch()
     {
-        // A retained video job freezes its preset, and the preset identity includes this recipe identity. Frames
-        // therefore keep their released overlays, including the corner text the #1383 producer default no longer draws.
+        // These identities were captured before #1383; 0.9.0 jobs must still produce the same payloads.
         var rig = Rig(640, 480, false);
         var source = Source(rig, 0) with { ArtifactId = Guid.Parse("33333333-3333-3333-3333-333333333333") };
-        var frame = TimeLapseFrameRenderer.Render([source], rig, new(), false, 320, 240);
+        var frame = TimeLapseFrameRenderer.Render([source], rig, new(), false, 320, 240, rendererVersion: TimeLapseFrameRenderer.LegacyVersion);
         Assert.AreEqual("C797E7DC93A1A089DBBD28EF167FC934A104DF901BC338952D813542B2FE57B9", frame.RecipeIdentitySha256);
         Assert.AreEqual("A7CF14EBF25EC28848C7CCC705D70915D9EFFD53B683B5D92CD8A58B40A78164", frame.RenderingIdentitySha256);
         Assert.IsTrue(frame.Layers.SelectMany(static layer => layer.TextBlocks)
             .Where(static block => block.Anchor != PresentationTextAnchor.Point)
             .All(static block => block.Color == new PresentationColor(216, 229, 246)));
+    }
+
+    [TestMethod]
+    public async Task RendererVersionsKeepOldBytesAndDistinguishNewRecipesAndFrames()
+    {
+        var rig = Rig(640, 480, false);
+        var source = Source(rig, 0);
+        var legacy = TimeLapseFrameRenderer.Render([source], rig, new(), false, 320, 240,
+            rendererVersion: TimeLapseFrameRenderer.LegacyVersion);
+        var current = TimeLapseFrameRenderer.Render([source], rig, new(), false, 320, 240);
+        Assert.AreEqual("BF9E3ED8BDF6BAD580440A50C465BF243EC5AED19567EBD8466977C179C02272", current.RecipeIdentitySha256);
+        Assert.AreNotEqual(legacy.RecipeIdentitySha256, current.RecipeIdentitySha256);
+        Assert.AreNotEqual(legacy.RenderingIdentitySha256, current.RenderingIdentitySha256);
+        Assert.IsFalse(legacy.Jpeg.Span.SequenceEqual(current.Jpeg.Span));
+        var sequence = new TimeLapseFrameSequence([source with { Payload = ReadOnlyMemory<byte>.Empty }], rig, new(), 320, 240,
+            (_, _) => ValueTask.FromResult(source), _ => false, TimeLapseFrameRenderer.LegacyVersion);
+        var resumed = await sequence.RenderAsync(source.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(legacy.RenderingIdentitySha256, resumed.RenderingIdentitySha256);
+        Assert.IsTrue(legacy.Jpeg.Span.SequenceEqual(resumed.Jpeg.Span));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => TimeLapseFrameRenderer.RecipeIdentity(new(), "unknown"));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => TimeLapseFrameRenderer.Render([source], rig, new(), false, 320, 240,
+            rendererVersion: "unknown"));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => TimeLapseFrameRenderer.GapImage(320, 240, "unknown"));
     }
 
     [TestMethod]

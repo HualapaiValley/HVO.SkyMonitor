@@ -9,9 +9,20 @@ to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 
 with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
 
 ## [Unreleased]
+- LogicHost uses stable bounded query ordering for projected-scene checks, diagnostics and transient submission conflicts, and keeps publication event and version identities paired when reading history. (#1444)
+
 
 ### Added
 
+- Shared space-weather storage contracts define snapshot comparison, atomic completion and bounded local history for the upcoming SWPC refresh service. (#1398)
+
+- Release installs and upgrades put verified `hvo-sky` and `hvo-sky-install` commands on PATH, keep replaced programs
+  as `.previous`, restore matching commands on rollback, and report their paths in plans and install records. Resume
+  and reinstall hints use the durable installer; uninstall and purge honor shared ownership. Publication refuses
+  unsafe folders and changed or unowned recovery copies, and program metadata uses a separate sidecar so released
+  installers can still read the install record. Completed legacy install re-runs also place missing commands. (#1385)
+
+- Space-weather fact model (#1398 S1).
 - Software & Catalog shows orbital snapshot coverage, element age, refresh status and storage repair guidance, with
   bounded Refresh and Resume commands. Automations edits the same orbital refresh schedule and links to its run
   history. Missing orbital data never implies an empty sky. The Automations UI service applies the 1–128-character
@@ -52,9 +63,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   cloud mask. The dark badge behind N, E, S and W and the dark corner-text panel stay, star markers have no crosshair
   (#1415), and the Current Sky layer swatches match the overlays. Captures already retained keep the overlays they were
   drawn with, and time-lapse frames are unchanged. (#1383)
-- The installer names itself by the full path it runs from, such as `/opt/hvo-sky/hvo-sky-install-linux-arm64`, in
-  its usage and in every command a message tells you to run (a `Resume:` line, the rollback an upgrade names), so the
-  command runs as printed; the bare `hvo-sky-install` is not on PATH. Each command's `--help` says what the command does
+- Before a durable copy is installed, the installer names itself by the full path it runs from, such as
+  `/opt/hvo-sky/hvo-sky-install-linux-arm64`, in its usage and in every command a message tells you to run (a `Resume:`
+  line, the rollback an upgrade names), so the command runs as printed. Each command's `--help` says what the command does
   and lists only its own options, each described, and `cameraagent --help`, `catalog --help` and `host --help` list
   that group's commands. An option a command does not take is still a usage error (exit 2). (#1384)
 - Current Sky moves to a newer capture only once its overlays are complete, or once its processing has ended without
@@ -64,6 +75,11 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   Refresh image skips the wait. (#1382)
 
 ### Fixed
+
+- Retained time-lapse jobs keep their released renderer and recipe identity across upgrades; new jobs restore white cardinal and corner text and the grey image circle under a distinct renderer version. (#1401)
+
+- CameraAgent no longer warns about unordered database queries during API-key authentication or local owner recovery;
+  ambiguous matches continue to be rejected. (#1437)
 
 - CameraAgent and LogicHost images no longer warn about overriding the runtime image's HTTP port default during
   their intended startup binding; listening addresses and ports are unchanged. (#1436)

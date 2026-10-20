@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -272,6 +273,23 @@ public sealed class OwnerPasswordRecoveryServiceTests
         Assert.AreEqual(OwnerPasswordRecoveryOutcome.InvalidRequest, missingPassword);
     }
 
+    [TestMethod]
+    public async Task Recovery_DuplicateOwnersUseAnOrderedBoundedProbeAndRefuseAChallenge()
+    {
+        var queries = new IdentityRowLimitQueryRecorder();
+        using var fixture = await RecoveryFixture.CreateAsync(queries: queries).ConfigureAwait(false);
+        await fixture.AddOwnerAsync("last-owner@cameraagent.test").ConfigureAwait(false);
+        await fixture.AddOwnerAsync("first-owner@cameraagent.test").ConfigureAwait(false);
+        queries.Commands.Clear();
+
+        var result = await fixture.Service.CreateChallengeAsync(Guid.NewGuid(), CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(OwnerPasswordRecoveryOutcome.Conflict, result.Outcome);
+        Assert.IsNull(result.Challenge);
+        queries.AssertOrderedBy("Id");
+    }
+
     private sealed class RecoveryFixture : IDisposable
     {
         internal const string OriginalPassword = "OriginalOwner!515";
@@ -319,14 +337,24 @@ public sealed class OwnerPasswordRecoveryServiceTests
                     UserManager)
                 .ReplaceAsync(Owner, RecoveryPassword, newPassword);
 
-        internal static async Task<RecoveryFixture> CreateAsync(bool passwordAuthorityRemoved = true)
+        internal static async Task<RecoveryFixture> CreateAsync(
+            bool passwordAuthorityRemoved = true,
+            IdentityRowLimitQueryRecorder? queries = null)
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync().ConfigureAwait(false);
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddDataProtection().UseEphemeralDataProtectionProvider();
-            services.AddDbContext<ApplicationDbContext>(options => options.UseSqlite(connection));
+            services.AddDbContext<ApplicationDbContext>(options =>
+            {
+                options.UseSqlite(connection)
+                    .ConfigureWarnings(warnings => warnings.Throw(CoreEventId.RowLimitingOperationWithoutOrderByWarning));
+                if (queries is not null)
+                {
+                    options.AddInterceptors(queries);
+                }
+            });
             services.AddIdentityCore<ApplicationUser>()
                 .AddEntityFrameworkStores<ApplicationDbContext>()
                 .AddCameraAgentPasswordPolicy()
