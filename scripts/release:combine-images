@@ -108,6 +108,13 @@ def combine(args):
                     info = tarfile.TarInfo(name)
                     info.size = len(data)
                     archive.addfile(info, io.BytesIO(data))
+                # An unprivileged reader such as skopeo cannot create missing parent directories with the
+                # archive's root ownership, so name them explicitly, as buildx archives do (#1464).
+                for name in ("blobs", "blobs/sha256"):
+                    info = tarfile.TarInfo(name)
+                    info.type = tarfile.DIRTYPE
+                    info.mode = 0o755
+                    archive.addfile(info)
                 for name, path in sorted(blobs.items()):
                     info = tarfile.TarInfo(name)
                     info.size = path.stat().st_size
