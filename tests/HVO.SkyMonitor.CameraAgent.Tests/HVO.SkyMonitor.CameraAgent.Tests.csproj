@@ -21,6 +21,7 @@
     <PackageReference Include="Microsoft.Extensions.Http" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
+    <None Include="../fixtures/space-weather/swpc-v1/**/*" Link="Fixtures/space-weather/swpc-v1/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

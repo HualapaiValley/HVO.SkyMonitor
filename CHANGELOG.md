@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- A dedicated STRICT SQLite store keeps space-weather snapshots, alert revisions and interrupted-attempt state durable, with bounded history and local diagnostics. (#1398)
+
 - Shared space-weather storage contracts define snapshot comparison, atomic completion and bounded local history for the upcoming SWPC refresh service. (#1398)
 
 - Space-weather fact model (#1398 S1).
