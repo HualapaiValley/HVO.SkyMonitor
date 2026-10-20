@@ -12,16 +12,19 @@ public sealed class SwpcGzipSourceFaultTests
 {
     private static int Bound => SwpcSource.MaximumDecodedBytes(SwpcProduct.Scales) + 1;
 
-    public static IEnumerable<object[]> DrainFaultCases()
-    {
-        foreach (var delivery in Deliveries())
-            foreach (var declared in new[] { false, true })
-                foreach (var once in new[] { false, true })
-                    yield return [delivery, declared, once];
-    }
-
     [TestMethod]
-    [DynamicData(nameof(DrainFaultCases))]
+    [DataRow("single", false, false)]
+    [DataRow("single", false, true)]
+    [DataRow("single", true, false)]
+    [DataRow("single", true, true)]
+    [DataRow("one-byte", false, false)]
+    [DataRow("one-byte", false, true)]
+    [DataRow("one-byte", true, false)]
+    [DataRow("one-byte", true, true)]
+    [DataRow("mixed", false, false)]
+    [DataRow("mixed", false, true)]
+    [DataRow("mixed", true, false)]
+    [DataRow("mixed", true, true)]
     public async Task SourceInvalidDataDuringDrainPropagatesOnce(string delivery, bool declared, bool once)
     {
         var wire = RejectedWire("completion", 2 * Bound + 32768);
@@ -38,16 +41,25 @@ public sealed class SwpcGzipSourceFaultTests
         Assert.AreEqual(7 * 8192, content.BytesRead - rejection);
     }
 
-    public static IEnumerable<object[]> DecodeFaultCases()
-    {
-        foreach (var delivery in Deliveries())
-            foreach (var stage in new[] { "header-first", "header-partial", "inflater" })
-                foreach (var kind in new[] { "invalid-data", "invalid-operation" })
-                    yield return [stage, kind, delivery];
-    }
-
     [TestMethod]
-    [DynamicData(nameof(DecodeFaultCases))]
+    [DataRow("header-first", "invalid-data", "single")]
+    [DataRow("header-first", "invalid-data", "one-byte")]
+    [DataRow("header-first", "invalid-data", "mixed")]
+    [DataRow("header-first", "invalid-operation", "single")]
+    [DataRow("header-first", "invalid-operation", "one-byte")]
+    [DataRow("header-first", "invalid-operation", "mixed")]
+    [DataRow("header-partial", "invalid-data", "single")]
+    [DataRow("header-partial", "invalid-data", "one-byte")]
+    [DataRow("header-partial", "invalid-data", "mixed")]
+    [DataRow("header-partial", "invalid-operation", "single")]
+    [DataRow("header-partial", "invalid-operation", "one-byte")]
+    [DataRow("header-partial", "invalid-operation", "mixed")]
+    [DataRow("inflater", "invalid-data", "single")]
+    [DataRow("inflater", "invalid-data", "one-byte")]
+    [DataRow("inflater", "invalid-data", "mixed")]
+    [DataRow("inflater", "invalid-operation", "single")]
+    [DataRow("inflater", "invalid-operation", "one-byte")]
+    [DataRow("inflater", "invalid-operation", "mixed")]
     public async Task UnexpectedSourceFaultDuringDecodingPropagatesUnchanged(string stage, string kind, string delivery)
     {
         var wire = ValidWire();
@@ -77,16 +89,25 @@ public sealed class SwpcGzipSourceFaultTests
         AssertFault(content, rejection, faultAt, expected, error);
     }
 
-    public static IEnumerable<object[]> FramingCases()
-    {
-        foreach (var delivery in Deliveries())
-            foreach (var shape in new[] { "wrong-id2", "reserved-flag", "invalid-deflate" })
-                foreach (var truncated in new[] { false, true })
-                    yield return [shape, truncated, delivery];
-    }
-
     [TestMethod]
-    [DynamicData(nameof(FramingCases))]
+    [DataRow("wrong-id2", false, "single")]
+    [DataRow("wrong-id2", false, "one-byte")]
+    [DataRow("wrong-id2", false, "mixed")]
+    [DataRow("wrong-id2", true, "single")]
+    [DataRow("wrong-id2", true, "one-byte")]
+    [DataRow("wrong-id2", true, "mixed")]
+    [DataRow("reserved-flag", false, "single")]
+    [DataRow("reserved-flag", false, "one-byte")]
+    [DataRow("reserved-flag", false, "mixed")]
+    [DataRow("reserved-flag", true, "single")]
+    [DataRow("reserved-flag", true, "one-byte")]
+    [DataRow("reserved-flag", true, "mixed")]
+    [DataRow("invalid-deflate", false, "single")]
+    [DataRow("invalid-deflate", false, "one-byte")]
+    [DataRow("invalid-deflate", false, "mixed")]
+    [DataRow("invalid-deflate", true, "single")]
+    [DataRow("invalid-deflate", true, "one-byte")]
+    [DataRow("invalid-deflate", true, "mixed")]
     public async Task ClientDecodingFaultStillDrainsExactlyOnce(string shape, bool truncated, string delivery)
     {
         var wire = RejectedWire(shape, 20000);
@@ -105,16 +126,43 @@ public sealed class SwpcGzipSourceFaultTests
         Assert.AreEqual(1, content.ZeroReadCalls, "Exactly one EOF read settles the rejection.");
     }
 
-    public static IEnumerable<object[]> TransportCases()
-    {
-        foreach (var delivery in Deliveries())
-            foreach (var stage in new[] { "header-first", "inflater", "drain" })
-                foreach (var kind in new[] { "io", "http-io", "deadline", "caller" })
-                    yield return [stage, kind, delivery];
-    }
-
     [TestMethod]
-    [DynamicData(nameof(TransportCases))]
+    [DataRow("header-first", "io", "single")]
+    [DataRow("header-first", "io", "one-byte")]
+    [DataRow("header-first", "io", "mixed")]
+    [DataRow("header-first", "http-io", "single")]
+    [DataRow("header-first", "http-io", "one-byte")]
+    [DataRow("header-first", "http-io", "mixed")]
+    [DataRow("header-first", "deadline", "single")]
+    [DataRow("header-first", "deadline", "one-byte")]
+    [DataRow("header-first", "deadline", "mixed")]
+    [DataRow("header-first", "caller", "single")]
+    [DataRow("header-first", "caller", "one-byte")]
+    [DataRow("header-first", "caller", "mixed")]
+    [DataRow("inflater", "io", "single")]
+    [DataRow("inflater", "io", "one-byte")]
+    [DataRow("inflater", "io", "mixed")]
+    [DataRow("inflater", "http-io", "single")]
+    [DataRow("inflater", "http-io", "one-byte")]
+    [DataRow("inflater", "http-io", "mixed")]
+    [DataRow("inflater", "deadline", "single")]
+    [DataRow("inflater", "deadline", "one-byte")]
+    [DataRow("inflater", "deadline", "mixed")]
+    [DataRow("inflater", "caller", "single")]
+    [DataRow("inflater", "caller", "one-byte")]
+    [DataRow("inflater", "caller", "mixed")]
+    [DataRow("drain", "io", "single")]
+    [DataRow("drain", "io", "one-byte")]
+    [DataRow("drain", "io", "mixed")]
+    [DataRow("drain", "http-io", "single")]
+    [DataRow("drain", "http-io", "one-byte")]
+    [DataRow("drain", "http-io", "mixed")]
+    [DataRow("drain", "deadline", "single")]
+    [DataRow("drain", "deadline", "one-byte")]
+    [DataRow("drain", "deadline", "mixed")]
+    [DataRow("drain", "caller", "single")]
+    [DataRow("drain", "caller", "one-byte")]
+    [DataRow("drain", "caller", "mixed")]
     public async Task SourceTransportAndCancellationKeepTheirOutcomes(string stage, string kind, string delivery)
     {
         var wire = stage == "drain" ? RejectedWire("completion", 2 * Bound + 32768) : ValidWire();
@@ -153,8 +201,6 @@ public sealed class SwpcGzipSourceFaultTests
         AssertDrainBound(content, rejection);
         Assert.IsTrue(content.ReaderDisposed);
     }
-
-    private static IEnumerable<string> Deliveries() => ["single", "one-byte", "mixed"];
 
     private static int FaultPoint(string stage) => stage switch
     {
