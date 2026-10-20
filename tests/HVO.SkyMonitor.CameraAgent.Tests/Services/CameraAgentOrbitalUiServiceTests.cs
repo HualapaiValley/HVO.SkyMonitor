@@ -478,7 +478,9 @@ public sealed class CameraAgentOrbitalUiServiceTests : OrbitalStoreTestBase
         fixture.Orbital.Client.Enqueue(fixture.Orbital.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
         using var runner = fixture.CreateRunner();
         await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        await fixture.Worker.WhenIdleAsync().ConfigureAwait(false);
         await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        await fixture.Worker.WhenIdleAsync().ConfigureAwait(false);
         var afterRun = (await service.GetAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
 
         Assert.AreEqual(OrbitalDataState.Fresh, afterRun.State);

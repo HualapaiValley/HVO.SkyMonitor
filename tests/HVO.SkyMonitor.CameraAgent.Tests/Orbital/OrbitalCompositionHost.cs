@@ -134,7 +134,13 @@ internal sealed class OrbitalCompositionHost : IAsyncDisposable
             .OrderBy(static run => run.Sequence)
             .ToArray();
 
-    public Task SweepAsync() => Runner.SweepAsync(CancellationToken.None);
+    // Existing scenario assertions inspect terminal outcomes, so this helper explicitly drains
+    // the newly off-sweep work. Worker-specific tests call Runner.SweepAsync directly.
+    public async Task SweepAsync()
+    {
+        await Runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        await _provider.GetRequiredService<LocalAutomationOffSweepWorker>().WhenIdleAsync().ConfigureAwait(false);
+    }
 
     /// <summary>Moves the clock to <paramref name="instant"/>; it never moves backwards.</summary>
     public void AdvanceTo(DateTimeOffset instant)
@@ -158,6 +164,7 @@ internal sealed class OrbitalCompositionHost : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _initializer.Dispose();
+        await Runner.StopAsync(CancellationToken.None).ConfigureAwait(false);
         Runner.Dispose();
         await _provider.DisposeAsync().ConfigureAwait(false);
     }
