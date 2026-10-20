@@ -35,7 +35,9 @@ Where instances share a command path, the last install, upgrade or rollback publ
 
 A preserved-instance uninstall removes the runtime client when no other installed instance uses it, and keeps the
 installer for `reinstall`. Reinstall republishes the retained client. Purge removes the last owner's installer copies
-and `.previous` files after deleting its instance tree and settling the install record. Shared paths stay while another instance needs them;
+and `.previous` files after deleting its instance tree, settling the install record and durably recording completion.
+An interrupted program cleanup resumes from the retained purge evidence with `--resume`.
+Shared paths stay while another instance needs them;
 files whose contents no longer match the recorded checksum are preserved with an actionable failure.
 Admitted test roots map every program destination below `<product-root>/programs/` and never publish to the host's
 real PATH folders.

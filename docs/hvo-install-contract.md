@@ -249,7 +249,8 @@ HVO.RoofController#127):
     version last published by an install, upgrade or rollback.
   - SkyMonitor removes a last-owner runtime client on uninstall and restores it on reinstall. Unlike RoofController,
     it retains the installer for a preserved instance's `reinstall`; purge removes the last-owner installer copies
-    and `.previous`. Shared commands remain while another instance needs them. Changed unowned bytes are preserved
+    and `.previous`, after the deletion is durably completed. Interrupted program cleanup remains resumable from
+    retained operation evidence. Shared commands remain while another instance needs them. Changed unowned bytes are preserved
     and reported rather than removed. These differences follow SkyMonitor's preserved-instance lifecycle.
   - After publication, command hints use an existing durable installer path. SkyMonitor completes its current
     operation without RoofController's installer handover; subsequent commands execute the newly installed release.

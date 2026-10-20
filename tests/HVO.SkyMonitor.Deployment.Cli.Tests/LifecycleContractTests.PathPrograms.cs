@@ -203,6 +203,50 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(journal, await File.ReadAllTextAsync(fixture.Paths.LifecycleStatePath));
     }
 
+    [TestMethod]
+    [DoNotParallelize]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task PathPrograms_PurgeProgramRemoval_IsAfterDurableCompletionAndResumesItsRemainingInstaller()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var targets = await SeedPathProgramsAsync(fixture);
+        await PathPrograms.SettleAsync(fixture.Paths, InstallRequest.DefaultProductRoot, null, fixture.Manifest.Image.ImageId,
+            CancellationToken.None);
+        fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
+            fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId, fixture.Uid, fixture.Gid);
+        await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Uninstall), fixture.Runner,
+            _ => new FakeLifecycleClient(), null, fixture.Uid, fixture.Gid, CancellationToken.None);
+        var request = fixture.Request(LifecycleOperationKind.Purge) with { ConfirmationInstanceId = fixture.InstanceId };
+        var previousHook = NativeLinux.DirectoryFlushed;
+        var interrupted = false;
+        try
+        {
+            NativeLinux.DirectoryFlushed = path =>
+            {
+                if (!interrupted && path == Path.GetDirectoryName(targets[1]) && !File.Exists(targets[1]) && File.Exists(targets[2]))
+                {
+                    interrupted = true;
+                    throw new InstallerException("Injected interruption between the installer removals.");
+                }
+            };
+            await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(request,
+                fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None));
+        }
+        finally
+        {
+            NativeLinux.DirectoryFlushed = previousHook;
+        }
+        Assert.IsTrue(interrupted);
+        Assert.IsTrue(File.Exists(targets[2]), "the machine installer remains available to resume cleanup");
+        var operation = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
+        Assert.AreEqual(InstallationStatus.Completed, operation!.Status, "the deletion must be durable before removing the installer");
+        Assert.AreEqual(LifecycleOperationPhase.Completed, operation.Phase);
+        var resumed = await CameraAgentLifecycleManager.ExecuteAsync(request with { Resume = true }, fixture.Runner,
+            null, null, fixture.Uid, fixture.Gid, CancellationToken.None);
+        Assert.AreEqual("completed", resumed.Outcome);
+        foreach (var target in targets) Assert.IsFalse(File.Exists(target));
+    }
+
     private static async Task<string[]> SeedPathProgramsAsync(LifecycleFixture fixture)
     {
         var user = Path.Combine(fixture.Root, "programs", "home", ".local", "bin");

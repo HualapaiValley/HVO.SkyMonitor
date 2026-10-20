@@ -1645,9 +1645,10 @@ internal sealed partial class CameraAgentLifecycleManager
                 exception);
         }
         await RemoveFromInstallRecordAsync(request, paths, manifest.InstanceId, cancellationToken).ConfigureAwait(false);
+        await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
+        // Removal is last: after the last installer is gone, a crash must not leave an unfinished data deletion.
         await PathPrograms.RemoveAsync(paths, request.ProductionProductRoot, purge: true, cancellationToken,
             PathPrograms.PurgeRecord(paths, operation.OperationId)).ConfigureAwait(false);
-        await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
         return new LifecycleResult(
             DeploymentSchemaVersions.LifecycleOperation,
             operation.Kind,
@@ -2062,7 +2063,14 @@ internal sealed partial class CameraAgentLifecycleManager
         CancellationToken cancellationToken)
     {
         var operation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
-        if (operation is not { Kind: LifecycleOperationKind.Purge, Status: not InstallationStatus.Completed, MutationStarted: true } ||
+        var cleanupOnly = operation is
+        {
+            Kind: LifecycleOperationKind.Purge, Status: InstallationStatus.Completed,
+            Phase: LifecycleOperationPhase.Completed, MutationStarted: false
+        } &&
+            File.Exists(PathPrograms.PurgeRecord(paths, operation.OperationId));
+        if (operation is null || operation.Kind != LifecycleOperationKind.Purge ||
+            !cleanupOnly && operation is not { Status: not InstallationStatus.Completed, MutationStarted: true } ||
             operation.InstanceId != request.InstanceId || operation.RequestSha256 != request.ComputeRequestSha256())
             throw new InstallerException("No matching interrupted purge operation exists.");
         if (request.ConfirmRemovedOperationId is { } confirmedOperationId && confirmedOperationId != operation.OperationId)
@@ -2080,6 +2088,19 @@ internal sealed partial class CameraAgentLifecycleManager
         EnsureDaemon(manifest.DockerDaemon, daemon);
         await docker.EnsureNoInstanceReferencesAsync(manifest.InstanceId, paths.InstanceRoot, cancellationToken, evidence.Tree).ConfigureAwait(false);
         await docker.EnsureNoInstanceReferencesAsync(manifest.InstanceId, tombstone, cancellationToken, evidence.Tree).ConfigureAwait(false);
+        if (cleanupOnly)
+        {
+            if (request.ConfirmRemovedOperationId is not null && evidence.Settlement != PurgeAlreadyAbsentSettlement ||
+                NativeLinux.TryGetNodeIdentity(tombstone) is not null)
+                throw InstallerException.Refused("A completed purge resumes only its retained program cleanup, without adopting another tree.");
+            var cleanup = new LifecycleResult(
+                DeploymentSchemaVersions.LifecycleOperation, operation.Kind, "completed", operation.OperationId,
+                manifest.InstanceId, null, paths.ProductRoot, null, null, null, manifest.Catalog, manifest.PreviousCatalog,
+                daemon, false, false, [paths.CatalogRoot, paths.OperationsRoot], null, DateTimeOffset.UtcNow);
+            await PathPrograms.RemoveAsync(paths, request.ProductionProductRoot, purge: true, cancellationToken,
+                PathPrograms.PurgeRecord(paths, operation.OperationId)).ConfigureAwait(false);
+            return cleanup;
+        }
         SafeFileSystem.EnsureSafeExistingAncestors(parent);
         bool tombstonePresent;
         using (var namespaceRoot = NativeLinux.OpenDirectoryNoFollow(parent))
@@ -2119,9 +2140,9 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
         await RemoveFromInstallRecordAsync(request, paths, manifest.InstanceId, cancellationToken).ConfigureAwait(false);
+        operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
         await PathPrograms.RemoveAsync(paths, request.ProductionProductRoot, purge: true, cancellationToken,
             PathPrograms.PurgeRecord(paths, operation.OperationId)).ConfigureAwait(false);
-        operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
         return new LifecycleResult(
             DeploymentSchemaVersions.LifecycleOperation, operation.Kind, outcome, operation.OperationId,
             manifest.InstanceId, null, paths.ProductRoot, null, null, null, manifest.Catalog, manifest.PreviousCatalog,
