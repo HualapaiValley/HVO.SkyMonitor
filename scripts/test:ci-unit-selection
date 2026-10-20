@@ -125,6 +125,33 @@ expect_fail 'Unit job env may set only DOCKER_HOST and UNIT_FILTER as plain sing
 mutate quotedenv '/^  unit:/,/^  integration:/ { /^      UNIT_FILTER:/ a\      "BASH_ENV": /tmp/narrow.sh
 }'
 expect_fail 'Unit job env may set only DOCKER_HOST and UNIT_FILTER as plain single-line' --workflow "$scratch/quotedenv.yml"
+# #1265: a failed input inspection is not clean absence of defaults/shell.
+# Inject independent read failures into the two existing comment-filter reads;
+# the otherwise valid workflow must fail with an explicit inspection diagnostic.
+mkdir "$scratch/inspection-bin"
+real_grep="$(command -v grep)"
+cat > "$scratch/inspection-bin/grep" <<'GREP'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1-}" == -vE && "${2-}" == '^[[:space:]]*#' ]]; then
+  case "${HVO_UNIT_INSPECTION_SCOPE-}:$#" in
+    workflow:3|unit:2) printf 'Simulated input read failure.\n' >&2; exit 2 ;;
+  esac
+fi
+exec "$HVO_UNIT_REAL_GREP" "$@"
+GREP
+chmod +x "$scratch/inspection-bin/grep"
+inspection_failures=0
+for scope in workflow unit; do
+  needle='could not inspect workflow settings'
+  [[ "$scope" != unit ]] || needle='could not inspect Unit job settings'
+  if ! (PATH="$scratch/inspection-bin:$PATH" HVO_UNIT_INSPECTION_SCOPE="$scope" \
+      HVO_UNIT_REAL_GREP="$real_grep" expect_fail "$needle" --workflow "$workflow"); then
+    inspection_failures=$((inspection_failures + 1))
+  fi
+done
+((inspection_failures == 0)) || exit 1
+
 mutate noupload '/^  unit:/,/^  integration:/ s#^          path: TestResults/unit/$#          path: TestResults/unit/astronomy/#'
 expect_fail 'must upload TestResults/unit/' --workflow "$scratch/noupload.yml"
 # The supplemental step moved after the upload keeps a complete list but loses its evidence.
@@ -237,4 +264,4 @@ for component in shared cameraagent logichost combined delivery; do
   cmp "$scratch/expected" "$scratch/actual"
 done
 
-printf 'CI Unit selection contract passed (full job and four supplemental component selections/build roots).\n'
+printf 'CI Unit selection contract passed (full job, four supplemental component selections/build roots, and 2 input-inspection failure controls).\n'

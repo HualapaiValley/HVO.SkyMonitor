@@ -12,7 +12,8 @@ set -euo pipefail
 # commands, with the same strict TRX-only arguments and their own build roots.
 # It is not proof of arbitrary shell execution, of whole-job artifact membership
 # or publication, of installed catalog availability, or of checkout trust: those
-# remain the workflow's own unchanged steps, Required CI and review (see the
+# remain accepted gaps requiring workflow review; Required CI alone does not prove
+# supplemental TRX publication, catalog availability or checkout trust (see the
 # Supplemental Unit selections section of docs/runbooks/ci-pipeline.md).
 #
 # Each test project declares its cases in tests/<project>/test-categories.json,
@@ -97,16 +98,25 @@ mapping_keys() { # mapping_keys <env-line-regex> <indent-of-keys>: keys of the m
 # inherited by the selecting steps, and so would a shell key anywhere in the Unit job.
 # shellcheck disable=SC2016
 key_pattern='(^|[^A-Za-z0-9_-])["'"'"']?%s["'"'"']?[[:space:]]*:'
-# The text is captured first: `grep -q` closing a pipe early would otherwise fail the
-# pipeline under pipefail and make a present key look absent.
-workflow_text="$(grep -vE '^[[:space:]]*#' "$workflow" || true)"
-unit_text="$(grep -vE '^[[:space:]]*#' <<<"$unit_job" || true)"
+# Read failures are fatal. Optional-key matching stays in memory: a large
+# here-string can fail to create its temporary file inside an if condition and
+# otherwise be mistaken for a key that is absent (#1265).
+if ! workflow_text="$(grep -vE '^[[:space:]]*#' "$workflow")"; then
+  fail 'could not inspect workflow settings'
+  exit 1
+fi
+if ! unit_text="$(job_block unit | grep -vE '^[[:space:]]*#')"; then
+  fail 'could not inspect Unit job settings'
+  exit 1
+fi
 # shellcheck disable=SC2059
-if grep -qE "$(printf "$key_pattern" defaults)" <<<"$workflow_text"; then
+printf -v defaults_pattern "$key_pattern" defaults
+if [[ "$workflow_text" =~ $defaults_pattern ]]; then
   fail 'the workflow must not set defaults (workflow or job scope), which the selecting steps would inherit'
 fi
 # shellcheck disable=SC2059
-if grep -qE "$(printf "$key_pattern" shell)" <<<"$unit_text"; then
+printf -v shell_pattern "$key_pattern" shell
+if [[ "$unit_text" =~ $shell_pattern ]]; then
   fail 'the Unit job must not set a shell, which could stop a selecting command executing'
 fi
 workflow_env="$(mapping_keys '^env:[[:space:]]*$' '  ' < "$workflow" | sort | paste -sd, -)"
