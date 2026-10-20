@@ -12,12 +12,41 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- The pre-release and release **Build** jobs may run for 120 minutes (it was 60): the arm64 image is built under
+  emulation, and its publish alone has taken 46 minutes, which cancelled the first `0.9.1` pre-release. (#1410)
+- The product version is `0.9.1`, the next release (owner decision 2026-10-19). Integration pre-releases are
+  `0.9.1-dev.<n>`, and a build given no version is `0.9.1-dev`. (#1406)
 - Sky overlays are drawn in their original colours again, instead of the purple and cyan theme that did not read well on
   the sky image: solid 2 px blue (`#60A0FF`) constellation lines, grey (`#909090`) star markers, white star names,
   cardinal letters and corner text, a 1 px grey (`#606060`) image circle at full opacity and an orange-red (`#FF4020`)
   cloud mask. The dark badge behind N, E, S and W, the dark corner-text panel and the crosshair star marker stay, and
   the Current Sky layer swatches match the overlays. Captures already retained keep the overlays they were drawn with,
   and time-lapse frames are unchanged. (#1383)
+- The installer names itself by the full path it runs from, such as `/opt/hvo-sky/hvo-sky-install-linux-arm64`, in
+  its usage and in every command a message tells you to run (a `Resume:` line, the rollback an upgrade names), so the
+  command runs as printed; the bare `hvo-sky-install` is not on PATH. Each command's `--help` says what the command does
+  and lists only its own options, each described, and `cameraagent --help`, `catalog --help` and `host --help` list
+  that group's commands. An option a command does not take is still a usage error (exit 2). (#1384)
+- Current Sky moves to a newer capture only once its overlays are complete, or once its processing has ended without
+  them, and keeps showing the current capture until then. It changes image at most once per
+  `currentSky.minimumRefreshSeconds` (default 15 seconds, 15 to 3,600), a new operator setting on the Observatory &
+  location page under Operator settings, and then shows the newest complete capture, skipping any in between.
+  Refresh image skips the wait. (#1382)
+
+### Fixed
+
+- `cameraagent install --plan` and `cameraagent upgrade --plan` name the release's image by the ID the install or
+  upgrade then reports: under Docker's containerd image store, the release's image digest rather than its
+  configuration digest. (#1384)
+- `/etc/hvo-sky/install.json` is written without HTML-safe escaping, so the installer version reads `0.9.0+<commit>`
+  rather than `0.9.0\u002B<commit>`. It is the same JSON, read the same way by earlier installers. (#1384)
+- `hvo-sky` no longer warns of plain HTTP to another machine when the address is one bound to this machine, such as the
+  CameraAgent host's own LAN address, and the request goes to it directly rather than through a proxy. (#1384)
+- `hvo-sky status`, the Operations page and `hvo-sky ui` no longer mark capture `(stale)` five minutes after it was
+  last paused or resumed: capture control is CameraAgent's live state, and is always current. (#1384)
+- Current Sky keeps the overlays an operator turned on or off when a new capture arrives, and the browser remembers
+  them across page loads for each CameraAgent. An archived capture's view keeps its own choices. Restore profile
+  defaults clears the remembered choice of the view it is used in. (#1382)
 
 ## [0.9.0] - 2026-10-19
 

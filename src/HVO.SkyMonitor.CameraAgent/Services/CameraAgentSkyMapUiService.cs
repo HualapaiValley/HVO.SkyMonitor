@@ -54,11 +54,21 @@ internal interface ICameraAgentSkyMapUiService
         int? maximumObjects,
         string expectedVersion,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Writes the Current Sky minimum image refresh to the operator settings file, or removes it so the default
+    /// applies when <paramref name="seconds"/> is null. Current Sky uses it from its next refresh.
+    /// </summary>
+    ValueTask<OperatorUiResult<CameraAgentCurrentSkyRefreshSetting>> SaveCurrentSkyRefreshAsync(
+        int? seconds,
+        string expectedVersion,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>Everything the Observatory &amp; location page shows besides geometry and the projected scene.</summary>
 /// <param name="OwnerLoginEmail">The local owner account's email, offered as the default owner contact; null when it is the non-routable installer default.</param>
 /// <param name="ObjectLimit">The sky map object bound in the settings file, or null when this host loads none.</param>
+/// <param name="CurrentSkyRefresh">The Current Sky minimum image refresh in the settings file, or null when this host loads none.</param>
 /// <param name="ActorNames">
 /// The sign-in name of every account that recorded a manual location change, keyed by the account identifier the
 /// audit stores, so history shows who acted without exposing the identifier.
@@ -69,7 +79,8 @@ internal sealed record CameraAgentSiteView(
     CameraAgentSiteAssignment Assignment,
     CameraAgentSiteMapSettings Map,
     CameraAgentObjectLimitSetting? ObjectLimit,
-    IReadOnlyDictionary<string, string> ActorNames);
+    IReadOnlyDictionary<string, string> ActorNames,
+    CameraAgentCurrentSkyRefreshSetting? CurrentSkyRefresh = null);
 
 /// <summary>The sky map object bound as the operator settings file holds it.</summary>
 /// <param name="Version">The settings file version a save must name.</param>
@@ -79,6 +90,14 @@ internal sealed record CameraAgentSiteView(
 /// effect until that source is removed.
 /// </param>
 internal sealed record CameraAgentObjectLimitSetting(string Version, string? SavedValue, bool Overridden);
+
+/// <summary>The Current Sky minimum image refresh as the operator settings file holds it.</summary>
+/// <param name="Version">The settings file version a save must name.</param>
+/// <param name="SavedValue">The seconds the file sets, as written, or null when it sets none and the default applies.</param>
+/// <param name="Overridden">A source above the settings file supplies the interval, so a saved value has no effect.</param>
+/// <param name="Unchanged">A save found the file already holding this value and changed nothing.</param>
+internal sealed record CameraAgentCurrentSkyRefreshSetting(
+    string Version, string? SavedValue, bool Overridden, bool Unchanged = false);
 
 internal enum CameraAgentSiteAssignmentState
 {
@@ -286,9 +305,9 @@ internal sealed class CameraAgentSkyMapUiService(
             }
             // Read after the profile: were the file to change between the two reads, a save naming the profile's
             // older version is refused as a conflict rather than overwriting the newer value shown here.
-            var objectLimit = settingsFile is null
-                ? null
-                : ReadObjectLimit(await settingsFile.ReadAsync(cancellationToken).ConfigureAwait(false));
+            var settings = settingsFile is null ? null : await settingsFile.ReadAsync(cancellationToken).ConfigureAwait(false);
+            var objectLimit = settings is null ? null : ReadObjectLimit(settings);
+            var currentSkyRefresh = settings is null ? null : ReadCurrentSkyRefresh(settings);
             return OperatorUiResult<CameraAgentSiteView>.Success(new CameraAgentSiteView(
                 profile,
                 string.IsNullOrWhiteSpace(ownerEmail) ? null : ownerEmail,
@@ -297,7 +316,8 @@ internal sealed class CameraAgentSkyMapUiService(
                     map.Enabled, map.TileTemplate, map.Attribution, map.AttributionLink, map.Zoom),
                 objectLimit is null ? null : objectLimit with { Version = profile.Version },
                 await ResolveActorNamesAsync(deploymentLocationStore.Manual.History.Select(entry => entry.Actor))
-                    .ConfigureAwait(false)));
+                    .ConfigureAwait(false),
+                currentSkyRefresh is null ? null : currentSkyRefresh with { Version = profile.Version }));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -413,6 +433,72 @@ internal sealed class CameraAgentSkyMapUiService(
                 OperatorUiResultKind.Unavailable, "The object limit change could not be completed.");
         }
     }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The UI service logs internal failures and returns fixed sanitized states.")]
+    public async ValueTask<OperatorUiResult<CameraAgentCurrentSkyRefreshSetting>> SaveCurrentSkyRefreshAsync(
+        int? seconds,
+        string expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        var principal = await GetAuthorizedPrincipalAsync(
+            CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false);
+        var actor = principal is null ? null : CameraAgentCredentialAccess.GetOwnerId(principal);
+        if (string.IsNullOrWhiteSpace(actor))
+        {
+            return OperatorUiResult<CameraAgentCurrentSkyRefreshSetting>.Failure(
+                OperatorUiResultKind.Unauthorized, "Authorization is required.");
+        }
+        if (settingsFile is null)
+        {
+            return OperatorUiResult<CameraAgentCurrentSkyRefreshSetting>.Failure(
+                OperatorUiResultKind.Unavailable, NoSettingsFileMessage);
+        }
+        var refresh = CameraAgentSettingsCatalogue.MinimumRefreshInterval;
+        if (refresh.Check(seconds) is not null || string.IsNullOrWhiteSpace(expectedVersion))
+        {
+            return OperatorUiResult<CameraAgentCurrentSkyRefreshSetting>.Failure(
+                OperatorUiResultKind.Invalid, refresh.NumberRule);
+        }
+        try
+        {
+            var result = await settingsFile.WriteAsync(
+                expectedVersion,
+                new Dictionary<string, JsonNode?>(StringComparer.Ordinal)
+                {
+                    [refresh.ConfigurationKey!] = seconds is { } value ? JsonValue.Create(value) : null
+                },
+                actor,
+                cancellationToken).ConfigureAwait(false);
+            return result.Status switch
+            {
+                OperatorSettingsWriteStatus.Conflict => OperatorUiResult<CameraAgentCurrentSkyRefreshSetting>.Failure(
+                    OperatorUiResultKind.Conflict, SettingsConflictMessage),
+                OperatorSettingsWriteStatus.Unreadable => OperatorUiResult<CameraAgentCurrentSkyRefreshSetting>.Failure(
+                    OperatorUiResultKind.Invalid, SettingsUnreadableMessage),
+                _ => OperatorUiResult<CameraAgentCurrentSkyRefreshSetting>.Success(ReadCurrentSkyRefresh(result.Snapshot) with
+                {
+                    Unchanged = result.Status == OperatorSettingsWriteStatus.Unchanged
+                })
+            };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "CameraAgent Current Sky refresh change failed.");
+            return OperatorUiResult<CameraAgentCurrentSkyRefreshSetting>.Failure(
+                OperatorUiResultKind.Unavailable, "The minimum image refresh change could not be completed.");
+        }
+    }
+
+    private CameraAgentCurrentSkyRefreshSetting ReadCurrentSkyRefresh(OperatorSettingsSnapshot snapshot)
+        => new(
+            snapshot.Version,
+            snapshot.GetValue(CameraAgentSettingsCatalogue.MinimumRefreshInterval.ConfigurationKey!),
+            settingsFile?.FindOverriddenKeys([CameraAgentSettingsCatalogue.MinimumRefreshInterval.ConfigurationKey!]).Count > 0);
 
     private CameraAgentObjectLimitSetting ReadObjectLimit(OperatorSettingsSnapshot snapshot)
         => new(

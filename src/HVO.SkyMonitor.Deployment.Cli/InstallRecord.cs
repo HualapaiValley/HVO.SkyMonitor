@@ -1,8 +1,10 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using System.Text.RegularExpressions;
 using HVO.SkyMonitor.Deployment.Contracts;
 
@@ -146,6 +148,17 @@ internal static partial class InstallRecordStore
     {
         WriteIndented = false
     };
+
+    /// <summary>
+    /// The record as it is written, for people to read (#1384): without the default HTML-safe escaping, which writes the
+    /// <c>+</c> of every installer version as <c>\u002B</c>. It is the same JSON, read the same way by every installer;
+    /// only control characters, quotes and backslashes are still escaped.
+    /// </summary>
+    private static readonly JsonTypeInfo<InstallRecord> ReadableRecord = (JsonTypeInfo<InstallRecord>)new JsonSerializerOptions(
+        InstallRecordJsonContext.Default.Options)
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    }.GetTypeInfo(typeof(InstallRecord));
 
     /// <summary>
     /// Rebuilds <paramref name="manifest"/>'s entry after <paramref name="kind"/> completed and writes it when it
@@ -433,7 +446,7 @@ internal static partial class InstallRecordStore
         }
         if (location.Trusted is not { } trusted)
         {
-            await SafeFileSystem.WriteJsonAtomicAsync(location.Path, next, InstallRecordJsonContext.Default.InstallRecord, cancellationToken)
+            await SafeFileSystem.WriteJsonAtomicAsync(location.Path, next, ReadableRecord, cancellationToken)
                 .ConfigureAwait(false);
             return true;
         }
@@ -487,7 +500,7 @@ internal static partial class InstallRecordStore
         HostProductRootPolicy.WriteTrustedFile(
             policy,
             location.Path,
-            Encoding.UTF8.GetBytes(JsonSerializer.Serialize(next, InstallRecordJsonContext.Default.InstallRecord) + "\n"),
+            Encoding.UTF8.GetBytes(JsonSerializer.Serialize(next, ReadableRecord) + "\n"),
             "The install record");
         return HostPolicyChange.Updated;
     }

@@ -680,8 +680,9 @@ internal sealed partial class CameraAgentLifecycleManager
                 !await docker.HoldsReleaseImageAsync(signedImage.Image, cancellationToken).ConfigureAwait(false))
             {
                 // A plan imports nothing: a release image Docker does not hold yet is described as it was read and
-                // checked from the release's archive or registry.
-                candidate = checkedImage;
+                // checked from the release's archive or registry, under the ID the upgrade will report (#1384).
+                candidate = await docker.PlannedReleaseImageAsync(signedImage.Image, checkedImage, cancellationToken)
+                    .ConfigureAwait(false);
             }
             else
             {
@@ -2750,7 +2751,7 @@ internal sealed partial class CameraAgentLifecycleManager
             healthy,
             [paths.ConfigRoot, paths.StateRoot, paths.CatalogRoot],
             manifest.LifecycleCondition == InstanceLifecycleCondition.Uninstalled
-                ? $"hvo-sky-install cameraagent reinstall --instance-id {manifest.InstanceId:D}"
+                ? $"{InstallerProgram.Current} cameraagent reinstall --instance-id {manifest.InstanceId:D}"
                 : null,
             DateTimeOffset.UtcNow);
 

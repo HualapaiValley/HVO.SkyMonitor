@@ -402,7 +402,23 @@ else
                         <p class="site-note">Another setting source supplies the object limit, so the value saved here has no effect until that source no longer sets it.</p>
                     }
                 }
-                <p class="site-note">Other settings can be added to this file by hand; it loads over the image's defaults and survives upgrades. On an installer deployment it is <code>state/identity/appsettings.local.json</code> in the instance directory. The object limit and site profile apply at once, the limit from the next sky map projection and the next capture of a camera profile that follows it (an exhaustive profile never does); most other settings take effect at the next CameraAgent start.</p>
+                @if (_site.CurrentSkyRefresh is { } currentSkyRefresh)
+                {
+                    <fieldset class="site-settings-form" disabled="@(_busy || _loading || _site.Profile.Problem is not null)">
+                        <legend class="visually-hidden">@CurrentSkyRefresh.Title</legend>
+                        <label class="ops-field">@CurrentSkyRefreshLabel<input id="site-current-sky-refresh" inputmode="numeric" autocomplete="off" placeholder="@CurrentSkyRefreshPlaceholder" @bind="_currentSkyRefreshInput" @bind:after="CurrentSkyRefreshFormChanged" /></label>
+                        <div class="site-settings-actions">
+                            <button type="button" class="button secondary" @onclick="() => SaveCurrentSkyRefreshAsync(useDefault: false)">Save interval</button>
+                            <button type="button" class="text-button" disabled="@(currentSkyRefresh.SavedValue is null)" @onclick="() => SaveCurrentSkyRefreshAsync(useDefault: true)">Use default interval</button>
+                        </div>
+                    </fieldset>
+                    <p class="site-note">The minimum image refresh is the shortest time the Current Sky page shows one capture before it moves to a newer one. It moves only to a capture whose overlays are complete, and once this time has passed it shows the newest such capture, skipping any in between. Refresh image moves at once. Captures are not affected.</p>
+                    @if (currentSkyRefresh.Overridden)
+                    {
+                        <p class="site-note">Another setting source supplies the minimum image refresh, so the value saved here has no effect until that source no longer sets it.</p>
+                    }
+                }
+                <p class="site-note">Other settings can be added to this file by hand; it loads over the image's defaults and survives upgrades. On an installer deployment it is <code>state/identity/appsettings.local.json</code> in the instance directory. The object limit, the minimum image refresh and the site profile apply at once: the limit from the next sky map projection and the next capture of a camera profile that follows it (an exhaustive profile never does), and the refresh from Current Sky's next refresh. Most other settings take effect at the next CameraAgent start.</p>
             }
         </section>
     </div>

@@ -8,6 +8,22 @@ that install and `install --dry-run` evaluate. The CameraAgent image comes from 
 published release's files ([Release Install](#release-install)) or from an image
 the operator names, and the catalog from a verified local bundle.
 
+**Running it.** The installer is one file in the release folder, `hvo-sky-install-linux-arm64` or
+`hvo-sky-install-linux-x64`, and nothing puts it on PATH. Run it by its path, for example from the release folder:
+
+```bash
+chmod 755 hvo-sky-install-linux-arm64
+./hvo-sky-install-linux-arm64 status
+```
+
+This runbook writes it as `hvo-sky-install`: put the path of the release's installer in its place. The installer names
+itself the same way, by the path it runs from, in its usage and in every command a message tells you to run (such as a
+`Resume:` line, or the `cameraagent rollback` an upgrade names), so such a command runs as printed. A copy run under
+another name, such as `/usr/local/bin/hvo-sky-install`, names itself by that path. [`install.sh`](#installsh) runs a
+checked copy from a temporary folder that it removes when it finishes, so a command printed during an `install.sh` run
+names that copy: run it with the release's installer instead, from the folder given to `--from` or downloaded from the
+release, or run `install.sh` again with that command's arguments.
+
 `hvo-sky-install --version` prints the installer's version and the commit it was built from, as
 `<version>+<40-character commit>`, and exits 0. Like `--help`, it needs no Docker and does not read the
 [host policy](#production-product-root-on-another-filesystem), so it works even where that policy is refused. A build
@@ -146,7 +162,10 @@ else is a usage error), it is handed to curl as `--url`, never as an option, and
 
 The command surface follows section 5 of the install contract (#1315). Instance
 commands are grouped under `cameraagent`; every command takes `--json` and
-`-h`/`--help`, and `--version` stands alone.
+`-h`/`--help`, and `--version` stands alone. A command's `--help` says what it does and lists only the options it takes,
+each with what it does; an option it does not list is a usage error (exit `2`). A group's `--help`
+(`cameraagent --help`, `catalog --help`, `host --help`), or a group named without a command, lists that group's commands
+with what each does.
 
 ### Exit codes
 
