@@ -10,9 +10,9 @@ The provider decision and its terms are recorded in
 Refresh is disabled by default. Nothing on the frame path makes a network request:
 consumers read the last activated snapshot from local storage.
 
-The Software & Catalog page does not show orbital status yet; that UI belongs to
-#1392. Until it lands, use the endpoints below, the `orbital-elements` health entry and
-the metrics.
+Operators normally read status, refresh and resume from the Software & Catalog page
+(#1392), described under "Software & Catalog And Automations" below. The endpoints,
+the `orbital-elements` health entry and the metrics remain available.
 
 ## Provider Policy
 
@@ -220,6 +220,63 @@ detail. The detail never contains a path, header value or secret.
 `UnchangedPayload` means the normalized payload matched the active one. A new manifest
 is still activated, reusing the payload file. Restart reconciliation records
 `Interrupted` (`orbital.attempt-interrupted`).
+
+## Software & Catalog And Automations
+
+`/operations/software` has an **Orbital-element snapshot** panel. It reads the refresh
+status above, the reserved definition and the verified manifest of the active snapshot.
+It never loads the payload, and it never shows a path, an ETag or Last-Modified value,
+a credential or a provider body. Diagnostics show only whether the ETag and
+Last-Modified were recorded. Reason codes appear as operator text; an unknown code is
+shown as the code itself. The page does not poll: use **Reload status**.
+
+What the panel shows:
+
+- One state: Fresh, Stale, Refresh overdue, No data, Disabled, Halted, Quarantined,
+  Needs repair or Unavailable. The page rail repeats it.
+- Coverage relative to the requested population, its known exclusions, record and
+  object counts, and the epoch range.
+- Element age and retrieval time, kept separate:
+  - **Stale** means even the newest element epoch is older than 48 h, however recently
+    it was downloaded. Stale elements stay in use until a refresh replaces them.
+  - **Refresh overdue** means refresh is on and there has been no successful retrieval
+    within `StaleAfterHours`.
+- Validity reads "Unknown": the source supplies no validity window.
+- Provider and dataset, terms, fetch and activation times, the schedule, the last
+  attempt, the next permitted attempt and the next due time.
+- Any provider halt (time, HTTP status and reason) and any quarantined response.
+  A missing or invalid HTTP status reads "No valid HTTP status recorded". The
+  last-known-good snapshot stays visible beside a quarantine.
+- If the store is unavailable, or no snapshot is installed, the panel says so. It never
+  reads either case as an empty sky.
+
+Commands need `CameraAgent.Operations.Mutate.V1`. A read-only operator sees the same
+facts with the commands disabled.
+
+- **Refresh now** sends the refresh command with a fixed reason. The button is
+  disabled, with the cause, whenever the command would be refused: refresh is off, the
+  definition is missing or disabled, a halt is in force, or the floor has not elapsed
+  (the next permitted time is shown).
+- **Resume provider** appears only during a halt. It opens a dialog that shows the halt
+  and asks for a single-line reason of 1 to 256 characters. It sends the halt time the
+  page read, so a halt that has since changed is never cleared. Resume never moves the
+  floor.
+- Each command intent uses one idempotency key. If the outcome is unknown (503), the
+  button changes to a retry that sends the identical request with the same key, so the
+  command is never applied twice. After any other outcome, the next click is a new
+  intent with a new key. A refresh, and a resume that succeeds or conflicts, re-reads
+  the status. An invalid resume reason keeps the dialog open.
+
+The **Schedule** and **Run history** links open
+`/operations/automations?definition=orbital-elements-refresh` and
+`/operations/automations?view=runs`. The `?definition=` link highlights that
+definition's card and scrolls to it once. If the definition does not exist, the page
+says so, and it ignores an identifier that is not valid.
+
+In Automations, choosing the `OrbitalElementsRefresh` task fixes the identifier to
+`orbital-elements-refresh`, the target to `celestrak:gp:active` and the trigger to
+Periodic. It defaults the interval to 21600 s. The server enforces the 7200–86400 s
+range, and its rejections in the table above appear as operator text.
 
 ## Health And Metrics
 
