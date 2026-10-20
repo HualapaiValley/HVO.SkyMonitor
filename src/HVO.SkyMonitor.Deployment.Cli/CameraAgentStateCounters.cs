@@ -655,7 +655,7 @@ internal static class CameraAgentStateCounters
             if (update.ExecuteNonQuery() == 1) return;
         }
         if (floor.Carry is not { } carry)
-            throw new InstallerException($"The restored '{relative}' cannot continue the version line of automation definition '{floor.Key}'.");
+            throw new InstallerException($"The restored '{relative}' cannot continue the version line of automation definition '{JsonEncodedText.Encode(floor.Key)}'.");
         using var insert = connection.CreateCommand();
         insert.Transaction = transaction;
         insert.CommandText = """

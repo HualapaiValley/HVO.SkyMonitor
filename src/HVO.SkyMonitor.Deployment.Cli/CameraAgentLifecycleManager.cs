@@ -10,6 +10,8 @@ namespace HVO.SkyMonitor.Deployment;
 
 internal sealed partial class CameraAgentLifecycleManager
 {
+    internal static readonly AsyncLocal<IHostEnvironment?> UpgradeStorageHostOverride = new();
+
     public static Task<LifecycleResult> ExecuteAsync(LifecycleRequest request, CancellationToken cancellationToken)
         => ExecuteAsync(request, new ProcessRunner(), null, null, NativeLinux.getuid(), NativeLinux.getgid(), cancellationToken);
 
@@ -641,7 +643,7 @@ internal sealed partial class CameraAgentLifecycleManager
             await ValidateComposeAuthorityAsync(docker, compose, manifest, cancellationToken).ConfigureAwait(false);
             await docker.VerifyContainerAsync(
                 compose, paths, manifest.Image, uid, gid, cancellationToken).ConfigureAwait(false);
-            EnsureUpgradeStorage(paths, request.ImageArchive, manifest.ReplayProfile, rollback);
+            EnsureUpgradeStorage(paths, request.ImageArchive, manifest.ReplayProfile, rollback, snapshotRequired: false);
         }
         var operationRoot = Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"));
         var previousManifestPath = Path.Combine(operationRoot, "previous-instance-manifest.json");
@@ -813,6 +815,10 @@ internal sealed partial class CameraAgentLifecycleManager
                 paths, manifest.Image, manifest.Image.UpgradeCompatibility ?? manifest.UpgradeCompatibility, candidate,
                 preflightDatabases?.RawIngressDatabasePath);
         var stateSnapshotRequired = operation.StateSnapshotRequired || retainedSnapshot is not null || declaredChanges.Count > 0;
+        // Archive/headroom admission ran before image preparation. Only a snapshotting operation needs the
+        // database copies and carry journal, and that decision is known only after candidate state preflight.
+        if (!operation.MutationStarted && stateSnapshotRequired)
+            EnsureUpgradeStorage(paths, request.ImageArchive, manifest.ReplayProfile, rollback, snapshotRequired: true);
         if (operation.CandidateImage is not null && operation.CandidateImage != candidate)
             throw new InstallerException("The retained image operation has a different candidate identity.");
         operation = operation with
@@ -2716,22 +2722,32 @@ internal sealed partial class CameraAgentLifecycleManager
     }
 
     /// <summary>
-    /// Estimated room for the staged image archive, the operation's snapshot, a temporary database copy, its
-    /// concurrent rollback journal and a separate restore-copy allowance. Triggers may grow the trial beyond its current-size estimate; every trial checks
-    /// capacity again while keeping space for the restore. Bulk data is never copied or counted.
+    /// Estimated room for the image archive and headroom, plus the operation's snapshot, scratch database,
+    /// concurrent rollback journal and separate restore-copy allowance only when those phases are required.
+    /// Triggers may grow the trial beyond its current-size estimate; every trial checks capacity again while
+    /// keeping space for the restore. Bulk data is never copied or counted.
     /// </summary>
     private static void EnsureUpgradeStorage(
         InstallationPaths paths, string? imageArchive, HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile replayProfile,
-        bool rollback)
+        bool rollback, bool snapshotRequired)
     {
-        var databaseBytes = CameraAgentStateSnapshot.StoreBytes(paths.StateRoot, SnapshotInventory(paths, replayProfile, rollback));
+        var databaseBytes = snapshotRequired
+            ? CameraAgentStateSnapshot.StoreBytes(paths.StateRoot, SnapshotInventory(paths, replayProfile, rollback))
+            : 0;
+        var snapshotBytes = snapshotRequired
+            ? checked(4 * databaseBytes + CameraAgentStateCounters.JournalRecordBytes(databaseBytes))
+            : 0;
         var archiveBytes = imageArchive is null ? 0 : new FileInfo(imageArchive).Length;
-        var required = checked(4 * databaseBytes + CameraAgentStateCounters.JournalRecordBytes(databaseBytes) + archiveBytes + 256L * 1024 * 1024);
+        var required = checked(snapshotBytes + archiveBytes + 256L * 1024 * 1024);
         // The snapshot and staged archive land on the filesystem that holds the product root, which need not be '/'.
-        var available = LinuxHostEnvironment.AvailableBytes(paths.ProductRoot);
+        var available = UpgradeStorageHostOverride.Value is { } host
+            ? host.MeasureFileSystem(paths.ProductRoot).AvailableBytes
+            : LinuxHostEnvironment.AvailableBytes(paths.ProductRoot);
         if (available < required)
         {
-            throw new InstallerException("Insufficient free space for the candidate image and the database snapshot.");
+            throw new InstallerException(snapshotRequired
+                ? "Insufficient free space for the candidate image and the database snapshot."
+                : "Insufficient free space for the candidate image and headroom.");
         }
     }
 

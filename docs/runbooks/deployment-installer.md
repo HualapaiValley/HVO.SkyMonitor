@@ -608,7 +608,7 @@ measured on the filesystem that actually stores each root, at its nearest
 existing ancestor, not on `/`; when the product root and Docker's data root
 share one filesystem their requirements are added together. An upgrade likewise
 measures the staged archive, snapshot, temporary database copy, concurrent trial
-rollback journal and a separate restore-copy allowance against the product root's own filesystem. Bulk capture data is never copied, so it is never counted.
+rollback journal and a separate restore-copy allowance against the product root's own filesystem when a migration or retained-state restore requires those phases. Pure image swaps budget only for their archive and headroom. Bulk capture data is never copied, so it is never counted.
 
 A host that cannot enforce the limits would otherwise run CameraAgent unbounded,
 so it is refused. On a Raspberry Pi the firmware adds `cgroup_disable=memory` to
