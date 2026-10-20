@@ -65,6 +65,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- LogicHost uses stable bounded query ordering for projected-scene checks, diagnostics and transient submission conflicts, and keeps publication event and version identities paired when reading history. (#1444)
+
 - CameraAgent and LogicHost images no longer warn about overriding the runtime image's HTTP port default during
   their intended startup binding; listening addresses and ports are unchanged. (#1436)
 
