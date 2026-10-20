@@ -86,6 +86,13 @@ public interface IOrbitalElementsStore
 
     ValueTask RecordTransportFailureAsync(string attemptId, string reasonCode, string detail, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Completes the InFlight attempt as StorageFailed after a local storage fault the store did not settle itself. It
+    /// records no halt and leaves the last successful retrieval unchanged; the attempt still holds the floor. Throws
+    /// <see cref="InvalidOperationException"/> when the attempt is unknown or already terminal.
+    /// </summary>
+    ValueTask RecordStorageFailureAsync(string attemptId, string reasonCode, string detail, CancellationToken cancellationToken);
+
     /// <summary>Retains the newest MaximumQuarantinedPayloads raw candidates under quarantine/; never activates them.</summary>
     ValueTask RecordQuarantineAsync(string attemptId, ReadOnlyMemory<byte> rawBytes, string? rawSha256,
         string reasonCode, string detail, CancellationToken cancellationToken);

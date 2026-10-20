@@ -754,6 +754,94 @@ public sealed class OrbitalElementsStoreTests : OrbitalStoreTestBase
     }
 
     [TestMethod]
+    public async Task AStorageFailureClosesTheInFlightAttemptWithoutAHaltAndStillHoldsTheFloor()
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        using var store = OrbitalElementsStoreTestData.Open(root, clock);
+        var attemptId = await OrbitalElementsStoreTestData.AdmitAsync(store).ConfigureAwait(false);
+        var revision = (await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Revision;
+
+        await store.RecordStorageFailureAsync(attemptId, "orbital.storage-no-space", "synthetic", CancellationToken.None)
+            .ConfigureAwait(false);
+
+        var state = await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual((OrbitalAttemptOutcome.StorageFailed, "orbital.storage-no-space"),
+            (state.LastAttemptOutcome!.Value, state.LastAttemptReasonCode));
+        Assert.IsNull(state.Halt);
+        Assert.IsNull(state.LastRetrievalSuccessUtc);
+        Assert.AreEqual(revision + 1, state.Revision);
+        AssertReadModelAccepts(state);
+        var blocked = await store.TryBeginAttemptAsync("run", OrbitalAttemptTrigger.Manual, CancellationToken.None)
+            .ConfigureAwait(false);
+        Assert.AreEqual(OrbitalAdmissionStatus.FloorNotElapsed, blocked.Status);
+        clock.Advance(OrbitalElementsStoreTestData.Interval);
+        Assert.AreEqual(OrbitalAdmissionStatus.Admitted, (await store.TryBeginAttemptAsync(
+            "run", OrbitalAttemptTrigger.Manual, CancellationToken.None).ConfigureAwait(false)).Status);
+    }
+
+    [TestMethod]
+    public async Task AStorageFailureRequiresTheExactInFlightAttempt()
+    {
+        var root = CreateRoot();
+        using var store = OrbitalElementsStoreTestData.Open(root, new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start));
+        var attemptId = await OrbitalElementsStoreTestData.AdmitAsync(store).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => store.RecordStorageFailureAsync(
+            new string('0', 32), "orbital.storage-io", "unknown", CancellationToken.None).AsTask()).ConfigureAwait(false);
+        await store.RecordTransportFailureAsync(attemptId, "orbital.transport-dns", "no route", CancellationToken.None)
+            .ConfigureAwait(false);
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => store.RecordStorageFailureAsync(
+            attemptId, "orbital.storage-io", "late", CancellationToken.None).AsTask()).ConfigureAwait(false);
+
+        var state = await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual((OrbitalAttemptOutcome.TransportFailed, "orbital.transport-dns"),
+            (state.LastAttemptOutcome!.Value, state.LastAttemptReasonCode), "A terminal outcome is never replaced.");
+    }
+
+    [TestMethod]
+    public async Task AStorageFailureLeavesAnExistingHaltAndItsStatusUntouched()
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        using var store = OrbitalElementsStoreTestData.Open(root, clock);
+        var attemptId = await OrbitalElementsStoreTestData.AdmitAsync(store).ConfigureAwait(false);
+        // Not reachable through the API (a halt refuses admission); written directly to prove the guard.
+        OrbitalElementsStoreTestData.Execute(root, """
+            UPDATE orbital_provider_state SET halt_since_unix_ms = 1000, halt_http_status = 429, halt_reason = 'synthetic existing halt';
+            """);
+
+        await store.RecordStorageFailureAsync(attemptId, "orbital.storage-io", "synthetic", CancellationToken.None)
+            .ConfigureAwait(false);
+
+        var state = await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalAttemptOutcome.StorageFailed, state.LastAttemptOutcome);
+        Assert.AreEqual(new OrbitalProviderHalt(DateTimeOffset.FromUnixTimeMilliseconds(1000), 429, "synthetic existing halt"),
+            state.Halt);
+        Assert.IsNull(OrbitalElementsStoreTestData.Scalar(root, "SELECT http_status FROM orbital_attempts;") as long?);
+    }
+
+    [TestMethod]
+    public async Task AStorageFailureLeavesTheLastRetrievalSuccessUnchanged()
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        using var store = OrbitalElementsStoreTestData.Open(root, clock);
+        var attemptId = await OrbitalElementsStoreTestData.AdmitAsync(store).ConfigureAwait(false);
+        var retrievedAt = clock.GetUtcNow().AddSeconds(3);
+        await store.RecordRetrievalAsync(attemptId, retrievedAt, CancellationToken.None).ConfigureAwait(false);
+        clock.Advance(TimeSpan.FromMinutes(1));
+
+        await store.RecordStorageFailureAsync(attemptId, "orbital.storage-io", "synthetic", CancellationToken.None)
+            .ConfigureAwait(false);
+
+        var state = await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalAttemptOutcome.StorageFailed, state.LastAttemptOutcome);
+        Assert.AreEqual(retrievedAt, state.LastRetrievalSuccessUtc);
+        Assert.IsNull(state.LastActivationUtc);
+    }
+
+    [TestMethod]
     public async Task QuarantineRetainsOnlyTheNewestBoundedEvidenceAndNeverActivates()
     {
         var root = CreateRoot();

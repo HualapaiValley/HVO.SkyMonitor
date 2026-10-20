@@ -346,6 +346,29 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
     }
 
     /// <inheritdoc />
+    public async ValueTask RecordStorageFailureAsync(
+        string attemptId,
+        string reasonCode,
+        string detail,
+        CancellationToken cancellationToken)
+    {
+        RequireAttemptId(attemptId);
+        RequireReasonCode(reasonCode);
+        ArgumentNullException.ThrowIfNull(detail);
+        var boundedDetail = BoundText(detail);
+        await ExecuteGatedAsync(async (connection, token) =>
+        {
+            using var transaction = BeginImmediate(connection);
+            await RequireInFlightAsync(connection, transaction, attemptId, token).ConfigureAwait(false);
+            await CompleteAttemptAsync(connection, transaction, attemptId, OrbitalAttemptOutcome.StorageFailed,
+                reasonCode, boundedDetail, ToUnixMilliseconds(Truncate(Now())), token).ConfigureAwait(false);
+            await BumpRevisionAsync(connection, transaction, token).ConfigureAwait(false);
+            await transaction.CommitAsync(token).ConfigureAwait(false);
+            return true;
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
     /// <remarks>
     /// The idempotency key is checked first: the same key and payload replays as <see cref="OrbitalCommandStatus.Unchanged"/>
     /// even after the halt is cleared, and the same key with another payload is a conflict. A new key with no halt in
