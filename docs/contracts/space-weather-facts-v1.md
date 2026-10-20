@@ -14,7 +14,9 @@ The decision's ledger and its U1 to U15 table give each rule's status:
 Approved, Proposed or Unresolved. The numbers in this document follow those
 statuses. For example, the per-product structure of the request policy is
 Approved, while the base interval values and the 35-day retention period are
-Proposed values (U1, U8, U15).
+Proposed values (U1, U8, U15). The 64-level JSON nesting limit and the
+1900–9998 source-year range are also **Proposed**, under the decision's
+"Proposed limits" section.
 
 ## Scope and ownership
 
@@ -113,7 +115,8 @@ the content does not change (s01, s17). They may be sent as `If-None-Match` and
 - Every letter and digit that a rule matches is ASCII. A "digit" is `0` to `9`
   only, so a field written with other Unicode digits does not match (s12).
   Case-insensitive matching folds ASCII letters only.
-- A source time with a year parses only when the year is 1900 to 9998. A
+- Under the **Proposed** source-year limit, a source time with a year parses
+  only when the year is 1900 to 9998 inclusive (s25). A
   source time is a message time (`Issue Time`, `Valid From`, `Valid To`,
   `Now Valid Until`, `Threshold Reached` or `Begin Time`), the 3-day
   forecast's `:Issued:` time, or a JSON product stamp. Every time derived from
@@ -128,7 +131,8 @@ the content does not change (s01, s17). They may be sent as `If-None-Match` and
 - The JSON product stamps are matched whole: scales `DateStamp` and
   `TimeStamp` joined by one space as `YYYY-MM-DD HH:MM:SS`, Kp `time_tag` as
   `YYYY-MM-DDTHH:MM:SS`, and the OVATION times as `YYYY-MM-DDTHH:MM:SSZ`.
-- A JSON body nested more than 64 levels deep is `malformed-json`. The
+- Under the **Proposed** nesting limit, a JSON body nested more than 64
+  levels deep is `malformed-json`. The
   outermost array or object is level 1, and brackets inside strings do not
   count (s12).
 - For every JSON product, `NaN`, `Infinity` and `-Infinity` are not JSON
@@ -558,6 +562,11 @@ them sorted in ordinal (code-point) order:
 - `body-rejected:<reason>`
 - `stale-snapshot`
 
+`record-rejected`, `issue-time-mismatch` and `duplicate-record-in-body` are
+reported only for `updated` and `stale-snapshot` bodies, never for `unchanged`
+bodies. s20 steps 3 and 5 pin the silent unchanged case; step 10 pins a
+`record-rejected` diagnostic on a stale snapshot.
+
 They never contain a credential, an authorization or cookie header, a CDN
 request identifier, a secret-bearing URI, or message text.
 
@@ -720,6 +729,7 @@ A fetch also reports:
 | s22 | 410 and 400 product halts; network error backoff; 304 without validators; product resume; an attempt ends the backoff before it |
 | s23 | Exact Retry-After grammar; invalid forms give 1,800 s; matching weekday; valid dates in years 0001 and 9999 keep the clamp |
 | s24 | NaN, Infinity and -Infinity are malformed-json for alerts, scales, Kp and OVATION; last-known-good is kept |
+| s25 | Inclusive source-year bounds: 1899 and 9999 reject; 1900 and 9998 update, for alerts and scales |
 
 **Implementation conformance.** An implementation passes when it reproduces each
 scenario's expectations from the same committed bodies. Unit tests use those

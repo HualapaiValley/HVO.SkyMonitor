@@ -2340,7 +2340,7 @@ def scenarios(cap: Capture):
     ovation_text = (PACK / OVATION_SUBSET).read_text("ascii")
     ovation_sha = sha256(ovation_text.encode("ascii"))
     # One cell outside the site band and the equatorial rows, [236, 60, 0], gets the JSON number 0.5 as its
-    # value. Nothing else changes, so the body stays the size of the committed subset.
+    # value. Nothing else changes, so the body is the committed subset plus two bytes.
     if ovation_text.count("\n    [236, 60, 0],\n") != 1:
         raise ScenarioError("s18 cell [236, 60, 0] is not unique in the OVATION subset")
     fraction_cell = ovation_text.replace("\n    [236, 60, 0],\n", "\n    [236, 60, 0.5],\n", 1)
@@ -2710,6 +2710,43 @@ def scenarios(cap: Capture):
                         "product": {"lkgSha256": sha256(body.encode("ascii")), "lastSuccessUtc": fmt(at),
                                     "validators": {"etag": '"fixture-s24"', "lastModified": None},
                                     "consecutiveRejected": index}}, product=product)
+    out.append(b.build())
+
+    # s25 ------------------------------------------------------------------
+    b = Builder("s25-year-bounds", "Source years 1900 and 9998 are inclusive; adjacent years reject",
+                ["source-year", "message-header", "schema", "last-known-good"], synthetic_records=True,
+                notes=["All records and scales are synthetic. Alert years exercise Issue Time; scales exercise "
+                       "JSON product stamps. Boundary outcomes are hand-authored.",
+                       "A restart separates products and preserves the accepted year-9998 alert across the "
+                       "year-9999 rejection. The 9998 record is not purged during this scenario."])
+    at = ts("2026-10-20T12:00:00Z")
+    lkg = None
+    last_success = None
+    for index, (year, accepted) in enumerate(((1899, False), (1900, True), (9998, True), (9999, False))):
+        record = synthetic("SYNTH", f"{year}-10-20 12:00:00.000", "ALTZZZ", 1425,
+                           ["ALERT: Synthetic source-year boundary", "Synthetic fixture; not an SWPC product."])
+        response = alerts_ok([record], f'"fixture-s25-alerts-{year}"', None)
+        when = fmt(at + dt.timedelta(seconds=index * 120))
+        if accepted:
+            lkg = sha256(response["body"].encode("ascii"))
+            last_success = when
+        b.fetch(when, response, {
+            "outcome": "updated" if accepted else "rejected",
+            "diagnostics": [] if accepted else ["body-rejected:no-valid-records"],
+            "product": {"lkgSha256": lkg, "lastSuccessUtc": last_success}})
+    b.step("restart")
+    lkg = None
+    last_success = None
+    for index, (year, accepted) in enumerate(((1899, False), (1900, True), (9998, True), (9999, False))):
+        body = json.dumps(synthetic_scales(year))
+        when = fmt(at + dt.timedelta(seconds=index * 300))
+        if accepted:
+            lkg = sha256(body.encode("ascii"))
+            last_success = when
+        b.fetch(when, {"status": 200, "contentType": "application/json", "body": body}, {
+            "outcome": "updated" if accepted else "rejected",
+            "diagnostics": [] if accepted else ["body-rejected:schema"],
+            "product": {"lkgSha256": lkg, "lastSuccessUtc": last_success}}, product="scales")
     out.append(b.build())
 
     return out
