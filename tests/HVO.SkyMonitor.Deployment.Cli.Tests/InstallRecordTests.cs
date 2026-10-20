@@ -30,7 +30,7 @@ public sealed class InstallRecordTests
     private static readonly string[] EntryMembers =
     [
         "component", "instanceId", "friendlyName", "condition", "version", "previousVersion", "rolledBackFrom",
-        "imageId", "previousImageId", "url", "resources", "updatedUtc", "lastImageChange"
+        "imageId", "previousImageId", "url", "resources", "updatedUtc", "lastImageChange", "programs"
     ];
 
     private static readonly JsonSerializerOptions Compact = new(InstallRecordJsonContext.Default.Options) { WriteIndented = false };

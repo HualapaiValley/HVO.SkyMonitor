@@ -443,12 +443,16 @@ production product root.
       "url": "http://127.0.0.1:5130/",
       "resources": { "cpus": 2, "memoryBytes": 4294967296, "pidsLimit": 256, "cpusSetByOperator": false, "memorySetByOperator": false },
       "updatedUtc": "2026-10-18T03:00:00+00:00",
-      "lastImageChange": null
+      "lastImageChange": null,
+      "programs": []
     }
   ]
 }
 ```
 
+- `programs` lists the installed commands' names, paths, release versions, SHA-256 and previous SHA-256. It is empty
+  in this image-only example. The instance's retained program sets and the shared publication registry own those
+  facts; the install record projects them.
 - The instance's release records (`image-distribution.json` and
   `image-distribution.records.json` in its deployment state, see
   [Release Install](#release-install)) own its installed version. The install
