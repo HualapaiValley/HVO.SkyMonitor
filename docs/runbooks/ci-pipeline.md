@@ -19,6 +19,38 @@ PR #1364 took 173 seconds with the contract selected; the new budget provides
 All checks, their order and selection rules, job names and required-check names
 remain unchanged.
 
+## Promotion ancestry prerequisite
+
+Before **every** promotion from `development/v1` to `main` becomes ready, including promotions without release
+tags, follow [Before every promotion](releases.md#before-every-promotion). A merge-commit promotion leaves a commit
+on `main` that development lacks. The workflow's behind-check tolerates verified promotion merges, but that does
+not satisfy `main`'s strict up-to-date protection; `Required CI` and branch protection stay unchanged.
+
+The operator/coordinator opens the sync PR with authenticated Git/`gh`, proves its normal merge tree equals the
+**pre-sync development tree**, and takes it through review, both Development v1 required checks, and a merge-commit
+merge. A conflict or changed tree stops the sync. Workflow `GITHUB_TOKEN` pushes do not start downstream push CI,
+and PR workflow runs may require approval; the operator step avoids relying on that token or adding secrets or
+permissions. Wait for the green Development v1 **push run on the merged development head**, then verify ancestry:
+
+<!-- promotion-sync-ready -->
+```bash
+(
+  set -euo pipefail
+  git fetch origin main development/v1
+  git merge-base --is-ancestor origin/main origin/development/v1 || {
+    echo "Keep the promotion draft: sync main into development/v1 first." >&2
+    exit 1
+  }
+  git rev-parse origin/main origin/development/v1
+)
+```
+<!-- /promotion-sync-ready -->
+
+Record these source/target SHAs and the sync tree proof with the promotion's updated-source review. If `main` was
+already an ancestor, record the no-sync result instead. Mark the promotion ready only after this prerequisite;
+then full `ci.yml` qualification supplies `Required CI` on the reviewed head. Recheck when either branch moves.
+A green sync PR is integration evidence and does not replace promotion qualification.
+
 ## Required Checks
 
 | Check | Enforced behavior |
