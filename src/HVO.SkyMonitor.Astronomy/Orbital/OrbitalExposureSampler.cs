@@ -28,7 +28,7 @@ internal static class OrbitalExposureSampler
     private sealed class Sampling(OrbitalExposureQuery query, OrbitalProductLineage lineage,
         Func<DateTimeOffset, OrbitalTopocentricState?> evaluate, OrbitalWorkBudget budget)
     {
-        private readonly OrbitalSampleProjector projector = new(query.Geometry);
+        private readonly OrbitalSampleProjector projector = new(query.Geometry, budget.Work);
         private readonly Dictionary<long, Probe?> cache = [];
         private readonly SortedDictionary<long, OrbitalProjectedSample> output = [];
         private readonly SortedDictionary<long, OrbitalProjectedSample> staged = [];

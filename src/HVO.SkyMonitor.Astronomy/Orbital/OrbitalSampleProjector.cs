@@ -10,12 +10,14 @@ internal sealed class OrbitalSampleProjector
     private readonly IImageProjector bounded;
     private readonly IImageProjector unbounded;
     private readonly IImageProjector chart;
+    private readonly OrbitalWorkCounter? work;
 
-    internal OrbitalSampleProjector(OrbitalGeometryFacts geometry)
+    internal OrbitalSampleProjector(OrbitalGeometryFacts geometry, OrbitalWorkCounter? work = null)
     {
         ArgumentNullException.ThrowIfNull(geometry);
         geometry.Validate();
         this.geometry = geometry;
+        this.work = work;
         bounded = ProjectorFactory.Create(geometry.Projection);
         unbounded = ProjectorFactory.Create(geometry.Projection with { EnforceSensorBounds = false });
         var p = geometry.Projection;
@@ -31,7 +33,15 @@ internal sealed class OrbitalSampleProjector
 
     internal double RemainingPixelScaleBound => 1d / Math.Min(geometry.ImageTransform.BinX, geometry.ImageTransform.BinY);
 
-    internal PixelPoint? ProjectChart(AltAzPoint horizontal) => chart.Project(horizontal);
+    internal PixelPoint? ProjectChart(AltAzPoint horizontal) => Project(chart, horizontal);
+
+    private PixelPoint? Project(IImageProjector projector, AltAzPoint horizontal)
+    {
+        work?.Project();
+        var point = projector.Project(horizontal);
+        if (point is not null) work?.ProjectionSucceeded();
+        return point;
+    }
 
     /// <summary>
     /// Classifies an entire direction tube, including cells with no drawable probes. A mixed result
@@ -48,7 +58,7 @@ internal sealed class OrbitalSampleProjector
         var p = geometry.Projection;
         var k = ProjectionSamplingBounds.MaximumPixelsPerRadian(p, tube.Center, tube.RadiusRadians);
         if (k == 0) return new(false, OrbitalClipReason.Aperture, 0);
-        if (!double.IsFinite(k) || unbounded.Project(tube.Center) is not { } center)
+        if (!double.IsFinite(k) || Project(unbounded, tube.Center) is not { } center)
             return new(false, null, k);
         var radius = k * tube.RadiusRadians + 1e-8;
         var apertureInside = true;
@@ -99,8 +109,8 @@ internal sealed class OrbitalSampleProjector
         OrbitalClipReason? clip;
         if (geometry.HorizonPolicy == HorizonPolicy.GeometricHorizon && horizontal.AltitudeDegrees < 0)
             clip = OrbitalClipReason.Horizon;
-        else if (bounded.Project(horizontal) is not { } native)
-            clip = unbounded.Project(horizontal) is null ? OrbitalClipReason.Aperture : OrbitalClipReason.Sensor;
+        else if (Project(bounded, horizontal) is not { } native)
+            clip = Project(unbounded, horizontal) is null ? OrbitalClipReason.Aperture : OrbitalClipReason.Sensor;
         else if (!InCrop(native))
             clip = OrbitalClipReason.Sensor;
         else

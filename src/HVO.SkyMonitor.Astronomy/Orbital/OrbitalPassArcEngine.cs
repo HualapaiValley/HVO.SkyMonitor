@@ -32,6 +32,8 @@ public sealed partial class OrbitalPredictionEngine
         if (budget.CanContinue())
         {
             evaluated = 1;
+            budget.Work.VisitObject();
+            budget.Work.SelectObject();
             var evaluator = OrbitalObjectEvaluator.Create(request.Observer, query.Pass.PassInterval, query.SelectedRecord,
                 timeData, budget, out reason, out detail);
             if (evaluator is not null)
@@ -84,7 +86,7 @@ public sealed partial class OrbitalPredictionEngine
                 arc is null ? OrbitalExecutionStatus.Unavailable : OrbitalExecutionStatus.Partial,
                 reason, evaluated, budget.Evaluations, elapsed,
                 arc is null ? [] : [arc], reason == OrbitalPredictionReason.None ? [] :
-                [new(query.Pass.Lineage.ObjectIdentity, reason, BoundedDetail(detail))], () => budget.CanContinue());
+                [new(query.Pass.Lineage.ObjectIdentity, reason, BoundedDetail(detail))], () => budget.CanContinue(), budget.Work.Snapshot(1));
         }
     }
 }

@@ -35,6 +35,7 @@ internal sealed class OrbitalWorkBudget
         started = this.time.GetTimestamp();
     }
 
+    internal OrbitalWorkCounter Work { get; } = new();
     internal int Evaluations { get; private set; }
     internal int Samples { get; private set; }
     internal int Tracks { get; private set; }
@@ -61,6 +62,20 @@ internal sealed class OrbitalWorkBudget
         if (!CanContinue()) return false;
         if (Evaluations == maximumEvaluations) return Stop(OrbitalPredictionReason.EvaluationBudget);
         Evaluations++;
+        return true;
+    }
+
+    internal bool TryInitializationEvaluation()
+    {
+        if (!TryEvaluation()) return false;
+        Work.Initialize();
+        return true;
+    }
+
+    internal bool TryPointEvaluation()
+    {
+        if (!TryEvaluation()) return false;
+        Work.PropagatePoint();
         return true;
     }
 

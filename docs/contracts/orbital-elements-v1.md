@@ -171,6 +171,17 @@ previous independently completed result, but cannot treat a canceled request as
 a newly completed or partial result. The sampler/pass-search qualification and
 existing cancellation tests already exercise this exception behavior.
 
+Engine-produced results also carry immutable, query-local `WorkDiagnostics`:
+requested/visited/selected object slots, actual initialization and point-call
+objects/calls, static support rejections, and actual image-projection
+objects/attempts/successes. Counts include failed, excluded and budget-prefix
+work; cached probes add no core attempts. Initialization plus point core calls
+equal `PropagationEvaluations`. Original public result constructors preserve
+their validation and leave diagnostics null, meaning unknown. These execution
+facts do not enter canonical products, schemas or model identities, and do not
+assert population completeness. Operation boundaries and qualification are in
+[work accounting](../astronomy/orbital-work-accounting-v1.md).
+
 Reuse `ObserverLocation`, `AltAzPoint`, `PixelPoint`, `ProjectionContext`,
 `ProjectedSceneImageTransformV1` and `AstrometricClockFacts`. Geometry facts bind
 configured-rig versus accepted-measured basis, rig/readout/calibration identity

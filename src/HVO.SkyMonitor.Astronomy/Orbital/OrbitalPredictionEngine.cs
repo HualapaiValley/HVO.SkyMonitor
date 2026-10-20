@@ -31,8 +31,8 @@ public sealed partial class OrbitalPredictionEngine : IOrbitalPredictionEngine, 
                 if (sampled.Track is null) budget.ReleaseUnusedTrack();
                 return new(sampled.Track is { } track ? [track] : [], sampled.Reason, sampled.Detail);
             },
-            (status, reason, objects, evaluations, elapsed, products, failures) =>
-                new(query, status, reason, objects, evaluations, elapsed, products, failures), cancellationToken));
+            (status, reason, objects, evaluations, elapsed, products, failures, diagnostics) =>
+                new(query, status, reason, objects, evaluations, elapsed, products, failures, diagnostics), cancellationToken));
     }
 
     public ValueTask<OrbitalPredictionResult<OrbitalPassSummaryV1>> FindPassesAsync(
@@ -46,13 +46,13 @@ public sealed partial class OrbitalPredictionEngine : IOrbitalPredictionEngine, 
                 var found = OrbitalPassSearch.Search(query, lineage, record.Elements, evaluator.Evaluate, budget);
                 return new ObjectOutput<OrbitalPassSummaryV1>(found.Passes, found.Reason, found.Detail);
             },
-            (status, reason, objects, evaluations, elapsed, products, failures) =>
-                new(query, status, reason, objects, evaluations, elapsed, products, failures), cancellationToken));
+            (status, reason, objects, evaluations, elapsed, products, failures, diagnostics) =>
+                new(query, status, reason, objects, evaluations, elapsed, products, failures, diagnostics), cancellationToken));
     }
 
     private OrbitalPredictionResult<T> Run<T>(OrbitalPredictionRequest request, OrbitalGeometryBasis geometryBasis,
         Func<OrbitalRecordV1, OrbitalProductLineage, OrbitalObjectEvaluator, OrbitalWorkBudget, ObjectOutput<T>> produce,
-        Func<OrbitalExecutionStatus, OrbitalPredictionReason, int, int, double, IEnumerable<T>, IEnumerable<OrbitalObjectFailure>, OrbitalPredictionResult<T>> finish,
+        Func<OrbitalExecutionStatus, OrbitalPredictionReason, int, int, double, IEnumerable<T>, IEnumerable<OrbitalObjectFailure>, OrbitalWorkDiagnostics, OrbitalPredictionResult<T>> finish,
         CancellationToken cancellationToken)
     {
         var budget = new OrbitalWorkBudget(request.Bounds, cancellationToken, timeProvider);
@@ -79,6 +79,7 @@ public sealed partial class OrbitalPredictionEngine : IOrbitalPredictionEngine, 
         {
             if (!budget.CanContinue()) break;
             evaluated++;
+            budget.Work.VisitObject();
             var selection = OrbitalRecordSelector.Select(request.Snapshot, identity, request.Interval, request.SelectionPolicy);
             if (selection.SelectedRecord is not { } record)
             {
@@ -87,6 +88,7 @@ public sealed partial class OrbitalPredictionEngine : IOrbitalPredictionEngine, 
                     $"selection-{selection.Eligibility}"));
                 continue;
             }
+            budget.Work.SelectObject();
             var evaluator = OrbitalObjectEvaluator.Create(request, record, timeData, budget, out var reason, out var detail);
             if (evaluator is null)
             {
@@ -116,12 +118,13 @@ public sealed partial class OrbitalPredictionEngine : IOrbitalPredictionEngine, 
             if (reason == OrbitalPredictionReason.None && evaluated < request.Objects.Count) reason = OrbitalPredictionReason.IncompleteInterval;
             var status = reason == OrbitalPredictionReason.None ? OrbitalExecutionStatus.Complete :
                 products.Count == 0 ? OrbitalExecutionStatus.Unavailable : OrbitalExecutionStatus.Partial;
-            var result = finish(status, reason, evaluated, budget.Evaluations, elapsed, products, failures);
+            var diagnostics = budget.Work.Snapshot(request.Objects.Count);
+            var result = finish(status, reason, evaluated, budget.Evaluations, elapsed, products, failures, diagnostics);
             // Contract validation, defensive freezing and hashing are charged to the deadline too.
             budget.CanContinue();
             if (budget.Reason == OrbitalPredictionReason.Deadline && result.Reason != OrbitalPredictionReason.Deadline)
                 result = finish(products.Count == 0 ? OrbitalExecutionStatus.Unavailable : OrbitalExecutionStatus.Partial,
-                    OrbitalPredictionReason.Deadline, evaluated, budget.Evaluations, budget.ElapsedMilliseconds, products, failures);
+                    OrbitalPredictionReason.Deadline, evaluated, budget.Evaluations, budget.ElapsedMilliseconds, products, failures, diagnostics);
             cancellationToken.ThrowIfCancellationRequested();
             return result;
         }

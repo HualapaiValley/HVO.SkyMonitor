@@ -38,6 +38,7 @@ internal sealed class OrbitalObjectEvaluator
             Math.Abs(e.BStarInverseEarthRadii) > .01 || perigee < 100 ||
             location.ElevationMeters is < -1000 or > 10000)
         {
+            budget.Work.RejectStaticSupport();
             reason = OrbitalPredictionReason.PropagationFailure; detail = "outside-numerical-support-profile-v1"; return null;
         }
         try { time.ValidatePropagationInterval(record.EpochUtc, interval); }
@@ -45,7 +46,7 @@ internal sealed class OrbitalObjectEvaluator
         {
             reason = TimeFailure(exception); detail = exception.Message; return null;
         }
-        if (!Sgp4ObjectPropagator.TryCreate(record, out var initialized, out var failure, budget.TryEvaluation))
+        if (!Sgp4ObjectPropagator.TryCreate(record, out var initialized, out var failure, budget.TryInitializationEvaluation))
         {
             reason = budget.Reason != OrbitalPredictionReason.None ? budget.Reason : OrbitalPredictionReason.PropagationFailure;
             detail = $"sgp4-{failure.Kind}-code-{failure.CoreErrorCode}"; return null;
@@ -59,14 +60,17 @@ internal sealed class OrbitalObjectEvaluator
         if (utc < interval.StartUtc || utc > interval.EndUtc)
             throw new ArgumentOutOfRangeException(nameof(utc), "Evaluation must stay in the query interval.");
         if (cache.TryGetValue(utc.UtcTicks, out var existing)) return existing;
-        if (!propagator.TryPropagate(utc, out var state, out var failure, budget.TryEvaluation))
+        var callsBefore = budget.Work.PointPropagationCoreCalls;
+        var success = propagator.TryPropagate(utc, out var state, out var failure, budget.TryPointEvaluation);
+        if (budget.Work.PointPropagationCoreCalls != callsBefore) budget.Work.PointCompleted(success);
+        if (!success)
         {
             FailureReason = budget.Reason != OrbitalPredictionReason.None ? budget.Reason : OrbitalPredictionReason.PropagationFailure;
             FailureDetail = $"sgp4-{failure.Kind}-code-{failure.CoreErrorCode}"; return null;
         }
         try
         {
-            var evaluated = observer.Evaluate(OrbitalCoordinateConverter.ToEarthFixed(state, time.Evaluate(utc)));
+            var evaluated = observer.Evaluate(OrbitalCoordinateConverter.ToEarthFixed(state!, time.Evaluate(utc)));
             if (evaluated.RangeKilometers < 50)
             {
                 FailureReason = OrbitalPredictionReason.PropagationFailure;
