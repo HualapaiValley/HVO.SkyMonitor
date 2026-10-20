@@ -59,10 +59,91 @@ public sealed partial class ProjectedSceneStagingStoreTests
         }
     }
 
+    [TestMethod]
+    public async Task RawIngressStartup_DeferredStagesYieldToSecondPauseAndResumeWithoutRepeatingDeletes()
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Inconclusive("Directory synchronization is a Linux durability boundary.");
+        using var hold = new Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: true).ConfigureAwait(false);
+        var stageRoot = Path.Combine(hold.Path, "staging", "projected-scenes");
+        Directory.CreateDirectory(stageRoot);
+        for (var index = 0; index < 3; index++)
+            await File.WriteAllTextAsync(Path.Combine(stageRoot, $".{index}.tmp"), "incomplete").ConfigureAwait(false);
+        using var staging = CreateStore(hold.Path);
+        using var lifecycle = new ProjectedSceneStageLifecycleCoordinator();
+        using var ingress = CreateIngress(hold.Path, staging, out var telemetry, hold.Gate, lifecycle);
+        using var ownedTelemetry = telemetry;
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(3, Directory.EnumerateFiles(stageRoot).ToArray());
+        await admission.ResumeAsync("startup-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+
+        Task? pause = null;
+        var syncs = 0;
+        staging.BeforeDirectorySyncForTest = _ =>
+        {
+            syncs++;
+            if (syncs != 1) return;
+            pause = admission.PauseAsync("startup-second-pause", null, "test", null, CancellationToken.None);
+            Assert.IsFalse(pause.IsCompleted, "The active deletion must finish its directory sync before acknowledgement.");
+        };
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(pause);
+        await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.AreEqual(1, syncs, "A second pause must wait for one deletion, not the entire deferred startup pass.");
+        Assert.HasCount(2, Directory.EnumerateFiles(stageRoot).ToArray());
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1, syncs, "Acknowledged pause must remain a deletion barrier.");
+
+        await admission.ResumeAsync("startup-second-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(3, syncs, "Every deferred stage must be deleted and synced exactly once.");
+        Assert.IsFalse(Directory.EnumerateFiles(stageRoot).Any());
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(3, syncs);
+    }
+
+    [TestMethod]
+    public async Task RawIngressStartup_SecondPauseInterruptsDeferredStageLifecycleWait()
+    {
+        using var hold = new Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: true).ConfigureAwait(false);
+        var stageRoot = Path.Combine(hold.Path, "staging", "projected-scenes");
+        Directory.CreateDirectory(stageRoot);
+        await File.WriteAllTextAsync(Path.Combine(stageRoot, ".waiting.tmp"), "incomplete").ConfigureAwait(false);
+        using var staging = CreateStore(hold.Path);
+        using var lifecycle = new ProjectedSceneStageLifecycleCoordinator();
+        using var ingress = CreateIngress(hold.Path, staging, out var telemetry, hold.Gate, lifecycle);
+        using var ownedTelemetry = telemetry;
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        await admission.ResumeAsync("startup-wait-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        var stageLease = await lifecycle.AcquireReconciliationLeaseAsync(CancellationToken.None).ConfigureAwait(false);
+        var initialization = ingress.InitializeAsync(CancellationToken.None).AsTask();
+        Task? pause = null;
+        try
+        {
+            Assert.IsFalse(initialization.IsCompleted);
+            pause = admission.PauseAsync("startup-wait-pause", null, "test", null, CancellationToken.None);
+            await initialization.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.HasCount(1, Directory.EnumerateFiles(stageRoot).ToArray());
+        }
+        finally
+        {
+            stageLease.Dispose();
+            await initialization.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            if (pause is not null) await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+        await admission.ResumeAsync("startup-wait-retry", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(Directory.EnumerateFiles(stageRoot).Any());
+    }
+
     private static RawCaptureIngress CreateIngress(
         string root,
         IProjectedSceneStagingReconciler? staging,
-        out RawIngressTelemetry telemetry)
+        out RawIngressTelemetry telemetry,
+        CaptureMaintenanceGate? maintenanceGate = null,
+        ProjectedSceneStageLifecycleCoordinator? lifecycle = null)
     {
         var state = new RawIngressState(TimeProvider.System);
         telemetry = new RawIngressTelemetry(state);
@@ -79,6 +160,8 @@ public sealed partial class ProjectedSceneStagingStoreTests
             telemetry,
             NullLogger<RawCaptureIngress>.Instance,
             new NullRawIngressFaultInjector(),
-            projectedSceneStaging: staging);
+            projectedSceneStaging: staging,
+            projectedSceneLifecycle: lifecycle,
+            maintenanceGate: maintenanceGate);
     }
 }
