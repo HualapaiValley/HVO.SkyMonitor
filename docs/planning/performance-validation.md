@@ -305,8 +305,9 @@ dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Te
 
 `OrbitalConsumerAndSweepInterferencePerformanceTests` extends the same in-process synthetic workload above. It
 keeps all 39 phase-1 series and adds three job-occurrence series, seven real terminal-completion series and an
-after-only preparation interval. Both sources use exactly the same harness (`bdc9da83`), one warmup and ten
-fresh-root measured repetitions. Production baseline is `939b46d6`; after production is `65fd790e`. The phase-1
+after-only preparation interval. The **first measurement** uses exactly the same harness (`bdc9da83`) for both
+sources, one warmup and ten fresh-root measured repetitions. Production baseline is `939b46d6`; after production
+is `65fd790e`. The phase-1
 contended timings are excluded from acceptance. These are x64 integration measurements, without edge-hardware
 or production qualification. Page cache is retained; restart means a new store/reader, not a new process.
 
@@ -371,8 +372,64 @@ every series with p50/p95 wall, allocation, CPU, peak and peak increase, physica
 
 | Evidence JSON (`orbital-consumer-and-sweep-performance.json`) | SHA-256 |
 | --- | --- |
-| `p2/baseline-01/` | `2dabf7c7b872958c9031413b35c44971b20208c82c785baa75b6abb83b19f26b` |
-| `p2/after-01/` | `ffb59c7c5dcfd952ad7395dc6c86d2773aa9e177651b93d5eda3acde406b7c3e` |
+| `p2/baseline-01/` (first measurement) | `2dabf7c7b872958c9031413b35c44971b20208c82c785baa75b6abb83b19f26b` |
+| `p2/after-01/` (first measurement) | `ffb59c7c5dcfd952ad7395dc6c86d2773aa9e177651b93d5eda3acde406b7c3e` |
+
+**Completion-tail correction evidence.** The first measurement did not explain the CPU outside preparation
+requested by R0-F1. Six further fresh-process runs on 2026-10-20 retain the same workload, one warmup and ten
+measured repetitions. Runs 02/03 are interleaved baseline/after with identical test-only harness `d4307776`;
+04 is an additional interleaved pair with harness `0c7d8e6b`, adding fixed-work integer and SHA controls at
+repetition boundaries. Baseline is `bdc9da83` plus the named harness overlay; all after production is byte-identical
+to reviewed `547c6145`. Builds/tests use `-m:4`; build servers are shut down before each measurement. Entry
+load is below 2, memory exceeds 8 GiB and no other `dotnet test` is running. Host samples are taken every 20 s.
+All six pass the quiet rule (sampled load below 4). No provider or Docker is used. CPU-frequency files are
+unavailable in this virtualized environment. Idle MSBuild nodes appeared briefly during baseline-04; its maximum
+load remained 1.46 and no competing test was present.
+
+| Evidence JSON directory | UTC start–end | Max load1 | SHA-256 |
+| --- | --- | ---: | --- |
+| `c1/baseline-02/` | 14:49:58–14:55:21 | 1.64 | `d426f5a8bc26ba029411a6c405685587ba0ac501a810c3c89ee0c028b7ec3327` |
+| `c1/after-02/` | 14:55:21–15:02:32 | 1.46 | `09d86ecda11b4d741eb447e6b2063a4f5bb6773810f912e25473e39620ce3ddc` |
+| `c1/baseline-03/` | 15:02:33–15:07:57 | 1.26 | `7b4d6602e575fa126853572703c47ee5e2a9af20f16a639c275d1e82ddac92cf` |
+| `c1/after-03/` | 15:07:57–15:15:02 | 1.23 | `c343a7991f2bbb7b2df26f7229f2a5b19ef399087fdb5404790a93badb8ae5a9` |
+| `c1/baseline-04/` | 15:20:31–15:26:57 | 1.46 | `922de8c0d6d5f42181e9ae411171512a8a726486e49c31432c76c2dea97b8400` |
+| `c1/after-04/` | 15:26:58–15:32:53 | 1.88 | `55fb6e185dcaf05a7bce260b5af28eba0bb5585f2bfc25fb12728eea16230f2d` |
+
+| Run | Changed job p50 / p95 ms | Run-now completion p50 / p95 ms | First consumer p50 / p95 ms | Process peak B |
+| --- | ---: | ---: | ---: | ---: |
+| baseline-02 | 3206.29 / 3440.60 | 3304.24 / 3618.68 | 855.47 / 948.90 | 2,532,016,128 |
+| after-02 | 4990.69 / 6977.67 | 4922.04 / 6482.60 | 0.00 / 0.01 | 2,532,745,216 |
+| baseline-03 | 3267.77 / 3531.97 | 3336.92 / 3572.31 | 871.51 / 982.90 | 2,201,436,160 |
+| after-03 | 4974.29 / 7275.52 | 5065.41 / 7076.70 | 0.00 / 0.01 | 2,574,749,696 |
+| baseline-04 | 3877.13 / 5618.64 | 3720.85 / 4579.26 | 975.10 / 1623.62 | 2,270,142,464 |
+| after-04 | 4239.88 / 4669.52 | 4222.11 / 4302.99 | 0.00 / 0.01 | 2,413,654,016 |
+
+The large tails recur in after-02/03, without confinement to the last three repetitions. They also occur in
+baseline-04 (full-body completion max 6,282.98 ms), while after-04 run-now completion max is 4,302.99 ms.
+Existing log events and a test provider wrapper locate most extra time in normalize/publish before preparation.
+For changed-job means, pair 02 adds 2,158.45 ms: 1,100.54 ms preparation, 159.85 ms additional outside-preparation
+GC pause, and 898.06 ms remaining execution time. Pair 03 adds 1,939.13 ms: 1,062.38, 142.47 and 734.28 ms
+respectively. These are accounting differences, not a causal attribution of the remainder. Outside-preparation
+allocation stays about 7.67 GB and collection counts remain close to baseline.
+
+After-04 changed-job mean preparation is 911.88 ms and mean outside preparation is 3,349.10 ms, versus
+3,319.74 ms in baseline-03. Its run-now mean preparation is 898.29 ms. Preparation still allocates about 2.10 GB
+and adds about 212 G0 collections per activation. The 04 fixed-work controls record no collections or pauses,
+with 0–168 B of process diagnostic overhead; their timing does not explain baseline-04’s orbital variation.
+They do not measure large-heap allocation or physical-host memory bandwidth.
+
+No collection is forced at repetition boundaries. Final full blocking collections find all 99 tracked disposed
+readers collectible in every run; final process live-heap estimates are 301–395 MB. Heap/LOH/POH, committed
+bytes and fragmentation fluctuate rather than growing every repetition, and baseline fragmentation can exceed
+after fragmentation. Remaining process object types are not attributed. No production retention defect is
+established. H3’s preparation cost is measured; H2’s heap-shape effects and H4’s host/runtime conditions remain
+possible explanations of the additional variable CPU. Frequency and thermal attribution are unavailable.
+
+**R0-F1 remains blocking:** the unexplained remainder is isolated but not fully attributed. This evidence does
+not clear the performance acceptance gate. No production behavior is changed by the correction. The external
+`c1/analysis.md`, `per-repetition.tsv`, `boundaries.tsv`, `cpu-probes.tsv`, `all-metrics.tsv` and runtime-thread
+samples preserve the observations and limits. The owner needs CPU/allocation profiling and, where available,
+physical-host telemetry before accepting a causal explanation or selecting a mitigation.
 
 Workload hashes: raw `9F75308EAFF68ED921A3CBBFCFFF771A67E4041E272A17E8E6FD868BF213718E`;
 changed `6601B2C2227405C0273C9613059F0E88FD6E041C60640E2DFA33C6B567292FB9` (16,754 records, 7,147,269 raw bytes).
