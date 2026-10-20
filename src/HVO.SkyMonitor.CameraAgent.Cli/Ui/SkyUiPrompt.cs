@@ -135,7 +135,10 @@ internal sealed class SkyUiPrompt : IDisposable
         };
         var scrollHint = new Label
         {
-            X = 0, Y = Pos.AnchorEnd(4), Width = Dim.Fill(), Height = 1,
+            X = 0,
+            Y = Pos.AnchorEnd(4),
+            Width = Dim.Fill(),
+            Height = 1,
             Text = y + 6 > screenHeight - 6 ? "PgUp/PgDn scroll; Tab moves" : string.Empty
         };
         scrollHint.SetScheme(theme.Label(HvoTone.Muted, HvoGround.Surface));
