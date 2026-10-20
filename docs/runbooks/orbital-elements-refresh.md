@@ -11,8 +11,29 @@ Refresh is disabled by default. Nothing on the frame path makes a network reques
 consumers read the last activated snapshot from local storage.
 
 The Software & Catalog page does not show orbital status yet; that UI belongs to
-#1392. Until it lands, use the endpoints below, the `orbital-elements` health entry and
-the metrics.
+#1392. Its "Orbital-element snapshot" panel (`/operations/software`) still reads "Not
+collected" and says this version does not acquire orbital elements. The "Orbital
+elements" health entry links to that page. Until #1392 replaces the panel text, ignore
+it: it does not reflect refresh, the halt or the active snapshot. Use the endpoints
+below, the `orbital-elements` health entry and the metrics instead.
+
+## Credentials
+
+None are needed, and none are accepted. CelesTrak GP is a public HTTPS source.
+
+- The request carries only the fixed User-Agent, `Accept: application/json` and
+  `Accept-Encoding: gzip`. It never sends a cookie, an `Authorization` header or a
+  conditional header.
+- The named HttpClient disables cookies, pre-authentication and handler credentials.
+  It refuses to start with any default request header configured.
+- `CameraAgent:OrbitalElements` has only the seven keys listed below. No key takes a
+  URL, token, account or password. An unrecognized key in the section is ignored, not
+  used.
+- Outbound proxy selection follows the host's standard proxy environment. The orbital
+  configuration has no proxy or credential setting of its own.
+
+Authenticated providers (Space-Track, SupGP) are deferred by the #527 decision. They
+need their own terms and credential handling before they can be enabled.
 
 ## Provider Policy
 
@@ -26,11 +47,32 @@ an operator command can bypass it.
 - **Single flight.** At most one attempt is in flight.
 - **Halt on any non-200 HTTP response.** A status from 100 to 599 other than 200 records
   a provider-wide halt with its status and time. Nothing is requested again until an
-  operator resumes, and resuming does not move the floor. A status outside 100–599 is
-  quarantined as `orbital.invalid-http-status` instead.
+  operator resumes, and resuming does not move the floor.
+- **Halt when no valid HTTP status is recorded.** Two cases also record a provider-wide
+  halt, with no valid HTTP status recorded:
+  - a status line outside 100–599 (`orbital.invalid-http-status`);
+  - an attempt that may have reached the provider but whose outcome was never durably
+    recorded (`orbital.provider-outcome-unknown`). See
+    [Crash Recovery](#crash-recovery).
+
+  The halt's HTTP status is then absent. It is never shown as 0, 200, 403 or 429. The
+  same resume rules apply.
 - **No retries.** A timeout or transport failure is recorded and keeps the
   last-known-good snapshot. The next request waits for the next scheduled occurrence
   after the floor.
+- **No conditional requests.** Each request is a full fetch. The client sends no
+  `If-None-Match` or `If-Modified-Since`, so a 304 is an ordinary non-200 halt.
+- **One egress address, one budget.** CelesTrak sees one client per egress address.
+  Every CameraAgent behind the same NAT gateway, proxy or shared public IP looks like
+  the same client and counts against the same allowance. Each CameraAgent's floor and
+  phase offset protect only its own requests. For a shared-egress site:
+  - enable refresh on as few CameraAgents as the deployment needs;
+  - keep the interval well above the two-hour floor;
+  - if a 403 or 429 halts one CameraAgent, treat the shared address as refused and
+    check the others before resuming any of them.
+
+  #527 requires coordinating shared NAT and cache deployments. A single approved
+  cache or distributor is future topology; #528 provides none.
 - **No redistribution.** Raw provider bytes stay on this CameraAgent, under the store
   root. #528 sends neither the feed nor its quarantine evidence to LogicHost or
   anywhere else.
@@ -119,10 +161,16 @@ history.
 
 Rules that apply to every command:
 
+- A browser session must send a valid antiforgery token. Without one the command
+  returns 400 with `orbital.antiforgery-invalid`, before the owner, key and body checks
+  and before anything durable happens. An owner API key with read-write access needs
+  no token, because a browser never adds an `Authorization` header to a cross-site
+  request. A read-only key is refused by the mutate policy with 403.
+- The actor is the authenticated owner identity.
 - Each command needs exactly one non-empty `Idempotency-Key` header. A missing or
   repeated header returns 400.
-- The actor is the authenticated owner identity.
-- Request bodies reject unknown members.
+- Each command needs a JSON body. A request with no body is refused with 400 by request
+  binding before any orbital check runs. Request bodies reject unknown members.
 - Nothing in either command can supply a URL, dataset, path or schedule.
 
 **Status.** `GET` returns the `hvo-orbital-refresh-status-v1` read model:
@@ -134,7 +182,9 @@ Rules that apply to every command:
   definition are both enabled;
 - `nextPermittedAttemptUtc`, the floor;
 - the `automation` reference: definition ID, revision hash and last run key;
-- `providerHalt`: since, HTTP status and reason;
+- `providerHalt`: since, HTTP status and reason. The HTTP status is null when no valid
+  HTTP status was recorded; the reason then begins with
+  `orbital.provider-outcome-unknown` or `orbital.invalid-http-status`;
 - `candidateQuarantine`: observed time, raw SHA and reason;
 - one `reason` and one `recoveryAction`.
 
@@ -155,18 +205,30 @@ The `reason` and `recoveryAction` come from the first matching state, in this or
 | `orbital.not-yet-permitted` | `WaitForPermittedAttempt` | The last attempt failed and the floor has not elapsed. |
 | `orbital.no-active-snapshot` / `orbital.ready` | `None` | Waiting for the first snapshot, or current. |
 
-**Refresh.** The optional body is `{ "reason": "..." }`, with a non-empty trimmed
-reason of at most 512 characters. A refresh is never executed inside the request. The
-checks run in this order:
+`orbital.ready` describes acquisition only. Element freshness is a health fact
+(`orbital.snapshot-stale`) and a metric (`newest_element_age`), not a status reason.
+
+**Refresh.** The body `{ "reason": "..." }` is required, and so is its reason: a
+non-empty trimmed reason of at most 512 characters. An absent, blank or over-long
+reason returns 400 with `orbital.refresh-invalid-reason`. A refresh is never executed
+inside the request. The checks run in this order:
 
 1. request validation;
-2. `Enabled`;
-3. store availability;
-4. the definition exists and is enabled;
-5. the halt;
-6. the floor.
+2. the idempotency key. If the automation store already recorded this key for the
+   reserved definition, the same key and payload replay (200,
+   `orbital.refresh-replayed`) and a different payload conflicts (409,
+   `automation.idempotencyKeyConflict`). Either answer comes before any policy check,
+   so a retry still gets its original answer after the queued run has executed and
+   moved the floor, or after a halt. A key recorded against an earlier definition
+   version conflicts, and a key can be matched only while the reserved definition
+   exists;
+3. `Enabled`;
+4. store availability;
+5. the definition exists and is enabled;
+6. the halt;
+7. the floor.
 
-When all six pass, the refresh is queued as one run-now occurrence of the reserved
+When all seven pass, the refresh is queued as one run-now occurrence of the reserved
 definition. The automation runner picks it up on its next poll. The store then
 re-applies the halt and the floor when it admits the attempt, so a race between the
 request and execution can never send an early request.
@@ -182,7 +244,11 @@ request and execution can never send an early request.
 the expected halt time means a resume can never clear a halt that it did not see.
 Resume:
 
+- answers a recorded idempotency key first: the same key and payload replay
+  (`orbital.resume-replayed`) even after the halt has cleared, and a different payload
+  conflicts (`orbital.idempotency-conflict`), before the halt is checked;
 - is allowed while refresh is disabled, so you can clear a halt before re-enabling;
+- clears a halt with no valid HTTP status recorded in the same way as any other halt;
 - never moves the floor;
 - does not make a request itself.
 
@@ -193,9 +259,9 @@ The next permitted occurrence makes the next request.
 | Accepted (refresh queued) | 202 with `Location: /api/v1/operations/orbital-elements` | `orbital.refresh-queued` |
 | Applied | 200 | `orbital.resumed` |
 | Replayed (same key, same payload) | 200 | `orbital.refresh-replayed`, `orbital.resume-replayed` |
-| Invalid | 400 | `orbital.refresh-invalid-idempotency-key`, `-actor`, `-reason`; `orbital.resume-invalid-halt-time`, `-idempotency-key`, `-actor`, `-reason` |
-| Conflict | 409 | `orbital.disabled`, `orbital.definition-missing`, `orbital.definition-disabled`, `orbital.provider-halted`, `orbital.not-yet-permitted`, `orbital.no-halt`, `orbital.halt-mismatch`, `orbital.idempotency-conflict`, `automation.run-now-pending` |
-| Unavailable | 503 | `orbital.store-unavailable` or the storage fault code |
+| Invalid | 400 | `orbital.antiforgery-invalid`; `orbital.refresh-invalid-idempotency-key`, `-actor`, `-reason`; `orbital.resume-invalid-halt-time`, `-idempotency-key`, `-actor`, `-reason` |
+| Conflict | 409 | `orbital.disabled`, `orbital.definition-missing`, `orbital.definition-disabled`, `orbital.provider-halted`, `orbital.not-yet-permitted`, `orbital.no-halt`, `orbital.halt-mismatch`, `orbital.idempotency-conflict` (resume), `automation.idempotencyKeyConflict` (refresh), `automation.run-now-pending` |
+| Unavailable | 503 | `orbital.store-unavailable`, the storage fault code, or `automation.run-now-unavailable` |
 
 Every rejection is a problem response. It carries only `reasonCode` and, when the
 floor blocked a refresh, `nextPermittedAttemptUtc`. A successful result also returns
@@ -211,29 +277,69 @@ detail. The detail never contains a path, header value or secret.
 | --- | --- | --- |
 | Skipped | none (no request) | `orbital.disabled`, `orbital.manual-request-expired`, `orbital.provider-halted`, `orbital.floor-not-elapsed`, `orbital.attempt-in-flight` |
 | Succeeded | `Activated` / `UnchangedPayload` | `orbital.activated`, `orbital.unchanged-payload` |
-| Failed | `ProviderHalted` | `orbital.provider-http-<status>` |
-| Failed | `TransportFailed` | `orbital.request-timeout`, `orbital.http-client-timeout`, `orbital.transport-*`, `orbital.attempt-cancelled` |
-| Failed | `Quarantined` | response checks (`orbital.media-type`, `orbital.content-encoding`, `orbital.gzip-invalid`, `orbital.length-mismatch`, `orbital.wire-bound`, `orbital.raw-bound`, `orbital.empty-body`, `orbital.invalid-http-status`) and parser or normalizer reasons (`orbital.json-*`, `orbital.missing-member`, `orbital.record-contract`, `orbital.snapshot-contract`, …) |
+| Failed | `ProviderHalted` | `orbital.provider-http-<status>`; `orbital.invalid-http-status` (status line outside 100–599, halted with no valid HTTP status recorded) |
+| Failed | `TransportFailed` | `orbital.request-timeout`, `orbital.http-client-timeout`, `orbital.transport-*` |
+| Failed | `Quarantined` | response checks (`orbital.media-type`, `orbital.content-encoding`, `orbital.gzip-invalid`, `orbital.length-mismatch`, `orbital.wire-bound`, `orbital.raw-bound`, `orbital.empty-body`) and parser or normalizer reasons (`orbital.json-*`, `orbital.missing-member`, `orbital.record-contract`, `orbital.snapshot-contract`, …) |
 | Failed | `StorageFailed` | `orbital.storage-no-space`, `-database`, `-permission`, `-containment`, `-integrity`, `-io` |
 | Failed | none (not admitted) | a storage fault code or `orbital.storage-integrity` at admission, `orbital.internal-error` |
 
 `UnchangedPayload` means the normalized payload matched the active one. A new manifest
-is still activated, reusing the payload file. Restart reconciliation records
-`Interrupted` (`orbital.attempt-interrupted`).
+is still activated, reusing the payload file. It advances `lastRetrievalSuccessUtc`
+but not `lastActivationUtc`, which moves only when the active payload changes.
+
+An attempt that stops before completing settles as `Interrupted`:
+
+- `orbital.provider-outcome-unknown`: no provider outcome was recorded, so the request
+  may have been refused. A provider-wide halt with no valid HTTP status is recorded,
+  unless a halt is already in force. This covers cancellation during the fetch (for
+  example a graceful shutdown) and restart reconciliation;
+- `orbital.attempt-cancelled`: cancelled after a valid HTTP 200 was recorded. No halt;
+- `orbital.attempt-interrupted`: restart reconciliation after a valid HTTP 200 was
+  recorded. No halt.
+
+A valid HTTP 200, one that passed the response checks, is recorded durably and
+advances `lastRetrievalSuccessUtc` before the body is parsed. A valid 200 whose content
+is later quarantined or fails storage still counts as a retrieval. A 200 rejected by
+the response checks does not.
 
 ## Health And Metrics
 
 `/health` includes the `orbital-elements` check, tagged `dependency`. The CameraAgent
 health UI lists it as "Orbital elements", scope Local, linked to
-`/operations/software`. Its data holds only these allowlisted keys: `Availability`,
-`Reason`, `RecoveryAction`, `Halted`, `HaltHttpStatus`, `ActiveRecordCount`,
-`ActiveAgeSeconds` and `LastAttemptOutcome`. No path or provider body ever appears.
+`/operations/software` (see the #1392 note at the top). No path or provider body ever
+appears in its data, which holds only these allowlisted keys:
+
+| Key | Meaning |
+| --- | --- |
+| `Availability` | `Available`, `Disabled`, or the storage failure state. |
+| `Reason` | The degrading reason when there is one, otherwise the status `reason`. |
+| `RecoveryAction` | The status `recoveryAction`. |
+| `Halted` | `true` while a provider halt is in force. |
+| `HaltHttpStatus` | The halt's HTTP status. Omitted when no valid HTTP status was recorded; a missing status is never shown as a number. |
+| `ActiveRecordCount` | Records in the active snapshot. |
+| `ActiveObjectCount` | Distinct objects in the active snapshot. |
+| `NewestElementAgeSeconds` | Seconds since the newest element epoch in the active snapshot. This is what element freshness follows. |
+| `OldestElementAgeSeconds` | Seconds since the oldest element epoch in the active snapshot. |
+| `ActivationAgeSeconds` | Seconds since the active payload last changed. An unchanged re-download does not reset it. |
+| `RetrievalAgeSeconds` | Seconds since the last valid provider retrieval (HTTP 200). |
+| `LastAttemptOutcome` | The durable outcome of the last attempt. |
+
+A disabled or unavailable store reports only the first three keys. Every other key is
+present only when its value is known. Ages are whole seconds and never negative, so an
+epoch ahead of the clock reads as 0.
 
 | State | When |
 | --- | --- |
-| Healthy | Refresh is disabled (no I/O is performed), the active snapshot is current, or the first snapshot is not yet due. |
+| Healthy | Refresh is disabled (no I/O is performed); the active snapshot's elements are fresh and a valid retrieval succeeded within `StaleAfterHours`; or the first snapshot is not yet due. |
 | Unhealthy | The store is unavailable or failed integrity verification (`RecoveryAction` `RepairStorage`). |
-| Degraded | The first match, in this order: a provider halt; a quarantine that has not yet been replaced by an activation; an unsettled attempt; a storage-failed attempt; `orbital.snapshot-stale` (activation older than `StaleAfterHours`); then, with no active snapshot, `orbital.first-snapshot-overdue` (an attempt already happened, or more than 5 minutes have passed since the first due time) or a missing or disabled definition. |
+| Degraded | The first match, in this order: a provider halt (`orbital.provider-halted`); a quarantined last attempt (its reason); a quarantine that has not yet been replaced by an activation; an unsettled attempt; a storage-failed attempt; `orbital.snapshot-stale` (the active snapshot has no newest element epoch, or it is more than 48 hours old); `orbital.refresh-overdue` (no valid provider retrieval within `StaleAfterHours`); then, with no active snapshot, a missing or disabled definition, or `orbital.first-snapshot-overdue` (an attempt already happened, or more than 5 minutes have passed since the first due time). |
+
+The 48-hour element envelope is the #527 selection policy's stale age, read from
+`OrbitalSelectionPolicy`, and it is not configurable. An age exactly at either
+threshold is neither stale nor overdue. Re-downloading an unchanged old payload
+clears `orbital.refresh-overdue` but never makes stale elements fresh.
+`OrbitalElementsHealthEvaluator.IsElementStale` and `IsRefreshOverdue` expose the two
+rules, so the operator UI applies the same comparisons.
 
 Degraded always means the last-known-good snapshot, if there is one, is still
 readable.
@@ -247,11 +353,46 @@ CameraAgent MeterProvider and exported through the Prometheus scraping endpoint:
 | `skymonitor.cameraagent.orbital_elements.fetch_duration` | histogram | `ms` | `disposition` |
 | `skymonitor.cameraagent.orbital_elements.raw_bytes` | histogram | `By` | — |
 | `skymonitor.cameraagent.orbital_elements.active_records` | gauge | `{record}` | — |
-| `skymonitor.cameraagent.orbital_elements.active_age` | gauge | `s` | — |
+| `skymonitor.cameraagent.orbital_elements.active_objects` | gauge | `{object}` | — |
+| `skymonitor.cameraagent.orbital_elements.newest_element_age` | gauge | `s` | — |
+| `skymonitor.cameraagent.orbital_elements.oldest_element_age` | gauge | `s` | — |
+| `skymonitor.cameraagent.orbital_elements.activation_age` | gauge | `s` | — |
 | `skymonitor.cameraagent.orbital_elements.halted` | gauge | `{halt}` | — |
 
-Log event IDs for orbital refresh fall in 7700–7769. Logs carry reason codes and SHA
-identities, never paths.
+The gauges read a cached provider-state snapshot, so a scrape performs no I/O. The age
+gauges are computed at scrape time from the cached epochs and times. Only the refresh
+job publishes that snapshot, from a durable read serialized with its single-flight
+lock:
+
+- at the end of every occurrence, including skipped ones;
+- once the store first becomes available at startup, after restart reconciliation:
+  straight away, or at the five-minute retry that finds a repaired store. A durable
+  halt, or one that reconciliation has just recorded, therefore reads `halted` 1 after
+  a restart, before any attempt;
+- after an applied operator resume, so `halted` drops to 0 then rather than at the next
+  attempt. A replayed resume does not publish.
+
+Status reads and health evaluation never publish. Nothing is emitted before the first
+publication. A store that later becomes unusable leaves the last published values in
+place. An occurrence cancelled by shutdown does not publish; the next start does.
+
+Logs carry reason codes, SHA identities, attempt IDs, store-relative directory names
+and counts in their structured fields, never an absolute path or a provider body. The
+event IDs are:
+
+| Event IDs | Source |
+| --- | --- |
+| 7700–7717 | The store. 7715 is an unknown provider outcome halted fail-safe, 7716 a halt for a status line outside 100–599, and 7717 the resume of a halt with no valid HTTP status recorded. |
+| 7720–7721 | The snapshot reader. |
+| 7730–7731 | Store availability. |
+| 7740–7751 | The refresh job. |
+| 7755–7757 | Operator commands. |
+
+Some events also carry the exception object: 7706, 7708, 7709, 7710 (store), 7720
+(reader), 7730 (availability), and 7743, 7744, 7745, 7747, 7750 (job). An exception's
+message and stack trace come from the runtime or SQLite. An I/O exception message can
+name an absolute file path under the store root. Treat these log entries as
+deployment-local, and redact them before sharing them outside the site.
 
 ## Storage Layout, Retention And Quarantine
 
@@ -309,18 +450,24 @@ at most 32 MiB each.
 3. Inspect a copy. Do not edit, rename or delete files in the store.
 4. Keep the copy local, because the provider terms forbid redistribution.
 
-Response-level rejections and an invalid HTTP status have no raw body. The newest
-`MaximumQuarantinedPayloads` bodies are kept and older ones are pruned automatically.
-The quarantine state clears at the next successful activation. If the cause is a
-provider format change, it needs a parser change under the contract; no configuration
-setting accepts it.
+Response-level rejections have no raw body. A status line outside 100–599 is a halt,
+not a quarantine. The newest `MaximumQuarantinedPayloads` bodies are kept and older
+ones are pruned automatically. The quarantine state clears at the next successful
+activation. If the cause is a provider format change, it needs a parser change under
+the contract; no configuration setting accepts it.
 
 ## Crash Recovery
 
 On every start, before the automation runner starts, the store:
 
-- marks any `InFlight` attempt as `Interrupted` (`orbital.attempt-interrupted`). It
-  keeps its start time, so the floor still applies;
+- marks any `InFlight` attempt as `Interrupted`. It keeps its start time, so the floor
+  still applies:
+  - with a recorded valid HTTP 200, the reason is `orbital.attempt-interrupted`, and
+    nothing else changes;
+  - with no recorded provider outcome, the request may have reached the provider and
+    been refused. The reason is `orbital.provider-outcome-unknown`, and the store
+    records a provider-wide halt with no valid HTTP status (event 7715), unless a halt
+    is already in force. An existing halt is never replaced;
 - settles staging intents and deletes partially written staging files;
 - removes publisher temporaries;
 - prunes quarantine bodies that no retained attempt names;
@@ -332,10 +479,39 @@ the new one is active, never a mixture. The automation runner claims an occurren
 advances its progress in one transaction, so a stopped process never repeats it.
 
 If the process stays up but cannot record an attempt's terminal outcome (for example,
-the halt write fails), the attempt stays `InFlight`. A halt is never downgraded to
-another outcome. Later attempts refuse with `orbital.attempt-in-flight`. Status reports
-`orbital.attempt-unsettled` and `RepairStorage`. Fix the storage fault and restart; the
-restart settles the attempt as `Interrupted`.
+the halt write fails), the attempt stays `InFlight` (events 7747 and 7748). A halt is
+never downgraded to another outcome. Later attempts refuse with
+`orbital.attempt-in-flight`. Status reports `orbital.attempt-unsettled` and
+`RepairStorage`. Fix the storage fault and restart. Unless a valid HTTP 200 was
+recorded first, the restart settles the attempt as `orbital.provider-outcome-unknown`
+and holds refresh with a halt that has no valid HTTP status recorded. The status that
+could not be written is not recorded anywhere. Event 7747 names the settlement that
+failed (`Halt`, `Quarantine`, `Transport` or `Interrupted`); `Settlement=Halt` means
+the provider answered with a halt status or a status line outside 100–599.
+
+The unknown-outcome halt is deliberately conservative. It also holds refresh in cases
+where the provider did answer but nothing durable recorded it:
+
+- a crash before a response-rejected quarantine (wrong media type, encoding or length)
+  commits, because a rejected response never records a valid HTTP 200;
+- a crash before a transport-failure record commits;
+- a failure to write both the pending settlement and its fallback, which leaves the
+  attempt `InFlight` until restart;
+- cancellation during the fetch, including a graceful shutdown.
+
+No automatic retry follows the floor in any of these cases, and a refresh request
+cannot bypass the hold; it is refused with `orbital.provider-halted`. To recover from
+`orbital.provider-outcome-unknown`:
+
+1. Optionally set `Enabled` to `false` while you investigate. The halt alone already
+   stops every request.
+2. Read events 7715, 7745, 7747 and 7748 and the last run detail to see what the
+   attempt was doing.
+3. Confirm the provider is not refusing this site before resuming. Do not send test
+   requests from this site's egress address to find out. A refusal of a shared egress
+   address applies to every CameraAgent behind it.
+4. Resume with `expectedHaltSinceUtc` from `providerHalt.sinceUtc`. The two-hour floor
+   still applies after the resume.
 
 ## Disk Full
 
@@ -384,6 +560,50 @@ confirm two things from the archived ledger or the logs:
 
 Never delete or replace the store to clear a halt or the floor. Doing so would permit
 a request that the provider policy forbids.
+
+## Removing Orbital Data
+
+Use this to remove orbital data from a CameraAgent, for example when you retire
+acquisition or decommission the device. Everything #528 stores, provider bytes
+included, lives under the store root `<RawIngressRoot>/.orbital-elements/`. Nothing is
+sent to LogicHost, so there is no central copy to remove.
+
+1. While the CameraAgent is running, read `GET /api/v1/operations/orbital-elements/`
+   and record these fields in the deployment ledger: `lastAttemptUtc`,
+   `nextPermittedAttemptUtc` (the floor), `providerHalt` (since, HTTP status or "no
+   valid HTTP status recorded", and reason), and `currentManifestSha256`. This is the
+   floor and halt evidence. A new store starts without it.
+2. Set `CameraAgent:OrbitalElements:Enabled` to `false`, and disable or remove the
+   `orbital-elements-refresh` definition. Do this before the store is removed, so no
+   occurrence can be admitted against an empty store.
+3. Stop the CameraAgent.
+4. Then either:
+   - archive the whole `.orbital-elements/` directory, including the `-wal` and `-shm`
+     sidecars, to owner-controlled storage, and record its checksum and the
+     disposition in the deployment ledger; or
+   - delete the whole directory, and record the deletion and the step 1 evidence in
+     the deployment ledger.
+
+   Remove the directory as a unit. Do not delete individual files, rows or
+   subdirectories from a store you intend to keep. The triggers and the
+   content-addressed layout depend on the store staying whole.
+5. Start the CameraAgent. If `.orbital-elements/` is absent, a new, empty store is
+   created. Consumers then read `NoActiveSnapshot`, and health reports no snapshot
+   (healthy while refresh stays disabled).
+
+An archive holds `raw/` and `quarantine/`, which are CelesTrak's response bytes exactly
+as received, and `payloads/`, which is derived from them. The #527 decision infers no
+redistribution licence for the feed:
+
+- Keep the archive on owner-controlled storage.
+- Do not publish it, attach it to an issue or support ticket, upload it to LogicHost or
+  another site, or include it in a release or installer.
+- Share checksums, manifest identities and counts instead of bytes.
+
+To restart acquisition later on a new store, follow the checks in
+[Integrity Failure And Store Replacement](#integrity-failure-and-store-replacement):
+at least two hours since the recorded `lastAttemptUtc`, and the cause of any recorded
+halt resolved, before setting `Enabled` to `true`.
 
 ## Rollback
 
