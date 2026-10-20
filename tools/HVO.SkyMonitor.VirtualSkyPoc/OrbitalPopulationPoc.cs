@@ -68,7 +68,7 @@ internal static partial class Program
         var scenarios = requestSetup.Value;
         WriteJson(Path.Combine(output, "workload.json"), new
         {
-            schema = "orbital-component-resource-workload-v1",
+            schema = "orbital-component-resource-workload-v2",
             start,
             populationBounds,
             singleBounds,
@@ -127,7 +127,12 @@ internal static partial class Program
                 }
                 var failureIds = result.Failures.Select(f => f.ObjectIdentity).ToHashSet();
                 var productIds = result.Products.Select(t => t.Lineage.ObjectIdentity).ToHashSet();
-                // EvaluatedObjects counts loop visits, including selection failures. The public result does not expose point/cache counters.
+                var work = result.WorkDiagnostics ?? throw new InvalidOperationException("Engine omitted actual work diagnostics.");
+                if (work.RequestedObjectSlots != result.RequestedObjects || work.VisitedObjectSlots != result.EvaluatedObjects ||
+                    work.InitializationCoreCalls + work.PointPropagationCoreCalls != result.PropagationEvaluations ||
+                    work.PointPropagationSuccesses + work.PointPropagationFailures != work.PointPropagationCoreCalls)
+                    throw new InvalidOperationException("Actual work counters disagree with the query result.");
+                // Successful no-product outcomes are resolved exclusions; explicit failures are not exclusions.
                 var geometricExclusions = scenario.Query.Request.Objects.Take(result.EvaluatedObjects)
                     .Count(id => !failureIds.Contains(id) && !productIds.Contains(id));
                 measurements.Add(new
@@ -140,25 +145,34 @@ internal static partial class Program
                     result.RequestedObjects,
                     result.EvaluatedObjects,
                     result.PropagationEvaluations,
+                    result.WorkDiagnostics,
                     enginePrefinalElapsedMilliseconds = result.ElapsedMilliseconds,
                     visitedObjects = result.EvaluatedObjects,
                     unvisitedObjects = scenario.Query.Request.Objects.Count - result.EvaluatedObjects,
-                    actualSelectedAmongVisited = result.EvaluatedObjects - result.Failures.Count(f => f.Reason is OrbitalPredictionReason.SelectionWithheld or OrbitalPredictionReason.ObjectMissing),
+                    actualSelectedAmongVisited = work.SelectedObjectSlots,
                     actualPolicyWithheld = result.Failures.Count(f => f.Reason == OrbitalPredictionReason.SelectionWithheld),
-                    actualNumericalDomainRejected = result.Failures.Count(f => f.Detail == "outside-numerical-support-profile-v1"),
-                    actualPointPropagatedObjects = (int?)null,
+                    actualNumericalDomainRejected = work.StaticSupportRejectedObjects,
+                    actualInitializationAttemptedObjects = work.InitializationAttemptedObjects,
+                    actualInitializationCoreCalls = work.InitializationCoreCalls,
+                    actualPointPropagatedObjects = work.PointPropagationAttemptedObjects,
+                    actualPointPropagationCoreCalls = work.PointPropagationCoreCalls,
+                    actualPointPropagationSuccesses = work.PointPropagationSuccesses,
+                    actualPointPropagationFailures = work.PointPropagationFailures,
                     pointPropagatedObjectsLowerBound = productIds.Count + geometricExclusions,
-                    actualPointPropagatedObjectsExplanation = "Unknown: aggregate propagation evaluations include initializer calls; failed objects can have zero or many points. Lower bound includes returned or successfully excluded objects only.",
+                    actualPointPropagatedObjectsExplanation = "Actual query-time SGP4 attempt objects, including failed points. Initialization is separately counted; cached points do not add core attempts. The retained product/exclusion lower bound is a cross-check only.",
                     geometricallyExcludedObjects = geometricExclusions,
                     geometricallyExcludedDerivation = "Visited prefix minus distinct failed and returned objects; engine only has a successful no-product path for resolved geometric exclusion",
-                    projectedObjects = result.Products.Count(t => t.Samples.Any(s => s.Pixel is not null)),
-                    projectedObjectsScope = "Returned objects with an emitted non-null pixel, not all internal projection attempts",
+                    projectedObjects = work.ProjectionAttemptedObjects,
+                    projectionAttempts = work.ProjectionAttempts,
+                    projectionSuccesses = work.ProjectionSuccesses,
+                    projectedObjectsScope = "Actual objects with bounded, unbounded or chart IImageProjector.Project attempts. Success is native coordinates, including later excluded/cropped probes; emitted products are separate.",
+                    returnedObjectsWithEmittedPixels = result.Products.Count(t => t.Samples.Any(s => s.Pixel is not null)),
                     returnedObjects = productIds.Count,
                     returnedTracks = result.Products.Count,
                     emittedSamples = result.Products.Sum(t => t.Samples.Count),
                     emittedProjectedSamples = result.Products.Sum(t => t.Samples.Count(s => s.Pixel is not null)),
                     cacheHits = (int?)null,
-                    actualInitializationCount = (int?)null,
+                    cacheHitsScope = "Not collected; cached reuse does not increment actual core-call counters.",
                     failureGroups = result.Failures.GroupBy(f => new { f.Reason, f.Detail }).Select(g => new { g.Key, count = g.Count() }),
                     propagationEvaluationsPerSecond = result.PropagationEvaluations * 1000 / measured.Resources.ElapsedMilliseconds,
                     visitedObjectsPerSecond = result.EvaluatedObjects * 1000 / measured.Resources.ElapsedMilliseconds,

@@ -80,6 +80,7 @@ internal static partial class Program
                     process.PeakWorkingSet64,
                     result.EvaluatedObjects,
                     result.PropagationEvaluations,
+                    result.WorkDiagnostics,
                     result.ElapsedMilliseconds,
                     samples = result.Products[0].Samples.Count,
                     result.Products[0].Sampling,

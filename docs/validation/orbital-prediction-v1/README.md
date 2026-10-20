@@ -52,6 +52,7 @@ frame-available-to-publication acceptance remain #1395.
 - [Independent dense calibration/held-out checks](sampling-reference.md)
 - [Canonical camera reproduction, source context and labeled samples](virtual-camera.md)
 - [Bounded full-population component resource baseline](component-resources.md)
+- [Actual query work-counter definitions](../../astronomy/orbital-work-accounting-v1.md)
 
 The public producer is `OrbitalPredictionEngine`, constructed with already
 materialized `OrbitalTimeData`. `OrbitalPredictionModel.Create` binds the actual

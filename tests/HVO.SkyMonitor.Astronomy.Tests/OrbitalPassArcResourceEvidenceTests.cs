@@ -43,6 +43,7 @@ public sealed class OrbitalPassArcResourceEvidenceTests
                 var cpuMilliseconds = (process.TotalProcessorTime - cpu).TotalMilliseconds;
                 process.Refresh();
                 Assert.AreEqual(OrbitalExecutionStatus.Complete, result.Status, $"{item.GetProperty("name").GetString()}: {result.Reason}");
+                Assert.IsNotNull(result.WorkDiagnostics);
                 var arc = result.Products.Single();
                 if (priorHash is not null) Assert.AreEqual(priorHash, arc.ProductSha256);
                 priorHash = arc.ProductSha256;
@@ -65,6 +66,7 @@ public sealed class OrbitalPassArcResourceEvidenceTests
                     peakProcessWorkingSetBytes = process.PeakWorkingSet64,
                     collections = new[] { GC.CollectionCount(0) - generations[0], GC.CollectionCount(1) - generations[1], GC.CollectionCount(2) - generations[2] },
                     result.PropagationEvaluations,
+                    result.WorkDiagnostics,
                     samples = arc.Samples.Count,
                     serializedBytes = bytes.Length,
                     status = result.Status.ToString(),
