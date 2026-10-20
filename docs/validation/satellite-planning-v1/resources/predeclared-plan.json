@@ -1,0 +1,47 @@
+{
+  "declaredUtc": "2026-10-20T03:28:20.992172+00:00",
+  "sourceHead": "0c48a01974df2a8d2bb1e73f9af56e7c6e4e5485",
+  "processOrder": [
+    "core",
+    "facade",
+    "facade",
+    "core"
+  ],
+  "replicates": 2,
+  "cases": [
+    "iss",
+    "starlinks"
+  ],
+  "warmupsPerCase": 2,
+  "samplesPerCase": 5,
+  "environment": {
+    "DOTNET_TieredCompilation": "0"
+  },
+  "acceptance": "All mode pairs preserve exact combined canonical pass/arc hash, pass/sample counts and actual evaluation totals; all requested products Complete. Quantify overhead and retain every sample; no statistical equivalence or cadence claim.",
+  "timedBoundary": "Warm direct engine search+all returned original-query arcs versus real facade search+same selected-parent arcs; excludes cold GP/time acquisition/parse, UI/HTTP/auth and capture.",
+  "runGuard": "Do not compile or run resource measurements until root candidate long gates have finished and host is idle.",
+  "harnessFiles": [
+    {
+      "file": "Program.cs",
+      "sha256": "73EFA8EEC9206C95B77E27F0AAD1CFF8276455381F8DC190FE30952E117C2BC1"
+    },
+    {
+      "file": "Harness.csproj",
+      "sha256": "CF09F3FC63D51313E32B9944F7D3D91CD4D2540359B46A54BE7BA8ACE76B4BC0"
+    }
+  ],
+  "amendments": [
+    {
+      "utc": "2026-10-20T03:30:29.433157+00:00",
+      "reason": "Copy only the existing snapshot/time fixture bytes needed by the included pinned internal test input helper; no measurement or build has run."
+    },
+    {
+      "utc": "2026-10-20T04:10:16.142614+00:00",
+      "reason": "First harness build failed CS0649 on three test-stub callback fields unused by real-engine mode. Explicitly assign their unchanged null defaults during untimed setup; no production source, case, tolerance or sample-plan change. No measurement has run."
+    },
+    {
+      "utc": "2026-10-20T04:13:06.555181+00:00",
+      "reason": "Correct output metadata label from sdk to runtimeVersion; the SDK will be independently recorded by dotnet --version. No measurements have run; no case, sample, threshold or timing-boundary change."
+    }
+  ]
+}

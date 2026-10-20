@@ -69,6 +69,42 @@ public sealed class CameraAgentStateSnapshotTests
     }
 
     [TestMethod]
+    public void SqliteStores_LeaveOutTheOrbitalElementsStore()
+    {
+        // The orbital store holds the provider's attempt floor and any halt, which a restore must never rewind (#528).
+        Assert.DoesNotContain(CameraAgentStateLayout.OrbitalElementsStore, CameraAgentStateLayout.SqliteStores);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RestoreAsync_LeavesTheOrbitalElementsStoreUntouched()
+    {
+        using var root = new SnapshotRoot();
+        CreateDatabase(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/journal/raw-ingress.db"), 5);
+        var orbital = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, CameraAgentStateLayout.OrbitalElementsStore);
+        CreateDatabase(orbital, 2);
+        var snapshot = await CameraAgentStateSnapshot.CreateAsync(root.Paths, root.InstanceId, Guid.NewGuid(), Image, CameraAgentStateLayout.SqliteStores, CancellationToken.None);
+        // After the snapshot the candidate records a provider attempt and keeps a content file beside the store.
+        await using (var connection = new SqliteConnection($"Data Source={orbital};Pooling=False"))
+        {
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO rows(value) VALUES('candidate attempt');";
+            await command.ExecuteNonQueryAsync();
+        }
+        var content = Path.Combine(Path.GetDirectoryName(orbital)!, "payloads", "candidate.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(content)!);
+        await File.WriteAllTextAsync(content, "{}");
+        var expected = await SafeFileSystem.ComputeSha256Async(orbital, CancellationToken.None);
+
+        await CameraAgentStateSnapshot.RestoreAsync(root.Paths, root.InstanceId, snapshot, root.Uid, root.Gid, [], await CameraAgentStateSnapshot.PlanRestoreAsync(root.Paths, root.InstanceId, snapshot, [], CancellationToken.None), CancellationToken.None);
+
+        Assert.AreEqual(expected, await SafeFileSystem.ComputeSha256Async(orbital, CancellationToken.None));
+        CollectionAssert.Contains(Rows(orbital), "candidate attempt");
+        Assert.IsTrue(File.Exists(content));
+    }
+
+    [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task VerifyAsync_RejectsASnapshotRecordedForAnotherOperationOrInstance()
     {

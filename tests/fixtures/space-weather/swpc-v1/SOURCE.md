@@ -130,6 +130,27 @@ records that SWPC did not publish. These include:
   - a 3-day forecast with a renamed table, and one whose solar radiation
     table has no rows (s17).
 
+The errata scenarios use entirely synthetic records and bodies:
+
+- s23 supplies synthetic Retry-After headers and a fresh synthetic reset alert;
+- s24 supplies synthetic baselines and nonfinite JSON constants for every JSON product;
+- s25 supplies synthetic alerts and scales at the source-year boundaries;
+- s26 supplies a synthetic alert with an unread fraction-valued field, nested
+  values and deliberate JSON escape spellings and whitespace;
+- s27 supplies two synthetic message versions with outer JSON whitespace, an
+  unread fraction-valued field, literal UTF-8 and a Unicode escape spelling,
+  retaining both original records through restart and unchanged refetch.
+
+`rounding-vectors.json` is a separate manifest-listed golden vectors file,
+checked by both `check` and `write`. These are pure numerical probes, so a
+vectors file keeps them independent of fetch timing and notice lifecycle.
+It records synthetic inputs, the exact unrounded binary64 double as Python
+`repr` text, and the expected rounded output for both one-decimal operations.
+Some inputs are exact binary ties; others lie immediately beside decimal
+half-way boundaries. Relevance probes also use deliberately higher-precision
+intermediate latitudes. Expectations are fixed, never regenerated from the
+rounding implementation. See the contract's local-relevance rounding rule.
+
 No third-party copy of any SWPC message is included.
 
 ## Verify and regenerate
@@ -140,12 +161,16 @@ Run from the repository root with an isolated interpreter:
 python3 -I tests/fixtures/space-weather/swpc-v1/fixtures.py check
 ```
 
-`check` performs four checks:
+`check` performs the following checks:
 
 - It verifies every file against `manifest.json` and rejects unlisted files.
 - It confirms that the captured bodies still match the recorded fetch sizes
   and hashes.
 - It regenerates every scenario and compares the bytes.
+- It generates an unterminated string of one quote and 524,287 escaped-quote
+  pairs in memory, and requires `malformed-json` within 5 seconds (including
+  subprocess startup). The adversarial body is never committed.
+- It checks all golden rounding vectors, including the sign of zero.
 - It replays every scenario through the reference model in `fixtures.py` and
   compares the results with the expectations.
 

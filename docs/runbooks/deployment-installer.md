@@ -2122,7 +2122,8 @@ stay where they are (install contract section 6):
    with the SQLite online backup API into `<product-root>/operations/lifecycle/<operation>/state-snapshots/<snapshot>/`,
    and each copy must pass `PRAGMA integrity_check` and match its source's user version, schema and per-table row
    counts. A manifest binds the files by SHA-256, and the journal records the manifest's hash before the candidate
-   may start.
+   may start. The orbital-elements store (`state/raw/.orbital-elements/`) is deliberately never snapshotted, so
+   putting a snapshot back never rewinds its provider floor or halt (install contract section 6).
 3. The candidate starts and must pass the same health and installation-identity checks as before.
 4. If it fails, the candidate is stopped, the snapshot (if any) is put back, and the previous image starts on the
    restored databases. A write-ahead log or journal the candidate left beside a store is removed first, so it can
@@ -2136,7 +2137,8 @@ from its container path through the writable bind mounts (`/app/data/raw` to `st
 `state/archive`, `/app/App_Data` to `state/identity`). A root outside every persisted mount holds nothing that
 survives the container, so there is nothing to snapshot. A root that is not an absolute, normalized container path
 refuses the upgrade before anything changes. The unit tests compare this inventory by location with the stores the
-CameraAgent actually creates (`CameraAgentStateInventoryTests` and `PreviousReleaseStoreReadabilityTests`).
+CameraAgent actually creates, less the orbital-elements store (`CameraAgentStateInventoryTests` and
+`PreviousReleaseStoreReadabilityTests`).
 
 **A store under a root named after the snapshot is removed by the restore.** A capture schedule created through the API
 after the snapshot can name a new storage root, and its outbox there has nothing in the snapshot to go back to.
@@ -2387,7 +2389,8 @@ validates its own schema exactly, so the test compares the complete schema objec
 compares the rows that record a store's version: the version column of a `*_schema` or `*_metadata` table, and the EF
 migration history. It fails in either of two cases:
 
-- the stores the current code creates differ from the images;
+- the stores the current code creates differ from the images plus the stores the test declares this release adds
+  (`StoresAddedByThisRelease`, emptied when the release pull request regenerates the fixture);
 - the previous release's stores, once the current code has opened and migrated them, differ from the images.
 
 A processing table gaining a column while `capture_processing_schema` stays at 8 fails it. So does a new table, index

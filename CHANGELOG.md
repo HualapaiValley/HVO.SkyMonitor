@@ -18,6 +18,24 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   unsafe folders and changed or unowned recovery copies, and program metadata uses a separate sidecar so released
   installers can still read the install record. Completed legacy install re-runs also place missing commands. (#1385)
 
+- Local satellite pass planning from verified local snapshots and explicitly pinned time data for the selected observatory and rig, with separate full-pass diagrams and retained predicted capture layers, thin dashed paths and small point markers, explicit data availability and source age, and independent presentation controls. (#1393)
+- Offline tools evaluate causal streak detections across retained virtual-camera sequences and compare every measured candidate with explicitly supplied satellite predictions, while preserving missing context, competing alternatives and unavailable observer or geometry facts. (#530)
+- CameraAgent can acquire orbital elements locally: one bounded CelesTrak GP request for the `active` group, strictly
+  parsed into the `orbital-elements-v1` contract, published as an immutable verified snapshot and activated atomically,
+  with the last-known-good snapshot kept readable through every failure. Refresh is off by default. Turn it on with
+  `CameraAgent:OrbitalElements:Enabled` and a reserved `orbital-elements-refresh` automation definition (at least two
+  hours apart). It needs and accepts no credentials. At most one request is made per two hours, with no automatic retry
+  and no conditional request. Any non-200 response, a status line outside 100 to 599, or a request whose outcome was
+  never recorded halts refresh until an owner resumes it. Owners can read status, queue a refresh and resume a halt at
+  `/api/v1/operations/orbital-elements` (antiforgery or a read-write API key, plus an `Idempotency-Key`). There is an
+  `orbital-elements` health entry: element freshness comes from the newest element epoch against a 48-hour envelope,
+  and an overdue refresh is reported separately. Metrics are on the `HVO.SkyMonitor.CameraAgent.OrbitalElements`
+  meter. Raw provider bytes are never sent to LogicHost or any other service; local `cameraagent backup` archives
+  include them, so keep those archives owner-only. The image's `io.hvo.skymonitor.state-contracts` label, and so
+  `release.json`, now declares the `orbitalElements` store (writes 1, reads 1 to 1). Installer snapshots exclude it, so
+  the provider floor and halt survive a rollback. Operation, removal, backup, restore and recovery are in
+  `docs/runbooks/orbital-elements-refresh.md`. The Software & Catalog page does not show orbital status until #1392.
+  (#528)
 - Bounded local satellite exposure tracks, future-pass predictions and complete sky arcs pinned to their original orbital record, with reproducible virtual-camera fixtures, explicit source/time/geometry provenance and unavailable or partial outcomes when inputs or work limits prevent completion. (#529)
 
 ### Changed

@@ -105,14 +105,20 @@ internal static class CameraAgentStateLayout
     public static string RawIngressDatabasePath(string stateRoot)
         => Path.Combine(stateRoot, RawDirectoryName, "journal", "raw-ingress.db");
 
-    /// <summary>
-    /// Every SQLite store CameraAgent keeps, relative to the state root, with <c>/</c> separators. These are the small
-    /// databases a migrating upgrade snapshots. None lies inside a bulk frame, archive or derived tree, so the snapshot
-    /// never reads bulk data. The artifact outbox lives in each storage root the generated pipeline writes to.
-    /// </summary>
     /// <summary>The local automation store's location under the state root.</summary>
     public const string AutomationStore = RawDirectoryName + "/.automation/local-automations.db";
 
+    /// <summary>The orbital elements store's location under the state root.</summary>
+    public const string OrbitalElementsStore = RawDirectoryName + "/.orbital-elements/orbital-elements.db";
+
+    /// <summary>
+    /// Every SQLite store CameraAgent keeps, relative to the state root, with <c>/</c> separators, except the orbital
+    /// elements store. These are the small databases a migrating upgrade snapshots. None lies inside a bulk frame,
+    /// archive or derived tree, so the snapshot never reads bulk data. The artifact outbox lives in each storage root
+    /// the generated pipeline writes to. <see cref="OrbitalElementsStore"/> is deliberately not listed: it holds the
+    /// provider's attempt floor and any halt, and a restore must never rewind them, or the release rolled back to could
+    /// request inside the floor or after the provider refused.
+    /// </summary>
     public static IReadOnlyList<string> SqliteStores { get; } =
     [
         $"{IdentityDirectoryName}/{IdentityDatabaseFileName}",
