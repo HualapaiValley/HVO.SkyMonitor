@@ -1,0 +1,143 @@
+using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
+using HVO.SkyMonitor.CameraAgent.Common.Orbital;
+
+namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
+
+[TestClass]
+[TestCategory("Unit")]
+public sealed class OrbitalElementsTelemetryTests : OrbitalStoreTestBase
+{
+    private const string Prefix = "skymonitor.cameraagent.orbital_elements.";
+    private static readonly string[] FetchDispositions = ["disposition=Retrieved", "disposition=HttpStatusHalt"];
+
+    [TestMethod]
+    public void AttemptsAndFetchesAreRecordedWithBoundedEnumLabelsOnly()
+    {
+        using var meter = new Meter(OrbitalElementsTelemetry.MeterName);
+        using var telemetry = new OrbitalElementsTelemetry(TimeProvider.System, meter);
+        using var recorder = new MeasurementRecorder(meter);
+
+        telemetry.RecordAttempt(OrbitalAttemptOutcome.Activated);
+        telemetry.RecordAttempt(OrbitalAttemptOutcome.ProviderHalted);
+        telemetry.RecordFetch(OrbitalFetchDisposition.Retrieved, TimeSpan.FromMilliseconds(250), 4_096);
+        telemetry.RecordFetch(OrbitalFetchDisposition.TimedOut, TimeSpan.FromMilliseconds(-5), null);
+
+        var measurements = recorder.Snapshot();
+        CollectionAssert.AreEqual(
+            new[] { ("attempts", 1d, "outcome=Activated"), ("attempts", 1d, "outcome=ProviderHalted") },
+            Select(measurements, "attempts"));
+        CollectionAssert.AreEqual(
+            new[] { ("fetch_duration", 250d, "disposition=Retrieved"), ("fetch_duration", 0d, "disposition=TimedOut") },
+            Select(measurements, "fetch_duration"));
+        CollectionAssert.AreEqual(new[] { ("raw_bytes", 4_096d, "") }, Select(measurements, "raw_bytes"));
+        var allowed = new HashSet<string>(["outcome", "disposition"], StringComparer.Ordinal);
+        Assert.IsTrue(measurements.SelectMany(static m => m.Tags.Keys).All(allowed.Contains));
+    }
+
+    [TestMethod]
+    public void GaugesEmitNothingBeforeTheFirstObservedStateAndItsValuesAfter()
+    {
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        using var meter = new Meter(OrbitalElementsTelemetry.MeterName);
+        using var telemetry = new OrbitalElementsTelemetry(clock, meter);
+        using var recorder = new MeasurementRecorder(meter);
+
+        recorder.Collect();
+        Assert.AreEqual(0, recorder.Snapshot().Length);
+
+        telemetry.Observe(State(records: 16_754, activated: clock.Now.AddMinutes(-2), halted: true));
+        recorder.Collect();
+        var observed = recorder.Snapshot();
+
+        CollectionAssert.AreEquivalent(
+            new[] { ("active_records", 16_754d, ""), ("active_age", 120d, ""), ("halted", 1d, "") },
+            observed.Select(static m => (m.Name, m.Value, m.TagText)).ToArray());
+
+        recorder.Clear();
+        telemetry.Observe(State(records: null, activated: null, halted: false));
+        recorder.Collect();
+
+        CollectionAssert.AreEqual(new[] { ("halted", 0d, "") },
+            recorder.Snapshot().Select(static m => (m.Name, m.Value, m.TagText)).ToArray());
+    }
+
+    [TestMethod]
+    public async Task TheRefreshJobCountsOnlyDurablySettledAttemptsAndPublishesTheGaugeState()
+    {
+        using var meter = new Meter(OrbitalElementsTelemetry.MeterName);
+        using var harness = await OrbitalRefreshTestHarness.CreateAsync(CreateRoot(), meter: meter).ConfigureAwait(false);
+        using var recorder = new MeasurementRecorder(meter);
+        var raw = OrbitalRefreshTestHarness.ValidPayload();
+        harness.Client.Enqueue(harness.Retrieved(raw));
+        await harness.RunAsync().ConfigureAwait(false);
+        harness.Intercept.HaltFault = static _ => new OrbitalStorageException("orbital.storage-io", "synthetic", null);
+        harness.Clock.Advance(OrbitalElementsStoreTestData.Interval);
+        harness.Client.Enqueue(harness.Halt(503));
+        await harness.RunAsync().ConfigureAwait(false);
+
+        recorder.Collect();
+        var measurements = recorder.Snapshot();
+
+        CollectionAssert.AreEqual(new[] { ("attempts", 1d, "outcome=Activated") }, Select(measurements, "attempts"),
+            "A halt that never became durable is not counted.");
+        CollectionAssert.AreEqual(FetchDispositions,
+            measurements.Where(static m => m.Name == "fetch_duration").Select(static m => m.TagText).ToArray());
+        CollectionAssert.AreEqual(new[] { ("raw_bytes", (double)raw.Length, "") }, Select(measurements, "raw_bytes"));
+        Assert.AreEqual(2d, measurements.Single(static m => m.Name == "active_records").Value);
+        Assert.AreEqual(0d, measurements.Single(static m => m.Name == "halted").Value);
+    }
+
+    private static (string, double, string)[] Select(IEnumerable<Measurement> measurements, string name)
+        => measurements.Where(m => m.Name == name).Select(static m => (m.Name, m.Value, m.TagText)).ToArray();
+
+    private static OrbitalProviderState State(int? records, DateTimeOffset? activated, bool halted)
+        => new(1, null, null, records, records, null, null, null, null, null, null, null, activated, null,
+            halted ? new OrbitalProviderHalt(OrbitalElementsStoreTestData.Start, 429, "synthetic") : null, null);
+
+    private sealed record Measurement(string Name, double Value, IReadOnlyDictionary<string, string?> Tags)
+    {
+        public string TagText => string.Join(',', Tags.Select(static tag => tag.Key + "=" + tag.Value));
+    }
+
+    /// <summary>Listens to exactly one meter instance, so parallel tests with the same meter name never interfere.</summary>
+    private sealed class MeasurementRecorder : IDisposable
+    {
+        private readonly MeterListener _listener = new();
+        private readonly ConcurrentQueue<Measurement> _measurements = new();
+
+        public MeasurementRecorder(Meter meter)
+        {
+            _listener.InstrumentPublished = (instrument, listener) =>
+            {
+                if (ReferenceEquals(instrument.Meter, meter))
+                {
+                    listener.EnableMeasurementEvents(instrument);
+                }
+            };
+            _listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) => Add(instrument, value, tags));
+            _listener.SetMeasurementEventCallback<int>((instrument, value, tags, _) => Add(instrument, value, tags));
+            _listener.SetMeasurementEventCallback<double>((instrument, value, tags, _) => Add(instrument, value, tags));
+            _listener.Start();
+        }
+
+        public void Collect() => _listener.RecordObservableInstruments();
+
+        public void Clear() => _measurements.Clear();
+
+        public Measurement[] Snapshot() => _measurements.ToArray();
+
+        public void Dispose() => _listener.Dispose();
+
+        private void Add(Instrument instrument, double value, ReadOnlySpan<KeyValuePair<string, object?>> tags)
+        {
+            Assert.IsTrue(instrument.Name.StartsWith(Prefix, StringComparison.Ordinal), instrument.Name);
+            var labels = new Dictionary<string, string?>(StringComparer.Ordinal);
+            foreach (var tag in tags)
+            {
+                labels[tag.Key] = tag.Value?.ToString();
+            }
+            _measurements.Enqueue(new Measurement(instrument.Name[Prefix.Length..], value, labels));
+        }
+    }
+}
