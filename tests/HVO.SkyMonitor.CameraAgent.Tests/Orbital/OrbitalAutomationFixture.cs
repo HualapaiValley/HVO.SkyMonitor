@@ -92,14 +92,17 @@ internal sealed class OrbitalAutomationFixture : IDisposable
             LocalAutomationTriggerKind.Periodic, interval, expectedVersion, key ?? Guid.NewGuid().ToString("N"), "owner",
             "orbital schedule"), CancellationToken.None).ConfigureAwait(false);
 
+    public LocalAutomationOffSweepWorker Worker { get; } = new();
+
     public LocalAutomationRunnerService CreateRunner() => new(Automation, Registry, Captures, AutomationOptions, Clock,
-        NullLogger<LocalAutomationRunnerService>.Instance);
+        NullLogger<LocalAutomationRunnerService>.Instance, offSweepWorker: Worker);
 
     public Task<LocalAutomationOperatorState> AutomationStateAsync()
         => Automation.GetStateAsync(CancellationToken.None).AsTask();
 
     public void Dispose()
     {
+        Worker.Dispose();
         Automation.Dispose();
         _registry.Dispose();
         Orbital.Dispose();

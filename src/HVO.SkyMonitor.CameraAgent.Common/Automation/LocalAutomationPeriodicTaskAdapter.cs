@@ -30,6 +30,9 @@ public interface ILocalAutomationPeriodicTaskAdapter
     /// <summary>Whether an explicit operator run-now may be queued for this task kind.</summary>
     bool SupportsRunNow { get; }
 
+    /// <summary>Reserves the bounded worker before claiming; the journal remains Running until completion.</summary>
+    bool RunsOffSweep => false;
+
     /// <summary>
     /// Runs one durable occurrence. A run-now occurrence is identified by
     /// <see cref="LocalAutomationRunKeys.IsRunNow(string)"/> on its run key.
