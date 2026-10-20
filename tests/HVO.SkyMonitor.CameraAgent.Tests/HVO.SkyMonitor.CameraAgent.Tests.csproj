@@ -47,6 +47,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="../fixtures/space-weather/swpc-v1/**/*" Link="Fixtures/space-weather/swpc-v1/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/time-lapse-v090/working-job.sql" Link="Fixtures/time-lapse-v090/working-job.sql" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/orbital-prediction-v1/time/*" Link="Fixtures/orbital-prediction-v1/time/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/six-facts/*" Link="Fixtures/orbital-prediction-v1/virtual-camera/snapshots/six-facts/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
