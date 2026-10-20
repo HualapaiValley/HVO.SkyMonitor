@@ -43,11 +43,7 @@ internal static class PrivilegedHostPolicy
         {
             var result = await processRunner.RunAsync("sudo", HelperArguments(request.ProductRoot, request.RepairMount), cancellationToken)
                 .ConfigureAwait(false);
-            if (result.ExitCode != 0)
-            {
-                throw new InstallerException(
-                    $"Privileged host policy update failed: {Redaction.SafeDiagnostic(result.StandardError)}");
-            }
+            PrivilegedHelperErrors.ThrowIfFailed(result, "Privileged host policy update failed");
             var outcome = result.StandardOutput.Trim();
             if (outcome is not (HostPolicyChange.Updated or HostPolicyChange.Unchanged))
             {
@@ -88,21 +84,25 @@ internal static class PrivilegedHostPolicy
     /// can redirect the policy, its owner, or the trust root it is validated from.
     /// </summary>
     public static int RunInternal(string[] args)
+        => RunInternal(args, HostPolicyLocation.Production, NativeLinux.getuid());
+
+    // The public entry point always supplies the fixed production location and actual UID.
+    internal static int RunInternal(string[] args, HostPolicyLocation location, uint uid)
     {
-        if (!TryParse(args, out var productRoot) || NativeLinux.getuid() != 0)
+        if (!TryParse(args, out var productRoot) || uid != 0)
         {
             return 2;
         }
         try
         {
-            var change = HostProductRootPolicy.Apply(HostPolicyLocation.Production, productRoot, repairMount: args.Length == 4);
+            var change = HostProductRootPolicy.Apply(location, productRoot, repairMount: args.Length == 4);
             Console.Out.WriteLine(change.Outcome);
             return 0;
         }
         catch (Exception exception) when (exception is InstallerException or IOException or UnauthorizedAccessException)
         {
             Console.Error.WriteLine(exception.Message);
-            return 1;
+            return PrivilegedHelperErrors.ExitCode(exception);
         }
     }
 }

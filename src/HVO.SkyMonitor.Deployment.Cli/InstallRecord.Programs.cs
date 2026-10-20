@@ -60,8 +60,7 @@ internal static partial class InstallRecordStore
         {
             var result = await PrivilegedRunner.RunAsync("sudo", HelperArguments(location.ProductRoot, new(null, null, change)),
                 cancellationToken).ConfigureAwait(false);
-            if (result.ExitCode != 0)
-                throw new InstallerException($"The PATH program sidecar could not be updated: {Redaction.SafeDiagnostic(result.StandardError)}");
+            PrivilegedHelperErrors.ThrowIfFailed(result, "The PATH program sidecar could not be updated");
             if (!ProgramsMatch(await ReadProgramsAsync(location, cancellationToken).ConfigureAwait(false), change))
                 throw new InstallerException("The PATH program sidecar does not hold the change after the privileged update.");
         }

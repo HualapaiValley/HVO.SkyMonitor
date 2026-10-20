@@ -463,11 +463,7 @@ internal static partial class InstallRecordStore
         }
         var result = await PrivilegedRunner.RunAsync("sudo", HelperArguments(location.ProductRoot, change), cancellationToken)
             .ConfigureAwait(false);
-        if (result.ExitCode != 0)
-        {
-            throw new InstallerException(
-                $"The install record '{location.Path}' could not be updated: {Redaction.SafeDiagnostic(result.StandardError)}");
-        }
+        PrivilegedHelperErrors.ThrowIfFailed(result, $"The install record '{location.Path}' could not be updated");
         // The helper re-read the record under the lock, so the entry is read back as this user before it counts.
         var written = await ReadAsync(location, cancellationToken).ConfigureAwait(false);
         var settled = change.Set is { } entry
@@ -596,15 +592,10 @@ internal static partial class InstallRecordStore
             Console.Out.WriteLine(ApplyTrusted(HostPolicyLocation.Production, productRoot, change));
             return 0;
         }
-        catch (InstallerException exception) when (exception.IsRefusal)
-        {
-            Console.Error.WriteLine(exception.Message);
-            return 2;
-        }
         catch (Exception exception) when (exception is InstallerException or IOException or UnauthorizedAccessException)
         {
             Console.Error.WriteLine(exception.Message);
-            return 1;
+            return PrivilegedHelperErrors.ExitCode(exception);
         }
     }
 
