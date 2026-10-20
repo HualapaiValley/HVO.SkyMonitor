@@ -152,15 +152,24 @@ internal sealed class SwpcPolicyTestStoreDouble : ISwpcStore
         return ValueTask.FromResult(result);
     }
 
+    /// <summary>
+    /// O1c: enforces SqliteSwpcStore's Limit bounds of 1–200 and minimum non-null
+    /// BeforeSequence of 1 before page overrides. Calls and queries include rejections.
+    /// Like SQLite, default paging is descending and exclusive; the last returned Sequence is a
+    /// continuation only when another qualifying lower-sequence row remains.
+    /// </summary>
     public ValueTask<SwpcDiagnosticsPage> ReadDiagnosticsAsync(SwpcDiagnosticsQuery request, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         Calls.Add("ReadDiagnostics");
         Queries.Add(request);
+        if (request.Limit is < 1 or > 200 || request.BeforeSequence is < 1)
+            throw new ArgumentOutOfRangeException(nameof(request));
         if (DiagnosticsPage is not null) return ValueTask.FromResult(DiagnosticsPage(request));
-        var page = Journal.Where(e => request.BeforeSequence is null || e.Sequence < request.BeforeSequence)
-            .OrderByDescending(e => e.Sequence).Take(request.Limit).ToImmutableArray();
-        return ValueTask.FromResult(new SwpcDiagnosticsPage(page, page.Length == request.Limit ? page[^1].Sequence : null));
+        var entries = Journal.Where(e => request.BeforeSequence is null || e.Sequence < request.BeforeSequence)
+            .OrderByDescending(e => e.Sequence).Take(request.Limit + 1).ToImmutableArray();
+        var page = entries.Take(request.Limit).ToImmutableArray();
+        return ValueTask.FromResult(new SwpcDiagnosticsPage(page, entries.Length > request.Limit ? page[^1].Sequence : null));
     }
 
     public ValueTask<SwpcStoreHealth> ReadHealthAsync(DateTimeOffset atUtc, CancellationToken ct)

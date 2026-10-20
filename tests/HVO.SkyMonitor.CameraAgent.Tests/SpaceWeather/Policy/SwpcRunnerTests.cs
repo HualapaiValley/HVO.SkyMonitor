@@ -268,7 +268,7 @@ public sealed class SwpcRunnerTests
         var exception = await Assert.ThrowsExactlyAsync<SwpcStorageException>(() => h.Runner.SettleIncompleteAsync().AsTask()).ConfigureAwait(false);
         Assert.AreEqual(endless ? "space-weather.journal-paging" : "space-weather.recovery-incomplete", exception.ReasonCode);
         Assert.AreEqual(1, h.Store.Queries.Count);
-        Assert.IsTrue(h.Store.Queries.All(q => q.Limit == 256));
+        Assert.IsTrue(h.Store.Queries.All(q => q.Limit == 200));
         Assert.IsTrue(h.Store.Incomplete);
     }
 

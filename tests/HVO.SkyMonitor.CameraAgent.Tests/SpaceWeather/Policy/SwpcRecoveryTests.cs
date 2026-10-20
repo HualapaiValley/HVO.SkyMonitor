@@ -59,13 +59,82 @@ public sealed class SwpcRecoveryTests
         };
         await runner.SettleIncompleteAsync().ConfigureAwait(false);
         Assert.AreEqual(expectedCalls, store.Queries.Count);
-        Assert.IsTrue(store.Queries.All(q => q.Limit == 256));
+        Assert.IsTrue(store.Queries.All(q => q.Limit == 200));
         Assert.AreEqual("interrupted", store.Completions.Single().ReasonCode);
         Assert.IsFalse(store.Incomplete);
         await runner.SettleIncompleteAsync().ConfigureAwait(false);
         await runner.ResumeAsync(null, Guid.NewGuid()).ConfigureAwait(false);
         Assert.AreEqual(1, store.HealthReads);
         Assert.AreEqual(expectedCalls, store.Queries.Count);
+    }
+
+    [TestMethod]
+    [DataRow(200, 1)]
+    [DataRow(201, 2)]
+    [DataRow(400, 2)]
+    [DataRow(401, 3)]
+    public async Task DefaultPagingSettlesAtStorePageSizeBoundaries(int retained, int expectedCalls)
+    {
+        using var store = await StartedStoreAsync(retained).ConfigureAwait(false);
+        using var runner = Runner(store);
+        await runner.SettleIncompleteAsync().ConfigureAwait(false);
+        Assert.AreEqual(expectedCalls, store.Queries.Count);
+        Assert.IsTrue(store.Queries.All(q => q.Limit == 200));
+        Assert.IsNull(store.Queries[0].BeforeSequence);
+        for (var page = 1; page < expectedCalls; page++)
+            Assert.AreEqual((long)retained - page * 200 + 1, store.Queries[page].BeforeSequence);
+        Assert.AreEqual("interrupted", store.Completions.Single().ReasonCode);
+        Assert.IsFalse(store.Incomplete);
+        Assert.AreEqual(1, store.HealthReads);
+
+        // Recovery stops once sequence 1 settles; repeat its requests to pin each
+        // returned continuation, including the final cursor that recovery ignores.
+        var queries = store.Queries.ToArray();
+        foreach (var query in queries)
+        {
+            var page = await store.ReadDiagnosticsAsync(query, default).ConfigureAwait(false);
+            var minimum = page.Attempts[^1].Sequence;
+            Assert.AreEqual(minimum > 1 ? (long?)minimum : null, page.NextBeforeSequence);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task DiagnosticsDoubleEnforcesStoreRequestBoundsBeforeOverrides(bool useOverride)
+    {
+        using var store = new SwpcPolicyTestStoreDouble();
+        var overrideCalls = 0;
+        if (useOverride)
+            store.DiagnosticsPage = _ =>
+            {
+                overrideCalls++;
+                return new([], null);
+            };
+        SwpcDiagnosticsQuery[] invalid =
+        [
+            new(SwpcTestData.Now, null, null, 0),
+            new(SwpcTestData.Now, null, null, 201),
+            new(SwpcTestData.Now, null, 0, 200)
+        ];
+        foreach (var query in invalid)
+        {
+            await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(() => store.ReadDiagnosticsAsync(query, default).AsTask()).ConfigureAwait(false);
+            Assert.AreSame(query, store.Queries[^1]);
+        }
+        Assert.AreEqual(3, store.Queries.Count);
+        Assert.AreEqual(3, store.Calls.Count(c => c == "ReadDiagnostics"));
+        Assert.AreEqual(0, overrideCalls);
+        foreach (var limit in new[] { 1, 200 })
+        {
+            var query = new SwpcDiagnosticsQuery(SwpcTestData.Now, null, null, limit);
+            var result = await store.ReadDiagnosticsAsync(query, default).ConfigureAwait(false);
+            Assert.IsTrue(result.Attempts.IsEmpty);
+            Assert.IsNull(result.NextBeforeSequence);
+            Assert.AreSame(query, store.Queries[^1]);
+        }
+        Assert.AreEqual(5, store.Queries.Count);
+        Assert.AreEqual(useOverride ? 2 : 0, overrideCalls);
     }
 
     [TestMethod]
@@ -79,6 +148,7 @@ public sealed class SwpcRecoveryTests
     [DataRow("at-cursor", 2)]
     [DataRow("above-cursor", 2)]
     [DataRow("oversized", 1)]
+    [DataRow("continuation-below-one", 1)]
     public async Task InvalidPagingFailsBeforeAnyEntryIsSettled(string violation, int expectedCalls)
     {
         using var store = await StartedStoreAsync(300).ConfigureAwait(false);
@@ -100,13 +170,26 @@ public sealed class SwpcRecoveryTests
                 "duplicate-sequence" => new([incomplete with { Sequence = 100 }, complete with { Sequence = 100 }], null),
                 "at-cursor" => new([incomplete with { Sequence = 100 }], null),
                 "above-cursor" => new([incomplete with { Sequence = 101 }], null),
-                "oversized" => new(Enumerable.Range(0, 257).Select(i => (i == 0 ? incomplete : complete) with { Sequence = 500 - i }).ToImmutableArray(), null),
+                "oversized" => new(Enumerable.Range(0, 201).Select(i => (i == 0 ? incomplete : complete) with { Sequence = 500 - i }).ToImmutableArray(), null),
+                "continuation-below-one" => new([complete with { Sequence = 5 }, incomplete with { Sequence = 3 }], 0),
                 _ => throw new AssertFailedException("Unknown paging violation.")
             };
         };
         await AssertRecoveryFailureAsync(() => runner.SettleIncompleteAsync().AsTask(), "space-weather.journal-paging").ConfigureAwait(false);
         Assert.AreEqual(expectedCalls, store.Queries.Count);
         Assert.AreEqual(0, store.Completions.Count, "The entire page must be validated before settling its first entry.");
+        Assert.IsTrue(store.Incomplete);
+    }
+
+    [TestMethod]
+    public async Task ContinuationBelowOneNeverBecomesRejectedStoreRequest()
+    {
+        using var store = await StartedStoreAsync(2).ConfigureAwait(false);
+        using var runner = Runner(store);
+        store.DiagnosticsPage = _ => new([store.Journal[1] with { Sequence = 5 }], 0);
+        await AssertRecoveryFailureAsync(() => runner.SettleIncompleteAsync().AsTask(), "space-weather.journal-paging").ConfigureAwait(false);
+        Assert.AreEqual(1, store.Queries.Count);
+        Assert.AreEqual(0, store.Completions.Count);
         Assert.IsTrue(store.Incomplete);
     }
 

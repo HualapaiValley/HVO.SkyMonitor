@@ -24,7 +24,7 @@ public sealed record SwpcResumeResult(bool NotHalted, SwpcWriteResult? Write, Sw
 public sealed class SwpcAttemptRunner : IDisposable
 {
     private const int MaximumConflictRetries = 3;
-    private const int JournalPageSize = 256;
+    private const int JournalPageSize = 200;
     private readonly ISwpcStore store;
     private readonly ISwpcClient client;
     private readonly TimeProvider clock;
@@ -51,12 +51,14 @@ public sealed class SwpcAttemptRunner : IDisposable
     /// <summary>
     /// P10: settles retained incomplete entries once per instance, before any run or resume.
     /// R1: each recovery pass reads health once and scans at most its retained entry
-    /// count, requesting up to 256 entries per page. Short non-final pages are allowed.
+    /// count, requesting up to 200 entries per page, the store's maximum page size.
+    /// Short non-final pages are allowed.
     /// Paging requires strictly descending Sequence and exclusive BeforeSequence;
     /// NextBeforeSequence is null only at journal end, otherwise lower than the sent
     /// cursor and no higher than the page minimum. Non-final pages must be non-empty,
     /// and health counts must describe the same journal. Every page is validated before
     /// settlement. The entry bound also bounds calls to retained count plus one.
+    /// A non-null continuation below 1 is a paging violation, rejected before settlement.
     /// Recovery is complete only when every reported incomplete attempt is settled.
     /// Missing entries fail closed; the next recovery, run or resume starts a new pass.
     /// Paging/count violations use space-weather.journal-paging; an exhausted scan uses
@@ -263,7 +265,7 @@ public sealed class SwpcAttemptRunner : IDisposable
             previous = entry.Sequence;
         }
         if (page.NextBeforeSequence is { } next
-            && ((cursor is { } before && next >= before)
+            && (next < 1 || (cursor is { } before && next >= before)
                 || (!page.Attempts.IsEmpty && next > page.Attempts[^1].Sequence)))
             throw JournalPagingFailure();
     }
