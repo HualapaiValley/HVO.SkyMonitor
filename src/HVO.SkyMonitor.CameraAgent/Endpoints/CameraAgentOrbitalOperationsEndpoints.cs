@@ -24,6 +24,12 @@ internal static class CameraAgentOrbitalOperationsEndpoints
     /// <summary>The reason code for a resume request without exactly one Idempotency-Key header.</summary>
     internal const string ResumeMissingIdempotencyKeyReasonCode = "orbital.resume-invalid-idempotency-key";
 
+    /// <summary>
+    /// The reason code for a session command without a valid antiforgery token. An API key needs none, because a browser
+    /// never adds the <c>Authorization</c> header to a cross-site request by itself.
+    /// </summary>
+    internal const string AntiforgeryInvalidReasonCode = "orbital.antiforgery-invalid";
+
     internal static IEndpointRouteBuilder MapCameraAgentOrbitalOperationsEndpoints(this IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup(RoutePrefix)
@@ -131,7 +137,8 @@ internal static class CameraAgentOrbitalOperationsEndpoints
     }
 
     /// <summary>
-    /// Requires exactly one Idempotency-Key header and an owner identity before the command runs, then maps its
+    /// Requires forgery protection (a valid antiforgery token for a session, or an API key), an owner identity and
+    /// exactly one Idempotency-Key header before the command runs, then maps its
     /// disposition: Accepted is 202 because the refresh is queued rather than executed, Applied and Replayed are 200,
     /// Invalid 400, Conflict 409 and Unavailable 503. Every rejection carries only its bounded reason code and, when the
     /// floor blocked it, the next permitted attempt.
@@ -146,6 +153,12 @@ internal static class CameraAgentOrbitalOperationsEndpoints
         Func<string, string, ValueTask<OrbitalElementsCommandResult>> command,
         CancellationToken cancellationToken)
     {
+        // The antiforgery middleware only records whether the token was valid; a JSON-bodied minimal API must check it.
+        if (!CameraAgentCredentialAccess.IsForgeryProtected(context))
+        {
+            return Rejected(StatusCodes.Status400BadRequest, "The orbital elements command is invalid.",
+                AntiforgeryInvalidReasonCode, null);
+        }
         var actor = CameraAgentCredentialAccess.GetOwnerId(context.User);
         if (string.IsNullOrWhiteSpace(actor))
         {
