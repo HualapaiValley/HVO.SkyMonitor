@@ -128,7 +128,7 @@ public sealed record OrbitalPassSummaryV1(string SchemaVersion, string ProductSh
 public sealed record OrbitalObjectFailure(OrbitalObjectIdentity ObjectIdentity, OrbitalPredictionReason Reason, string Detail);
 
 /// <summary>Computational completion is independent of population completeness. Counts cover this query only.</summary>
-public sealed class OrbitalPredictionResult<T>
+public sealed partial class OrbitalPredictionResult<T>
 {
     public OrbitalExecutionStatus Status { get; }
     public OrbitalPredictionReason Reason { get; }

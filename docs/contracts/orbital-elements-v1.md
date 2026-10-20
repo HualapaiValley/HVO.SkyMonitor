@@ -162,6 +162,26 @@ exhaustion yields explicit partial/unavailable status, not a complete empty
 list. No `Visible` or `Detected` boolean and no synthetic magnitude belongs
 in the orbital geometry product.
 
+The exposure, future-pass and pass-arc producer methods honor caller cancellation
+by throwing `OperationCanceledException`, including during final freezing. They
+do not return a prefix after cancellation. Useful prefixes belong to explicit
+budget/deadline or unresolved numerical outcomes while the request remains active;
+this differs from cancellation of the request itself. Consumers may retain a
+previous independently completed result, but cannot treat a canceled request as
+a newly completed or partial result. The sampler/pass-search qualification and
+existing cancellation tests already exercise this exception behavior.
+
+Engine-produced results also carry immutable, query-local `WorkDiagnostics`:
+requested/visited/selected object slots, actual initialization and point-call
+objects/calls, static support rejections, and actual image-projection
+objects/attempts/successes. Counts include failed, excluded and budget-prefix
+work; cached probes add no core attempts. Initialization plus point core calls
+equal `PropagationEvaluations`. Original public result constructors preserve
+their validation and leave diagnostics null, meaning unknown. These execution
+facts do not enter canonical products, schemas or model identities, and do not
+assert population completeness. Operation boundaries and qualification are in
+[work accounting](../astronomy/orbital-work-accounting-v1.md).
+
 Reuse `ObserverLocation`, `AltAzPoint`, `PixelPoint`, `ProjectionContext`,
 `ProjectedSceneImageTransformV1` and `AstrometricClockFacts`. Geometry facts bind
 configured-rig versus accepted-measured basis, rig/readout/calibration identity
@@ -285,3 +305,84 @@ They are synthetic schema examples, including illustrative pixels, not new
 satellite truth. #528 must add reader/provider adapter conformance and #529
 independent numerical/projection/sampling validation. Both lanes record the
 merged commit, schema/profile and pack hashes on #1402/#1391 before adoption.
+
+## Additive canonical sky pass arc (#529)
+
+The supplemental `hvo-orbital-pass-arc-v1` schema is defined by
+`OrbitalPassArcV1` / `OrbitalPassArcJson`, independently of the existing record,
+snapshot, refresh, exposure-track and pass-summary schemas. Their original
+conformance bytes remain unchanged. `IOrbitalPassArcEngine` is a separate
+interface implemented by the same `OrbitalPredictionEngine`; the existing
+`IOrbitalPredictionEngine` acquires no members. No host registration or
+acquisition contract changes are required by this supplement.
+
+`OrbitalPassArcQuery` binds an immutable canonical parent pass and the original
+`OrbitalPassQuery`. It validates snapshot manifest/payload, observer, model,
+minimum elevation, population coverage, selection policy, object membership,
+record/source/epoch/validity and the parent content hash. It validates record
+selection once over **the original search interval**, then executes that exact
+record. It never selects against the narrower pass interval. Parent signed ages
+and freshness continue to refer to `Pass.SearchInterval`.
+
+`SearchQuerySha256` is SHA256 of a canonical explicitly versioned projection:
+`schemaVersion = hvo-orbital-pass-search-identity-v1`, `use`,
+`snapshotManifestSha256`, `normalizedPayloadSha256`, `selectionPolicySha256`,
+`interval`, `objects` in original request canonical order, `observer`, full
+`model`, original `bounds`, and `minimumElevationDegrees`. It never serializes
+or hashes the entire snapshot. The arc query hash covers canonical
+`{schemaVersion: hvo-orbital-pass-arc-query-v1, searchQuerySha256,
+parentPassSha256, bounds}`. The arc product hash covers all product fields
+except `productSha256`; the canonical nested parent retains its own hash.
+Canonical byte/hash examples are in
+[`pass-arc-v1`](../../tests/fixtures/orbital/pass-arc-v1/README.md).
+
+The dedicated `OrbitalPredictionResult<OrbitalPassArcV1>` constructor accepts
+one requested object, at most one product and one failure for that object;
+`RequestedInterval` is exactly `Pass.PassInterval`. It enforces arc/query/search
+and parent hashes and exact angular/work bounds. Complete requires one complete
+product, one evaluated object and no failures. Existing exposure/pass result
+routes retain their previous generic-kind and provenance validation.
+
+Every sample has UTC, geometric AltAz and optional range/range-rate/angular
+speed; `Pixel` is always null and illumination remains Unknown. No exposure,
+readout, rig, calibration, clock bound, sky-to-pixel mapping or optical visibility
+is manufactured. Physical orbit error is null degrees with
+`physical-orbit-error-unqualified`. Numerical sampling is a separate empirical
+estimate. The initial producer requires actual resolved, non-nominal EOP and
+leap data with matching hashes, coverage and conventions. Nominal zero EOP
+returns Unavailable / MissingEarthOrientation; the configured-rig-only
+Diagnostic exception is unchanged.
+
+Sampling uses time-synchronous shortest ENU unit-vector spherical interpolation
+(`unit-vector-slerp-by-utc-v1`), including north wrap and zenith. Antipodal
+endpoints subdivide or remain explicitly unresolved. Samples contain exact
+parent start/peak/end UTCs when available; identical anchors share one index.
+The same-record/model peak elevation must agree with the parent within
+`1e-8` degrees. No second peak search edits the parent. Only consecutive samples
+within a segment may be joined. Missing/unresolved work stops the current
+producer's useful prefix; a partial parent stays partial, including its original
+boundary labels and reason. `CoveredInterval` describes retained first/last UTC,
+not implied continuity across arbitrary segment gaps. Complete requires the
+full interval, all anchors, one connected segment and achieved step/error
+within bounds. No useful samples yields no product and Unavailable.
+
+`OrbitalPassArcBounds` accepts positive finite angular tolerance at most
+`0.25` degrees, step at most one second, at most ten million actual core calls,
+one million requested samples and 600,000ms. Both propagator initialization
+calls and every uncached evaluation consume work; cached probes do not. Output
+samples consume a separate allowance. The 16MiB serialized ceiling reserves
+256KiB metadata plus a conservative 2KiB per sample/possible singleton segment,
+limiting materialized samples to **8,064** even with a larger requested bound.
+The producer stops with SampleBudget; parser streaming preflight checks array
+counts before typed allocation and canonical creation checks before copying.
+Final serialized size is checked exactly. Cancellation and deadline checks cover
+probes, materialization, validation, freezing, hashing and final return.
+
+`quartic-cartesian-to-time-slerp-empirical-v1` bounds the fitted Cartesian path's
+departure from the UTC-parameterized spherical path and adds an inflated
+odd-probe orbit remainder and UTC tick rounding. It splits at EOP interpolation
+knots. This is an empirical numerical estimator qualified on frozen independent
+inputs, not a global SGP4 proof or physical covariance. Its derivation, fixed
+`0.001` degree qualification target, `1e-6` degree independent off-phase allowance,
+`1e-8` degree same-UTC anchor allowance, and separate 20ms external event gate
+are recorded in [arc qualification](../astronomy/orbital-pass-arc-qualification-v1.md).

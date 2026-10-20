@@ -10,6 +10,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ## [Unreleased]
 
+### Added
+
+- Bounded local satellite exposure tracks, future-pass predictions and complete sky arcs pinned to their original orbital record, with reproducible virtual-camera fixtures, explicit source/time/geometry provenance and unavailable or partial outcomes when inputs or work limits prevent completion. (#529)
+
 ### Changed
 
 - The pre-release and release **Build** jobs may run for 120 minutes (it was 60): the arm64 image is built under

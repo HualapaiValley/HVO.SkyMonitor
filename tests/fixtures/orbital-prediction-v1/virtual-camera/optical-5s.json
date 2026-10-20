@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "satellite-synthetic-optical-v1",
+  "isSynthetic": true,
+  "magnitude": -3,
+  "angularWidthDegrees": 0.05,
+  "redWeight": 1,
+  "greenWeight": 1,
+  "blueWeight": 1,
+  "exposureSeconds": 5,
+  "seed": 527,
+  "lightCurve": []
+}

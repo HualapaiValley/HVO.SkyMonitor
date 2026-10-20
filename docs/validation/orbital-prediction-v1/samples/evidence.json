@@ -1,0 +1,90 @@
+{
+  "schema": "orbital-camera-sample-evidence-v1",
+  "cases": [
+    {
+      "case": "iss",
+      "canonical": true,
+      "controlCandidates": 0,
+      "injectedCandidates": 1,
+      "repeatRawIdentical": true,
+      "captureSourceCommit": "0b2eb1a3",
+      "manifestSha256": "6FFFEEF25FB1C4CA1A85183143C28308190A8F953A3AFAAF4DD015B9E1A334F2",
+      "changedPixels": [
+        100,
+        104,
+        111,
+        115,
+        121
+      ],
+      "products": [
+        "74BD6D22F7B1D4AE9BDAF904CD9D6D11804B0D2E6A1D2961C8D7A946239FCFC3",
+        "66B68699B90B73955B76F29B918AD529EA21F80778441E1DEF82869F65E1B05E",
+        "FFABDD4C757A63583FB699BB064B409E5CC8E3362628FA6AF868DCB94B80472D",
+        "337A05A6BF5912F2B5DCD01A0463A43653C11199727CD378D21B06F059794EC4",
+        "C75A06C00E9B6F165793BCF81334E0B87F498141E1C34F3622BEDDC9ADA03814"
+      ]
+    },
+    {
+      "case": "constellation",
+      "canonical": true,
+      "controlCandidates": 0,
+      "injectedCandidates": 2,
+      "repeatRawIdentical": true,
+      "captureSourceCommit": "0b2eb1a3",
+      "manifestSha256": "5E4E2FAA715C7E4A28DDD836E05E14CB095DA5D94E5B1A9C4CB849D93D31822D",
+      "changedPixels": [
+        157496,
+        164933,
+        171843,
+        178131,
+        185107
+      ],
+      "products": [
+        "76A3BBBBFAF02F082AD6211219A11ABA7DE48038AB85B8EF234EB0F63CC594EB",
+        "E6C39D5BDDF67CA50E1BF883C31B3DFC46C3E1AD21F8110BCFFD1BEB161A7E34",
+        "AA5B4DF44335FD450FC73F3EB363E4F11B81763D16A34D4AC7DEE485C28947D9",
+        "F3775B4C74C1D23C4FC3B13273CE8E251419EB0D8374FA7472C0C069070A2397",
+        "F4069EF34FA4283DA3FD8E574EE7BAFBF146F25A26AFDD89D161C4845ED1FF71",
+        "1924A9229FE6F16239195449556E805D8955EFF55908788132B1930FB87F3A86",
+        "6E8AC37DC3F019B251C3BC93390F78A6F39050E19C0FA637BE2F29E570D029AD",
+        "94D3B55563C54CB44F71F7C96440C572BC2374FC36F68FA4F348FF003FE234AC",
+        "39ED230BB1113E523896082824FA8002CC696AC0F627843656DBFCE3C32D1739",
+        "D890581E2FEB87F120C45894260BF54668CD5214293D1EFAF9FB61D50E91FD9D"
+      ]
+    },
+    {
+      "case": "inactive",
+      "canonical": true,
+      "controlCandidates": 0,
+      "injectedCandidates": 1,
+      "repeatRawIdentical": true,
+      "captureSourceCommit": "0b2eb1a3",
+      "manifestSha256": "E567998094CC385405DBEEDDC2ACCC8E094A1F4588E5F670BDA47910EA494E75",
+      "changedPixels": [
+        126616,
+        39384,
+        126269,
+        126142,
+        87426
+      ],
+      "products": [
+        "648E9E63FBDFBFBABBAAF7EC3F5BA29DA67762B4CEB85F72864A9FAF5C1573BE",
+        "08800BB8E7E3051F39FD79AD5D80FD9724559930A31AB052D7796DE89C82B25C",
+        "DBBC648262070C0913662FB609D3B8D0E3D86B72D1C2FF7BEE3D2C742B7CABF4",
+        "4ADCF66B7A3613326EE61AF403CB70CA5EB68B6955E4D9D87AC17AB92C1D1129",
+        "62A5DD30BF15D8A2DBEF723CAB002FCB5E119592D026F3018F8DB27A05E30A87"
+      ]
+    },
+    {
+      "case": "synthetic-fade",
+      "canonical": true,
+      "controlCandidates": 0,
+      "injectedCandidates": 1,
+      "repeatRawIdentical": true,
+      "captureSourceCommit": "0b2eb1a3",
+      "manifestSha256": "020474C295433FD5543014287CE83EC60F89B2C2EAE07E5EA53BE6C9162F0EB6",
+      "qualification": "Explicit synthetic fade from magnitude-3 to9 between10..12.5s; not physical Earth shadow; orbital illumination stays Unknown."
+    }
+  ],
+  "limitations": "640-square accelerated virtual exposures; synthetic brightness; no detection identity/classification/physical visibility or#1395five-second full-host cadence acceptance."
+}
