@@ -3,7 +3,9 @@
 CameraAgent describes each operator setting once, in a catalogue its operations API serves, so the web UI, the
 `hvo-sky` command line and its terminal UI build the same forms and apply the same rules. Non-browser clients reach
 the operations API with owner-created API keys. This implements section 8 of the
-[HVO installation contract](../hvo-install-contract.md) for CameraAgent; the command line itself is #1317.
+[HVO installation contract](../hvo-install-contract.md) for CameraAgent. The command line is `hvo-sky`
+([hvo-sky.md](../runbooks/hvo-sky.md), #1317), which also uses the operations routes `GET info` and `POST restart`
+that runbook describes.
 
 ## Catalogue
 
@@ -17,6 +19,7 @@ names the store that keeps it, and a group is the unit of one write.
 | `skyMap` | `skyMap.maximumObjects` | operator settings file (`CameraAgent:SkyMap:MaximumObjects`) | at once |
 | `camera` | `camera.skyLighting` (VirtualSky only) | a new camera revision and a staged rig revision | at the next CameraAgent start |
 | `schedule` | `schedule.activeRevision` | capture schedule revisions | at the next capture boundary |
+| `currentSky` | `currentSky.minimumRefreshSeconds` | operator settings file (`CameraAgent:CurrentSky:MinimumRefreshSeconds`) | at once |
 
 Every setting carries `key`, `group`, `title`, `description`, `type` (`Integer`, `Number`, `String`, `Enum`),
 `nullable`, `minimum`/`maximum` (numbers), `maximumLength` (text), `allowedValues` (enum value, label and
@@ -25,7 +28,7 @@ and, for a settings-file setting, its host `configurationKey`.
 
 - **Roles.** `OperationsRead` is the owner's session or any of the owner's API keys; `OperationsMutate` is the
   owner's session or a `ReadWrite` key. They are the operations read and mutate policies.
-- **Safety.** `Descriptive` (labels only; nothing operational reads it), `CaptureOutput` (changes what future
+- **Safety.** `Descriptive` (labels and what a page shows; capture never reads it), `CaptureOutput` (changes what future
   captures record) or `CaptureGeometry` (changes the location and time basis future captures are stamped with).
   Captures already taken never change.
 - **Application.** `Immediate`, `NextCaptureBoundary` or `Restart`; `appliesAfterRestart` is true only for `Restart`.

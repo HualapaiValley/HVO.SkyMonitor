@@ -46,13 +46,16 @@ updates:
       - "dependencies"
       - "github-actions"
 
-  # Digest-pinned base images (mcr.microsoft.com/dotnet/sdk and aspnet) of the CameraAgent and LogicHost
-  # Dockerfiles (#1321). Both hosts must use the same images, so each image is bumped in both Dockerfiles in
-  # one pull request (group-by: dependency-name), as RoofController does.
+  # Digest-pinned base images in every repository Dockerfile (#1321, #1345).
+  # Group each dependency across directories so identical tags keep one digest.
   - package-ecosystem: "docker"
     directories:
+      - "/.devcontainer"
+      - "/docker/stellarium"
       - "/src/HVO.SkyMonitor.CameraAgent"
       - "/src/HVO.SkyMonitor.LogicHost"
+      - "/src/HVO.SkyMonitor.ProcessingRunner"
+      - "/tools/HVO.SkyMonitor.TimeLapseBenchmark"
     schedule:
       interval: "weekly"
       day: "monday"

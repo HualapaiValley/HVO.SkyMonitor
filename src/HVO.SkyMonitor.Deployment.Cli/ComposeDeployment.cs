@@ -176,6 +176,11 @@ services:
 
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
 
+    /// <summary>
+    /// Writes the instance's Compose model and every file it binds: the writable state directories, the camera module
+    /// document, the setting files under <c>config/secrets</c>, the replay runner key, and the Compose and environment
+    /// files. <see cref="Render"/> computes the same files without writing any.
+    /// </summary>
     public static ComposeFiles Write(
         InstallRequest request,
         InstallationPaths paths,
@@ -193,11 +198,9 @@ services:
         InstallationPaths? outputPaths = null)
     {
         outputPaths ??= paths;
-        // The package version names exactly one approved catalog, and the mounted root must be that catalog's.
-        var catalogId = ProductionCatalog.ForPackageVersion(catalogPackageVersion).CatalogId;
-        if (!string.Equals(Path.GetFileName(paths.CatalogRoot), catalogId, StringComparison.Ordinal))
-            throw new InstallerException("The catalog package version does not belong to the instance's catalog root.");
-        var compactId = instanceId.ToString("N");
+        var rendering = Render(
+            request, paths, instanceId, applicationIdentity, uid, gid, immutableImage, catalogPackageVersion, passwordFile,
+            installationVerificationToken, lifecycleControlToken, passwordAuthorityEnabled, resources, outputPaths);
         var composeRoot = Path.Combine(outputPaths.ConfigRoot, "compose");
         var secretsRoot = Path.Combine(outputPaths.ConfigRoot, "secrets");
         foreach (var path in new[]
@@ -215,8 +218,81 @@ services:
             SafeFileSystem.CreateRuntimeDirectory(path, uid, gid);
         }
 
+        SafeFileSystem.WriteTextAtomic(rendering.ConfigurationPath, rendering.ConfigurationJson);
+        // The camera name is operator-editable, so it lives only in the operator settings file the camera's UI
+        // writes. An earlier installer also wrote it here as a read-only setting, which is removed.
+        File.Delete(Path.Combine(secretsRoot, "CameraAgent__DisplayName"));
+        // A state reset interrupted before it wrote the operator's settings back left them only in its carried copy;
+        // they are put back before the seed, which would otherwise write a fresh file in their place.
+        var operatorSettingsPath = CameraAgentStateLayout.OperatorSettingsPath(outputPaths.StateRoot);
+        CameraAgentStateResetManager.RecoverOperatorSettings(outputPaths.OperationsRoot, instanceId, operatorSettingsPath);
+        SeedOperatorSettings(operatorSettingsPath, request.FriendlyName);
+
+        foreach (var setting in rendering.Settings)
+        {
+            SafeFileSystem.WriteTextAtomic(Path.Combine(secretsRoot, setting.Key), setting.Value);
+        }
+        var replayKeyPath = Path.Combine(secretsRoot, ReplayRunnerKeyName);
+        if (request.ReplayProfile == CameraAgentReplayProfile.LocalRunner)
+        {
+            if (File.Exists(replayKeyPath))
+            {
+                ValidateReplayRunnerKey(replayKeyPath);
+            }
+            else
+            {
+                SafeFileSystem.WriteTextAtomic(
+                    replayKeyPath,
+                    Convert.ToHexString(RandomNumberGenerator.GetBytes(32)));
+            }
+        }
+        else
+        {
+            File.Delete(replayKeyPath);
+        }
+        var obsoletePasswordSetting = Path.Combine(secretsRoot, "LocalIdentity__AdminPasswordFile");
+        if (!passwordAuthorityEnabled)
+        {
+            File.Delete(obsoletePasswordSetting);
+        }
+
+        SafeFileSystem.WriteTextAtomic(rendering.Files.ComposeFile, rendering.ComposeText);
+        SafeFileSystem.WriteTextAtomic(rendering.Files.EnvironmentFile, rendering.EnvironmentText);
+        return rendering.Files;
+    }
+
+    /// <summary>
+    /// The files <see cref="Write"/> would write, computed without touching the disk: what a plan, and the check that
+    /// an installed instance's files are still those its records describe, read instead of rendering into a
+    /// temporary directory (#1315).
+    /// </summary>
+    public static ComposeRendering Render(
+        InstallRequest request,
+        InstallationPaths paths,
+        Guid instanceId,
+        Guid applicationIdentity,
+        uint uid,
+        uint gid,
+        string immutableImage,
+        string catalogPackageVersion,
+        string passwordFile,
+        string installationVerificationToken,
+        string lifecycleControlToken,
+        bool passwordAuthorityEnabled,
+        ContainerResourceLimits? resources,
+        InstallationPaths? outputPaths = null)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(paths);
+        outputPaths ??= paths;
+        // The package version names exactly one approved catalog, and the mounted root must be that catalog's.
+        var catalogId = ProductionCatalog.ForPackageVersion(catalogPackageVersion).CatalogId;
+        if (!string.Equals(Path.GetFileName(paths.CatalogRoot), catalogId, StringComparison.Ordinal))
+            throw new InstallerException("The catalog package version does not belong to the instance's catalog root.");
+        var compactId = instanceId.ToString("N");
+        var composeRoot = Path.Combine(outputPaths.ConfigRoot, "compose");
+
         var configuration = CameraConfiguration.Generate(request, applicationIdentity);
-        SafeFileSystem.WriteTextAtomic(Path.Combine(outputPaths.ConfigRoot, "camera-module.json"), configuration.Json);
         var settings = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["CameraAgent__ConfigFilePath"] = "/app/cameraagent.deploy.json",
@@ -245,14 +321,6 @@ services:
             ["LifecycleControl__Token"] = lifecycleControlToken,
             ["DeviceProvisioning__StateDirectory"] = "/app/data/provisioning"
         };
-        // The camera name is operator-editable, so it lives only in the operator settings file the camera's UI
-        // writes. An earlier installer also wrote it here as a read-only setting, which is removed.
-        File.Delete(Path.Combine(secretsRoot, "CameraAgent__DisplayName"));
-        // A state reset interrupted before it wrote the operator's settings back left them only in its carried copy;
-        // they are put back before the seed, which would otherwise write a fresh file in their place.
-        var operatorSettingsPath = CameraAgentStateLayout.OperatorSettingsPath(outputPaths.StateRoot);
-        CameraAgentStateResetManager.RecoverOperatorSettings(outputPaths.OperationsRoot, instanceId, operatorSettingsPath);
-        SeedOperatorSettings(operatorSettingsPath, request.FriendlyName);
         settings["CameraAgent__ProcessingGraphs__ReplayProfile"] = request.ReplayProfile.ToString();
         settings["CameraAgent__ProcessingGraphs__LocalRunner__SocketPath"] = "/run/hvo-replay/runner.sock";
         settings["CameraAgent__ProcessingGraphs__LocalRunner__AuthorizationKeyFile"] =
@@ -262,39 +330,6 @@ services:
             settings["LocalIdentity__AdminPasswordFile"] = "/run/hvo-private/owner-password";
         }
 
-        foreach (var setting in settings)
-        {
-            SafeFileSystem.WriteTextAtomic(Path.Combine(secretsRoot, setting.Key), setting.Value);
-        }
-        var replayKeyPath = Path.Combine(secretsRoot, "replay-runner-auth-key");
-        if (request.ReplayProfile == CameraAgentReplayProfile.LocalRunner)
-        {
-            if (File.Exists(replayKeyPath))
-            {
-                SafeFileSystem.ValidateOwnerFile(replayKeyPath);
-                if (new FileInfo(replayKeyPath).Length is < 32 or > 4096)
-                {
-                    throw new InstallerException("The local replay runner authorization key length is invalid.");
-                }
-            }
-            else
-            {
-                SafeFileSystem.WriteTextAtomic(
-                    replayKeyPath,
-                    Convert.ToHexString(RandomNumberGenerator.GetBytes(32)));
-            }
-        }
-        else
-        {
-            File.Delete(replayKeyPath);
-        }
-        var obsoletePasswordSetting = Path.Combine(secretsRoot, "LocalIdentity__AdminPasswordFile");
-        if (!passwordAuthorityEnabled)
-        {
-            File.Delete(obsoletePasswordSetting);
-        }
-
-        var composeFile = Path.Combine(composeRoot, "compose.yml");
         // An instance that records no limits keeps the limits every earlier installer wrote, byte for byte.
         var template = Template.Replace(
             ResourceLimitsPlaceholder,
@@ -315,8 +350,6 @@ services:
                 StringComparison.Ordinal);
             template += ReplayRunnerTemplate;
         }
-        SafeFileSystem.WriteTextAtomic(composeFile, template);
-        var environmentFile = Path.Combine(composeRoot, "instance.env");
         var environment = string.Join('\n', new[]
         {
             $"HVO_CONTAINER_NAME=hvo-skymonitor-{compactId}",
@@ -332,27 +365,129 @@ services:
             $"HVO_PASSWORD_FILE={passwordFile}",
             string.Empty
         });
-        SafeFileSystem.WriteTextAtomic(environmentFile, environment);
-        return new ComposeFiles(
-            composeFile,
-            environmentFile,
-            $"hvo-skymonitor-{compactId}",
-            $"hvo-skymonitor-{compactId}",
-            passwordFile,
-            installationVerificationToken,
-            configuration.Sha256,
-            configuration.RigProfileSha256,
-            configuration.ScheduleSha256,
-            configuration.RigProfileName,
-            configuration.RigProfileVersion,
-            configuration.ScheduleSchemaVersion,
-            configuration.ScheduleState,
-            request.ReplayProfile == CameraAgentReplayProfile.LocalRunner
-                ? $"hvo-skymonitor-{compactId}-replay"
-                : null);
+        return new ComposeRendering(
+            new ComposeFiles(
+                Path.Combine(composeRoot, "compose.yml"),
+                Path.Combine(composeRoot, "instance.env"),
+                $"hvo-skymonitor-{compactId}",
+                $"hvo-skymonitor-{compactId}",
+                passwordFile,
+                installationVerificationToken,
+                configuration.Sha256,
+                configuration.RigProfileSha256,
+                configuration.ScheduleSha256,
+                configuration.RigProfileName,
+                configuration.RigProfileVersion,
+                configuration.ScheduleSchemaVersion,
+                configuration.ScheduleState,
+                request.ReplayProfile == CameraAgentReplayProfile.LocalRunner
+                    ? $"hvo-skymonitor-{compactId}-replay"
+                    : null),
+            Path.Combine(outputPaths.ConfigRoot, "camera-module.json"),
+            configuration.Json,
+            settings,
+            template,
+            environment,
+            passwordAuthorityEnabled,
+            request.ReplayProfile == CameraAgentReplayProfile.LocalRunner);
+    }
+
+    /// <summary>
+    /// True when <see cref="Write"/> would change nothing on disk for <paramref name="rendering"/>: every directory it
+    /// creates exists as it leaves it, every file it writes already holds the same text, every file it removes is
+    /// absent, and the operator settings it seeds or recovers are already in place. Only reads; any file it cannot read
+    /// counts as different, so the caller writes it and meets the real error there.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A file that cannot be read counts as different; writing it reports the real error.")]
+    public static bool Matches(ComposeRendering rendering, InstallationPaths paths, Guid instanceId, uint uid, uint gid)
+    {
+        ArgumentNullException.ThrowIfNull(rendering);
+        ArgumentNullException.ThrowIfNull(paths);
+        try
+        {
+            var secretsRoot = Path.Combine(paths.ConfigRoot, "secrets");
+            foreach (var directory in new[]
+                     {
+                         paths.ConfigRoot, Path.GetDirectoryName(rendering.Files.ComposeFile)!, secretsRoot, paths.StateRoot,
+                         paths.DeploymentStateRoot
+                     })
+            {
+                if (!Directory.Exists(directory) || new DirectoryInfo(directory).LinkTarget is not null) return false;
+            }
+            foreach (var directory in WritableStateDirectories(paths.StateRoot))
+            {
+                if (!Directory.Exists(directory) || new DirectoryInfo(directory).LinkTarget is not null) return false;
+                var identity = NativeLinux.GetDirectoryIdentity(directory);
+                if (identity.Uid != uid || identity.Gid != gid || (identity.Mode & AllPermissions) != OwnerDirectoryMode) return false;
+            }
+            bool Holds(string path, string content)
+            {
+                if (!File.Exists(path)) return false;
+                using var stream = SafeFileSystem.OpenOwnerFileRead(path);
+                using var reader = new StreamReader(stream, new UTF8Encoding(false, true));
+                return string.Equals(reader.ReadToEnd(), content, StringComparison.Ordinal);
+            }
+            if (!Holds(rendering.ConfigurationPath, rendering.ConfigurationJson) ||
+                !Holds(rendering.Files.ComposeFile, rendering.ComposeText) ||
+                !Holds(rendering.Files.EnvironmentFile, rendering.EnvironmentText) ||
+                rendering.Settings.Any(setting => !Holds(Path.Combine(secretsRoot, setting.Key), setting.Value)))
+            {
+                return false;
+            }
+            if (File.Exists(Path.Combine(secretsRoot, "CameraAgent__DisplayName")) ||
+                !rendering.PasswordAuthorityEnabled && File.Exists(Path.Combine(secretsRoot, "LocalIdentity__AdminPasswordFile")))
+            {
+                return false;
+            }
+            var replayKeyPath = Path.Combine(secretsRoot, ReplayRunnerKeyName);
+            if (rendering.ReplayRunner)
+            {
+                if (!File.Exists(replayKeyPath)) return false;
+                ValidateReplayRunnerKey(replayKeyPath);
+            }
+            else if (File.Exists(replayKeyPath))
+            {
+                return false;
+            }
+            var operatorSettingsPath = CameraAgentStateLayout.OperatorSettingsPath(paths.StateRoot);
+            return File.Exists(operatorSettingsPath) &&
+                   (!Directory.Exists(paths.OperationsRoot) ||
+                    new DirectoryInfo(paths.OperationsRoot).GetFiles(CameraAgentStateLayout.OperatorSettingsResetCopyPattern(instanceId)).Length == 0);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return false;
+        }
+    }
+
+    private const string ReplayRunnerKeyName = "replay-runner-auth-key";
+    private const UnixFileMode OwnerDirectoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+    private const UnixFileMode AllPermissions = (UnixFileMode)0x1FF;
+
+    private static void ValidateReplayRunnerKey(string path)
+    {
+        SafeFileSystem.ValidateOwnerFile(path);
+        if (new FileInfo(path).Length is < 32 or > 4096)
+        {
+            throw new InstallerException("The local replay runner authorization key length is invalid.");
+        }
     }
 
     public static string ComputeSha256(string content)
         => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
 
 }
+
+/// <summary>
+/// The files <see cref="ComposeDeployment.Write"/> writes for an instance, computed in memory
+/// (<see cref="ComposeDeployment.Render"/>).
+/// </summary>
+internal sealed record ComposeRendering(
+    ComposeFiles Files,
+    string ConfigurationPath,
+    string ConfigurationJson,
+    IReadOnlyDictionary<string, string> Settings,
+    string ComposeText,
+    string EnvironmentText,
+    bool PasswordAuthorityEnabled,
+    bool ReplayRunner);

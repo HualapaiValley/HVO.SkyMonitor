@@ -14,6 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Settings;
 public sealed class CameraAgentSettingsServiceTests
 {
     private const string MaximumObjects = "skyMap.maximumObjects";
+    private const string MinimumRefresh = "currentSky.minimumRefreshSeconds";
 
     [TestMethod]
     public async Task Get_ListsEveryGroupInCatalogueOrderWithItsValuesAndSourcesAsync()
@@ -170,6 +171,87 @@ public sealed class CameraAgentSettingsServiceTests
         Assert.AreEqual(CameraAgentSettingSource.SettingsFile, limit.Source);
         StringAssert.StartsWith(limit.Problem, "The settings file value is not a whole number from 1 to 5,000",
             StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task CurrentSky_AppliesAtOnceAndClearingRestoresTheDefaultAsync()
+    {
+        using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
+        var before = await harness.GroupAsync("currentSky").ConfigureAwait(false);
+        Assert.AreEqual(CurrentSkyRefreshSetting.DefaultSeconds, before.Settings.Single().Value!.Value.GetInt32());
+        Assert.AreEqual(CameraAgentSettingSource.Default, before.Settings.Single().Source);
+
+        var saved = await harness.WriteAsync("currentSky", before.Version,
+            new Dictionary<string, object?> { [MinimumRefresh] = 120 }).ConfigureAwait(false);
+
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Applied, saved.Outcome, saved.Message);
+        Assert.AreEqual(120, harness.CurrentSkyRefresh.Seconds);
+        var interval = saved.Group!.Settings.Single();
+        Assert.AreEqual(120, interval.Value!.Value.GetInt32());
+        Assert.AreEqual(CameraAgentSettingSource.SettingsFile, interval.Source);
+        StringAssert.Contains(harness.ReadSettingsFile(), "\"MinimumRefreshSeconds\": 120", StringComparison.Ordinal);
+
+        var cleared = await harness.WriteAsync("currentSky", saved.Group.Version,
+            new Dictionary<string, object?> { [MinimumRefresh] = null }).ConfigureAwait(false);
+
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Applied, cleared.Outcome, cleared.Message);
+        Assert.AreEqual(CurrentSkyRefreshSetting.DefaultSeconds, harness.CurrentSkyRefresh.Seconds);
+        Assert.AreEqual(CameraAgentSettingSource.Default, cleared.Group!.Settings.Single().Source);
+    }
+
+    [TestMethod]
+    [DataRow(14)]
+    [DataRow(3601)]
+    public async Task CurrentSky_OutOfRange_IsRefusedBeforeTheFileIsTouchedAsync(int seconds)
+    {
+        using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
+        var read = await harness.GroupAsync("currentSky").ConfigureAwait(false);
+
+        var result = await harness.WriteAsync("currentSky", read.Version,
+            new Dictionary<string, object?> { [MinimumRefresh] = seconds }).ConfigureAwait(false);
+
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Invalid, result.Outcome);
+        Assert.AreEqual(CameraAgentSettingsCatalogue.Find(MinimumRefresh)!.NumberRule, result.Problems![MinimumRefresh]);
+        Assert.AreEqual(string.Empty, harness.ReadSettingsFile());
+    }
+
+    [TestMethod]
+    public async Task CurrentSky_AHandEditTheHostCannotUse_IsReportedAsAProblemAsync()
+    {
+        using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
+        await File.WriteAllTextAsync(harness.SettingsPath,
+            """{ "CameraAgent": { "CurrentSky": { "MinimumRefreshSeconds": 5 } } }""").ConfigureAwait(false);
+        ((Microsoft.Extensions.Configuration.IConfigurationRoot)harness.Configuration).Reload();
+
+        var interval = (await harness.GroupAsync("currentSky").ConfigureAwait(false)).Settings.Single();
+
+        Assert.AreEqual(CurrentSkyRefreshSetting.DefaultSeconds, interval.Value!.Value.GetInt32());
+        Assert.AreEqual(CameraAgentSettingSource.SettingsFile, interval.Source);
+        StringAssert.StartsWith(interval.Problem, "The settings file value is not a whole number from 15 to 3,600",
+            StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow("currentSky", "{ \"value\": 5 }", "15 to 3,600", "Default")]
+    [DataRow("currentSky", "[ 30 ]", "15 to 3,600", "Default")]
+    [DataRow("currentSky", "\"soon\"", "15 to 3,600", "SettingsFile")]
+    [DataRow("skyMap", "{ \"value\": 400 }", "1 to 5,000", "Default")]
+    public async Task FileInteger_AStoredValueOfAnotherShape_IsReportedAsAProblemAsync(
+        string group, string stored, string range, string source)
+    {
+        using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
+        var (section, name) = group == "skyMap" ? ("SkyMap", "MaximumObjects") : ("CurrentSky", "MinimumRefreshSeconds");
+        await File.WriteAllTextAsync(harness.SettingsPath,
+            $"{{ \"CameraAgent\": {{ \"{section}\": {{ \"{name}\": {stored} }} }} }}").ConfigureAwait(false);
+        ((Microsoft.Extensions.Configuration.IConfigurationRoot)harness.Configuration).Reload();
+
+        var setting = (await harness.GroupAsync(group).ConfigureAwait(false)).Settings.Single();
+
+        // The default applies, and the stored value is still named as one the host cannot use.
+        var expected = group == "skyMap" ? CameraAgentSkyMapProjection.DefaultMaximumObjects : CurrentSkyRefreshSetting.DefaultSeconds;
+        Assert.AreEqual(expected, setting.Value!.Value.GetInt32());
+        Assert.AreEqual(Enum.Parse<CameraAgentSettingSource>(source), setting.Source);
+        StringAssert.StartsWith(setting.Problem, $"The settings file value is not a whole number from {range}", StringComparison.Ordinal);
     }
 
     [TestMethod]

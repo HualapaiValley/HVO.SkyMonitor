@@ -13,4 +13,17 @@ internal sealed class InstallerException : Exception
     public InstallerException(string message, Exception innerException) : base(message, innerException)
     {
     }
+
+    /// <summary>
+    /// Whether the installer refused before it changed anything, which exits 3 rather than 1 (install contract section 5).
+    /// Only a gate that decides not to go ahead raises one, through <see cref="Refused(string)"/>; a step that failed part way is
+    /// an ordinary failure, which re-running continues.
+    /// </summary>
+    public bool IsRefusal { get; private init; }
+
+    /// <summary>A refusal: the installer will not do what was asked here, and nothing was changed.</summary>
+    public static InstallerException Refused(string message) => new(message) { IsRefusal = true };
+
+    /// <summary>A refusal that keeps the failure which decided it.</summary>
+    public static InstallerException Refused(string message, Exception innerException) => new(message, innerException) { IsRefusal = true };
 }

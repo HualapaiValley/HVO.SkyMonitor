@@ -194,69 +194,228 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
-    public void Parse_SignedLocalCatalog_UsesLocalChannelWithoutNetwork()
+    [DataRow(null, null)]
+    [DataRow("archive", "Archive")]
+    [DataRow("registry", "Registry")]
+    public void Parse_Release_NamesTheReleaseFolderInsteadOfAnImage(string? source, string? expected)
     {
-        var arguments = ValidArguments
-            .Where(static value => value != "--catalog-bundle" && value != "/srv/hvo/catalog.bundle")
-            .Concat(["--catalog-manifest", "/srv/hvo/catalog-manifest.json", "--no-download"])
-            .ToArray();
+        string[] arguments =
+        [
+            .. ValidArguments.Take(8), "--release", "/srv/hvo/release-v1.2.0-dev.3",
+            .. source is null ? Array.Empty<string>() : ["--image-source", source]
+        ];
 
+        // No image is prompted for: the release names it.
         var request = CommandLine.Parse(arguments);
 
-        Assert.AreEqual(DistributionChannel.Local, request.Channel);
-        Assert.IsTrue(request.NoDownload);
-        Assert.IsNull(request.CatalogBundle);
+        Assert.AreEqual("/srv/hvo/release-v1.2.0-dev.3", request.Release);
+        Assert.AreEqual(expected, request.ImageSource?.ToString());
+        Assert.AreEqual(string.Empty, request.ImageReference);
     }
 
     [TestMethod]
-    public void Parse_StableCatalogManifest_RequiresHttpsLocator()
+    [DataRow("--image-ref", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--image-ref cannot be combined with --release.")]
+    [DataRow("--image-archive", "/srv/hvo/cameraagent.tar", "--image-archive and --image-archive-sha256 cannot be combined with --release.")]
+    public void Parse_ReleaseWithAnOperatorImage_IsRejected(string option, string value, string message)
     {
-        var arguments = ValidArguments
-            .Where(static value => value != "--catalog-bundle" && value != "/srv/hvo/catalog.bundle")
-            .Concat(["--channel", "stable", "--catalog-manifest", "https://downloads.example/catalog/catalog-manifest.json"])
-            .ToArray();
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse(
+            [.. ValidArguments.Take(8), "--release", "/srv/hvo/release", option, value,
+             .. option == "--image-archive" ? new[] { "--image-archive-sha256", new string('b', 64) } : []]));
 
-        var request = CommandLine.Parse(arguments);
-
-        Assert.AreEqual(DistributionChannel.Stable, request.Channel);
+        Assert.AreEqual(message, exception.Message);
     }
 
     [TestMethod]
-    public void Parse_NonLocalChannelWithLocalManifest_IsRejected()
+    [DataRow("relative/release", "--release must be an absolute normalized path.")]
+    [DataRow("/srv//release", "--release must be an absolute normalized path.")]
+    [DataRow("/srv/hvo/../release", "--release must be an absolute normalized path other than root.")]
+    [DataRow("/", "--release must be an absolute normalized path other than root.")]
+    public void Parse_ReleaseThatIsNotAnAbsoluteFolder_IsRejected(string release, string message)
     {
-        var arguments = ValidArguments
-            .Where(static value => value != "--catalog-bundle" && value != "/srv/hvo/catalog.bundle")
-            .Concat(["--channel", "stable", "--catalog-manifest", "/srv/hvo/catalog-manifest.json"])
-            .ToArray();
+        var exception = Assert.ThrowsExactly<InstallUsageException>(
+            () => CommandLine.Parse([.. ValidArguments.Take(8), "--release", release]));
 
-        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse(arguments));
+        Assert.AreEqual(message, exception.Message);
     }
 
     [TestMethod]
-    public void Parse_UnknownChannel_IsRejected()
+    public void Parse_ImageSourceWithoutARelease_IsRejected()
     {
-        var arguments = ValidArguments.Concat(["--channel", "latest"]).ToArray();
+        var exception = Assert.ThrowsExactly<InstallUsageException>(
+            () => CommandLine.Parse([.. ValidArguments, "--image-source", "registry"]));
 
-        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse(arguments));
+        Assert.AreEqual("--image-source requires --release.", exception.Message);
     }
 
     [TestMethod]
-    public void Parse_SignedIndex_AllowsExplicitOrDefaultCatalogVersion()
+    public void Parse_UnknownImageSource_IsRejected()
     {
-        var arguments = ValidArguments
-            .Where(static value => value != "--catalog-bundle" && value != "/srv/hvo/catalog.bundle")
-            .Concat([
-                "--channel", "prerelease",
-                "--catalog-index", "https://downloads.example/catalog-index.json",
-                "--catalog-version", "hyg-v4.2-p3-s2-r1",
-                "--asset-base-url", "https://mirror.example/releases"
-            ])
-            .ToArray();
+        var exception = Assert.ThrowsExactly<InstallUsageException>(
+            () => CommandLine.Parse([.. ValidArguments.Take(8), "--release", "/srv/hvo/release", "--image-source", "network"]));
 
-        var request = CommandLine.Parse(arguments);
+        Assert.AreEqual("--image-source must be archive or registry.", exception.Message);
+    }
 
-        Assert.AreEqual("hyg-v4.2-p3-s2-r1", request.CatalogVersion);
-        Assert.AreEqual(DistributionChannel.Prerelease, request.Channel);
+    [TestMethod]
+    [DataRow("--image-manifest", "/srv/hvo/image-manifest.json")]
+    [DataRow("--image-index", "https://downloads.example/image-index.json")]
+    [DataRow("--image-version", "1.2.0")]
+    [DataRow("--catalog-manifest", "/srv/hvo/catalog-manifest.json")]
+    [DataRow("--catalog-index", "https://downloads.example/catalog-index.json")]
+    [DataRow("--catalog-version", "hyg-v4.2-p3-s2-r1")]
+    [DataRow("--asset-base-url", "https://mirror.example/releases")]
+    [DataRow("--channel", "stable")]
+    public void Parse_RetiredSignedReleaseOption_IsUnknown(string option, string value)
+    {
+        // Signed manifests and indexes are retired (#1309): their options are no longer the installer's.
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.Parse([.. ValidArguments, option, value]));
+
+        Assert.AreEqual($"Unknown option '{option}'.", exception.Message);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("imageManifest", "/srv/hvo/image-manifest.json")]
+    [DataRow("catalogIndex", "https://downloads.example/catalog-index.json")]
+    [DataRow("channel", "Stable")]
+    public void Parse_ConfigurationNamingARetiredSignedReleaseMember_IsRejected(string member, string value)
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            var json = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(
+                CommandLine.Parse(ValidArguments), InstallRequestJsonContext.Default.InstallRequest))!.AsObject();
+            json[member] = value;
+            File.WriteAllText(path, json.ToJsonString());
+
+            Assert.ThrowsExactly<JsonException>(() => CommandLine.Parse(["cameraagent", "install", "--config", path]));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Parse_ConfigurationNamingARelease_ReadsIt()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            var json = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(
+                CommandLine.Parse(ValidArguments), InstallRequestJsonContext.Default.InstallRequest))!.AsObject();
+            json["imageReference"] = string.Empty;
+            json["release"] = "/srv/hvo/release-v1.2.0-dev.3";
+            json["imageSource"] = "Registry";
+            File.WriteAllText(path, json.ToJsonString());
+
+            var request = CommandLine.Parse(["cameraagent", "install", "--config", path]);
+
+            Assert.AreEqual("/srv/hvo/release-v1.2.0-dev.3", request.Release);
+            Assert.AreEqual("Registry", request.ImageSource?.ToString());
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(null, null)]
+    [DataRow("registry", "Registry")]
+    public void ParseCommand_UpgradeFromARelease_NamesTheReleaseFolder(string? source, string? expected)
+    {
+        var request = (LifecycleRequest)CommandLine.ParseCommand([
+            "cameraagent", "upgrade", "--instance-id", Guid.NewGuid().ToString("D"),
+            "--release", "/srv/hvo/release-v1.2.0-dev.3",
+            .. source is null ? Array.Empty<string>() : ["--image-source", source]
+        ]);
+
+        Assert.AreEqual("/srv/hvo/release-v1.2.0-dev.3", request.Release);
+        Assert.AreEqual(expected, request.ImageSource?.ToString());
+        Assert.IsNull(request.ImageReference);
+    }
+
+    [TestMethod]
+    [DataRow("--image-ref", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--image-ref, --image-archive, and --image-archive-sha256 cannot be combined with --release.")]
+    [DataRow("--catalog-bundle", "/srv/hvo/catalog.bundle", "Unknown option '--catalog-bundle'.")]
+    public void ParseCommand_UpgradeFromAReleaseWithAnotherSource_IsRejected(string option, string value, string message)
+    {
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand([
+            "cameraagent", "upgrade", "--instance-id", Guid.NewGuid().ToString("D"),
+            "--release", "/srv/hvo/release", option, value
+        ]));
+
+        Assert.AreEqual(message, exception.Message);
+    }
+
+    private const string BackupName = "hvo-sky-5a3f7c1e2b4d4e6f8a9b0c1d2e3f4a5b-20261018T073000Z-11223344.tar.gz";
+
+    /// <summary><c>cameraagent restore</c> names its backup by name, or by its path in the product root's backup folder (#1353).</summary>
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void ParseCommand_Restore_NamesTheBackupInTheBackupFolder(bool byPath)
+    {
+        var instance = Guid.NewGuid().ToString("D");
+        var productRoot = ((LifecycleRequest)CommandLine.ParseCommand(["cameraagent", "restore", BackupName, "--instance-id", instance])).ProductRoot;
+        var archive = byPath ? Path.Combine(productRoot, BackupVault.FolderName, BackupName) : BackupName;
+
+        var request = (LifecycleRequest)CommandLine.ParseCommand(["cameraagent", "restore", archive, "--instance-id", instance, "--plan"]);
+
+        Assert.AreEqual(LifecycleOperationKind.Restore, request.Operation);
+        Assert.AreEqual(BackupName, request.Archive);
+        Assert.IsTrue(request.DryRun);
+    }
+
+    [TestMethod]
+    [DataRow("/tmp/" + BackupName, "restore reads a backup only from")]
+    [DataRow("/var/backups/hvo-sky/" + BackupName, "restore reads a backup only from")]
+    [DataRow("backup.tar.gz", "restore requires the name of a backup")]
+    [DataRow(null, "restore requires the name of a backup")]
+    public void ParseCommand_RestoreOfAnythingButABackupInTheFolder_IsRejected(string? archive, string message)
+    {
+        string[] arguments = archive is null
+            ? ["cameraagent", "restore", "--instance-id", Guid.NewGuid().ToString("D")]
+            : ["cameraagent", "restore", archive, "--instance-id", Guid.NewGuid().ToString("D")];
+
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(arguments));
+
+        StringAssert.StartsWith(exception.Message, message, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void ParseCommand_BackupWithAnArchive_IsRejected()
+    {
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(
+            ["cameraagent", "backup", BackupName, "--instance-id", Guid.NewGuid().ToString("D")]));
+
+        Assert.AreEqual("Unexpected positional argument.", exception.Message);
+    }
+
+    [TestMethod]
+    public void ParseCommand_UpgradeImageSourceWithoutARelease_IsRejected()
+    {
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand([
+            "cameraagent", "upgrade", "--instance-id", Guid.NewGuid().ToString("D"),
+            "--image-ref", $"sha256:{new string('a', 64)}", "--image-source", "registry"
+        ]));
+
+        Assert.AreEqual("--image-source requires --release.", exception.Message);
+    }
+
+    [TestMethod]
+    [DataRow("cameraagent", "rollback")]
+    [DataRow("catalog", "install")]
+    [DataRow("cameraagent", "uninstall")]
+    public void ParseCommand_ReleaseOutsideAnUpgrade_IsRejected(string group, string command)
+    {
+        string[] arguments = group == "catalog"
+            ? [group, command, "--catalog-bundle", "/srv/hvo/catalog.bundle", "--release", "/srv/hvo/release"]
+            : [group, command, "--instance-id", Guid.NewGuid().ToString("D"), "--release", "/srv/hvo/release"];
+
+        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(arguments));
     }
 
     [TestMethod]
@@ -336,7 +495,7 @@ public sealed class CommandLineTests
             "missing-restore" => request with { RestoreOnly = false },
             "dry-run" => request with { DryRun = true },
             "rollback" => request with { Operation = LifecycleOperationKind.Rollback, ImageReference = null },
-            "signed" => request with { ImageReference = null, ImageManifest = "/srv/release/image-manifest.json" },
+            "signed" => request with { ImageReference = null, Release = "/srv/release" },
             _ => throw new InvalidOperationException()
         };
         Assert.ThrowsExactly<InstallUsageException>(request.Validate);
@@ -473,30 +632,30 @@ public sealed class CommandLineTests
     }
 
     [TestMethod]
-    public void ParseCommand_CatalogCheckIsInstanceFreeAndNamesASignedLocator()
+    public void ParseCommand_CatalogCheck_IsNoLongerACommand()
     {
-        var check = (LifecycleRequest)CommandLine.ParseCommand([
-            "catalog", "check", "--catalog-index", "https://mirror.example/indexes/catalog-stable-index.json"
-        ]);
+        // catalog check read only signed catalog releases, which are retired (#1309).
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(["catalog", "check"]));
 
-        Assert.AreEqual(LifecycleOperationKind.CatalogCheck, check.Operation);
-        Assert.IsNull(check.InstanceId);
-        Assert.IsFalse(check.DryRun);
+        Assert.AreEqual("Unknown command 'catalog check'.", exception.Message);
     }
 
     [TestMethod]
-    [DataRow("--instance-id", "00000000-0000-0000-0000-000000000001", DisplayName = "instance")]
-    [DataRow("--dry-run", null, DisplayName = "dry-run")]
-    [DataRow("--resume", null, DisplayName = "resume")]
-    [DataRow("--image-reference", "sha256:0000000000000000000000000000000000000000000000000000000000000000", DisplayName = "image")]
-    [DataRow(null, null, DisplayName = "no-locator")]
-    public void ParseCommand_CatalogCheckRefusesMutatingOrUnscopedOptions(string? option, string? value)
+    [DataRow(null, "catalog install requires --catalog-bundle.")]
+    [DataRow("--catalog-version", "Unknown option '--catalog-version'.")]
+    [DataRow("relative", "--catalog-bundle must be an absolute normalized path other than root.")]
+    public void ParseCommand_CatalogInstallTakesOnlyABundle(string? fault, string message)
     {
-        string[] arguments = option is null
-            ? ["catalog", "check"]
-            : ["catalog", "check", "--catalog-manifest", "/srv/hvo/catalog-manifest.json", option, .. value is null ? Array.Empty<string>() : [value]];
+        string[] arguments = fault switch
+        {
+            null => ["catalog", "install"],
+            "relative" => ["catalog", "install", "--catalog-bundle", "relative/catalog.bundle"],
+            _ => ["catalog", "install", "--catalog-bundle", "/srv/hvo/catalog.bundle", fault, "hyg-v4.2-p3-s2-r1"]
+        };
 
-        Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(arguments));
+        var exception = Assert.ThrowsExactly<InstallUsageException>(() => CommandLine.ParseCommand(arguments));
+
+        Assert.AreEqual(message, exception.Message);
     }
 
     [TestMethod]
@@ -585,6 +744,138 @@ public sealed class CommandLineTests
         }
     }
 
+    /// <summary>
+    /// Each command's help says what the command does and lists only the options it takes, each with what it does
+    /// (#1384): no command lists another's options, and none says that some of its options do not apply.
+    /// </summary>
+    [TestMethod]
+    public void CommandUsage_DescribesTheCommandAndListsOnlyItsOwnOptionsEachDescribed()
+    {
+        foreach (var command in CommandLine.Commands)
+        {
+            var lines = UsageFor([.. command.Path, "--help"]).Split('\n');
+
+            Assert.AreEqual(string.Empty, lines[1], command.Name);
+            Assert.IsFalse(string.IsNullOrWhiteSpace(lines[2]) || lines[2] == "Options:", $"{command.Name} has no description");
+            Assert.DoesNotContain("not every one applies", string.Join('\n', lines), StringComparison.Ordinal);
+            var options = lines.SkipWhile(static line => line != "Options:").Skip(1).TakeWhile(static line => line.Length > 0).ToArray();
+            Assert.IsNotEmpty(options, command.Name);
+            foreach (var option in options)
+            {
+                Assert.IsTrue(
+                    option.StartsWith("  -", StringComparison.Ordinal) && option.Trim().Contains("  ", StringComparison.Ordinal),
+                    $"{command.Name}: '{option}' has no description");
+            }
+        }
+
+        var catalogInstall = UsageFor(["catalog", "install", "--help"]);
+        StringAssert.Contains(catalogInstall, "--catalog-bundle <path>", StringComparison.Ordinal);
+        Assert.DoesNotContain("--image-ref", catalogInstall, StringComparison.Ordinal);
+        Assert.DoesNotContain("--instance-id", catalogInstall, StringComparison.Ordinal);
+        Assert.DoesNotContain("--catalog-version", catalogInstall, StringComparison.Ordinal);
+        var status = UsageFor(["status", "--help"]);
+        Assert.DoesNotContain("--plan", status, StringComparison.Ordinal);
+        Assert.DoesNotContain("--resume", status, StringComparison.Ordinal);
+        Assert.DoesNotContain("--release", status, StringComparison.Ordinal);
+        var rollback = UsageFor(["cameraagent", "rollback", "--help"]);
+        Assert.DoesNotContain("--release", rollback, StringComparison.Ordinal);
+        Assert.DoesNotContain("--migration-backward-compatible", rollback, StringComparison.Ordinal);
+        StringAssert.Contains(UsageFor(["cameraagent", "upgrade", "--help"]), "--migration-backward-compatible", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// What a command's help lists is exactly what its parser reads: a listed option is never an unknown one, and an option
+    /// another command takes that this one does not list is a usage error (exit 2) carrying this command's usage.
+    /// </summary>
+    [TestMethod]
+    public void ParseCommand_EveryCommand_AdmitsExactlyTheOptionsItsHelpLists()
+    {
+        var instance = Guid.NewGuid().ToString("D");
+        var every = CommandLine.Commands.SelectMany(static command => command.ValueOptions.Concat(command.Flags)).Distinct().ToArray();
+        foreach (var command in CommandLine.Commands)
+        {
+            string[] head = [.. command.Path, .. (command.Positional is null ? [] : new[] { "/srv/hvo" })];
+            foreach (var option in every)
+            {
+                string[] arguments = command.ValueOptions.Contains(option) || CommandLine.Commands.Any(other => other.ValueOptions.Contains(option))
+                    ? [.. head, option, ValueFor(option, instance)]
+                    : [.. head, option];
+                var listed = command.ValueOptions.Contains(option) || command.Flags.Contains(option);
+                try
+                {
+                    _ = CommandLine.ParseCommand(arguments, allowTestProductRoot: false);
+                    Assert.IsTrue(listed, $"{command.Name} admits {option}, which its help does not list");
+                }
+                catch (InstallUsageException exception)
+                {
+                    if (listed)
+                    {
+                        Assert.AreNotEqual($"Unknown option '{option}'.", exception.Message, $"{command.Name} lists {option}");
+                    }
+                    else
+                    {
+                        // Unknown, or, for another command's flag, read as an option that lacks its value.
+                        StringAssert.Contains(exception.Message, $"'{option}'", StringComparison.Ordinal);
+                        Assert.AreEqual(CommandLine.CommandUsage(command), exception.Usage, $"{command.Name} {option}");
+                    }
+                }
+                catch (InstallerException exception) when (listed)
+                {
+                    // Reading what an admitted option names can fail later, as an answers file that is not there does.
+                    Assert.IsFalse(exception.Message.StartsWith("Unknown option", StringComparison.Ordinal), $"{command.Name} {option}");
+                }
+            }
+        }
+
+        static string ValueFor(string option, string instance) => option switch
+        {
+            "--image-source" => "archive",
+            "--replay-profile" => "in-process",
+            "--port" => "5130",
+            "--cpus" => "2",
+            "--latitude" or "--longitude" or "--elevation" => "1",
+            "--image-archive-sha256" => new string('a', 64),
+            "--image-ref" => $"sha256:{new string('a', 64)}",
+            _ when option.EndsWith("-id", StringComparison.Ordinal) => instance,
+            _ => "/srv/hvo/value"
+        };
+    }
+
+    /// <summary>
+    /// A group's help, and a group named without a command, lists the group's own commands with what each does (#1384),
+    /// rather than every command.
+    /// </summary>
+    [TestMethod]
+    public void HelpFor_AGroup_ListsOnlyItsOwnCommands()
+    {
+        var catalog = UsageFor(["catalog", "--help"]);
+        var cameraagent = UsageFor(["cameraagent", "-h"]);
+        var host = UsageFor(["host", "--help"]);
+
+        foreach (var (group, usage) in new[] { ("catalog", catalog), ("cameraagent", cameraagent), ("host", host) })
+        {
+            var listed = usage.Split('\n').Where(static line => line.StartsWith("  ", StringComparison.Ordinal)).ToArray();
+            var own = CommandLine.Commands.Where(command => command.Path[0] == group).ToArray();
+            Assert.HasCount(own.Length, listed, usage);
+            foreach (var command in own)
+            {
+                Assert.IsTrue(
+                    listed.Any(line => line.StartsWith($"  {command.Name} ", StringComparison.Ordinal) && line.Trim().Contains("  ", StringComparison.Ordinal)),
+                    $"{group} help does not describe {command.Name}:\n{usage}");
+            }
+        }
+        Assert.DoesNotContain("catalog install", cameraagent, StringComparison.Ordinal);
+        Assert.DoesNotContain("cameraagent install", catalog, StringComparison.Ordinal);
+
+        var missing = Assert.ThrowsExactly<InstallUsageException>(
+            () => CommandLine.ParseCommand(["catalog"], allowTestProductRoot: false));
+        Assert.AreEqual("Missing command after 'catalog'.", missing.Message);
+        Assert.AreEqual(catalog, missing.Usage);
+    }
+
+    private static string UsageFor(string[] arguments)
+        => ((HelpCommand)CommandLine.ParseCommand(arguments, allowTestProductRoot: false)).Usage;
+
     [TestMethod]
     public void ParseCommand_HelpOption_IsRecognisedOnlyWhereAnOptionIsRead()
     {
@@ -597,8 +888,8 @@ public sealed class CommandLineTests
         Assert.AreEqual(status, Help(["status", "--instance-id", instance, "-h"]));
         Assert.AreEqual(host, Help(["host", "set-product-root", "--help"]));
         Assert.AreEqual(host, Help(["host", "set-product-root", "/srv/hvo", "-h"]));
-        Assert.AreEqual(CommandLine.GeneralUsage(), Help(["cameraagent", "--help"]));
-        Assert.AreEqual(CommandLine.GeneralUsage(), Help(["catalog", "-h"]));
+        Assert.AreEqual(CommandLine.GroupUsage("cameraagent"), Help(["cameraagent", "--help"]));
+        Assert.AreEqual(CommandLine.GroupUsage("catalog"), Help(["catalog", "-h"]));
 
         // A value that happens to be -h is still that option's value, and is validated as one.
         var value = Assert.ThrowsExactly<InstallUsageException>(

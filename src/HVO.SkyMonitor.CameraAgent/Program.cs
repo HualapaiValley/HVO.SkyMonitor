@@ -87,6 +87,7 @@ public class Program
         builder.Services.AddSingleton(provider => new CameraAgentSettingSources(
             provider.GetRequiredService<IConfiguration>(),
             localSettings is null ? static _ => false : localSettings.IsSettingsFileProvider));
+        builder.Services.AddSingleton(provider => new CurrentSkyRefreshSetting(provider.GetRequiredService<IConfiguration>()));
 
         var reverseProxy = builder.Configuration.GetSection(DeploymentReverseProxyOptions.SectionName).Get<DeploymentReverseProxyOptions>() ?? new();
         if (reverseProxy.Enabled)
@@ -435,6 +436,7 @@ public class Program
         app.MapCameraAgentTimeLapseSampleEndpoints();
         app.MapCameraAgentTimeLapseEndpoints();
         app.MapCameraAgentOperationsEndpoints();
+        app.MapCameraAgentSystemOperationsEndpoints();
         app.MapCameraAgentSkyMapEndpoints();
         app.MapCameraAgentDeploymentLocationOperationsEndpoints();
         app.MapCameraAgentAutomationOperationsEndpoints();

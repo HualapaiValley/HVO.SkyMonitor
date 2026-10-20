@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="696" height="486" viewBox="0 0 696.00 486.00" role="img" aria-label="hvo-sky-install">
+<g font-family="ui-monospace, SFMono-Regular, 'Cascadia Mono', 'DejaVu Sans Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" xml:space="preserve" style="white-space: pre">
+<rect x="0" y="0" width="696.00" height="486.00" rx="8" fill="#0d1420"/>
+<rect x="0" y="0" width="696.00" height="30" rx="8" fill="#323233"/>
+<rect x="0" y="22" width="696.00" height="8" fill="#323233"/>
+<circle cx="16" cy="15.0" r="6" fill="#ff5f57"/>
+<circle cx="36" cy="15.0" r="6" fill="#febc2e"/>
+<circle cx="56" cy="15.0" r="6" fill="#28c840"/>
+<text x="348.00" y="20.0" fill="#cccccc" text-anchor="middle" font-size="13">hvo-sky-install</text>
+<rect x="12.00" y="60" width="672.40" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="78" width="672.40" height="18.4" fill="#0c3721"/>
+<rect x="12.00" y="96" width="672.40" height="18.4" fill="#0c3721"/>
+<rect x="12.00" y="114" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="114" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="132" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="132" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="150" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="150" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="168" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="168" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="186" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="186" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="204" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="204" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="222" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="222" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="240" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="240" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="258" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="258" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="276" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="276" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="294" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="294" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="312" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="312" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="330" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="330" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="348" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="348" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="366" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="188.40" y="366" width="470.80" height="18.4" fill="#111c2a"/>
+<rect x="675.60" y="366" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="384" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="675.60" y="384" width="8.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="402" width="17.20" height="18.4" fill="#05070d"/>
+<rect x="28.80" y="402" width="67.60" height="18.4" fill="#111c2a"/>
+<rect x="96.00" y="402" width="25.60" height="18.4" fill="#05070d"/>
+<rect x="121.20" y="402" width="92.80" height="18.4" fill="#2563eb"/>
+<rect x="213.60" y="402" width="470.80" height="18.4" fill="#05070d"/>
+<rect x="12.00" y="420" width="672.40" height="18.4" fill="#05070d"/>
+<rect x="222.00" y="438" width="84.40" height="18.4" fill="#2563eb"/>
+<rect x="12.00" y="456" width="672.40" height="18.4" fill="#05070d"/>
+<line x1="24.60" y1="122.40" x2="24.60" y2="393.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="24.00" y1="123.00" x2="37.80" y2="123.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="179.40" y1="123.00" x2="672.00" y2="123.00" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="671.40" y1="122.40" x2="671.40" y2="393.60" stroke="#3a4a60" stroke-width="1.2"/>
+<line x1="24.00" y1="393.00" x2="672.00" y2="393.00" stroke="#3a4a60" stroke-width="1.2"/>
+<text x="20.40" y="55.50" fill="#f7f9fc" textLength="201.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">HVO SKYMONITOR INSTALLER</text>
+<text x="583.20" y="55.50" fill="#58a6ff" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">STEP 7 OF 7</text>
+<text x="20.40" y="73.50" fill="#98a7bb" textLength="520.80" lengthAdjust="spacingAndGlyphs">hvo-sky-install 0.9.0-dev installs CameraAgent on this machine</text>
+<text x="20.40" y="91.50" fill="#bbf7d0" textLength="621.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">[OK] The plan can be carried out. Install saves the answers and carries it</text>
+<text x="20.40" y="109.50" fill="#bbf7d0" textLength="33.60" lengthAdjust="spacingAndGlyphs" font-weight="bold">out.</text>
+<text x="45.60" y="127.50" fill="#58a6ff" textLength="126.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">REVIEW THE PLAN</text>
+<text x="37.20" y="145.50" fill="#f7f9fc" textLength="588.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">Install Allsky East, instance 6f9b3c1e-2d4a-4e8b-9c7d-1a2b3c4d5e6f, at</text>
+<text x="37.20" y="163.50" fill="#f7f9fc" textLength="193.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">http://127.0.0.1:5130/:</text>
+<text x="54.00" y="199.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
+<text x="146.40" y="199.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">folder</text>
+<text x="238.80" y="199.50" fill="#3fb950" textLength="420.00" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/cameraagents/6f9b3c1e-2d4a-4e8b-9</text>
+<text x="238.80" y="217.50" fill="#3fb950" textLength="134.40" lengthAdjust="spacingAndGlyphs">c7d-1a2b3c4d5e6f</text>
+<text x="54.00" y="235.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
+<text x="146.40" y="235.50" fill="#3fb950" textLength="33.60" lengthAdjust="spacingAndGlyphs">file</text>
+<text x="238.80" y="235.50" fill="#3fb950" textLength="420.00" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/cameraagents/6f9b3c1e-2d4a-4e8b-9</text>
+<text x="238.80" y="253.50" fill="#3fb950" textLength="336.00" lengthAdjust="spacingAndGlyphs">c7d-1a2b3c4d5e6f/config/cameraagent.json</text>
+<text x="54.00" y="271.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
+<text x="146.40" y="271.50" fill="#3fb950" textLength="42.00" lengthAdjust="spacingAndGlyphs">image</text>
+<text x="238.80" y="271.50" fill="#3fb950" textLength="420.00" lengthAdjust="spacingAndGlyphs">sha256:9c3f6e2b1a7d4c8e5f0a3b6d9e2c5f8a1b4d7e0c3f6</text>
+<text x="238.80" y="289.50" fill="#3fb950" textLength="420.00" lengthAdjust="spacingAndGlyphs">a9b2d5e8f1a4c7b0d3e6f (imported from the release's</text>
+<text x="238.80" y="307.50" fill="#3fb950" textLength="67.20" lengthAdjust="spacingAndGlyphs">archive)</text>
+<text x="54.00" y="325.50" fill="#3fb950" textLength="50.40" lengthAdjust="spacingAndGlyphs">create</text>
+<text x="146.40" y="325.50" fill="#3fb950" textLength="58.80" lengthAdjust="spacingAndGlyphs">catalog</text>
+<text x="238.80" y="325.50" fill="#3fb950" textLength="285.60" lengthAdjust="spacingAndGlyphs">/var/lib/hvo-sky/catalogs/hyg-v4.2</text>
+<text x="37.20" y="343.50" fill="#58a6ff" textLength="369.60" lengthAdjust="spacingAndGlyphs">-- lines 1-11 of 18: Up, Down, PgUp, PgDn --</text>
+<text x="37.20" y="379.50" fill="#98a7bb" textLength="126.00" lengthAdjust="spacingAndGlyphs">Save answers to</text>
+<text x="188.40" y="379.50" fill="#f7f9fc" textLength="428.40" lengthAdjust="spacingAndGlyphs">/home/operator/.config/hvo-sky/install-answers.json</text>
+<text x="28.80" y="415.50" fill="#f7f9fc" font-weight="bold">[</text>
+<text x="45.60" y="415.50" fill="#f7f9fc" font-weight="bold" text-decoration="underline">B</text>
+<text x="54.00" y="415.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">ack ]</text>
+<text x="121.20" y="415.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Install ]</text>
+<text x="28.80" y="451.50" fill="#f7f9fc">1</text>
+<text x="62.40" y="451.50" fill="#f7f9fc">2</text>
+<text x="96.00" y="451.50" fill="#f7f9fc">3</text>
+<text x="129.60" y="451.50" fill="#f7f9fc">4</text>
+<text x="163.20" y="451.50" fill="#f7f9fc">5</text>
+<text x="196.80" y="451.50" fill="#f7f9fc">6</text>
+<text x="222.00" y="451.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">[7 Review]</text>
+<text x="20.40" y="469.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">Enter</text>
+<text x="70.80" y="469.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">next</text>
+<text x="121.20" y="469.50" fill="#f7f9fc" textLength="42.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">Alt+B</text>
+<text x="171.60" y="469.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">back</text>
+<text x="222.00" y="469.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Tab</text>
+<text x="255.60" y="469.50" fill="#98a7bb" textLength="33.60" lengthAdjust="spacingAndGlyphs">move</text>
+<text x="306.00" y="469.50" fill="#f7f9fc" textLength="25.20" lengthAdjust="spacingAndGlyphs" font-weight="bold">Esc</text>
+<text x="339.60" y="469.50" fill="#98a7bb" textLength="50.40" lengthAdjust="spacingAndGlyphs">cancel</text>
+</g>
+</svg>

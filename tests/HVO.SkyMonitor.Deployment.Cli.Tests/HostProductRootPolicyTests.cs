@@ -325,7 +325,7 @@ public sealed class HostProductRootPolicyTests
             ["catalog", "select", "--instance-id", instance, "--catalog-version", "hyg-v4.2-p3-s2-r1"],
             ["catalog", "rollback", "--instance-id", instance],
             ["catalog", "gc", "--dry-run"],
-            ["catalog", "check", "--catalog-manifest", "/srv/hvo/catalog-manifest.json"]
+            ["cameraagent", "upgrade", "--instance-id", instance, "--release", "/srv/hvo/release-v1.2.0-dev.3"]
         ];
 
         foreach (var arguments in commands)
@@ -791,6 +791,15 @@ public sealed class HostProductRootPolicyTests
         }
         Assert.IsFalse(PrivilegedPreparation.TryParse([.. product, "--force"], out _));
         Assert.IsFalse(PrivilegedPreparation.TryParse(product[..^1], out _));
+        // A backup's folder alone (#1353 PR-1369-R3 F20): never with an instance.
+        var backups = PrivilegedPreparation.HelperArguments(
+            new PrivilegedPreparation.Invocation("/srv/data/hvo-skymonitor", instanceId, 1000, 1001, Backups: true)).Skip(2).ToArray();
+        string[] backupsForm = ["internal-prepare", "--product-root", "/srv/data/hvo-skymonitor", "--backups", "--uid", "1000", "--gid", "1001"];
+        CollectionAssert.AreEqual(backupsForm, backups);
+        Assert.IsTrue(PrivilegedPreparation.TryParse(backups, out var parsedBackups));
+        Assert.AreEqual(new PrivilegedPreparation.Invocation("/srv/data/hvo-skymonitor", null, 1000, 1001, Backups: true), parsedBackups);
+        Assert.IsFalse(PrivilegedPreparation.TryParse([.. backups[..4], "--instance-id", instanceId.ToString("D"), .. backups[4..]], out _));
+        Assert.IsFalse(PrivilegedPreparation.TryParse([.. backups[..3], "--backup", .. backups[4..]], out _));
         if (NativeLinux.getuid() != 0)
         {
             Assert.AreEqual(2, PrivilegedPreparation.RunInternal(product));

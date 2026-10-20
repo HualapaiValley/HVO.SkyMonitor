@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# Exercise runtime directory checks without Docker, dotnet, or ARM64 hardware.
+set -euo pipefail
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/dotnet-runtime-home.sh
+source "$script_dir/lib/dotnet-runtime-home.sh"
+# Bind the tested helper to the real harness before its first dotnet invocation.
+python3 - "$script_dir" <<'PYTHON'
+import pathlib
+import sys
+harness = (pathlib.Path(sys.argv[1]) / "test:cameraagent-arm64-ci").read_text()
+source = 'source "$SCRIPT_DIR/lib/dotnet-runtime-home.sh"'
+call = 'dotnet_runtime_home_check || fail "runner runtime directory is unusable"'
+assert source in harness and call in harness, "ARM64 harness must enforce the runtime directory check"
+assert harness.index(source) < harness.index(call) < harness.index('--arg sdk "$(dotnet --version)"')
+PYTHON
+work="$(mktemp -d)"
+trap 'chmod -R u+rwx "$work"; rm -rf "$work"' EXIT
+mkdir -m 700 "$work/home" "$work/runtime" "$work/readonly"
+ln -s "$work/home" "$work/link"
+chmod 500 "$work/readonly"
+count=0
+expect() {
+    local expected="$1" home="$2" runtime="$3" status=0
+    HOME="$home" XDG_RUNTIME_DIR="$runtime" DOTNET_CLI_HOME="$work/home" \
+        dotnet_runtime_home_check >"$work/output" 2>&1 || status=$?
+    if [[ "$expected" == pass ]]; then
+        [[ "$status" == 0 ]] || { cat "$work/output" >&2; exit 1; }
+    else
+        [[ "$status" != 0 ]] || { printf 'Invalid runtime directory was accepted: %s %s\n' "$home" "$runtime" >&2; exit 1; }
+        grep -q 'DOTNET_CLI_HOME alone is insufficient' "$work/output"
+    fi
+    count=$((count + 1))
+}
+expect pass "$work/home" ''
+expect fail '' ''
+expect fail "$work/missing" ''
+expect fail "$work/link" ''
+expect fail "$work/link/" ''
+mkdir "$work/home/nested"
+expect fail "$work/link/nested" ''
+expect fail "$work/link/../home" ''
+expect fail relative ''
+if (( EUID != 0 )); then
+    expect fail "$work/readonly" ''
+else
+    printf 'Run as a non-root account to test unwritable directories.\n' >&2
+    exit 1
+fi
+expect pass "$work/link" "$work/runtime"
+expect pass '' "$work/runtime"
+expect fail "$work/home" "$work/missing"
+expect fail "$work/home" "$work/link"
+expect fail "$work/home" "$work/readonly"
+# A write failure despite -w must fail closed, and the aligned case must work again.
+mktemp() { return 1; }
+expect fail "$work/home" ''
+unset -f mktemp
+expect pass "$work/home" ''
+[[ -z "$(find "$work/home" "$work/runtime" -name '.hvo-dotnet-home.*' -print)" ]]
+printf 'ARM64 runtime HOME preflight: %s cases passed.\n' "$count"
+
+python3 - "$script_dir/lib/dotnet-runtime-home.sh" <<'PYTHON'
+import os
+import pathlib
+import subprocess
+import sys
+import tempfile
+import unittest
+
+HELPER = sys.argv.pop()
+CHAIN = (".dotnet", "corefx", "Runtime", "SharedMemory")
+
+class RuntimeDirectories(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.cleanup)
+        self.root = pathlib.Path(self.temp.name)
+        self.home = self.root / "home"
+        self.runtime = self.root / "runtime"
+        self.home.mkdir(mode=0o700)
+        self.runtime.mkdir(mode=0o700)
+
+    def cleanup(self):
+        for path, dirs, files in os.walk(self.temp.name):
+            os.chmod(path, 0o700)
+        self.temp.cleanup()
+
+    def run_check(self, *, runtime="", prefix="", home=None):
+        env = dict(os.environ, HOME=str(self.home) if home is None else home,
+                   XDG_RUNTIME_DIR=str(runtime), PROBE_LOG=str(self.root / "probe"))
+        return subprocess.run(["bash", "-c", 'source "$1"; ' + prefix + '; dotnet_runtime_home_check',
+                               "fixture", HELPER], env=env, capture_output=True, text=True)
+
+    def refused(self, **kwargs):
+        result = self.run_check(**kwargs)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("DOTNET_CLI_HOME alone is insufficient", result.stderr)
+        self.assertIn("runner service", result.stderr)
+        self.assertNotIn(str(self.root), result.stderr)
+        self.assertFalse(any(line.lstrip().startswith("::") for line in result.stderr.splitlines()))
+
+    def test_F2_dotnet_regular_file(self):
+        (self.home / ".dotnet").touch()
+        self.refused(prefix=":")
+
+    def test_F2_corefx_readonly(self):
+        (self.home / ".dotnet/corefx").mkdir(parents=True)
+        (self.home / ".dotnet/corefx").chmod(0o500)
+        self.refused(prefix=":")
+
+    def test_F2_nested_symlink(self):
+        (self.home / ".dotnet").symlink_to(self.runtime, target_is_directory=True)
+        self.refused(prefix=":")
+
+    def test_F2_nested_dangling_symlink(self):
+        (self.home / ".dotnet").symlink_to(self.root / "missing")
+        self.refused(prefix=":")
+
+    def test_F2_xdg_tmp(self):
+        self.refused(runtime="/tmp", prefix=":")
+
+    def test_F2_xdg_shared_memory(self):
+        self.refused(runtime="/dev/shm", prefix=":")
+
+    def test_F2_xdg_world_writable(self):
+        self.runtime.chmod(0o777)
+        self.refused(runtime=self.runtime, prefix=":")
+
+    def test_F2_home_group_writable(self):
+        self.home.chmod(0o770)
+        self.refused(prefix=":")
+
+    def test_F2_xdg_foreign_owner(self):
+        # Stat fixture models an otherwise usable directory owned by another UID,
+        # without root/chown or any access to another account's home.
+        self.refused(runtime=self.runtime, prefix='stat() { printf "%s 700\\n" "$((UID + 1))"; }')
+
+    def test_F2_nested_foreign_owner(self):
+        (self.home / ".dotnet").mkdir()
+        self.refused(prefix='stat() { if [[ "${@: -1}" == */.dotnet ]]; then printf "%s 700\\n" "$((UID + 1))"; else command stat "$@"; fi; }')
+
+    def test_F2_deepest_existing_probe(self):
+        current = self.home
+        for component in (None,) + CHAIN:
+            if component:
+                current = current / component
+                current.mkdir()
+            with self.subTest(depth=str(current.relative_to(self.home))):
+                result = self.run_check(prefix='mktemp() { printf "%s\\n" "${@: -1}" > "$PROBE_LOG"; command mktemp "$@"; }')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((self.root / "probe").read_text().strip(), str(current / ".hvo-dotnet-home.XXXXXX"))
+
+    def test_F2_xdg_takes_precedence_over_invalid_dotnet(self):
+        (self.home / ".dotnet").touch()
+        result = self.run_check(runtime=self.runtime, prefix=":")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_F2_private_0755_is_allowed(self):
+        self.home.chmod(0o755)
+        self.runtime.chmod(0o755)
+        for runtime in ("", self.runtime):
+            result = self.run_check(runtime=runtime, prefix=":")
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_F2_message_has_no_environment_text(self):
+        self.refused(home="/missing\n::error injected\x1b]0;title\x07", prefix=":")
+
+unittest.main(verbosity=2)
+PYTHON

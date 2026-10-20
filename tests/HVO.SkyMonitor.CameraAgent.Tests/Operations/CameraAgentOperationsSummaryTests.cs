@@ -236,6 +236,50 @@ public sealed class CameraAgentOperationsSummaryTests
         Assert.AreEqual(OperationsFreshness.Fresh, summary.RawIngress.Freshness);
     }
 
+    /// <summary>
+    /// Capture control is the coordinator's live state, read when the summary is taken; its time is when the state last
+    /// changed, not when it was last observed. A camera left running for longer than the stale window is still current, so
+    /// <c>hvo-sky status</c> must not read "Running (stale)" (#1384).
+    /// </summary>
+    [TestMethod]
+    public async Task GetAsyncReportsCaptureControlFreshLongAfterItsLastChange()
+    {
+        var clock = new MutableTimeProvider(new DateTimeOffset(2026, 10, 19, 6, 0, 0, TimeSpan.Zero));
+        var root = Path.Combine(Path.GetTempPath(), "private-operations-root-capture-control");
+        var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
+        var configuration = new CameraAgentConfigurationAccessor();
+        using var moduleOptions = JsonDocument.Parse("""{}""");
+        configuration.SetConfiguration(CreateConfiguration(moduleOptions.RootElement.Clone()));
+        using var captureTelemetry = new CaptureControlTelemetry();
+        using var coordinator = new CaptureAdmissionCoordinator(new NullIngress(), options, clock, captureTelemetry);
+        var provider = new CameraAgentOperationsSummaryProvider(
+            clock,
+            coordinator,
+            new RawIngressState(clock),
+            new RecordingLaneSnapshotRefresher(),
+            new CaptureLaneState(clock, options),
+            new CaptureProcessingState(),
+            new ArtifactOutboxState(),
+            new StoragePressureState(),
+            new FleetRuntimeState(clock),
+            new FleetHeartbeatState(),
+            new EnvironmentalObservationDeliveryState(),
+            new ExecutionEvidenceExportState(),
+            new TransientWorkerState(clock),
+            new CaptureTelemetrySink(),
+            configuration,
+            new CameraAgentStorageResolver(configuration, options),
+            options);
+        var changed = coordinator.Snapshot.UpdatedUtc;
+
+        clock.Now = changed.AddHours(1);
+        var summary = await provider.GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperationsFreshness.Fresh, summary.CaptureControl.Freshness);
+        // The time it reports is still when the state last changed.
+        Assert.AreEqual(changed, summary.CaptureControl.ObservedUtc);
+    }
+
     private static CameraModuleConfig CreateConfiguration(JsonElement moduleOptions)
         => new(
             new ObservatoryLocation(20, -155, 1000, "Pacific/Honolulu"),
@@ -258,6 +302,13 @@ public sealed class CameraAgentOperationsSummaryTests
             CaptureLoopSubmission submission,
             CancellationToken cancellationToken)
             => ValueTask.FromResult<RawCaptureReceipt?>(null);
+    }
+
+    private sealed class MutableTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = now;
+
+        public override DateTimeOffset GetUtcNow() => Now;
     }
 
     private sealed class RecordingLaneSnapshotRefresher : IOperationsQueueSnapshotRefresher

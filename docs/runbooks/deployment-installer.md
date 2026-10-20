@@ -4,14 +4,32 @@ The `hvo-sky-install` self-contained Linux CLI installs one local, standalone
 VirtualSky CameraAgent without a repository checkout or a target-host .NET
 runtime. Docker Engine and the Compose plugin are the only application-runtime
 prerequisites; the host must also pass the [host prerequisites](#host-prerequisites)
-that install and `install --dry-run` evaluate. Catalog releases can be resolved from signed local metadata,
-HTTPS mirrors, or signed release indexes; every source uses the same pinned
-signature, length, checksum, archive, and internal catalog validation.
+that install and `install --dry-run` evaluate. The CameraAgent image comes from a
+published release's files ([Release Install](#release-install)) or from an image
+the operator names, and the catalog from a verified local bundle.
+
+**Running it.** The installer is one file in the release folder, `hvo-sky-install-linux-arm64` or
+`hvo-sky-install-linux-x64`, and nothing puts it on PATH. Run it by its path, for example from the release folder:
+
+```bash
+chmod 755 hvo-sky-install-linux-arm64
+./hvo-sky-install-linux-arm64 status
+```
+
+This runbook writes it as `hvo-sky-install`: put the path of the release's installer in its place. The installer names
+itself the same way, by the path it runs from, in its usage and in every command a message tells you to run (such as a
+`Resume:` line, or the `cameraagent rollback` an upgrade names), so such a command runs as printed. A copy run under
+another name, such as `/usr/local/bin/hvo-sky-install`, names itself by that path. [`install.sh`](#installsh) runs a
+checked copy from a temporary folder that it removes when it finishes, so a command printed during an `install.sh` run
+names that copy: run it with the release's installer instead, from the folder given to `--from` or downloaded from the
+release, or run `install.sh` again with that command's arguments.
 
 `hvo-sky-install --version` prints the installer's version and the commit it was built from, as
 `<version>+<40-character commit>`, and exits 0. Like `--help`, it needs no Docker and does not read the
 [host policy](#production-product-root-on-another-filesystem), so it works even where that policy is refused. A build
-given no version is `0.0.0-dev`, and a build without a checkout or a supplied commit prints `0.0.0-dev+unknown`.
+given no version is the product version's development build, `X.Y.Z-dev` (`VersionPrefix` in `Directory.Build.props`,
+[releases.md](releases.md#the-product-version)), and a build without a checkout or a supplied commit prints
+`X.Y.Z-dev+unknown`.
 [Build Evidence](#build-evidence) describes how a publish is stamped.
 
 ## HVO Install Contract
@@ -25,19 +43,429 @@ runbook describes the installer as it behaves today.
 
 | Contract | Today | Issue |
 | --- | --- | --- |
-| Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | The `hvo-sky-install` CLI, configured by flags or `--config`; no runtime client or wizard | [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
-| `install.sh` entry point with `--check` and `--from DIR` | No `install.sh`; the self-contained CLI is run directly | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
-| Install and upgrade from a published release, by GHCR digest or offline archive | Nothing is published, so hosts install a locally built image by its loaded image ID | [#1309](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1309) |
-| `--version`, and upgrade notes printed before an upgrade | `--version` reports the installer build identity. The release.json reader and pre-upgrade notes are implemented; the release acquisition path that supplies them is pending #1309 (see [Upgrade notes and older targets](#upgrade-notes-and-older-targets)) | [#1312](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1312) |
-| `--plan`, `--answers FILE`, `backup` and `restore FILE`, exit codes 0/1/2/3/130 | `--dry-run` and `--config`; no `backup` or `restore`; a refusal such as failed host prerequisites exits `1` | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
-| Container limits kept in the install record and changed with a re-run | Limits are set at install and recorded in the instance's `instance-manifest.json`. A re-run with different `--cpus` or `--memory` is refused, and an installed instance's limits change only when an upgrade moves limits the operator did not set to the new default (see [Container Resources](#container-resources)) | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
+| Installer `hvo-sky-install`, runtime client `hvo-sky` with a terminal UI, and an installer wizard | The `hvo-sky-install` CLI, configured by flags or an [answers file](#answers-file), with the [installer wizard](#installer-wizard) on a terminal. The runtime client [`hvo-sky`](hvo-sky.md), with its terminal UI (`hvo-sky ui`), ships with each release and is installed by hand | [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317) |
+| `install.sh` entry point with `--check`, `--from DIR`, and `--install-docker` and the like | [`install.sh`](#installsh) checks the host, then verifies the release's installer and small files and starts it, online or with `--from DIR`; it gives `cameraagent install` and `upgrade` the release and the catalog. With no arguments it runs `cameraagent install`. It installs no Docker and changes no boot setting; it names the remedy. The installer itself still needs a command | [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311) |
+| Command words `install`, `upgrade`, `rollback`, `uninstall`, `status` | Instance commands are grouped under `cameraagent` (`cameraagent install`, `cameraagent upgrade`, ...), because one host holds several instances and the catalogs beside them; `status` is top level | Recorded for contract draft 4 |
 | Settings catalogue served by the API | CameraAgent serves the [operator settings catalogue and group writes](../contracts/cameraagent-operator-settings-v1.md) through its operations API; the owner creates API keys for non-browser clients | [#1316](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1316) |
-| Machine install record `/etc/hvo-sky/install.json` | Records live beneath each instance root (`instance-manifest.json`, `state/deployment/`); `/etc/hvo-sky/` holds only the host policy | [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315) |
+| Upgrade and rollback decide between a swap and a breaking change by comparing `stateContracts` (contract section 6, D1) | `release.json` and the image's `io.hvo.skymonitor.state-contracts` label declare `stateContracts`, but the installer still decides a state migration from the image's state boundary labels ([CameraAgent Lifecycle](#cameraagent-lifecycle)) | Epic [#1318](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1318); no issue yet |
+
+## install.sh
+
+Each release carries `install.sh`, the contract's one-line entry point (section 5). The release tool writes the
+release's version into it when it builds the release's files; the repository's own copy names no release and refuses
+to run. It checks the machine, gets that release's `hvo-sky-install` and the release's small files, verifies them,
+and starts the installer with the remaining arguments:
+
+```bash
+# Check this machine for the release, changing nothing:
+curl -fsSL https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v<version>/install.sh | bash -s -- --check
+
+# Install the release, asking on the terminal for what the installer needs (no arguments is cameraagent install):
+curl -fsSL https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v<version>/install.sh | bash
+
+# Install the release with its settings given; CameraAgent's image is pulled from ghcr.io by its digest:
+curl -fsSL https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/v<version>/install.sh \
+  | bash -s -- cameraagent install --friendly-name "North All-Sky Camera" --bind-address 127.0.0.1 --port 5130 ...
+
+# Install from a downloaded release folder, offline:
+bash "$release/install.sh" --from "$release" cameraagent install --friendly-name "North All-Sky Camera" ...
+```
+
+An integration pre-release is never `latest`, so name its tag as above. Run it as the Docker-capable runtime user, not
+as root: the installer refuses root and asks `sudo` itself for the steps that need it. Its own options come before the
+installer's arguments, which start at the first argument that is not one of them, or after `--`:
+
+| Option | Meaning |
+| --- | --- |
+| `--check` | Run the checks below, then stop. Nothing is downloaded or changed |
+| `--from DIR` | Take everything from `DIR`, a folder holding the release's files, instead of GitHub and ghcr.io: the installer, `SHA256SUMS`, the catalog and the offline image archive. ghcr.io is never contacted. `DIR`, and every folder above it, must be one that only you and root can change; `DIR` itself must be writable by no one but its owner, even when it is sticky; and the release's files in it must be yours or root's, writable by no one else and not links: the installer reads `release.json`, `SHA256SUMS` and the archive there after `install.sh` has checked them. `DIR` is resolved to its physical path once, when the command line is read, and everything uses that path |
+| `-h`, `--help` | Its usage. `--help` after the installer's arguments is the installer's |
+
+**What the installer is given.** `install.sh` adds to the installer's arguments only what the installer is not
+already given:
+
+| Command | Online | With `--from DIR` |
+| --- | --- | --- |
+| `cameraagent install` | `--release <private folder> --image-source registry --catalog-bundle <catalog>` | `--release DIR --no-download --catalog-bundle <catalog>` |
+| `cameraagent upgrade` | `--release <private folder> --image-source registry` | `--release DIR --no-download` |
+| no arguments | `cameraagent install`, then as above | `cameraagent install`, then as above |
+| any other command, or options with no command | nothing | nothing |
+
+- Online, the private folder holds the release's `release.json` and `SHA256SUMS`. Docker pulls CameraAgent's image by
+  the digest `release.json` names, after the installer's [pre-import checks](#release-install); the offline image
+  archive is never downloaded. While the `skymonitor-cameraagent` package is private, sign in to `ghcr.io` first.
+- The catalog is the release's `<catalog version>.bundle.tar.gz`, from `DIR` or downloaded, checked, and unpacked in
+  `${XDG_CACHE_HOME:-~/.cache}/hvo-sky/catalogs/<catalog version>.bundle`. It is unpacked there afresh each time, not
+  in the temporary folder, because the installer binds an install to the catalog folder it is given: a second run, or a
+  `--resume`, must name the same folder. The archive must hold only files in that one folder.
+- With no installer arguments, `install.sh` runs `cameraagent install`, as the install contract has it, with an
+  install's checks, downloads and hand-over; the installer asks on the terminal for what it needs. `--check` alone
+  still stops after the checks.
+- `--release`, `--image-ref` or `--image-archive` given by you means no `--release` is added; `--catalog-bundle`
+  means no catalog is added; `--image-source` is not added twice; `--config`, which names the whole request, gets
+  nothing but `--from`'s `--no-download`. Online, `--image-source archive` is refused, because the archive is not
+  downloaded: use `--from DIR`.
+
+**Checks.** All of them run, and every failure is reported, before anything is downloaded or changed:
+
+- Linux on 64-bit ARM or x86-64, with a 64-bit system and glibc, run by someone other than root;
+- `curl`, `tar` and `sha256sum`;
+- 300 MB free in `TMPDIR` for the download; for an install, 50 MB where the catalog is unpacked, a folder that only you
+  and root can change;
+- github.com answers, and this machine's clock is within five minutes of its `Date`. With `--from`, github.com not
+  answering is only noted. An unsynchronised clock (`timedatectl`) is noted;
+- with `--from`, the folder is one only you and root can change and holds, each yours or root's and writable by no one
+  else, the installer for this machine, `SHA256SUMS`, `release.json` and, for an install or
+  an upgrade, the offline image archive for this machine and, for an install, the one catalog archive `SHA256SUMS`
+  lists. Otherwise, for an install or an upgrade, ghcr.io answers;
+- for an install (`cameraagent install`, or no command) or an upgrade: Docker answers you and is 20.10 or later with
+  Compose v2; `docker info` reports `MemoryLimit`, `CPUCfsQuota` and `PidsLimit` as `true` and at least 2 CPUs; and
+  Docker's `DockerRootDir` has 3 GB free. Online, `docker buildx` is 0.8 or later, which the installer uses to read the
+  image from the registry before it pulls it. On a Raspberry Pi whose Docker cannot limit memory it names the remedy
+  in [Host Prerequisites](#host-prerequisites): append a space and `cgroup_enable=memory` to the single line in
+  `/boot/firmware/cmdline.txt`, then reboot. Less memory than the 4 GiB limit is only noted, as the installer notes it.
+
+Other commands, such as `status`, `cameraagent rollback` and `cameraagent uninstall`, check what they need
+themselves, so a host that has lost Docker's limits can still be inspected, rolled back or cleaned up. The installer's
+own [host prerequisites](#host-prerequisites) still run, with exact sizes.
+
+**Verification.** The installer for this machine (`hvo-sky-install-linux-arm64` or `hvo-sky-install-linux-x64`),
+`SHA256SUMS` and, as the table above needs them, `release.json` and the catalog archive are downloaded, or copied
+from `--from`, into a new folder of mode `0700` under `TMPDIR`. `TMPDIR` must be a folder that only you and root can
+change. Then:
+
+1. each file's SHA-256 must be the one `SHA256SUMS` lists for it, once;
+2. when `gh` is installed and signed in, the build-provenance attestations of `SHA256SUMS` and of the installer must
+   name `.github/workflows/prerelease.yml` (for a `-dev.<n>` pre-release; `release.yml` otherwise) at the release's
+   tag, built on a GitHub-hosted runner. Without `gh` this is noted and skipped. `SHA256SUMS` is what every other file,
+   and the installer's own checks of `release.json` and the image, are checked against;
+3. the installer's `--version` must succeed and print `<version>+<40-character commit>`.
+
+The installer is never started before all of this, not even for its `--help` or `--version`, and never as root.
+
+It then runs as you, with your umask, reading the terminal when there is one (never the download), and the folder is
+removed afterwards. `install.sh` prints its own messages on standard error, so standard output is the installer's alone:
+`--json` output can be redirected to a file. Only `--help` prints on standard output.
+
+**Exit codes**, the install contract's: the installer's when it ran; otherwise `0` when `--check` passed, `1` when a
+download failed (running it again continues), `2` for an invalid command line, `3` when a check or the verification
+refused and nothing was changed, and `130` when it was interrupted.
+
+`scripts/test:install-sh` tests it with fake commands, as `curl ... | bash` runs it; `scripts/test:release-scripts`
+runs those tests ([ci-pipeline.md](ci-pipeline.md#release-script-tests)). For tests only,
+`HVO_SKY_INSTALL_TEST_RELEASE_URL` names another address to download the release's files from, so a locally
+built release can be served; nothing else should set it. It must be an absolute `https://` URL with a host (anything
+else is a usage error), it is handed to curl as `--url`, never as an option, and still fetched over HTTPS alone, and
+`install.sh` announces it on standard error whenever it is set.
+
+## Command Surface
+
+The command surface follows section 5 of the install contract (#1315). Instance
+commands are grouped under `cameraagent`; every command takes `--json` and
+`-h`/`--help`, and `--version` stands alone. A command's `--help` says what it does and lists only the options it takes,
+each with what it does; an option it does not list is a usage error (exit `2`). A group's `--help`
+(`cameraagent --help`, `catalog --help`, `host --help`), or a group named without a command, lists that group's commands
+with what each does.
+
+### Exit codes
+
+Every command ends with one of these codes:
+
+| Code | Meaning | Examples |
+| --- | --- | --- |
+| `0` | Done. With `--plan`, the plan can be carried out | An install, a re-run with nothing to change, `status`, `--help` |
+| `1` | A step failed. Re-running the same command continues, with `--resume` where the message says so | Docker or CameraAgent did not respond, a verification failed, an install record that could not be written |
+| `2` | The command line or the answers file is invalid, or a question had no one to answer it | An unknown option, an answers file with an unknown member, a missing `--friendly-name` without a terminal |
+| `3` | Refused, and nothing was changed | Unmet [host prerequisites](#host-prerequisites), including an upgrade on a host that cannot enforce the container limits, a host policy that cannot be trusted, running as root, a re-run that describes a different instance, an incompatible preflight, a [release](#release-install) the installer will not use or whose image is not the release's, an upgrade to the image already active or to an older release, a rollback with no previous image |
+| `130` | Interrupted by Ctrl+C or SIGTERM | |
+
+With `--json`, a failure or refusal writes one JSON object to standard error:
+`{"schemaVersion": 1, "errorCode": "...", "message": "..."}`. A refusal's
+`errorCode` is `refused`, except `host-prerequisites` and `state-incompatible`,
+which keep their own codes. Without `--json` a refusal reads
+`Installation refused: <reason> Nothing was changed.`
+
+Every refusal under [Release Install](#release-install) exits `3`, including a registry the
+installer cannot read before it pulls: each is decided before anything is imported, or after an import that is then
+removed. When Docker does not remove that import, or its image listing cannot show that it did, the refusal becomes a
+failed step instead and exits `1`, naming the images. A load or pull that Docker itself rejects is a failed step and
+exits `1`. An upgrade loads an offline
+archive after its journal entry, so a loaded image that is not the release's is refused there: the journal settles
+it as refused, so it blocks no later operation, and it exits `1` (see below).
+
+Every command makes each check that can refuse before its first write, and a refusal
+there is never journaled:
+
+- An install decides the host, the release, the answers against the installed
+  instance, the catalog bundle and the persisted state before it prepares anything.
+- A lifecycle command decides, before it takes a lock or writes its journal, the
+  instance's condition, a rollback with no previous image, an older release, an
+  unfinished operation that demands `--resume`, the purge gates, for an upgrade, a
+  rollback or a backup that starts the instance the [container limits the host can enforce](#upgrade-rollback-and-the-hosts-limits),
+  and for an upgrade whose candidate is known without importing it (the image Docker
+  holds, or a release's image read from its archive or registry), the already-active
+  and state-contract checks and the state preflight. A registry release image is
+  pulled at that point, before any lock, and removed again if it is refused.
+
+Once a command has written, it cannot say nothing changed: a check that stops it
+after that point is a failure (exit `1`), journaled so that a re-run or `--resume`
+continues. Examples are the state preflight a fresh install repeats once its
+configuration is written, and an upgrade candidate that is only known once it is
+pulled after the journal entry.
+
+### Plan
+
+`--plan` reports what the command would create, change, leave unchanged or remove,
+and writes nothing of the product's: no file, folder, lock or Compose file. It renders
+the Compose files in memory, admits the catalog bundle where it lies, and takes only
+the locks that already exist. One read needs scratch space: the state preflight reads
+a database it catches with an uncommitted transaction (a hot rollback journal)
+through a private temporary copy in `TMPDIR`, because SQLite cannot read such a
+database safely in place, and removes the copy when it is done. `--dry-run` is its older name and does the
+same. Install, its re-run, `cameraagent upgrade`, `rollback`, `reinstall`, `uninstall`
+and `purge` report a plan; `reset-state` and the catalog commands report their
+existing dry-run output.
+
+A plan makes the same checks the command makes before it changes anything: host
+prerequisites, the host policy, the release, the answers against the installed
+instance, an unfinished lifecycle operation that demands `--resume`, and whether the
+instance's persisted state suits its image. A plan that would be refused is not
+printed: the refusal is reported and the command exits `3`, so a printed plan can be
+carried out. A fresh install's plan reports `composeModelSha256` as empty, because
+Docker renders a Compose model only from files. A release image Docker does not hold
+yet, such as the registry image `install.sh` hands an install or an upgrade, is
+planned from the image read and checked from the release's archive or registry,
+since a plan imports nothing.
+
+```console
+$ hvo-sky-install cameraagent install --answers camera.json --memory 6g --plan
+...
+Plan:
+  unchanged  folder     /var/lib/hvo-sky/cameraagents/<uuid> (instance)
+  change     file       /var/lib/hvo-sky/cameraagents/<uuid>/config/compose/compose.yml (Compose model, 2 CPUs, 6 GiB of memory and 256 PIDs)
+  change     file       /var/lib/hvo-sky/cameraagents/<uuid>/instance-manifest.json (instance manifest, 2 CPUs, 6 GiB of memory and 256 PIDs)
+  change     file       /var/lib/hvo-sky/cameraagents/<uuid>/state/deployment/installation-result.json (installation result, its Compose model)
+  change     container  hvo-skymonitor-<uuid> (recreated with 2 CPUs, 6 GiB of memory and 256 PIDs)
+  change     record     /etc/hvo-sky/install.json (instance <uuid>)
+0 to create, 5 to change, 1 unchanged.
+```
+
+With `--json` the plan is the result's `plan` member: `items`, each with `action`
+(`Create`, `Change`, `Unchanged` or `Remove`), `kind`, `target` and `detail`, and the
+`summary`. A completed install also reports the plan of what it did, under
+`Changes:`. Neither is retained in `installation-result.json`.
+
+### Answers file
+
+`cameraagent install --answers FILE` reads the install from strict JSON with a
+schema version. The members are those `--config` reads, under the same names:
+
+```json
+{
+  "schemaVersion": 1,
+  "instanceId": "8f6a1d0e-6c1b-4e57-9a3e-2d4b5c6e7f80",
+  "friendlyName": "North All-Sky Camera",
+  "ownerEmail": "owner@example.org",
+  "bindAddress": "127.0.0.1",
+  "port": 5130,
+  "catalogBundle": "/srv/hvo/hyg-v4.2-p3-s2-r1.bundle",
+  "imageReference": "sha256:<loaded-image-id>",
+  "latitudeDegrees": 35.2,
+  "longitudeDegrees": -114.1,
+  "elevationMeters": 800,
+  "timeZoneId": "America/Phoenix",
+  "cpus": 2,
+  "memory": "4g"
+}
+```
+
+- `schemaVersion` is required and must be `1`. A member the installer does not
+  read, a member given twice, or a file that cannot be read is a usage error (exit
+  `2`) naming the file.
+- `instanceId` and `friendlyName` are required, so running the file again addresses
+  the same instance. Every other member defaults as the command-line option does.
+- The other members are `productRoot`, `release` and `imageSource` (`Archive` or
+  `Registry`, as `--release` and `--image-source`; see [Release Install](#release-install)),
+  `imageArchive`, `imageArchiveSha256`, `passwordFile`, `acknowledgePlaintextHttp`,
+  `generatePassword`, `noDownload` and `replayProfile` (`InProcess` or `LocalRunner`).
+  A release install names `release` and leaves out `imageReference`. The run flags
+  `dryRun`, `resume` and `json` are not answers: give `--plan`, `--resume` and
+  `--json` on the command line.
+- No secret is ever an answer. A password is given in its own owner-only file
+  (`passwordFile`) or generated (`generatePassword`).
+- Only `--cpus`, `--memory`, `--release`, `--image-source`, `--catalog-bundle` and
+  `--no-download` may accompany `--answers`. Each replaces the file's member: the
+  limits, so a re-run with the same file changes the limits (see
+  [Re-running an install](#re-running-an-install)), and the release and catalog, so
+  [`install.sh`](#installsh) can hand the installer its verified release and catalog
+  beside an answers file. A file that names `imageReference` or `imageArchive` cannot
+  be given `--release`; leave the image to the release.
+
+`--config FILE` is deprecated. It installs exactly as before and warns: on standard
+error, or with `--json` as an `option-deprecated` entry in the result's `warnings`.
+To convert a configuration file, add `"schemaVersion": 1` and remove `dryRun`,
+`resume` and `json`.
+
+### Installer wizard
+
+On a terminal, an install whose command line leaves a question it cannot go without opens a wizard (install contract
+section 5, #1317): the camera's name (`--friendly-name`), its software (`--release`, or `--image-ref`), or the catalog
+(`--catalog-bundle`). `install.sh` with no arguments, and `hvo-sky-install` alone on a terminal, are such installs.
+Anywhere else nothing is asked, and nothing is read from the input: without a terminal (its input or output is not
+one, or `TERM=dumb`), with `--answers`, `--config`, `--plan`, `--dry-run`, `--json` or `--resume`, or with all three
+given, a missing value is a usage error (exit `2`) that names it, such as `--friendly-name is required.`
+
+![The wizard's first page at 80 x 24: the installer's name and STEP 1 OF 7 on the top bar, the Camera panel with the camera's name and the new instance ID, Back and Next, the steps and the keys](../images/terminal/install-80x24-1-camera.svg)
+
+The wizard asks only what the command line left. A page whose every question the command line answered is passed
+over, and a question it answered shows the answer and the option that gave it:
+
+| Page | Asks | Passed over when the command line gave |
+| --- | --- | --- |
+| Camera | The camera's name; it shows the instance ID, new or from the saved answers | `--friendly-name` |
+| Software | The release folder and where its image comes from, and the catalog bundle | `--release` (or `--image-ref`) and `--catalog-bundle`, as `install.sh` does |
+| Network | The address and port CameraAgent's pages listen on, and, for an address other computers reach, that they reach it over plain HTTP | `--bind-address` and `--port`, with `--acknowledge-plaintext-http` for such an address |
+| Location | Latitude, longitude, elevation and time zone | All four |
+| Limits | CPUs and memory (empty for the [default](#container-resources)) and where archived replays run | `--cpus`, `--memory` and `--replay-profile` |
+| Owner | The owner's email, and how the first password is set: the documented one, changed at the first sign-in; generated into a file only the owner can read; or read from a file | `--owner-email`, and `--password-file` or `--generate-password` |
+| Review | The plan, and where the answers are saved | Never |
+
+The wizard never asks for a password, and never shows or saves one. Each page refuses an answer the install would
+refuse, saying why in a band at the top, and the answers start from those saved by the last run of the wizard
+(`~/.config/hvo-sky/install-answers.json`, under `$XDG_CONFIG_HOME` when it is set), so running it again addresses the
+same instance and, with nothing different, changes nothing.
+
+The Review page checks the answers exactly as `hvo-sky-install cameraagent install --answers FILE --plan` does, through
+the same parser and installer, with a private copy of the answers that it removes; the check changes nothing. A plan
+the installer refuses says why and that nothing was changed, and Back changes the answers:
+
+![The Review page at 80 x 24: an OK band, the plan item by item, the save path, and Install](../images/terminal/install-80x24-7-review.svg)
+
+![The Review page when the plan is refused: a REFUSED band naming the port in use, and that nothing was changed](../images/terminal/install-80x24-7-review-refused.svg)
+
+**Install** saves the answers there (`0600`, the default folder `0700`) and closes the wizard. The installer then runs
+`hvo-sky-install cameraagent install --answers FILE`, with the release, its image source, the catalog and
+`--no-download` beside it when the command line handed them over (they are `install.sh`'s own paths, so they are not
+saved). That is the same install, with the same output and [exit codes](#exit-codes), as the command typed. It runs on
+the terminal rather than inside the wizard because the installer asks `sudo` for the steps that need root, and `sudo`
+may need the terminal for a password. A panel before it says what runs; one after it says the install finished, or why
+it stopped and that running the same command again carries on, with the command whole on the line under it:
+
+![What the terminal shows around the install: the Installing panel, the command, the installer's own result, an OK band and the Done panel](../images/terminal/install-80x24-8-done.svg)
+
+Keys: Enter is Next (on the Review page, Install), or presses the button that has the focus; Alt+N and Alt+B are Next
+and Back; Tab moves; Up and Down choose an option and scroll the plan; Space ticks a box. **Esc** or **Ctrl+C**, on any
+page, closes the wizard: it exits `130` and nothing was changed. A signal does the same.
+
+The wizard is drawn in HVO Dark, CameraAgent's own palette, as RoofController's terminal prototype draws it (#158), and
+uses only whole character cells: it is usable at 80 x 24, and from 110 columns it shows every answer so far beside the
+page. It never depends on colour alone. A terminal without true colour gets the 16 ANSI colours, `NO_COLOR` gets the
+terminal's own colours with bold, underline and reverse video, and a locale that is not UTF-8 gets ASCII frames; see
+[`src/HVO.SkyMonitor.TerminalUi`](../../src/HVO.SkyMonitor.TerminalUi/README.md), which also gives the colour tokens:
+
+![The Review page at 120 x 32, with every answer so far in a panel beside it](../images/terminal/install-120x32-7-review.svg)
+
+![The Review page with NO_COLOR: the terminal's own colours, the current step and Install in reverse video](../images/terminal/install-80x24-7-review-nocolor.svg)
+
+Every page's screenshot, at both sizes and in each fallback, is in [`docs/images/terminal`](../images/terminal). The
+wizard's tests draw them on Terminal.Gui's in-memory driver, Development v1 CI draws them as SVG in Build and Unit and
+keeps them with its evidence, and `scripts/docs:terminal-screenshots` refreshes the folder.
+
+### Re-running an install
+
+Running a completed install again with the same answers prints every item
+unchanged and `Nothing to change: the instance is installed as the answers
+describe.` It validates the installed instance against its records and checks it is
+healthy, and then stops: it writes nothing, not even a file with the same content,
+and starts and restarts nothing.
+
+A re-run puts back whatever no longer matches the records: Compose files that differ
+from what the records describe are rewritten, a container that is not running healthy
+on the recorded image is started again, a result behind its manifest is repaired,
+and an install record behind the instance's records is settled. Each is listed as a
+change, in the plan as in the run.
+
+A re-run is held to the instance its records describe, not to the bytes of the first
+request: the camera name, owner email, bind address, port, product root, location,
+time zone, replay profile, image and catalog must match the installed instance. Any
+difference is refused with exit `3`, names each differing option, and changes
+nothing. Only the container limits change with a re-run (see
+[Container Resources](#container-resources)). After an upgrade, a re-run names the
+image the instance now runs; the image itself changes only with `cameraagent upgrade`.
+
+An unfinished install is different: `--resume` continues it only with exactly the
+inputs it began with.
+
+### Install record
+
+The installer keeps a machine install record at `/etc/hvo-sky/install.json`
+(contract section 5), beside the host policy and checked as the policy is: the file
+and every directory above it root-owned and not writable by group or other users,
+no symbolic or hard link. It holds no secret: one entry per instance under the
+production product root.
+
+```json
+{
+  "schemaVersion": 1,
+  "product": "HVO.SkyMonitor",
+  "productRoot": "/var/lib/hvo-sky",
+  "installerVersion": "0.9.0-dev+<commit>",
+  "updatedUtc": "2026-10-18T03:00:00+00:00",
+  "instances": [
+    {
+      "component": "CameraAgent",
+      "instanceId": "8f6a1d0e-6c1b-4e57-9a3e-2d4b5c6e7f80",
+      "friendlyName": "North All-Sky Camera",
+      "condition": "Installed",
+      "version": null,
+      "previousVersion": null,
+      "rolledBackFrom": null,
+      "imageId": "sha256:...",
+      "previousImageId": null,
+      "url": "http://127.0.0.1:5130/",
+      "resources": { "cpus": 2, "memoryBytes": 4294967296, "pidsLimit": 256, "cpusSetByOperator": false, "memorySetByOperator": false },
+      "updatedUtc": "2026-10-18T03:00:00+00:00",
+      "lastImageChange": null
+    }
+  ]
+}
+```
+
+- The instance's release records (`image-distribution.json` and
+  `image-distribution.records.json` in its deployment state, see
+  [Release Install](#release-install)) own its installed version. The install
+  record keeps no version of its own: whenever it settles an entry it reads
+  `version` (the release the running image came from), `previousVersion` and
+  `rolledBackFrom` from those records, by image ID. A version is `null` for an image
+  given by `--image-ref`, which no release names.
+- `lastImageChange` (`Upgrade`, `Rollback` or `null`) is the only fact the record
+  adds: which way the image last changed. After an upgrade, `previousVersion` is the
+  release before it; after a rollback, `rolledBackFrom` is the release the rollback
+  left and `previousVersion` is `null`.
+- The instance's own records stay authoritative. Each operation that completes on
+  an instance (install, its re-run, upgrade, rollback, reinstall, uninstall) settles
+  that instance's entry from them before it records its completion, and `purge`
+  removes the entry. A write happens only when the entry changes.
+- The installer runs as the runtime user, so it changes the root-owned record
+  through one narrow `sudo` helper (`internal-record-instance`). The helper accepts
+  only the product root and one entry, re-reads the host policy itself, writes only
+  for the product root the policy resolves, and holds the host-policy lock. The
+  record is read back as the runtime user before the change counts.
+- A record that cannot be written, or one the installer did not write and cannot
+  read, fails the operation at that point with exit `1`, after its other changes
+  are complete; the record is never silently overwritten. Remove a damaged record,
+  then re-run the install or rerun a lifecycle command with `--resume` to finish:
+  the operation stays resumable until the record is settled. An upgrade settles the
+  record after capture has resumed, so a record failure never holds capture paused.
+- An admitted test product root (`HVO_INSTALLER_ALLOW_TEST_ROOT=1`) keeps its own
+  record, owner-only, at `<product root>/operations/install.json`, so a test never
+  writes the machine record.
 
 ## Inputs
 
-Supply an immutable CameraAgent repository digest or an already loaded image ID,
-plus the verified production catalog bundle. An offline image archive additionally
+Supply a downloaded release ([Release Install](#release-install)), or an immutable
+CameraAgent repository digest or an already loaded image ID, plus the verified
+production catalog bundle. An offline image archive named directly additionally
 requires its independently trusted lowercase SHA-256. Never use a mutable image
 tag or pass a password on the command line.
 
@@ -57,40 +485,15 @@ hvo-sky-install cameraagent install \
   --time-zone America/Phoenix
 ```
 
-For a signed offline catalog release, place `catalog-manifest.json`,
-`catalog-manifest.json.sig`, and the referenced bundle together and use:
+`--catalog-bundle` is required by an install and by `catalog install`, and names
+the bundle directory itself. A release carries its approved bundle as its own
+versioned asset, `<catalog version>.bundle.tar.gz`: extract it and pass the
+bundle directory. The installer does not take the catalog from a release folder.
 
-```bash
-hvo-sky-install cameraagent install \
-  --channel local \
-  --catalog-manifest /srv/hvo/catalog-release/catalog-manifest.json \
-  --no-download \
-  --friendly-name "North All-Sky Camera" \
-  --image-ref sha256:<loaded-image-id>
-```
-
-For an exact online release, use an immutable versioned manifest URL. To resolve
-a documented channel default or `--catalog-version`, use `--catalog-index` and a
-signed immutable index snapshot. A non-GitHub mirror also requires
-`--asset-base-url`; mirrored bytes retain the release tag, manifest hash, asset
-hash, and signing identity. Channels are `stable`, `nightly`, `prerelease`, and
-`local`; `local` is the compatibility default.
-
-`--no-download` permits local inputs and fully verified cache hits but performs
-no HTTP request and no Docker registry pull. The user cache is
-`$XDG_CACHE_HOME/hvo-sky/distribution`, or
-`~/.cache/hvo-sky/distribution` when `XDG_CACHE_HOME` is unset. Cache
-hits are rehashed, partial transfers use signed lengths and HTTP ranges, invalid
-complete or partial bytes are removed, and signed-index sequence/hash state
-prevents rollback. Network requests are HTTPS-only with bounded redirects,
-timeouts, retries, response sizes, and disk-space checks. Optional public GitHub
-authentication uses `HVO_GITHUB_TOKEN`; credentials are sent only to the
-original `github.com` request and never retained as evidence.
-
-Signed-index rollback state is durable rather than cache data. It is stored
-under `$XDG_STATE_HOME/hvo-sky/distribution`, or
-`~/.local/state/hvo-sky/distribution` when `XDG_STATE_HOME` is unset, and
-is not removed by ordinary cache cleanup.
+`--no-download` performs no Docker registry pull, so the image must come from an
+offline archive or already be on the host. With `--release --image-source
+registry` that means the host already holds the release's image by its digest;
+otherwise the install fails naming that digest reference.
 
 Use `--image-archive /srv/hvo/cameraagent.tar` together with
 `--image-archive-sha256 <sha256>` for an offline image load.
@@ -110,24 +513,26 @@ part of the password.
 `--json` selects the versioned structured result. Its `warnings` array lists each
 [advisory host finding](#host-prerequisites) as a `code` and a `message`, and is
 empty when there is none; the retained `state/deployment/installation-result.json`
-does not carry it. `--dry-run` validates the catalog, Docker daemon, loaded image, generated
+does not carry it, nor the [`plan`](#plan). `--plan` (or its older name `--dry-run`) validates the catalog, Docker daemon, loaded image, generated
 configuration, and rendered Compose model using private temporary storage without
-creating the product root, loading/pulling an image, or starting a container.
+creating the product root, loading/pulling an image, or starting a container, and
+reports the [plan](#plan).
 
-Missing required values are prompted only on an interactive terminal. A strict
-JSON config may be supplied with `--config`; value options cannot be mixed with
-it. Its `cpus` number and `memory` string are the `--cpus` and `--memory`
-[container limits](#container-resources). Flags such as `--dry-run`, `--json`, `--no-download`, and the explicit non-loopback HTTP
-acknowledgement may still be applied. A configuration that does not name
-`productRoot` installs into the production product root, as the command-line form
-does; one that names a root keeps it and is validated like `--product-root`.
+Missing required values are prompted only on an interactive terminal; without one,
+a missing value is a usage error (exit `2`). The install can instead be read from an
+[answers file](#answers-file) with `--answers FILE`. `--config FILE`, its deprecated
+predecessor, still works and warns: it reads the same members without a schema
+version and with the run flags, and cannot be mixed with value options. A
+configuration that does not name `productRoot` installs into the production product
+root, as the command-line form does; one that names a root keeps it and is validated
+like `--product-root`.
 
 To serve the camera on a LAN address, bind it there and acknowledge plaintext
 HTTP:
 
 ```bash
 hvo-sky-install cameraagent install ... \
-  --bind-address 192.168.2.138 --port 5130 --acknowledge-plaintext-http
+  --bind-address <host-lan-address> --port 5130 --acknowledge-plaintext-http
 ```
 
 After `compose up`, the installer waits for health and bootstraps the owner at
@@ -148,7 +553,6 @@ and report every finding together so the host can be fixed in one pass:
 | `docker-cpu-quota-unsupported` | `docker info` reports `CpuCfsQuota: true`, so the Compose `cpus` quota is enforced |
 | `docker-pids-limit-unsupported` | `docker info` reports `PidsLimit: true`, so the Compose `pids_limit` is enforced |
 | `docker-host-cpus-insufficient` | `docker info` reports at least as many CPUs (`NCPU`) as the CameraAgent [CPU limit](#container-resources); Docker refuses to create a container with a larger quota |
-| `tar-missing` | an executable `tar` on `PATH`, for an archive of the whole instance (the explicit `backup` command, [#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315)); upgrade and rollback no longer run it |
 | `product-root-storage-insufficient` | room on the filesystem that holds the product root: twice the catalog bundle and image archive together, plus 1 GiB |
 | `docker-root-storage-insufficient` | room on the filesystem that holds Docker's `DockerRootDir`: twice the image archive and 1 GiB |
 | `docker-root-unreported` | `docker info` reports an absolute `DockerRootDir` |
@@ -171,20 +575,93 @@ snapshot and a restore's temporary copy) against the product root's own
 filesystem. Bulk capture data is never copied, so it is never counted.
 
 A host that cannot enforce the limits would otherwise run CameraAgent unbounded,
-so it is refused. Raspberry Pi OS boots with `cgroup_disable=memory`. The remedy
-is to add `cgroup_enable=memory` to the single line in
-`/boot/firmware/cmdline.txt`, reboot, and confirm that `docker info` reports
-`MemoryLimit`, `CpuCfsQuota`, and `PidsLimit` as `true`. Each limit finding
-quotes the cgroup version, `/sys/fs/cgroup/cgroup.controllers` when it is
-readable, and Docker's own limit warnings.
+so it is refused. On a Raspberry Pi the firmware adds `cgroup_disable=memory` to
+the kernel command line, so it is not in `/boot/firmware/cmdline.txt` and there
+is nothing there to change. The remedy is to append a space and
+`cgroup_enable=memory` to the end of the single line in that file, reboot, and
+confirm that `docker info` reports `MemoryLimit`, `CpuCfsQuota`, and `PidsLimit`
+as `true`. Each limit finding quotes the cgroup version,
+`/sys/fs/cgroup/cgroup.controllers` when it is readable, and Docker's own limit
+warnings.
 
 The human form renders every finding and its remedy on standard error. With
 `--json` the structured report is written to standard output and standard error
 carries one error object with `errorCode` `host-prerequisites`; the exit code is
-`1` either way. The CLI uses SQLite in-process and never runs `sqlite3` or `jq`,
-so neither is required. Uninstall, purge, and the other lifecycle commands do not
-evaluate these prerequisites, so a host that loses limit support can still be
-cleaned up.
+`3` (refused, nothing changed) either way. The CLI uses SQLite in-process and never
+runs `sqlite3`, `jq` or `tar`, so none is required; `install.sh` checks for `tar`
+itself, since it unpacks the catalog. An upgrade, a rollback and a backup that starts
+the instance are held to the limit and CPU findings ([below](#upgrade-rollback-and-the-hosts-limits)).
+Uninstall, purge, and the other lifecycle commands do not evaluate these
+prerequisites, so a host that loses limit support can still be cleaned up.
+
+### Upgrade, rollback and the host's limits
+
+An upgrade and a rollback check the host's container limits before they change
+anything, with the same checks as an install: `docker-memory-limit-unsupported`,
+`docker-cpu-quota-unsupported`, `docker-pids-limit-unsupported` and
+`docker-host-cpus-insufficient`, against the limits the instance moves to. They are
+not held to the install's room; an upgrade measures its own room. Swap is
+not one of CameraAgent's limits: Docker's own swap warning is quoted beside the
+limit findings, as at install. This is install contract section 7, and
+RoofController behaves the same way (HVO.RoofController#151).
+
+- **An upgrade is refused** on a host that cannot enforce the limits, or that has
+  fewer CPUs than the CPU limit. The refusal lists every finding, with its remedy
+  (`cgroup_enable=memory` and a reboot on a Raspberry Pi), and exits `3` with nothing
+  changed: it comes before any pull, import, lock or journal. Its `--plan` and its
+  `--resume` are refused the same way: resuming goes forward to the candidate, which
+  the host cannot bound. Recover an interrupted upgrade with
+  [`--restore-only`](#restore-only-after-an-interrupted-upgrade), or fix the host and
+  resume. There is no override.
+- **A rollback goes ahead**, because it is the recovery path. So does its
+  `--resume`, and `upgrade --restore-only`. Before anything changes, each one prints
+  a loud warning on standard error that starts
+  `WARNING: THE ROLLBACK GOES AHEAD, BUT DOCKER HERE CANNOT ENFORCE` (for
+  `--restore-only`, `WARNING: THE RESTORE-ONLY RECOVERY GOES AHEAD`) and names each
+  limit Docker cannot enforce, what that means for CameraAgent, and the remedy. It also
+  writes the warning, stamped with the time, to the operation's install log,
+  `<product-root>/operations/lifecycle/<operation>/install.log`, beside its other
+  retained records. A `--plan` prints the warning and writes nothing. With `--json`
+  the result's `warnings` carry it, one entry per limit, and standard error does not.
+- **Every limit Docker can enforce is kept, at every start.** Each container
+  start of a rollback, of its `--resume` (including the restart of the image an
+  interrupted rollback was leaving), of a failed candidate's recovery and of
+  `upgrade --restore-only` gives Docker the model as Docker here can run it. Docker
+  drops a memory or PIDs limit it cannot enforce, with its own warning, and applies
+  the rest, so those are given as recorded. Docker refuses to create a container
+  with a CPU limit on a host without CPU quota support, so there the start uses a
+  copy of the model without the CPU limits of CameraAgent and its replay runner,
+  `<product-root>/operations/lifecycle/<operation>/host-compose.yml`, in which each
+  `cpus:` line is a comment that keeps its value
+  (`# cpus: "2" withheld: Docker here cannot enforce a CPU limit (#1357)`). The host's
+  CPU count no longer applies then. The instance's own Compose files and manifest
+  are never changed this way: they keep every limit the instance records, under the
+  identity the manifest authenticates, so the next start on a host that enforces
+  them, such as the next upgrade, gives them all.
+- **A rollback is still refused** for a CPU limit Docker enforces on a host with
+  fewer CPUs, because Docker refuses to create that container. Its other guards,
+  the instance's state, identity and journal, are unchanged. `upgrade --restore-only`
+  is never refused by the host's limits; its own guards are unchanged too.
+- **A backup that starts the instance goes ahead as a rollback does** (#1353). It
+  changes no image, but a backup of a running instance stops it and starts it again,
+  so it warns first, `WARNING: THE BACKUP GOES AHEAD, BUT DOCKER HERE CANNOT ENFORCE`,
+  writes the install log and the result's `warnings` the same way, and makes that
+  start, and the start of its `--resume` and of its recovery, through the same path,
+  with `host-compose.yml` on a host without CPU quota support. It is refused, before
+  anything changes, for a CPU limit Docker enforces on a host with fewer CPUs. A
+  backup of an instance that is not running, or that its journal says was not
+  running when it is resumed, starts nothing, so the host's limits do not apply to
+  it. Nor do they to a restore, which starts nothing either.
+
+**A private place to unpack the installer.** `hvo-sky-install` is one
+self-contained file. Each time it starts, the .NET host extracts the native SQLite
+library bundled into it under `$DOTNET_BUNDLE_EXTRACT_BASE_DIR`, or by default
+`~/.net` in the home directory of the user running it, and reuses what an earlier
+run extracted there without checking it again. Whoever can write that directory
+decides what the installer loads. Run the installer as a user whose home directory
+is writable by that user and nobody else, or set `DOTNET_BUNDLE_EXTRACT_BASE_DIR` to
+a directory only that user can write (mode `0700`). The `sudo`-run preparation
+step extracts under root's own home.
 
 ## Container Resources
 
@@ -200,9 +677,10 @@ hvo-sky-install cameraagent install ... --cpus 3 --memory 6g
   `2.5`.
 - `--memory` is whole mebibytes or gibibytes, such as `6144m` or `6g`, from `4g`
   to `1024g`.
-- In a `--config` file they are the `cpus` number and the `memory` string, for
-  example `"cpus": 3, "memory": "6g"`. Leaving a member out, or setting it to
-  `null`, leaves that limit to the default.
+- In an [answers file](#answers-file) (or a deprecated `--config` file) they are the
+  `cpus` number and the `memory` string, for example `"cpus": 3, "memory": "6g"`.
+  Leaving a member out, or setting it to `null`, leaves that limit to the default on
+  a first install, and keeps the recorded limit on a re-run.
 - A limit below 2 CPUs or 4 GiB is **refused** as a usage error with exit code
   `2`. No acknowledgement admits one: the contract makes these limits a floor,
   and [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044)
@@ -214,7 +692,7 @@ hvo-sky-install cameraagent install ... --cpus 3 --memory 6g
   2 GiB and 64 PID limits. They bound one sandboxed replay at a time and are not
   changed by these options.
 
-Install and `install --dry-run` check the limits against the host Docker runs on
+Install and `install --plan` (`--dry-run`) check the limits against the host Docker runs on
 before anything is created (see [Host Prerequisites](#host-prerequisites)). A
 CPU limit above the CPUs Docker reports is refused, because Docker would refuse
 to create the container. A memory limit above the host's memory is the advisory
@@ -244,23 +722,59 @@ installer default:
 - **Rollback** runs the previous image with the Compose model retained from
   before the upgrade, authenticated against its recorded identity, and gives it
   the limits the instance records. A rollback never returns an instance to limits
-  it has left.
-- **Reinstall** keeps the recorded limits, and so does a re-run of a completed
-  install. A re-run is held to the same request: adding, dropping or changing
-  `--cpus` or `--memory` is refused with `The retained installation state belongs
-  to different immutable inputs`. The same limit written another way, such as
-  `6g` and `6144m`, is the same request.
+  it has left. On a host that cannot enforce a CPU limit it starts the image
+  without the CPU limits and with the rest, and keeps them all recorded
+  ([Upgrade, rollback and the host's limits](#upgrade-rollback-and-the-hosts-limits)).
+- **Reinstall** keeps the recorded limits.
+- **A re-run** of a completed install changes them (contract section 7). A limit
+  given on the re-run replaces the recorded one and counts as set by the operator; a
+  limit left out keeps what the instance records. The same limit written another way,
+  such as `6g` and `6144m`, changes nothing. Giving the default explicitly changes no
+  limit, only records it as the operator's, so the next upgrade keeps it.
 - A failed upgrade candidate restores the exact prior Compose file and manifest,
   limits included.
-- The limits of an installed instance cannot be changed yet, apart from the
-  default moving on upgrade.
+- The [host check](#host-prerequisites) runs against the limits a re-run moves to,
+  before anything changes: a CPU limit above the CPUs Docker reports is refused
+  with exit `3`, and the 2 CPU and 4 GiB floor still refuses a lower limit as a
+  usage error.
+
+To change the limits of an installed instance, re-run its install with the new
+limits, from the answers file it was installed with or the same options:
+
+```bash
+hvo-sky-install cameraagent install --answers camera.json --cpus 3 --memory 6g --plan
+hvo-sky-install cameraagent install --answers camera.json --cpus 3 --memory 6g
+```
+
+The re-run first validates the instance at the limits it records and checks it is
+healthy. It then rewrites the Compose file with the new limits, Compose recreates
+the container, and the instance must come back healthy and verified. Only then are
+the instance manifest, the installation result and the
+[install record](#install-record) rewritten, in that order. The manifest is the
+change's commit point:
+
+- Until the manifest is written, anything that stops the change, an interruption
+  included, rewrites the Compose file with the recorded limits, recreates the
+  container with them and puts the recorded manifest back before the failure is
+  reported (exit `1`, or `130` when interrupted). The restore has its own four-minute
+  bound.
+- Once the manifest is written, the container and the instance's records agree on
+  the new limits. An interruption while the result or the install record is written
+  leaves them behind, and the next re-run settles them.
+- A power loss before the manifest is written, which leaves the container on the new
+  limits and the records on the old ones, is settled by the next re-run too: the
+  records decide, so a re-run that gives no limits puts the container back, and one
+  that gives the new limits finishes the change.
+
+The installation stays completed throughout.
 
 An instance installed before limits were recorded has no `resources` member. It
 runs the original 1 CPU, 1 GiB and 256 PID limits. No operator could set them,
 because the installer had no option for them, so none counts as set by the
 operator. Its next `cameraagent upgrade` moves it to 2 CPUs and 4 GiB and records
 `resources` with both flags `false`; until then a re-run of its install keeps the
-original limits exactly. A runtime `docker update` override, such as a memory
+original limits exactly, unless the re-run gives a limit: the original 1 CPU and
+1 GiB are below the floor, so the limit not given moves to the default. A runtime `docker update` override, such as a memory
 override approved during recovery, is not an installer setting: it is not
 recorded, and the container an upgrade creates carries the recorded limits.
 
@@ -279,98 +793,165 @@ docker inspect --format '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.Host
 
 The defaults report `2000000000 4294967296 256`.
 
-## Signed Image Release
+## Release Install
 
 > `linux/arm64` installation is qualified natively: the `open(2)` flag defect
 > ([#603](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/603)) is fixed,
-> the advisory arm64 workflow runs this CLI's Unit suite, and the complete signed
-> installer lifecycle has run on aarch64 under
-> [#651](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/651). The campaign
-> uses locally signed published-format candidates. An archive downloaded from an
-> actual production release remains untested because no production release exists;
-> preserve that publication/download caveat until the first release smoke.
+> and the advisory arm64 workflow runs this CLI's Unit suite. Every integration
+> pre-release is installed from its arm64 offline archive and upgraded by digest
+> from GHCR on the dedicated arm64 runner before it is published
+> ([prereleases.md](prereleases.md)).
 
-`--image-ref` and `--image-archive` name an image the operator has already
-established. `--image-manifest`, `--image-index`, and `--image-version` instead
-consume the signed CameraAgent image train described in
-[release-distribution.md](release-distribution.md), and the two forms are
-mutually exclusive: a signed release resolves the image, so an installation
-never both trusts a release and accepts an operator-supplied image.
-
-An air-gapped installation receives the release directory on local media and
-needs neither registry access nor a source checkout:
+`--release <folder>` installs or upgrades from a release's files downloaded into one folder (install contract
+section 4). The folder needs `release.json`, `SHA256SUMS` and, unless the image is pulled, the offline archive for the
+platform being installed. `--image-ref` and `--image-archive` instead name an image the operator has already
+established. `--release` cannot be combined with them, so an installation never both follows a release and accepts an
+operator-supplied image.
 
 ```bash
 hvo-sky-install cameraagent install \
-  --channel local \
-  --image-manifest /media/hvo/image-v1.4.0/image-manifest.json \
-  --catalog-manifest /media/hvo/catalog-release/catalog-manifest.json \
-  --no-download \
+  --release /srv/hvo/releases/1.2.0-dev.3 \
+  --catalog-bundle /srv/hvo/releases/1.2.0-dev.3/catalog/hyg-v4.2-p3-s2-r1.bundle \
   --friendly-name "North All-Sky Camera" \
   --owner-email admin@home.lan \
   --latitude 35.2 --longitude -114.1 --elevation 800 --time-zone America/Phoenix
 ```
 
-Online, use an immutable versioned manifest URL, or `--image-index` with
-`--image-version` to resolve a documented default from a signed index snapshot.
-A non-GitHub mirror also requires `--asset-base-url`; that option is shared with
-the catalog train, so a single invocation that names both a mirrored image
-release and a catalog release resolves both from the same base. Signed indexes
-are rollback-protected per train, so an older image index is refused just as an
-older catalog index is.
+`--image-source` chooses how the image reaches Docker:
 
-The installation retains the verified archive under
-`<instance-root>/state/deployment/image-archive.tar` so a resumed or repeated
-operation does not re-acquire it. It is the size of the published image and is
+| `--image-source` | The image |
+| --- | --- |
+| `archive` (the default) | Loaded from the platform's offline archive in the folder. Nothing is pulled, so an air-gapped host needs only the folder |
+| `registry` | Pulled as `<repository>@<digest>`, the digest `release.json` names, never by tag, once its metadata has been read from the registry and checked (below). The host needs `docker buildx` 0.8 or later, and must be signed in to `ghcr.io` while the package is private |
+
+Before it contacts Docker, the installer checks the folder. It refuses, naming the reason and changing nothing, when:
+
+- `SHA256SUMS` is not a list of `<sha256>  <name>` lines in printable ASCII ending in a newline, or lists a file twice;
+- `SHA256SUMS` does not list `release.json`, or `release.json` does not match its SHA-256 there;
+- `release.json` does not follow schema 1: its version (which carries no build metadata), tag, prerelease flag,
+  commit, time, repository, image, offline archives, assets and upgrade notes are each checked;
+- `release.json` and `SHA256SUMS` list different files, or give a file different SHA-256s;
+- the release does not publish the platform: this host's for an install, the one recorded for the instance's Docker
+  daemon for an upgrade;
+- with `archive`, the release has no offline archive for the platform, the archive is not in the folder, or its size
+  or SHA-256 is not the one the release gives;
+- with `archive`, the archive does not hold the release's image, which is read from the archive itself before anything
+  is loaded. Its OCI layout must name the release's digest, and only `<repository>:<version>` when it names the image.
+  The release's index must list the platform once, as the manifest `release.json` names, and that manifest must name the
+  configuration `release.json` names. The configuration must be for the platform and labelled CameraAgent at the
+  release's version, commit and created time (`org.opencontainers.image.created`, exactly `release.json`'s `created`).
+  Docker's own `manifest.json`, which its classic store loads instead, must describe the
+  same image and tag only `<repository>:<version>`, so a load cannot retag another image. Every layer the manifest
+  names must be in the archive, the size the manifest gives it and the blob its digest names, so Docker cannot reject
+  the load for a missing or damaged layer. The image must also declare the contracts the instance needs, as below.
+  Every blob is checked against its digest and the size its descriptor gives;
+- with `archive`, an entry of the archive could be read differently by a loader. Docker and containerd clean each entry
+  name, and a later entry replaces an earlier one, so every name must be the one canonical spelling of its path: no
+  `.` or `..` segment, no empty segment (`//`), no leading `/`, no backslash, and a trailing `/` only on a directory.
+  It must also be part of the OCI image layout (`oci-layout` at version 1.0.0, `index.json`, `manifest.json`, the
+  `blobs/sha256` directories and the blobs the image uses), appear once, and be a regular file, or a directory where
+  the layout has one. A link, a duplicate, an alias such as `metadata/../index.json`, or a blob the image does not use
+  is refused;
+- with `archive`, a JSON field a loader could read differently. Docker and containerd decode the layout, the index,
+  the manifest, `manifest.json` and the configuration with Go, which matches a field's name regardless of case,
+  Unicode folds included (`ſ` reads as `s`, the Kelvin sign as `k`), and lets a later spelling replace an earlier one.
+  So `oci-layout`, `index.json` and its image entry, the image index and its entries, the platform manifest and its
+  descriptors, and each `manifest.json` item may hold only the fields the release tool writes, spelled exactly:
+  `manifest.json` holds `Config`, `RepoTags` and `Layers`, and nothing else. In every object of the archive's JSON,
+  and of `release.json`, a property name must be ASCII and must not differ from another of the same object only in
+  case. A second `repotags` or `RepoTagſ` beside `RepoTags` is refused before anything is loaded;
+- `release.json`, or any JSON in the archive, names the same property twice in one object, compared after escapes are
+  decoded, so two readers could see different values.
+
+Each file is opened as a regular file with a single link, so a symbolic link, hard link, FIFO or folder under a
+release file's name is refused rather than followed. Copy the files into the folder; do not link them.
+
+With `registry`, the image is read from the registry before anything is pulled. The installer runs `docker buildx
+imagetools inspect` (buildx 0.8 or later, which added the `--format` template and its `.Image` field). buildx uses
+this user's Docker credentials and credential helpers, so the installer never handles them. It reads, by the digest `release.json` names:
+
+- the release's image index (or, for a one-platform release, its manifest) exactly as the registry serves it, which must
+  be the content that digest names;
+- the index's one entry for the platform, and that manifest exactly as served, which must be the content its digest
+  names and, when `release.json` lists an offline archive for the platform, the manifest it names;
+- the configuration that manifest names, which buildx fetches by its digest: it must be the configuration
+  `release.json` names, when it names one, be for the platform, be labelled CameraAgent at the release's version,
+  commit and created time, and declare the contracts the instance needs.
+
+Anything else is refused with nothing pulled, naming what disagrees. When the registry cannot be read this way (no
+`docker buildx`, a buildx older than 0.8, no network, or no credentials for a private package), the installer refuses
+the registry source before pulling anything and names the default archive source as the alternative.
+
+A new installation then imports the release's image, by loading its archive or pulling it, before it claims anything:
+no product root, state, application identity, catalog, staged archive or journal entry exists yet. A load or pull that
+Docker rejects, or that is cancelled, therefore leaves nothing for `--resume` or purge to recover, and running the same
+install again completes it. A resumed or repeated installation, which already has state, imports in its image step
+from the same verified inputs. An upgrade pulls a registry image before its journal entry, once every check that
+only reads has passed, the state preflight included, so no refusal follows the pull; a refusal under the instance lock
+that still changes nothing removes the pulled image again. It loads an archive after its journal entry, and a load
+Docker still rejects there is settled as a terminal refusal that blocks no later operation.
+
+A refusal says that nothing changed, so after removing an image it imported the installer lists every image Docker
+holds (`docker image ls --all --digests --no-trunc`). A name is proven gone only when that listing succeeds, reads
+completely and does not show it. If the listing still shows any name the import added, or fails, or holds a line the
+installer cannot read, the command fails with exit `1` instead of refusing, names the images, and gives the
+`docker image rm` command that removes them. Names Docker held before the import are never removed.
+
+Before it claims anything, the installer also requires the release's image, from the archive or the pull, to declare
+the configuration and catalog contracts this instance needs (an upgrade also requires the current state contract).
+After Docker resolves the image, the installer again requires it to be one the release names: the image index, the
+platform's manifest or its configuration digest, as `release.json` or the registry gave them. It must also be labelled
+CameraAgent at the release's version, commit and created time. Otherwise the installer refuses, naming the release, and removes what
+that step loaded or pulled, unless Docker held it before. It removes it too when the load or pull fails or the
+operation is cancelled while it runs.
+
+The installer checks that a release's files agree with each other; it does not check who built them. Verify that with
+`sha256sum --check SHA256SUMS` and `gh attestation verify` before installing, as
+[prereleases.md](prereleases.md#installing-a-pre-release-on-skymonitor01) shows.
+
+An archive install retains the verified archive under
+`<instance-root>/state/deployment/image-archive.tar`, so a resumed or repeated
+operation does not read the folder again. It is the size of the image and is
 included in instance backups; size the instance filesystem accordingly.
 
-The installation resolves the release, selects the platform matching this host,
-and verifies the offline archive against its signed length and checksum **before
-the Docker daemon is contacted**. An unsupported architecture, a release that
-does not publish this host's architecture, a tampered archive, a mismatched
-signature, or a rolled-back index therefore fails while nothing has been loaded,
-started, or written to instance state. After Docker resolves the image, the
-labels it actually carries are compared against the signed compatibility record,
-and every contradicted boundary is reported in one message.
-
-The selected release is retained beside the other deployment evidence:
+The installed release is retained beside the other deployment evidence:
 
 ```text
 <instance-root>/state/deployment/image-distribution.json
 ```
 
-It records the release train, tag, version, manifest checksum, signing key,
-asset name and checksum, resolved source URI, verification result, the platform
-and immutable image ID that were installed, the source revision and tree, the
-SBOM, provenance, and vulnerability-scan asset names, the per-platform component
-inventory asset published for the installed architecture (absent for a release
-published before inventories existed), and the exact compatibility boundaries
-the release declared. An operator can correlate a running container with its
-release, and name the component inventory to triage against, without network
-access. The record is schema version 2; a version-1 record written by an earlier
-installer has no inventory member and remains valid.
+It is schema version 3. It records the release's version, tag and commit; the SHA-256s of the `release.json` and
+`SHA256SUMS` it was verified with; the image's digest reference and platform; the source, `archive` or `registry`; the
+archive's name and SHA-256 for an archive install; the image ID Docker gave the image; and when it was recorded. A
+schema 1 or 2 record, written for a signed release by an earlier installer, is read as no record.
 
 The record follows the image the instance actually runs. It is written only once
-the image has been prepared and accepted, a refused install or upgrade leaves
-none behind, and a rollback withdraws whatever the superseded upgrade recorded.
-Its `manifestDigest` is the release's multi-architecture identity; for a release
-published without a registry push that value is a computed index digest and is
-not resolvable with `docker pull`.
+the image has been prepared and accepted, and a refused install or upgrade leaves
+none behind. An upgrade to an image no release names withdraws it. The record of
+the image the instance ran before is kept beside it, in
+`image-distribution.records.json`, which holds both records and is written
+atomically. A rollback restores the record of the image it returns to, including
+when the rollback is resumed, so an upgrade after it is still refused when it would
+go back. An upgrade reads the version to show the right upgrade notes and to refuse
+an older target (see [Upgrade notes and older targets](#upgrade-notes-and-older-targets)).
 
-An upgrade accepts the same options and writes the same evidence before the
-operation begins. It selects the platform from the architecture recorded for
-the instance's Docker daemon at installation, not from the machine running the
-CLI, so a remote or cross-architecture daemon is served the archive it can run;
-a release that does not publish that architecture is refused, naming what it
-publishes, before anything is downloaded:
+An upgrade accepts the same options. It selects the platform from the architecture recorded for the instance's Docker
+daemon at installation, not from the machine running the CLI, so a remote or cross-architecture daemon is served the
+image it can run:
 
 ```bash
 hvo-sky-install cameraagent upgrade \
   --instance-id <uuid> \
-  --channel local \
-  --image-manifest /media/hvo/image-v1.5.0/image-manifest.json \
-  --no-download
+  --release /srv/hvo/releases/1.2.0-dev.4 \
+  --image-source registry
 ```
+
+`scripts/test:release-install --release <folder>` proves a release folder against the real Docker daemon of the host
+it runs on. It installs a throwaway instance from the offline archive and moves it to a stand-in image. It then
+upgrades it from the release and checks that the upgrade showed the release's notes and recorded the release. Finally
+it checks that a second upgrade to the same release is refused, and removes everything it added. The pre-release
+workflow runs it on the arm64 runner; [prereleases.md](prereleases.md#building-a-release-locally) shows how to build a
+release folder to run it against.
 
 The generated CameraAgent rig and pipeline are immutable instance configuration.
 The installer-virtualsky-v3 profile changes only the generated **new-install**
@@ -405,14 +986,17 @@ rights. On a host with no supervisor, restart CameraAgent manually;
 `CameraAgent:Restart:Supervised` (`true` or `false`) overrides the container
 detection.
 
-`cameraagent preflight` accepts the same release selectors and resolves them the same way, so a planned upgrade
-can be evaluated against persisted state first without acquiring, loading, or starting anything; see
+`cameraagent preflight` evaluates a planned upgrade's image against persisted state first without loading,
+pulling, or starting anything; it takes the image as `--image-ref`, see
 [State Compatibility Boundary](#state-compatibility-boundary).
 
-`--migration-backward-compatible` is no longer needed. A candidate that declares a
+`--migration-backward-compatible` is deprecated. A candidate that declares a
 state migration has its small databases snapshotted before it starts instead; see
 [Swap upgrade and database snapshots](#swap-upgrade-and-database-snapshots). The flag
-is still accepted and changes nothing.
+is still accepted and changes nothing, and the command warns about it: on standard
+error before it runs, or with `--json` as an `option-deprecated` entry in the result's
+`warnings`. It is not removed yet because it is part of an upgrade's journaled request
+identity, so an interrupted upgrade begun with it still resumes with it (#1315).
 
 ### Edge work persisted across an upgrade
 
@@ -539,7 +1123,7 @@ failures continue to refuse captures. No release deletes or rewrites raw data.
 
 Audited recovery requires raw-journal version 15. A canonical v13 or v14 journal
 upgrades transactionally through the declared `canonical-v13-v14-to-v15`
-transition. The image and signed release must declare schema 15 and that
+transition. The image must declare schema 15 and that
 migration. Older readers cannot preserve these dispositions, so installer
 preflight refuses rollback to an image declaring an earlier raw-journal version;
 the earlier runtime also refuses the v15 journal. Select a compatible image
@@ -684,176 +1268,6 @@ Three paths stay outside the check:
   declaration, the check passes and the transition then recreates the older
   image on the new catalog. Before a catalog transition, make sure the running
   CameraAgent image is the one the deployment retains.
-
-### Proving the signed lifecycle in the installer campaign
-
-`scripts/test:deployment-installer` proves the signed lifecycle against real
-containers when `HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN=1` is set. The scenario
-builds two release candidates with `scripts/release:cameraagent-image` from two
-committed revisions in throwaway Git worktrees, so each signed manifest
-describes exactly the tree it was built from, then drives one instance through
-every transition the retained release record has to follow:
-
-| Transition | Command | `image-distribution.json` |
-| --- | --- | --- |
-| Install from the superseded release | `cameraagent install --image-manifest <a>` | present, naming that release and the running image |
-| Refused by the production trust root | the unmodified CLI, same upgrade | unchanged |
-| Preflight the candidate release | `cameraagent preflight --image-manifest <b>` | unchanged; nothing is acquired or started |
-| Candidate verification fails after mutation | `cameraagent upgrade --image-manifest <b>` through the campaign-only verifier fault | byte-identical; still names the restored superseded release and image |
-| Resume the same upgrade to the candidate release | `cameraagent upgrade --image-manifest <b> --resume` | present, naming the new release and the new image |
-| Upgrade to an operator-supplied image no signed release named | `cameraagent upgrade --image-ref <a-image>` | withdrawn (absent) |
-| Upgrade back to the candidate release | `cameraagent upgrade --image-manifest <b>` | present again, naming the candidate release and image |
-| Refused: signed by a key the trust root does not hold | `cameraagent upgrade --image-manifest <untrusted>` | unchanged; still names the running release |
-| Refused: declares a key identity the trust root does not carry | `cameraagent upgrade --image-manifest <declared-key>` | unchanged |
-| Refused: the trusted key's signature over a different release | `cameraagent upgrade --image-manifest <forged>` | unchanged |
-| Refused: names an archive that is not the one it signed | `cameraagent upgrade --image-manifest <mismatched>` | unchanged |
-| Rollback to the retained previous image | `cameraagent rollback` | absent |
-| Refused: release contradicts the image labels | `cameraagent upgrade --image-manifest <contradicting>` | still absent |
-| Refused: resuming the refused upgrade | `cameraagent upgrade --image-manifest <contradicting> --resume` | still absent; the journal is byte-identical |
-| State-compatibility preflight on what the sequence left behind | `cameraagent preflight` | still absent |
-| Uninstall without `--resume` after the refusal | `cameraagent uninstall` | still absent; the container is gone |
-
-Every upgrade in the table passes `--migration-backward-compatible` only when
-the two releases declare different state boundaries, as an operator would. Two
-releases built from adjacent revisions normally declare the same ones, so their
-upgrades then run without it. `summary.txt` records which applied.
-
-Each refusal targets its own gate. The production-trust-root refusal and the
-four derived-release refusals share the acquirer's single diagnostic, because
-the CLI deliberately does not surface the inner verification cause; what
-separates the derived releases is that each varies exactly one trust or
-integrity condition against a release the instance has already accepted, and
-that each is required to leave every durable deployment record — the release
-record, the instance manifest, the installation result and state, the retained
-preflight report, the staged image archive, and the lifecycle journal —
-byte-identical. Only the label-agreement refusal has a diagnostic of its own,
-and it is the only refusal that runs after the lifecycle journal has been
-opened. The campaign asserts that the journal records it as a terminal
-refusal: `status` is `Failed`, `failureCode` is `lifecycle-refused`, the
-`failureMessage` carries the gate's diagnostic, and `mutationStarted` is
-`false`. That record blocks nothing: resuming the refused command is refused
-because no incomplete operation exists, and the closing uninstall runs without
-`--resume` (the `LifecycleContractTests` prove the same for a rollback and a
-different upgrade). Every transition reads the running image back through
-`status`, whose `status` outcome (rather than `drifted`) means the container
-really carries the recorded image. Every step retains, under
-`TestResults/issue-598/<run>/`, the release record when it exists and an
-explicit `image-distribution.absent` marker when it does not, the instance
-manifest, the installation result and state, the retained preflight report, the
-lifecycle journal and its candidate diagnostics once a lifecycle operation has
-created them, a state inventory with modes, deployment and Compose checksums
-(the staged image archive appears there by SHA-256 rather than as a copied
-file), the container log, the container's real image and health, and the exact
-CLI reports the assertions read.
-
-Every trust or integrity refusal in the scenario happens before the upgrade
-mutates anything. The separate post-mutation failure runs only after the signed
-candidate has passed acquisition, image-label agreement, state compatibility,
-capture drain, Compose stop, Compose-up, application health, and installation-identity
-verification. A campaign-local Docker shim then records the real healthy,
-unprivileged candidate inspection and reports an impossible privileged runtime
-to the candidate-container verifier exactly once. The existing lifecycle catch
-restores the prior image, byte-identical Compose files, manifest, and result,
-resumes capture, and leaves `image-distribution.json` present and byte-identical
-naming that restored signed release. Every recovery command uses unmodified
-Docker results, and neither production code nor either signed candidate is
-changed to create the fault.
-
-The campaign proves that the retained record follows the image the instance runs
-across every transition above. The record is settled as soon as an upgrade or
-rollback commit is durable and again on `--resume`, so a signed upgrade whose
-final resume acknowledgement is lost still records its release when completed
-with `--resume` (proved by `LifecycleContractTests`, because the campaign cannot
-lose a real acknowledgement on demand), and an `--image-ref` upgrade of an
-instance installed from a signed release withdraws the superseded record
-(transition `03d` above, against a real container).
-
-The refusals bracket the trust decision from several sides. The release
-contradicting the image labels is genuinely signed and is refused by the
-label-agreement gate after acquisition and before any mutation. Four more are
-refused during acquisition:
-
-- a manifest signed by a key the trust root does not hold, and release B's
-  manifest presented with the trusted key's real signature over release A. Both
-  fail signature verification: a signature the trusted key cannot verify at all,
-  and a signature it verifies but not over these bytes. The forged case is the
-  one that isolates signature verification, because nothing else can refuse it.
-  The untrusted case also declares the untrusted key's identity, so it would
-  still be refused by the declared-key comparison if verification were removed.
-- a manifest declaring a key identity the trust root does not carry, signed by
-  the key it does. `VerifyManifest` verifies the signature before comparing
-  `signing.keyId`, so this is the only way to reach that comparison — the release
-  tool refuses to sign a manifest whose declared key is not the signing key, so
-  the campaign produces this signature in detached mode.
-- a manifest naming the other candidate's archive under this release's signed
-  length and checksum: the only case that fails on the acquired bytes rather than
-  on the metadata.
-
-None of the four derived releases or the label-agreement refusal writes,
-rewrites, or resurrects the retained release record. The four derived releases
-must leave every durable deployment record and the lifecycle journal
-byte-identical; the label-agreement refusal legitimately journals its refused
-operation as terminal and must leave every other durable record byte-identical.
-
-Each refused release is a manifest and signature in its own directory that names
-the real published archives through `--asset-base-url`, so nothing copies or
-links them, each published candidate still contains exactly the files its own
-`SHA256SUMS` describes — which the run verifies at the end — and the installer's
-refusal to read a hard-linked input still applies to every file it opens. The
-retained evidence keeps each refused manifest, the exact signature it was
-presented with, and the public keys that verify them, under
-`refused-releases/`.
-
-The contradicted boundary is the signed compatibility record — the campaign
-changes the release's `minimumCompatibleRevision` — because the manifest's own
-consistency rules already bind the release identity, the repository, the source
-revision and tree, the evidence assets, and each platform's archive to one
-another. The compatibility record is the one claim about the image that the
-manifest cannot check against itself, which is precisely why the installation
-compares it against the labels the image actually carries.
-
-### The ephemeral key: what the campaign does and does not establish
-
-The production signing key is a Key Vault key that only the release workflow's
-federated identity may sign with. No identity available to this campaign can
-sign with or export it, so a production-signed release can be produced only by a
-real publication run, which this scenario excludes. The campaign therefore signs
-both candidates with an ephemeral P-256 key and publishes a campaign-only CLI,
-built from the same committed revision, whose embedded trust root is that
-ephemeral public key. The key is generated fresh for each run into the
-disposable workspace; a durable `HVO_INSTALLER_SIGNED_WORKSPACE` retains it
-alongside the candidates it signed, so reruns against that workspace reuse it.
-Either way it is never a production key. Nothing else is changed: no
-verification step is removed, relaxed, or bypassed.
-
-The substitution is proved to redirect trust rather than to disable it. An
-unmodified CLI, published from the same archived candidate source so that it
-differs from the campaign CLI only in the embedded trusted key, is run against
-the same signed release and must refuse it; the campaign CLI must refuse the
-same release under a key it does not hold, must refuse the trusted key's real
-signature over other bytes, and must refuse a release whose archive is not the
-one it signed. A campaign whose trust root had simply been switched off would
-pass none of them.
-
-What the campaign establishes: the whole signed image lifecycle — manifest and
-signature verification, asset length and checksum verification, platform
-selection, the agreement between the signed compatibility record and the labels
-the image actually carries, automatic exact restore after a post-mutation
-candidate-verification failure, the terminal journal a pre-mutation refusal
-leaves behind, and the retained release record across install, upgrade,
-rollback, refusal, and the closing uninstall — against real multi-architecture release
-candidates, a real Docker daemon, and a real running CameraAgent.
-
-The manifest's declared-key-identity comparison is included: reaching it needs a
-signature the trust root can verify over a manifest that declares a different
-key, which the campaign produces with a detached signature.
-
-What it does not establish: that the committed production public key matches the
-Key Vault private key, that the workflow's federated identity can sign, that the
-signatures Key Vault produces verify against the committed trust root, that key
-custody and rotation behave as documented, or anything about the registry push
-and the published index. Those remain the first real publishing run's evidence,
-as [release-distribution.md](release-distribution.md) records.
 
 ## Local Replay Runner
 
@@ -1113,9 +1527,8 @@ the manifest, result, phase state, Compose environment, logs, or terminal output
 The one exception is the public, documented default owner password: when it
 seeded the owner, the result records `ownerPasswordIsDefault: true` and the human
 output names it.
-Signed installs additionally retain the release train/version/tag, exact
-manifest and asset length/hash, signing key ID, source and resolved public URI,
-verification result/time, and provenance identity without authentication data.
+A release install also retains the release record described in
+[Release Install](#release-install).
 
 The installer creates the product root through one narrow `sudo`-executed
 internal preparation command when needed. That command prepares only the
@@ -1336,12 +1749,6 @@ it on demand without starting, loading, pulling, or mutating anything:
 hvo-sky-install cameraagent preflight --instance-id <uuid> --json
 hvo-sky-install cameraagent preflight --instance-id <uuid> \
   --image-ref <repository@sha256:digest>
-hvo-sky-install cameraagent preflight --instance-id <uuid> \
-  --image-manifest /media/hvo/image-v1.5.0/image-manifest.json
-hvo-sky-install cameraagent preflight --instance-id <uuid> \
-  --channel stable --no-download \
-  --image-index https://mirror.example/indexes/image-stable-index.json \
-  --image-version 1.5.0 --asset-base-url https://mirror.example/releases
 ```
 
 With `--json`, an install or lifecycle invocation reports on standard error only in one-line JSON objects: any events,
@@ -1352,59 +1759,31 @@ error object, last. The rendered report is therefore written there only in human
 
 Without a candidate the installed image's declaration is evaluated; naming one evaluates that candidate's
 declaration and requires the current contract, matching an in-place upgrade. `--image-ref` names an image this
-host already holds and is read from the local Docker image store. `--image-manifest`, `--image-index`, and
-`--image-version` instead name a signed image release from the train above and are resolved exactly as an
-upgrade resolves one: the same signature and index verification, the same rollback protection, the same
-offline-archive identification, and the same platform selection, which follows the architecture recorded for the
-instance's Docker daemon rather than the machine running the CLI, so the report describes exactly the platform the
-upgrade acquires. `--asset-base-url`, `--channel`, and `--no-download` apply to them as they do to an
-upgrade and are rejected without `--image-manifest` or `--image-index`. A local-media manifest is read from disk
-whether or not `--no-download` is given, so the flag matters only for an `https://` manifest or index. A signed release and `--image-ref` are mutually
-exclusive here for the same reason install and upgrade refuse the combination.
+host already holds and is read from the local Docker image store. The command takes no `--release`: to evaluate a
+release's image first, load its offline archive or pull it by the digest `release.json` names, and pass that digest
+reference as `--image-ref`. An upgrade from `--release` runs the same preflight against the release's image before it
+changes anything, and the report it retains names the release's tag beside the image ID.
 
-A signed-release preflight is strictly read-only. It evaluates the release's own signed compatibility record,
-so it neither acquires the offline archive nor contacts Docker at all and it reports on a release this host has
-not received yet. It writes nothing into the instance, the release media, or the distribution download cache,
-and it never advances the signed-index rollback state an acquisition would commit. A persisted database whose
+The on-demand preflight is strictly read-only. A persisted database whose
 journal carries unreplayed recovery state without a wal-index is read through a private temporary copy, so
 replay never touches the instance. A database a writer currently holds is instead read in place, which
 registers a reader in the wal-index that already exists, exactly as the instance's own readers do: no file is
 created and no durable state changes. That is preferred over copying a database under a live writer, since such
-a copy can tear and report a busy instance as unreadable. Unlike install and upgrade the on-demand command retains no `state-preflight.json`. The
-report names the resolved release tag beside the immutable image ID it selected; install and upgrade record the
-same tag in the report they retain, which is the only release evidence a refused operation leaves behind.
+a copy can tear and report a busy instance as unreadable. Unlike install and upgrade the on-demand command retains
+no `state-preflight.json`.
 
-A signed-release preflight also evaluates the upgrade's contract-identity gate from the signed declaration,
-because every value that gate compares is in the release manifest and the instance manifest. The candidate's
-component, configuration contract, and catalog contract must match this instance, and a LocalRunner instance
-additionally requires the release to declare the local replay-runner contract; an in-process instance imposes no
-runner requirement. Each mismatch is a blocking finding under the `contract-identity` boundary with its own code
-(`contract-component`, `contract-configuration`, `contract-catalog`, `contract-replay-runner`), naming the
-declared and required identities. The release's platform is selected for the instance's recorded daemon
-architecture before this evaluation, so an architecture mismatch is reported as a resolution error rather than a
-finding. A release built for another configuration or catalog contract, or one omitting the runner contract a
-LocalRunner instance needs, therefore no longer preflights clean only to be refused after acquisition.
+**A compatible preflight is still not a promise that the upgrade will proceed.** It compares persisted state
+against this instance. Gates that need the image itself run only during the upgrade: a release's image must be one
+the release names and carry its version, commit and created time (see [Release Install](#release-install)), the candidate's
+contract identities must match this instance, and whether the candidate declares a state migration decides
+whether its small databases are snapshotted (see [CameraAgent Lifecycle](#cameraagent-lifecycle)).
 
-**A compatible signed-release preflight is still not a promise that the upgrade will proceed.** It compares
-persisted state and the declared contract identities against this instance. Gates that need the image itself run
-only during the upgrade: the labels the loaded image actually carries are compared against the signed record, and
-whether the candidate declares a state migration, which decides whether its small databases are snapshotted (see
-[CameraAgent Lifecycle](#cameraagent-lifecycle)). When either signed
-identity for the selected platform (`offlineArchiveImageId` or `manifestDigest`) equals the installed
-`manifest.image.imageId`, preflight remains compatible but includes the non-blocking
-`candidate-image-already-active` advisory. The advisory tells the operator that no upgrade action is needed; an
-attempted upgrade to that same image is still refused outright.
-
-Rollback state is retained per operating-system user
-(`$XDG_STATE_HOME/hvo-sky/distribution`, else `~/.local/state/...`), so run the preflight as the same
-user that will run the upgrade for its rollback protection to consult the same floor.
-
-The command exits `0` when compatible and `1` with error code `state-incompatible` otherwise. Each finding
+The command exits `0` when compatible and `3` (refused, nothing changed) with error code `state-incompatible`
+otherwise. Each finding
 names its boundary code, path, observed
 value, expected value, and remediation. The checked boundaries are the selected catalog manifest version and
 catalog identity, the Identity migration lineage recorded in `__EFMigrationsHistory`, the raw-ingress
-`PRAGMA user_version`, the ownership and mode of every writable Compose bind source, and, for a signed release,
-the contract identities described above.
+`PRAGMA user_version`, and the ownership and mode of every writable Compose bind source.
 
 An in-place upgrade requires a candidate that declares `cameraagent-state-v2`. Installing an image, and
 rolling back to one, are not state migrations and therefore also accept the superseded declaration. Any
@@ -1481,7 +1860,8 @@ instance identity back to healthy. Take an instance backup first if the deleted 
 
 ## CameraAgent Lifecycle
 
-Run lifecycle commands as the Docker-capable deployment user, never as root.
+Run lifecycle commands, `backup` and `restore` included, as the Docker-capable deployment user, the instance's service
+account, never as root or with `sudo` (see [Backup and restore](#backup-and-restore)).
 Image and catalog transitions authenticate through the lifecycle-control credential
 provisioned during installation and bound to the instance manifest. Candidate
 health, installation identity, owner identity, and runtime ownership are verified
@@ -1494,6 +1874,8 @@ hvo-sky-install cameraagent upgrade --instance-id <uuid> \
 hvo-sky-install cameraagent rollback --instance-id <uuid>
 hvo-sky-install cameraagent uninstall --instance-id <uuid>
 hvo-sky-install cameraagent reinstall --instance-id <uuid>
+hvo-sky-install cameraagent backup --instance-id <uuid>
+hvo-sky-install cameraagent restore <archive> --instance-id <uuid>
 ```
 
 An upgrade whose candidate declares the installed state contract is a pure swap. The candidate declares a state
@@ -1527,6 +1909,169 @@ candidate restores the exact prior Compose, image, identity records and, for a
 declared migration, databases before capture resumes. Noncurrent manifests and
 results are rejected before lifecycle state mutation; invalid candidate images or
 rollback models are rejected before runtime mutation.
+
+### Backup and restore
+
+`backup` is the one command that copies everything an instance holds, bulk captures included; an upgrade or rollback
+never copies bulk data (install contract draft 4).
+
+```bash
+hvo-sky-install cameraagent backup --instance-id <uuid> [--plan] [--json] [--resume]
+hvo-sky-install cameraagent restore <archive> --instance-id <uuid> [--plan] [--json] [--resume]
+```
+
+**Run them as the instance's service account.** Backups are owner-only (owner decision, 2026-10-18). The service
+account already owns every live store and secret a backup copies, its Identity database, Data Protection keys and
+tokens, and it is in the `docker` group, which is root on the host in all but name. An archive kept from it by root
+would protect almost nothing. So both commands run as that account, not started with `sudo`, and handle every archive
+and every file of the instance as that account:
+- Run with `sudo`, as root or as another user, they are refused (exit `3`) before anything changes, naming the
+  account to run them as.
+- The account is the owner of the instance root, which the installer creates as the account the instance manifest
+  records. For an absent instance it is the account the backup's record names, which the backup verified as the
+  instance's owner when it ran.
+- Every file they write is that account's.
+- **The one exception** (owner decision, 2026-10-18): before they change anything, they may call the installer's own
+  folder-preparation helper, the narrow `sudo` helper `install` uses, only to create two folders, both the service
+  account's: a missing `<product-root>/backups`, and an absent instance root when restoring after a purge. Each is
+  first created as the account, where the product root allows it. Nothing else is privileged: a restore leaves the
+  machine install record (`/etc/hvo-sky/install.json`) to `cameraagent reinstall`.
+
+RoofController's backups run as root, in `/var/backups/hvo-roof`. The install contract (section 5) records why
+SkyMonitor's differ.
+
+**Where backups are kept.** Each backup is one file in `<product-root>/backups`, named
+`hvo-sky-<instance>-<yyyyMMddTHHmmssZ>-<operation>.tar.gz`, with its record `<archive>.json` beside it.
+- The folder is the service account's, mode `0700`, and both files are its own, mode `0600`.
+- Before a backup changes anything, it checks the folder, even when it does not exist yet:
+  - every existing folder above it must be a folder, not a link, that no group or other user can write, unless its
+    sticky bit is set;
+  - the folder itself, once it exists, must be the account's own, mode `0700` exactly.
+
+  Otherwise the backup is refused (exit `3`), naming the folder and its remedy, because someone else could put another
+  folder in its place.
+- The first backup creates the folder, still before it changes anything: as the account where it can, and through the
+  preparation helper when the product root is root's, as the production product root is. If the folder cannot be
+  created, the backup is refused (exit `3`) with nothing changed. A `--plan` creates nothing.
+- Copy a backup off the host as the service account, both files together. Backups are kept until you remove them.
+
+**What a backup holds.** It is a gzip-compressed PAX tar:
+- under `instance/`, every folder and regular file of the instance root, except the instance lock and the owner
+  recovery socket;
+- under `snapshots/<operation>/<snapshot>/`, a verified snapshot of the instance's SQLite stores, taken while the
+  instance is stopped through the SQLite online backup API, as an upgrade takes one
+  ([Swap upgrade and database snapshots](#swap-upgrade-and-database-snapshots)), and the snapshot the manifest keeps
+  for a rollback, so a restored instance can still roll back;
+- as its last entry, the manifest `hvo-sky-backup.json`: every entry's path, type, mode, size and SHA-256, and the
+  instance, image, release, catalog and product root the backup belongs to, and the service account it ran as.
+
+A link, device or other special file in the instance refuses the backup before anything changes.
+
+**What proves an archive.** The record binds the archive's bytes: restore reads only an archive whose SHA-256 and length
+are the ones its record names. Within those bytes, the restore also requires:
+- every entry is named by the manifest, with the same type, mode, size and SHA-256;
+- the manifest is the last entry and names nothing else;
+- the decompressed stream holds nothing after the tar's end but zero padding.
+
+This is a check of the archive the backup wrote, not a proof of the gzip format.
+
+**How a backup runs.**
+1. Before anything changes, it checks the backup folder (above) and that there is room on each filesystem it writes. That
+   is the archive at its worst
+   case (no compression, every entry's tar overhead, the snapshot it takes and the rollback snapshot the manifest
+   keeps), the snapshot itself, and 256 MiB of headroom on each. Any partial archive an earlier interrupted backup of
+   the instance left counts as free. Too little room refuses it (exit `3`).
+2. A running instance's capture is paused and drained, and its container stopped, only while the snapshot and the
+   archive are written. The container is then started, verified and resumed before the archive is read back. That
+   start is made as every lifecycle start is, so on a host whose Docker cannot enforce some of the CameraAgent limits
+   the backup warns first and starts without a CPU limit Docker refuses there (see
+   [Upgrade, rollback and the host's limits](#upgrade-rollback-and-the-hosts-limits)). A stopped instance is left
+   stopped, and the host's limits do not apply.
+3. The archive is written as `<archive>.partial`, made durable, read back in full, and proved whole against its
+   manifest and the hash taken as it was written. Only then does the backup commit it, under the folder's lock: the
+   record is written first, then the partial gets its name. A name that is already committed is refused before any
+   record is touched.
+4. Standard error reports progress at most every two seconds. With `--json` each report is a `backup-progress` event.
+   The backup has no fixed deadline, so a large instance is never cut off part of the way.
+5. Once complete, it removes every database snapshot of the instance that nothing refers to (see below).
+
+A failure or Ctrl+C discards the partial and puts the instance back as it was (exit `1` or `130`). The instance is
+started and resumed whatever becomes of the discard. If the discard or the restart fails, both errors are reported and
+the operation stays resumable. After an interruption, `--resume` keeps nothing written before the archive was complete.
+From then on, it reads the archive back, commits it and finishes. A partial or unrecorded archive is never restorable.
+
+**How a restore runs.** `restore` puts back an instance that is uninstalled and preserved, or absent (after `purge`,
+or on a rebuilt host with the same product root and Docker daemon). It never replaces an installed instance: uninstall
+it first. `<archive>` is the backup's name, or its path in `<product-root>/backups`. Before anything changes, the
+restore reads the whole archive and refuses it (exit `3`) when:
+- it is partial, has no record, or its bytes are not the ones the record names;
+- an entry is not the one its manifest names, the manifest is not last, or the archive cannot be read to its end;
+- it belongs to another instance or product root, or its record names another account than the one running the
+  restore;
+- the catalog it needs is not installed, Docker is another daemon, or the instance's container exists;
+- there is not enough room for what is left to do. A fresh restore needs room to stage the archive and to copy each
+  database it puts back. A resumed one needs room only for what it has not done: none for staging once the journal
+  records the archive staged, and none for the database copies once it records the databases restored.
+
+A `--plan` makes the same checks and writes nothing.
+
+The restore then:
+1. records the counters the replaced instance handed out;
+2. reads the archive a second time, staging its files in `<instance-root>/.hvo-restore/<operation>` and verifying
+   every byte again. If any counter the replaced instance handed out could not be carried into the backup's
+   databases, it stops here, with nothing replaced;
+3. swaps the staged files in, keeping what they replace until it completes. Each move is a rename on one filesystem,
+   durable in both folders before the next step. A resumed restore syncs both folders of every rename again, those it
+   finds already made included, since an interruption between a rename and its sync leaves it undurable;
+4. puts the databases back through the same staged, durable and verified snapshot restore an upgrade's recovery uses,
+   carrying every counter past what the replaced instance handed out. A database that hands out identities, and that
+   the backup does not have because the instance created it later, is carried over from the replaced instance whole:
+   the database file with its WAL, journal and shared-memory files, as one unit. An interruption between them leaves
+   the rest to move when the restore is resumed. The restore is not done until every counter is at least as high as
+   the replaced instance took it;
+5. revokes again the credentials and authority the live instance revoked after the backup, and reports each change:
+   - an API key the backup holds and the live store does not is deleted;
+   - an account whose password or security stamp changed keeps the live password and stamp;
+   - an account the live store demoted is not the site owner;
+   - a role or claim the live store removed is removed;
+   - an account the live store no longer has loses its password, roles, claims and site ownership, and is locked out.
+
+   With no live credential store to compare (an absent instance), it warns loudly that every key and password valid at
+   the backup is valid again. With `--json`, both are a `credentials-restored` event;
+6. keeps the live instance's owner settings over the backup's, because at every start CameraAgent makes the account
+   they name the site owner, and creates it from the temporary password when it is missing:
+   `config/secrets/LocalIdentity__AdminEmail`, the other `LocalIdentity__Admin*` settings,
+   `LocalIdentity__AllowMissingAdminPassword` and `config/owner-bootstrap/temporary-password`. It also keeps the owner
+   email the live records name, which `reinstall` verifies the running instance against. So the backup does not give
+   back site ownership the live instance moved.
+   - When the backup does not hold the live owner's own account, as after a purge and a fresh install with another
+     owner, or with the same email but a new account, the restore puts the live account in place, with its live
+     password. An installed CameraAgent can only find its owner, by its email, never create it, because the installer
+     withdraws the temporary password once the owner is seeded.
+   - Every account the backup holds under the live owner's email or sign-in name gives them up first. One the live
+     store no longer has gets a sign-in name no other account has (`removed-<id>`, or `removed-<id>-2` and so on),
+     loses the email, and is locked out. One the live store still has takes the sign-in name, email and lockout the
+     live store gives it, as one an earlier restore of the same backup gave way, so restoring a backup again changes
+     nothing more.
+   - The restore reports each setting and account it kept, settings by name only (`restore-live-owner-settings-kept`).
+     With no live instance it warns loudly that the backup's owner settings are in force again
+     (`restore-backup-owner-settings`).
+
+The instance is restored uninstalled, with its release records settled for the restored image. The machine install
+record is not touched: start the instance with `hvo-sky-install cameraagent reinstall --instance-id <uuid>`, which
+brings it up through the verified reinstall path and settles the install record from the restored manifest. The Docker image the backup names must still be on the host for that.
+
+Before the swap, a failure or Ctrl+C removes what was staged and changes nothing else. After it, the restore can only
+go forward: `--resume` finishes it.
+
+**Database snapshot cleanup.** When a backup or restore completes, it removes every snapshot under
+`<product-root>/operations/lifecycle/<operation>/state-snapshots/` that its manifest says belongs to this instance and
+that nothing refers to. A snapshot is kept when:
+- the instance manifest keeps it for a rollback;
+- an unfinished operation in the instance's journal wrote it or names it;
+- the manifest that operation saved names it.
+
+A snapshot whose manifest cannot be read, or that belongs to another instance, is never touched.
 
 ### Swap upgrade and database snapshots
 
@@ -1867,9 +2412,10 @@ The installed version is the one the retained release record names for the runni
 image reference records none. Its upgrade then shows every note up to the target, says that the installed version is not
 recorded, and cannot apply the older-target refusal.
 
-No current upgrade source supplies a `release.json`. The reader and the upgrade step that uses it are in place. The
-release acquisition that selects the candidate image from the same `release.json`, and records the installed release
-version, comes with #1309. Until then, image-reference and signed-manifest upgrades show no notes.
+An upgrade from `--release` reads the notes from the release's `release.json`, and records the installed release
+version once the upgrade completes (see [Release Install](#release-install)). An upgrade from `--image-ref` has no
+`release.json`, so it shows no notes, withdraws the release record, and leaves the next upgrade without an installed
+version. A rollback restores the record of the image it returns to, so the older-target refusal applies again.
 
 ### Restore Only After an Interrupted Upgrade
 
@@ -1890,7 +2436,7 @@ Retain the original image reference, archive checksum, `--no-download`, and
 compatibility acknowledgement exactly as supplied to that upgrade. The command
 checks the original request hash and operation UUID; it does not acquire or
 inspect the candidate image. This first recovery slice supports operator-image
-upgrades only, not signed-release selectors, rollback, or catalog operations.
+upgrades only, not `--release` upgrades, rollback, or catalog operations.
 
 The original manifest/result and operation snapshots must agree exactly, including
 the prior rollback history. Owner-only bounded snapshot reads, canonical configuration
@@ -1941,12 +2487,12 @@ they never publish terminal success. Repeating a successful restore-only request
 verifies the current result without another resume command. It never reports the
 upgrade completed, and ordinary `--resume` cannot restart a settled recovery.
 
-Issue [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044) remains
-open for size-aware backup deadlines, capacity, progress, and cancellation/partial
-cleanup, which now apply to the explicit `backup` command
-([#1315](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1315)) rather than to
-every upgrade. Do not manually edit the lifecycle journal or
-reduce an approved memory override to work around those remaining limits.
+The explicit [`backup` command](#backup-and-restore)
+([#1353](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1353)) checks its
+capacity, reports progress, has no fixed deadline, and discards its partial archive
+on cancellation; issue [#1044](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1044)
+keeps the qualification of a large (61 GiB) instance. Do not manually edit the
+lifecycle journal or reduce an approved memory override to work around a limit.
 
 The protected installation-verification GET used by both the pre-mutation owner
 state read and full installation identity verification has one finite **120-second
@@ -2086,7 +2632,6 @@ hvo-sky-install catalog install --catalog-bundle /owner-private/catalog.bundle
 hvo-sky-install catalog select --instance-id <uuid> --catalog-version <version>
 hvo-sky-install catalog rollback --instance-id <uuid>
 hvo-sky-install catalog gc --catalog-version <version>
-hvo-sky-install catalog check --catalog-manifest <signed-manifest-url-or-path>
 ```
 
 Each approved catalog ID has its own root,
@@ -2104,12 +2649,6 @@ returns to the previous selection across lineages. The exact identities and
 selection behavior are documented in
 [HYG 4.4 catalog snapshot](../catalog/hyg-v44.md).
 
-`catalog check` is read-only. It verifies the signed manifest or index, or the
-previously verified cached copy when offline, and reports `available` or
-`installed`. It takes no lock, downloads no bundle, and changes no catalog,
-selection, cache or rollback state. It refuses an installed version whose
-identity differs from the signed release.
-
 Mutating garbage collection requires one explicit version. A dry run without a
 version plans collection across every installed approved catalog ID. It fails closed on
 unknown instance roots, malformed selection pointers, active Docker mounts,
@@ -2126,7 +2665,7 @@ future lifecycle scope.
 ## Harness Inputs For A Published Image
 
 Both container harnesses can exercise a published image instead of building one,
-so a signed release can be proved against the bytes an operator receives:
+so a release can be proved against the bytes an operator receives:
 
 ```bash
 # Install, health, replay-runner health, stop-and-reinstall idempotence, preflight,
@@ -2141,7 +2680,7 @@ case "$(uname -m)" in
   *) printf 'Unsupported machine architecture: %s\n' "$(uname -m)" >&2; exit 2 ;;
 esac
 HVO_PRODUCTION_CATALOG_BUNDLE=<bundle> \
-HVO_INSTALLER_RELEASE_ARCHIVE=<candidate>/cameraagent-image-v<version>-linux-${release_architecture}.tar \
+HVO_INSTALLER_RELEASE_ARCHIVE=<release>/skymonitor-cameraagent-<version>-linux-${release_architecture}.oci.tar \
   ./scripts/test:deployment-installer
 
 # Two-agent standalone smoke against a published image. Diagnostic mode only:
@@ -2155,26 +2694,6 @@ Neither variable changes anything when unset; both harnesses build their own
 image as before. `HVO_INSTALLER_BASELINE_REVISION` takes precedence, because a
 baseline upgrade contract needs two images built from two revisions.
 
-The signed-release scenario is a separate opt-in section of the same campaign
-and adds its own instance rather than replacing the operator-supplied image
-path:
-
-```bash
-HVO_PRODUCTION_CATALOG_BUNDLE=<bundle> \
-HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN=1 \
-  ./scripts/test:deployment-installer
-```
-
-| Variable | Meaning |
-| --- | --- |
-| `HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN` | `1` runs the signed install/upgrade/post-mutation automatic-restore/rollback/refusal scenario |
-| `HVO_INSTALLER_SIGNED_BASE_REVISION` | Revision of the superseded release. Default `HEAD~1` |
-| `HVO_INSTALLER_SIGNED_CANDIDATE_REVISION` | Revision of the upgrade candidate, which also builds the campaign CLI. Default `HEAD`. The base must be a distinct ancestor of it, and both must own the release train |
-| `HVO_INSTALLER_SIGNED_ARM64_BUILDER` | `linux/arm64` builder for the release candidates. Falls back to `HVO_RELEASE_ARM64_BUILDER`, then to `hvo-edge-01-arm64` |
-| `HVO_INSTALLER_SIGNED_VERSION_A` / `_B` | Candidate versions. Default `0.0.0-598a` and `0.0.0-598b` |
-| `HVO_INSTALLER_SIGNED_WORKSPACE` | Durable owner-private directory for the signing key and two candidates, created if absent and set to mode `0700`. A retained exact-candidate workspace is cryptographically reverified and reused without recopying or rebuilding; leaving it unset creates a fresh disposable workspace |
-| `HVO_INSTALLER_SIGNED_EVIDENCE_ROOT` | Retained evidence directory. Default `TestResults/issue-598/<timestamp>` |
-
 The harness derives its native platform once from `uname -m`: `x86_64` selects
 `linux/amd64` and the `linux-x64` deployment CLI, while `aarch64` or `arm64`
 selects `linux/arm64` and the `linux-arm64` CLI. Any other architecture is
@@ -2183,137 +2702,18 @@ architecture, and every archive loaded by the harness must report that native
 platform. An emulated image or an ARM host driving an x64 Docker server is not
 native qualification evidence.
 
-Every one of those preconditions — a clean worktree, `openssl`, two distinct
-ancestor revisions that both own the release train, and two distinct versions —
-is checked before any scenario runs, so a misconfigured invocation fails in
-seconds rather than after the rest of the campaign.
+### Published ARM64 release smoke
 
-The scenario requires a clean worktree because its candidates and CLI are bound
-to committed revisions. On first use it builds two multi-architecture candidates
-and scans four archives; later exact-candidate runs authenticate and reuse the
-retained packages. A complete first run that also exercises
-`HVO_INSTALLER_BASELINE_REVISION` took 35 minutes on an amd64 host with a native
-`linux/arm64` builder over the network, of which about 25 minutes were the two
-candidate builds. Hold the shared Docker window for the whole run. It never
-pushes to a registry, and CI never sets
-`HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN`, so this scenario is an operator-run gate
-rather than a CI-gated one.
-
-### Reusing signed candidates for native ARM64 qualification
-
-Candidate creation and native execution can use different hosts without
-weakening identity. First run the corrected campaign on an x64 host with an
-external, owner-private `HVO_INSTALLER_SIGNED_WORKSPACE`. That run builds and
-verifies both multi-architecture candidates. Copy the complete workspace — the
-two release directories, campaign signing key and public key, and untrusted test
-key pair — to an owner-private directory on the ARM64 host. Do not copy only the
-ARM64 archives: manifest verification, refusal derivations, and final
-`SHA256SUMS` checks require the complete candidates.
-
-On the ARM64 host, use a clean checkout that contains the same two exact Git
-objects and set the same base/candidate revisions and versions:
-
-```bash
-umask 077
-chmod 700 <external-signed-workspace>
-chmod 600 <external-signed-workspace>/*.pem
-
-HVO_PRODUCTION_CATALOG_BUNDLE=<exact-production-bundle> \
-HVO_INSTALLER_SIGNED_RELEASE_CAMPAIGN=1 \
-HVO_INSTALLER_SIGNED_BASE_REVISION=<release-a-sha> \
-HVO_INSTALLER_SIGNED_CANDIDATE_REVISION=<release-b-sha> \
-HVO_INSTALLER_SIGNED_VERSION_A=<version-a> \
-HVO_INSTALLER_SIGNED_VERSION_B=<version-b> \
-HVO_INSTALLER_SIGNED_WORKSPACE=<external-signed-workspace> \
-HVO_INSTALLER_SIGNED_EVIDENCE_ROOT=<external-evidence-root> \
-  ./scripts/test:deployment-installer
-```
-
-Before reuse, the production verifier authenticates each retained signed manifest,
-every declared asset, and the independently signed checksum list, then binds the
-release and image revision, tree, version, and tag to the requested Git objects.
-The complete verification repeats after the lifecycle. A campaign retains 16
-transition directories: `01`,
-`02`, `03a` through `03e`, `04` through `07`, `08`, `09`, `09b`, `10`, and
-`11`. Every applicable `image-distribution.json` must name `linux/arm64`, the
-ARM64 archive and component inventory, and the expected immutable A/B identity.
-Retain `summary.txt`, the manifests, signed checksums, refusal artifacts,
-container evidence, host and Docker inventories, and before/after cleanup
-inventories. Keep the owner-private exact-candidate cache through review and any
-bounded rerun so the 1.3 GB package need not be recopied. For exact-candidate
-reuse, keep the ephemeral `signing.pem` at mode `600` in that owner-private
-workspace for as long as the cached candidates remain reusable; it is never a
-production key. To retire the private keys instead, securely delete them and
-delete the workspace's `release-*` directories (or the whole workspace) before
-the next campaign. A later run generates a new key and correctly refuses retained
-candidates signed by the retired key rather than rebuilding them. Immutable public
-candidates and public-key evidence may be retained separately as evidence, not as
-a reusable workspace after key retirement. Never use a production CameraAgent
-host for this campaign.
-
-### First published ARM64 release smoke
-
-The first real image release, and each materially changed release process, must
-run the published archive path on a qualified native ARM64 host. This is not a
-release-production command: it downloads immutable public assets after the
-release exists, verifies them with the production trust root, and exercises the
-archive an operator receives.
-
-```bash
-set -euo pipefail
-umask 077
-release_tag=image-v<version>
-release_root="$(mktemp -d /srv/hvo/image-release-smoke.XXXXXX)"
-evidence_root=/srv/hvo/evidence/<issue-or-release>/<timestamp>
-mkdir -m 700 "$evidence_root"
-
-test "$(gh release view "$release_tag" --repo HualapaiValley/HVO.SkyMonitor \
-  --json isDraft --jq .isDraft)" = false
-gh release view "$release_tag" --repo HualapaiValley/HVO.SkyMonitor \
-  --json tagName,targetCommitish,url >"$evidence_root/release.json"
-gh release download "$release_tag" --repo HualapaiValley/HVO.SkyMonitor \
-  --dir "$release_root"
-
-dotnet restore tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj
-dotnet build tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
-  --no-restore --configuration Release -warnaserror
-release_tool=(dotnet run --project tools/HVO.SkyMonitor.Deployment.ReleaseTool/HVO.SkyMonitor.Deployment.ReleaseTool.csproj \
-  --no-build --configuration Release --)
-"${release_tool[@]}" verify \
-  --manifest "$release_root/image-manifest.json" \
-  --signature "$release_root/image-manifest.json.sig" \
-  --asset-root "$release_root"
-"${release_tool[@]}" verify-signature \
-  --input "$release_root/SHA256SUMS" \
-  --signature "$release_root/SHA256SUMS.sig"
-(cd "$release_root" && sha256sum --check SHA256SUMS)
-
-test "$(jq -er '[.images[0].platforms[] | select(.operatingSystem == "linux" and .architecture == "arm64")] | length' \
-  "$release_root/image-manifest.json")" = 1
-archive_name="$(jq -er '.images[0].platforms[] | select(.operatingSystem == "linux" and .architecture == "arm64") | .offlineArchiveAsset' \
-  "$release_root/image-manifest.json")"
-test "$archive_name" = "cameraagent-image-v<version>-linux-arm64.tar"
-test -f "$release_root/$archive_name"
-
-{
-  uname -a
-  docker info --format 'server={{.ServerVersion}} os={{.OSType}} architecture={{.Architecture}} id={{.ID}} root={{.DockerRootDir}}'
-  jq -er '.images[0].sourceRevision' "$release_root/image-manifest.json"
-  sha256sum "$release_root/$archive_name"
-} >"$evidence_root/host-release-inventory.txt"
-
-HVO_PRODUCTION_CATALOG_BUNDLE=<exact-production-bundle> \
-HVO_INSTALLER_RELEASE_ARCHIVE="$release_root/$archive_name" \
-  ./scripts/test:deployment-installer 2>&1 | tee "$evidence_root/deployment-installer.log"
-```
-
-Require an `aarch64`/`arm64` host, a local Linux ARM64 Docker daemon on qualified
-non-production storage, exit zero, a healthy unprivileged CameraAgent with
-capture advancing, and clean before/after container, network, image, process,
-and worktree inventories. Record the public release URL/tag, manifest source
-revision, archive checksum, catalog identity, host/daemon/storage inventory, and
-cleanup result. Until this post-release run exists, native signed-campaign
-qualification does not by itself prove a production-published ARM64 archive.
+Every integration pre-release runs the published-release path on native ARM64
+before it is published: the workflow's arm64 job installs a throwaway instance
+from the draft's arm64 offline archive on `github-runner-pi-01` and upgrades it
+by digest from GHCR ([prereleases.md](prereleases.md#what-the-workflow-does)).
+To repeat it by hand on a qualified ARM64 host, download a pre-release's files
+as [prereleases.md](prereleases.md#installing-a-pre-release-on-skymonitor01)
+shows and run `scripts/test:release-install --release <folder>`. Never use a
+production CameraAgent host for it. A final release or release candidate runs the same test from its draft on both
+linux-x64 (a GitHub-hosted runner) and linux-arm64 before the owner can approve publishing it
+([releases.md](releases.md#what-the-workflow-does)).
 
 ## Build Evidence
 
@@ -2330,10 +2730,16 @@ dotnet publish src/HVO.SkyMonitor.CameraAgent.ReplayRunner/HVO.SkyMonitor.Camera
   --configuration Release --runtime linux-arm64
 ```
 
-Each installer publish is stamped with its version and commit. A publish given no version is `0.0.0-dev+<commit>`. A
-release passes `-p:InformationalVersion=<version> -p:SourceRevisionId=<40-character commit>`. The build refuses a
-version that is not 1-128 letters, digits, periods and hyphens, and a commit that is not 40 lowercase hexadecimal
-digits or `unknown`. `scripts/ci:component-publish delivery`, the Architecture & Publish job and the release workflow
+Each installer publish is one self-contained file. The native SQLite library that catalog validation opens is bundled
+into it, and the .NET host extracts it when the installer starts, under `$DOTNET_BUNDLE_EXTRACT_BASE_DIR` or, by default,
+`~/.net`; the user running the installer needs a writable home for that. `scripts/release:assets` refuses a publish that
+leaves anything the installer loads beside the executable.
+
+Each installer publish is stamped with its version and commit. A publish given no version is the product version's
+development build, `X.Y.Z-dev+<commit>`. A release passes `-p:Version=<version> -p:SourceRevisionId=<40-character
+commit>`. The build refuses a version that is not the product version or a pre-release of it (`Directory.Build.targets`,
+[releases.md](releases.md#the-product-version)), a version that is not 1-128 letters, digits, periods and hyphens, and
+a commit that is not 40 lowercase hexadecimal digits or `unknown`. `scripts/ci:component-publish delivery`, the Architecture & Publish job and the release workflow
 each check that `--version` prints exactly `<version>+<commit>`. On ARM64 they check that the binary contains that
 string.
 
@@ -2354,7 +2760,10 @@ step, because its baseline image may predate the boundary labels, and keeps the 
 upgrade.
 
 Run the disposable installer contract against the current image with
-`./scripts/test:deployment-installer`. To validate an owner-recovery image
+`./scripts/test:deployment-installer`. It runs `backup` and `restore` as the instance's service account, the user
+running the campaign, with no `sudo`. Its last step purges the instance, installs it again with another owner, and
+restores the earlier backup over it, so the real CameraAgent startup seeder proves the live owner settings win. To
+validate an owner-recovery image
 transition, use a clean committed worktree with an ancestor pre-support commit
 available locally:
 
@@ -2376,28 +2785,6 @@ installation, configuration, catalog, and recovered Identity state. The exact
 production catalog bundle remains required through
 `HVO_PRODUCTION_CATALOG_BUNDLE`.
 
-The `Signed Distribution Release` workflow publishes independent installer and
-catalog tags, signed manifests and indexes, checksums, SBOMs, provenance,
-licenses, and attribution. The optional bootstrap script downloads and verifies
-only the selected self-contained CLI archive:
-
-```bash
-./scripts/install-hvo-sky-install.sh 1.0.0 /opt/hvo-installer-1.0.0
-```
-
-Resolve a signed installer-index default or exact indexed version with:
-
-```bash
-./scripts/install-hvo-sky-install.sh \
-  --index https://github.com/HualapaiValley/HVO.SkyMonitor/releases/download/installer-index-3/installer-release-index.json \
-  --version 1.0.0 \
-  /opt/hvo-installer-1.0.0
-```
-
-The optional third direct-mode argument and `--asset-base` support HTTPS mirrors
-or absolute local release directories. `HVO_INSTALLER_NO_DOWNLOAD=1` permits
-only local or cached bytes. `HVO_INSTALLER_CACHE` selects an owner-only bounded
-2 GiB cache; mirror redirects are refused and GitHub redirects are restricted
-to approved release CDN hosts. The script retains the signed manifest, signature,
-and sanitized `installer-distribution.txt` beside the verified executable; it
-does not download or execute a helper verifier.
+Final releases are cut by `.github/workflows/release.yml` ([releases.md](releases.md)), and integration pre-releases
+by `.github/workflows/prerelease.yml` ([prereleases.md](prereleases.md)). The key-signed design, its independent
+installer and catalog trains and its bootstrap script were retired by the owner on 2026-10-16 and removed (#1310).

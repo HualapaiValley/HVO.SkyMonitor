@@ -1117,7 +1117,11 @@ public sealed partial class UpgradePreflightTests
                     ID = "daemon",
                     Name = "host",
                     Architecture = "amd64",
-                    ServerVersion = "29.7.2"
+                    ServerVersion = "29.7.2",
+                    MemoryLimit = true,
+                    CpuCfsQuota = true,
+                    PidsLimit = true,
+                    NCPU = 64
                 }), string.Empty));
             }
             if (arguments is ["compose", "version", ..])

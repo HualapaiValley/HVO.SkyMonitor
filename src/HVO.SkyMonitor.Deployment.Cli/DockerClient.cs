@@ -24,7 +24,14 @@ internal sealed class DockerClient(IProcessRunner processRunner)
 {
     private string? endpoint;
 
-    internal sealed record ContainerRuntimeIdentity(bool Exists, bool Running, bool Healthy, string? ImageId);
+    internal sealed record ContainerRuntimeIdentity(bool Exists, bool Running, bool Healthy, string? ImageId)
+    {
+        /// <summary>
+        /// The CPU, memory and PID limits Docker enforces on the container, as its <c>HostConfig</c> reports them, or
+        /// <see langword="null"/> when it reports none of them. Docker reports an unset limit as zero.
+        /// </summary>
+        public ContainerResourceLimits? Limits { get; init; }
+    }
     public async Task<DockerDaemonIdentity> PreflightAsync(CancellationToken cancellationToken)
     {
         var identity = await ReadDaemonIdentityAsync(cancellationToken).ConfigureAwait(false);
@@ -80,10 +87,246 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             ? value.GetString()
             : null;
 
+    /// <summary>
+    /// Loads, pulls or finds the CameraAgent image a request names and reads its identity and contract labels. A
+    /// <paramref name="release"/> selection additionally requires the image Docker resolved to be the release's: one of
+    /// the identities its offline archive names, and labelled with the release's version and commit. A release image
+    /// this call imports is removed again when it is refused, when Docker fails, or when the operation is cancelled, so
+    /// a refused or abandoned release leaves Docker holding what it held.
+    /// </summary>
     public async Task<(DockerDaemonIdentity Daemon, ImageInstallationIdentity Image)> PrepareImageAsync(
         InstallRequest request,
         bool allowMutation,
-        DistributionImageIdentity? signedImage,
+        ReleaseImageSelection? release,
+        CancellationToken cancellationToken)
+    {
+        var added = allowMutation && release is not null
+            ? await AbsentAsync(ReleaseIdentities(release), cancellationToken).ConfigureAwait(false)
+            : [];
+        try
+        {
+            return await PrepareImageCoreAsync(request, allowMutation, release, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (added.Count > 0)
+        {
+            // A cancellation is removed too: a load or pull it interrupted may already have imported the image.
+            await UndoImportAsync(added, exception).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Imports a release's image, loading its offline archive or pulling it by the digest release.json names, and checks
+    /// what Docker then holds with <paramref name="validate"/> as well as against the release, before anything else is
+    /// changed for it. Whatever this import added is removed again when the image is refused, when Docker fails, or when
+    /// the operation is cancelled, so it leaves Docker holding what it held. A registry image's metadata must have been
+    /// read and checked first (<see cref="ReadRegistryReleaseImageAsync"/>); these checks after the import are the second.
+    /// Returns the image and the names this import added, which <see cref="UndoImportAsync"/> removes again when a later
+    /// refusal undoes the import.
+    /// </summary>
+    public async Task<(ImageInstallationIdentity Image, IReadOnlyList<string> Added)> ImportReleaseImageAsync(
+        InstallRequest request,
+        ReleaseImageSelection release,
+        Action<ImageInstallationIdentity> validate,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(release);
+        ArgumentNullException.ThrowIfNull(validate);
+        var added = await AbsentAsync(ReleaseIdentities(release), cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var (_, image) = await PrepareImageCoreAsync(request, allowMutation: true, release, cancellationToken)
+                .ConfigureAwait(false);
+            validate(image);
+            return (image, added);
+        }
+        catch (Exception exception) when (added.Count > 0)
+        {
+            await UndoImportAsync(added, exception).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Removes the names an import added once <paramref name="cause"/> has stopped the operation: without force, never
+    /// cancelled, and never a name Docker held before the import. A refusal says that nothing changed, so after one the
+    /// names are read back from one listing of every image Docker holds (<see cref="HeldAsync"/>). When any is still
+    /// listed, or the listing fails or cannot be read completely, the refusal becomes a failure that names the images and
+    /// how to remove them (#1315 PR-1355-R4 R4-1, R5-1). Absence is proven only by a listing that succeeds: a failed
+    /// command never proves that a name is gone. Any other cause stands as it is: a failure or an interruption never says
+    /// that nothing changed.
+    /// </summary>
+    public async Task UndoImportAsync(IReadOnlyList<string> added, Exception cause)
+    {
+        ArgumentNullException.ThrowIfNull(added);
+        ArgumentNullException.ThrowIfNull(cause);
+        if (added.Count == 0) return;
+        await RemoveImagesAsync(added).ConfigureAwait(false);
+        if (cause is not InstallerException { IsRefusal: true }) return;
+        IReadOnlyList<string> left;
+        try
+        {
+            left = await HeldAsync(added).ConfigureAwait(false);
+        }
+        catch (Exception reread) when (reread is not OutOfMemoryException)
+        {
+            throw new InstallerException(
+                $"{cause.Message} The image this run imported may still be held: Docker's images could not be listed after removing it ({Redaction.SafeDiagnostic(reread.Message)}). Check with 'docker image ls --all --digests', and remove what is left with 'docker image rm {string.Join(' ', added)}'.",
+                cause);
+        }
+        if (left.Count > 0)
+        {
+            throw new InstallerException(
+                $"{cause.Message} Docker did not remove the image this run imported, so it is still held: {string.Join(", ", left)}. Remove it with 'docker image rm {string.Join(' ', left)}'.",
+                cause);
+        }
+    }
+
+    /// <summary>
+    /// The names of <paramref name="names"/> Docker holds, from one structured listing of every image
+    /// (<c>docker image ls --all --digests --no-trunc --format '{{json .}}'</c>). A name is gone only when a listing that
+    /// succeeded, and whose every line was read, does not show it. A listing that exits non-zero, or any line of it that
+    /// is not an image this installer reads, proves nothing and throws. Docker's error text is not read.
+    /// </summary>
+    private async Task<IReadOnlyList<string>> HeldAsync(IReadOnlyList<string> names)
+    {
+        var listing = await RunDockerRawAsync(
+                ["image", "ls", "--all", "--digests", "--no-trunc", "--format", "{{json .}}"], CancellationToken.None)
+            .ConfigureAwait(false);
+        if (listing.ExitCode != 0)
+        {
+            throw new InstallerException("Docker could not list its images.");
+        }
+        var images = ParseImageListing(listing.StandardOutput);
+        return [.. names.Where(name => images.Any(image => image.Shows(name)))];
+    }
+
+    private static readonly System.Buffers.SearchValues<char> LowerHexDigits = System.Buffers.SearchValues.Create("0123456789abcdef");
+
+    /// <summary>
+    /// Reads every line of an image listing as one image: a JSON object with a string <c>ID</c> that is a full
+    /// <c>sha256</c> digest, and string <c>Repository</c>, <c>Tag</c> and <c>Digest</c>. Any other line refuses the whole
+    /// listing, so nothing is concluded from a listing that was only partly read.
+    /// </summary>
+    internal static IReadOnlyList<ListedImage> ParseImageListing(string output)
+    {
+        ArgumentNullException.ThrowIfNull(output);
+        var images = new List<ListedImage>();
+        foreach (var line in output.Split('\n'))
+        {
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                var image = document.RootElement;
+                var id = image.ValueKind == JsonValueKind.Object ? Text(image, "ID") : null;
+                if (id is null || !id.StartsWith("sha256:", StringComparison.Ordinal) || id.Length != 71 ||
+                    id.AsSpan(7).IndexOfAnyExcept(LowerHexDigits) >= 0 ||
+                    Text(image, "Repository") is not { } repository || Text(image, "Tag") is not { } tag ||
+                    Text(image, "Digest") is not { } digest)
+                {
+                    throw new InstallerException("Docker listed an image in a form this installer does not read.");
+                }
+                images.Add(new ListedImage(id, repository, tag, digest));
+            }
+            catch (JsonException exception)
+            {
+                throw new InstallerException("Docker listed an image in a form this installer does not read.", exception);
+            }
+        }
+        return images;
+
+        static string? Text(JsonElement image, string name)
+            => image.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String && value.GetString() is { Length: > 0 } text
+                ? text
+                : null;
+    }
+
+    /// <summary>
+    /// Reads a release's image from its registry, by the digest release.json names, and checks it without importing
+    /// anything (<see cref="ReleaseRegistryImage"/>). Returns the image's configuration identity, which the caller holds to
+    /// its own requirements before anything is pulled, and the selection extended by every identity the registry gave.
+    /// </summary>
+    public Task<(ImageInstallationIdentity Image, ReleaseImageSelection Release)> ReadRegistryReleaseImageAsync(
+        ReleaseImageSelection release,
+        CancellationToken cancellationToken)
+        => ReleaseRegistryImage.ReadAsync(release, RunDockerRawAsync, cancellationToken);
+
+    /// <summary>
+    /// A release's image Docker does not hold yet, as a plan names it (#1384): as it was read and checked before any
+    /// import, under the ID Docker will give it once it is imported, which the install, <c>status</c> and the install record
+    /// then report. A daemon backed by the containerd image store names it by the release's image digest; the classic
+    /// store by its configuration digest, which the checked image already carries.
+    /// </summary>
+    public async Task<ImageInstallationIdentity> PlannedReleaseImageAsync(
+        ReleaseImageSelection release,
+        ImageInstallationIdentity checkedImage,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(release);
+        ArgumentNullException.ThrowIfNull(checkedImage);
+        var daemon = await RunDockerAsync(["info", "--format", "{{json .}}"], cancellationToken).ConfigureAwait(false);
+        using var info = JsonDocument.Parse(daemon.StandardOutput);
+        return UsesContainerdImageStore(info.RootElement)
+            ? checkedImage with { ImageId = release.DigestReference[(release.DigestReference.LastIndexOf('@') + 1)..] }
+            : checkedImage;
+    }
+
+    /// <summary>
+    /// Whether <c>docker info</c> reports the containerd image store, whose storage driver is a containerd snapshotter
+    /// (<c>DriverStatus</c> <c>driver-type</c> <c>io.containerd.snapshotter.v1</c>).
+    /// </summary>
+    internal static bool UsesContainerdImageStore(JsonElement info)
+        => info.ValueKind == JsonValueKind.Object &&
+           info.TryGetProperty("DriverStatus", out var status) && status.ValueKind == JsonValueKind.Array &&
+           status.EnumerateArray().Any(static pair =>
+               pair.ValueKind == JsonValueKind.Array && pair.GetArrayLength() == 2 &&
+               pair[0].ValueKind == JsonValueKind.String && pair[0].GetString() == "driver-type" &&
+               pair[1].ValueKind == JsonValueKind.String &&
+               pair[1].GetString()!.StartsWith("io.containerd.snapshotter.", StringComparison.Ordinal));
+
+    /// <summary>Whether Docker already holds the release's image under any name it can have.</summary>
+    public async Task<bool> HoldsReleaseImageAsync(ReleaseImageSelection release, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(release);
+        var identities = ReleaseIdentities(release);
+        return (await AbsentAsync(identities, cancellationToken).ConfigureAwait(false)).Count < identities.Length;
+    }
+
+    /// <summary>The names Docker can give a release's image: its digest reference, then its archive's identities.</summary>
+    private static string[] ReleaseIdentities(ReleaseImageSelection release)
+        => [.. new[] { release.DigestReference }.Concat(release.ImageIds ?? []).Distinct(StringComparer.Ordinal)];
+
+    private async Task<List<string>> AbsentAsync(IEnumerable<string> references, CancellationToken cancellationToken)
+    {
+        var absent = new List<string>();
+        foreach (var reference in references)
+        {
+            if (await TryInspectImageAsync(reference, cancellationToken).ConfigureAwait(false) is null)
+            {
+                absent.Add(reference);
+            }
+        }
+        return absent;
+    }
+
+    /// <summary>
+    /// Removes what an import added, best effort and without force: a name another image or a container now uses is
+    /// left alone. It is never cancelled, so it also runs after a cancellation and a refused image is not left half
+    /// removed.
+    /// </summary>
+    private async Task RemoveImagesAsync(IEnumerable<string> references)
+    {
+        foreach (var reference in references)
+        {
+            _ = await RunDockerRawAsync(["image", "rm", reference], CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<(DockerDaemonIdentity Daemon, ImageInstallationIdentity Image)> PrepareImageCoreAsync(
+        InstallRequest request,
+        bool allowMutation,
+        ReleaseImageSelection? release,
         CancellationToken cancellationToken)
     {
         var identity = await ReadDaemonIdentityAsync(cancellationToken).ConfigureAwait(false);
@@ -114,16 +357,16 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             await RunDockerAsync(["image", "pull", request.ImageReference], cancellationToken).ConfigureAwait(false);
         }
 
-        // A daemon backed by the containerd image store addresses a loaded image by its manifest digest, while the
-        // classic store addresses it by its configuration digest. The signed release names both, so resolve the
-        // candidate the daemon actually knows instead of assuming one store's identity scheme.
+        // A daemon backed by the containerd image store addresses a loaded image by its index or manifest digest, while
+        // the classic store addresses it by its configuration digest. A release's offline archive names all three, so
+        // resolve the candidate the daemon actually knows instead of assuming one store's identity scheme.
         var reference = request.ImageReference;
         var inspectResult = reference.Length == 0
             ? null
             : await TryInspectImageAsync(reference, cancellationToken).ConfigureAwait(false);
-        if (inspectResult is null && signedImage is not null)
+        if (inspectResult is null && release?.ImageIds is { } releaseImageIds)
         {
-            foreach (var candidate in SignedReferenceCandidates(signedImage, architecture, reference))
+            foreach (var candidate in releaseImageIds.Where(candidate => !string.Equals(candidate, reference, StringComparison.Ordinal)))
             {
                 inspectResult = await TryInspectImageAsync(candidate, cancellationToken).ConfigureAwait(false);
                 if (inspectResult is not null)
@@ -154,7 +397,10 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         if (reference.StartsWith("sha256:", StringComparison.Ordinal) &&
             !string.Equals(reference, imageId, StringComparison.Ordinal))
         {
-            throw new InstallerException("The loaded image ID does not match --image-ref.");
+            throw release is null
+                ? new InstallerException("The loaded image ID does not match --image-ref.")
+                : InstallerException.Refused(
+                    $"The CameraAgent image Docker resolved is not the {release.Platform} image release {release.ReleaseTag} names.");
         }
 
         if (reference.Contains('@', StringComparison.Ordinal))
@@ -177,75 +423,63 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             imageArchitecture,
             request.ImageArchiveSha256,
             labels);
-        if (signedImage is not null)
+        if (release is not null)
         {
-            EnsureSignedImageAgreement(signedImage, installationIdentity);
+            EnsureReleaseImageAgreement(
+                release, imageId, installationIdentity.Component, CameraAgentImageLabels.Label(labels, "org.opencontainers.image.version"),
+                installationIdentity.SourceRevision, CameraAgentImageLabels.Label(labels, "org.opencontainers.image.created"));
         }
         return (identity, installationIdentity);
     }
 
     /// <summary>
-    /// Requires the image Docker actually resolved to carry exactly the identity and compatibility boundaries the
-    /// signed release declared. The labels are the installation's compatibility authority, so a mismatch means the
-    /// running bytes are not the released image and the deployment stops before any state is touched.
+    /// Requires the image Docker resolved to be the release's. Its digest pins its bytes, labels included, so the image
+    /// must be one the release's offline archive names for this platform, when the release has one, and must name the
+    /// release's version, commit and created time, which a release build stamps into it. A mismatch stops the deployment
+    /// before any state is touched, and what the step imported is removed, so it is a refusal (exit 3, #1315); an upgrade
+    /// loads an offline archive after its journal entry, where the refusal is settled in the journal and exits 1. The
+    /// message names only the release's own validated values, never the image's labels.
     /// </summary>
-    private static void EnsureSignedImageAgreement(DistributionImageIdentity signed, ImageInstallationIdentity actual)
+    private static void EnsureReleaseImageAgreement(
+        ReleaseImageSelection release,
+        string imageId,
+        string? component,
+        string? version,
+        string? revision,
+        string? created)
     {
-        var platform = signed.Platforms.SingleOrDefault(candidate =>
-            candidate.OperatingSystem == "linux" && candidate.Architecture == actual.Architecture)
-            ?? throw new InstallerException(
-                $"The signed CameraAgent image release does not publish linux/{actual.Architecture}.");
-        // Either signed identity is acceptable because the daemon's image store decides which one names the image.
-        if (actual.ImageId != platform.OfflineArchiveImageId && actual.ImageId != platform.ManifestDigest)
+        if (release.ImageIds is { } identities && !identities.Contains(imageId, StringComparer.Ordinal))
         {
-            throw new InstallerException("The prepared CameraAgent image is not the immutable image the release signed.");
+            throw InstallerException.Refused(
+                $"The CameraAgent image Docker resolved is not the {release.Platform} image release {release.ReleaseTag} names.");
         }
-        var mismatches = new List<string>();
-        Compare(mismatches, "component", signed.Component, actual.Component);
-        Compare(mismatches, "source revision", signed.SourceRevision, actual.SourceRevision);
-        Compare(mismatches, "state compatibility", signed.Compatibility.StateContract, actual.UpgradeCompatibility);
-        Compare(mismatches, "minimum compatible revision", signed.Compatibility.MinimumCompatibleRevision, actual.MinimumCompatibleRevision);
-        Compare(mismatches, "identity migration", signed.Compatibility.IdentityMigration, actual.IdentityMigration);
-        Compare(mismatches, "raw ingress migration", signed.Compatibility.RawIngressMigration, actual.RawIngressMigration);
-        Compare(
-            mismatches,
-            "raw ingress schema",
-            signed.Compatibility.RawIngressSchema.ToString(CultureInfo.InvariantCulture),
-            actual.RawIngressSchema);
-        Compare(
-            mismatches,
-            "catalog manifest version",
-            signed.Compatibility.CatalogManifestVersion.ToString(CultureInfo.InvariantCulture),
-            actual.CatalogManifestVersion);
-        Compare(mismatches, "configuration contract", signed.Compatibility.ConfigurationContract, actual.ConfigurationContract);
-        Compare(mismatches, "catalog contract", signed.Compatibility.CatalogContract, actual.CatalogContract);
-        Compare(mismatches, "replay runner contract", signed.Compatibility.ReplayRunnerContract, actual.ReplayRunnerContract);
-        if (mismatches.Count != 0)
+        if (component != "CameraAgent" || version != release.Version || revision != release.Commit || created != release.Created)
         {
-            throw new InstallerException(
-                "The prepared CameraAgent image does not carry the compatibility identity the release signed: " +
-                string.Join("; ", mismatches) + ".");
+            throw InstallerException.Refused(
+                $"The CameraAgent image Docker resolved is not labelled as CameraAgent {release.Version} from commit " +
+                $"{release.Commit}, created {release.Created}, as release {release.ReleaseTag} requires.");
         }
     }
 
-    private static void Compare(List<string> mismatches, string boundary, string? expected, string? actual)
+    /// <summary>The limits a container's <c>HostConfig</c> imposes, or null when it reports none of them.</summary>
+    private static ContainerResourceLimits? ReadLimits(JsonElement host)
     {
-        if (!string.Equals(expected, actual, StringComparison.Ordinal))
+        static long Read(JsonElement host, string name)
+            => host.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var number)
+                ? number
+                : 0;
+        if (!host.TryGetProperty("NanoCpus", out _) && !host.TryGetProperty("Memory", out _) && !host.TryGetProperty("PidsLimit", out _))
         {
-            mismatches.Add($"{boundary} signed '{expected ?? "(absent)"}' but image declares '{actual ?? "(absent)"}'");
+            return null;
         }
+        var pids = Read(host, "PidsLimit");
+        return new ContainerResourceLimits(
+            Read(host, "NanoCpus") / 1_000_000_000m,
+            Read(host, "Memory"),
+            pids is > 0 and <= int.MaxValue ? (int)pids : 0,
+            false,
+            false);
     }
-
-    private static IEnumerable<string> SignedReferenceCandidates(
-        DistributionImageIdentity signedImage,
-        string architecture,
-        string attempted)
-        => signedImage.Platforms
-            .Where(platform => platform.OperatingSystem == "linux" && platform.Architecture == architecture)
-            .SelectMany(static platform => new[] { platform.OfflineArchiveImageId, platform.ManifestDigest })
-            .OfType<string>()
-            .Where(candidate => !string.Equals(candidate, attempted, StringComparison.Ordinal))
-            .Distinct(StringComparer.Ordinal);
 
     private async Task<ProcessResult?> TryInspectImageAsync(string reference, CancellationToken cancellationToken)
     {
@@ -545,7 +779,10 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             true,
             state.GetProperty("Running").GetBoolean(),
             healthy,
-            container.GetProperty("Image").GetString());
+            container.GetProperty("Image").GetString())
+        {
+            Limits = container.TryGetProperty("HostConfig", out var host) ? ReadLimits(host) : null
+        };
     }
 
     public async Task EnsureNoInstanceReferencesAsync(
@@ -701,4 +938,27 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         "arm64" or "aarch64" => "arm64",
         _ => throw new InstallerException($"Unsupported Docker architecture '{value}'.")
     };
+}
+
+/// <summary>One image of Docker's image listing, as <see cref="DockerClient.ParseImageListing"/> reads it.</summary>
+internal sealed record ListedImage(string Id, string Repository, string Tag, string Digest)
+{
+    /// <summary>
+    /// Whether Docker holds this image under <paramref name="name"/>, as an import records names: a bare <c>sha256</c>
+    /// digest is its ID or its repository digest, <c>repository@digest</c> its repository and digest, and
+    /// <c>repository:tag</c> (or a bare repository, which is <c>:latest</c>) its repository and tag.
+    /// </summary>
+    public bool Shows(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        if (name.StartsWith("sha256:", StringComparison.Ordinal))
+            return string.Equals(Id, name, StringComparison.Ordinal) || string.Equals(Digest, name, StringComparison.Ordinal);
+        var at = name.LastIndexOf('@');
+        if (at > 0)
+            return string.Equals(Repository, name[..at], StringComparison.Ordinal) && string.Equals(Digest, name[(at + 1)..], StringComparison.Ordinal);
+        var colon = name.LastIndexOf(':');
+        return colon > name.LastIndexOf('/')
+            ? string.Equals(Repository, name[..colon], StringComparison.Ordinal) && string.Equals(Tag, name[(colon + 1)..], StringComparison.Ordinal)
+            : string.Equals(Repository, name, StringComparison.Ordinal) && string.Equals(Tag, "latest", StringComparison.Ordinal);
+    }
 }

@@ -152,3 +152,89 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## The terminal programs' packages
+
+`hvo-sky-install`, the installer, and `hvo-sky`, CameraAgent's command line,
+are each one self-contained file. The installer's wizard and `hvo-sky ui`
+(#1317) draw with Terminal.Gui, and both files contain Terminal.Gui and the
+packages listed here, which Terminal.Gui brings in; `hvo-sky` also contains
+`System.CommandLine` 2.0.13. Every release ships this file beside them as an asset of its
+own, `THIRD-PARTY-NOTICES.md` (install contract section 4).
+
+Terminal.Gui also depends on TextMateSharp, its grammars and Onigwrap's native
+Oniguruma library, for the syntax highlighting of its Code and Markdown views.
+No terminal program here highlights text, so the installer and `hvo-sky` leave
+them out and none of their files are in either (`Directory.Build.targets`).
+
+| Package | Licence | Copyright | Source |
+| --- | --- | --- | --- |
+| `Terminal.Gui` | MIT | Copyright 2007-2011 Novell Inc; Copyright 2017 Microsoft Corp | https://github.com/tui-cs/Terminal.Gui |
+| `ColorHelper` | MIT | Copyright (c) 2020 Artyom Gritsuk | https://github.com/iamartyom/ColorHelper |
+| `JetBrains.Annotations` | MIT | Copyright (c) 2016-2025 JetBrains s.r.o. | https://github.com/JetBrains/JetBrains.Annotations |
+| `Markdig` | BSD-2-Clause, below | Copyright (c) 2016-2026, Alexandre Mutel | https://github.com/xoofx/markdig |
+| `Wcwidth` | MIT | Copyright Patrik Svensson. Phil Scott | https://github.com/spectreconsole/wcwidth |
+| `System.IO.Abstractions` | MIT | Copyright (c) Tatham Oddie and Contributors | https://github.com/TestableIO/System.IO.Abstractions |
+| `TestableIO.System.IO.Abstractions` | MIT | Copyright (c) Tatham Oddie and Contributors | https://github.com/TestableIO/System.IO.Abstractions |
+| `TestableIO.System.IO.Abstractions.Wrappers` | MIT | Copyright (c) Tatham Oddie and Contributors | https://github.com/TestableIO/System.IO.Abstractions |
+| `Testably.Abstractions.FileSystem.Interface` | MIT | Copyright (c) 2022 Valentin Breuß | https://github.com/Testably/Testably.Abstractions |
+| `Microsoft.Extensions.Configuration` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
+| `Microsoft.Extensions.Configuration.Abstractions` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
+| `Microsoft.Extensions.Configuration.Binder` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
+| `Microsoft.Extensions.Configuration.FileExtensions` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
+| `Microsoft.Extensions.Configuration.Json` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
+| `Microsoft.Extensions.DependencyInjection.Abstractions` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
+| `Microsoft.Extensions.FileProviders.Abstractions` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
+| `Microsoft.Extensions.FileProviders.Physical` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
+| `Microsoft.Extensions.FileSystemGlobbing` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
+| `Microsoft.Extensions.Logging.Abstractions` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
+| `Microsoft.Extensions.Options` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
+| `Microsoft.Extensions.Primitives` | MIT | Copyright (c) .NET Foundation and Contributors | https://github.com/dotnet/runtime |
+| `System.CommandLine` | MIT | Copyright (c) Microsoft Corporation | https://github.com/dotnet/command-line-api |
+
+The following MIT terms apply to each package above that is under the MIT
+License, with its copyright notice:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+### Markdig
+
+Copyright (c) 2016-2026, Alexandre Mutel
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

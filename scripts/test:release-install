@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+# Installs a CameraAgent instance from a release's files, then upgrades it from the same release, against the real
+# Docker daemon of this host (install contract sections 4 to 6). The pre-release workflow runs it on the dedicated arm64
+# runner against the draft's files before the pre-release is published; run it locally against scripts/release:assets
+# output to reproduce that test.
+#
+#   scripts/test:release-install --release <folder> [--install-source archive|registry] [--upgrade-source archive|registry] [--port <port>]
+#
+# 1. SHA256SUMS checks the release's files, and the installer for this host reports the release's version and commit.
+# 2. Install from the release folder: the image is loaded from its offline archive (the default) or pulled by digest
+#    from the registry, and the instance records the release.
+# 3. Move the instance to a stand-in image (the release image committed with one label added), which withdraws the
+#    record.
+# 4. Upgrade it from the release, by digest from the registry (the default) or from the offline archive: the upgrade
+#    shows the release's notes, runs the release image and records the release again.
+# 5. Upgrading again to the same release is refused and changes nothing.
+#
+# Everything is under its own instance, product root, containers and port, and is removed afterwards, along with the
+# images the run added to Docker, however far it got: the release's image identities are registered for removal before
+# the install loads anything, unless Docker held them when the run began. HVO_INSTALLER_ALLOW_TEST_ROOT admits the
+# temporary product root, which is created under TMPDIR (/tmp by default).
+set -euo pipefail
+
+usage() {
+    sed -n '7p' "$0" | sed 's/^# \{0,1\}//' >&2
+    exit 2
+}
+
+fail() {
+    printf 'test:release-install: %s\n' "$*" >&2
+    exit 1
+}
+
+release="" install_source=archive upgrade_source=registry port=55420
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --release) release="${2:-}"; shift 2 ;;
+        --install-source) install_source="${2:-}"; shift 2 ;;
+        --upgrade-source) upgrade_source="${2:-}"; shift 2 ;;
+        --port) port="${2:-}"; shift 2 ;;
+        -h | --help) usage ;;
+        *) usage ;;
+    esac
+done
+[[ -n "$release" && -d "$release" ]] || usage
+[[ "$install_source" == archive || "$install_source" == registry ]] || usage
+[[ "$upgrade_source" == archive || "$upgrade_source" == registry ]] || usage
+[[ "$port" =~ ^[0-9]{4,5}$ ]] || usage
+for tool in docker jq sha256sum tar; do
+    command -v "$tool" >/dev/null || fail "$tool is required."
+done
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/deployment-installer-qualification.sh
+source "$repo_root/scripts/lib/deployment-installer-qualification.sh"
+release="$(cd "$release" && pwd -P)"
+
+case "$(uname -m)" in
+    x86_64) rid=linux-x64 platform=linux/amd64 ;;
+    aarch64 | arm64) rid=linux-arm64 platform=linux/arm64 ;;
+    *) fail "unsupported host architecture $(uname -m)." ;;
+esac
+
+root="$(mktemp -d "${TMPDIR:-/tmp}/hvo-ri.XXXXXX")"
+chmod 700 "$root"
+instance_id="$(tr -d '\n' </proc/sys/kernel/random/uuid)"
+container="hvo-skymonitor-${instance_id//-/}"
+standin_container="hvo-release-test-standin-$$"
+baseline_tag="hvo-skymonitor-cameraagent:release-test-baseline-$$"
+baseline_image=""
+# shellcheck disable=SC2034 # Passed by name to the ownership-aware image helpers.
+declare -A startup_images=()
+# shellcheck disable=SC2034 # Filled by name through hvo_installer_register_owned_image_pair.
+declare -A owned_images=()
+hvo_installer_snapshot_image_ids startup_images
+
+cleanup() {
+    set +e
+    set -u
+    docker rm --force "$container" "$container-replay" "$standin_container" >/dev/null 2>&1
+    docker network rm "${container}_default" >/dev/null 2>&1
+    docker image rm --force "$baseline_tag" >/dev/null 2>&1
+    [[ -z "$baseline_image" ]] || docker image rm --force "$baseline_image" >/dev/null 2>&1
+    for image in "${!owned_images[@]}"; do
+        docker image rm --force "$image" >/dev/null 2>&1
+    done
+    chmod -R u+w "$root" >/dev/null 2>&1
+    rm -rf "$root"
+}
+trap cleanup EXIT
+
+step() { printf '\n== %s\n' "$*" >&2; }
+
+step "Checking the release's files"
+(cd "$release" && sha256sum --check --strict --quiet SHA256SUMS) || fail "SHA256SUMS does not match the release's files."
+manifest="$release/release.json"
+version="$(jq -er '.version' "$manifest")"
+commit="$(jq -er '.commit' "$manifest")"
+digest_reference="$(jq -er '.images.cameraAgent | .repository + "@" + .digest' "$manifest")"
+mapfile -t release_ids < <(jq -er --arg platform "$platform" '.images.cameraAgent as $image
+    | $image.digest, ($image.offlineArchives[] | select(.platform == $platform) | .manifestDigest, .configDigest)' "$manifest")
+[[ ${#release_ids[@]} -eq 3 ]] || fail "release.json has no offline archive for $platform."
+# Whatever the install loads or pulls is one of these, so it is removed on exit even when the install fails part-way;
+# an identity Docker already held when the run began is left alone.
+hvo_installer_register_owned_image_pair startup_images owned_images "${release_ids[0]}" "${release_ids[2]}"
+hvo_installer_register_owned_image_pair startup_images owned_images "${release_ids[1]}" "$digest_reference"
+installer="$root/hvo-sky-install"
+cp "$release/hvo-sky-install-$rid" "$installer"
+chmod 700 "$installer"
+[[ "$("$installer" --version)" == "$version+$commit" ]] || fail "the $rid installer is not $version+$commit."
+catalog_archive="$(jq -er '[.assets[] | select(.kind == "catalog") | .name] | if length == 1 then .[0] else error("one catalog") end' "$manifest")"
+mkdir -m 700 "$root/catalog"
+tar -xzf "$release/$catalog_archive" -C "$root/catalog"
+catalog_bundle="$(find "$root/catalog" -mindepth 1 -maxdepth 1 -type d -name '*.bundle' -print -quit)"
+[[ -n "$catalog_bundle" ]] || fail "$catalog_archive holds no catalog bundle."
+printf 'Release %s (%s), image %s, catalog %s\n' "$version" "$commit" "$digest_reference" "$(basename "$catalog_bundle")" >&2
+
+is_release_image() {
+    local candidate="$1" id
+    for id in "${release_ids[@]}"; do
+        [[ "$candidate" == "$id" ]] && return 0
+    done
+    return 1
+}
+
+record="$root/product/cameraagents/$instance_id/state/deployment/image-distribution.json"
+assert_running() {
+    local expected="$1" label="$2"
+    "$installer" status --instance-id "$instance_id" --product-root "$root/product" --json >"$root/$label.json"
+    [[ "$(jq -er '.outcome' "$root/$label.json")" == status ]] || fail "$label: the instance has drifted."
+    [[ "$(jq -er '.image.imageId' "$root/$label.json")" == "$expected" ]] || fail "$label: the instance does not run $expected."
+    [[ "$(jq -er '.running' "$root/$label.json")" == true && "$(jq -er '.healthy' "$root/$label.json")" == true ]] ||
+        fail "$label: the instance is not running and healthy."
+}
+
+export HVO_INSTALLER_ALLOW_TEST_ROOT=1
+
+step "Installing from the release ($install_source)"
+"$installer" cameraagent install \
+    --instance-id "$instance_id" \
+    --friendly-name "Release Test Camera" \
+    --owner-email "release-test@example.test" \
+    --bind-address 127.0.0.1 \
+    --port "$port" \
+    --product-root "$root/product" \
+    --catalog-bundle "$catalog_bundle" \
+    --release "$release" \
+    --image-source "$install_source" \
+    --generate-password \
+    --json >"$root/install.json"
+release_image="$(jq -er '.image.imageId' "$root/install.json")"
+is_release_image "$release_image" || fail "the install runs $release_image, which the release does not name."
+[[ "$(jq -er '.image.source' "$root/install.json")" == "$install_source" ]] || fail "the install did not use the $install_source."
+[[ "$(jq -er '.healthy' "$root/install.json")" == true ]] || fail "the installed instance is not healthy."
+[[ "$(jq -er '.releaseVersion + " " + .source' "$record")" == "$version $install_source" ]] || fail "the install did not record the release."
+assert_running "$release_image" install-status
+
+step "Moving the instance to a stand-in image"
+# Committed from a container that never runs, so it needs no build and leaves no build cache behind.
+docker create --name "$standin_container" "$release_image" >/dev/null
+docker commit --change 'LABEL io.hvo.skymonitor.release-test=baseline' "$standin_container" "$baseline_tag" >/dev/null
+docker rm "$standin_container" >/dev/null
+baseline_image="$(docker image inspect --format '{{.Id}}' "$baseline_tag")"
+"$installer" cameraagent upgrade \
+    --instance-id "$instance_id" --product-root "$root/product" \
+    --image-ref "$baseline_image" --no-download --json >"$root/baseline.json"
+[[ "$(jq -er '.outcome' "$root/baseline.json")" == completed ]] || fail "the move to the stand-in image did not complete."
+[[ ! -e "$record" ]] || fail "the release record survived a move to an image no release names."
+assert_running "$baseline_image" baseline-status
+
+step "Upgrading from the release ($upgrade_source)"
+"$installer" cameraagent upgrade \
+    --instance-id "$instance_id" --product-root "$root/product" \
+    --release "$release" --image-source "$upgrade_source" \
+    --json >"$root/upgrade.json" 2>"$root/upgrade-events.jsonl"
+upgraded_image="$(jq -er '.image.imageId' "$root/upgrade.json")"
+[[ "$(jq -er '.outcome' "$root/upgrade.json")" == completed ]] || fail "the upgrade from the release did not complete."
+is_release_image "$upgraded_image" || fail "the upgrade runs $upgraded_image, which the release does not name."
+[[ "$(jq -er '.image.source' "$root/upgrade.json")" == "$upgrade_source" ]] || fail "the upgrade did not use the $upgrade_source."
+[[ "$(head -n 1 "$root/upgrade-events.jsonl" | jq -er '.event + " " + .upgradeNotes.targetVersion')" == "upgrade-notes $version" ]] ||
+    fail "the upgrade did not show the release's upgrade notes before it started."
+[[ "$(jq -er '.releaseVersion + " " + .source' "$record")" == "$version $upgrade_source" ]] || fail "the upgrade did not record the release."
+assert_running "$upgraded_image" upgrade-status
+
+step "Upgrading again to the same release"
+if "$installer" cameraagent upgrade \
+    --instance-id "$instance_id" --product-root "$root/product" \
+    --release "$release" --image-source "$upgrade_source" \
+    --json >"$root/repeat.json" 2>"$root/repeat-error.jsonl"; then
+    fail "an upgrade to the release the instance already runs was not refused."
+fi
+grep -Fq 'already active' "$root/repeat-error.jsonl" || fail "the repeated upgrade was refused for another reason."
+assert_running "$upgraded_image" repeat-status
+
+step "Uninstalling"
+"$installer" cameraagent uninstall --instance-id "$instance_id" --product-root "$root/product" --json >"$root/uninstall.json"
+[[ "$(jq -er '.outcome' "$root/uninstall.json")" == completed ]] || fail "the uninstall did not complete."
+
+printf '\nRelease %s installed from the %s and upgraded from the %s on %s.\n' "$version" "$install_source" "$upgrade_source" "$platform"

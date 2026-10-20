@@ -12,10 +12,16 @@ public static class DeploymentSchemaVersions
     public const int StateResetEvidence = 1;
     public const int LifecycleEvent = 1;
     /// <summary>
-    /// Version 1 recorded the SBOM, provenance, and vulnerability-scan asset names; version 2 (issue #645) adds the
-    /// optional per-platform component-inventory asset. Version-1 documents remain readable.
+    /// The record of the release an instance's image came from. Version 3 (#1309) names a release by its
+    /// <c>release.json</c> and <c>SHA256SUMS</c>. Versions 1 and 2 named a key-signed image release; signed releases are
+    /// retired and none was ever published, so a record of an earlier version is read as no record.
     /// </summary>
-    public const int ImageReleaseEvidence = 2;
+    public const int ImageReleaseEvidence = 3;
+    /// <summary>
+    /// The pair of release records an instance keeps: the record of its running image's release and that of the image it
+    /// ran before (#1309), so a rollback restores the installed version.
+    /// </summary>
+    public const int ImageReleaseRecords = 1;
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<DeploymentComponent>))]
@@ -82,7 +88,10 @@ public enum LifecycleOperationKind
     CatalogSelect,
     CatalogRollback,
     CatalogGarbageCollect,
-    CatalogCheck
+    /// <summary><c>cameraagent backup</c>: the instance copied into one owner-only, self-verifying archive (#1353).</summary>
+    Backup,
+    /// <summary><c>cameraagent restore</c>: an uninstalled or absent instance put back from a committed backup (#1353).</summary>
+    Restore
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<LifecycleOperationPhase>))]
@@ -122,8 +131,7 @@ public sealed record CatalogInstallationIdentity(
     long RowCount,
     string InstallRoot,
     string ManifestSha256,
-    string Source,
-    DistributionVerificationEvidence? Distribution = null);
+    string Source);
 
 public sealed record ImageInstallationIdentity(
     string Source,
@@ -131,7 +139,6 @@ public sealed record ImageInstallationIdentity(
     string ImageId,
     string Architecture,
     string? ArchiveSha256,
-    DistributionVerificationEvidence? Distribution = null,
     string? UpgradeCompatibility = null,
     string? SourceRevision = null,
     string? Component = null,
@@ -372,6 +379,75 @@ public sealed record LifecycleResult(
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public LifecycleUpgradeNotes? UpgradeNotes { get; init; }
+
+    /// <summary>
+    /// What the operation did, or with <c>--plan</c> would do, item by item. Omitted by commands that report no plan.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DeploymentPlan? Plan { get; init; }
+
+    /// <summary>
+    /// Advisories the command reported without refusing, such as a deprecated option it accepted and ignored. Omitted
+    /// when there are none. Without <c>--json</c> they are written to standard error instead.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<InstallationWarning>? Warnings { get; init; }
+
+    /// <summary>The archive a completed <c>cameraagent backup</c> committed. Omitted by every other command.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public LifecycleBackup? Backup { get; init; }
+
+    /// <summary>What a completed <c>cameraagent restore</c> put back. Omitted by every other command.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public LifecycleRestore? Restore { get; init; }
+}
+
+/// <summary>
+/// The archive a backup committed (#1353): its name in the backup folder, its path, when the backup was taken, the
+/// archive's size and SHA-256 as its record names them, and the bytes and entries it holds.
+/// </summary>
+public sealed record LifecycleBackup(
+    string Archive,
+    string Path,
+    DateTimeOffset CreatedUtc,
+    long ArchiveBytes,
+    string ArchiveSha256,
+    long TotalBytes,
+    int Entries);
+
+/// <summary>
+/// What a restore put back (#1353): the archive, when its backup was taken and by which operation, and the credentials
+/// and authority it revoked again. <see cref="NoLiveCredentialStore"/> is true when there was no live store to compare, so
+/// credentials revoked after the backup are valid again; the credential fields are null when a resumed restore did not
+/// make the comparison itself.
+/// </summary>
+public sealed record LifecycleRestore(
+    string Archive,
+    DateTimeOffset BackupCreatedUtc,
+    Guid BackupOperationId,
+    int? ApiKeysRevoked,
+    int? AccountsReset,
+    int? AuthorityRevoked,
+    bool? NoLiveCredentialStore);
+
+/// <summary>
+/// What a <c>--json</c> backup or restore writes to standard error, as one line, as it goes: how many bytes of the
+/// archive it has written, verified or extracted (<see cref="Stage"/> <c>write</c>, <c>verify</c> or <c>extract</c>).
+/// </summary>
+public sealed record LifecycleBackupProgressEvent(int SchemaVersion, string Event, string Stage, long Bytes, long? TotalBytes)
+{
+    /// <summary>The <see cref="Event"/> this record carries.</summary>
+    public const string Name = "backup-progress";
+}
+
+/// <summary>
+/// What a <c>--json</c> restore writes to standard error, as one line, about the credentials the backup holds: that
+/// those revoked since were revoked again, or, with no live store to compare, that they are valid again.
+/// </summary>
+public sealed record LifecycleCredentialsRestoredEvent(int SchemaVersion, string Event, string Warning, DateTimeOffset BackupCreatedUtc)
+{
+    /// <summary>The <see cref="Event"/> this record carries.</summary>
+    public const string Name = "credentials-restored";
 }
 
 /// <summary>One release's upgrade notes, from its <c>docs/upgrade-notes/X.Y.Z.md</c> as release.json carries them.</summary>
@@ -475,4 +551,13 @@ public sealed record InstallationResult(
     CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess,
     bool OwnerPasswordIsDefault = false,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<InstallationWarning>? Warnings = null);
+    IReadOnlyList<InstallationWarning>? Warnings = null)
+{
+    /// <summary>
+    /// What this invocation created, changed or left unchanged, or with <c>--plan</c> would. Like
+    /// <see cref="Warnings"/> it describes one invocation, so the retained result never carries it. A second run with the
+    /// same answers reports every item unchanged and the summary <see cref="DeploymentPlan.NothingToChange"/>.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DeploymentPlan? Plan { get; init; }
+}

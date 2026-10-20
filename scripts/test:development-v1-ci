@@ -40,6 +40,12 @@ contract_condition = (
 )
 
 
+release_scripts_condition = (
+    "if: ${{ !cancelled() && (steps.classify.outcome != 'success' || "
+    "steps.classify.outputs.release_scripts != 'false') }}"
+)
+
+
 def step(section, name):
     match = re.search(
         rf"^      - name: {re.escape(name)}\n(.*?)(?=^      - |\Z)",
@@ -74,6 +80,10 @@ def violations(short, full):
         "test:pr-review-tools", "test:development-v1-ci",
     ):
         require(f"          ./scripts/{command}\n" in preflight, f"preflight {command}")
+    base_images = step(preflight, "Check Dockerfile base images")
+    require(base_images.strip() == "run: ./scripts/ci:base-images",
+            "base-image check is unconditional and fail-closed")
+    require("timeout-minutes: 4" in preflight, "Preflight keeps its 240-second budget")
     # Issue #1321: both required profiles scan the complete history for secrets,
     # inside a check that branch protection already requires.
     for profile, section in (("preflight", preflight), ("full Quality", quality)):
@@ -99,6 +109,15 @@ def violations(short, full):
             "history scan precedes fallible classification")
     require(contract_condition in contract and "./scripts/test:ci-secret-scan" in contract,
             "contract skips only successful explicit false, including after classification failure")
+    # Issue #1309: the pre-release scripts' tests share that classification and its fail-open rule.
+    release_scripts = step(preflight, "Test release scripts")
+    require(release_scripts_condition in release_scripts and
+            "          ./scripts/test:release-scripts\n" in release_scripts,
+            "release script tests skip only successful explicit false, including after classification failure")
+    require(0 <= preflight.find("Classify secret scanner contract inputs") <
+            preflight.find("- name: Test release scripts"),
+            "release script tests follow the classification they read")
+    require("          ./scripts/test:release-scripts\n" in quality, "full Quality retains test:release-scripts")
     require(
         re.findall(r"^\s+dotnet (restore|build|test)\b", build, re.M)
         == ["restore", "build", "test"],
@@ -154,6 +173,13 @@ if errors:
 
 # Mutation controls prove the checks reject costly creep and silent loss of gates.
 mutations = (
+    ("Preflight budget reverted", short.replace("timeout-minutes: 4", "timeout-minutes: 3"), full),
+    ("Preflight budget raised", short.replace("timeout-minutes: 4", "timeout-minutes: 5"), full),
+    ("Preflight budget removed", short.replace("    timeout-minutes: 4\n", ""), full),
+    ("base-image check removed", short.replace("run: ./scripts/ci:base-images", "run: true"), full),
+    ("base-image check gated", short.replace(
+        "- name: Check Dockerfile base images", "- name: Check Dockerfile base images\n        if: false"), full),
+    ("base-image failure masked", short.replace("run: ./scripts/ci:base-images", "run: ./scripts/ci:base-images || true"), full),
     ("missing Unit filter", short.replace('--filter "TestCategory=Unit"', ""), full),
     ("integration in fast run", short.replace("TestCategory=Unit", "TestCategory=Integration"), full),
     ("Docker enabled", short.replace("DOCKER_HOST: unix:///tmp/hvo-no-docker.sock", ""), full),
@@ -193,6 +219,16 @@ mutations = (
         "secret_scan_contract != 'false'", "secret_scan_contract == 'true'"), full),
     ("v1 failed-step fallback suppressed", short.replace("!cancelled() && ", ""), full),
     ("full secret scan removed", short, full.replace("./scripts/ci:secret-scan", ":")),
+    ("v1 release script tests removed", short.replace("./scripts/test:release-scripts", ":"), full),
+    ("v1 classifier failure skips release script tests", short.replace(
+        "steps.classify.outcome != 'success' || steps.classify.outputs.release_scripts",
+        "steps.classify.outputs.release_scripts"), full),
+    ("v1 missing output skips release script tests", short.replace(
+        "release_scripts != 'false'", "release_scripts == 'true'"), full),
+    ("v1 release script tests suppressed after a failed step", short.replace(
+        "${{ !cancelled() && (steps.classify.outcome != 'success' || steps.classify.outputs.release_scripts",
+        "${{ (steps.classify.outcome != 'success' || steps.classify.outputs.release_scripts"), full),
+    ("full release script tests removed", short, full.replace("./scripts/test:release-scripts", ":")),
     ("v1 shallow checkout", short.replace("fetch-depth: 0", "fetch-depth: 1"), full),
     ("full shallow checkout", short, full.replace("fetch-depth: 0", "fetch-depth: 1")),
 )
@@ -262,3 +298,7 @@ else:
             raise SystemExit("New promotion was not created as draft")
 print(f"Development v1 CI contracts passed; {len(mutations)} mutation controls and 8 offline promotion cases passed.")
 PY
+
+# Keep the cheap image and runtime-directory fixtures on the Preflight contract path.
+"$repo_root/scripts/test:ci-base-images"
+"$repo_root/scripts/test:cameraagent-arm64-preflight"

@@ -58,9 +58,9 @@ public sealed class CameraAgentSettingsEndpointsTests
             .ConfigureAwait(false);
 
         Assert.AreEqual(StatusCodes.Status200OK, catalogue.Status);
-        Assert.AreEqual(5, JsonDocumentLength(catalogue.Body, "groups"));
+        Assert.AreEqual(6, JsonDocumentLength(catalogue.Body, "groups"));
         Assert.AreEqual(StatusCodes.Status200OK, values.Status);
-        Assert.AreEqual(5, JsonDocumentLength(values.Body, "groups"));
+        Assert.AreEqual(6, JsonDocumentLength(values.Body, "groups"));
         Assert.AreEqual(StatusCodes.Status404NotFound, unknown.Status);
     }
 

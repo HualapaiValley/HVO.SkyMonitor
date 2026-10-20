@@ -475,7 +475,7 @@ internal sealed class ScenePresentationLayerProcessingStepOptions : IValidatable
     [Range(1, 8)] public int LabelScale { get; init; } = 2;
     [Range(0, 64)] public int MaximumLabelCharacters { get; init; } = 24;
     [Range(-30, 30)] public double MaximumLabelMagnitude { get; init; } = 2.5;
-    [Range(1, 8)] public int ConstellationLineThickness { get; init; } = 3;
+    [Range(1, 8)] public int ConstellationLineThickness { get; init; } = 2;
     public IReadOnlyList<string> ConstellationIds { get; init; } = [];
     public bool DrawMarkers { get; init; } = true;
     public bool DrawLabels { get; init; } = true;
@@ -484,8 +484,8 @@ internal sealed class ScenePresentationLayerProcessingStepOptions : IValidatable
     public bool DrawCardinalDirections { get; init; } = true;
     [Range(0, 255)] public byte? MarkerValue { get; init; }
     [Range(0, 255)] public byte? LabelValue { get; init; }
-    [Range(0, 255)] public byte ConstellationLineRed { get; init; } = 188;
-    [Range(0, 255)] public byte ConstellationLineGreen { get; init; } = 140;
+    [Range(0, 255)] public byte ConstellationLineRed { get; init; } = 96;
+    [Range(0, 255)] public byte ConstellationLineGreen { get; init; } = 160;
     [Range(0, 255)] public byte ConstellationLineBlue { get; init; } = 255;
     [Range(0, 255)] public byte? ImageCircleValue { get; init; }
     [Range(0, 255)] public byte? CardinalValue { get; init; }
@@ -541,7 +541,7 @@ internal sealed class OverlayManifestProcessingStepOptions : IValidatableObject
     [Required, MaxLength(128)] public string CloudLabelVariant { get; init; } = "cloud-label-layer-v1";
     [Required, MaxLength(128)] public string EnvironmentVariant { get; init; } = "environment-layer-v1";
     [Required, MaxLength(128)] public string EnvironmentFactsVariant { get; init; } = "presentation-metadata-facts-v2";
-    [Range(0, 1_000_000)] public int ConstellationOpacityMillionths { get; init; } = 780_000;
+    [Range(0, 1_000_000)] public int ConstellationOpacityMillionths { get; init; } = 800_000;
     public IReadOnlyList<PresentationLayerSelectionOptions> Layers { get; init; } = [];
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)

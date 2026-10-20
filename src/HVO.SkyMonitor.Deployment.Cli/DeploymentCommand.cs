@@ -20,6 +20,12 @@ internal abstract record DeploymentCommand(bool Json)
     /// validates against it, so an instance is found under a relocated root with no extra option.
     /// </summary>
     public string ProductionProductRoot { get; init; } = InstallRequest.DefaultProductRoot;
+
+    /// <summary>
+    /// Advisories about the command line itself, such as a deprecated option that was accepted. They are said before the
+    /// command runs, or with <c>--json</c> reported in its result, and never change what it does.
+    /// </summary>
+    public IReadOnlyList<InstallationWarning> ParseWarnings { get; init; } = [];
 }
 
 internal sealed record InstallDeploymentCommand(InstallRequest Request) : DeploymentCommand(Request.Json);
@@ -79,22 +85,6 @@ internal sealed record CameraAgentStatePreflightRequest(
     string? ImageReference,
     bool Json) : DeploymentCommand(Json)
 {
-    public string? ImageManifest { get; init; }
-    public string? ImageIndex { get; init; }
-    public string? ImageVersion { get; init; }
-    public string? AssetBaseUrl { get; init; }
-    public bool NoDownload { get; init; }
-
-    /// <summary>
-    /// The operator-selected distribution channel, or <c>null</c> when none was named. Presence is retained rather
-    /// than collapsed onto the <c>Local</c> default so an explicit <c>--channel local</c> is rejected without a
-    /// signed release exactly as any other explicit channel is.
-    /// </summary>
-    public DistributionChannel? Channel { get; init; }
-
-    /// <summary>Whether the operator named a signed image release instead of an image already established here.</summary>
-    public bool NamesSignedImageRelease => ImageManifest is not null || ImageIndex is not null || ImageVersion is not null;
-
     public void Validate()
     {
         if (InstanceId is null)
@@ -102,19 +92,6 @@ internal sealed record CameraAgentStatePreflightRequest(
             throw new InstallUsageException("--instance-id is required.");
         }
         ProductRootAdmission.Validate(ProductRoot, ProductionProductRoot, AllowTestProductRoot);
-        if (NamesSignedImageRelease)
-        {
-            // A preflight selects its candidate by exactly the rules an install and an upgrade use, so the mutual
-            // exclusion with --image-ref, the index/version pairing, and the locator/channel rules all produce the
-            // same usage errors here that they produce there.
-            ImageSelection().ValidateImageSelection();
-            return;
-        }
-        if (AssetBaseUrl is not null || Channel is not null || NoDownload)
-        {
-            throw new InstallUsageException(
-                "--asset-base-url, --channel, and --no-download require --image-manifest or --image-index.");
-        }
         if (ImageReference is not null &&
             !System.Text.RegularExpressions.Regex.IsMatch(
                 ImageReference,
@@ -124,25 +101,6 @@ internal sealed record CameraAgentStatePreflightRequest(
             throw new InstallUsageException("preflight requires an immutable --image-ref.");
         }
     }
-
-    /// <summary>
-    /// The image-train selectors this preflight resolves, carrying no instance state. It is validated as an
-    /// install request so one set of selection rules governs install, upgrade, and preflight alike.
-    /// </summary>
-    internal InstallRequest ImageSelection() => new()
-    {
-        AllowTestProductRoot = AllowTestProductRoot,
-        ProductionProductRoot = ProductionProductRoot,
-        FriendlyName = "preflight",
-        OwnerEmail = "preflight@localhost.invalid",
-        ImageReference = ImageReference ?? string.Empty,
-        ImageManifest = ImageManifest,
-        ImageIndex = ImageIndex,
-        ImageVersion = ImageVersion,
-        AssetBaseUrl = AssetBaseUrl,
-        Channel = Channel ?? DistributionChannel.Local,
-        NoDownload = NoDownload
-    };
 }
 
 internal sealed record CameraAgentStateResetRequest(
@@ -202,9 +160,12 @@ internal sealed record LifecycleRequest : DeploymentCommand
     public string? ImageReference { get; init; }
     public string? ImageArchive { get; init; }
     public string? ImageArchiveSha256 { get; init; }
-    public string? ImageManifest { get; init; }
-    public string? ImageIndex { get; init; }
-    public string? ImageVersion { get; init; }
+
+    /// <summary>The folder holding the release an upgrade installs (<c>--release</c>), as <see cref="InstallRequest.Release"/>.</summary>
+    public string? Release { get; init; }
+
+    /// <summary>How the release's image reaches Docker (<c>--image-source</c>), as <see cref="InstallRequest.ImageSource"/>.</summary>
+    public ReleaseImageSource? ImageSource { get; init; }
     public bool NoDownload { get; init; }
     public bool MigrationBackwardCompatible { get; init; }
     public Guid? ConfirmationInstanceId { get; init; }
@@ -216,17 +177,16 @@ internal sealed record LifecycleRequest : DeploymentCommand
     /// </summary>
     public Guid? ConfirmRemovedOperationId { get; init; }
     public string? CatalogBundle { get; init; }
-    public string? CatalogManifest { get; init; }
-    public string? CatalogIndex { get; init; }
     public string? CatalogVersion { get; init; }
-    public string? AssetBaseUrl { get; init; }
-    public DistributionChannel Channel { get; init; }
+
+    /// <summary>The name of the backup <c>cameraagent restore</c> puts back, in the product root's backup folder (#1353).</summary>
+    public string? Archive { get; init; }
 
     /// <summary>
-    /// The release.json of the release an upgrade installs, when its source provides one. The upgrade shows its notes
-    /// and refuses an older target before anything changes. No command-line source sets it yet: the release.json
-    /// acquisition that also selects the candidate image from it is #1309's, so a document is never paired with an
-    /// image it does not describe. It is not part of the request hash, because it adds no input to the operation.
+    /// The release.json of the release an upgrade installs. The upgrade shows its notes and refuses an older target
+    /// before anything changes. It is set only from the verified release.json that also selects the candidate image
+    /// (<see cref="Release"/>), so a document is never paired with an image it does not describe. It is not part of the
+    /// request hash, because it adds no input to the operation.
     /// </summary>
     public ReleaseManifest? TargetRelease { get; init; }
 
@@ -237,8 +197,7 @@ internal sealed record LifecycleRequest : DeploymentCommand
         {
             throw new InstallUsageException("A release's upgrade notes apply only to an upgrade.");
         }
-        if (Operation is not null and not LifecycleOperationKind.CatalogInstall and not LifecycleOperationKind.CatalogGarbageCollect
-                and not LifecycleOperationKind.CatalogCheck &&
+        if (Operation is not null and not LifecycleOperationKind.CatalogInstall and not LifecycleOperationKind.CatalogGarbageCollect &&
             InstanceId is null)
         {
             throw new InstallUsageException("--instance-id is required.");
@@ -247,18 +206,25 @@ internal sealed record LifecycleRequest : DeploymentCommand
         {
             ValidateImage();
         }
+        if (Operation == LifecycleOperationKind.Restore && (Archive is null || !BackupVaultFiles.IsName(Archive)))
+        {
+            throw new InstallUsageException("restore requires the name of a backup in the backup folder, such as hvo-sky-<instance>-<time>-<operation>.tar.gz.");
+        }
+        if (Operation != LifecycleOperationKind.Restore && Archive is not null)
+        {
+            throw new InstallUsageException("Only restore takes a backup archive.");
+        }
         if (Operation == LifecycleOperationKind.Purge && ConfirmationInstanceId != InstanceId)
         {
             throw new InstallUsageException("purge requires --confirm-instance-id matching --instance-id.");
         }
-        if (Operation == LifecycleOperationKind.CatalogInstall &&
-            CatalogBundle is null && CatalogManifest is null && CatalogIndex is null)
+        if (Operation == LifecycleOperationKind.CatalogInstall && CatalogBundle is null)
         {
-            throw new InstallUsageException("catalog install requires --catalog-bundle, --catalog-manifest, or --catalog-index.");
+            throw new InstallUsageException("catalog install requires --catalog-bundle.");
         }
-        if (Operation == LifecycleOperationKind.CatalogCheck && CatalogManifest is null && CatalogIndex is null)
+        if (Operation == LifecycleOperationKind.CatalogInstall)
         {
-            throw new InstallUsageException("catalog check requires --catalog-manifest or --catalog-index.");
+            ValidateAbsolutePath(CatalogBundle!, "--catalog-bundle");
         }
         if (Operation == LifecycleOperationKind.CatalogGarbageCollect && !DryRun && CatalogVersion is null)
         {
@@ -271,10 +237,10 @@ internal sealed record LifecycleRequest : DeploymentCommand
         if (Resume && DryRun) throw new InstallUsageException("--resume cannot be combined with --dry-run.");
         if (RestoreOnly && (!Resume || Operation != LifecycleOperationKind.Upgrade ||
                             RecoveryOperationId is null || RecoveryOperationId == Guid.Empty ||
-                            ImageManifest is not null || ImageIndex is not null))
+                            Release is not null))
         {
             throw new InstallUsageException(
-                "--restore-only requires upgrade --resume --operation-id and the original operator-supplied image request; signed-release recovery is not supported.");
+                "--restore-only requires upgrade --resume --operation-id and the original operator-supplied image request; release recovery is not supported.");
         }
         if (!RestoreOnly && RecoveryOperationId is not null)
             throw new InstallUsageException("--operation-id requires --restore-only.");
@@ -300,39 +266,46 @@ internal sealed record LifecycleRequest : DeploymentCommand
             // Keep the null slot stable so current password-free operation receipts survive executable replacement.
             OwnerPasswordFile = (string?)null,
             CatalogBundle,
-            CatalogManifest,
-            CatalogIndex,
+            // The retired signed-release locators keep their empty slots, null and the local channel, so every receipt
+            // journaled before they were retired (#1309) keeps the identity it was written with and stays resumable.
+            CatalogManifest = (string?)null,
+            CatalogIndex = (string?)null,
             CatalogVersion,
-            AssetBaseUrl,
-            Channel
+            AssetBaseUrl = (string?)null,
+            Channel = 0
         });
-        // The signed image-release selection is appended only when it is used, so every operation receipt written
-        // before this train existed keeps the identity it was journaled with and stays resumable.
-        if (ImageManifest is not null || ImageIndex is not null || ImageVersion is not null)
+        // The release selection is appended only when it is used, for the same reason.
+        if (Release is not null)
         {
-            value += JsonSerializer.Serialize(new { ImageManifest, ImageIndex, ImageVersion });
+            value += JsonSerializer.Serialize(new { Release, ImageSource = ImageSource ?? ReleaseImageSource.Archive });
+        }
+        // A restore's archive likewise, so a --resume continues the restore of the same archive.
+        if (Archive is not null)
+        {
+            value += JsonSerializer.Serialize(new { Archive });
         }
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
 
     private void ValidateImage()
     {
-        if (ImageManifest is not null && ImageIndex is not null)
+        if (ImageSource is { } source && !Enum.IsDefined(source))
         {
-            throw new InstallUsageException("--image-manifest cannot be combined with --image-index.");
+            throw new InstallUsageException("--image-source must be archive or registry.");
         }
-        if (ImageVersion is not null && ImageIndex is null)
+        if (Release is not null)
         {
-            throw new InstallUsageException("--image-version requires --image-index.");
-        }
-        if (ImageManifest is not null || ImageIndex is not null)
-        {
+            ValidateAbsolutePath(Release, "--release");
             if (ImageReference is not null || ImageArchive is not null || ImageArchiveSha256 is not null)
             {
                 throw new InstallUsageException(
-                    "--image-ref, --image-archive, and --image-archive-sha256 cannot be combined with a signed image release.");
+                    "--image-ref, --image-archive, and --image-archive-sha256 cannot be combined with --release.");
             }
             return;
+        }
+        if (ImageSource is not null)
+        {
+            throw new InstallUsageException("--image-source requires --release.");
         }
         if (ImageReference is null ||
             !System.Text.RegularExpressions.Regex.IsMatch(
@@ -355,27 +328,18 @@ internal sealed record LifecycleRequest : DeploymentCommand
 
     private void ValidateOperationOptions()
     {
-        var hasSignedImage = ImageManifest is not null || ImageIndex is not null || ImageVersion is not null;
         var hasImage = ImageReference is not null || ImageArchive is not null || ImageArchiveSha256 is not null ||
-                       hasSignedImage || NoDownload || MigrationBackwardCompatible;
-        var hasCatalogBundleSource = CatalogBundle is not null || CatalogManifest is not null || CatalogIndex is not null;
-        // A signed image upgrade resolves its release through the same locator and channel options the catalog train
-        // uses, so those two options belong to an image upgrade as well and are only rejected without one.
-        var hasCatalogSource = hasCatalogBundleSource || AssetBaseUrl is not null || Channel != DistributionChannel.Local;
+                       Release is not null || ImageSource is not null || NoDownload || MigrationBackwardCompatible;
+        var hasCatalogSource = CatalogBundle is not null;
         switch (Operation)
         {
             case LifecycleOperationKind.Upgrade:
-                Reject((hasSignedImage ? hasCatalogBundleSource : hasCatalogSource) ||
-                       CatalogVersion is not null || ConfirmationInstanceId is not null,
+                Reject(hasCatalogSource || CatalogVersion is not null || ConfirmationInstanceId is not null,
                     "Image upgrade does not accept catalog or purge options.");
                 break;
             case LifecycleOperationKind.CatalogInstall:
-                Reject(hasImage || InstanceId is not null || ConfirmationInstanceId is not null,
-                    "Catalog install accepts only catalog acquisition and common options.");
-                break;
-            case LifecycleOperationKind.CatalogCheck:
-                Reject(hasImage || InstanceId is not null || ConfirmationInstanceId is not null || DryRun || Resume,
-                    "Catalog check is read-only and accepts only catalog locator and common options.");
+                Reject(hasImage || InstanceId is not null || ConfirmationInstanceId is not null || CatalogVersion is not null,
+                    "Catalog install accepts only --catalog-bundle and common options.");
                 break;
             case LifecycleOperationKind.CatalogSelect:
                 Reject(hasImage || hasCatalogSource || ConfirmationInstanceId is not null,

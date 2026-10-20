@@ -26,8 +26,8 @@ internal sealed partial class SqliteRawCaptureJournal(
 {
     // v15 fences readers that do not preserve audited evidence dispositions and retention holds.
     internal const int CurrentSchemaVersion = 15;
-    private const int PreviousSchemaVersion = 13;
-    private const int PreviousRecoverySchemaVersion = 14;
+    internal const int PreviousSchemaVersion = 13;
+    internal const int PreviousRecoverySchemaVersion = 14;
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
         new(() => CreateCanonicalSchemaDefinitions(includeProfiles: true));
     private static readonly Lazy<Dictionary<string, string>> PreviousSchemaDefinitions =

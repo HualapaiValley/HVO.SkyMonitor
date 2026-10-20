@@ -10,6 +10,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly REPO_ROOT
 # shellcheck source=lib/trx-evidence.sh
 source "$SCRIPT_DIR/lib/trx-evidence.sh"
+# shellcheck source=lib/dotnet-runtime-home.sh
+source "$SCRIPT_DIR/lib/dotnet-runtime-home.sh"
 readonly BUNDLE="${1:-}"
 readonly RUN_ID="${GITHUB_RUN_ID:-local}"
 readonly RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT:-$(date -u '+%Y%m%d%H%M%S')-$$}"
@@ -254,6 +256,9 @@ fi
 for command in cc curl date df docker dotnet du file find findmnt git grep id ip jq lsblk nproc readelf readlink realpath sha256sum sqlite3 stat timeout wc; do
     require_command "$command"
 done
+
+# Fail before invoking dotnet or creating any ARM64 workload resources.
+dotnet_runtime_home_check || fail "runner runtime directory is unusable"
 
 rm -rf -- "$RESULTS" "$UPLOAD_RESULTS" "$UPLOAD_STAGING"
 mkdir -p "$RESULTS" "$AGENT_ROOT/home" "$AGENT_ROOT/identity" "$AGENT_ROOT/provisioning" \
@@ -550,12 +555,13 @@ jq -e --arg revision "$(<"$RESULTS/source-revision.txt")" \
     '.[0].Id | startswith("sha256:")' \
     "$RESULTS/image-inspect.json" >/dev/null || fail "native image is not content addressed"
 jq -e --arg revision "$(<"$RESULTS/source-revision.txt")" \
-    '.[0].Os == "linux" and .[0].Architecture == "arm64" and .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and .[0].Config.Labels["org.opencontainers.image.version"] == "0.0.0-dev" and .[0].Config.Labels["io.hvo.skymonitor.component"] == "CameraAgent" and .[0].Config.Labels["io.hvo.skymonitor.state-compatibility"] == "cameraagent-state-v2" and .[0].Config.Labels["io.hvo.skymonitor.minimum-compatible-revision"] == "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f" and .[0].Config.Labels["io.hvo.skymonitor.identity-migration"] == "20260827053715_InitialIdentity" and .[0].Config.Labels["io.hvo.skymonitor.raw-ingress-schema"] == "15" and .[0].Config.Labels["io.hvo.skymonitor.catalog-manifest-version"] == "2" and .[0].Config.Labels["io.hvo.skymonitor.configuration-contract"] == "cameraagent-install-v1" and .[0].Config.Labels["io.hvo.skymonitor.catalog-contract"] == "hvo-approved-catalogs-v1" and .[0].Config.Labels["io.hvo.skymonitor.replay-runner-contract"] == "local-replay-runner-v1"' \
+    '.[0].Os == "linux" and .[0].Architecture == "arm64" and .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and .[0].Config.Labels["org.opencontainers.image.version"] == "" and .[0].Config.Labels["io.hvo.skymonitor.component"] == "CameraAgent" and .[0].Config.Labels["io.hvo.skymonitor.state-compatibility"] == "cameraagent-state-v2" and .[0].Config.Labels["io.hvo.skymonitor.minimum-compatible-revision"] == "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f" and .[0].Config.Labels["io.hvo.skymonitor.identity-migration"] == "20260827053715_InitialIdentity" and .[0].Config.Labels["io.hvo.skymonitor.raw-ingress-schema"] == "15" and .[0].Config.Labels["io.hvo.skymonitor.catalog-manifest-version"] == "2" and .[0].Config.Labels["io.hvo.skymonitor.configuration-contract"] == "cameraagent-install-v1" and .[0].Config.Labels["io.hvo.skymonitor.catalog-contract"] == "hvo-approved-catalogs-v1" and .[0].Config.Labels["io.hvo.skymonitor.replay-runner-contract"] == "local-replay-runner-v1"' \
     "$RESULTS/image-inspect.json" >/dev/null || fail "native image identity or revision is incorrect"
-# The advisory build passes no release version, so the published assemblies carry the development default.
+# The advisory build passes no release version, so the published assemblies carry the product version's development
+# build (#1310) and the version label is empty.
 docker run --rm --network none --label "$OWNERSHIP_LABEL" --entrypoint /bin/sh "$IMAGE_ID" -c \
     'grep -qaF "$1" /app/HVO.SkyMonitor.CameraAgent.dll && grep -qaF "$1" /app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner.dll' \
-    stamp "0.0.0-dev+$(<"$RESULTS/source-revision.txt")" || fail "published assemblies do not carry the source revision"
+    stamp "$("$REPO_ROOT/scripts/release:version" --dev)+$(<"$RESULTS/source-revision.txt")" || fail "published assemblies do not carry the source revision"
 docker run --rm --label "$OWNERSHIP_LABEL" \
     --entrypoint /app/replay-runner/HVO.SkyMonitor.CameraAgent.ReplayRunner \
     "$IMAGE_ID" --capabilities > "$RESULTS/replay-runner-image-capabilities.json"

@@ -1,0 +1,281 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-fixtures-v1",
+  "fixtureId": "swpc-v1",
+  "issue": 1398,
+  "source": {
+    "provider": "NOAA Space Weather Prediction Center (SWPC)",
+    "host": "services.swpc.noaa.gov",
+    "rights": "U.S. Government work; not subject to copyright in the United States (17 U.S.C. 105). See SOURCE.md for the NWS disclaimer terms that apply to use and attribution.",
+    "credit": "Space weather data: NOAA Space Weather Prediction Center (SWPC)."
+  },
+  "retrievedBy": "claude-code:anthropic:home-dev-01:d221666e",
+  "captures": [
+    {
+      "product": "alerts",
+      "file": "capture-20261019T1857Z/alerts.json",
+      "fetchStartUtc": "2026-10-19T18:57:03.332Z",
+      "http": {
+        "status": 200,
+        "contentType": "application/json",
+        "contentEncoding": "gzip",
+        "lastModified": "Mon, 19 Oct 2026 18:56:08 GMT",
+        "etag": "W/\"d330-65e36111702aa\"",
+        "cacheControl": "max-age=60",
+        "transferBytes": 5174
+      },
+      "decodedBytes": 54064,
+      "sha256": "3A6DA456C1846F5D07E002514C57E997B2E3D456AC5AA636D0E7A6FBFC12114E",
+      "transform": "none"
+    },
+    {
+      "product": "scales",
+      "file": "capture-20261019T1857Z/noaa-scales.json",
+      "fetchStartUtc": "2026-10-19T18:57:03.430Z",
+      "http": {
+        "status": 200,
+        "contentType": "application/json",
+        "contentEncoding": "gzip",
+        "lastModified": "Mon, 19 Oct 2026 18:55:44 GMT",
+        "etag": "W/\"44e-65e360fa970f3\"",
+        "cacheControl": "max-age=60",
+        "transferBytes": 216
+      },
+      "decodedBytes": 1102,
+      "sha256": "D1CB0BD994FF2E0020DC44BA4F10F54E7A409D2C65DC49EAA2249A21C7FC8941",
+      "transform": "none"
+    },
+    {
+      "product": "kp-forecast",
+      "file": "capture-20261019T1857Z/noaa-planetary-k-index-forecast.json",
+      "fetchStartUtc": "2026-10-19T18:57:03.632Z",
+      "http": {
+        "status": 200,
+        "contentType": "application/json",
+        "contentEncoding": "gzip",
+        "lastModified": "Mon, 19 Oct 2026 18:56:43 GMT",
+        "etag": "W/\"1af9-65e361333c7ac\"",
+        "cacheControl": "max-age=60",
+        "transferBytes": 509
+      },
+      "decodedBytes": 6905,
+      "sha256": "12B8831BA5C88707FF6694C61D451C0714CC54EEB33B4B5127467443BFAACF31",
+      "transform": "none"
+    },
+    {
+      "product": "3-day-forecast",
+      "file": "capture-20261019T1857Z/3-day-forecast.original.json",
+      "fetchStartUtc": "2026-10-19T18:57:03.895Z",
+      "http": {
+        "status": 200,
+        "contentType": "text/plain",
+        "contentEncoding": "gzip",
+        "lastModified": "Mon, 19 Oct 2026 18:55:42 GMT",
+        "etag": "\"7fe-65e360f9121ca-gzip\"",
+        "cacheControl": "max-age=60",
+        "transferBytes": 838
+      },
+      "decodedBytes": 2046,
+      "sha256": "D8EC76FB6813BCF92DB38E70057689334DA5CA8DF8BABA5FA320F8591A7FAB3E",
+      "transform": "json-string-wrapper; the decoded text is byte-exact",
+      "normalizedFile": "capture-20261019T1857Z/3-day-forecast.txt"
+    },
+    {
+      "product": "ovation",
+      "file": "ovation-aurora-site-sector.json",
+      "fetchStartUtc": "2026-10-19T18:57:04.464Z",
+      "http": {
+        "status": 200,
+        "contentType": "application/json",
+        "contentEncoding": "gzip",
+        "lastModified": "Mon, 19 Oct 2026 18:55:29 GMT",
+        "etag": "W/\"e03bc-65e360ec17552\"",
+        "cacheControl": "max-age=60",
+        "transferBytes": 150748
+      },
+      "decodedBytes": 918460,
+      "sha256": "3B4CE243EFE8B6B44EAF3692EAFD0517BA12A6FBDB3357A41AF45505BF7C760C",
+      "transform": "sector subset: longitudes 236..256, latitudes -5..90; original not committed"
+    }
+  ],
+  "derived": {
+    "scenarioSchema": "hvo-space-weather-swpc-scenario-v1",
+    "scenarios": [
+      "scenarios/s01-duplicate-refetch.json",
+      "scenarios/s02-same-identity-revised-content.json",
+      "scenarios/s03-correction-reissue.json",
+      "scenarios/s04-continuation-self-reference.json",
+      "scenarios/s05-extension-chain-expiry.json",
+      "scenarios/s06-extension-before-root.json",
+      "scenarios/s07-watch-supersession-and-cancel.json",
+      "scenarios/s08-watch-replacement-and-escalation.json",
+      "scenarios/s09-synthetic-cancel-warning.json",
+      "scenarios/s10-restart-ack-rolling-window.json",
+      "scenarios/s11-stale-cdn-out-of-order.json",
+      "scenarios/s12-malformed-bodies.json",
+      "scenarios/s13-outage-backoff-halts.json",
+      "scenarios/s14-year-rollover-and-local-day.json",
+      "scenarios/s15-missing-scale-and-location.json",
+      "scenarios/s16-kp-estimated-future-bin.json",
+      "scenarios/s17-three-day-issue-versus-last-modified.json",
+      "scenarios/s18-ovation-site-band.json",
+      "scenarios/s19-early-resume-spacing.json",
+      "scenarios/s20-record-level-drift.json",
+      "scenarios/s21-pending-short-window-and-cap.json",
+      "scenarios/s22-gone-client-error-network.json"
+    ],
+    "generator": "fixtures.py",
+    "normalization": "CRLF to LF, trailing spaces/tabs trimmed per line, trailing blank lines removed, every line LF-terminated"
+  },
+  "files": [
+    {
+      "path": "SOURCE.md",
+      "bytes": 8816,
+      "sha256": "2171007704A2EB33A798DC0E9C204A2D64755CA3094E8DF0D5EB4293E7DC9404"
+    },
+    {
+      "path": "capture-20261019T1857Z/3-day-forecast.original.json",
+      "bytes": 2298,
+      "sha256": "110FE6AB212EA1F638207DEC04D1164FCCF9787C5A1240D4C1F89C7D70E86FDE"
+    },
+    {
+      "path": "capture-20261019T1857Z/3-day-forecast.txt",
+      "bytes": 1974,
+      "sha256": "548D87ECA9AF7C424B37B27CFABE6B393960207253C9110A31005FC0CE02A2A7"
+    },
+    {
+      "path": "capture-20261019T1857Z/alerts.json",
+      "bytes": 54064,
+      "sha256": "3A6DA456C1846F5D07E002514C57E997B2E3D456AC5AA636D0E7A6FBFC12114E"
+    },
+    {
+      "path": "capture-20261019T1857Z/noaa-planetary-k-index-forecast.json",
+      "bytes": 6905,
+      "sha256": "12B8831BA5C88707FF6694C61D451C0714CC54EEB33B4B5127467443BFAACF31"
+    },
+    {
+      "path": "capture-20261019T1857Z/noaa-scales.json",
+      "bytes": 1102,
+      "sha256": "D1CB0BD994FF2E0020DC44BA4F10F54E7A409D2C65DC49EAA2249A21C7FC8941"
+    },
+    {
+      "path": "fixtures.py",
+      "bytes": 163031,
+      "sha256": "7F8DFA5AAF1300F9DAC0876DEE8448199952302A874FDC6432539DC43722FA20"
+    },
+    {
+      "path": "ovation-aurora-site-sector.json",
+      "bytes": 36517,
+      "sha256": "6B8AFCE675CA62062B39A5E1F26682E1548C96E5030FEAD1CFB2DC6DE5C1FFD6"
+    },
+    {
+      "path": "scenarios/s01-duplicate-refetch.json",
+      "bytes": 7644,
+      "sha256": "F3C99AE9BF9E9406022FFE8323BDE57C0C8E7657D43CE3A25F34C8C4CB2189D6"
+    },
+    {
+      "path": "scenarios/s02-same-identity-revised-content.json",
+      "bytes": 4073,
+      "sha256": "8AD0F16FFA1F0B37E0B9CFCC192026FB82E32359CF1C29D1357B33F232A3EE9F"
+    },
+    {
+      "path": "scenarios/s03-correction-reissue.json",
+      "bytes": 3671,
+      "sha256": "66AD35C2F7ECEDA2AA17749BA7680692ED7FA92E144A490B46C0583626DD1099"
+    },
+    {
+      "path": "scenarios/s04-continuation-self-reference.json",
+      "bytes": 3733,
+      "sha256": "6D87B59C82868E7A40FE32B15634049E9AFD729164726EB7AB478CC5B4965DA0"
+    },
+    {
+      "path": "scenarios/s05-extension-chain-expiry.json",
+      "bytes": 8893,
+      "sha256": "9345540C7CCE6B412476F536772DFB9BD1A818DDAE933AFFE8BE90A9BA153D54"
+    },
+    {
+      "path": "scenarios/s06-extension-before-root.json",
+      "bytes": 4500,
+      "sha256": "F525C6C0E3C720DF486BE46DB9240026819414CF543484593D1FD81B7470860A"
+    },
+    {
+      "path": "scenarios/s07-watch-supersession-and-cancel.json",
+      "bytes": 9842,
+      "sha256": "3D5553E29A6CAFBDF74891F5DEEF9C9F4D123C58FEB9695C409192FE814494F8"
+    },
+    {
+      "path": "scenarios/s08-watch-replacement-and-escalation.json",
+      "bytes": 34159,
+      "sha256": "3E6F9CE9D8E4B152FDFA2A0D6F4C99A4ABDE6ACD1FD68D0C8766E6758FC57F52"
+    },
+    {
+      "path": "scenarios/s09-synthetic-cancel-warning.json",
+      "bytes": 7333,
+      "sha256": "0FDEEE11F4158CB214A051B67F391838393C7A898B2F6BA5847AD6874D15F637"
+    },
+    {
+      "path": "scenarios/s10-restart-ack-rolling-window.json",
+      "bytes": 10633,
+      "sha256": "93E9C769649BD2AB7D9519D770460012EFF9E578AD01357EAA12A98755C09DD8"
+    },
+    {
+      "path": "scenarios/s11-stale-cdn-out-of-order.json",
+      "bytes": 6662,
+      "sha256": "EAD7970F5EAE147E066D603096E095EF786DB14B98FB8DEAD3244A1C694762C8"
+    },
+    {
+      "path": "scenarios/s12-malformed-bodies.json",
+      "bytes": 46374,
+      "sha256": "820C99B169003D3BB30D4A9BD5327F7D3032BC79937F098AA4AF59961B056DCD"
+    },
+    {
+      "path": "scenarios/s13-outage-backoff-halts.json",
+      "bytes": 11615,
+      "sha256": "3ACC1D31D4021CCB866C83FF7A8BEA3C599A02D4820D6ABFA8259A0F7AF1D507"
+    },
+    {
+      "path": "scenarios/s14-year-rollover-and-local-day.json",
+      "bytes": 5891,
+      "sha256": "27316D27BAC08AA7CE39499D5D6A0338A165656B1FC94C1E3AA0D7675EA3367D"
+    },
+    {
+      "path": "scenarios/s15-missing-scale-and-location.json",
+      "bytes": 7084,
+      "sha256": "AFC92D62B0F0893543370F16347D2AA6AFA9A9FDFF67AAB259492828E3A68757"
+    },
+    {
+      "path": "scenarios/s16-kp-estimated-future-bin.json",
+      "bytes": 32848,
+      "sha256": "F63B13754D90C139F1E66CB8224795959A4541286953D7793FC9B837CE80C866"
+    },
+    {
+      "path": "scenarios/s17-three-day-issue-versus-last-modified.json",
+      "bytes": 13568,
+      "sha256": "F5BDDD71ACE5259E583ECC4046E6DA9641515213226B7551C070531235CFDE30"
+    },
+    {
+      "path": "scenarios/s18-ovation-site-band.json",
+      "bytes": 42692,
+      "sha256": "9695AFFF834D6271F4D10B4F1459EB0C3A7A06904E0571148184243903816310"
+    },
+    {
+      "path": "scenarios/s19-early-resume-spacing.json",
+      "bytes": 7661,
+      "sha256": "060001F4DDB175F207DE46CF962FE26D7D7F90F2EE09A18805787B2481429F2A"
+    },
+    {
+      "path": "scenarios/s20-record-level-drift.json",
+      "bytes": 25618,
+      "sha256": "AB432602229C8B189B717126B8E44C729D9B03707CDBC786D4A65766AB2D75A2"
+    },
+    {
+      "path": "scenarios/s21-pending-short-window-and-cap.json",
+      "bytes": 10270,
+      "sha256": "345023618F7B6C0A89C2E63C10987C0B47D893C72C78E5586CB40B67A74F13ED"
+    },
+    {
+      "path": "scenarios/s22-gone-client-error-network.json",
+      "bytes": 8894,
+      "sha256": "5D84B53758496ED0CB1D05B6ADC0C7366D99ECD3D2848166EE7C213078D526EA"
+    }
+  ]
+}

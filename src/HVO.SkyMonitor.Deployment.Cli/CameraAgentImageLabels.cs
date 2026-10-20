@@ -51,7 +51,7 @@ internal static class CameraAgentImageLabels
     /// kind reads as absent, which leaves the image undeclared (and so refused, or treated as declaring a migration)
     /// rather than throwing on a recovery path.
     /// </summary>
-    private static string? Label(JsonElement labels, string name)
+    internal static string? Label(JsonElement labels, string name)
         => labels.ValueKind == JsonValueKind.Object && labels.TryGetProperty(name, out var value) &&
            value.ValueKind == JsonValueKind.String
             ? value.GetString()
