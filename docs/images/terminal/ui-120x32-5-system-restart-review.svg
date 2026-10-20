@@ -88,12 +88,11 @@
 <text x="532.80" y="217.50" fill="#98a7bb" textLength="58.80" lengthAdjust="spacingAndGlyphs">Restart</text>
 <text x="616.80" y="217.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs">supervised</text>
 <text x="264.00" y="253.50" fill="#58a6ff" textLength="134.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">RESTART / REVIEW</text>
-<text x="255.60" y="271.50" fill="#f7f9fc" textLength="504.00" lengthAdjust="spacingAndGlyphs">Restart CameraAgent at http://127.0.0.1:5130/? Capture stops</text>
+<text x="255.60" y="271.50" fill="#f7f9fc" textLength="142.80" lengthAdjust="spacingAndGlyphs">until it is back.</text>
 <text x="20.40" y="289.50" fill="#f7f9fc" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Sign in ]</text>
 <text x="129.60" y="289.50" fill="#98a7bb" textLength="100.80" lengthAdjust="spacingAndGlyphs" opacity="0.6">[ Sign out ]</text>
-<text x="255.60" y="289.50" fill="#f7f9fc" textLength="142.80" lengthAdjust="spacingAndGlyphs">until it is back.</text>
-<text x="255.60" y="307.50" fill="#98a7bb" textLength="495.60" lengthAdjust="spacingAndGlyphs">Settings and a staged rig that apply at its next start take</text>
-<text x="255.60" y="325.50" fill="#98a7bb" textLength="403.20" lengthAdjust="spacingAndGlyphs">effect. The interface waits for the new process.</text>
+<text x="255.60" y="289.50" fill="#98a7bb" textLength="495.60" lengthAdjust="spacingAndGlyphs">Settings and a staged rig that apply at its next start take</text>
+<text x="255.60" y="307.50" fill="#98a7bb" textLength="403.20" lengthAdjust="spacingAndGlyphs">effect. The interface waits for the new process.</text>
 <text x="255.60" y="397.50" fill="#05070d" textLength="92.40" lengthAdjust="spacingAndGlyphs" font-weight="bold" text-decoration="underline">[ Restart ]</text>
 <text x="373.20" y="397.50" fill="#f7f9fc" textLength="84.00" lengthAdjust="spacingAndGlyphs" font-weight="bold">[ Cancel ]</text>
 <text x="20.40" y="577.50" fill="#98a7bb" textLength="546.00" lengthAdjust="spacingAndGlyphs">hvo-sky's own version shows even when CameraAgent cannot be read.</text>

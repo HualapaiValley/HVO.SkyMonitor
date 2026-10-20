@@ -178,7 +178,7 @@ internal sealed class SkyUiRigPage : SkyUiPage
                 }
 
                 Ui.Say(HvoNotice.Info, $"Rig revision {id} passed CameraAgent's preview against the active schedule.");
-                Ui.OpenPrompt(new SkyUiPromptSpec("Rig stage / Review",
+                Ui.OpenChangePrompt(new SkyUiPromptSpec("Rig stage / Review",
                 [
                     new($"Rig revision {id} passed the preview against schedule revision {SkyJson.Text(preview, "scheduleRevisionId")}."),
                     new("It is unvalidated at runtime: it takes effect when CameraAgent next starts, and its camera may fail to initialize then.", HvoTone.Warning)
@@ -215,7 +215,7 @@ internal sealed class SkyUiRigPage : SkyUiPage
             return;
         }
 
-        Ui.OpenPrompt(new SkyUiPromptSpec("Rig apply / Review",
+        Ui.OpenChangePrompt(new SkyUiPromptSpec("Rig apply / Review",
         [
             new($"Restart CameraAgent at {Ui.Connection?.Url} to apply rig revision {staged}?"),
             new("Capture stops until it is back. The interface waits for the new process, then until the rig is active or its camera fails.", HvoTone.Muted)

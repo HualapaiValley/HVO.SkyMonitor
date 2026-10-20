@@ -19,13 +19,14 @@ internal sealed class SkyUiSettingsPage : SkyUiPage
     private readonly HvoPanel _settingsPanel;
     private readonly HvoPanel _aboutPanel;
     private readonly Button _change;
+    private string? _aboutKey;
 
     public SkyUiSettingsPage(SkyTerminalUi ui)
         : base(ui, "Settings")
     {
         _groups = new SkyUiTable(Theme, [new SkyUiColumn("GROUP", 24)]) { Empty = "Reading the catalogue..." };
         _settings = new SkyUiTable(Theme, [new SkyUiColumn("SETTING", 24), new SkyUiColumn("VALUE", 18), new SkyUiColumn("NOTE", 40)]);
-        _about = new HvoTextLines(Theme) { CanFocus = false };
+        _about = new HvoTextLines(Theme);
         _groupsPanel = AddPanel("Groups", _groups);
         _settingsPanel = AddPanel("Settings", _settings);
         _aboutPanel = AddPanel("About", _about);
@@ -77,6 +78,7 @@ internal sealed class SkyUiSettingsPage : SkyUiPage
             _groups.Show([]);
             _settings.Show([]);
             _about.Show([]);
+            _aboutKey = null;
             _change.Enabled = false;
             return;
         }
@@ -114,11 +116,12 @@ internal sealed class SkyUiSettingsPage : SkyUiPage
         if (SelectedField is not { } field)
         {
             _about.Show([]);
+            _aboutKey = null;
             _change.Enabled = false;
             return;
         }
 
-        _aboutPanel.Caption = $"About {field.Key}";
+        _aboutPanel.Caption = Titled($"About {field.Key}", Ui.Data.Settings);
         var lines = new List<HvoLine>
         {
             new(field.Setting.Description),
@@ -141,7 +144,8 @@ internal sealed class SkyUiSettingsPage : SkyUiPage
             lines.Add(new($"Pending   {SkySettingText.Describe(pending)}, saved and not in effect yet", HvoTone.Info));
         }
 
-        _about.Show(lines);
+        _about.Show(lines, preserveScroll: _aboutKey == field.Key);
+        _aboutKey = field.Key;
         _change.Enabled = field.CanWrite && CanChange;
         Ui.Hint(Help);
     }
@@ -187,7 +191,7 @@ internal static class SkyUiSettingChange
 
         SkySettingsGroupState group = field.Group.State
             ?? throw new InvalidOperationException($"CameraAgent did not return the {field.Group.Name} group's state.");
-        return ui.OpenPrompt(new SkyUiPromptSpec("Setting / Review", lines, "Save", answers =>
+        return ui.OpenChangePrompt(new SkyUiPromptSpec("Setting / Review", lines, "Save", answers =>
         {
             JsonElement value;
             try
@@ -222,6 +226,20 @@ internal static class SkyUiSettingChange
         });
     }
 
+    private static SkySettingsWriteResponse ReadReceipt(JsonElement answer, string group, string key)
+    {
+        var receipt = SkyApiClient.Read<SkySettingsWriteResponse>(answer);
+        if (receipt.Status is not ("Applied" or "PendingRestart" or "Unchanged")
+            || receipt.Group is not { } state || state.Group != group || string.IsNullOrWhiteSpace(state.Version)
+            || state.Settings is null || !state.Settings.Any(setting => setting is not null && setting.Key == key)
+            || receipt.Recorded is null || receipt.Recorded.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new SkyProtocolException("CameraAgent returned an incomplete or unknown settings receipt. Read the settings again to check what took effect.");
+        }
+
+        return receipt;
+    }
+
     private static string Initial(SkySettingField field) => field.State?.Value switch
     {
         { ValueKind: JsonValueKind.String } text => text.GetString() ?? string.Empty,
@@ -239,9 +257,19 @@ internal static class SkyUiSettingChange
         var request = new SkySettingsUpdateRequest(group.Version, new Dictionary<string, JsonElement>(StringComparer.Ordinal) { [field.Key] = value }, reason);
         ui.Say(HvoNotice.Info, $"Saving {field.Key}...");
         ui.Run(
-            async (operation, token) => SkyApiClient.Read<SkySettingsWriteResponse>(await operation.SendChangeAsync(
-                client, HttpMethod.Put, $"{SkySettingsContract.Route}/{Uri.EscapeDataString(group.Group)}", request,
-                $"the {group.Group} settings", token, static answer => SkyJson.Text(answer, "status") != "Unchanged").ConfigureAwait(false)),
+            async (operation, token) =>
+            {
+                SkySettingsWriteResponse? receipt = null;
+                await operation.SendChangeAsync(
+                    client, HttpMethod.Put, $"{SkySettingsContract.Route}/{Uri.EscapeDataString(group.Group)}", request,
+                    $"the {group.Group} settings", token, answer =>
+                    {
+                        // Validate before accepting even an Unchanged claim: an incomplete 200 remains unverified.
+                        receipt = ReadReceipt(answer, group.Group, field.Key);
+                        return receipt.Status != "Unchanged";
+                    }).ConfigureAwait(false);
+                return receipt!;
+            },
             (response, error, operation) =>
             {
                 if (error is not null)

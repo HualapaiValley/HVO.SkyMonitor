@@ -196,7 +196,7 @@ internal sealed class SkyUiSystemPage : SkyUiPage
             return;
         }
 
-        Ui.OpenPrompt(new SkyUiPromptSpec("Restart / Review",
+        Ui.OpenChangePrompt(new SkyUiPromptSpec("Restart / Review",
         [
             new($"Restart CameraAgent at {Ui.Connection?.Url}? Capture stops until it is back."),
             new("Settings and a staged rig that apply at its next start take effect. The interface waits for the new process.", HvoTone.Muted)

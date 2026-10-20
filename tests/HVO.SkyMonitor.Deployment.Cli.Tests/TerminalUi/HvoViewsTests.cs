@@ -165,6 +165,11 @@ public sealed class HvoViewsTests
             Assert.AreEqual(4, lines.Top);
             app.InjectKey(Key.CursorUp);
             Assert.AreEqual(3, lines.Top);
+            lines.Show([.. Enumerable.Range(1, 12).Select(i => new HvoLine($"updated {i}"))], preserveScroll: true);
+            Assert.AreEqual(3, lines.Top, "A refresh keeps the reader on the same row.");
+            lines.Show([new HvoLine("shorter")], preserveScroll: true);
+            Assert.AreEqual(0, lines.Top, "Shorter refreshed content clamps the offset.");
+            lines.Show(Enumerable.Range(1, 10).Select(i => $"line {i}"));
             app.InjectKey(Key.Home);
             Assert.AreEqual(0, lines.Top);
 
