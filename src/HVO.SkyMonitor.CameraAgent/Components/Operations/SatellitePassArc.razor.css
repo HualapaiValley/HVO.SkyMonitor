@@ -3,7 +3,7 @@
 .sky-disc { fill: #0c1422; stroke: #536176; }
 .sky-grid { fill: none; stroke: #29384b; stroke-dasharray: 2 5; }
 .sky-axis { fill: #9caabe; font: 12px sans-serif; }
-.predicted-path { fill: none; stroke: #f4a44e; stroke-width: 2.5; stroke-dasharray: 8 5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.predicted-path { fill: none; stroke: #f4a44e; stroke-width: 1; stroke-dasharray: 8 5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .prediction-point { fill: #f4a44e; stroke: #f4a44e; stroke-width: 2; vector-effect: non-scaling-stroke; }
 .arc-anchor { fill: #101b2b; stroke: #f4a44e; stroke-width: 2; }
 .arc-time-label text { fill: #ffc689; stroke: #0c1422; stroke-width: 3px; paint-order: stroke; font: 10px sans-serif; }
