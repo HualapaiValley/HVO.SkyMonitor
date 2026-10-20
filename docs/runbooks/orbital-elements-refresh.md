@@ -58,7 +58,7 @@ validated at startup.
 | `MaximumRetainedSnapshots` | `12` | 2–64 | Newest snapshots that retention always keeps. |
 | `MinimumRetentionHours` | `48` | 1–720 | Snapshots younger than this are always kept. |
 | `MaximumQuarantinedPayloads` | `4` | 1–16 | Newest quarantined raw bodies that are kept as evidence. |
-| `StaleAfterHours` | `12` | 3–168 | Health degrades when the active snapshot was activated longer ago than this. |
+| `StaleAfterHours` | `12` | 3–168 | The refresh-overdue bound. With an active snapshot whose elements are not stale, health degrades with `orbital.refresh-overdue` when no valid provider retrieval (an HTTP 200 the store recorded) has succeeded within this many hours. It does not measure element age: `orbital.snapshot-stale` follows the newest element epoch against a fixed 48-hour envelope, so re-downloading an unchanged old payload clears refresh-overdue but never makes stale elements fresh. |
 
 The store root is `<RawIngressRoot>/.orbital-elements/`. The store is initialized
 before the automation runner starts, whether or not refresh is enabled. If it cannot

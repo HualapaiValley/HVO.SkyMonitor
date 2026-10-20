@@ -152,6 +152,26 @@ public sealed class OrbitalElementsHealthEvaluator
                 "Orbital elements need operator attention; the last-known-good snapshot remains readable.", data);
     }
 
+    /// <summary>
+    /// Whether the active snapshot's elements are stale: there is no newest element epoch (fail safe, because then no
+    /// element could be fresh), or it is more than <see cref="ElementStaleAge"/> before <paramref name="now"/>. An epoch
+    /// exactly at the threshold, or ahead of the clock, is not stale. Pure, so the operator UI applies the same rule.
+    /// </summary>
+    public static bool IsElementStale(DateTimeOffset now, DateTimeOffset? newestEpochUtc)
+        => newestEpochUtc is not { } newest || now - newest > ElementStaleAge;
+
+    /// <summary>
+    /// Whether a refresh is overdue: no valid provider retrieval has succeeded, or the last one is more than
+    /// <see cref="OrbitalElementsOptions.StaleAfterHours"/> before <paramref name="now"/>. A retrieval exactly at the
+    /// threshold is not overdue. Pure, so the operator UI applies the same rule.
+    /// </summary>
+    public static bool IsRefreshOverdue(DateTimeOffset now, DateTimeOffset? lastRetrievalSuccessUtc,
+        OrbitalElementsOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return lastRetrievalSuccessUtc is not { } retrieved || now - retrieved > TimeSpan.FromHours(options.StaleAfterHours);
+    }
+
     /// <summary>The first degrading condition in precedence order, or null when the snapshot is healthy.</summary>
     internal static string? DegradedReason(DateTimeOffset now, OrbitalElementsOptions configured, OrbitalProviderState state,
         OrbitalElementsObservation observation)
@@ -178,15 +198,11 @@ public sealed class OrbitalElementsHealthEvaluator
         }
         if (state.CurrentManifestSha256 is not null)
         {
-            // Fail safe: an active snapshot without a newest epoch has no element that could be fresh.
-            if (state.CurrentMaximumEpochUtc is not { } newest || now - newest > ElementStaleAge)
+            if (IsElementStale(now, state.CurrentMaximumEpochUtc))
             {
                 return SnapshotStaleReasonCode;
             }
-            return state.LastRetrievalSuccessUtc is not { } retrieved ||
-                now - retrieved > TimeSpan.FromHours(configured.StaleAfterHours)
-                ? RefreshOverdueReasonCode
-                : null;
+            return IsRefreshOverdue(now, state.LastRetrievalSuccessUtc, configured) ? RefreshOverdueReasonCode : null;
         }
         if (observation.Definition is not { Definition.Enabled: true } definition)
         {

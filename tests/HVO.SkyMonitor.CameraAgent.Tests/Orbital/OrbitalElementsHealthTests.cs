@@ -350,6 +350,47 @@ public sealed class OrbitalElementsHealthTests : OrbitalStoreTestBase
         Assert.AreEqual(OrbitalElementsOperations.DefinitionMissingReasonCode, result.Data["Reason"]);
     }
 
+    [TestMethod]
+    [DataRow(null, true)]
+    [DataRow(-1L, false)]
+    [DataRow(0L, false)]
+    [DataRow(1L, true)]
+    public void ElementsAreStaleOnlyPastTheElementAgeEnvelopeOrWithoutANewestEpoch(long? ticksPastThreshold,
+        bool expected)
+    {
+        var now = OrbitalElementsStoreTestData.Start;
+        DateTimeOffset? newest = ticksPastThreshold is { } ticks
+            ? now - OrbitalElementsHealthEvaluator.ElementStaleAge - TimeSpan.FromTicks(ticks)
+            : null;
+
+        Assert.AreEqual(TimeSpan.FromHours(48), OrbitalElementsHealthEvaluator.ElementStaleAge);
+        Assert.AreEqual(expected, OrbitalElementsHealthEvaluator.IsElementStale(now, newest));
+        Assert.IsFalse(OrbitalElementsHealthEvaluator.IsElementStale(now, now.AddHours(1)),
+            "An epoch ahead of the clock is not stale.");
+    }
+
+    [TestMethod]
+    [DataRow(12, null, true)]
+    [DataRow(12, -1L, false)]
+    [DataRow(12, 0L, false)]
+    [DataRow(12, 1L, true)]
+    [DataRow(3, 0L, false)]
+    [DataRow(3, 1L, true)]
+    [DataRow(168, 0L, false)]
+    [DataRow(168, 1L, true)]
+    public void ARefreshIsOverdueOnlyPastTheRetrievalBoundOrWithoutARetrieval(int staleAfterHours,
+        long? ticksPastThreshold, bool expected)
+    {
+        var now = OrbitalElementsStoreTestData.Start;
+        var options = new OrbitalElementsOptions { StaleAfterHours = staleAfterHours };
+        DateTimeOffset? retrieved = ticksPastThreshold is { } ticks
+            ? now - TimeSpan.FromHours(staleAfterHours) - TimeSpan.FromTicks(ticks)
+            : null;
+
+        Assert.AreEqual(expected, OrbitalElementsHealthEvaluator.IsRefreshOverdue(now, retrieved, options));
+        Assert.ThrowsExactly<ArgumentNullException>(() => OrbitalElementsHealthEvaluator.IsRefreshOverdue(now, now, null!));
+    }
+
     private static OrbitalElementsHealthEvaluator Evaluator(OrbitalAutomationFixture fixture)
         => new(fixture.Operations, fixture.Orbital.Options, fixture.Clock);
 
