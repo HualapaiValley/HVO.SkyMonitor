@@ -213,9 +213,9 @@ def is_flag(text):
 def is_wide(text):
     """
     True when a cell's text (a character, with what joins it) takes two columns, as Terminal.Gui draws it: when any of
-    it is wide, or it is a flag's two regional indicators.
+    its non-combining characters are wide, or it is a flag's two regional indicators.
     """
-    return is_flag(text) or any(unicodedata.east_asian_width(ch) in ("W", "F") for ch in text)
+    return is_flag(text) or any(not unicodedata.combining(ch) and unicodedata.east_asian_width(ch) in ("W", "F") for ch in text)
 
 
 def joins(previous, ch, after_joiner):

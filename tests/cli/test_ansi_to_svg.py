@@ -39,6 +39,15 @@ class AnsiToSvgTests(unittest.TestCase):
         svg = draw("東́ x\n")
         self.assertIn("東́", texts(svg))
 
+    def test_wide_combining_marks_do_not_widen_narrow_clusters(self):
+        for cluster in ("a゙", "ｶ゙"):
+            with self.subTest(cluster=cluster):
+                rows = ansi_to_svg.parse(cluster + "!")
+                self.assertEqual([cluster, "!"], [cell and cell[0] for cell in rows[0]])
+                svg = draw(cluster + "\x1b[31m!")
+                following = next(element for element in svg.iter(f"{SVG}text") if element.text == "!")
+                self.assertEqual(ansi_to_svg.PADDING + ansi_to_svg.CELL_WIDTH, float(following.get("x")))
+
     def test_escapes_that_draw_nothing_are_left_out(self):
         screen = "\x1b=\x1b>a\x1b7b\x1b8\x1b(Bc\x1b[?25l\x1b[2Jd\x07\x01\x7fe\x1b[12\n"
         svg = draw(screen)
