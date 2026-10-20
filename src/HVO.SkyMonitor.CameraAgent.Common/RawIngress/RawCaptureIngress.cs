@@ -179,22 +179,32 @@ internal sealed partial class RawCaptureIngress :
                     // Stage cleanup deletes unowned stages, so it runs only under the maintenance barrier, as the
                     // background reconciliation does.
                     using var maintenance = await EnterInitializationMaintenanceAsync(cancellationToken).ConfigureAwait(false);
-                    if (maintenance is null)
+                    if (maintenance.Held)
                     {
                         stagesHeld = true;
                         _logger.MaintenanceHeld("Startup projected-scene stage reconciliation", heldBy);
                     }
                     else
                     {
-                        using var stageLease = _projectedSceneLifecycle is null
-                            ? null
-                            : await _projectedSceneLifecycle.AcquireReconciliationLeaseAsync(cancellationToken).ConfigureAwait(false);
-                        var ownedStageKeys = await GetOwnedStageKeysAsync(cancellationToken).ConfigureAwait(false);
-                        var protectedStageKeys = new HashSet<string>(ownedStageKeys, StringComparer.Ordinal);
-                        if (stageLease is not null) protectedStageKeys.UnionWith(stageLease.PendingStageKeys);
-                        var staged = await _projectedSceneStaging.ReconcileAsync(protectedStageKeys, cancellationToken).ConfigureAwait(false);
-                        projectedSceneBacklog = staged.BacklogCount;
-                        reconciliation = reconciliation with { ProjectedSceneStageBacklog = projectedSceneBacklog };
+                        using var interruption = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, maintenance.InterruptionToken);
+                        try
+                        {
+                            using var stageLease = _projectedSceneLifecycle is null
+                                ? null
+                                : await _projectedSceneLifecycle.AcquireReconciliationLeaseAsync(interruption.Token).ConfigureAwait(false);
+                            var ownedStageKeys = await GetOwnedStageKeysAsync(interruption.Token).ConfigureAwait(false);
+                            var protectedStageKeys = new HashSet<string>(ownedStageKeys, StringComparer.Ordinal);
+                            if (stageLease is not null) protectedStageKeys.UnionWith(stageLease.PendingStageKeys);
+                            var staged = await _projectedSceneStaging.ReconcileAsync(
+                                protectedStageKeys, cancellationToken, maintenance.InterruptionToken).ConfigureAwait(false);
+                            projectedSceneBacklog = staged.BacklogCount;
+                            reconciliation = reconciliation with { ProjectedSceneStageBacklog = projectedSceneBacklog };
+                            stagesHeld = maintenance.InterruptionToken.IsCancellationRequested;
+                        }
+                        catch (OperationCanceledException) when (maintenance.InterruptionToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                        {
+                            stagesHeld = true;
+                        }
                     }
                 }
                 // Whatever was held runs again once capture admission opens (CaptureMaintenanceGate.CaptureRunning).
@@ -1145,18 +1155,18 @@ internal sealed partial class RawCaptureIngress :
             : "handler-failure";
 
     /// <summary>
-    /// The capture maintenance barrier for a deletion or move this initialization makes, or null while it is held.
+    /// The interruption-bearing maintenance entry for a deletion or move this initialization makes, held while capture is paused.
     /// Admission initialization waits for the first raw-ingress initialization, so no pause can be acknowledged before
     /// that one ends, and the durable admission state this journal records decides. A later re-initialization runs
     /// while admission can be paused, so it needs a maintenance lease, which it takes without initializing admission.
     /// </summary>
-    private async ValueTask<IDisposable?> EnterInitializationMaintenanceAsync(CancellationToken cancellationToken)
+    private async ValueTask<Capture.CaptureMaintenanceEntry> EnterInitializationMaintenanceAsync(CancellationToken cancellationToken)
     {
         if (Volatile.Read(ref _completedInitializations) > 0 && _maintenanceGate is not null)
-            return _maintenanceGate.TryEnterIfInitialized();
+            return _maintenanceGate.EnterIfInitialized();
         return await _journal.HasDurablePauseAsync(cancellationToken).ConfigureAwait(false)
-            ? null
-            : NoLease.Instance;
+            ? new Capture.CaptureMaintenanceEntry(null, Capture.CaptureAdmissionState.Paused)
+            : default;
     }
 
     private Capture.CaptureAdmissionState HeldBy()
@@ -1169,15 +1179,6 @@ internal sealed partial class RawCaptureIngress :
     private void RunDeferredMaintenance()
     {
         if (Volatile.Read(ref _maintenanceDeferred)) Volatile.Write(ref _initialized, false);
-    }
-
-    private sealed class NoLease : IDisposable
-    {
-        public static readonly NoLease Instance = new();
-
-        public void Dispose()
-        {
-        }
     }
 
     public void Dispose()

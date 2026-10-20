@@ -29,7 +29,7 @@ internal sealed class RawIngressReconciler(
     /// counted as deferred and nothing is marked for them, and the next reconciliation makes them.
     /// </summary>
     internal async Task<RawIngressReconciliationSummary> RunAsync(
-        Func<CancellationToken, ValueTask<IDisposable?>> enterMaintenance,
+        Func<CancellationToken, ValueTask<Capture.CaptureMaintenanceEntry>> enterMaintenance,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(enterMaintenance);
@@ -237,20 +237,26 @@ internal sealed class RawIngressReconciler(
         if (planned.Count + pending.Count > 0)
         {
             using var maintenance = await enterMaintenance(cancellationToken).ConfigureAwait(false);
-            if (maintenance is null)
+            if (maintenance.Held)
             {
                 deferred = planned.Count + pending.Count;
             }
             else
             {
+                deferred = planned.Count + pending.Count;
                 foreach (var operation in planned)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (maintenance.InterruptionToken.IsCancellationRequested) break;
                     await ResumeQuarantineAsync(operation, cancellationToken).ConfigureAwait(false);
                     quarantined++;
                     quarantineBytes += operation.ObservedBytes;
+                    deferred--;
                 }
                 foreach (var move in pending)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (maintenance.InterruptionToken.IsCancellationRequested) break;
                     quarantineBytes += await QuarantinePairAsync(
                         move.PayloadPath, move.SidecarPath, move.Reason, cancellationToken).ConfigureAwait(false);
                     if (move.CaptureId is { } captureId)
@@ -259,6 +265,7 @@ internal sealed class RawIngressReconciler(
                             captureId, "quarantined", move.Reason, cancellationToken).ConfigureAwait(false);
                     }
                     quarantined++;
+                    deferred--;
                 }
                 await _journal.CheckpointAsync(cancellationToken).ConfigureAwait(false);
             }
