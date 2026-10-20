@@ -13,7 +13,8 @@ public enum CameraAgentSatellitePlanningOutcome
     Busy,
     Expired,
     ContextChanged,
-    Failed
+    Failed,
+    NoMatches
 }
 
 /// <summary>

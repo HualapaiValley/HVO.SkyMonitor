@@ -3,6 +3,7 @@ using System.Text;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
+using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.OrbitalPlanning;
 
@@ -24,17 +25,20 @@ public sealed class CameraAgentSatellitePlannerTests
         Assert.AreEqual(CameraAgentSatellitePlanningOutcome.NoSnapshot, (await input.Planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
         input.Snapshots.Current = PlanningTestInputs.Snapshot();
         var readsBeforeUnavailableTime = input.Snapshots.Reads;
+        var sky = new RecordingSkyMap(input.Sky);
+        var planner = CreatePlanner(input, sky);
         input.Options.CurrentValue.Enabled = false;
-        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, (await input.Planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, (await planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
         Assert.AreEqual(readsBeforeUnavailableTime, input.Snapshots.Reads,
             "A disabled planner must not materialize the local GP population.");
         input.Options.CurrentValue.Enabled = true;
         input.Times.Current = null;
-        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, (await input.Planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, (await planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
         input.Times.Current = OrbitalTimeData.CreateNominalZeroDiagnostic(PlanningTestInputs.Bytes("time", "leap-seconds.list"));
-        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, (await input.Planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, (await planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
         Assert.AreEqual(readsBeforeUnavailableTime, input.Snapshots.Reads,
             "Unavailable actual time inputs must be rejected before materializing orbital data.");
+        Assert.AreEqual(0, sky.Calls, "Unavailable actual time inputs must not invoke the sky projector.");
         Assert.AreEqual(0, input.Engine.Searches);
     }
 
@@ -82,6 +86,7 @@ public sealed class CameraAgentSatellitePlannerTests
             var response = await input.Planner.SearchAsync(invalid, TestContext.CancellationToken).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Invalid, response.Outcome, response.Message);
         }
+        Assert.AreEqual(0, input.Snapshots.Reads, "Invalid bounded inputs must not materialize orbital data.");
         Assert.AreEqual(CameraAgentSatellitePlanningOutcome.ContextChanged,
             (await input.Planner.SearchAsync(valid with { ExpectedObserverSha256 = new string('A', 64) }, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
         Assert.AreEqual(CameraAgentSatellitePlanningOutcome.ContextChanged,
@@ -94,12 +99,14 @@ public sealed class CameraAgentSatellitePlannerTests
     {
         var input = new PlanningTestInputs();
         var request = await input.RequestAsync().ConfigureAwait(false);
+        var sky = new RecordingSkyMap(input.Sky);
+        var planner = CreatePlanner(input, sky);
         var lines = Encoding.ASCII.GetString(PlanningTestInputs.Bytes("time", "predicted-2026.finals2000A"))
             .Split('\n', StringSplitOptions.RemoveEmptyEntries);
         input.Times.Current = OrbitalTimeData.FromFinals2000A(Encoding.ASCII.GetBytes(string.Join('\n', lines.Where((_, index) => index != 2))),
             PlanningTestInputs.Bytes("time", "leap-seconds.list"));
         // October 19 noon needs the October 19/20 daily bracket; remove October 20.
-        var result = await input.Planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
+        var result = await planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, result.Outcome, result.Message);
         input.Times.Current = PlanningTestInputs.TimeData();
         // Use the actual retained table with only its expiration changed, preserving valid consecutive offsets.
@@ -109,15 +116,44 @@ public sealed class CameraAgentSatellitePlannerTests
             "#@ " + expiration.ToString(CultureInfo.InvariantCulture) : line));
         input.Times.Current = OrbitalTimeData.FromFinals2000A(PlanningTestInputs.Bytes("time", "predicted-2026.finals2000A"), Encoding.ASCII.GetBytes(expiredLeaps));
         Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable,
-            (await input.Planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+            (await planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
         input.Times.Current = PlanningTestInputs.TimeData();
         Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable,
-            (await input.Planner.SearchAsync(request with { StartUtc = request.StartUtc.AddDays(10), EndUtc = request.EndUtc.AddDays(10) }, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+            (await planner.SearchAsync(request with { StartUtc = request.StartUtc.AddDays(10), EndUtc = request.EndUtc.AddDays(10) }, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
         input.Times.Current = OrbitalTimeData.FromFinals2000A(PlanningTestInputs.Bytes("time", "leap-2016.finals2000A"), PlanningTestInputs.Bytes("time", "leap-seconds.list"));
         var start = new DateTimeOffset(2016, 12, 31, 23, 59, 30, TimeSpan.Zero);
         Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable,
-            (await input.Planner.SearchAsync(request with { StartUtc = start, EndUtc = start.AddMinutes(1) }, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+            (await planner.SearchAsync(request with { StartUtc = start, EndUtc = start.AddMinutes(1) }, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+        Assert.AreEqual(0, input.Snapshots.Reads, "Unsupported original query times must be rejected before reading the snapshot.");
+        Assert.AreEqual(0, sky.Calls, "Unsupported original query times must be rejected before sky projection.");
         Assert.AreEqual(0, input.Engine.Searches);
+    }
+
+    [TestMethod]
+    public async Task SupportedQueryStillValidatesTheSelectedEpochAfterSnapshotSelectionAsync()
+    {
+        var input = new PlanningTestInputs();
+        var request = await input.RequestAsync().ConfigureAwait(false);
+        input.Times.Current = OrbitalTimeData.FromFinals2000A(PlanningTestInputs.Bytes("time", "leap-2016.finals2000A"),
+            PlanningTestInputs.Bytes("time", "leap-seconds.list"));
+        var start = new DateTimeOffset(2017, 1, 1, 1, 0, 0, TimeSpan.Zero);
+        request = request with { StartUtc = start, EndUtc = start.AddHours(1) };
+        var snapshot = input.Snapshots.Current!;
+        var record = snapshot.Records.Single(item => item.ObjectIdentity.CatalogNumber == "25544");
+        input.Snapshots.Current = OrbitalSnapshot.Create([OrbitalContract.CreateRecord(record with
+        {
+            RecordSha256 = "",
+            EpochUtc = start.AddHours(-2)
+        })], snapshot.Manifest.Sources, snapshot.Manifest.Coverage);
+        var sky = new RecordingSkyMap(input.Sky);
+        var response = await CreatePlanner(input, sky).SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, response.Outcome, response.Message);
+        Assert.IsNull(response.Value);
+        StringAssert.Contains(response.Message, "selected epochs", StringComparison.Ordinal);
+        Assert.AreEqual(1, input.Snapshots.Reads, "The query is supported; the selected epoch is only known after loading the snapshot.");
+        Assert.AreEqual(1, sky.Calls);
+        Assert.AreEqual(0, input.Engine.Searches);
+        Assert.IsNull(input.Engine.BoundTime, "Unsupported selected epochs must not create the numerical engines.");
     }
 
     [TestMethod]
@@ -146,8 +182,14 @@ public sealed class CameraAgentSatellitePlannerTests
         Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, again.Outcome, again.Message);
         CollectionAssert.AreEqual(selected, input.Engine.LastSearch.Request.Objects.ToArray());
         Assert.AreNotEqual(result.Value.SearchIdentitySha256, again.Value!.SearchIdentitySha256);
+        var searchesBeforeAbsentFilter = input.Engine.Searches;
         var absent = await input.Planner.SearchAsync(request with { ObjectFilter = "missing-name" }, TestContext.CancellationToken).ConfigureAwait(false);
-        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Invalid, absent.Outcome); StringAssert.Contains(absent.Message, "matching 0; selected 0", StringComparison.Ordinal);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.NoMatches, absent.Outcome);
+        Assert.IsNull(absent.Value);
+        StringAssert.Contains(absent.Message, "matching 0; selected 0", StringComparison.Ordinal);
+        StringAssert.Contains(absent.Message, "in this snapshot", StringComparison.Ordinal);
+        StringAssert.Contains(absent.Message, "does not establish global absence", StringComparison.Ordinal);
+        Assert.AreEqual(searchesBeforeAbsentFilter, input.Engine.Searches);
     }
 
     [TestMethod]
@@ -461,6 +503,20 @@ public sealed class CameraAgentSatellitePlannerTests
             Assert.AreEqual(request.EndUtc, parent.SearchInterval.EndUtc);
             Assert.AreEqual(input.Snapshots.Current.Manifest.ManifestSha256, parent.Lineage.SnapshotManifestSha256);
             Assert.IsNotNull(view.Prediction.WorkDiagnostics);
+        }
+    }
+
+    private static CameraAgentSatellitePlanner CreatePlanner(PlanningTestInputs input, ICameraAgentSkyMapProjection sky)
+        => new(sky, input.Configuration, input.Times, input.Engine, input.Options, input.Time, input.Snapshots);
+
+    private sealed class RecordingSkyMap(ICameraAgentSkyMapProjection inner) : ICameraAgentSkyMapProjection
+    {
+        internal int Calls { get; private set; }
+
+        public ValueTask<CameraAgentSkyMapProjectionResult> ProjectAsync(DateTimeOffset? atUtc, CancellationToken cancellationToken)
+        {
+            Calls++;
+            return inner.ProjectAsync(atUtc, cancellationToken);
         }
     }
 }

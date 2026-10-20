@@ -51,6 +51,17 @@ public sealed class CameraAgentSatellitePlanningUiServiceTests
     }
 
     [TestMethod]
+    public async Task Read_NoMatchesUsesAFixedSanitizedDescriptionAsync()
+    {
+        var planner = new RecordingPlanner { Outcome = CameraAgentSatellitePlanningOutcome.NoMatches };
+        var service = Create(Authorization(true).Object, planner);
+        var result = await service.SearchAsync(Request, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.NoMatches, result.Value!.Outcome);
+        Assert.AreEqual("No matching objects in this snapshot (matching 0; selected 0). This does not establish global absence.", result.Value.Message);
+        Assert.DoesNotContain("/private", result.Value.Message, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task Read_WithoutPlannerIsUnavailableAfterAuthorizationAsync()
     {
         var authorization = Authorization(true);
@@ -122,6 +133,7 @@ public sealed class CameraAgentSatellitePlanningUiServiceTests
         internal (string, string) ArcIdentity { get; private set; }
         internal CancellationToken Token { get; private set; }
         internal Exception? Failure { get; set; }
+        internal CameraAgentSatellitePlanningOutcome Outcome { get; set; } = CameraAgentSatellitePlanningOutcome.NoSnapshot;
 
         public ValueTask<CameraAgentSatellitePlanningResponse<CameraAgentSatellitePassSearchView>> SearchAsync(
             CameraAgentSatellitePassSearchRequest request, CancellationToken cancellationToken)
@@ -131,7 +143,7 @@ public sealed class CameraAgentSatellitePlanningUiServiceTests
             Token = cancellationToken;
             if (Failure is { } failure) return ValueTask.FromException<CameraAgentSatellitePlanningResponse<CameraAgentSatellitePassSearchView>>(failure);
             return ValueTask.FromResult(new CameraAgentSatellitePlanningResponse<CameraAgentSatellitePassSearchView>(
-                CameraAgentSatellitePlanningOutcome.NoSnapshot, "/private/must-not-reach-operator", null));
+                Outcome, "/private/must-not-reach-operator", null));
         }
 
         public ValueTask<CameraAgentSatellitePlanningResponse<CameraAgentSatellitePassArcView>> GetArcAsync(
@@ -142,7 +154,7 @@ public sealed class CameraAgentSatellitePlanningUiServiceTests
             Token = cancellationToken;
             if (Failure is { } failure) return ValueTask.FromException<CameraAgentSatellitePlanningResponse<CameraAgentSatellitePassArcView>>(failure);
             return ValueTask.FromResult(new CameraAgentSatellitePlanningResponse<CameraAgentSatellitePassArcView>(
-                CameraAgentSatellitePlanningOutcome.NoSnapshot, "/private/must-not-reach-operator", null));
+                Outcome, "/private/must-not-reach-operator", null));
         }
     }
 }

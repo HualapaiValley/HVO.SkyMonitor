@@ -93,18 +93,20 @@ public sealed class CameraAgentSatellitePlanner(
         var settings = options.CurrentValue.Copy();
         var settingsIdentity = Hash(settings);
         var time = await ReadTimeAsync(settings, cancellationToken).ConfigureAwait(false);
-        var snapshot = await ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
         var interval = new OrbitalUtcInterval(request.StartUtc, request.EndUtc);
+        var model = OrbitalPredictionModel.Create(time, assumeEllipsoidalHeight: true);
+        ValidateQueryTime(time, model, interval);
+        var snapshot = await ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
         var context = await ReadContextAsync(interval, cancellationToken).ConfigureAwait(false);
         if (context.Observer.CanonicalSha256 != request.ExpectedObserverSha256 || context.Rig.RigProfileHashSha256 != request.ExpectedRigSha256)
             throw ContextChanged();
         var matches = snapshot.ObjectIdentities.Where(identity => Matches(snapshot, identity, filter)).ToArray();
         if (matches.Length == 0)
-            throw Invalid("No matching objects in this snapshot (matching 0; selected 0). This does not establish global absence.");
+            throw new PlanningUnavailable(CameraAgentSatellitePlanningOutcome.NoMatches,
+                "No matching objects in this snapshot (matching 0; selected 0). This does not establish global absence.");
         var selected = matches.Take(MaximumObjects).ToArray();
         var policy = new OrbitalSelectionPolicy([new("celestrak:gp:active", 0)], settings.AllowStaleDiagnostics);
-        var model = OrbitalPredictionModel.Create(time, assumeEllipsoidalHeight: true);
-        ValidateTime(time, model, interval, snapshot, selected, policy);
+        ValidateSelectedEpochs(time, interval, snapshot, selected, policy);
         var query = new OrbitalPassQuery(new(OrbitalPredictionUse.Diagnostic, snapshot, policy, interval, selected,
             new(context.Observer.LatitudeDegrees, context.Observer.LongitudeDegrees, context.Observer.ElevationMeters),
             model, SearchBounds), request.MinimumElevationDegrees);
@@ -248,20 +250,30 @@ public sealed class CameraAgentSatellitePlanner(
         return new(scene.Observer, geometry, projection);
     }
 
-    private static void ValidateTime(OrbitalTimeData time, OrbitalPredictionModelFacts model, OrbitalUtcInterval interval,
-        OrbitalSnapshot snapshot, OrbitalObjectIdentity[] objects, OrbitalSelectionPolicy policy)
+    private static void ValidateQueryTime(OrbitalTimeData time, OrbitalPredictionModelFacts model, OrbitalUtcInterval interval)
     {
         try
         {
             time.ValidateModel(model, interval, OrbitalPredictionUse.Diagnostic, OrbitalGeometryBasis.ConfiguredRig);
+        }
+        catch (ArgumentException)
+        {
+            throw TimeInputsUnavailable();
+        }
+    }
+
+    private static void ValidateSelectedEpochs(OrbitalTimeData time, OrbitalUtcInterval interval,
+        OrbitalSnapshot snapshot, OrbitalObjectIdentity[] objects, OrbitalSelectionPolicy policy)
+    {
+        try
+        {
             foreach (var identity in objects)
                 if (OrbitalRecordSelector.Select(snapshot, identity, interval, policy).SelectedRecord is { } record)
                     time.ValidatePropagationInterval(record.EpochUtc, interval);
         }
         catch (ArgumentException)
         {
-            throw new PlanningUnavailable(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable,
-                "Pinned time inputs do not continuously support the original interval and selected epochs, or cross an unsupported leap second.");
+            throw TimeInputsUnavailable();
         }
     }
 
@@ -288,6 +300,8 @@ public sealed class CameraAgentSatellitePlanner(
     private void ExpireSessions() => sessions.RemoveAll(session => timeProvider.GetUtcNow() >= session.View.ExpiresUtc);
     private static string Hash<T>(T value) => Convert.ToHexString(SHA256.HashData(OrbitalContract.SerializeCanonical(value)));
     private static PlanningUnavailable Invalid(string message) => new(CameraAgentSatellitePlanningOutcome.Invalid, message);
+    private static PlanningUnavailable TimeInputsUnavailable() => new(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable,
+        "Pinned time inputs do not continuously support the original interval and selected epochs, or cross an unsupported leap second.");
     private static PlanningUnavailable ContextChanged() => new(CameraAgentSatellitePlanningOutcome.ContextChanged,
         "The authoritative site, active rig, snapshot, time inputs or planning options changed. Refresh the scene and run a new search.");
     private static PlanningUnavailable RetentionExceeded() => Invalid("The original search exceeds the local 128 MiB source-byte/product retention cap and was not retained. This cap is not an exact managed-memory bound.");
