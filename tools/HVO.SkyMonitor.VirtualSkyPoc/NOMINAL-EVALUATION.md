@@ -117,7 +117,9 @@ geometry facts, never from private labels or from a proposed match. Null pins
 allow detection but withhold comparison residuals. The required `observer` field
 is either null (unknown) or the public capture-time location object with finite
 `latitudeDegrees` (-90..90), `longitudeDegrees` (-180..180, east positive) and
-`elevationMeters`. Unknown locations withhold residuals; supplied coordinates
+`elevationMeters`. All three members must be explicitly present in a non-null
+object, including zero elevation; omitted coordinates and `{}` are rejected
+before raw or prediction files open. Unknown locations withhold residuals; supplied coordinates
 must match the prediction exactly. Camera geometry does not establish location.
 Rig identity, raster size,
 full geometry hash, readout-view coordinates and identity image transform must

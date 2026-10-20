@@ -45,8 +45,25 @@ internal static class NominalCausalEvaluation
         PropertyNameCaseInsensitive = false,
         RespectRequiredConstructorParameters = true,
         MaxDepth = 48,
-        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false) }
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false), new ObserverConverter() }
     };
+
+    // ObserverLocation is a struct whose default JSON construction cannot distinguish missing members from zero.
+    // A reference-type envelope makes every constructor argument mandatory on both raw and evaluation inputs.
+    private sealed record ObserverFields(double LatitudeDegrees, double LongitudeDegrees, double ElevationMeters);
+
+    private sealed class ObserverConverter : JsonConverter<ObserverLocation>
+    {
+        public override ObserverLocation Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            var fields = JsonSerializer.Deserialize<ObserverFields>(ref reader, options)
+                ?? throw new JsonException("A non-null observer must contain every coordinate.");
+            return new(fields.LatitudeDegrees, fields.LongitudeDegrees, fields.ElevationMeters);
+        }
+
+        public override void Write(Utf8JsonWriter writer, ObserverLocation value, JsonSerializerOptions options)
+            => JsonSerializer.Serialize(writer, new ObserverFields(value.LatitudeDegrees, value.LongitudeDegrees, value.ElevationMeters), options);
+    }
 
     internal static NominalEvaluationReport Evaluate(string publicRoot, Action<string>? onRead = null)
     {

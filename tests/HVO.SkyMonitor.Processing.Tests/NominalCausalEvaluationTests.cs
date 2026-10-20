@@ -309,6 +309,51 @@ public sealed class NominalCausalEvaluationTests
     }
 
     [TestMethod]
+    [DataRow("latitudeDegrees", false)]
+    [DataRow("longitudeDegrees", false)]
+    [DataRow("elevationMeters", false)]
+    [DataRow("all", false)]
+    [DataRow("latitudeDegrees", true)]
+    [DataRow("longitudeDegrees", true)]
+    [DataRow("elevationMeters", true)]
+    [DataRow("all", true)]
+    public void IncompleteObserverIsRejectedBeforeRawOrPredictionFilesAreOpened(string omitted, bool comparison)
+    {
+        using var package = new Package();
+        var bytes = Fixture("starlink-56838", 3);
+        var track = OrbitalPredictionJson.ParseTrack(bytes);
+        Assert.AreEqual(0d, track.Observer.ElevationMeters, "Missing elevation must not be confused with HVO's explicit zero.");
+        package.Write(Enumerable.Range(1, 3).Select(n => package.Frame(n, width: 640, signals: n == 3 ? 2 : 0) with
+        {
+            ObservationStartedUtc = track.RequestedInterval.StartUtc.AddSeconds((n - 3) * 5),
+            ObservationEndedUtc = track.RequestedInterval.EndUtc.AddSeconds((n - 3) * 5),
+            GeometryIdentitySha256 = NominalPredictionComparison.GeometryHash(track.Geometry),
+            Observer = track.Observer,
+            Compatibility = package.Frame(n).Compatibility with { Rig = track.Geometry.RigIdentitySha256 }
+        }).ToArray());
+        var path = package.Manifest;
+        if (comparison)
+        {
+            path = Path.Combine(package.Root, "evaluation.json");
+            Publish(path, Evaluate(package.Root));
+            package.Predictions([bytes]);
+        }
+        var document = JsonNode.Parse(File.ReadAllBytes(path))!;
+        var target = document["frames"]![2]!;
+        var observer = (comparison ? target["raw"]! : target)["observer"]!.AsObject();
+        if (omitted == "all") observer.Clear();
+        else Assert.IsTrue(observer.Remove(omitted));
+        File.WriteAllText(path, document.ToJsonString());
+        var reads = new List<string>();
+        ExpectRejected(() =>
+        {
+            if (comparison) _ = NominalPredictionComparison.Compare(path, package.Root, reads.Add);
+            else _ = Evaluate(package.Root, reads.Add);
+        });
+        CollectionAssert.AreEqual(new[] { comparison ? "evaluation.json" : "input.json" }, reads);
+    }
+
+    [TestMethod]
     public void WrongTimeUnknownOrMismatchedGeometryWithholdResidualsWithoutDiscardingHypotheses()
     {
         using var package = new Package();
