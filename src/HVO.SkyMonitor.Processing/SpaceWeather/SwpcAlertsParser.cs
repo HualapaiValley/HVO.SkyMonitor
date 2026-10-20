@@ -80,8 +80,8 @@ public static class SwpcAlertsParser
 
     private static SwpcMessageHeader Header(string code, string text, string[] lines, DateTimeOffset issue)
     {
-        var headline = lines.Skip(3).FirstOrDefault(l => !string.IsNullOrWhiteSpace(l)) ?? "";
-        var match = SwpcText.Match(headline.Trim(), @"\A(?:(CANCEL|EXTENDED|CONTINUED) )?(WATCH|WARNING|ALERT|SUMMARY): (.+)\z");
+        var headline = lines.Skip(3).FirstOrDefault(l => !SwpcText.IsBlank(l)) ?? "";
+        var match = SwpcText.Match(SwpcText.TrimWhitespace(headline.AsSpan()).ToString(), @"\A(?:(CANCEL|EXTENDED|CONTINUED) )?(WATCH|WARNING|ALERT|SUMMARY): (.+)\z");
         var kind = match.Success ? match.Groups[2].Value : null;
         var modifier = match.Success && match.Groups[1].Success ? match.Groups[1].Value : null;
         var family = Family(code, kind);

@@ -35,7 +35,10 @@ public static class SwpcJsonBody
         var media = mediaType.AsSpan();
         var semicolon = media.IndexOf(';');
         if (semicolon >= 0) media = media[..semicolon];
-        if (!media.Trim().Equals(product == SwpcProduct.ThreeDayForecast ? "text/plain" : "application/json", StringComparison.OrdinalIgnoreCase)) return "content-type";
+        media = SwpcText.TrimWhitespace(media);
+        foreach (var character in media)
+            if (character > 127) return "content-type";
+        if (!media.Equals(product == SwpcProduct.ThreeDayForecast ? "text/plain" : "application/json", StringComparison.OrdinalIgnoreCase)) return "content-type";
         try { SwpcText.Utf8.GetCharCount(decoded); }
         catch (DecoderFallbackException) { return "encoding"; }
         return null;

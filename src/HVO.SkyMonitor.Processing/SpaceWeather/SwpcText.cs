@@ -19,13 +19,27 @@ public static class SwpcText
         return count == 0 ? "" : string.Join('\n', lines, 0, count) + "\n";
     }
 
+    // Python str.strip includes the four information separators in addition to
+    // Unicode White_Space. Keep that model behavior distinct from normalization's
+    // explicitly limited trailing space/tab/CR rule.
+    internal static ReadOnlySpan<char> TrimWhitespace(ReadOnlySpan<char> text)
+    {
+        var start = 0;
+        var end = text.Length;
+        static bool Space(char c) => char.IsWhiteSpace(c) || c is >= '\u001c' and <= '\u001f';
+        while (start < end && Space(text[start])) start++;
+        while (end > start && Space(text[end - 1])) end--;
+        return text[start..end];
+    }
+    internal static bool IsBlank(string text) => TrimWhitespace(text.AsSpan()).IsEmpty;
+
     internal static Match Match(string text, string pattern) => Regex.Match(text, pattern,
         RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
     internal static bool Whole(string text, string pattern) => Match(text, "\\A(?:" + pattern + ")\\z").Success;
     internal static string? Field(string text, string label)
     {
         var match = Match(text, "(?m)^" + Regex.Escape(label) + ": ?(.*)$");
-        return match.Success ? match.Groups[1].Value.Trim() : null;
+        return match.Success ? TrimWhitespace(match.Groups[1].Value.AsSpan()).ToString() : null;
     }
 
     internal static int Month(string name) => name switch
@@ -48,7 +62,7 @@ public static class SwpcText
     internal static DateTimeOffset? SourceTime(string? text)
     {
         if (text is null) return null;
-        var m = Match(text.Trim(), @"\A([0-9]{4}) ([A-Z][a-z]{2}) ([0-9]{2}) ([0-9]{2})([0-9]{2}) UTC\z");
+        var m = Match(TrimWhitespace(text.AsSpan()).ToString(), @"\A([0-9]{4}) ([A-Z][a-z]{2}) ([0-9]{2}) ([0-9]{2})([0-9]{2}) UTC\z");
         if (!m.Success || Month(m.Groups[2].Value) == 0) return null;
         return Date(Number(m.Groups[1].Value), Month(m.Groups[2].Value), Number(m.Groups[3].Value),
             Number(m.Groups[4].Value), Number(m.Groups[5].Value), 0);

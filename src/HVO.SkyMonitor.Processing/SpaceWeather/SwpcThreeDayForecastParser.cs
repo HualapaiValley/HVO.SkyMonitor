@@ -16,9 +16,9 @@ public static class SwpcThreeDayForecastParser
         if (!text.StartsWith(":Product: 3-Day Forecast\n", StringComparison.Ordinal) || issued is null)
             return SwpcJsonBody.Rejected<IssuedForecast>("schema");
         var lines = text.Split('\n');
-        var kp = Table(lines, @"NOAA Kp index breakdown \S.*", issued.Value);
-        var radiation = Table(lines, @"Solar Radiation Storm Forecast for \S.*", issued.Value);
-        var blackout = Table(lines, @"Radio Blackout Forecast for \S.*", issued.Value);
+        var kp = Table(lines, @"NOAA Kp index breakdown [^\s\u001c-\u001f].*", issued.Value);
+        var radiation = Table(lines, @"Solar Radiation Storm Forecast for [^\s\u001c-\u001f].*", issued.Value);
+        var blackout = Table(lines, @"Radio Blackout Forecast for [^\s\u001c-\u001f].*", issued.Value);
         if (kp is null || radiation is null || blackout is null) return SwpcJsonBody.Rejected<IssuedForecast>("schema");
         var bins = ImmutableSortedDictionary.CreateBuilder<DateTimeOffset, SwpcForecastKpBin>();
         var starts = new List<int>();
@@ -52,7 +52,7 @@ public static class SwpcThreeDayForecastParser
         var index = Array.FindIndex(lines, line => SwpcText.Whole(line, title));
         if (index < 0) return null;
         index++;
-        while (index < lines.Length && string.IsNullOrWhiteSpace(lines[index])) index++;
+        while (index < lines.Length && SwpcText.IsBlank(lines[index])) index++;
         if (index >= lines.Length) return null;
         var header = SwpcText.Match(lines[index], @"\A *([A-Z][a-z]{2}) ([0-9]{2}) +([A-Z][a-z]{2}) ([0-9]{2}) +([A-Z][a-z]{2}) ([0-9]{2})\z");
         if (!header.Success) return null;
@@ -64,7 +64,7 @@ public static class SwpcThreeDayForecastParser
             dates.Add(day.Value);
         }
         var rows = ImmutableArray.CreateBuilder<string>();
-        for (index++; index < lines.Length && !string.IsNullOrWhiteSpace(lines[index]); index++) rows.Add(lines[index]);
+        for (index++; index < lines.Length && !SwpcText.IsBlank(lines[index]); index++) rows.Add(lines[index]);
         return new(dates.ToImmutable(), rows.ToImmutable());
     }
 

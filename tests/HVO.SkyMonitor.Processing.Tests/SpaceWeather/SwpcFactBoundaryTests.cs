@@ -102,6 +102,8 @@ public sealed class SwpcFactBoundaryTests
         Assert.AreEqual("encoding", SwpcAlertsParser.Parse([0xff], "application/json").RejectionReason);
         Assert.AreEqual("malformed-json", SwpcAlertsParser.Parse("[NaN]"u8, "APPLICATION/JSON; charset=utf-8").RejectionReason);
         Assert.AreEqual("malformed-json", SwpcAlertsParser.Parse("[] []"u8, "application/json").RejectionReason);
+        Assert.AreEqual("content-type", SwpcAlertsParser.Parse("[]"u8, "application/j\u017fon").RejectionReason);
+        Assert.AreEqual("suspect-empty", SwpcAlertsParser.Parse("[]"u8, "\u001cAPPLICATION/JSON\u001f; charset=utf-8").RejectionReason);
     }
 
     [TestMethod]
@@ -132,6 +134,10 @@ public sealed class SwpcFactBoundaryTests
         Assert.AreEqual("record-oversize", Parse().Rejections.Single().Reason);
         bad["message"] = "bad";
         Assert.AreEqual("message-header", Parse().Rejections.Single().Reason);
+        bad["message"] = good["message"]!.GetValue<string>().Replace("\r\n\r\n", "\r\n\r\n\u001c\n", StringComparison.Ordinal);
+        var controlBlank = Parse();
+        Assert.IsEmpty(controlBlank.Rejections);
+        Assert.AreEqual(SpaceWeatherFamily.Watch, controlBlank.Records[1].Header.Family);
     }
 
     [TestMethod]
