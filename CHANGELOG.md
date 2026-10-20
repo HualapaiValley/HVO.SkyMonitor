@@ -65,6 +65,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent no longer warns about unordered database queries during API-key authentication or local owner recovery;
+  ambiguous matches continue to be rejected. (#1437)
+
 - CameraAgent and LogicHost images no longer warn about overriding the runtime image's HTTP port default during
   their intended startup binding; listening addresses and ports are unchanged. (#1436)
 
