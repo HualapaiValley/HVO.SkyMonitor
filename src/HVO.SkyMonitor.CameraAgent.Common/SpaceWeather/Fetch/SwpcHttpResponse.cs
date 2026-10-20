@@ -22,10 +22,19 @@ public sealed record SwpcRequestValidators(string? EntityTag, string? LastModifi
 /// Immutable transport facts, constructible without HTTP for scenario replay. Owner decision T1: when a body is
 /// undecodable its size cannot be judged, so Oversize is false. Policy checks content type before mapping
 /// BodyUndecodable to encoding, preserving the contract's oversize, content-type, encoding rejection order.
+/// Owner decision T2: gzip is exactly one complete RFC 1952 member, with no trailing bytes or second member.
+/// ID1/ID2 and CM=8 are required; reserved flags are rejected; MTIME, XFL and OS are ignored. FEXTRA is skipped;
+/// FNAME and FCOMMENT are zero-terminated within 1,024 bytes each, including the terminator. FHCRC is the low
+/// 16 bits of the header's IEEE CRC-32. Raw deflate must finish immediately before the eight-byte trailer,
+/// whose IEEE CRC-32 and ISIZE must match the decoded body (length modulo 2^32). Oversize takes priority over framing checks;
+/// connection truncation remains NetworkError. The response owns an exact-length copy of its body.
 /// </summary>
 public sealed record SwpcHttpResponse
 {
-    /// <summary>Creates transport facts; a failure has no status and a completed HTTP response has a status.</summary>
+    /// <summary>
+    /// Creates transport facts and copies caller body bytes into independently owned exact-length storage.
+    /// A failure has no status and a completed HTTP response has a status. Record copies share owned body storage.
+    /// </summary>
     public SwpcHttpResponse(SwpcProduct product, DateTimeOffset startedUtc, DateTimeOffset completedUtc,
         SwpcTransportFailure failure, int? statusCode, bool validatorsSent = false, string? mediaType = null,
         string? entityTag = null, string? lastModified = null, string? retryAfter = null,
@@ -48,7 +57,8 @@ public sealed record SwpcHttpResponse
         EntityTag = entityTag;
         LastModified = lastModified;
         RetryAfter = retryAfter;
-        Body = body;
+        // This is also the client's only copy: its cap+1 read buffer is sliced but never retained here.
+        Body = body.IsEmpty ? ReadOnlyMemory<byte>.Empty : body.ToArray();
         Oversize = oversize;
         BodyUndecodable = bodyUndecodable;
     }
@@ -73,7 +83,7 @@ public sealed record SwpcHttpResponse
     public string? LastModified { get; }
     /// <summary>One raw Retry-After field of at most 29 characters, with its comma preserved.</summary>
     public string? RetryAfter { get; }
-    /// <summary>Decoded bytes for a readable, bounded 200 body; otherwise empty.</summary>
+    /// <summary>Owned exact-length decoded bytes for a readable, bounded 200 body; otherwise empty.</summary>
     public ReadOnlyMemory<byte> Body { get; }
     /// <summary>The decoded size exceeded the cap; no body is returned.</summary>
     public bool Oversize { get; }

@@ -113,14 +113,22 @@ public sealed class SwpcClient : ISwpcClient
         }
         try
         {
-            var decoder = new GZipStream(wire, CompressionMode.Decompress, leaveOpen: true);
+            var member = new SwpcGzipMemberStream(wire);
+            await using var memberDisposal = member.ConfigureAwait(false);
+            await member.ReadHeaderAsync(token).ConfigureAwait(false);
+            var decoder = new DeflateStream(member, CompressionMode.Decompress, leaveOpen: true);
             await using var decoderDisposal = decoder.ConfigureAwait(false);
             var body = await ReadBoundedAsync(decoder, maximum, token).ConfigureAwait(false);
             if (body.Oversize) return body;
-            wire.CheckLength(declared);
-            // GZipStream can silently accept an incomplete member. Check its framing and final decoded size too.
-            // No wire buffer grows with the response: only the first three and final eight bytes are retained.
-            if (!wire.HasGzipFraming(body.Bytes.Length)) return new(default, false, true);
+            if (wire.Ended) wire.CheckLength(declared);
+            // A zero decoded read proves completion only if the inflater did not request source EOF.
+            // Requiring the isolated final byte excludes unseen input left in any preceding bulk read.
+            if (!member.LoneByteDelivered || member.DecoderStarved || !member.HasExactTrailer)
+                return new(default, false, true);
+            if (BinaryPrimitives.ReadUInt32LittleEndian(member.Trailer.Span) != SwpcCrc32.Compute(body.Bytes.Span))
+                return new(default, false, true);
+            if (BinaryPrimitives.ReadUInt32LittleEndian(member.Trailer.Span[4..]) != (uint)body.Bytes.Length)
+                return new(default, false, true);
             return body;
         }
         catch (InvalidDataException)
@@ -149,11 +157,9 @@ public sealed class SwpcClient : ISwpcClient
 
     private readonly record struct BodyResult(ReadOnlyMemory<byte> Bytes, bool Oversize, bool Undecodable);
 
-    /// <summary>Tracks wire length and constant-space gzip framing without buffering or draining the body.</summary>
+    /// <summary>Tracks wire length without buffering or draining the body.</summary>
     private sealed class CountingStream(Stream source) : Stream
     {
-        private readonly byte[] first = new byte[3];
-        private readonly byte[] tail = new byte[8];
         private long count;
         public bool Ended { get; private set; }
         public override bool CanRead => true;
@@ -168,23 +174,12 @@ public sealed class SwpcClient : ISwpcClient
         {
             var read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
             if (read == 0) Ended = true;
-            for (var index = 0; index < read && count + index < first.Length; index++)
-                first[count + index] = buffer.Span[index];
-            for (var index = Math.Max(0, read - tail.Length); index < read; index++)
-                tail[(count + index) % tail.Length] = buffer.Span[index];
             count += read;
             return read;
         }
         public void CheckLength(long? declared)
         {
             if (declared.HasValue && count != declared.Value) throw new IOException("Incomplete HTTP body.");
-        }
-        public bool HasGzipFraming(int decodedLength)
-        {
-            if (count < 18 || first[0] != 0x1f || first[1] != 0x8b || first[2] != 8) return false;
-            Span<byte> size = stackalloc byte[4];
-            for (var index = 0; index < size.Length; index++) size[index] = tail[(count - 4 + index) % tail.Length];
-            return BinaryPrimitives.ReadUInt32LittleEndian(size) == (uint)decodedLength;
         }
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();

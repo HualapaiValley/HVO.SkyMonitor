@@ -13,8 +13,11 @@ internal static class SwpcTestData
     public static string? Text(JsonElement element, string key) => element.TryGetProperty(key, out var value) ? value.GetString() : null;
     public static JsonDocument Scenario(string name) => JsonDocument.Parse(File.ReadAllBytes(Path.Combine(
         AppContext.BaseDirectory, "Fixtures", "space-weather", "swpc-v1", "scenarios", name)));
+    public static byte[] EmptyGzipMember => [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 255, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     public static byte[] Gzip(byte[] bytes)
     {
+        // The pinned GZipStream emits no complete member for empty input; use the canonical empty member.
+        if (bytes.Length == 0) return EmptyGzipMember;
         using var output = new MemoryStream();
         using (var gzip = new GZipStream(output, CompressionLevel.SmallestSize, leaveOpen: true)) gzip.Write(bytes);
         return output.ToArray();
@@ -33,12 +36,14 @@ internal sealed class SwpcStubHandler(Func<HttpRequestMessage, CancellationToken
 }
 
 internal sealed class SwpcContent(byte[] bytes, bool unbounded = false, bool pending = false,
-    Exception? failure = null, int chunk = int.MaxValue) : HttpContent
+    Exception? failure = null, int chunk = int.MaxValue, int[]? chunks = null, int afterBytes = 0) : HttpContent
 {
+    private int readIndex;
     public bool Opened { get; private set; }
     public bool Disposed { get; private set; }
     public int BytesRead { get; private set; }
     public int LargestRead { get; private set; }
+    public TaskCompletionSource BlockedReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource ReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     protected override bool TryComputeLength(out long length) { length = 0; return false; }
     protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new AssertFailedException("No buffering.");
@@ -49,9 +54,16 @@ internal sealed class SwpcContent(byte[] bytes, bool unbounded = false, bool pen
     {
         ReadStarted.TrySetResult();
         LargestRead = Math.Max(LargestRead, buffer.Length);
-        if (pending) await Task.Delay(Timeout.Infinite, token).ConfigureAwait(false);
-        if (failure is not null) throw failure;
-        var count = Math.Min(buffer.Length, chunk);
+        if (BytesRead >= afterBytes)
+        {
+            if (pending)
+            {
+                BlockedReadStarted.TrySetResult();
+                await Task.Delay(Timeout.Infinite, token).ConfigureAwait(false);
+            }
+            if (failure is not null) throw failure;
+        }
+        var count = Math.Min(buffer.Length, chunks is null ? chunk : chunks[readIndex++ % chunks.Length]);
         if (unbounded) buffer.Span[..count].Clear();
         else
         {
