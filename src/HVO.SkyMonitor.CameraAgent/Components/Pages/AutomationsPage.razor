@@ -226,13 +226,28 @@ else
                 {
                     <p class="automation-empty">No local automation is defined on this CameraAgent.@(AvailableTask is null ? null : " Use Create automation to schedule a registered task.")</p>
                 }
+                @if (FocusedDefinitionId is { } focusedId &&
+                     !automation.Definitions.Any(candidate => string.Equals(candidate.Definition.DefinitionId, focusedId, StringComparison.Ordinal)))
+                {
+                    <p id="automation-focus-missing" class="automation-empty">No automation named @focusedId is defined on this CameraAgent.@(CreateUnavailableReason is null ? " Use Create automation to define it." : null)</p>
+                }
                 <div class="automation-card-grid">
                     @foreach (var definition in automation.Definitions)
                     {
                         var item = definition.Definition;
-                        <article class="automation-card" @key="item.DefinitionId" aria-labelledby="@($"automation-card-{item.DefinitionId}")">
+                        var focused = IsFocusedCard(item);
+                        <article id="@CardId(item.DefinitionId)" class="automation-card@(focused ? " focused" : null)" @key="item.DefinitionId" aria-labelledby="@($"automation-card-{item.DefinitionId}")" aria-current="@(focused ? "true" : null)">
                             <header>
-                                <span class="automation-icon environment" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M8 3.5a2 2 0 0 1 4 0v7.6a4 4 0 1 1-4 0Z"></path><path d="M10 8v6"></path></svg></span>
+                                <span class="automation-icon @IconClass(item.TaskKind)" aria-hidden="true">
+                                    @if (item.TaskKind == LocalAutomationTaskKind.OrbitalElementsRefresh)
+                                    {
+                                        <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.2"></circle><ellipse cx="10" cy="10" rx="8" ry="3.4" transform="rotate(-30 10 10)"></ellipse><circle cx="16.2" cy="6.4" r="1.1"></circle></svg>
+                                    }
+                                    else
+                                    {
+                                        <svg viewBox="0 0 20 20"><path d="M8 3.5a2 2 0 0 1 4 0v7.6a4 4 0 1 1-4 0Z"></path><path d="M10 8v6"></path></svg>
+                                    }
+                                </span>
                                 <div><h3 id="@($"automation-card-{item.DefinitionId}")">@item.Name</h3><p>@TaskDescription(item)</p></div>
                                 <span class="state-chip @(item.Enabled ? "success" : "pending")">@(item.Enabled ? "Enabled" : "Disabled")</span>
                             </header>
@@ -316,8 +331,8 @@ else
                     <legend class="visually-hidden">Local automation definition</legend>
                     <div class="automation-dialog-grid">
                         <label class="ops-field">Identifier
-                            <input id="automation-id" autocomplete="off" spellcheck="false" readonly="@Editing" aria-describedby="automation-id-help" @bind="_idInput" @bind:after="FormChanged" />
-                            <small id="automation-id-help" class="automation-field-hint">@(Editing ? "Fixed once recorded." : "Lower-case letters, digits, hyphens and dots; fixed once recorded.")</small>
+                            <input id="automation-id" autocomplete="off" spellcheck="false" readonly="@(Editing || OrbitalTaskSelected)" aria-describedby="automation-id-help" @bind="_idInput" @bind:after="FormChanged" />
+                            <small id="automation-id-help" class="automation-field-hint">@(Editing ? "Fixed once recorded." : OrbitalTaskSelected ? OrbitalIdentifierHint : "Lower-case letters, digits, hyphens and dots; fixed once recorded.")</small>
                         </label>
                         <label class="ops-field">Name
                             <input id="automation-name" autocomplete="off" maxlength="@LocalAutomationContract.MaximumNameLength" @bind="_nameInput" @bind:after="FormChanged" />
@@ -331,8 +346,11 @@ else
                             </select>
                         </label>
                         <label class="ops-field">Task target
-                            <select id="automation-target" @bind="_targetInput" @bind:after="FormChanged">
-                                <option value="">Select a registered target</option>
+                            <select id="automation-target" disabled="@OrbitalTaskSelected" @bind="_targetInput" @bind:after="FormChanged">
+                                @if (!OrbitalTaskSelected)
+                                {
+                                    <option value="">Select a registered target</option>
+                                }
                                 @foreach (var target in Targets())
                                 {
                                     <option value="@target">@target</option>
@@ -340,7 +358,7 @@ else
                             </select>
                         </label>
                         <label class="ops-field">Trigger
-                            <select id="automation-trigger" @bind="_triggerKindInput" @bind:after="TriggerChanged">
+                            <select id="automation-trigger" disabled="@OrbitalTaskSelected" @bind="_triggerKindInput" @bind:after="TriggerChanged">
                                 @foreach (var trigger in CompatibleTriggers())
                                 {
                                     <option value="@trigger">@Split(trigger.ToString())</option>
