@@ -1,6 +1,7 @@
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
+using HVO.SkyMonitor.CameraAgent.Common.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -121,6 +122,39 @@ public sealed class OrbitalWarmHandoffTests : OrbitalStoreTestBase
         Assert.AreEqual(OrbitalSnapshotUnavailableReason.NoActiveSnapshot,
             (await reader.ReadCurrentAsync(default).ConfigureAwait(false)).UnavailableReason);
         await store.EnsureReadyAsync(default).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task CancellationInsideInitializationDoesNotOpenABackoffWindow()
+    {
+        var root = CreateRoot();
+        var clock = new InitializationClock();
+        using var store = OrbitalElementsStoreTestData.Open(root, clock);
+        using var cancelled = new CancellationTokenSource();
+        var utc = clock.GetUtcNow();
+        var timestamp = clock.GetTimestamp();
+
+        // Hold the real connection-configuration dependency. Initialization opens its database and
+        // then waits here, inside EnsureInitializedCoreAsync's try/catch, after acquiring its own gate.
+        await SqliteConnectionConfigurationGate.RunAsync(async () =>
+        {
+            var initialization = store.InitializeAsync(cancelled.Token).AsTask();
+            Assert.IsFalse(initialization.IsCompleted, "Initialization must be waiting inside connection configuration.");
+            Assert.IsTrue(File.Exists(Path.Combine(root, SqliteOrbitalElementsStore.DatabaseFileName)),
+                "Initialization has acquired the root and opened the real database before cancellation.");
+            await cancelled.CancelAsync().ConfigureAwait(false);
+            await Assert.ThrowsAsync<OperationCanceledException>(() => initialization).ConfigureAwait(false);
+        }, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsFalse(store.IsInitialized);
+        var reader = new OrbitalSnapshotReader(store, true, NullLogger<OrbitalSnapshotReader>.Instance);
+        var retry = await reader.ReadCurrentAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalSnapshotUnavailableReason.NoActiveSnapshot, retry.UnavailableReason,
+            "A fresh-token retry must perform initialization I/O immediately, without a failure window.");
+        Assert.IsTrue(store.IsInitialized);
+        Assert.AreEqual(utc, clock.GetUtcNow());
+        Assert.AreEqual(timestamp, clock.GetTimestamp(), "Neither clock advances to make the retry succeed.");
     }
 
     [TestMethod]
