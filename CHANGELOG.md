@@ -23,7 +23,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   `orbital-elements` health entry: element freshness comes from the newest element epoch against a 48-hour envelope,
   and an overdue refresh is reported separately. Metrics are on the `HVO.SkyMonitor.CameraAgent.OrbitalElements`
   meter. Raw provider bytes are never sent to LogicHost or any other service; local `cameraagent backup` archives
-  include them, so keep those archives owner-only. Operation, removal, backup, restore and recovery are in
+  include them, so keep those archives owner-only. The image's `io.hvo.skymonitor.state-contracts` label, and so
+  `release.json`, now declares the `orbitalElements` store (writes 1, reads 1 to 1). Installer snapshots exclude it, so
+  the provider floor and halt survive a rollback. Operation, removal, backup, restore and recovery are in
   `docs/runbooks/orbital-elements-refresh.md`. The Software & Catalog page does not show orbital status until #1392.
   (#528)
 - Bounded local satellite exposure tracks, future-pass predictions and complete sky arcs pinned to their original orbital record, with reproducible virtual-camera fixtures, explicit source/time/geometry provenance and unavailable or partial outcomes when inputs or work limits prevent completion. (#529)

@@ -674,8 +674,12 @@ the instance root back exactly as it was archived, so the orbital store comes ba
 of the backup, with its floor, halt and attempt history. A halt, floor or attempt
 recorded after the backup is lost, and nothing carries it forward. An archive taken
 before the store existed restores no store at all, so the instance starts with an
-empty one, with no floor and no halt. Before you restore an archive older than the
-latest halt or attempt:
+empty one, with no floor and no halt. This is unlike an installer upgrade or rollback:
+their snapshots, and the automatic recovery of a failed candidate, never touch
+`.orbital-elements/` (see [Rollback](#rollback)). A restore of an older backup does
+rewind it, so the replacement checks apply: at least two hours since the last attempt,
+and any halt resolved. Before you restore an archive older than the latest halt or
+attempt:
 
 1. While the instance still runs, record the status fields listed in step 1 of
    [Removing Orbital Data](#removing-orbital-data).
@@ -691,6 +695,18 @@ latest halt or attempt:
    Any halt the restore dropped must be resolved first.
 
 ## Rollback
+
+**Installer snapshots never touch the orbital store.** A migrating upgrade's database
+snapshot, the automatic recovery of a failed candidate, and
+`hvo-sky-install cameraagent rollback` restore only the stores in the installer's
+snapshot set. The orbital store is declared in the image's state contract
+(`orbitalElements`, writes 1, reads 1 to 1) but deliberately left out of that set
+(`docs/hvo-install-contract.md` section 6). The floor, halt and history recorded
+before a rollback therefore survive it, and the release rolled back to cannot request
+inside the floor or after a refusal. `cameraagent restore` of an older backup is
+different: it does rewind the store (see [Backup And Restore](#backup-and-restore)),
+so the replacement checks apply before refresh is enabled again: at least two hours
+since the last attempt, and any halt resolved.
 
 `OrbitalElementsRefresh` is a value appended to the closed `LocalAutomationTaskKind`
 enumeration. It is stored by name in `<RawIngressRoot>/.automation/local-automations.db`.
