@@ -9,6 +9,8 @@ to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 
 with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
 
 ## [Unreleased]
+- LogicHost uses stable bounded query ordering for projected-scene checks, diagnostics and transient submission conflicts, and keeps publication event and version identities paired when reading history. (#1444)
+
 
 ### Added
 
@@ -49,6 +51,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Bounded local satellite exposure tracks, future-pass predictions and complete sky arcs pinned to their original orbital record, with reproducible virtual-camera fixtures, explicit source/time/geometry provenance and unavailable or partial outcomes when inputs or work limits prevent completion. (#529)
 
 ### Changed
+
+- Orbital refresh prepares the shared snapshot reader at startup and after activation, backs off failed store
+  initialization, and runs on one bounded worker so provider waits and normalization let other automations proceed.
+  Its journal records the real completion; provider floor, halt and single-flight rules remain in force. (#1425)
 
 - Star markers are the original plain grey (`#909090`) circle outline again, without the crosshair inside them; so is
   the marker of a Sun or Moon too small to outline. Captures already retained keep the markers they were drawn with,

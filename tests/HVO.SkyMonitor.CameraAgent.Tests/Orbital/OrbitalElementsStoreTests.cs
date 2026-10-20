@@ -337,6 +337,7 @@ public sealed class OrbitalElementsStoreTests : OrbitalStoreTestBase
         first.Dispose();
         await Assert.ThrowsExactlyAsync<ObjectDisposedException>(
             () => first.GetStateAsync(CancellationToken.None).AsTask()).ConfigureAwait(false);
+        clock.Advance(TimeSpan.FromSeconds(1));
         await second.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.IsTrue(second.IsInitialized);
     }
