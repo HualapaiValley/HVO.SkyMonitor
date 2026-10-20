@@ -194,7 +194,9 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
             var settleWaitMs = settled ? await SettleAsync(repeat, "before-changed-job").ConfigureAwait(false) : 0;
             _changedJobConditions.Add(new
             {
-                repeat, condition = repeat < 0 ? "warmup" : settled ? "S" : "U", settleWaitMs,
+                repeat,
+                condition = repeat < 0 ? "warmup" : settled ? "S" : "U",
+                settleWaitMs,
                 legacyRepetitionSettle = Environment.GetEnvironmentVariable("HVO_ORBITAL_PERF_SETTLE") == "1"
             });
             await MeasureActivationAsync(host, workload.ChangedRaw, "changed").ConfigureAwait(false);
