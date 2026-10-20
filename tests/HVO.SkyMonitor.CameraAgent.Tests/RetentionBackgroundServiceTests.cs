@@ -12,6 +12,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
+using System.Diagnostics.Metrics;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Imaging;
 
@@ -314,6 +315,59 @@ public sealed class RetentionBackgroundServiceTests
         {
             DeleteRoot(root);
         }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task ApplyRetentionAsync_PendingPauseCompletesRawInitializationQuarantineBeforeAcknowledgement()
+    {
+        using var hold = new Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: false).ConfigureAwait(false);
+        var options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = hold.Path,
+            RawIngressReserveBytes = 0,
+            RawIngressSqliteBusyTimeoutSeconds = 1
+        });
+        var state = new RawIngressState(TimeProvider.System);
+        using var telemetry = new RawIngressTelemetry(state);
+        using var ingress = new RawCaptureIngress(options, new FixedCapacityProvider(50), state,
+            TimeProvider.System, telemetry, NullLogger<RawCaptureIngress>.Instance,
+            new NullRawIngressFaultInjector(), maintenanceGate: hold.Gate);
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var raw = Path.Combine(hold.Path, "frames", "2026", "01", "01", "Raw");
+        Directory.CreateDirectory(raw);
+        for (var index = 0; index < 3; index++)
+            await File.WriteAllBytesAsync(Path.Combine(raw, $"{index}.bin"), new byte[] { (byte)index }).ConfigureAwait(false);
+        ingress.InvalidateEvidence();
+        Task? pause = null;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, owner) =>
+        {
+            if (instrument.Meter.Name == RawIngressTelemetry.MeterName &&
+                instrument.Name == "camera_agent.ingress.sqlite.transactions") owner.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, listenerState) =>
+        {
+            foreach (var tag in tags)
+                if (tag.Key == "operation" && Equals(tag.Value, "reconciliation-plan"))
+                    pause ??= admission.PauseAsync("retention-initialization-pause", null, "test", null, CancellationToken.None);
+        });
+        listener.Start();
+        using var service = new RetentionBackgroundService(new StubConfigurationAccessor(), options,
+            TimeProvider.System, new SqliteArtifactOutbox(), new FixedCapacityProvider(50),
+            new StoragePressureState(), NullLogger<RetentionBackgroundService>.Instance, ingress, admission: admission);
+        await service.ApplyRetentionAsync(CreateConfig(hold.Path), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(pause);
+        await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        var journal = new SqliteRawCaptureJournal(Path.Combine(hold.Path, "journal", "raw-ingress.db"), 1);
+        Assert.IsEmpty(await journal.ReadPlannedQuarantinesAsync(CancellationToken.None).ConfigureAwait(false),
+            "The pause token was used as operation cancellation, leaving an active quarantine half-done.");
+        Assert.HasCount(2, Directory.GetFiles(raw));
+        await admission.ResumeAsync("retention-initialization-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsEmpty(Directory.GetFiles(raw));
+        Assert.HasCount(3, Directory.GetFiles(Path.Combine(hold.Path, "quarantine"), "*.bin", SearchOption.AllDirectories));
     }
 
     [TestMethod]

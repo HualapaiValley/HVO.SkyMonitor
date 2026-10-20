@@ -121,13 +121,20 @@ internal sealed partial class RawCaptureIngress :
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
         => _ = await InitializeCoreAsync(allowEvidenceUnavailable: false, cancellationToken).ConfigureAwait(false);
 
-    private async ValueTask<bool> InitializeCoreAsync(bool allowEvidenceUnavailable, CancellationToken cancellationToken)
+    // A maintenance caller must keep the pause signal separate from cancellation of a durable operation.
+    internal async ValueTask InitializeForMaintenanceAsync(CancellationToken cancellationToken, CancellationToken interruptionToken)
+        => _ = await InitializeCoreAsync(false, cancellationToken, interruptionToken).ConfigureAwait(false);
+
+    private async ValueTask<bool> InitializeCoreAsync(
+        bool allowEvidenceUnavailable, CancellationToken cancellationToken, CancellationToken interruptionToken = default)
     {
         if (Volatile.Read(ref _initialized))
         {
             return true;
         }
-        await _initializeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        using var interruption = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, interruptionToken);
+        var waitToken = interruption.Token;
+        await _initializeGate.WaitAsync(waitToken).ConfigureAwait(false);
         SemaphoreSlim? lifecycleGate = null;
         var lifecycleAcquired = false;
         try
@@ -140,7 +147,7 @@ internal sealed partial class RawCaptureIngress :
             if (allowEvidenceUnavailable && _journalValidated && _evidenceUnavailable) return false;
             _faultInjector.Inject(RawIngressFaultPoint.BeforeInitializationLifecycleLock);
             lifecycleGate = RawIngressLifecycleLock.ForRoot(_options.RawIngressRoot);
-            await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await lifecycleGate.WaitAsync(waitToken).ConfigureAwait(false);
             lifecycleAcquired = true;
             var wasUnhealthy = _state.Snapshot.Availability == RawIngressAvailability.Unhealthy;
             try
@@ -166,7 +173,7 @@ internal sealed partial class RawCaptureIngress :
                     _telemetry.RecordFileFlush,
                     _telemetry.RecordDirectorySync,
                     _lanePolicy.Definitions)
-                     .RunAsync(EnterInitializationMaintenanceAsync, cancellationToken).ConfigureAwait(false);
+                     .RunAsync(EnterInitializationMaintenanceAsync, cancellationToken, interruptionToken).ConfigureAwait(false);
                 var projectedSceneBacklog = 0;
                 var heldBy = HeldBy();
                 if (reconciliation.MaintenanceDeferred > 0)
@@ -186,22 +193,22 @@ internal sealed partial class RawCaptureIngress :
                     }
                     else
                     {
-                        using var interruption = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, maintenance.InterruptionToken);
+                        using var stageInterruption = CancellationTokenSource.CreateLinkedTokenSource(waitToken, maintenance.InterruptionToken);
                         try
                         {
                             using var stageLease = _projectedSceneLifecycle is null
                                 ? null
-                                : await _projectedSceneLifecycle.AcquireReconciliationLeaseAsync(interruption.Token).ConfigureAwait(false);
-                            var ownedStageKeys = await GetOwnedStageKeysAsync(interruption.Token).ConfigureAwait(false);
+                                : await _projectedSceneLifecycle.AcquireReconciliationLeaseAsync(stageInterruption.Token).ConfigureAwait(false);
+                            var ownedStageKeys = await GetOwnedStageKeysAsync(stageInterruption.Token).ConfigureAwait(false);
                             var protectedStageKeys = new HashSet<string>(ownedStageKeys, StringComparer.Ordinal);
                             if (stageLease is not null) protectedStageKeys.UnionWith(stageLease.PendingStageKeys);
                             var staged = await _projectedSceneStaging.ReconcileAsync(
-                                protectedStageKeys, cancellationToken, maintenance.InterruptionToken).ConfigureAwait(false);
+                                protectedStageKeys, cancellationToken, stageInterruption.Token).ConfigureAwait(false);
                             projectedSceneBacklog = staged.BacklogCount;
                             reconciliation = reconciliation with { ProjectedSceneStageBacklog = projectedSceneBacklog };
-                            stagesHeld = maintenance.InterruptionToken.IsCancellationRequested;
+                            stagesHeld = stageInterruption.IsCancellationRequested;
                         }
-                        catch (OperationCanceledException) when (maintenance.InterruptionToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                        catch (OperationCanceledException) when (stageInterruption.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                         {
                             stagesHeld = true;
                         }
@@ -265,6 +272,10 @@ internal sealed partial class RawCaptureIngress :
                 }
                 Interlocked.Increment(ref _completedInitializations);
                 Volatile.Write(ref _initialized, true);
+                // A resume can notify us after the maintenance lease releases but before this publication.
+                // Recheck after publishing: an earlier notification is covered here, and a later one invalidates us.
+                if (Volatile.Read(ref _maintenanceDeferred) && _maintenanceGate?.HeldBy == Capture.CaptureAdmissionState.Running)
+                    Volatile.Write(ref _initialized, false);
                 return true;
             }
             catch (OperationCanceledException)

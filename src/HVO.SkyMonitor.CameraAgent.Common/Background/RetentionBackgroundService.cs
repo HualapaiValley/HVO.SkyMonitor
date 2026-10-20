@@ -123,7 +123,7 @@ public sealed class RetentionBackgroundService(
                 if (rawIngressGate is not null && _rawIngressHolds is RawCaptureIngress rawIngress)
                 {
                     // Initialization takes this same lifecycle lock so it must complete before retention owns the lock.
-                    await rawIngress.InitializeAsync(sweepToken).ConfigureAwait(false);
+                    await rawIngress.InitializeForMaintenanceAsync(cancellationToken, maintenance.InterruptionToken).ConfigureAwait(false);
                 }
                 if (rawIngressGate is not null)
                 {
