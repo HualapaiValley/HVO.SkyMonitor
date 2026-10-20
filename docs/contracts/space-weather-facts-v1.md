@@ -131,6 +131,9 @@ the content does not change (s01, s17). They may be sent as `If-None-Match` and
 - A JSON body nested more than 64 levels deep is `malformed-json`. The
   outermost array or object is level 1, and brackets inside strings do not
   count (s12).
+- For every JSON product, `NaN`, `Infinity` and `-Infinity` are not JSON
+  numbers (RFC 8259 §6). Their presence anywhere in a body is `malformed-json`,
+  before product schema checks; last-known-good and its validators are kept (s24).
 - A JSON number is valid whatever its length. A body is never rejected because
   a number has many digits. A long number is still a number, not a string, so
   a 4,301-digit `product_id` is `record-schema` (s12; see "JSON value types").
@@ -472,7 +475,8 @@ gives the reason:
    - the column header does not name three days;
    - a row does not parse;
    - the Kp rows are not exactly 00 to 21 UT in 3-hour steps.
-5. For JSON products, `malformed-json`.
+5. For JSON products, `malformed-json`, including `NaN`, `Infinity` and
+   `-Infinity` anywhere in the body (s24).
 6. For alerts:
    - `schema` if the body is not an array;
    - `suspect-empty` for `[]`;
@@ -715,6 +719,7 @@ A fetch also reports:
 | s21 | Pending before `Valid From`; short-window alert inside and outside the new-notice grace; 96-hour cap |
 | s22 | 410 and 400 product halts; network error backoff; 304 without validators; product resume; an attempt ends the backoff before it |
 | s23 | Exact Retry-After grammar; invalid forms give 1,800 s; matching weekday; valid dates in years 0001 and 9999 keep the clamp |
+| s24 | NaN, Infinity and -Infinity are malformed-json for alerts, scales, Kp and OVATION; last-known-good is kept |
 
 **Implementation conformance.** An implementation passes when it reproduces each
 scenario's expectations from the same committed bodies. Unit tests use those

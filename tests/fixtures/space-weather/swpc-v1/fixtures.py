@@ -30,6 +30,8 @@ import json
 import math
 import re
 import sys
+import subprocess
+import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -162,7 +164,7 @@ def retry_after_date(value):
     return when if WEEKDAYS[when.weekday()] == weekday else None
 
 
-JSON_TOKEN_RE = re.compile(r'"[^"\\]*(?:\\.[^"\\]*)*"|[\[\]{}]', re.DOTALL)
+JSON_TOKEN_RE = re.compile(r'"[^"\\]*(?:\\.[^"\\]*)*"?|[\[\]{}]', re.DOTALL)
 
 
 def json_depth(text):
@@ -176,6 +178,11 @@ def json_depth(text):
         elif value in ("]", "}"):
             depth -= 1
     return deepest
+
+
+def reject_json_constant(value):
+    """RFC 8259 numbers never include NaN or either infinity."""
+    raise ValueError(f"non-JSON constant: {value}")
 
 
 def dump_json(obj) -> bytes:
@@ -932,7 +939,7 @@ class Model:
         if json_depth(text) > JSON_MAX_DEPTH:
             return "rejected", "malformed-json", None
         try:
-            obj = json.loads(text, parse_float=JsonNumberText)
+            obj = json.loads(text, parse_float=JsonNumberText, parse_constant=reject_json_constant)
         except (ValueError, RecursionError):
             return "rejected", "malformed-json", None
         digest = sha256(data)
@@ -1229,7 +1236,7 @@ def replay(scenario):
 class Capture:
     def __init__(self):
         self.alerts_text = (PACK / CAPTURE / "alerts.json").read_text("ascii")
-        self.alerts = json.loads(self.alerts_text)
+        self.alerts = json.loads(self.alerts_text, parse_constant=reject_json_constant)
         self.by_identity = {}
         for record in self.alerts:
             msg = Message(record, normalize_text(record["message"]))
@@ -1252,6 +1259,14 @@ def synthetic(product_id, issue_datetime, code, serial, lines):
     issue = issue_datetime[:10] + "T" + issue_datetime[11:16] + ":00Z"
     return {"product_id": product_id, "issue_datetime": issue_datetime,
             "message": message_text(code, serial, issue, lines)}
+
+
+def synthetic_scales(year=2026):
+    """Fresh synthetic source data; no captured scale values are reused."""
+    return {str(day): {"DateStamp": f"{year:04d}-10-20", "TimeStamp": "12:00:00",
+                       "R": {"Scale": "0", "MinorProb": "5", "MajorProb": "1"},
+                       "S": {"Scale": "0", "Prob": "2"}, "G": {"Scale": "0"}}
+            for day in range(-1, 4)}
 
 
 def newest_first(records):
@@ -2268,7 +2283,7 @@ def scenarios(cap: Capture):
     out.append(b.build())
 
     # s17 ------------------------------------------------------------------
-    original = json.loads((PACK / THREE_DAY_ORIGINAL).read_text("ascii"))
+    original = json.loads((PACK / THREE_DAY_ORIGINAL).read_text("ascii"), parse_constant=reject_json_constant)
     normalized_sha = sha256(normalize_text(original["text"]).encode("utf-8"))
     renamed = original["text"].replace("NOAA Kp index breakdown", "NOAA Kp Index Forecast Breakdown", 1)
     no_radiation_rows = re.sub(r"(?m)^S1 or greater.*\n", "", original["text"], count=1)
@@ -2667,6 +2682,36 @@ def scenarios(cap: Capture):
                                            "product": {"consecutiveRateLimited": 0}})
     out.append(b.build())
 
+    # s24 ------------------------------------------------------------------
+    record = synthetic("SYNTH", "2026-10-20 12:00:00.000", "ALTZZZ", 1424,
+                       ["ALERT: Synthetic JSON baseline", "Synthetic fixture; not an SWPC product."])
+    bodies = {
+        "alerts": encode_alerts([record]),
+        "scales": json.dumps(synthetic_scales()),
+        "kp-forecast": '[{"time_tag":"2026-10-20T12:00:00","kp":4.67,'
+                       '"observed":"observed","noaa_scale":"G1"}]',
+        "ovation": '{"Observation Time":"2026-10-20T12:00:00Z",'
+                   '"Forecast Time":"2026-10-20T12:30:00Z","coordinates":[[236,60,0]]}',
+    }
+    b = Builder("s24-json-nonfinite", "Non-JSON constants reject every JSON product and preserve last-known-good",
+                ["malformed-json", "nonfinite", "last-known-good"], synthetic_records=True,
+                notes=["Every body is synthetic. Each JSON product first accepts a baseline, then rejects NaN, "
+                       "Infinity and -Infinity before applying product schema or per-record checks."])
+    for product, body in bodies.items():
+        at = ts("2026-10-20T12:00:00Z")
+        response = {"status": 200, "contentType": "application/json", "etag": '"fixture-s24"',
+                    "lastModified": None, "body": body}
+        b.fetch(fmt(at), response, {"outcome": "updated", "diagnostics": []}, product=product)
+        for index, constant in enumerate(("NaN", "Infinity", "-Infinity"), 1):
+            malformed = "[" + constant + "]" if product in ("alerts", "kp-forecast") else '{"x":' + constant + '}'
+            b.fetch(fmt(at + dt.timedelta(seconds=index * POLICY["products"][product]["baseSeconds"])),
+                    dict(response, body=malformed, etag='"fixture-s24-rejected"'), {
+                        "outcome": "rejected", "diagnostics": ["body-rejected:malformed-json"],
+                        "product": {"lkgSha256": sha256(body.encode("ascii")), "lastSuccessUtc": fmt(at),
+                                    "validators": {"etag": '"fixture-s24"', "lastModified": None},
+                                    "consecutiveRejected": index}}, product=product)
+    out.append(b.build())
+
     return out
 
 
@@ -2714,7 +2759,7 @@ def ovation_subset_bytes(original: Path) -> bytes:
     data = original.read_bytes()
     if len(data) != OVATION_ORIGINAL_BYTES or sha256(data) != OVATION_ORIGINAL_SHA256:
         raise ScenarioError("OVATION original does not match the recorded size and hash")
-    obj = json.loads(data)
+    obj = json.loads(data, parse_constant=reject_json_constant)
     s = OVATION_SECTOR
     cells = [c for c in obj["coordinates"]
              if s["lonMin"] <= c[0] <= s["lonMax"] and s["latMin"] <= c[1] <= s["latMax"]]
@@ -2771,7 +2816,7 @@ def collect_files(cap, ovation_bytes):
     for rel in ("SOURCE.md", "fixtures.py", CAPTURE + "/alerts.json", CAPTURE + "/noaa-scales.json",
                 CAPTURE + "/noaa-planetary-k-index-forecast.json", THREE_DAY_ORIGINAL):
         files[rel] = (PACK / rel).read_bytes()
-    original = json.loads(files[THREE_DAY_ORIGINAL])
+    original = json.loads(files[THREE_DAY_ORIGINAL], parse_constant=reject_json_constant)
     files[THREE_DAY_NORMALIZED] = normalize_text(original["text"]).encode("utf-8")
     files[OVATION_SUBSET] = ovation_bytes
     files.update(scenario_files(cap))
@@ -2783,12 +2828,12 @@ def check_captures(files):
     for fact in CAPTURE_FACTS:
         data = files[fact["file"]]
         if fact["product"] == "3-day-forecast":
-            wrapper = json.loads(data)
+            wrapper = json.loads(data, parse_constant=reject_json_constant)
             raw = wrapper["text"].encode("utf-8")
             if wrapper.get("schemaVersion") != TEXT_CAPTURE_SCHEMA:
                 problems.append("3-day wrapper schema")
         elif fact["product"] == "ovation":
-            subset = json.loads(data)
+            subset = json.loads(data, parse_constant=reject_json_constant)
             if subset["originalSha256"] != fact["sha256"] or subset["originalBytes"] != fact["decodedBytes"]:
                 problems.append("OVATION subset provenance mismatch")
             continue
@@ -2797,9 +2842,40 @@ def check_captures(files):
         if len(raw) != fact["decodedBytes"] or sha256(raw) != fact["sha256"]:
             problems.append(f"{fact['file']}: capture bytes or hash differ from the recorded fetch")
     alerts = files[CAPTURE + "/alerts.json"]
-    if encode_alerts(json.loads(alerts)).encode("ascii") != alerts:
+    if encode_alerts(json.loads(alerts, parse_constant=reject_json_constant)).encode("ascii") != alerts:
         problems.append("alerts encoder does not reproduce the captured bytes")
     return problems
+
+
+ADVERSARIAL_TIMEOUT_SECONDS = 5
+
+
+def command_check_adversarial_json():
+    # 1,048,575 bytes, just below the alert cap. Generate only in memory, never in the fixture tree.
+    body = '"' + '\\"' * 524287
+    model = Model({"sites": [HVO_SITE]})
+    started = time.perf_counter()
+    result = model.validate("alerts", {"contentType": "application/json", "body": body},
+                            ts("2026-10-20T12:00:00Z"), [])
+    elapsed = time.perf_counter() - started
+    if result != ("rejected", "malformed-json", None) or elapsed >= ADVERSARIAL_TIMEOUT_SECONDS:
+        print(f"FAIL adversarial JSON: {result}, {elapsed:.3f}s")
+        return 1
+    print(f"OK adversarial JSON: malformed-json in {elapsed:.3f}s (bound {ADVERSARIAL_TIMEOUT_SECONDS}s)")
+    return 0
+
+
+def check_adversarial_json():
+    # A subprocess timeout also bounds the old regex, so check itself cannot hang on a regression.
+    try:
+        run = subprocess.run([sys.executable, "-I", "-B", str(PACK / "fixtures.py"), "check-adversarial-json"],
+                             capture_output=True, text=True, timeout=ADVERSARIAL_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return [f"adversarial JSON exceeded {ADVERSARIAL_TIMEOUT_SECONDS}s"]
+    if run.returncode:
+        return [f"adversarial JSON: {run.stdout.strip()} {run.stderr.strip()}"]
+    print(run.stdout.strip())
+    return []
 
 
 def command_check():
@@ -2826,9 +2902,10 @@ def command_check():
     if dump_json(manifest(cap, files)) != manifest_path.read_bytes():
         problems.append("manifest.json differs from its regenerated form")
     problems.extend(check_captures(files))
+    problems.extend(check_adversarial_json())
     for rel, data in sorted(files.items()):
         if rel.startswith("scenarios/"):
-            problems.extend(replay(json.loads(data)))
+            problems.extend(replay(json.loads(data, parse_constant=reject_json_constant)))
     for line in problems:
         print("FAIL", line)
     count = len([f for f in files if f.startswith("scenarios/")])
@@ -2848,7 +2925,7 @@ def command_write(ovation_original):
     problems = check_captures(files)
     for rel, data in sorted(files.items()):
         if rel.startswith("scenarios/"):
-            problems.extend(replay(json.loads(data)))
+            problems.extend(replay(json.loads(data, parse_constant=reject_json_constant)))
     if problems:
         for line in problems:
             print("FAIL", line)
@@ -2870,10 +2947,13 @@ def main(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("check")
+    sub.add_parser("check-adversarial-json")
     write = sub.add_parser("write")
     write.add_argument("--ovation-original")
     args = parser.parse_args(argv)
     try:
+        if args.command == "check-adversarial-json":
+            return command_check_adversarial_json()
         return command_check() if args.command == "check" else command_write(args.ovation_original)
     except ScenarioError as error:
         print("FAIL", error)
