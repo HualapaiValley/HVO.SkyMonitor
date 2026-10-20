@@ -235,6 +235,37 @@ HVO.RoofController#127):
   - Reason: SkyMonitor's service account already owns every live store and secret a backup copies, and it is in the
     `docker` group, which is root on the host in all but name. A root-only archive would add almost no protection, and
     running as root was the riskiest code of the backup. The difference from RoofController stays.
+- **Programs on PATH** (#1385). A release-based SkyMonitor CameraAgent install and upgrade put the host's
+  `hvo-sky-linux-<arch>` in `~/.local/bin/hvo-sky`, with `/usr/local/bin` as the next choice only when writable without
+  sudo. The default folder order matches RoofController; SkyMonitor chooses the first writable folder rather than
+  adding RoofController's `cli.folder` setting. The release's installer goes in both `/usr/local/sbin/hvo-sky-install`
+  and `~/.local/bin/hvo-sky-install`. Both kinds are checked against release.json and SHA256SUMS, published atomically
+  with mode `0755`, reported by `--plan`, and projected into `install-programs.json` beside the install record. Upgrade keeps replaced files as
+  `.previous`; rollback republishes the verified files retained for the previous image, without the release folder.
+  - SkyMonitor keeps per-image program sets and cached files under the instance's deployment state. The machine
+    install-record sidecar is their summary, consistent with D10. The schema-1 `install.json` keeps exactly its released
+    members: older strict readers, including a kept `.previous` installer, can still read it for recovery. The separate
+    sidecar uses the same atomic write and file/directory fsync discipline. Old installers leave PATH programs and the
+    sidecar alone. An image-only install has no release programs to publish.
+    A rollback to an image without a retained set removes the owned runtime client and keeps the maintenance
+    installer, rather than assuming an unverified manual copy is that image's client. Shared command paths take the
+    version last published by an install, upgrade or rollback.
+  - SkyMonitor removes a last-owner runtime client on uninstall and restores it on reinstall. Unlike RoofController,
+    it retains the installer for a preserved instance's `reinstall`; purge removes the last-owner installer copies
+    and `.previous`, after the deletion is durably completed. Interrupted program cleanup remains resumable from
+    retained operation evidence. Shared commands remain while another instance needs them. Both current and
+    `.previous` files are checked against publication records before replacement; unowned or externally changed files
+    are preserved and reported, as on removal. These differences follow SkyMonitor's preserved-instance lifecycle.
+  - Destination folders and their ancestors must be owned by the installing user or root and have no group/world
+    write permission, including destinations kept in existing records. Production checks reach the filesystem root;
+    admitted isolated roots map every destination below their own virtual root. New directories receive explicit safe
+    modes. Publication keeps the verified stage open and checks its device/inode at the renamed destination. A durable
+    intent records the old and desired checksums before either slot changes, so an interrupted publication can resume
+    without accepting an unowned `.previous`.
+  - A completed legacy install re-run also publishes missing release commands and then settles both record views,
+    without redeploying an otherwise unchanged container.
+  - After publication, command hints use an existing durable installer path. SkyMonitor completes its current
+    operation without RoofController's installer handover; subsequent commands execute the newly installed release.
 - **Common flags:** `--plan` (read-only; prints what would be created, changed, unchanged or refused), `--answers FILE`
   (strict JSON with a schema version; unknown members are errors), `--json`, `--version` and `-h`/`--help` (prints on
   stdout and exits 0).

@@ -8,21 +8,49 @@ that install and `install --dry-run` evaluate. The CameraAgent image comes from 
 published release's files ([Release Install](#release-install)) or from an image
 the operator names, and the catalog from a verified local bundle.
 
-**Running it.** The installer is one file in the release folder, `hvo-sky-install-linux-arm64` or
-`hvo-sky-install-linux-x64`, and nothing puts it on PATH. Run it by its path, for example from the release folder:
+**Running it.** A release-based install puts `hvo-sky-install` in `/usr/local/sbin` for the machine and
+`~/.local/bin` for the runtime user, both mode `0755`. Include `~/.local/bin` in PATH when your shell does not already.
+The first invocation uses the release's `hvo-sky-install-linux-arm64` or `hvo-sky-install-linux-x64`, or
+[`install.sh`](#installsh). Later runs use the installed command:
 
 ```bash
-chmod 755 hvo-sky-install-linux-arm64
-./hvo-sky-install-linux-arm64 status
+hvo-sky-install status
+hvo-sky-install cameraagent upgrade --instance-id <uuid> --release /path/to/release
 ```
 
-This runbook writes it as `hvo-sky-install`: put the path of the release's installer in its place. The installer names
-itself the same way, by the path it runs from, in its usage and in every command a message tells you to run (such as a
-`Resume:` line, or the `cameraagent rollback` an upgrade names), so such a command runs as printed. A copy run under
-another name, such as `/usr/local/bin/hvo-sky-install`, names itself by that path. [`install.sh`](#installsh) runs a
-checked copy from a temporary folder that it removes when it finishes, so a command printed during an `install.sh` run
-names that copy: run it with the release's installer instead, from the folder given to `--from` or downloaded from the
-release, or run `install.sh` again with that command's arguments.
+Both installed copies come from the release, verified against `release.json` and `SHA256SUMS`. Upgrade keeps the
+replaced copies beside them as `hvo-sky-install.previous`. Once an executable durable copy exists, usage, resume,
+rollback and reinstall hints name its path rather than `install.sh`'s temporary copy. Before one exists, hints name
+the running release installer; a failed initial bootstrap can be repeated with `install.sh` and the same arguments.
+The installer finishes the current operation itself; it does not hand execution to the newly published binary.
+
+Before publishing, the installer requires each destination folder and ancestor to be owned by the runtime user or
+root, with no group or world write permission. This also checks destinations retained by an earlier install. Unsafe
+folders are refused before changes; fix their ownership/permissions and retry. Both the current command and
+`.previous` must match publication records before replacement. An unowned or externally changed recovery file is
+preserved and reported; move it aside deliberately before retrying. Publication retains an open verified stage and
+checks its device/inode after rename, with recorded old/new intent making interruption recovery repeatable.
+
+Release installs also publish the matching `hvo-sky` runtime client ([hvo-sky.md](hvo-sky.md)). Each instance retains
+verified command files by image ID in `state/deployment/programs/`, with its authoritative `path-programs.json` and
+image-bound program records. Rollback restores those files, retaining the replaced version as `.previous`.
+`--image-ref` installs without release metadata do not install commands. A rollback to an image with no retained
+program set (including an installation from before PATH publication) removes this installer's runtime client and
+keeps the durable maintenance installer; it does not assume an unverified manual copy belongs to the old release.
+The install record projects the commands' paths, versions, SHA-256 and previous SHA-256; it is not their authority.
+Where instances share a command path, the last install, upgrade or rollback publishes that path's version.
+
+A preserved-instance uninstall removes the runtime client when no other installed instance uses it, and keeps the
+installer for `reinstall`. Reinstall republishes the retained client. Purge removes the last owner's installer copies
+and `.previous` files after deleting its instance tree, settling the install record and durably recording completion.
+An interrupted program cleanup resumes from the retained purge evidence with `--resume`.
+Shared paths stay while another instance needs them;
+files whose contents no longer match the recorded checksum are preserved with an actionable failure.
+Admitted test roots map every program destination below `<product-root>/programs/` and never publish to the host's
+real PATH folders. Their admitted product root is the virtual filesystem root for destination trust checks; production
+checks continue through `/`. Each newly created program directory gets an explicit safe mode, independent of umask.
+A completed legacy install re-run publishes missing release programs before settling its records, without restarting
+an otherwise unchanged container.
 
 `hvo-sky-install --version` prints the installer's version and the commit it was built from, as
 `<version>+<40-character commit>`, and exits 0. Like `--help`, it needs no Docker and does not read the
@@ -431,6 +459,15 @@ production product root.
 }
 ```
 
+- PATH program metadata is in the separate `/etc/hvo-sky/install-programs.json` sidecar, with one instance ID and
+  `programs` list per release install: name, path, release version, SHA-256 and previous SHA-256. Admitted test roots keep
+  it beside their own `operations/install.json`. The instance's retained program sets and shared publication registry
+  own those facts; this sidecar projects them and uses the same atomic, fsynced file/directory writes and host-policy
+  trust checks as the machine record. Image-only instances have no program entry.
+- Schema-1 `install.json` retains exactly the released members shown above. Released installers use a strict reader,
+  so adding even an empty `programs` field there would break recovery with an older or `.previous` installer. Older
+  installers can still read and maintain `install.json`; they leave PATH programs and the sidecar untouched. Use the
+  current durable installer when commands must follow an upgrade, rollback or removal.
 - The instance's release records (`image-distribution.json` and
   `image-distribution.records.json` in its deployment state, see
   [Release Install](#release-install)) own its installed version. The install
