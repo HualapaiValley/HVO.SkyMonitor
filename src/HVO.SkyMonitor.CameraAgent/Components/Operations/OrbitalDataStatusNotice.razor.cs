@@ -44,11 +44,22 @@ public sealed partial class OrbitalDataStatusNotice : ComponentBase
         {
             return new NoticeContent("Orbital data unknown.", [StoreUnavailableText], "failure");
         }
+        var repair = view.Status.RecoveryAction == OrbitalRefreshRecoveryAction.RepairStorage
+            ? string.Concat("Orbital storage needs repair: ", OrbitalOperatorText.ReasonText(view.Status.Reason),
+                " ", OrbitalOperatorText.Recovery(view.Status.RecoveryAction))
+            : null;
         if (!view.HasData)
         {
-            return HaltLine(view) is { } noDataHalt
-                ? new NoticeContent(null, [OrbitalOperatorText.NoDataText, noDataHalt], "warning")
-                : new NoticeContent(null, [OrbitalOperatorText.NoDataText], "pending");
+            var noDataLines = new List<string> { OrbitalOperatorText.NoDataText };
+            if (HaltLine(view) is { } noDataHalt)
+            {
+                noDataLines.Add(noDataHalt);
+            }
+            if (repair is not null)
+            {
+                noDataLines.Add(repair);
+            }
+            return new NoticeContent(null, noDataLines, noDataLines.Count > 1 ? "warning" : "pending");
         }
         var lines = new List<string>(4);
         if (view.Manifest is not { } manifest)
@@ -86,12 +97,19 @@ public sealed partial class OrbitalDataStatusNotice : ComponentBase
         {
             lines.Add(halt);
         }
+        if (repair is not null)
+        {
+            lines.Add(repair);
+        }
         var headline = view.ElementsStale
             ? "Orbital elements are stale."
             : view.RefreshOverdue
                 ? "Orbital refresh is overdue."
-                : "Orbital elements installed.";
-        var tone = view.ElementsStale || view.RefreshOverdue || view.Manifest is null || halt is not null ? "warning" : "success";
+                : repair is not null
+                    ? "Orbital storage needs repair."
+                    : "Orbital elements installed.";
+        var tone = view.ElementsStale || view.RefreshOverdue || view.Manifest is null || halt is not null || repair is not null
+            ? "warning" : "success";
         return new NoticeContent(headline, lines, tone);
     }
 

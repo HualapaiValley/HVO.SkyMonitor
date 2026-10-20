@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Bunit;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
@@ -10,6 +11,7 @@ using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moq;
 
@@ -270,6 +272,70 @@ public sealed class CameraAgentOrbitalUiServiceTests : OrbitalStoreTestBase
         Assert.AreEqual(OrbitalDataState.Quarantined, view.State);
         Assert.IsNotNull(view.Status.CandidateQuarantine);
         Assert.AreEqual(OrbitalElementsHealthState.Degraded, view.HealthState);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task StorageFailedAttempt_WithAStorageReason_ShowsRepairInThePanelAndNoticeAsync(bool withSnapshot)
+    {
+        using var fixture = await OrbitalAutomationFixture.CreateAsync(CreateRoot()).ConfigureAwait(false);
+        await fixture.SaveDefinitionAsync().ConfigureAwait(false);
+        if (withSnapshot)
+        {
+            fixture.Orbital.Client.Enqueue(fixture.Orbital.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
+            await fixture.Orbital.RunAsync().ConfigureAwait(false);
+            fixture.Clock.Advance(Floor);
+        }
+        var previous = await fixture.Orbital.StateAsync().ConfigureAwait(false);
+        fixture.Orbital.Intercept.RetrievalFault = static _ =>
+            new OrbitalStorageException("orbital.storage-no-space", "synthetic", null);
+        fixture.Orbital.Client.Enqueue(fixture.Orbital.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
+        await fixture.Orbital.RunAsync().ConfigureAwait(false);
+        var service = CreateService(fixture, read: true, mutate: true, out _);
+
+        var state = await fixture.Orbital.StateAsync().ConfigureAwait(false);
+        var view = (await service.GetAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        Assert.AreEqual(OrbitalAttemptOutcome.StorageFailed, state.LastAttemptOutcome);
+        Assert.AreEqual("orbital.storage-no-space", state.LastAttemptReasonCode);
+        Assert.AreEqual(previous.CurrentManifestSha256, state.CurrentManifestSha256);
+        Assert.AreEqual(previous.LastRetrievalSuccessUtc, state.LastRetrievalSuccessUtc);
+        Assert.AreEqual("orbital.storage-no-space", view.Status.Reason);
+        Assert.AreEqual(OrbitalRefreshRecoveryAction.RepairStorage, view.Status.RecoveryAction);
+        Assert.AreEqual(OrbitalElementsHealthState.Degraded, view.HealthState);
+        Assert.AreEqual(OrbitalDataState.NeedsRepair, view.State);
+        Assert.IsNull(view.Status.ProviderHalt);
+        Assert.IsFalse(view.CanResume);
+        Assert.IsFalse(view.CanRefresh, "The failed attempt still holds the provider floor.");
+
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton<ICameraAgentOrbitalUiService>(service);
+        var panel = context.Render<OrbitalSnapshotPanel>();
+        var notice = context.Render<OrbitalDataStatusNotice>(parameters => parameters.Add(component => component.View, view));
+        const string storageText = "The orbital store ran out of disk space.";
+        const string recoveryText = "Check this CameraAgent's orbital storage and restart CameraAgent, as the orbital refresh runbook describes.";
+        panel.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Needs repair", panel.Find("#orbital-state").TextContent);
+            Assert.AreEqual(storageText, panel.Find("#orbital-reason-text").TextContent);
+            Assert.AreEqual(recoveryText, panel.Find("#orbital-recovery").TextContent);
+            Assert.IsTrue(panel.Find("#orbital-refresh").HasAttribute("disabled"));
+            Assert.IsEmpty(panel.FindAll("#orbital-resume"));
+            Assert.AreEqual(withSnapshot ? 1 : 0, panel.FindAll("#orbital-counts").Count);
+            foreach (var text in new[] { panel.Find("#orbital-data-notice").TextContent, notice.Find("#orbital-data-notice").TextContent })
+            {
+                Assert.Contains(storageText, text);
+                Assert.Contains(recoveryText, text);
+                Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(text, @"HTTP\s*\d"), text);
+                if (!withSnapshot)
+                {
+                    Assert.Contains(OrbitalOperatorText.NoDataText, text);
+                }
+            }
+            Assert.IsNotNull(notice.Find(".status-icon.warning"));
+        });
     }
 
     [TestMethod]

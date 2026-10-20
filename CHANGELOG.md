@@ -12,6 +12,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Software & Catalog shows orbital snapshot coverage, element age, refresh status and storage repair guidance, with
+  bounded Refresh and Resume commands. Automations edits the same orbital refresh schedule and links to its run
+  history. Missing orbital data never implies an empty sky. (#1392)
 - CameraAgent can acquire orbital elements locally: one bounded CelesTrak GP request for the `active` group, strictly
   parsed into the `orbital-elements-v1` contract, published as an immutable verified snapshot and activated atomically,
   with the last-known-good snapshot kept readable through every failure. Refresh is off by default. Turn it on with
@@ -26,7 +29,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   include them, so keep those archives owner-only. The image's `io.hvo.skymonitor.state-contracts` label, and so
   `release.json`, now declares the `orbitalElements` store (writes 1, reads 1 to 1). Installer snapshots exclude it, so
   the provider floor and halt survive a rollback. Operation, removal, backup, restore and recovery are in
-  `docs/runbooks/orbital-elements-refresh.md`. The Software & Catalog page does not show orbital status until #1392.
+  `docs/runbooks/orbital-elements-refresh.md`.
   (#528)
 - Bounded local satellite exposure tracks, future-pass predictions and complete sky arcs pinned to their original orbital record, with reproducible virtual-camera fixtures, explicit source/time/geometry provenance and unavailable or partial outcomes when inputs or work limits prevent completion. (#529)
 

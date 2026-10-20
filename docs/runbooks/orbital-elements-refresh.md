@@ -343,7 +343,11 @@ The panel embeds the compact orbital data notice. It lists the requested populat
 its coverage, the newest element age, and then each of these that applies: stale
 elements, refresh overdue, and a provider halt with its status. These are separate
 facts, so stale and overdue still show while refresh is halted, quarantined or needs
-repair.
+repair. A `StorageFailed` last attempt can carry its specific storage reason, such as
+`orbital.storage-no-space`, rather than the generic `orbital.storage-failed`. The panel
+and notice translate that reason and the `RepairStorage` recommendation into operator
+text, without inventing an HTTP status or a provider halt. The installed snapshot, if
+any, remains visible, and the failed attempt still holds the provider floor.
 
 The page and the health check agree on every fact, but they summarize differently, by
 design:
