@@ -1,0 +1,16 @@
+{
+  "schema": "historical-verification-fixture-source-v1",
+  "rawSourcePath": "/home/roys/.codex/artifacts/batch-a-527-2026-10-19/reference-source/SGP4-VER.TLE",
+  "upstreamSourceUri": "https://raw.githubusercontent.com/aholinch/sgp4/552cb1489a52c3023ae70cb6c7e239e84c5950fe/data/SGP4-VER.TLE",
+  "upstreamHttpRetrievedUtc": null,
+  "upstreamHttpRetrievalLimitation": "Original upstream acquisition timestamp was not retained in reference-source/manifest.json; no timestamp is invented.",
+  "offlineFixtureRetrievedUtc": "2026-10-19T22:53:26.415490+00:00",
+  "offlineFixtureRetrievedMeaning": "Actual UTC time this previously retained raw verification artifact was read into the external historical fixture. The canonical manifest RetrievedUtc uses this explicit local offline-fixture retrieval, not a new or inferred HTTP retrieval.",
+  "rawSha256": "D246D1D9D768ACE445A38A965713FA9BA52D80FD8A41A0502FF83D7ACFFE2881",
+  "rawLengthBytes": 8616,
+  "retainedLfTrimmedReferenceSha256": "76727A72FC0D0A1AF115E03AF487C33213BEC8842AE6C32B5F0829454C8A45D7",
+  "rawToReferenceTransformation": "CRLF to LF; trim line-end whitespace; preserve fixed-width fields.",
+  "upstreamReferenceArchiveUri": "https://celestrak.org/publications/AIAA/2006-6753/AIAA-2006-6753.zip",
+  "upstreamReferenceArchiveSha256": "3642043B706C76BE87CF012DB3F22E04DA6B80498D00F515E51879E0FFADC115",
+  "sourceStatusContext": "Parent supplied NASA/NRL history: Vanguard1 contact/last signal ended1964. Historical context is separate from SourceAssertedStatus, which stays null. No network retrieval or independent historical-source verification was performed by this helper."
+}
