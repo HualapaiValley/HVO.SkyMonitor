@@ -299,10 +299,16 @@ internal sealed class SkyTerminalUi : IDisposable
     }
 
     /// <summary>Opens a write review whose eligibility is checked again when its action is chosen.</summary>
-    public SkyUiPrompt OpenChangePrompt(SkyUiPromptSpec spec)
+    public SkyUiPrompt OpenChangePrompt(SkyUiPromptSpec spec, Func<bool> canSubmit)
     {
         ArgumentNullException.ThrowIfNull(spec);
-        return OpenPrompt(spec with { Run = answers => ChangeRefusal ?? spec.Run(answers) });
+        ArgumentNullException.ThrowIfNull(canSubmit);
+        return OpenPrompt(spec with
+        {
+            Run = answers => ChangeRefusal ?? (canSubmit()
+                ? spec.Run(answers)
+                : "This action is no longer available. Refresh this page and review it again.")
+        });
     }
 
     public void ClosePrompt(SkyUiPrompt? which = null)

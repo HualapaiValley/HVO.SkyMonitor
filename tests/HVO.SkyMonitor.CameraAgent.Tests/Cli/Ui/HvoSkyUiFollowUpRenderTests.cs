@@ -1,5 +1,6 @@
 using System.Runtime.Versioning;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.CameraAgent.Cli.Client;
 using HVO.SkyMonitor.CameraAgent.Cli.Ui;
 using HVO.SkyMonitor.TerminalUi;
@@ -258,4 +259,238 @@ public sealed class HvoSkyUiFollowUpRenderTests
         StringAssert.Contains(driver.Ui.Prompt.Error, "read-only", StringComparison.Ordinal);
         Assert.IsEmpty(harness.Api.RequestsTo("POST", Fake.RestartRoute));
     }
+
+    [TestMethod]
+    [DataRow("group", "canWrite")]
+    [DataRow("group", "readOnlyReason")]
+    [DataRow("setting", "key")]
+    [DataRow("setting", "value")]
+    [DataRow("setting", "isSet")]
+    [DataRow("setting", "source")]
+    [DataRow("setting", "sourceDetail")]
+    [DataRow("setting", "canWrite")]
+    [DataRow("setting", "readOnlyReason")]
+    [DataRow("setting", "pendingValue")]
+    [DataRow("setting", "problem")]
+    [DataRow("setting", "allowedValues")]
+    [DataRow("choice", "value")]
+    [DataRow("choice", "label")]
+    [DataRow("choice", "description")]
+    public void MissingNestedReceiptMember_KeepsAcceptedWriteUnverified(string scope, string member)
+    {
+        var group = scope == "choice" ? "schedule" : "skyMap";
+        var receipt = Receipt(group);
+        var state = receipt["group"]!["settings"]![0]!;
+        var target = scope switch
+        {
+            "group" => receipt["group"]!.AsObject(),
+            "choice" => state["allowedValues"]![0]!.AsObject(),
+            _ => state.AsObject()
+        };
+        Assert.IsTrue(target.Remove(member));
+        AssertUnverifiedReceipt(receipt, group);
+    }
+
+    [TestMethod]
+    [DataRow("integer-object", "Applied")]
+    [DataRow("integer-string", "Applied")]
+    [DataRow("integer-fraction", "Applied")]
+    [DataRow("integer-boolean", "Applied")]
+    [DataRow("number-object", "Applied")]
+    [DataRow("string-object", "Applied")]
+    [DataRow("enum-object", "Applied")]
+    [DataRow("null-setting", "Applied")]
+    [DataRow("key-only", "Applied")]
+    [DataRow("key-only", "Unchanged")]
+    [DataRow("null-choice", "Applied")]
+    [DataRow("other-setting-value", "Applied")]
+    [DataRow("pending-object", "Applied")]
+    [DataRow("source-null", "Applied")]
+    [DataRow("choice-label-type", "Applied")]
+    [DataRow("sourceDetail-type", "Applied")]
+    public void MalformedNestedReceipt_KeepsAcceptedWriteUnverified(string defect, string status)
+    {
+        var group = defect switch
+        {
+            "number-object" or "other-setting-value" => "location",
+            "string-object" => "site",
+            "enum-object" => "camera",
+            "null-choice" or "choice-label-type" => "schedule",
+            _ => "skyMap"
+        };
+        var receipt = Receipt(group);
+        receipt["status"] = status;
+        var settings = receipt["group"]!["settings"]!.AsArray();
+        var state = settings[0]!;
+        switch (defect)
+        {
+            case "null-setting": settings.Add((JsonNode?)null); break;
+            case "key-only": settings[0] = new JsonObject { ["key"] = state["key"]!.GetValue<string>() }; break;
+            case "null-choice": state["allowedValues"]!.AsArray().Add((JsonNode?)null); break;
+            case "other-setting-value": settings[1]!["value"] = new JsonObject(); break;
+            case "pending-object": state["pendingValue"] = new JsonObject(); break;
+            case "source-null": state["source"] = null; break;
+            case "choice-label-type": state["allowedValues"]![0]!["label"] = 7; break;
+            case "sourceDetail-type": state["sourceDetail"] = 7; break;
+            default:
+                state["value"] = defect switch
+                {
+                    "integer-string" => JsonValue.Create("450"),
+                    "integer-fraction" => JsonValue.Create(450.5),
+                    "integer-boolean" => JsonValue.Create(true),
+                    _ => new JsonObject()
+                };
+                break;
+        }
+
+        AssertUnverifiedReceipt(receipt, group);
+    }
+
+    private static JsonObject Receipt(string group) => JsonSerializer.SerializeToNode(new
+    {
+        status = "Applied",
+        group = Fake.GroupState(group, $"{group}-v2"),
+        recorded = Array.Empty<string>()
+    }, SkyApiClient.Json)!.AsObject();
+
+    private static void AssertUnverifiedReceipt(JsonObject receipt, string group)
+    {
+        using var harness = Operator();
+        harness.Api.Json("PUT", Fake.SettingsRoute + "/" + group, receipt);
+        using var driver = SkyUiDriver.Start(harness);
+        driver.ShowPage(1);
+        var field = driver.Ui.Data.Settings.Value!.FindGroup(group)!.Fields[0];
+        var prompt = SkyUiSettingChange.Open(driver.Ui, field);
+        if (prompt.Choices is null)
+        {
+            prompt.Fields[0].Text = group switch { "location" => "36", "site" => "Updated name", _ => "450" };
+        }
+        if (prompt.Acknowledgement is { } acknowledgement)
+        {
+            acknowledgement.Checked = true;
+        }
+
+        prompt.Choose();
+        driver.WaitIdle("the nested receipt");
+
+        Assert.HasCount(1, harness.Api.RequestsTo("PUT", Fake.SettingsRoute + "/" + group));
+        // UNVERIFIED is emitted by SayOutcome only while the operation still tracks a possibly accepted write.
+        StringAssert.StartsWith(driver.Ui.Notice.Message, "[UNVERIFIED]", StringComparison.Ordinal);
+        Assert.DoesNotContain("was not saved", driver.Ui.Notice.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Nothing changed", driver.Ui.Notice.Message, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow(1, "Change", "group-read-only")]
+    [DataRow(1, "Change", "setting-read-only")]
+    [DataRow(2, "Stage", "rig-staged")]
+    [DataRow(2, "Apply", "rig-unstaged")]
+    [DataRow(2, "Change camera", "camera-read-only")]
+    [DataRow(3, "Apply staged", "schedule-unstaged")]
+    [DataRow(3, "Activate", "schedule-active")]
+    [DataRow(4, "Restart", "restart-requested")]
+    public void AnOpenReview_RechecksItsCurrentActionEligibility(int page, string action, string change)
+    {
+        using var harness = Operator();
+        harness.Api.Json("GET", Fake.RigRoute, Fake.Rigs("rig-1", action == "Stage" ? null : "rig-2"));
+        harness.Api.Json("GET", Fake.ScheduleRoute, Fake.Schedule(action == "Apply staged" ? "schedule-4" : null));
+        using var driver = SkyUiDriver.Start(harness, timeout: TimeSpan.FromSeconds(1));
+        driver.ShowPage(page);
+        if (action is "Stage" or "Activate")
+        {
+            driver.Press(Key.CursorDown);
+        }
+        driver.Ui.Page.Press(action);
+        driver.WaitIdle("the action review");
+        var prompt = driver.Ui.Prompt!;
+        Assert.IsNotNull(prompt);
+        if (prompt.Acknowledgement is { } acknowledgement)
+        {
+            acknowledgement.Checked = true;
+        }
+        switch (change)
+        {
+            case "group-read-only":
+            case "setting-read-only":
+            case "camera-read-only":
+                var values = JsonSerializer.SerializeToNode(Fake.Values(), SkyApiClient.Json)!;
+                var group = values["groups"]!.AsArray().Single(item => item!["group"]!.GetValue<string>() == (page == 2 ? "camera" : "site"))!;
+                if (change == "group-read-only") group["canWrite"] = false;
+                else group["settings"]![0]!["canWrite"] = false;
+                harness.Api.Json("GET", Fake.SettingsRoute, values);
+                break;
+            case "rig-staged": harness.Api.Json("GET", Fake.RigRoute, Fake.Rigs("rig-1", "rig-2")); break;
+            case "rig-unstaged": harness.Api.Json("GET", Fake.RigRoute, Fake.Rigs("rig-1", null)); break;
+            case "schedule-unstaged": harness.Api.Json("GET", Fake.ScheduleRoute, Fake.Schedule()); break;
+            case "schedule-active":
+                var schedule = JsonSerializer.SerializeToNode(Fake.Schedule(), SkyApiClient.Json)!;
+                schedule["activeRevision"] = JsonSerializer.SerializeToNode(Fake.ScheduleRevision("schedule-2", 2), SkyApiClient.Json);
+                harness.Api.Json("GET", Fake.ScheduleRoute, schedule);
+                break;
+            case "restart-requested": harness.Api.Json("GET", Fake.InfoRoute, Fake.Info(SkyUiClock.Observed, requested: true)); break;
+        }
+        driver.Ui.Page.Refresh();
+        driver.WaitIdle("updated action eligibility");
+        Assert.AreEqual(SkyUiFreshness.Live, driver.Ui.Freshness);
+        Assert.IsFalse(driver.Ui.Page.Buttons.Single(button => button.Text == $"[ {action} ]").Enabled);
+
+        prompt.Choose();
+        driver.WaitIdle("refused review submission");
+
+        Assert.IsFalse(harness.Api.Requests.Any(request => request.Method is "PUT" or "POST"), "A review must send nothing after its action becomes unavailable.");
+        Assert.AreSame(prompt, driver.Ui.Prompt);
+        StringAssert.Contains(prompt.Error, "no longer available", StringComparison.Ordinal);
+    }
+
+
+    [TestMethod]
+    [DataRow(1, "Change", "\"site-v1\"")]
+    [DataRow(2, "Stage", "7")]
+    [DataRow(3, "Activate", "11")]
+    public void AnEligibleOpenReview_KeepsTheReviewedVersion(int page, string action, string expectedVersion)
+    {
+        using var harness = Operator();
+        using var driver = SkyUiDriver.Start(harness);
+        driver.ShowPage(page);
+        if (action is "Stage" or "Activate")
+        {
+            driver.Press(Key.CursorDown);
+        }
+        driver.Ui.Page.Press(action);
+        driver.WaitIdle("the versioned review");
+        var prompt = driver.Ui.Prompt!;
+        if (prompt.Acknowledgement is { } acknowledgement)
+        {
+            acknowledgement.Checked = true;
+        }
+        switch (page)
+        {
+            case 1:
+                prompt.Fields[0].Text = "Updated site name";
+                var values = JsonSerializer.SerializeToNode(Fake.Values(), SkyApiClient.Json)!;
+                foreach (var group in values["groups"]!.AsArray()) group!["version"] = "new-version";
+                harness.Api.Json("GET", Fake.SettingsRoute, values);
+                break;
+            case 2:
+                var rigs = JsonSerializer.SerializeToNode(Fake.Rigs("rig-1", null), SkyApiClient.Json)!;
+                rigs["selection"]!["version"] = 99;
+                harness.Api.Json("GET", Fake.RigRoute, rigs);
+                break;
+            case 3:
+                var schedule = JsonSerializer.SerializeToNode(Fake.Schedule(), SkyApiClient.Json)!;
+                schedule["stateVersion"] = 99;
+                harness.Api.Json("GET", Fake.ScheduleRoute, schedule);
+                break;
+        }
+        driver.Ui.Page.Refresh();
+        driver.WaitIdle("the newer eligible state");
+        Assert.IsTrue(driver.Ui.Page.Buttons.Single(button => button.Text == $"[ {action} ]").Enabled);
+        prompt.Choose();
+        driver.WaitIdle("the write with its reviewed version");
+
+        var writes = harness.Api.Requests.Where(request => request.Method is "PUT" or "POST").ToArray();
+        Assert.HasCount(1, writes);
+        Assert.AreEqual(expectedVersion, writes[0].BodyJson().GetProperty("expectedVersion").GetRawText());
+    }
+
 }

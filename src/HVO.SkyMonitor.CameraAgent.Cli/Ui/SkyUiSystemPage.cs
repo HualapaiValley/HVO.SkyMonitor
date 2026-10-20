@@ -81,7 +81,7 @@ internal sealed class SkyUiSystemPage : SkyUiPage
             ]
             : [connection is null ? new SkyUiField(string.Empty, "Not signed in: Sign in below.", HvoTone.Warning) : Pending(info, "CameraAgent's information")];
         _signOut.Enabled = connection is not null && connection.KeySource == Ui.Context.CredentialsPath;
-        _restart.Enabled = CanChange && info.Value?.Restart is { Supervised: true, Requested: false };
+        _restart.Enabled = CanRestart;
     }
 
     public override string Describe()
@@ -189,9 +189,11 @@ internal sealed class SkyUiSystemPage : SkyUiPage
         }));
     }
 
+    private bool CanRestart => CanChange && Ui.Data.Info.Value?.Restart is { Supervised: true, Requested: false };
+
     private void Restart()
     {
-        if (!_restart.Enabled)
+        if (!CanRestart)
         {
             return;
         }
@@ -206,6 +208,6 @@ internal sealed class SkyUiSystemPage : SkyUiPage
                 error is null ? $"CameraAgent is back: started {SkyCliFormat.Time(outcome!.After!.Host.ProcessStartedUtc)}, running {outcome.After.Application.InformationalVersion}." : string.Empty,
                 "CameraAgent was not restarted"));
             return null;
-        }));
+        }), () => CanRestart);
     }
 }

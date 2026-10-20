@@ -140,31 +140,37 @@ internal sealed class SkyUiSchedulePage : SkyUiPage
     // A window's time without its year, so FROM and TO fit side by side at 80 columns.
     private static string Short(DateTimeOffset? time) => time is { } at ? SkyCliFormat.Time(at)[5..16].Replace('T', ' ') + "Z" : "?";
 
+    private bool CanApplyStaged(string? id) => CanChange && id is not null && id == StagedId;
+
+    private bool CanActivate(string? id)
+        => CanChange && id is not null && id != ActiveId
+            && (id == StagedId || SkyJson.Items(Schedule, "history").Any(revision => SkyJson.Text(revision, "revisionId") == id));
+
     private void UpdateButtons()
     {
         var chosen = _revisions.SelectedRow?.Key;
-        _applyStaged.Enabled = CanChange && StagedId is not null;
-        _activate.Enabled = CanChange && chosen is not null && chosen != ActiveId;
+        _applyStaged.Enabled = CanApplyStaged(StagedId);
+        _activate.Enabled = CanActivate(chosen);
         Ui.Hint(Help);
     }
 
     private void ApplyStaged()
     {
-        if (_applyStaged.Enabled && StagedId is { } staged)
+        if (StagedId is { } staged && CanApplyStaged(staged))
         {
-            Open(staged);
+            Open(staged, () => CanApplyStaged(staged));
         }
     }
 
     private void Activate()
     {
-        if (_activate.Enabled && _revisions.SelectedRow?.Key is { } chosen)
+        if (_revisions.SelectedRow?.Key is { } chosen && CanActivate(chosen))
         {
-            Open(chosen);
+            Open(chosen, () => CanActivate(chosen));
         }
     }
 
-    private void Open(string id)
+    private void Open(string id, Func<bool> canSubmit)
     {
         var schedule = Schedule;
         var version = SkyJson.Integer(schedule, "stateVersion");
@@ -211,6 +217,6 @@ internal sealed class SkyUiSchedulePage : SkyUiPage
         })
         {
             Fields = [new SkyUiPromptField("Reason")]
-        });
+        }, canSubmit);
     }
 }
