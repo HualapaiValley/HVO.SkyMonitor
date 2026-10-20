@@ -9,7 +9,9 @@ public enum OrbitalFetchDisposition
     Retrieved,
 
     /// <summary>
-    /// Any valid status (100..599) other than 200. The provider policy halts on it; the body was not read.
+    /// Any valid status (100..599) other than 200, or a status line outside 100..599
+    /// (<c>orbital.invalid-http-status</c>, recorded as a halt with no HTTP status). The provider policy halts on it;
+    /// the body was not read.
     /// </summary>
     HttpStatusHalt,
 
@@ -19,10 +21,7 @@ public enum OrbitalFetchDisposition
     /// <summary>The bounded request timeout elapsed. Keep last-known-good; no retry.</summary>
     TimedOut,
 
-    /// <summary>
-    /// A 200 response whose media type, encoding, declared length or size bounds were not accepted, or a response
-    /// whose status lies outside the RFC 9110 range 100..599 (<c>orbital.invalid-http-status</c>; body not read).
-    /// </summary>
+    /// <summary>A 200 response whose media type, encoding, declared length or size bounds were not accepted.</summary>
     ResponseRejected
 }
 

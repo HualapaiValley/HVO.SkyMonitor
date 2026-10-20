@@ -76,12 +76,13 @@ public sealed class CelesTrakGpClientTests
     [DataRow(99)]
     [DataRow(600)]
     [DataRow(999)]
-    public async Task StatusOutsideTheRfc9110RangeIsARejectedResponseNotAHalt(int status)
+    public async Task StatusOutsideTheRfc9110RangeIsAHaltWithTheInvalidStatusReason(int status)
     {
         var content = new TrackingContent(SmallJson);
         var (result, handler) = await FetchAsync(content, (HttpStatusCode)status).ConfigureAwait(false);
 
-        Assert.AreEqual(OrbitalFetchDisposition.ResponseRejected, result.Disposition);
+        // Fail safe: the job records it as a provider-wide halt with no HTTP status (orbital.invalid-http-status).
+        Assert.AreEqual(OrbitalFetchDisposition.HttpStatusHalt, result.Disposition);
         Assert.AreEqual(status, result.HttpStatusCode);
         Assert.AreEqual("orbital.invalid-http-status", result.ReasonCode);
         Assert.AreEqual($"status={status}", result.Detail);

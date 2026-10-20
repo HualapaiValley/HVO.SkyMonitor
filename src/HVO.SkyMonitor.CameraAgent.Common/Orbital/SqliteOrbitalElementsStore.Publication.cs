@@ -310,6 +310,12 @@ public sealed partial class SqliteOrbitalElementsStore
         var nextPrevious = active is not null && !string.Equals(active, prepared.ManifestSha256, StringComparison.Ordinal)
             ? active
             : previous;
+        // A caller that did not record the retrieval first (the refresh job always does) records it with the activation.
+        await ExecuteAsync(connection, transaction, """
+            UPDATE orbital_attempts SET retrieved_utc_ticks = $retrieved
+            WHERE attempt_id = $attempt AND retrieved_utc_ticks IS NULL;
+            """, cancellationToken, ("$retrieved", prepared.Source.RetrievedUtc.UtcTicks), ("$attempt", attemptId))
+            .ConfigureAwait(false);
         await ExecuteAsync(connection, transaction, """
             UPDATE orbital_provider_state
             SET active_manifest_sha256 = $sha, previous_manifest_sha256 = $previous, snapshot_sequence = $sequence,

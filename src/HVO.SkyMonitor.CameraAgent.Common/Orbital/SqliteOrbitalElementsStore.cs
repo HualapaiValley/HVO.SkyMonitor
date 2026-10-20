@@ -18,7 +18,10 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;
 /// Every operation initializes the store on first use, so an operator read that arrives before the hosted
 /// refresh job starts still sees a verified store. Provider policy (halt, floor and single flight) is enforced
 /// here rather than by callers. A halt is recorded even when cancellation is requested, because losing it would
-/// let a later attempt reach a provider that has already refused service.
+/// let a later attempt reach a provider that has already refused service. For the same reason an attempt whose
+/// provider outcome was never durably recorded (neither a halt, a transport failure nor a valid 200 retrieval) is
+/// treated as possibly refused: interrupting it, here or by restart reconciliation, records a provider-wide halt
+/// with no HTTP status (<c>orbital.provider-outcome-unknown</c>) unless a halt is already in force.
 /// </remarks>
 public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, IDisposable
 {
@@ -36,6 +39,18 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
     internal const string ManifestDirectoryName = "manifests";
     internal const string QuarantineDirectoryName = "quarantine";
     internal const string StagingDirectoryName = "staging";
+
+    /// <summary>An attempt that may have reached the provider stopped before its outcome was durably recorded.</summary>
+    internal const string ProviderOutcomeUnknownReasonCode = "orbital.provider-outcome-unknown";
+
+    /// <summary>The provider status line was outside 100..599, so the halt records no HTTP status.</summary>
+    internal const string InvalidHttpStatusReasonCode = "orbital.invalid-http-status";
+
+    /// <summary>The attempt was cancelled after its valid 200 retrieval was recorded; no halt is implied.</summary>
+    internal const string AttemptCancelledReasonCode = "orbital.attempt-cancelled";
+
+    internal const string ProviderOutcomeUnknownHaltReason =
+        "orbital.provider-outcome-unknown: no valid HTTP status recorded; a request may have reached the provider but its outcome was not recorded; confirm provider access before resuming";
     private const string PhaseDomain = "hvo-orbital-refresh-phase-v1|";
     private const long PhaseWindowSeconds = 30 * 60;
     private static readonly TimeSpan MaximumAttemptInterval = TimeSpan.FromDays(31);
@@ -176,7 +191,7 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
     /// <inheritdoc />
     public async ValueTask RecordHaltAsync(
         string attemptId,
-        int httpStatusCode,
+        int? httpStatusCode,
         string reason,
         CancellationToken cancellationToken)
     {
@@ -184,14 +199,20 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
         if (httpStatusCode is < 100 or > 599 or 200)
         {
             throw new ArgumentOutOfRangeException(
-                nameof(httpStatusCode), httpStatusCode, "A provider halt requires a non-200 HTTP status from 100 to 599.");
+                nameof(httpStatusCode), httpStatusCode, "A provider halt requires a non-200 HTTP status from 100 to 599, or none.");
         }
         ArgumentNullException.ThrowIfNull(reason);
         // Bound first: a reason made only of control characters becomes blank and takes the default.
         var boundedReason = BoundText(reason);
         var normalizedReason = string.IsNullOrWhiteSpace(boundedReason)
-            ? string.Create(CultureInfo.InvariantCulture, $"provider returned HTTP {httpStatusCode}")
+            ? httpStatusCode is { } defaultStatus
+                ? string.Create(CultureInfo.InvariantCulture, $"provider returned HTTP {defaultStatus}")
+                : string.Concat(InvalidHttpStatusReasonCode, ": no valid HTTP status recorded; the provider status line was outside 100-599")
             : boundedReason;
+        var attemptReasonCode = httpStatusCode is { } status
+            ? string.Create(CultureInfo.InvariantCulture, $"orbital.provider-http-{status}")
+            : InvalidHttpStatusReasonCode;
+        object statusValue = httpStatusCode.HasValue ? httpStatusCode.Value : DBNull.Value;
         // Deliberately not cancellable: a lost halt would permit another request to a refusing provider.
         _ = cancellationToken;
         await ExecuteGatedAsync(async (connection, token) =>
@@ -200,16 +221,103 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
             await RequireInFlightAsync(connection, transaction, attemptId, token).ConfigureAwait(false);
             var now = ToUnixMilliseconds(Truncate(Now()));
             await CompleteAttemptAsync(connection, transaction, attemptId, OrbitalAttemptOutcome.ProviderHalted,
-                string.Create(CultureInfo.InvariantCulture, $"orbital.provider-http-{httpStatusCode}"), normalizedReason,
-                now, token, httpStatus: httpStatusCode).ConfigureAwait(false);
+                attemptReasonCode, normalizedReason, now, token, httpStatus: httpStatusCode).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction, """
                 UPDATE orbital_provider_state
                 SET halt_since_unix_ms = $now, halt_http_status = $status, halt_reason = $reason, revision = revision + 1
                 WHERE provider = 'celestrak';
-                """, token, ("$now", now), ("$status", httpStatusCode), ("$reason", normalizedReason)).ConfigureAwait(false);
+                """, token, ("$now", now), ("$status", statusValue), ("$reason", normalizedReason)).ConfigureAwait(false);
             await transaction.CommitAsync(token).ConfigureAwait(false);
-            ProviderHalted(_logger, httpStatusCode, attemptId);
+            if (httpStatusCode is { } logged)
+            {
+                ProviderHalted(_logger, logged, attemptId);
+            }
+            else
+            {
+                ProviderHaltedInvalidStatus(_logger, attemptId);
+            }
             return true;
+        }, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async ValueTask RecordRetrievalAsync(
+        string attemptId,
+        DateTimeOffset retrievedUtc,
+        CancellationToken cancellationToken)
+    {
+        RequireAttemptId(attemptId);
+        // Deliberately not cancellable: this record is what distinguishes a received response from an unknown outcome.
+        _ = cancellationToken;
+        await ExecuteGatedAsync(async (connection, token) =>
+        {
+            using var transaction = BeginImmediate(connection);
+            await RequireInFlightAsync(connection, transaction, attemptId, token).ConfigureAwait(false);
+            var ticks = retrievedUtc.UtcTicks;
+            var changed = await ExecuteAsync(connection, transaction, """
+                UPDATE orbital_attempts SET retrieved_utc_ticks = $ticks
+                WHERE attempt_id = $attempt AND outcome = 'InFlight' AND retrieved_utc_ticks IS NULL;
+                """, token, ("$ticks", ticks), ("$attempt", attemptId)).ConfigureAwait(false);
+            if (changed != 1)
+            {
+                throw new InvalidOperationException("The orbital attempt already has a recorded retrieval.");
+            }
+            await ExecuteAsync(connection, transaction, """
+                UPDATE orbital_provider_state
+                SET last_retrieval_success_utc_ticks = $ticks, revision = revision + 1
+                WHERE provider = 'celestrak';
+                """, token, ("$ticks", ticks)).ConfigureAwait(false);
+            await transaction.CommitAsync(token).ConfigureAwait(false);
+            return true;
+        }, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async ValueTask<bool> RecordInterruptedAsync(string attemptId, CancellationToken cancellationToken)
+    {
+        RequireAttemptId(attemptId);
+        // Deliberately not cancellable: it is called after cancellation, and a lost fail-safe halt would permit
+        // another request to a provider that may have refused service.
+        _ = cancellationToken;
+        return await ExecuteGatedAsync(async (connection, token) =>
+        {
+            using var transaction = BeginImmediate(connection);
+            await RequireInFlightAsync(connection, transaction, attemptId, token).ConfigureAwait(false);
+            var retrieved = await ScalarLongAsync(connection, transaction,
+                "SELECT retrieved_utc_ticks IS NOT NULL FROM orbital_attempts WHERE attempt_id = $attempt;", token,
+                ("$attempt", attemptId)).ConfigureAwait(false) != 0;
+            var now = ToUnixMilliseconds(Truncate(Now()));
+            var haltRecorded = false;
+            if (retrieved)
+            {
+                await CompleteAttemptAsync(connection, transaction, attemptId, OrbitalAttemptOutcome.Interrupted,
+                    AttemptCancelledReasonCode,
+                    "The attempt was cancelled after a valid provider response was recorded.", now, token)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                await CompleteAttemptAsync(connection, transaction, attemptId, OrbitalAttemptOutcome.Interrupted,
+                    ProviderOutcomeUnknownReasonCode,
+                    "The attempt was cancelled after the request may have reached the provider and before its outcome was recorded.",
+                    now, token).ConfigureAwait(false);
+                haltRecorded = await ExecuteAsync(connection, transaction, """
+                    UPDATE orbital_provider_state
+                    SET halt_since_unix_ms = $now, halt_http_status = NULL, halt_reason = $reason
+                    WHERE provider = 'celestrak' AND halt_since_unix_ms IS NULL;
+                    """, token, ("$now", now), ("$reason", ProviderOutcomeUnknownHaltReason)).ConfigureAwait(false) > 0;
+            }
+            await BumpRevisionAsync(connection, transaction, token).ConfigureAwait(false);
+            await transaction.CommitAsync(token).ConfigureAwait(false);
+            if (retrieved)
+            {
+                AttemptInterrupted(_logger, attemptId);
+            }
+            else
+            {
+                ProviderOutcomeUnknown(_logger, attemptId, haltRecorded);
+            }
+            return !retrieved;
         }, CancellationToken.None).ConfigureAwait(false);
     }
 
@@ -299,7 +407,14 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
                 ("$now", ToUnixMilliseconds(Truncate(Now())))).ConfigureAwait(false);
             var state = await ReadStateAsync(connection, transaction, token).ConfigureAwait(false);
             await transaction.CommitAsync(token).ConfigureAwait(false);
-            ProviderResumed(_logger, halt.HttpStatusCode, state.Revision);
+            if (halt.HttpStatusCode is { } resumedStatus)
+            {
+                ProviderResumed(_logger, resumedStatus, state.Revision);
+            }
+            else
+            {
+                ProviderResumedWithoutStatus(_logger, state.Revision);
+            }
             return new OrbitalCommandResult(OrbitalCommandStatus.Applied, "orbital.resumed", state);
         }, cancellationToken).ConfigureAwait(false);
     }
@@ -546,7 +661,11 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
         {
             AcquireRoot();
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-            var interrupted = await EnsureSchemaAndReconcileLedgerAsync(connection, cancellationToken).ConfigureAwait(false);
+            var reconciliation = await EnsureSchemaAndReconcileLedgerAsync(connection, cancellationToken).ConfigureAwait(false);
+            if (reconciliation.UnknownOutcomeAttemptId is { } unknown)
+            {
+                ProviderOutcomeUnknown(_logger, unknown, reconciliation.HaltRecorded);
+            }
             var seed = await ReadSeedAsync(connection, cancellationToken).ConfigureAwait(false);
             _phaseOffset = ComputePhaseOffset(seed);
             _activeManifestSha256 = await ScalarStringAsync(connection, null,
@@ -554,7 +673,7 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
                 cancellationToken).ConfigureAwait(false);
             var orphans = await ReconcileFilesAsync(connection, cancellationToken).ConfigureAwait(false);
             _initialized = true;
-            StoreInitialized(_logger, interrupted, orphans);
+            StoreInitialized(_logger, reconciliation.Interrupted, orphans);
         }
         catch
         {
@@ -679,12 +798,15 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
             NullableLong(reader, 12) is { } activated ? FromUnixMilliseconds(activated) : null,
             lastAttempt is { } floor ? FromUnixMilliseconds(floor) + _settings.MinimumAttemptInterval : null,
             NullableLong(reader, 13) is { } since
-                ? new OrbitalProviderHalt(FromUnixMilliseconds(since), reader.GetInt32(14), reader.GetString(15))
+                ? new OrbitalProviderHalt(FromUnixMilliseconds(since), NullableInt(reader, 14), reader.GetString(15))
                 : null,
             NullableLong(reader, 16) is { } observed
                 ? new OrbitalCandidateQuarantine(FromUnixMilliseconds(observed), NullableString(reader, 17), reader.GetString(18))
                 : null);
     }
+
+    /// <summary>The restart settlement: interrupted attempts, the attempt whose outcome was unknown, and whether it halted.</summary>
+    private readonly record struct LedgerReconciliation(int Interrupted, string? UnknownOutcomeAttemptId, bool HaltRecorded);
 
     private sealed record ProviderPolicy(long AttemptSequence, long? LastAttemptStartedUnixMs, OrbitalProviderHalt? Halt,
         string? InFlightAttemptId);
@@ -708,7 +830,7 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
             reader.GetInt64(0),
             NullableLong(reader, 1),
             NullableLong(reader, 2) is { } since
-                ? new OrbitalProviderHalt(FromUnixMilliseconds(since), reader.GetInt32(3), reader.GetString(4))
+                ? new OrbitalProviderHalt(FromUnixMilliseconds(since), NullableInt(reader, 3), reader.GetString(4))
                 : null,
             NullableString(reader, 5));
     }

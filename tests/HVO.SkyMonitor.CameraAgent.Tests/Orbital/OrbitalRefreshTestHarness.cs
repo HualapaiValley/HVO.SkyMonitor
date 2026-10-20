@@ -180,6 +180,8 @@ internal sealed class InterceptingOrbitalStore(IOrbitalElementsStore inner) : IO
     private int _quarantines;
     private int _publishes;
     private int _retentions;
+    private int _retrievals;
+    private int _interruptions;
 
     public Func<int, Exception?>? HaltFault { get; set; }
 
@@ -191,6 +193,10 @@ internal sealed class InterceptingOrbitalStore(IOrbitalElementsStore inner) : IO
 
     public Func<int, Exception?>? RetentionFault { get; set; }
 
+    public Func<int, Exception?>? RetrievalFault { get; set; }
+
+    public Func<int, Exception?>? InterruptFault { get; set; }
+
     /// <summary>When set, every state read and resume command throws it, as a failing store would.</summary>
     public Exception? ReadFault { get; set; }
 
@@ -201,6 +207,10 @@ internal sealed class InterceptingOrbitalStore(IOrbitalElementsStore inner) : IO
     public int Quarantines => Volatile.Read(ref _quarantines);
 
     public int Publishes => Volatile.Read(ref _publishes);
+
+    public int Retrievals => Volatile.Read(ref _retrievals);
+
+    public int Interruptions => Volatile.Read(ref _interruptions);
 
     public ConcurrentQueue<string> QuarantineCodes { get; } = new();
 
@@ -215,10 +225,22 @@ internal sealed class InterceptingOrbitalStore(IOrbitalElementsStore inner) : IO
         string runKey, OrbitalAttemptTrigger trigger, CancellationToken cancellationToken)
         => inner.TryBeginAttemptAsync(runKey, trigger, cancellationToken);
 
-    public ValueTask RecordHaltAsync(string attemptId, int httpStatusCode, string reason, CancellationToken cancellationToken)
+    public ValueTask RecordHaltAsync(string attemptId, int? httpStatusCode, string reason, CancellationToken cancellationToken)
     {
         Fail(HaltFault, ref _halts);
         return inner.RecordHaltAsync(attemptId, httpStatusCode, reason, cancellationToken);
+    }
+
+    public ValueTask RecordRetrievalAsync(string attemptId, DateTimeOffset retrievedUtc, CancellationToken cancellationToken)
+    {
+        Fail(RetrievalFault, ref _retrievals);
+        return inner.RecordRetrievalAsync(attemptId, retrievedUtc, cancellationToken);
+    }
+
+    public ValueTask<bool> RecordInterruptedAsync(string attemptId, CancellationToken cancellationToken)
+    {
+        Fail(InterruptFault, ref _interruptions);
+        return inner.RecordInterruptedAsync(attemptId, cancellationToken);
     }
 
     public ValueTask RecordTransportFailureAsync(string attemptId, string reasonCode, string detail, CancellationToken cancellationToken)

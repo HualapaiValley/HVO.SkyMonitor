@@ -328,11 +328,9 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
     }
 
     [TestMethod]
-    [DataRow(UnknownMemberFixture, 200, "orbital.unknown-member", true)]
-    [DataRow("invalid-duplicate-record.json", 200, "orbital.duplicate-record", true)]
-    [DataRow(null, 600, "orbital.invalid-http-status", false)]
-    public async Task InvalidContentIsQuarantinedAndLastKnownGoodStaysActive(string? fixture, int status, string reasonCode,
-        bool retainsBody)
+    [DataRow(UnknownMemberFixture, "orbital.unknown-member")]
+    [DataRow("invalid-duplicate-record.json", "orbital.duplicate-record")]
+    public async Task InvalidContentIsQuarantinedAndLastKnownGoodStaysActive(string fixture, string reasonCode)
     {
         var host = await StartAsync(CreateRoot()).ConfigureAwait(false);
         await using var lifetime = host.ConfigureAwait(false);
@@ -340,14 +338,7 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
         var good = (await host.StateAsync().ConfigureAwait(false)).CurrentManifestSha256;
 
         host.AdvanceTo(due + Floor);
-        if (fixture is null)
-        {
-            host.Handler.EnqueueStatus(status);
-        }
-        else
-        {
-            host.Handler.EnqueueFixture(fixture);
-        }
+        host.Handler.EnqueueFixture(fixture);
         await host.SweepAsync().ConfigureAwait(false);
 
         var run = (await host.RunsAsync().ConfigureAwait(false))[^1];
@@ -357,10 +348,11 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
         Assert.AreEqual(OrbitalAttemptOutcome.Quarantined, state.LastAttemptOutcome);
         Assert.AreEqual(reasonCode, state.LastAttemptReasonCode);
         Assert.IsNotNull(state.Quarantine);
-        Assert.IsNull(state.Halt, "An invalid response is quarantined, never a provider halt.");
+        Assert.IsNull(state.Halt, "Invalid content in a valid 200 is quarantined, never a provider halt.");
+        Assert.AreEqual(due + Floor, state.LastRetrievalSuccessUtc, "The provider still answered with a valid 200.");
         Assert.AreEqual(good, state.CurrentManifestSha256);
         var quarantine = Path.Combine(host.OrbitalRoot, "quarantine");
-        Assert.HasCount(retainsBody ? 1 : 0, Directory.Exists(quarantine) ? Directory.GetFiles(quarantine) : []);
+        Assert.HasCount(1, Directory.Exists(quarantine) ? Directory.GetFiles(quarantine) : []);
         var current = await host.Reader.ReadCurrentAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(good, current.Snapshot?.Manifest.ManifestSha256);
         var health = await host.Health.EvaluateAsync(CancellationToken.None).ConfigureAwait(false);
@@ -369,7 +361,57 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
     }
 
     [TestMethod]
-    public async Task ACrashBetweenAttemptBeginAndCompletionIsInterruptedOnRestartAndStillCountsTowardTheFloor()
+    public async Task AnInvalidHttpStatusHaltsTheProviderWithNoRecordedStatusAndKeepsLastKnownGood()
+    {
+        var host = await StartAsync(CreateRoot()).ConfigureAwait(false);
+        await using var lifetime = host.ConfigureAwait(false);
+        var due = await ActivateFirstAsync(host).ConfigureAwait(false);
+        var good = (await host.StateAsync().ConfigureAwait(false)).CurrentManifestSha256;
+        var second = due + Floor;
+
+        host.AdvanceTo(second);
+        host.Handler.EnqueueStatus(600);
+        await host.SweepAsync().ConfigureAwait(false);
+
+        var run = (await host.RunsAsync().ConfigureAwait(false))[^1];
+        Assert.AreEqual(LocalAutomationRunOutcome.Failed, run.Outcome);
+        AssertDetail("orbital.invalid-http-status", run);
+        var state = await host.StateAsync().ConfigureAwait(false);
+        Assert.AreEqual(OrbitalAttemptOutcome.ProviderHalted, state.LastAttemptOutcome);
+        Assert.AreEqual("orbital.invalid-http-status", state.LastAttemptReasonCode);
+        Assert.IsNotNull(state.Halt);
+        Assert.IsNull(state.Halt.HttpStatusCode, "An out-of-range status is never recorded as an HTTP status.");
+        Assert.AreEqual(second, state.Halt.SinceUtc);
+        Assert.IsNull(state.Quarantine);
+        Assert.AreEqual(due, state.LastRetrievalSuccessUtc, "Only a valid 200 is a successful retrieval.");
+        Assert.AreEqual(0L, host.Scalar("SELECT COUNT(*) FROM orbital_attempts WHERE http_status IS NOT NULL;"));
+        await AssertLastKnownGoodAsync(host, good, OrbitalAttemptOutcome.ProviderHalted, second + Floor).ConfigureAwait(false);
+        var health = await host.Health.EvaluateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalElementsHealthState.Degraded, health.State);
+        Assert.AreEqual(OrbitalElementsOperations.ProviderHaltedReasonCode, health.Data["Reason"]);
+        Assert.IsTrue((bool)health.Data["Halted"]);
+        Assert.IsFalse(health.Data.ContainsKey("HaltHttpStatus"), "No status was recorded, so none is reported.");
+
+        Assert.AreEqual(OrbitalElementsOperations.ProviderHaltedReasonCode,
+            (await host.RefreshAsync("refresh-invalid-status").ConfigureAwait(false)).ReasonCode);
+        host.AdvanceTo(second + Floor);
+        await host.SweepAsync().ConfigureAwait(false);
+        AssertDetail(OrbitalElementsOperations.ProviderHaltedReasonCode, (await host.RunsAsync().ConfigureAwait(false))[^1]);
+        Assert.AreEqual(2, host.Handler.Count, "Nothing is requested again until an operator resumes.");
+
+        var resumed = await host.Operations.ResumeAsync(new OrbitalResumeRequest(second, "resume-invalid-status", "owner",
+            "provider status confirmed"), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalElementsCommandStatus.Applied, resumed.Status, resumed.ReasonCode);
+        host.AdvanceTo(second + (2 * Floor));
+        host.Handler.EnqueueFixture(CelesTrakGpTestData.ValidFixture);
+        await host.SweepAsync().ConfigureAwait(false);
+        var after = (await host.RunsAsync().ConfigureAwait(false))[^1];
+        Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, after.Outcome, after.Detail);
+        Assert.AreEqual(3, host.Handler.Count);
+    }
+
+    [TestMethod]
+    public async Task ACrashBetweenAttemptBeginAndCompletionHaltsOnRestartUntilResumedAndStillCountsTowardTheFloor()
     {
         var root = CreateRoot();
         var clock = new SignalingTimeProvider(OrbitalElementsStoreTestData.Start);
@@ -390,19 +432,33 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
         var after = await StartAsync(root, clock: clock).ConfigureAwait(false);
         await using var lifetime = after.ConfigureAwait(false);
 
+        // The crashed attempt may have reached a provider that refused it, so the restart fails safe and halts.
         var state = await after.StateAsync().ConfigureAwait(false);
         Assert.AreEqual(OrbitalAttemptOutcome.Interrupted, state.LastAttemptOutcome);
-        Assert.AreEqual("orbital.attempt-interrupted", state.LastAttemptReasonCode);
-        Assert.AreEqual(second + Floor, state.NextPermittedAttemptUtc, "The interrupted attempt still counts.");
-        Assert.AreEqual(good, state.CurrentManifestSha256);
-        after.AdvanceTo(second + TimeSpan.FromHours(1));
+        Assert.AreEqual("orbital.provider-outcome-unknown", state.LastAttemptReasonCode);
+        Assert.IsNotNull(state.Halt);
+        Assert.IsNull(state.Halt.HttpStatusCode, "The outcome is unknown, so no HTTP status is claimed.");
+        Assert.StartsWith("orbital.provider-outcome-unknown: ", state.Halt.Reason);
+        await AssertLastKnownGoodAsync(after, good, OrbitalAttemptOutcome.Interrupted, second + Floor).ConfigureAwait(false);
+        var health = await after.Health.EvaluateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalElementsHealthState.Degraded, health.State);
+        Assert.AreEqual(OrbitalElementsOperations.ProviderHaltedReasonCode, health.Data["Reason"]);
+        Assert.IsFalse(health.Data.ContainsKey("HaltHttpStatus"));
+        Assert.AreEqual(OrbitalElementsOperations.ProviderHaltedReasonCode,
+            (await after.RefreshAsync("refresh-after-crash").ConfigureAwait(false)).ReasonCode,
+            "A manual refresh never bypasses the unknown-outcome hold.");
+
+        after.AdvanceTo(second + Floor);
         await after.SweepAsync().ConfigureAwait(false);
         var skipped = (await after.RunsAsync().ConfigureAwait(false))[^1];
         Assert.AreEqual(LocalAutomationRunOutcome.Skipped, skipped.Outcome);
-        AssertDetail("orbital.floor-not-elapsed", skipped);
-        Assert.AreEqual(0, after.Handler.Count);
+        AssertDetail(OrbitalElementsOperations.ProviderHaltedReasonCode, skipped);
+        Assert.AreEqual(0, after.Handler.Count, "Nothing is retried automatically once the floor elapses.");
 
-        after.AdvanceTo(second + Floor);
+        var resumed = await after.Operations.ResumeAsync(new OrbitalResumeRequest(state.Halt.SinceUtc, "resume-after-crash",
+            "owner", "provider access confirmed"), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalElementsCommandStatus.Applied, resumed.Status, resumed.ReasonCode);
+        after.AdvanceTo(second + (2 * Floor));
         after.Handler.EnqueueFixture(CelesTrakGpTestData.ValidFixture);
         await after.SweepAsync().ConfigureAwait(false);
         Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, (await after.RunsAsync().ConfigureAwait(false))[^1].Outcome);

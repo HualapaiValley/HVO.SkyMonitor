@@ -348,6 +348,13 @@ public sealed class OrbitalElementsOperationsTests : OrbitalStoreTestBase
         await cancellation.CancelAsync().ConfigureAwait(false);
         await Assert.ThrowsAsync<OperationCanceledException>(() => running).ConfigureAwait(false);
         Assert.AreEqual(0L, fixture.Orbital.Job.ActivityGeneration % 2);
+        // The cancelled request may have reached the provider, so it is a fail-safe halt an operator resumes.
+        var halted = await fixture.Orbital.StateAsync().ConfigureAwait(false);
+        Assert.AreEqual("Interrupted|orbital.provider-outcome-unknown|Scheduled", fixture.Orbital.LastAttempt());
+        Assert.IsNull(halted.Halt?.HttpStatusCode);
+        var resumed = await fixture.Operations.ResumeAsync(Resume(halted.Halt!.SinceUtc, "resume-cancelled"),
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalElementsCommandStatus.Applied, resumed.Status);
 
         fixture.Clock.Advance(Floor);
         fixture.Orbital.Intercept.TransportFault = static _ => new IOException("synthetic");

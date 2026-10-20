@@ -22,8 +22,14 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;
 /// Liveness: once an attempt is admitted it is closed with a terminal record on every path while this process keeps
 /// running, including cancellation and unexpected exceptions; otherwise the store's single-flight rule would refuse
 /// every later attempt until a restart. Closing uses its own short deadline. A halt is never downgraded to another
-/// outcome: if a halt cannot be recorded the attempt stays in flight, which still refuses further requests, and
-/// restart reconciliation settles it as interrupted.
+/// outcome: if a halt cannot be recorded the attempt stays in flight, which still refuses further requests.
+/// </para>
+/// <para>
+/// Fail safe: a valid HTTP 200 is recorded durably as the attempt's provider outcome before normalization. An attempt
+/// that is cancelled or stops before any provider outcome (halt, transport failure or that retrieval) is recorded may
+/// have been refused by the provider, so the store settles it as <c>orbital.provider-outcome-unknown</c> and halts
+/// provider-wide with no HTTP status until an operator resumes; restart reconciliation does the same for an attempt
+/// left in flight. An attempt interrupted after its retrieval was recorded is a plain interruption.
 /// </para>
 /// <para>Every execution detail is <c>{reason code}: {bounded text}</c> and carries no secret, path or header value.</para>
 /// </remarks>
@@ -46,9 +52,10 @@ public sealed partial class OrbitalElementsRefreshJob
     internal const string FloorNotElapsedReasonCode = "orbital.floor-not-elapsed";
     internal const string AttemptInFlightReasonCode = "orbital.attempt-in-flight";
     internal const string ClientErrorReasonCode = "orbital.client-error";
-    internal const string InvalidHttpStatusReasonCode = "orbital.invalid-http-status";
+    internal const string InvalidHttpStatusReasonCode = SqliteOrbitalElementsStore.InvalidHttpStatusReasonCode;
     internal const string CandidateRejectedReasonCode = "orbital.candidate-rejected";
-    internal const string AttemptCancelledReasonCode = "orbital.attempt-cancelled";
+    internal const string AttemptCancelledReasonCode = SqliteOrbitalElementsStore.AttemptCancelledReasonCode;
+    internal const string ProviderOutcomeUnknownReasonCode = SqliteOrbitalElementsStore.ProviderOutcomeUnknownReasonCode;
     internal const string InternalErrorReasonCode = "orbital.internal-error";
     internal const string ActivatedReasonCode = "orbital.activated";
     internal const string UnchangedPayloadReasonCode = "orbital.unchanged-payload";
@@ -157,8 +164,11 @@ public sealed partial class OrbitalElementsRefreshJob
         {
             case OrbitalAdmissionStatus.Halted:
                 return Skipped(ProviderHaltedReasonCode, admission.Halt is { } halt
-                    ? string.Create(CultureInfo.InvariantCulture,
-                        $"provider halted since {halt.SinceUtc.UtcDateTime:O} after HTTP {halt.HttpStatusCode}; an operator resume is required")
+                    ? halt.HttpStatusCode is { } haltStatus
+                        ? string.Create(CultureInfo.InvariantCulture,
+                            $"provider halted since {halt.SinceUtc.UtcDateTime:O} after HTTP {haltStatus}; an operator resume is required")
+                        : string.Create(CultureInfo.InvariantCulture,
+                            $"provider halted since {halt.SinceUtc.UtcDateTime:O} with no valid HTTP status recorded; an operator resume is required")
                     : "provider halted; an operator resume is required");
             case OrbitalAdmissionStatus.FloorNotElapsed:
                 return Skipped(FloorNotElapsedReasonCode, admission.NextPermittedAttemptUtc is { } next
@@ -231,11 +241,14 @@ public sealed partial class OrbitalElementsRefreshJob
             {
                 AttemptFaulted(_logger, attemptId, code, exception);
             }
-            // The store itself settles cancellation and storage faults raised inside quarantine and publication.
+            // The store itself settles cancellation and storage faults raised inside quarantine and publication. A
+            // cancelled attempt with nothing else pending is closed as interrupted, and the store decides from the
+            // durable record whether its provider outcome is unknown (fail-safe halt) or a retrieval was recorded.
             OrbitalAttemptOutcome? settledByStore = cancelled
                 ? OrbitalAttemptOutcome.Interrupted
                 : exception is OrbitalStorageException ? OrbitalAttemptOutcome.StorageFailed : null;
-            await CloseAsync(attemptId, context.Pending, code, detail, settledByStore).ConfigureAwait(false);
+            var fallback = cancelled ? PendingSettlement.Interrupted : PendingSettlement.Transport(code, detail);
+            await CloseAsync(attemptId, context.Pending, fallback, settledByStore).ConfigureAwait(false);
             if (cancelled)
             {
                 throw;
@@ -266,9 +279,19 @@ public sealed partial class OrbitalElementsRefreshJob
                             $"provider returned HTTP {status}; refresh is halted provider-wide until an operator resumes it")));
                 }
             case OrbitalFetchDisposition.HttpStatusHalt:
-                context.Pending = PendingSettlement.Quarantine(ReadOnlyMemory<byte>.Empty, InvalidHttpStatusReasonCode,
-                    string.Concat("status=", fetch.HttpStatusCode?.ToString(CultureInfo.InvariantCulture) ?? "none"));
-                return await QuarantineAsync(context, cancellationToken).ConfigureAwait(false);
+                {
+                    // A status line outside 100..599 (or a halt without a usable status) is not a status the halt record
+                    // can name, but the provider still answered with something other than a valid 200: halt, fail safe.
+                    var observed = string.Concat("status=",
+                        fetch.HttpStatusCode?.ToString(CultureInfo.InvariantCulture) ?? "none");
+                    var reason = string.Concat(InvalidHttpStatusReasonCode,
+                        ": no valid HTTP status recorded; the provider status line was not a halt status in 100-599 (", observed, ")");
+                    context.Pending = PendingSettlement.Halt(null, reason);
+                    await _store.RecordHaltAsync(attemptId, null, reason, CancellationToken.None).ConfigureAwait(false);
+                    return Settled(OrbitalAttemptOutcome.ProviderHalted, Failed(InvalidHttpStatusReasonCode, string.Concat(
+                        "the provider did not return a valid HTTP status (", observed,
+                        "); refresh is halted provider-wide with no valid HTTP status recorded until an operator resumes it")));
+                }
             case OrbitalFetchDisposition.TransportFailure or OrbitalFetchDisposition.TimedOut:
                 context.Pending = PendingSettlement.Transport(fetch.ReasonCode, fetch.Detail);
                 await _store.RecordTransportFailureAsync(attemptId, fetch.ReasonCode, fetch.Detail, cancellationToken)
@@ -281,6 +304,9 @@ public sealed partial class OrbitalElementsRefreshJob
                 context.Pending = PendingSettlement.Quarantine(ReadOnlyMemory<byte>.Empty, fetch.ReasonCode, fetch.Detail);
                 return await QuarantineAsync(context, cancellationToken).ConfigureAwait(false);
             case OrbitalFetchDisposition.Retrieved when fetch.RawBytes is { } raw:
+                // The valid 200 is this attempt's provider outcome. It is durable before normalization, so a later
+                // crash or cancellation is a plain interruption rather than an unknown outcome that would halt.
+                await _store.RecordRetrievalAsync(attemptId, fetch.CompletedUtc, CancellationToken.None).ConfigureAwait(false);
                 return await NormalizeAndPublishAsync(context, fetch, raw, cancellationToken).ConfigureAwait(false);
             default:
                 context.Pending = PendingSettlement.Quarantine(ReadOnlyMemory<byte>.Empty, ClientErrorReasonCode,
@@ -389,20 +415,19 @@ public sealed partial class OrbitalElementsRefreshJob
 
     /// <summary>
     /// Records a terminal outcome for an admitted attempt that has not reached one, under its own deadline. The
-    /// pending record is retried first; a halt is never replaced by another outcome. An attempt that is already
-    /// terminal (the store settles cancellation and storage faults during quarantine and publication) is left as is.
+    /// pending record is retried first; a halt is never replaced by another outcome. The fallback is an interruption
+    /// after cancellation and a transport record otherwise. An attempt that is already terminal (the store settles
+    /// cancellation and storage faults during quarantine and publication) is left as is.
     /// </summary>
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "Closing is best-effort after a failure; every failure is logged and restart reconciliation remains.")]
     private async ValueTask CloseAsync(
         string attemptId,
         PendingSettlement pending,
-        string fallbackCode,
-        string fallbackDetail,
+        PendingSettlement fallback,
         OrbitalAttemptOutcome? alreadySettledOutcome)
     {
         using var deadline = new CancellationTokenSource(CloseTimeout, _timeProvider);
-        var fallback = PendingSettlement.Transport(fallbackCode, fallbackDetail);
         PendingSettlement[] attempts = pending.Kind switch
         {
             PendingKind.Halt => [pending],
@@ -413,8 +438,8 @@ public sealed partial class OrbitalElementsRefreshJob
         {
             try
             {
-                var outcome = await SettleAsync(attemptId, settlement, deadline.Token).ConfigureAwait(false);
-                AttemptClosed(_logger, attemptId, outcome.ToString(), settlement.ReasonCode ?? fallbackCode);
+                var (outcome, reasonCode) = await SettleAsync(attemptId, settlement, deadline.Token).ConfigureAwait(false);
+                AttemptClosed(_logger, attemptId, outcome.ToString(), reasonCode);
                 _telemetry?.RecordAttempt(outcome);
                 return;
             }
@@ -439,7 +464,7 @@ public sealed partial class OrbitalElementsRefreshJob
         AttemptLeftInFlight(_logger, attemptId);
     }
 
-    private async ValueTask<OrbitalAttemptOutcome> SettleAsync(
+    private async ValueTask<(OrbitalAttemptOutcome Outcome, string ReasonCode)> SettleAsync(
         string attemptId, PendingSettlement settlement, CancellationToken cancellationToken)
     {
         switch (settlement.Kind)
@@ -447,15 +472,19 @@ public sealed partial class OrbitalElementsRefreshJob
             case PendingKind.Halt:
                 await _store.RecordHaltAsync(attemptId, settlement.HttpStatusCode, settlement.Detail!, CancellationToken.None)
                     .ConfigureAwait(false);
-                return OrbitalAttemptOutcome.ProviderHalted;
+                return (OrbitalAttemptOutcome.ProviderHalted, settlement.ReasonCode!);
             case PendingKind.Quarantine:
                 await _store.RecordQuarantineAsync(attemptId, settlement.RawBytes, null, settlement.ReasonCode!,
                     settlement.Detail!, cancellationToken).ConfigureAwait(false);
-                return OrbitalAttemptOutcome.Quarantined;
+                return (OrbitalAttemptOutcome.Quarantined, settlement.ReasonCode!);
+            case PendingKind.Interrupted:
+                // Not cancellable by design: a lost fail-safe halt would permit another request.
+                var unknown = await _store.RecordInterruptedAsync(attemptId, CancellationToken.None).ConfigureAwait(false);
+                return (OrbitalAttemptOutcome.Interrupted, unknown ? ProviderOutcomeUnknownReasonCode : AttemptCancelledReasonCode);
             default:
                 await _store.RecordTransportFailureAsync(attemptId, settlement.ReasonCode!, settlement.Detail!,
                     cancellationToken).ConfigureAwait(false);
-                return OrbitalAttemptOutcome.TransportFailed;
+                return (OrbitalAttemptOutcome.TransportFailed, settlement.ReasonCode!);
         }
     }
 
@@ -495,7 +524,7 @@ public sealed partial class OrbitalElementsRefreshJob
         return value;
     }
 
-    private enum PendingKind { None, Halt, Transport, Quarantine }
+    private enum PendingKind { None, Halt, Transport, Quarantine, Interrupted }
 
     /// <summary>The admitted attempt and the terminal record it was about to make when a failure interrupted it.</summary>
     private sealed class AttemptContext(string attemptId)
@@ -507,19 +536,25 @@ public sealed partial class OrbitalElementsRefreshJob
 
     /// <summary>The terminal record an admitted attempt was about to make, retried if the first try fails.</summary>
     private readonly record struct PendingSettlement(
-        PendingKind Kind, int HttpStatusCode, ReadOnlyMemory<byte> RawBytes, string? ReasonCode, string? Detail)
+        PendingKind Kind, int? HttpStatusCode, ReadOnlyMemory<byte> RawBytes, string? ReasonCode, string? Detail)
     {
         public static PendingSettlement None => default;
 
-        public static PendingSettlement Halt(int status, string reason)
-            => new(PendingKind.Halt, status, ReadOnlyMemory<byte>.Empty,
-                string.Create(CultureInfo.InvariantCulture, $"orbital.provider-http-{status}"), reason);
+        /// <summary>A cancelled attempt; the store classifies it from its durable record.</summary>
+        public static PendingSettlement Interrupted
+            => new(PendingKind.Interrupted, null, ReadOnlyMemory<byte>.Empty, null, null);
+
+        /// <summary>A provider halt; a null status means the status line was outside 100..599.</summary>
+        public static PendingSettlement Halt(int? status, string reason)
+            => new(PendingKind.Halt, status, ReadOnlyMemory<byte>.Empty, status is { } value
+                ? string.Create(CultureInfo.InvariantCulture, $"orbital.provider-http-{value}")
+                : InvalidHttpStatusReasonCode, reason);
 
         public static PendingSettlement Transport(string reasonCode, string detail)
-            => new(PendingKind.Transport, 0, ReadOnlyMemory<byte>.Empty, reasonCode, detail);
+            => new(PendingKind.Transport, null, ReadOnlyMemory<byte>.Empty, reasonCode, detail);
 
         public static PendingSettlement Quarantine(ReadOnlyMemory<byte> raw, string reasonCode, string detail)
-            => new(PendingKind.Quarantine, 0, raw, reasonCode, detail);
+            => new(PendingKind.Quarantine, null, raw, reasonCode, detail);
     }
 
     [LoggerMessage(7740, LogLevel.Information, "Orbital elements attempt {AttemptId} admitted ({Trigger}).")]
