@@ -280,6 +280,11 @@ are accepted for the core products, or 8,115,978,240 with OVATION.
 - Decoded-body caps: 1 MiB for alerts, 64 KiB for scales and text, 256 KiB for
   Kp, 4 MiB for OVATION.
 - At most 2,000 alert records per body and 16 KiB per message.
+- **Proposed:** JSON nesting is limited to 64 levels, with the outermost array
+  or object at level 1 and brackets inside strings excluded (contract; s12).
+- **Proposed:** Source times parse only in years 1900–9998 inclusive, so derived
+  windows, caps and retention times remain representable (contract; s25).
+  Retry-After IMF-fixdate uses calendar years 0001–9999 and its delay clamp.
 
 **Proposed retention:**
 
@@ -367,7 +372,7 @@ fixtures encode the final form.
   ```
 
   It verifies every manifest hash and the recorded capture facts, regenerates
-  all 22 scenarios byte for byte, and replays each one through the reference
+  all scenarios byte for byte, and replays each one through the reference
   model against its expectations.
 - Research notes, raw headers and the request ledger are kept outside the
   repository as reviewer evidence. They are not needed to verify the pack.

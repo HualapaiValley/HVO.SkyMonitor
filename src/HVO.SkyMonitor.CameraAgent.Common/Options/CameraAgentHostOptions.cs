@@ -67,6 +67,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     public LocalAutomationOptions Automation { get; init; } = new();
 
     [Required]
+    public OrbitalElementsOptions OrbitalElements { get; init; } = new();
+
+    [Required]
     public NightlyProductOptions NightlyProducts { get; init; } = new();
 
     public TimeLapseOptions TimeLapses { get; init; } = new();
@@ -346,6 +349,17 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             siteMapResults,
             validateAllProperties: true);
         foreach (var result in siteMapResults)
+        {
+            yield return result;
+        }
+
+        var orbitalResults = new List<ValidationResult>();
+        Validator.TryValidateObject(
+            OrbitalElements,
+            new ValidationContext(OrbitalElements),
+            orbitalResults,
+            validateAllProperties: true);
+        foreach (var result in orbitalResults)
         {
             yield return result;
         }
