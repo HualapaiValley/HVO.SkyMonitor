@@ -53,6 +53,40 @@ Browser screenshots are a separate verification of the exported HTML; root owns
 that step. Render the `*-selected.html`, `iss-clipped.html` and `iss-no-pass.html`
 files, retaining screenshots outside Git with their input HTML checksums.
 
+## Retained integrated examples
+
+The integrated run at `ac1713ffc1b07d576c6a4056cdeb2ec5dd04cd85` passed this
+Manual case and all 19 planner Unit cases together with a warning-clean Release
+build. Root checked all 57 output hashes and inspected the actual frozen
+component pages in the native browser. Desktop 1024×1000 CSS-pixel views had no
+page overflow or console errors. A 390×844 CSS-pixel Starlink view also had no
+page overflow; its wider table scrolls inside its own container. These viewport
+checks do not qualify full-resolution camera processing.
+
+| Selected object | Actual component screenshot | Standalone full-sky diagram | Exact canonical arc |
+| --- | --- | --- | --- |
+| ISS / NORAD 25544 | [PNG](samples/iss-25544-selected.png) | [SVG](samples/iss-25544-full-sky.svg) | [JSON](samples/iss-25544-arc.json) |
+| STARLINK-30123 / NORAD 56838 | [PNG](samples/starlinks-56838-selected.png) | [SVG](samples/starlinks-56838-full-sky.svg) | [JSON](samples/starlinks-56838-arc.json) |
+| STARLINK-35015 / NORAD 65283 | [PNG](samples/starlinks-65283-selected.png) | [SVG](samples/starlinks-65283-full-sky.svg) | [JSON](samples/starlinks-65283-arc.json) |
+
+The standalone SVGs preserve the exact component geometry and labels; their
+wrappers add the SVG namespace and the component's unchanged CSS so they can be
+opened independently. The screenshots retain the actual frozen component page.
+The [portable checksums](samples/checksums.json), [browser proof](samples/browser-proof.json)
+and [integrated source/input/product evidence](samples/export-evidence.json)
+bind this subset. The [full export manifest](samples/export-checksums.json)
+also lists the uncommitted, reproducible frozen HTML and alternate toggle views;
+it does not claim those files are all copied into this smaller directory.
+
+The ISS arc retains 663 samples; the Starlink arcs retain 664 and 624. The
+Starlink pass starts at the original 03:55 UTC search boundary in both examples;
+the diagram and row identify this clipped start rather than inventing a rise.
+A fractionally below-horizon crossing sample in each case remains canonical while
+the shared hemisphere projector omits its drawn point. Selected detail and
+repeat-selection identity checks preserve all original facts. These diagrams
+contain no HYG star field; the separate [exposure examples](../satellite-presentation-v1/README.md)
+retain their HYG attribution and license.
+
 These are consumer preservation checks, not independent numerical references.
 The actual retained prediction inputs are used; synthetic `pass-arc-v1/arc.json`
 is not an oracle. The test pins only current UTC time for source age/session TTL;

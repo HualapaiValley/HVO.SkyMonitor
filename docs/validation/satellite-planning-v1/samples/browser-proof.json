@@ -1,0 +1,56 @@
+[
+  {
+    "name": "iss-25544",
+    "url": "http://localhost:53291/root-real-ui-export/iss-25544-selected.html",
+    "screenshotPath": "/home/roys/.t3/userdata/browser-artifacts/browser-screenshot-localhost-mvg42ik1-bc480bee.png",
+    "consoleEntries": [],
+    "check": {
+      "title": "ISS (ZARYA): real full-pass angular arc and configured-rig preview",
+      "overflow": false,
+      "fullSkyPoints": 662,
+      "viewport": [
+        1024,
+        1000
+      ]
+    },
+    "retainedScreenshot": "iss-25544-selected.png",
+    "sha256": "E0101BC8CE5B5CEFCD938FE3F935656E3D81E4150CF507B7AD882C11D3D1B728",
+    "inputHtmlSha256": "E66D472963D6649DEDD8605C1F8EFE48582924A165886505E3B9B2A578BB585F"
+  },
+  {
+    "name": "starlinks-56838",
+    "url": "http://localhost:53291/root-real-ui-export/starlinks-56838-selected.html",
+    "screenshotPath": "/home/roys/.t3/userdata/browser-artifacts/browser-screenshot-localhost-mvg42iq8-22349578.png",
+    "consoleEntries": [],
+    "check": {
+      "title": "STARLINK-30123: real full-pass angular arc and configured-rig preview",
+      "overflow": false,
+      "fullSkyPoints": 663,
+      "viewport": [
+        1024,
+        1000
+      ]
+    },
+    "retainedScreenshot": "starlinks-56838-selected.png",
+    "sha256": "FEAC3C7779B5B2FEEC5720B5F388E949373A39883F9BFB89CA944A762762AA36",
+    "inputHtmlSha256": "7A7857857C3AE48905742F21482B93D02E5C740475732A7BAE6D19DFE044F32C"
+  },
+  {
+    "name": "starlinks-65283",
+    "url": "http://localhost:53291/root-real-ui-export/starlinks-65283-selected.html",
+    "screenshotPath": "/home/roys/.t3/userdata/browser-artifacts/browser-screenshot-localhost-mvg42iv0-6c968ce4.png",
+    "consoleEntries": [],
+    "check": {
+      "title": "STARLINK-35015: real full-pass angular arc and configured-rig preview",
+      "overflow": false,
+      "fullSkyPoints": 623,
+      "viewport": [
+        1024,
+        1000
+      ]
+    },
+    "retainedScreenshot": "starlinks-65283-selected.png",
+    "sha256": "DD98D7BEE7E955EAC4308E57BC8497996CC5A604CB293B89600D06988CF1EEC2",
+    "inputHtmlSha256": "74AA22F76C459F5D88EBD5426BE7A4F16C69698FEAEED87C186601F6C80F9224"
+  }
+]

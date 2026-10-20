@@ -1,0 +1,62 @@
+[
+  {
+    "file": "browser-proof.json",
+    "bytes": 2139,
+    "sha256": "D65F6F6F6B81B67854C67B3C959E75DCCF5A060FEDE30226542853AC0A0B6DA8"
+  },
+  {
+    "file": "export-checksums.json",
+    "bytes": 7547,
+    "sha256": "5227F254B9BC99E4364A5452030EA00F1D93D912A6F5B8BEEC6E339FC73F7D23"
+  },
+  {
+    "file": "export-evidence.json",
+    "bytes": 26400,
+    "sha256": "D7D25FAB3804DD83A6688C658CC4BA697A77990FA4A9ECAC055D2AD9D1D572C3"
+  },
+  {
+    "file": "iss-25544-arc.json",
+    "bytes": 209409,
+    "sha256": "B2A9E544C382994A52B28CE6E72B21F9F27A4DA34B7DA12763715501FFB59001"
+  },
+  {
+    "file": "iss-25544-full-sky.svg",
+    "bytes": 12746,
+    "sha256": "0D4B03E357E8234AF5869D31F93DE594085945A4496B432A2E15C11BB2620A40"
+  },
+  {
+    "file": "iss-25544-selected.png",
+    "bytes": 155915,
+    "sha256": "E0101BC8CE5B5CEFCD938FE3F935656E3D81E4150CF507B7AD882C11D3D1B728"
+  },
+  {
+    "file": "starlinks-56838-arc.json",
+    "bytes": 207265,
+    "sha256": "00238EAB3E8981AC3A69C60F55C0C8126BCC4B3105A254A4163CB3FE68A93F99"
+  },
+  {
+    "file": "starlinks-56838-full-sky.svg",
+    "bytes": 12861,
+    "sha256": "3C793E09D33691EF9A2D47FD53F794CB74682F26EB69898CC8127EB6B857BCA3"
+  },
+  {
+    "file": "starlinks-56838-selected.png",
+    "bytes": 163337,
+    "sha256": "FEAC3C7779B5B2FEEC5720B5F388E949373A39883F9BFB89CA944A762762AA36"
+  },
+  {
+    "file": "starlinks-65283-arc.json",
+    "bytes": 194939,
+    "sha256": "218BB546691093AE5CB61613004DD1ABC55FC3E83C08C2924B43FD75C73013FC"
+  },
+  {
+    "file": "starlinks-65283-full-sky.svg",
+    "bytes": 12156,
+    "sha256": "0FEAA5E6B945343DE47951D7AEFAD10792B6D920DC27E72DC1AE900130948DBF"
+  },
+  {
+    "file": "starlinks-65283-selected.png",
+    "bytes": 163547,
+    "sha256": "DD98D7BEE7E955EAC4308E57BC8497996CC5A604CB293B89600D06988CF1EEC2"
+  }
+]
