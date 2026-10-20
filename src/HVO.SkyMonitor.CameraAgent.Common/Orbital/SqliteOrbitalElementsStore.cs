@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using HVO.SkyMonitor.Astronomy;
@@ -84,6 +85,14 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
     private volatile bool _disposed;
     private volatile string? _activeManifestSha256;
     private long _retentionGeneration;
+    // All initialization entry points share this state under _gate. UTC permits deterministic clocks;
+    // monotonic elapsed time and rollback expiry prevent a wall-clock correction extending the cap.
+    private ExceptionDispatchInfo? _initializationFailure;
+    private int _initializationFailures;
+    private DateTimeOffset _initializationFailedUtc;
+    private DateTimeOffset _initializationObservedUtc;
+    private long _initializationFailedTimestamp;
+    private TimeSpan _initializationDelay;
 
     public SqliteOrbitalElementsStore(
         OrbitalElementsStoreSettings settings,
@@ -680,6 +689,19 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
         {
             return;
         }
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_initializationFailure is { } failure)
+        {
+            var now = Now();
+            var elapsed = now - _initializationFailedUtc;
+            var monotonicElapsed = _timeProvider.GetElapsedTime(_initializationFailedTimestamp);
+            var rolledBack = now < _initializationObservedUtc;
+            _initializationObservedUtc = now;
+            if (!rolledBack && elapsed < _initializationDelay && monotonicElapsed < _initializationDelay)
+            {
+                failure.Throw();
+            }
+        }
         try
         {
             AcquireRoot();
@@ -695,12 +717,23 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
                 "SELECT active_manifest_sha256 FROM orbital_provider_state WHERE provider = 'celestrak';",
                 cancellationToken).ConfigureAwait(false);
             var orphans = await ReconcileFilesAsync(connection, cancellationToken).ConfigureAwait(false);
+            _initializationFailure = null;
+            _initializationFailures = 0;
             _initialized = true;
             StoreInitialized(_logger, reconciliation.Interrupted, orphans);
         }
-        catch
+        catch (Exception exception)
         {
             ReleaseLock();
+            if (!cancellationToken.IsCancellationRequested && exception is not OperationCanceledException &&
+                exception is not FileSystemFaultException { Kind: FileSystemFaultKind.Cancelled })
+            {
+                _initializationDelay = TimeSpan.FromSeconds(_initializationFailures >= 5 ? 30 : 1 << _initializationFailures);
+                _initializationFailures = Math.Min(6, _initializationFailures + 1);
+                _initializationFailedUtc = _initializationObservedUtc = Now();
+                _initializationFailedTimestamp = _timeProvider.GetTimestamp();
+                _initializationFailure = ExceptionDispatchInfo.Capture(exception);
+            }
             throw;
         }
     }
