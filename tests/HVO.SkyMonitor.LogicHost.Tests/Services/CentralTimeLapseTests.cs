@@ -22,6 +22,54 @@ namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 public sealed class CentralTimeLapseTests
 {
     [TestMethod]
+    public void ZeroNineStoredRequestKeepsItsIdentityAndReleasedRecipe()
+    {
+        var json = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "time-lapse-v090", "central-request.json")).TrimEnd();
+        var request = CentralTimeLapseJson.Read<CentralTimeLapseRequest>(json, CentralTimeLapseJson.Hash(json));
+        var row = new CentralTimeLapseJob
+        {
+            Id = request.JobId,
+            DevicePublicId = request.DevicePublicId,
+            ObservatoryId = request.ObservatoryId,
+            ReportDate = request.Period.ReportDate,
+            StartUtc = request.StartUtc,
+            EndUtc = request.EndUtc,
+            RequestJson = json,
+            RequestSha256 = CentralTimeLapseJson.Hash(json)
+        };
+        var restored = CentralTimeLapseStore.ReadRequest(row);
+        Assert.AreEqual("C560BD6DD3C7B6B33FDD26DF89552F155064A5843B5E7ED23FF7F4B701116B2F", restored.Identity);
+        Assert.AreEqual(json, CentralTimeLapseJson.Serialize(restored));
+        Assert.AreEqual("C797E7DC93A1A089DBBD28EF167FC934A104DF901BC338952D813542B2FE57B9",
+            TimeLapseFrameRenderer.RecipeIdentity(restored.Preset.Frames,
+                restored.Preset.RendererVersion ?? TimeLapseFrameRenderer.LegacyVersion));
+        Assert.IsNull(restored.Preset.RendererVersion);
+        var current = restored with { Preset = restored.Preset with { RendererVersion = TimeLapseFrameRenderer.Version } };
+        Assert.AreNotEqual(restored.Identity, current.Identity);
+        Assert.AreNotEqual(restored.JobId, current.JobId);
+    }
+
+    [TestMethod]
+    public void UnknownStoredRendererIsRejected()
+    {
+        var request = Request();
+        request = request with { Preset = request.Preset with { RendererVersion = "unknown" } };
+        var json = CentralTimeLapseJson.Serialize(request);
+        var row = new CentralTimeLapseJob
+        {
+            Id = request.JobId,
+            DevicePublicId = request.DevicePublicId,
+            ObservatoryId = request.ObservatoryId,
+            ReportDate = request.Period.ReportDate,
+            StartUtc = request.StartUtc,
+            EndUtc = request.EndUtc,
+            RequestJson = json,
+            RequestSha256 = CentralTimeLapseJson.Hash(json)
+        };
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => CentralTimeLapseStore.ReadRequest(row));
+    }
+
+    [TestMethod]
     public void FrozenRequestRoundTripsAndDetectsConflictingJobAuthority()
     {
         var request = Request();
