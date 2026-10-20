@@ -11,15 +11,15 @@ public sealed class CelesTrakGpNormalizerTests
 {
     // Pinned identities of the valid fixture's candidate at RetrievedUtc with the default synthetic validators. A change
     // to the parser rules, normalizer rules, contract serialization or fixture bytes must change these deliberately.
-    private const string ValidNormalizedPayloadSha256 = "5509C108AA8E171F7F2018BB5EF36758ADFC6DC980A6D35939D0CD77C1581A81";
-    private const string ValidManifestSha256 = "2E3BB81B8CAFA89DCA4070A6C6E1474E1745053EA41792D123974E05ACEB2BA2";
+    private const string ValidNormalizedPayloadSha256 = "F3BDD6215306A5188CBDF1D518B0EC51A7AD55336B15388864B48B49BDABB8C8";
+    private const string ValidManifestSha256 = "0009A4DE70965F6C70F881576EADCB3E9D345B0BFCF4CAE0BC7453C3CCF5FE00";
     private const string ParserImplementationSha256 = "79FEEE50CCC7D0D5108E8040D95A8048332C5C9AD4A13B17B1B2CC2249A8BF7A";
-    private const string NormalizerImplementationSha256 = "8B7C72F9155EDD6E2488B49E94534CC39D096B08FBC9805E334CAB3F0447C53D";
+    private const string NormalizerImplementationSha256 = "0D1E2F09E4F375287BC9353ECA0FBBE4BACED8782DF5E240DF564C5812A17583";
 
     private static readonly string[] ExpectedKnownExclusions =
     [
-        "analyst-objects", "debris", "inactive-payloads", "missing-records", "rocket-bodies", "supplemental-gp",
-        "unpublicized-objects"
+        "analyst-objects", "debris", "inactive-payloads", "missing-records", "supplemental-gp",
+        "unattached-rocket-bodies", "unpublicized-objects"
     ];
 
     private static readonly string[] ExpectedObjectOrder = ["1", "123456", "25544", "43013", "48274", "5", "999999999"];
