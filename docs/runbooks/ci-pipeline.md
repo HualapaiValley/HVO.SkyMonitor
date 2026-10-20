@@ -893,8 +893,23 @@ direct local equivalents:
 
 Component baselines live beside the aggregate baseline as
 `scripts/coverage/baseline.<component>.json`. Each one carries its own aggregate
-rate over the files its lane observes plus its own critical-file floors, so a
+rate over the files its lane measures plus its own critical-file floors, so a
 regression in one component cannot be masked by another component's coverage.
+
+The CameraAgent, LogicHost and delivery lanes measure only the assemblies they
+own, as the classifier's project lists assign them: `HVO.SkyMonitor.CameraAgent`
+and `HVO.SkyMonitor.CameraAgent.*`, `HVO.SkyMonitor.LogicHost`, and
+`HVO.SkyMonitor.Deployment.*` with `HVO.SkyMonitor.TerminalUi`.
+`scripts/coverage:component` passes each lane's set to ReportGenerator as
+`-assemblyfilters`. Coverlet instruments every HVO assembly in a test project's
+output, including the shared assemblies a host references, so without the
+filter shared code the host's tests never call would count against the host's
+floor. #1408's orbital contracts took the LogicHost lane below its floor that
+way (#1420). Shared code is measured by the shared lane and the aggregate
+rollup. The shared and combined lanes keep every assembly their reports carry:
+the shared suites reference only shared assemblies, and the combined baseline
+floors the shared contracts both hosts compose. A filter that drops a floored
+file, or leaves a report with no classes, fails the lane rather than passing it.
 
 A lane merges fewer reports than the aggregate rollup, so its measured rates are
 its own. To keep component gating from relaxing risk coverage, `Coverage Policy`
