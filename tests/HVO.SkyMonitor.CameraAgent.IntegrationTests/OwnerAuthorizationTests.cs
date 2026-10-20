@@ -579,6 +579,9 @@ public sealed class OwnerAuthorizationTests
         using var anonymousAutomations = await anonymousClient.GetAsync(
             new Uri("/api/v1/operations/automations", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousAutomations.StatusCode);
+        using var anonymousOrbital = await anonymousClient.GetAsync(
+            new Uri("/api/v1/operations/orbital-elements", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Unauthorized, anonymousOrbital.StatusCode);
 
         using var nonOwnerClient = AssemblyHooks.Fixture.CreateCameraAgentClient();
         nonOwnerClient.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, nonOwnerId);
@@ -632,6 +635,17 @@ public sealed class OwnerAuthorizationTests
                 expectedVersion = 0
             }).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerAutomationMutation.StatusCode);
+        using var nonOwnerOrbital = await nonOwnerClient.GetAsync(
+            new Uri("/api/v1/operations/orbital-elements", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerOrbital.StatusCode);
+        using var nonOwnerOrbitalRefresh = await nonOwnerClient.PostAsJsonAsync(
+            new Uri("/api/v1/operations/orbital-elements/refresh", UriKind.Relative),
+            new { reason = "unauthorized refresh" }).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerOrbitalRefresh.StatusCode);
+        using var nonOwnerOrbitalResume = await nonOwnerClient.PostAsJsonAsync(
+            new Uri("/api/v1/operations/orbital-elements/resume", UriKind.Relative),
+            new { expectedHaltSinceUtc = DateTimeOffset.UnixEpoch, reason = "unauthorized resume" }).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.Forbidden, nonOwnerOrbitalResume.StatusCode);
         using var nonOwnerMutation = await nonOwnerClient.PostAsJsonAsync(
             new Uri("/api/v1/operations/capture/resume", UriKind.Relative),
             new { reason = "test" }).ConfigureAwait(false);
@@ -685,6 +699,14 @@ public sealed class OwnerAuthorizationTests
         StringAssert.Contains(automationsJson, "registry", StringComparison.Ordinal);
         Assert.IsFalse(automationsJson.Contains(
             AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
+        using var ownerOrbital = await ownerClient.GetAsync(
+            new Uri("/api/v1/operations/orbital-elements", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, ownerOrbital.StatusCode);
+        var orbitalJson = await ownerOrbital.Content.ReadAsStringAsync().ConfigureAwait(false);
+        StringAssert.Contains(orbitalJson, "hvo-orbital-refresh-status-v1", StringComparison.Ordinal);
+        StringAssert.Contains(orbitalJson, "orbital.disabled", StringComparison.Ordinal);
+        Assert.IsFalse(orbitalJson.Contains(AssemblyHooks.Fixture.StorageRoot, StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(orbitalJson.Contains("celestrak", StringComparison.OrdinalIgnoreCase));
         using var ownerPipeline = await ownerClient.GetAsync(
             new Uri("/api/v1/operations/pipeline", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, ownerPipeline.StatusCode);
@@ -753,6 +775,41 @@ public sealed class OwnerAuthorizationTests
                 expectedVersion = 0
             }).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.BadRequest, missingAutomationAntiforgery.StatusCode);
+        // The orbital commands carry a valid Idempotency-Key and body, so the only thing missing is the antiforgery
+        // token; the rejection must be the antiforgery one, not the key or body check (which would otherwise answer 400
+        // or, for a disabled refresh, 409 orbital.disabled).
+        using (var missingOrbitalRefreshAntiforgeryRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/orbital-elements/refresh", UriKind.Relative)))
+        {
+            missingOrbitalRefreshAntiforgeryRequest.Headers.Add("Idempotency-Key", $"orbital-{Guid.NewGuid():N}");
+            missingOrbitalRefreshAntiforgeryRequest.Content = JsonContent.Create(new { reason = "unprotected refresh" });
+            using var missingOrbitalRefreshAntiforgery = await ownerClient.SendAsync(missingOrbitalRefreshAntiforgeryRequest)
+                .ConfigureAwait(false);
+            var missingOrbitalRefreshAntiforgeryJson = await missingOrbitalRefreshAntiforgery.Content.ReadAsStringAsync()
+                .ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.BadRequest, missingOrbitalRefreshAntiforgery.StatusCode,
+                missingOrbitalRefreshAntiforgeryJson);
+            StringAssert.Contains(missingOrbitalRefreshAntiforgeryJson, "orbital.antiforgery-invalid", StringComparison.Ordinal);
+        }
+        using (var missingOrbitalResumeAntiforgeryRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/orbital-elements/resume", UriKind.Relative)))
+        {
+            missingOrbitalResumeAntiforgeryRequest.Headers.Add("Idempotency-Key", $"orbital-{Guid.NewGuid():N}");
+            missingOrbitalResumeAntiforgeryRequest.Content = JsonContent.Create(new
+            {
+                expectedHaltSinceUtc = DateTimeOffset.UnixEpoch,
+                reason = "unprotected resume"
+            });
+            using var missingOrbitalResumeAntiforgery = await ownerClient.SendAsync(missingOrbitalResumeAntiforgeryRequest)
+                .ConfigureAwait(false);
+            var missingOrbitalResumeAntiforgeryJson = await missingOrbitalResumeAntiforgery.Content.ReadAsStringAsync()
+                .ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.BadRequest, missingOrbitalResumeAntiforgery.StatusCode,
+                missingOrbitalResumeAntiforgeryJson);
+            StringAssert.Contains(missingOrbitalResumeAntiforgeryJson, "orbital.antiforgery-invalid", StringComparison.Ordinal);
+        }
 
         var token = await GetAntiforgeryTokenAsync(ownerClient).ConfigureAwait(false);
         using (var authorizedRigRequest = new HttpRequestMessage(
@@ -884,6 +941,50 @@ public sealed class OwnerAuthorizationTests
             using var staleAutomationRemoval = await ownerClient.SendAsync(staleAutomationRemovalRequest)
                 .ConfigureAwait(false);
             Assert.AreEqual(HttpStatusCode.NotFound, staleAutomationRemoval.StatusCode);
+        }
+        using (var keylessOrbitalRefreshRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/orbital-elements/refresh", UriKind.Relative)))
+        {
+            keylessOrbitalRefreshRequest.Headers.Add("RequestVerificationToken", token);
+            keylessOrbitalRefreshRequest.Content = JsonContent.Create(new { reason = "missing idempotency key" });
+            using var keylessOrbitalRefresh = await ownerClient.SendAsync(keylessOrbitalRefreshRequest)
+                .ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.BadRequest, keylessOrbitalRefresh.StatusCode);
+            StringAssert.Contains(await keylessOrbitalRefresh.Content.ReadAsStringAsync().ConfigureAwait(false),
+                "orbital.refresh-invalid-idempotency-key", StringComparison.Ordinal);
+        }
+        using (var disabledOrbitalRefreshRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/orbital-elements/refresh", UriKind.Relative)))
+        {
+            disabledOrbitalRefreshRequest.Headers.Add("Idempotency-Key", $"orbital-{Guid.NewGuid():N}");
+            disabledOrbitalRefreshRequest.Headers.Add("RequestVerificationToken", token);
+            disabledOrbitalRefreshRequest.Content = JsonContent.Create(new { reason = "refresh while disabled" });
+            using var disabledOrbitalRefresh = await ownerClient.SendAsync(disabledOrbitalRefreshRequest)
+                .ConfigureAwait(false);
+            // Refresh is disabled by default, so the owner's request is refused and no provider request is queued.
+            Assert.AreEqual(HttpStatusCode.Conflict, disabledOrbitalRefresh.StatusCode);
+            StringAssert.Contains(await disabledOrbitalRefresh.Content.ReadAsStringAsync().ConfigureAwait(false),
+                "orbital.disabled", StringComparison.Ordinal);
+        }
+        using (var unhaltedOrbitalResumeRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/orbital-elements/resume", UriKind.Relative)))
+        {
+            unhaltedOrbitalResumeRequest.Headers.Add("Idempotency-Key", $"orbital-{Guid.NewGuid():N}");
+            unhaltedOrbitalResumeRequest.Headers.Add("RequestVerificationToken", token);
+            unhaltedOrbitalResumeRequest.Content = JsonContent.Create(new
+            {
+                expectedHaltSinceUtc = DateTimeOffset.UnixEpoch,
+                reason = "resume without a halt"
+            });
+            using var unhaltedOrbitalResume = await ownerClient.SendAsync(unhaltedOrbitalResumeRequest)
+                .ConfigureAwait(false);
+            // The store is composed and available in the real host even while refresh is disabled.
+            Assert.AreEqual(HttpStatusCode.Conflict, unhaltedOrbitalResume.StatusCode);
+            StringAssert.Contains(await unhaltedOrbitalResume.Content.ReadAsStringAsync().ConfigureAwait(false),
+                "orbital.no-halt", StringComparison.Ordinal);
         }
         using (var scheduleDocument = JsonDocument.Parse(scheduleJson))
         using (var missingVersionRequest = new HttpRequestMessage(

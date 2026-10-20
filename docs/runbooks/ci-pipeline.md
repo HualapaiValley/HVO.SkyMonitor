@@ -28,8 +28,8 @@ remain unchanged.
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 9132 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
-| **Integration Tests** | 844 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
+| **Unit Tests** | 9966 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). |
+| **Integration Tests** | 846 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
 | **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 20 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **LogicHost Migrations** | Exactly one canonical initial migration source for LogicHost plus zero pending LogicHost EF model changes, built from the LogicHost project root. Runs for every full-mode head. Unreleased legacy-schema convergence is not supported by either host. |
@@ -417,7 +417,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=9132`, `Integration=844`, `Manual=255`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=9966`, `Integration=846`, `Manual=257`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
 
@@ -893,8 +893,27 @@ direct local equivalents:
 
 Component baselines live beside the aggregate baseline as
 `scripts/coverage/baseline.<component>.json`. Each one carries its own aggregate
-rate over the files its lane observes plus its own critical-file floors, so a
+rate over the files its lane measures plus its own critical-file floors, so a
 regression in one component cannot be masked by another component's coverage.
+
+The CameraAgent, LogicHost and delivery lanes measure only the assemblies they
+own, as the classifier's project lists assign them: `HVO.SkyMonitor.CameraAgent`
+and `HVO.SkyMonitor.CameraAgent.*`, `HVO.SkyMonitor.LogicHost`, and
+`HVO.SkyMonitor.Deployment.*` with `HVO.SkyMonitor.TerminalUi`.
+`scripts/coverage:component` passes each lane's set to ReportGenerator as
+`-assemblyfilters`. Coverlet instruments every HVO assembly in a test project's
+output, including the shared assemblies a host references, so without the
+filter shared code the host's tests never call would count against the host's
+floor. #1408's orbital contracts took the LogicHost lane below its floor that
+way (#1420). Shared code is measured by the shared lane and the aggregate
+rollup, with one gap: the `ProcessingRunner` and `ProcessingRunner.Contracts`
+files LogicHost's tests reach are not in the shared lane, because the
+ProcessingRunner suite is not a coverage slot (below). The aggregate rollup
+still measures both, and the combined lane measures the contracts. The shared
+and combined lanes keep every assembly their reports carry: the shared suites
+reference only shared assemblies, and the combined baseline floors the shared
+contracts both hosts compose. A filter that drops a floored file, or leaves a
+report with no classes, fails the lane rather than passing it.
 
 A lane merges fewer reports than the aggregate rollup, so its measured rates are
 its own. To keep component gating from relaxing risk coverage, `Coverage Policy`

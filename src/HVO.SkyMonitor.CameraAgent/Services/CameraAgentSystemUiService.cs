@@ -145,6 +145,7 @@ internal sealed class CameraAgentSystemUiService(
             ["identity-database"] = ("Identity database", "Local", null),
             ["owner-bootstrap"] = ("Owner account", "Local", null),
             ["catalog"] = ("Celestial catalog", "Local", "/operations/software"),
+            ["orbital-elements"] = ("Orbital elements", "Local", "/operations/software"),
             ["deployment-location"] = ("Deployment location", "Local", "/operations/site"),
             ["disk-pressure"] = ("Storage capacity", "Local", "/operations/storage"),
             ["camera-configuration"] = ("Camera configuration", "Acquisition", "/operations/camera"),

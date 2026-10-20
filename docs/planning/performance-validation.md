@@ -243,6 +243,64 @@ dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Te
   --filter "FullyQualifiedName~ExecutionEvidenceExportPerformanceTests"
 ```
 
+Orbital-elements acquisition evidence (#528):
+`OrbitalElementsRefreshPerformanceTests` (Manual, CameraAgent test project)
+generates a deterministic synthetic CelesTrak-GP-shaped payload at the #527
+active-group size (16,754 records, 826 six-digit catalog numbers, 64 objects
+with two element sets, two future epochs and 25 epochs older than seven days)
+and serves it from an in-process handler, so no provider bytes are used and
+nothing reaches the network. Every measured repeat uses a fresh root and the
+real client, parser, normalizer, store and reader. It reports wall, process-CPU
+and allocated-byte distributions for these stages: initialize, admit, fetch
+(identity and gzip), parse, candidate, publish and activate, cold current and
+exact materialization, warm current reads, an identical-body refresh (the
+unchanged-payload path) and a changed refresh followed by retention. The
+retention pass lowers the bound to one snapshot and zero minimum age so that it
+retires one snapshot. The test also reports end-to-end first-activation latency,
+process CPU, allocation, collections and working set, raw, wire, payload and
+manifest sizes against the contract bounds, and the store's on-disk growth.
+
+For the scheduler it measures:
+
+- adapter validation and initial-epoch latency;
+- the automation runner's sweep cost with and without the reserved orbital
+  definition saved, while that definition is not yet due (zero provider
+  requests).
+
+A companion test moves the manifest and payload files out of the store after
+one cold read and proves that 1,000 warm current and exact reads return the
+cached instance without touching the disk.
+
+There is no prior implementation, so the first recorded run is a baseline
+rather than a comparison. On the recording host (12-core x64, ext4, Release),
+per refresh:
+
+| Stage | Median wall | Median allocation |
+| --- | --- | --- |
+| Candidate | about 2.3 s | about 5.1 GB |
+| Publish and activate | about 1.2 s | about 2.55 GB |
+| Cold materialization | about 0.95 s | about 2.1 GB |
+
+Parse alone is about 29 ms and 5.8 MB, and fetch is about 6 ms. These costs sit
+in the shared contract's per-record canonical-form and identity verification
+(`OrbitalContract.ValidateRecord`, `CreateRecord` and `SerializeCanonical`
+through a JSON DOM) rather than in the CameraAgent adapter. They are paid once
+per activation, at most every two hours, and once per reader cache miss. Warm
+reads perform no I/O.
+
+The process peak working set across the measured loop was about 2.45 GB. That
+is the main edge-device risk, and any reduction belongs to the Astronomy
+contract implementation. Output is written to
+`TestResults/issue-528/orbital-refresh-performance.json` (override the directory
+with `HVO_ISSUE528_EVIDENCE_ROOT`). CPU, allocation and working-set figures are
+process-scoped, so run the filtered invocation alone.
+
+```bash
+dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  --configuration Release \
+  --filter "FullyQualifiedName~OrbitalElementsRefreshPerformanceTests"
+```
+
 Live derived-window resolution evidence (#608):
 `W6RollingWindowCaptureTimingTests` (Manual, CameraAgent test project) runs the
 `W6` frame dimensions through the real raw ingress and standard lane with a
