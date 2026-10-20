@@ -218,15 +218,85 @@ public sealed class SwpcClientTests
     }
 
     [TestMethod]
-    [DataRow("application/json; charset=UTF-8", true)]
-    [DataRow("café", false)]
-    [DataRow("bad\tvalue", false)]
-    [DataRow("", false)]
-    public async Task ContentTypeIsOneBoundedRawAsciiValue(string media, bool keep)
+    [DataRow("application/json", "application/json")]
+    [DataRow("application/json; charset=UTF-8", "application/json")]
+    [DataRow("application/json\t; charset=UTF-8", "application/json")]
+    [DataRow("\u001capplication/json\u001f", "application/json")]
+    [DataRow("application/json\u0085", "application/json")]
+    [DataRow("\u00a0text/plain\u00a0;q=1", "text/plain")]
+    [DataRow("application/json\u2003", "application/json")]
+    [DataRow("application/json; charset=café", "application/json")]
+    [DataRow("TEXT/Plain", "TEXT/Plain")]
+    [DataRow("café", null)]
+    [DataRow("bad\tvalue", null)]
+    [DataRow("application/\u00a0json", null)]
+    [DataRow("", null)]
+    [DataRow(" \t\u001c ", null)]
+    [DataRow(";charset=UTF-8", null)]
+    public async Task ContentTypeIsOneBoundedTrimmedMediaToken(string raw, string? expected)
     {
         var (result, _) = await Fetch(new SwpcContent([]), configure: response =>
-            response.Content.Headers.TryAddWithoutValidation("Content-Type", media)).ConfigureAwait(false);
-        Assert.AreEqual(keep ? media : null, result.MediaType);
+        {
+            Assert.IsTrue(response.Content.Headers.TryAddWithoutValidation("Content-Type", raw));
+            Assert.AreEqual(raw, response.Content.Headers.NonValidated["Content-Type"].Single(), "The injected field must reach raw extraction unchanged.");
+        }).ConfigureAwait(false);
+        Assert.AreEqual(expected, result.MediaType);
+    }
+
+    [TestMethod]
+    public async Task MediaTypeBoundAppliesAfterParametersAndWhitespaceAreRemoved()
+    {
+        var token = new string('m', 256);
+        var parameters = "; " + new string('p', 1000);
+        var (bounded, _) = await Fetch(new SwpcContent([]), configure: response =>
+            response.Content.Headers.TryAddWithoutValidation("Content-Type", token + parameters)).ConfigureAwait(false);
+        Assert.AreEqual(token, bounded.MediaType);
+        var (over, _) = await Fetch(new SwpcContent([]), configure: response =>
+            response.Content.Headers.TryAddWithoutValidation("Content-Type", token + "m" + parameters)).ConfigureAwait(false);
+        Assert.IsNull(over.MediaType);
+        var (trimmed, _) = await Fetch(new SwpcContent([]), configure: response =>
+            response.Content.Headers.TryAddWithoutValidation("Content-Type", "\t" + token + "\u00a0")).ConfigureAwait(false);
+        Assert.AreEqual(token, trimmed.MediaType);
+    }
+
+    [TestMethod]
+    [DataRow("application/json\t; charset=UTF-8", SwpcProduct.Scales)]
+    [DataRow("\u001capplication/json\u001f", SwpcProduct.Scales)]
+    [DataRow("\u00a0text/plain\u00a0;q=1", SwpcProduct.ThreeDayForecast)]
+    [DataRow("application/json; charset=café", SwpcProduct.Scales)]
+    [DataRow("café", SwpcProduct.Scales)]
+    [DataRow("mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm;q=1", SwpcProduct.Scales)]
+    public async Task MediaTypeTokenPreservesS1VerdictOnTheRawHeader(string raw, SwpcProduct product)
+    {
+        var fixture = product == SwpcProduct.ThreeDayForecast ? "3-day-forecast.txt" : "noaa-scales.json";
+        var bytes = await File.ReadAllBytesAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "space-weather", "swpc-v1",
+            "capture-20261019T1857Z", fixture)).ConfigureAwait(false);
+        var (result, _) = await Fetch(new SwpcContent(bytes), product: product, configure: response =>
+        {
+            Assert.IsTrue(response.Content.Headers.TryAddWithoutValidation("Content-Type", raw));
+            Assert.AreEqual(raw, response.Content.Headers.NonValidated["Content-Type"].Single(), "The parser oracle must see the injected field unchanged.");
+        }).ConfigureAwait(false);
+        Assert.AreEqual(SwpcTransportFailure.None, result.Failure);
+        CollectionAssert.AreEqual(bytes, result.Body.ToArray());
+        if (product == SwpcProduct.ThreeDayForecast)
+        {
+            var expected = SwpcThreeDayForecastParser.Parse(bytes, raw);
+            var actual = SwpcThreeDayForecastParser.Parse(result.Body.Span, result.MediaType);
+            Assert.AreEqual(expected.RejectionReason, actual.RejectionReason);
+            Assert.IsTrue(actual.Accepted);
+        }
+        else
+        {
+            var expected = SwpcScalesParser.Parse(bytes, raw);
+            var actual = SwpcScalesParser.Parse(result.Body.Span, result.MediaType);
+            Assert.AreEqual(expected.RejectionReason, actual.RejectionReason);
+            if (raw == "application/json\t; charset=UTF-8")
+            {
+                Assert.IsTrue(actual.Accepted, "B1 must fully accept the committed valid scales body.");
+                Assert.IsEmpty(actual.Rejections);
+                Assert.HasCount(5, actual.Records);
+            }
+        }
     }
 
     [TestMethod]

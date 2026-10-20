@@ -54,8 +54,7 @@ public sealed class SwpcClient : ISwpcClient
             if (sentModified is not null) request.Headers.TryAddWithoutValidation("If-Modified-Since", sentModified);
             using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, linked.Token)
                 .ConfigureAwait(false);
-            var media = SwpcSource.SanitizeValidator(SwpcSource.SingleHeaderValue(response.Content.Headers, "Content-Type"),
-                SwpcSource.MaximumMediaTypeLength);
+            var media = SwpcSource.MediaTypeToken(SwpcSource.SingleHeaderValue(response.Content.Headers, "Content-Type"));
             var etag = SwpcSource.SanitizeValidator(SwpcSource.SingleHeaderValue(response.Headers, "ETag"),
                 SwpcSource.MaximumEntityTagLength);
             var modified = SwpcSource.SanitizeValidator(SwpcSource.SingleHeaderValue(response.Content.Headers, "Last-Modified"),

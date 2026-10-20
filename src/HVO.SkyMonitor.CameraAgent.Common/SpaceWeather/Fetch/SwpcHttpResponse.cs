@@ -41,6 +41,14 @@ public sealed record SwpcRequestValidators(string? EntityTag, string? LastModifi
 /// unexpected and propagates from FetchAsync as the same object. The existing transport boundary alone maps
 /// I/O, HTTP, authentication and socket failures to NetworkError, the deadline to Timeout, and throws caller
 /// cancellation. On every path the aggregate wire bytes read after rejection are bounded by maximum+1.
+/// Owner decision T4: Content-Type is reduced to its media token. Absent or repeated fields give null.
+/// Cut the single raw field before the first semicolon and trim both ends with char.IsWhiteSpace plus
+/// U+001C through U+001F. Empty tokens, tokens longer than 256 characters and tokens outside U+0020 through
+/// U+007E give null; otherwise preserve the token's case. This is exactly the information the contract's
+/// content-type check uses. The transport makes no content-type decision: T1 is unchanged, and S1/S2b decide.
+/// The returned value stays bounded printable ASCII, so persistence and replay are unchanged in kind.
+/// The 256 bound applies to the token, not the raw field; parameters may be long because the handler's
+/// MaxResponseHeadersLength already bounds the raw field. Processing is linear in the field length.
 /// The response owns an exact-length copy of its body.
 /// </summary>
 public sealed record SwpcHttpResponse
@@ -89,7 +97,7 @@ public sealed record SwpcHttpResponse
     public int? StatusCode { get; }
     /// <summary>Whether at least one conditional validator was sent.</summary>
     public bool ValidatorsSent { get; }
-    /// <summary>One bounded printable-ASCII raw Content-Type, including parameters.</summary>
+    /// <summary>The single Content-Type media token, contract-trimmed and bounded to 256 printable-ASCII characters (T4), or null.</summary>
     public string? MediaType { get; }
     /// <summary>One sanitized response ETag.</summary>
     public string? EntityTag { get; }
