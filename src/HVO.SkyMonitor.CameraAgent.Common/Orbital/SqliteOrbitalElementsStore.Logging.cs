@@ -46,7 +46,7 @@ public sealed partial class SqliteOrbitalElementsStore
     private static partial void CleanupFailed(ILogger logger, string scope, Exception exception);
 
     [LoggerMessage(7711, LogLevel.Information, "Orbital provider halt for HTTP {HttpStatusCode} resumed by an operator at revision {Revision}")]
-    private static partial void ProviderResumed(ILogger logger, int httpStatusCode, long revision);
+    private static partial void ProviderResumed(ILogger logger, int? httpStatusCode, long revision);
 
     [LoggerMessage(7712, LogLevel.Information, "Orbital snapshot {ManifestSha256} retired by retention")]
     private static partial void SnapshotRetired(ILogger logger, string manifestSha256);

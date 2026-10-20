@@ -293,7 +293,8 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalElementsStore, 
                 VALUES($key, 'resume', $payload, $since, $status, $actor, $reason, $revision, $now);
                 """, token,
                 ("$key", request.IdempotencyKey), ("$payload", payloadSha256),
-                ("$since", ToUnixMilliseconds(halt.SinceUtc)), ("$status", halt.HttpStatusCode),
+                ("$since", ToUnixMilliseconds(halt.SinceUtc)),
+                ("$status", halt.HttpStatusCode.HasValue ? halt.HttpStatusCode.Value : DBNull.Value),
                 ("$actor", request.Actor), ("$reason", request.Reason), ("$revision", revision),
                 ("$now", ToUnixMilliseconds(Truncate(Now())))).ConfigureAwait(false);
             var state = await ReadStateAsync(connection, transaction, token).ConfigureAwait(false);

@@ -93,9 +93,9 @@ public sealed class OrbitalElementsHealthEvaluator
             ["RecoveryAction"] = observation.Status.RecoveryAction.ToString(),
             ["Halted"] = state.Halt is not null
         };
-        if (state.Halt is { } halt)
+        if (state.Halt?.HttpStatusCode is { } haltStatus)
         {
-            data["HaltHttpStatus"] = halt.HttpStatusCode;
+            data["HaltHttpStatus"] = haltStatus;
         }
         if (state.CurrentRecordCount is { } records)
         {
