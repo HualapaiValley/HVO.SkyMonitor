@@ -285,11 +285,17 @@ public sealed partial class OrbitalElementsRefreshJob
             }
             // The store itself settles cancellation and storage faults raised inside quarantine and publication. A
             // cancelled attempt with nothing else pending is closed as interrupted, and the store decides from the
-            // durable record whether its provider outcome is unknown (fail-safe halt) or a retrieval was recorded.
+            // durable record whether its provider outcome is unknown (fail-safe halt) or a retrieval was recorded. A
+            // storage fault the store did not settle (such as a retrieval record that could not be written) is closed
+            // as a storage failure, never as a transport failure, so status and health direct the operator to storage.
             OrbitalAttemptOutcome? settledByStore = cancelled
                 ? OrbitalAttemptOutcome.Interrupted
                 : exception is OrbitalStorageException ? OrbitalAttemptOutcome.StorageFailed : null;
-            var fallback = cancelled ? PendingSettlement.Interrupted : PendingSettlement.Transport(code, detail);
+            var fallback = cancelled
+                ? PendingSettlement.Interrupted
+                : exception is OrbitalStorageException
+                    ? PendingSettlement.Storage(code, detail)
+                    : PendingSettlement.Transport(code, detail);
             await CloseAsync(attemptId, context.Pending, fallback, settledByStore).ConfigureAwait(false);
             if (cancelled)
             {
@@ -457,8 +463,9 @@ public sealed partial class OrbitalElementsRefreshJob
     /// <summary>
     /// Records a terminal outcome for an admitted attempt that has not reached one, under its own deadline. The
     /// pending record is retried first; a halt is never replaced by another outcome. The fallback is an interruption
-    /// after cancellation and a transport record otherwise. An attempt that is already terminal (the store settles
-    /// cancellation and storage faults during quarantine and publication) is left as is.
+    /// after cancellation, a storage-failure record after a storage fault, and a transport record otherwise. An
+    /// attempt that is already terminal (the store settles cancellation and storage faults during quarantine and
+    /// publication) is left as is.
     /// </summary>
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "Closing is best-effort after a failure; every failure is logged and restart reconciliation remains.")]
@@ -522,6 +529,10 @@ public sealed partial class OrbitalElementsRefreshJob
                 // Not cancellable by design: a lost fail-safe halt would permit another request.
                 var unknown = await _store.RecordInterruptedAsync(attemptId, CancellationToken.None).ConfigureAwait(false);
                 return (OrbitalAttemptOutcome.Interrupted, unknown ? ProviderOutcomeUnknownReasonCode : AttemptCancelledReasonCode);
+            case PendingKind.Storage:
+                await _store.RecordStorageFailureAsync(attemptId, settlement.ReasonCode!, settlement.Detail!,
+                    cancellationToken).ConfigureAwait(false);
+                return (OrbitalAttemptOutcome.StorageFailed, settlement.ReasonCode!);
             default:
                 await _store.RecordTransportFailureAsync(attemptId, settlement.ReasonCode!, settlement.Detail!,
                     cancellationToken).ConfigureAwait(false);
@@ -565,7 +576,7 @@ public sealed partial class OrbitalElementsRefreshJob
         return value;
     }
 
-    private enum PendingKind { None, Halt, Transport, Quarantine, Interrupted }
+    private enum PendingKind { None, Halt, Transport, Quarantine, Interrupted, Storage }
 
     /// <summary>The admitted attempt and the terminal record it was about to make when a failure interrupted it.</summary>
     private sealed class AttemptContext(string attemptId)
@@ -593,6 +604,10 @@ public sealed partial class OrbitalElementsRefreshJob
 
         public static PendingSettlement Transport(string reasonCode, string detail)
             => new(PendingKind.Transport, null, ReadOnlyMemory<byte>.Empty, reasonCode, detail);
+
+        /// <summary>A local storage fault the store did not settle; never a halt.</summary>
+        public static PendingSettlement Storage(string reasonCode, string detail)
+            => new(PendingKind.Storage, null, ReadOnlyMemory<byte>.Empty, reasonCode, detail);
 
         public static PendingSettlement Quarantine(ReadOnlyMemory<byte> raw, string reasonCode, string detail)
             => new(PendingKind.Quarantine, null, raw, reasonCode, detail);

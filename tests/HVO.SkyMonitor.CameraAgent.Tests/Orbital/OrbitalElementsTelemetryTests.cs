@@ -95,6 +95,48 @@ public sealed class OrbitalElementsTelemetryTests : OrbitalStoreTestBase
     }
 
     [TestMethod]
+    [DataRow("publication")]
+    [DataRow("quarantine")]
+    [DataRow("retrieval")]
+    public async Task AStorageFaultIsCountedOnceAsAStorageFailureWhicheverPartySettlesIt(string stage)
+    {
+        // The store settles a publication fault itself, so the job's storage record finds the attempt already terminal;
+        // a quarantine or retrieval record that cannot be written leaves the attempt in flight for the job to close.
+        var faults = stage == "publication"
+            ? new OrbitalElementsStoreTestData.Faults
+            {
+                ArmedPoint = OrbitalStorageFaultPoint.AfterPayload,
+                Throw = static () => new IOException("synthetic disk fault")
+            }
+            : null;
+        using var meter = new Meter(OrbitalElementsTelemetry.MeterName);
+        using var harness = await OrbitalRefreshTestHarness.CreateAsync(CreateRoot(), faults: faults, meter: meter)
+            .ConfigureAwait(false);
+        using var recorder = new MeasurementRecorder(meter);
+        if (stage == "quarantine")
+        {
+            harness.Intercept.QuarantineFault = static _ => new OrbitalStorageException("orbital.storage-io", "synthetic", null);
+            harness.Client.Enqueue(harness.Result(OrbitalFetchDisposition.ResponseRejected, 200, "orbital.media-type", "synthetic"));
+        }
+        else
+        {
+            if (stage == "retrieval")
+            {
+                harness.Intercept.RetrievalFault = static _ => new OrbitalStorageException("orbital.storage-io", "synthetic", null);
+            }
+            harness.Client.Enqueue(harness.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
+        }
+
+        await harness.RunAsync().ConfigureAwait(false);
+
+        StringAssert.StartsWith(harness.LastAttempt(), "StorageFailed|orbital.storage-", StringComparison.Ordinal);
+        Assert.AreEqual(1, harness.Intercept.StorageFailures);
+        Assert.AreEqual(0, harness.Intercept.Transports);
+        CollectionAssert.AreEqual(new[] { ("attempts", 1d, "outcome=StorageFailed") },
+            Select(recorder.Snapshot(), "attempts"));
+    }
+
+    [TestMethod]
     public async Task StartupPublishesTheReconciledHaltBeforeAnyAttemptAndAnAppliedResumeClearsIt()
     {
         var root = CreateRoot();

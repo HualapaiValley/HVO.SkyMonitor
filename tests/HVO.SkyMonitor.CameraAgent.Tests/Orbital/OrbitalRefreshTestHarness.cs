@@ -182,6 +182,7 @@ internal sealed class InterceptingOrbitalStore(IOrbitalElementsStore inner) : IO
     private int _retentions;
     private int _retrievals;
     private int _interruptions;
+    private int _storageFailures;
 
     public Func<int, Exception?>? HaltFault { get; set; }
 
@@ -211,6 +212,8 @@ internal sealed class InterceptingOrbitalStore(IOrbitalElementsStore inner) : IO
     public int Retrievals => Volatile.Read(ref _retrievals);
 
     public int Interruptions => Volatile.Read(ref _interruptions);
+
+    public int StorageFailures => Volatile.Read(ref _storageFailures);
 
     public ConcurrentQueue<string> QuarantineCodes { get; } = new();
 
@@ -247,6 +250,12 @@ internal sealed class InterceptingOrbitalStore(IOrbitalElementsStore inner) : IO
     {
         Fail(TransportFault, ref _transports);
         return inner.RecordTransportFailureAsync(attemptId, reasonCode, detail, cancellationToken);
+    }
+
+    public ValueTask RecordStorageFailureAsync(string attemptId, string reasonCode, string detail, CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _storageFailures);
+        return inner.RecordStorageFailureAsync(attemptId, reasonCode, detail, cancellationToken);
     }
 
     public ValueTask RecordQuarantineAsync(string attemptId, ReadOnlyMemory<byte> rawBytes, string? rawSha256,

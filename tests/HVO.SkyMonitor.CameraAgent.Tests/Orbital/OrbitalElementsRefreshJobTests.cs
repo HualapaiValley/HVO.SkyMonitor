@@ -343,6 +343,44 @@ public sealed class OrbitalElementsRefreshJobTests : OrbitalStoreTestBase
     }
 
     [TestMethod]
+    public async Task ACancelledFetchWhoseInterruptionCannotBeRecordedStaysInFlightAndHaltsAfterARestart()
+    {
+        var root = CreateRoot();
+        using (var harness = await OrbitalRefreshTestHarness.CreateAsync(root).ConfigureAwait(false))
+        {
+            harness.Intercept.InterruptFault = static _ => new OrbitalStorageException("orbital.storage-io", "synthetic", null);
+            harness.Client.EnqueueHang();
+            using var cancellation = new CancellationTokenSource();
+            var run = harness.RunAsync(cancellationToken: cancellation.Token).AsTask();
+            await harness.Client.RequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            await cancellation.CancelAsync().ConfigureAwait(false);
+
+            await Assert.ThrowsAsync<OperationCanceledException>(() => run).ConfigureAwait(false);
+            // No provider outcome was seen, so nothing but the fail-safe interruption may close the attempt.
+            Assert.AreEqual("InFlight||Scheduled", harness.LastAttempt());
+            Assert.AreEqual(1, harness.Intercept.Interruptions);
+            Assert.AreEqual(0, harness.Intercept.Transports);
+            Assert.AreEqual(0, harness.Intercept.StorageFailures);
+            Assert.IsTrue(harness.Logger.EventIds.Contains(7748));
+            AssertExecution(await harness.RunAsync().ConfigureAwait(false), LocalAutomationRunOutcome.Skipped, "orbital.floor-not-elapsed");
+            harness.Clock.Advance(Floor);
+            AssertExecution(await harness.RunAsync().ConfigureAwait(false), LocalAutomationRunOutcome.Skipped, "orbital.attempt-in-flight");
+            Assert.AreEqual(1, harness.Client.Calls);
+        }
+
+        using var restarted = await OrbitalRefreshTestHarness.CreateAsync(root).ConfigureAwait(false);
+        var state = await restarted.StateAsync().ConfigureAwait(false);
+
+        Assert.AreEqual("Interrupted|orbital.provider-outcome-unknown|Scheduled", restarted.LastAttempt());
+        Assert.IsNotNull(state.Halt);
+        Assert.IsNull(state.Halt.HttpStatusCode);
+        Assert.StartsWith("orbital.provider-outcome-unknown: ", state.Halt.Reason);
+        restarted.Clock.Advance(Floor);
+        AssertExecution(await restarted.RunAsync().ConfigureAwait(false), LocalAutomationRunOutcome.Skipped, "orbital.provider-halted");
+        Assert.AreEqual(0, restarted.Client.Calls);
+    }
+
+    [TestMethod]
     public async Task AThrowingClientIsClosedAsAClientErrorSoTheNextDueRunIsAdmitted()
     {
         using var harness = await OrbitalRefreshTestHarness.CreateAsync(CreateRoot()).ConfigureAwait(false);
@@ -397,6 +435,46 @@ public sealed class OrbitalElementsRefreshJobTests : OrbitalStoreTestBase
     }
 
     [TestMethod]
+    public async Task ARetrievalThatCannotBeRecordedIsClosedAsAStorageFailureThatKeepsTheFloorWithoutAHalt()
+    {
+        using var fixture = await OrbitalAutomationFixture.CreateAsync(CreateRoot()).ConfigureAwait(false);
+        await fixture.SaveDefinitionAsync().ConfigureAwait(false);
+        var harness = fixture.Orbital;
+        harness.Intercept.RetrievalFault = static _ => new OrbitalStorageException("orbital.storage-no-space", "synthetic", null);
+        harness.Client.Enqueue(harness.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
+
+        var execution = await harness.RunAsync().ConfigureAwait(false);
+
+        // A local storage fault is not a transport failure and not a provider refusal.
+        AssertExecution(execution, LocalAutomationRunOutcome.Failed, "orbital.storage-no-space");
+        Assert.AreEqual("StorageFailed|orbital.storage-no-space|Scheduled", harness.LastAttempt());
+        Assert.AreEqual(1, harness.Intercept.StorageFailures);
+        Assert.AreEqual(0, harness.Intercept.Transports);
+        Assert.AreEqual(0, harness.Intercept.Publishes);
+        CollectionAssert.IsSubsetOf(FaultedThenClosed, harness.Logger.EventIds.ToArray());
+        var state = await harness.StateAsync().ConfigureAwait(false);
+        Assert.IsNull(state.Halt);
+        Assert.IsNull(state.LastRetrievalSuccessUtc, "The retrieval was never recorded, so it never advanced.");
+        Assert.AreEqual(OrbitalElementsStoreTestData.Start + Floor, state.NextPermittedAttemptUtc);
+
+        var status = await fixture.Operations.GetStatusAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalRefreshRecoveryAction.RepairStorage, status.RecoveryAction);
+        Assert.AreEqual("orbital.storage-no-space", status.Reason);
+        var health = await new OrbitalElementsHealthEvaluator(fixture.Operations, harness.Options, fixture.Clock)
+            .EvaluateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalElementsHealthState.Degraded, health.State);
+        Assert.AreEqual("orbital.storage-no-space", (string)health.Data["Reason"]);
+
+        harness.Intercept.RetrievalFault = null;
+        harness.Clock.Advance(Floor / 2);
+        AssertExecution(await harness.RunAsync().ConfigureAwait(false), LocalAutomationRunOutcome.Skipped, "orbital.floor-not-elapsed");
+        Assert.AreEqual(1, harness.Client.Calls);
+        harness.Clock.Advance(Floor / 2);
+        harness.Client.Enqueue(harness.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
+        AssertExecution(await harness.RunAsync().ConfigureAwait(false), LocalAutomationRunOutcome.Succeeded, "orbital.activated");
+    }
+
+    [TestMethod]
     public async Task AnAttemptIsLeftInFlightOnlyWhenEveryCloseRecordFails()
     {
         using var harness = await OrbitalRefreshTestHarness.CreateAsync(CreateRoot()).ConfigureAwait(false);
@@ -430,6 +508,7 @@ public sealed class OrbitalElementsRefreshJobTests : OrbitalStoreTestBase
         Assert.AreEqual(2, harness.Intercept.Halts);
         Assert.AreEqual(0, harness.Intercept.Transports);
         Assert.AreEqual(0, harness.Intercept.Quarantines);
+        Assert.AreEqual(0, harness.Intercept.StorageFailures);
         Assert.AreEqual("InFlight||Scheduled", harness.LastAttempt());
         Assert.IsTrue(harness.Logger.EventIds.Contains(7748));
 

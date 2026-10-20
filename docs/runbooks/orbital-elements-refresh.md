@@ -70,9 +70,12 @@ an operator command can bypass it.
 
   #527 requires coordinating shared NAT and cache deployments. A single approved
   cache or distributor is future topology; #528 provides none.
-- **No redistribution.** Raw provider bytes stay on this CameraAgent, under the store
-  root. #528 sends neither the feed nor its quarantine evidence to LogicHost or
-  anywhere else.
+- **No redistribution.** Raw and quarantined provider bytes stay on this CameraAgent's
+  host, under the store root. #528 never sends the feed or its quarantine evidence to
+  LogicHost or any other service. Local `cameraagent backup` archives do contain them,
+  because the store, `raw/` and `quarantine/` included, lies inside the instance a
+  backup copies. Keep those archives owner-only, and do not redistribute them or share
+  them with third parties. See [Backup And Restore](#backup-and-restore).
 
 Request facts:
 
@@ -428,6 +431,32 @@ clears `orbital.refresh-overdue` but never makes stale elements fresh.
 `OrbitalElementsHealthEvaluator.IsElementStale` and `IsRefreshOverdue` expose the two
 rules, so the operator UI applies the same comparisons.
 
+Health, status and the gauges report element staleness at that one envelope,
+`OrbitalSelectionPolicy.StaleAbsoluteAgeHours`. While refresh is enabled, health stays
+Degraded from then on, however old the elements become: `orbital.snapshot-stale`,
+unless an earlier reason in the order above applies. Status reports acquisition, not
+freshness, and the age gauges report the age itself. There is no separate expired
+health state. Expiry is a per-record selection outcome,
+`OrbitalElementFreshness.Expired`, that prediction consumers apply through the #527
+selection policy (`OrbitalRecordSelector.Select` in
+`src/HVO.SkyMonitor.Astronomy/Orbital/OrbitalRecordSelection.cs`). For each record of
+the requested object, the selector measures the requested interval's start and end
+against the record's epoch, in hours, positive when the interval is after the epoch.
+It classifies the record by the first rule that matches:
+
+1. an end offset beyond `MaximumEpochOffsetHours` (168 hours) is `Expired`;
+2. a start offset below `MinimumEpochOffsetHours` (−24 hours, so an epoch more than a
+   day after the interval starts) is `FutureBeyondPolicy`;
+3. a start or end offset larger than `StaleAbsoluteAgeHours` (48 hours) in absolute
+   value is `Stale`;
+4. anything else is `Fresh`.
+
+A record outside the −24 to 168 hour window is never selectable
+(`OutsidePolicyWindow`), whatever `AllowStaleDiagnostics` says. A `Stale` record inside
+the window is withheld (`StaleWithheld`) unless the policy sets
+`AllowStaleDiagnostics`. Then it is eligible, but the prediction products accept that
+policy, and a stale record's lineage, only for diagnostic use.
+
 Degraded always means the last-known-good snapshot, if there is one, is still
 readable.
 
@@ -476,10 +505,20 @@ event IDs are:
 | 7755–7757 | Operator commands. |
 
 Some events also carry the exception object: 7706, 7708, 7709, 7710 (store), 7720
-(reader), 7730 (availability), and 7743, 7744, 7745, 7747, 7750 (job). An exception's
-message and stack trace come from the runtime or SQLite. An I/O exception message can
-name an absolute file path under the store root. Treat these log entries as
-deployment-local, and redact them before sharing them outside the site.
+(reader), 7730 (availability), and 7743, 7744, 7745, 7747, 7750 (job). So do two
+warnings that have no event ID. The operator endpoints log them under the category
+`HVO.SkyMonitor.CameraAgent.Endpoints.CameraAgentOrbitalOperationsEndpoints` when a
+request fails unexpectedly:
+
+- `CameraAgent orbital elements status read failed.`, when a status read throws;
+- `CameraAgent orbital elements command failed.`, when a refresh or resume throws.
+
+The response never carries the exception. Its body is the sanitized 503 problem, with
+the fixed title `Orbital elements status is unavailable.` or `The orbital elements
+command could not be completed.` and no reason code. An exception's message and stack
+trace come from the runtime or SQLite. An I/O exception message can name an absolute
+file path under the store root. Treat these log entries as deployment-local, and
+redact them before sharing them outside the site.
 
 ## Storage Layout, Retention And Quarantine
 
@@ -573,8 +612,10 @@ never downgraded to another outcome. Later attempts refuse with
 recorded first, the restart settles the attempt as `orbital.provider-outcome-unknown`
 and holds refresh with a halt that has no valid HTTP status recorded. The status that
 could not be written is not recorded anywhere. Event 7747 names the settlement that
-failed (`Halt`, `Quarantine`, `Transport` or `Interrupted`); `Settlement=Halt` means
-the provider answered with a halt status or a status line outside 100–599.
+failed (`Halt`, `Quarantine`, `Transport`, `Interrupted` or `Storage`); `Settlement=Halt`
+means the provider answered with a halt status or a status line outside 100–599, and
+`Settlement=Storage` means the storage-failure fallback for an unsettled storage fault
+(such as a retrieval record that could not be written) could not be written either.
 
 The unknown-outcome halt is deliberately conservative. It also holds refresh in cases
 where the provider did answer but nothing durable recorded it:
@@ -652,8 +693,13 @@ a request that the provider policy forbids.
 
 Use this to remove orbital data from a CameraAgent, for example when you retire
 acquisition or decommission the device. Everything #528 stores, provider bytes
-included, lives under the store root `<RawIngressRoot>/.orbital-elements/`. Nothing is
-sent to LogicHost, so there is no central copy to remove.
+included, lives under the store root `<RawIngressRoot>/.orbital-elements/`. Raw and
+quarantined provider bytes are never sent to LogicHost or any other service, so there
+is no central copy to remove. Local `cameraagent backup` archives are the exception:
+every archive taken while the store existed contains it, `raw/` and `quarantine/`
+included (see [Backup And Restore](#backup-and-restore)). If your purpose requires the
+orbital data to be gone, also delete those archives, or move them to owner-controlled
+storage as in step 4, and record that in the deployment ledger.
 
 1. While the CameraAgent is running, read `GET /api/v1/operations/orbital-elements/`
    and record these fields in the deployment ledger: `lastAttemptUtc`,
@@ -678,9 +724,10 @@ sent to LogicHost, so there is no central copy to remove.
    created. Consumers then read `NoActiveSnapshot`, and health reports no snapshot
    (healthy while refresh stays disabled).
 
-An archive holds `raw/` and `quarantine/`, which are CelesTrak's response bytes exactly
-as received, and `payloads/`, which is derived from them. The #527 decision infers no
-redistribution licence for the feed:
+An archive of the store, like a `cameraagent backup` archive, holds `raw/` and
+`quarantine/`, which are CelesTrak's response bytes exactly as received, and
+`payloads/`, which is derived from them. The #527 decision infers no redistribution
+licence for the feed:
 
 - Keep the archive on owner-controlled storage.
 - Do not publish it, attach it to an issue or support ticket, upload it to LogicHost or
@@ -692,7 +739,63 @@ To restart acquisition later on a new store, follow the checks in
 at least two hours since the recorded `lastAttemptUtc`, and the cause of any recorded
 halt resolved, before setting `Enabled` to `true`.
 
+## Backup And Restore
+
+`cameraagent backup` copies every folder and regular file of the instance root, and
+the store lies inside it: `<RawIngressRoot>` is the container's `/app/data/raw`, bound
+from the instance's `state/raw`. The store is not one of the SQLite stores a backup
+snapshots, so it is copied as files while the instance is stopped (a backup stops a
+running instance first): the database with any `-wal` and `-shm` sidecars, `raw/`,
+`quarantine/`, `payloads/` and `manifests/`.
+
+- Backup archives are the service account's alone on the host
+  (`<product-root>/backups`, mode 0700, files 0600). Copy one only to owner-controlled
+  storage.
+- Do not redistribute an archive or share it with a third party. It holds CelesTrak's
+  response bytes, as described in [Removing Orbital Data](#removing-orbital-data).
+
+`cameraagent reset-state` deletes the whole raw tree, the store included. The checks
+in [Integrity Failure And Store Replacement](#integrity-failure-and-store-replacement)
+then apply before refresh is enabled again.
+
+**Restoring an older archive rewinds the provider state.** `cameraagent restore` puts
+the instance root back exactly as it was archived, so the orbital store comes back as
+of the backup, with its floor, halt and attempt history. A halt, floor or attempt
+recorded after the backup is lost, and nothing carries it forward. An archive taken
+before the store existed restores no store at all, so the instance starts with an
+empty one, with no floor and no halt. This is unlike an installer upgrade or rollback:
+their snapshots, and the automatic recovery of a failed candidate, never touch
+`.orbital-elements/` (see [Rollback](#rollback)). A restore of an older backup does
+rewind it, so the replacement checks apply: at least two hours since the last attempt,
+and any halt resolved. Before you restore an archive older than the latest halt or
+attempt:
+
+1. While the instance still runs, record the status fields listed in step 1 of
+   [Removing Orbital Data](#removing-orbital-data).
+2. Make sure refresh is disabled (`CameraAgent:OrbitalElements:Enabled=false`) in the
+   restored instance before it runs. A restore also brings back the archive's
+   configuration, including the operator settings file, so a setting changed on the
+   live instance before the restore does not survive it. A restore leaves the instance
+   uninstalled, so set the value after the restore and before `cameraagent reinstall`
+   starts it.
+3. Re-enable refresh only after you confirm that the provider is not refusing this
+   site, without sending test requests to find out, and that at least the two-hour
+   floor has elapsed since the last request actually made, from step 1 or the logs.
+   Any halt the restore dropped must be resolved first.
+
 ## Rollback
+
+**Installer snapshots never touch the orbital store.** A migrating upgrade's database
+snapshot, the automatic recovery of a failed candidate, and
+`hvo-sky-install cameraagent rollback` restore only the stores in the installer's
+snapshot set. The orbital store is declared in the image's state contract
+(`orbitalElements`, writes 1, reads 1 to 1) but deliberately left out of that set
+(`docs/hvo-install-contract.md` section 6). The floor, halt and history recorded
+before a rollback therefore survive it, and the release rolled back to cannot request
+inside the floor or after a refusal. `cameraagent restore` of an older backup is
+different: it does rewind the store (see [Backup And Restore](#backup-and-restore)),
+so the replacement checks apply before refresh is enabled again: at least two hours
+since the last attempt, and any halt resolved.
 
 `OrbitalElementsRefresh` is a value appended to the closed `LocalAutomationTaskKind`
 enumeration. It is stored by name in `<RawIngressRoot>/.automation/local-automations.db`.
