@@ -60,12 +60,15 @@ internal sealed record InstallRecordInstance(
     Uri Url,
     ContainerResourceLimits? Resources,
     DateTimeOffset UpdatedUtc,
-    InstallRecordImageChange? LastImageChange = null)
+    InstallRecordImageChange? LastImageChange = null,
+    IReadOnlyList<PathProgramRecord>? Programs = null)
 {
     public const string CameraAgent = "CameraAgent";
 
     /// <summary>Whether the two say the same, whenever each was written.</summary>
-    public bool SameAs(InstallRecordInstance? other) => other is not null && this with { UpdatedUtc = other.UpdatedUtc } == other;
+    public bool SameAs(InstallRecordInstance? other) => other is not null &&
+        this with { UpdatedUtc = other.UpdatedUtc, Programs = other.Programs } == other &&
+        (Programs ?? []).SequenceEqual(other.Programs ?? []);
 }
 
 /// <summary>How an instance's image last changed.</summary>
@@ -244,7 +247,8 @@ internal static partial class InstallRecordStore
             PublicUri(manifest.BindAddress, manifest.Port),
             manifest.Resources,
             DateTimeOffset.UtcNow,
-            lastImageChange);
+            lastImageChange,
+            await PathPrograms.ProjectAsync(paths, cancellationToken).ConfigureAwait(false));
     }
 
     /// <summary>
@@ -384,6 +388,11 @@ internal static partial class InstallRecordStore
         {
             return $"instance {entry.InstanceId:D} has invalid resources";
         }
+        if (entry.Programs is { } programs && (programs.Count > 3 || programs.Any(program =>
+                program.Name is not ("hvo-sky" or "hvo-sky-install") || !Path.IsPathFullyQualified(program.Path) ||
+                !ProductVersion.IsValid(program.Version) || !ReleaseManifest.Sha256Pattern().IsMatch(program.Sha256) ||
+                program.PreviousSha256 is { } previous && !ReleaseManifest.Sha256Pattern().IsMatch(previous))))
+            return $"instance {entry.InstanceId:D} has invalid PATH programs";
         return entry.UpdatedUtc.Offset == TimeSpan.Zero ? null : $"instance {entry.InstanceId:D} has a non-UTC updatedUtc";
     }
 

@@ -365,6 +365,8 @@ internal sealed partial class CameraAgentInstaller
         // The install record is a view of the instance's own records, so an interruption here leaves those agreeing
         // with the container and the next run settles the view.
         cancellationToken.ThrowIfCancellationRequested();
+        await PathPrograms.SettleAsync(paths, request.ProductionProductRoot, request.Release, manifest.Image.ImageId,
+            cancellationToken).ConfigureAwait(false);
         var recordAction = await InstallRecordStore.SettleInstanceAsync(
                 instance.RecordLocation, paths, manifest, InstallRecordEvent.Install, cancellationToken)
             .ConfigureAwait(false);

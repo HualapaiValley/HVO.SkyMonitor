@@ -191,9 +191,16 @@ internal sealed class ReleaseFixture : IDisposable
             });
             assets.Add(Asset(name, ReleaseManifest.ImageArchiveKind, ReleaseManifest.RuntimeOf(platform), bytes));
         }
-        var installer = Encoding.UTF8.GetBytes($"installer {version}");
-        File.WriteAllBytes(Path.Combine(folder, "hvo-sky-install-linux-arm64"), installer);
-        assets.Add(Asset("hvo-sky-install-linux-arm64", "installer", "linux-arm64", installer));
+        foreach (var runtime in new[] { "linux-arm64", "linux-x64" })
+        {
+            foreach (var (name, kind) in new[] { ("hvo-sky-install", "installer"), ("hvo-sky", "cli") })
+            {
+                var bytes = Encoding.UTF8.GetBytes($"{name} {version} {runtime}");
+                var file = $"{name}-{runtime}";
+                File.WriteAllBytes(Path.Combine(folder, file), bytes);
+                assets.Add(Asset(file, kind, runtime, bytes));
+            }
+        }
         var releaseJson = new JsonObject
         {
             ["schemaVersion"] = 1,

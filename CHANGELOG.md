@@ -12,6 +12,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Release installs and upgrades put verified `hvo-sky` and `hvo-sky-install` commands on PATH, keep replaced programs
+  as `.previous`, restore matching commands on rollback, and report their paths in plans and install records. Resume
+  and reinstall hints use the durable installer; uninstall and purge honor shared ownership. (#1385)
+
 - Bounded local satellite exposure tracks, future-pass predictions and complete sky arcs pinned to their original orbital record, with reproducible virtual-camera fixtures, explicit source/time/geometry provenance and unavailable or partial outcomes when inputs or work limits prevent completion. (#529)
 
 ### Changed
@@ -29,9 +33,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   cloud mask. The dark badge behind N, E, S and W and the dark corner-text panel stay, star markers have no crosshair
   (#1415), and the Current Sky layer swatches match the overlays. Captures already retained keep the overlays they were
   drawn with, and time-lapse frames are unchanged. (#1383)
-- The installer names itself by the full path it runs from, such as `/opt/hvo-sky/hvo-sky-install-linux-arm64`, in
-  its usage and in every command a message tells you to run (a `Resume:` line, the rollback an upgrade names), so the
-  command runs as printed; the bare `hvo-sky-install` is not on PATH. Each command's `--help` says what the command does
+- Before a durable copy is installed, the installer names itself by the full path it runs from, such as
+  `/opt/hvo-sky/hvo-sky-install-linux-arm64`, in its usage and in every command a message tells you to run (a `Resume:`
+  line, the rollback an upgrade names), so the command runs as printed. Each command's `--help` says what the command does
   and lists only its own options, each described, and `cameraagent --help`, `catalog --help` and `host --help` list
   that group's commands. An option a command does not take is still a usage error (exit 2). (#1384)
 - Current Sky moves to a newer capture only once its overlays are complete, or once its processing has ended without
