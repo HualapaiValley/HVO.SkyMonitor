@@ -1,0 +1,106 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s26-original-record-verbatim",
+  "title": "An alert's exact source JSON span survives restart and refetch",
+  "covers": [
+    "original-record",
+    "verbatim-json",
+    "restart",
+    "duplicate"
+  ],
+  "containsSyntheticRecords": true,
+  "notes": [
+    "The alert and its extra fields are synthetic. The originalRecord span excludes only the array delimiters and surrounding whitespace, and includes the JSON number x: 1.5, escape spellings, nested values, field order and internal whitespace.",
+    "Exact text equality pins the UTF-8 bytes, including that 1.5 remains a JSON number."
+  ],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:01:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s26\"",
+        "lastModified": null,
+        "body": "[ \n{ \"x\": 1.5, \"escape\": \"\\u0061\\/\", \"nested\": {\"x\": [1, {\"y\": 2}]},\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1426\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic verbatim record\\nSynthetic fixture; not an SWPC product.\"}\n ]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "diagnostics": [],
+        "originalRecords": {
+          "ALTZZZ/1426/2026-10-20T12:00:00Z": [
+            "{ \"x\": 1.5, \"escape\": \"\\u0061\\/\", \"nested\": {\"x\": [1, {\"y\": 2}]},\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1426\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic verbatim record\\nSynthetic fixture; not an SWPC product.\"}"
+          ]
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "restart",
+      "expect": {
+        "originalRecords": {
+          "ALTZZZ/1426/2026-10-20T12:00:00Z": [
+            "{ \"x\": 1.5, \"escape\": \"\\u0061\\/\", \"nested\": {\"x\": [1, {\"y\": 2}]},\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1426\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic verbatim record\\nSynthetic fixture; not an SWPC product.\"}"
+          ]
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:03:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s26\"",
+        "lastModified": null,
+        "body": "[ \n{ \"x\": 1.5, \"escape\": \"\\u0061\\/\", \"nested\": {\"x\": [1, {\"y\": 2}]},\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1426\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic verbatim record\\nSynthetic fixture; not an SWPC product.\"}\n ]"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "diagnostics": [],
+        "attention": [],
+        "originalRecords": {
+          "ALTZZZ/1426/2026-10-20T12:00:00Z": [
+            "{ \"x\": 1.5, \"escape\": \"\\u0061\\/\", \"nested\": {\"x\": [1, {\"y\": 2}]},\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1426\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic verbatim record\\nSynthetic fixture; not an SWPC product.\"}"
+          ]
+        },
+        "notices": {
+          "ALTZZZ/1426": {
+            "versions": 1
+          }
+        }
+      }
+    },
+    {
+      "step": 4,
+      "kind": "restart",
+      "expect": {
+        "originalRecords": {
+          "ALTZZZ/1426/2026-10-20T12:00:00Z": [
+            "{ \"x\": 1.5, \"escape\": \"\\u0061\\/\", \"nested\": {\"x\": [1, {\"y\": 2}]},\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1426\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic verbatim record\\nSynthetic fixture; not an SWPC product.\"}"
+          ]
+        }
+      }
+    }
+  ]
+}

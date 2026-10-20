@@ -30,6 +30,8 @@ import json
 import math
 import re
 import sys
+import subprocess
+import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -142,7 +144,27 @@ def encode_alerts(records) -> str:
     return json.dumps(records, separators=(",", ":"), ensure_ascii=True).replace("/", "\\/")
 
 
-JSON_TOKEN_RE = re.compile(r'"[^"\\]*(?:\\.[^"\\]*)*"|[\[\]{}]', re.DOTALL)
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+IMF_FIXDATE_RE = re.compile(
+    r"(Mon|Tue|Wed|Thu|Fri|Sat|Sun), ([0-9]{2}) "
+    r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) ([0-9]{4}) "
+    r"([0-9]{2}):([0-9]{2}):([0-9]{2}) GMT")
+
+
+def retry_after_date(value):
+    """Exact IMF-fixdate, including a matching weekday and a real year in 0001..9999."""
+    match = IMF_FIXDATE_RE.fullmatch(value)
+    if match is None:
+        return None
+    weekday, day, month, year, hour, minute, second = match.groups()
+    try:
+        when = dt.datetime(int(year), MONTHS[month], int(day), int(hour), int(minute), int(second), tzinfo=UTC)
+    except ValueError:
+        return None
+    return when if WEEKDAYS[when.weekday()] == weekday else None
+
+
+JSON_TOKEN_RE = re.compile(r'"[^"\\]*(?:\\.[^"\\]*)*"?|[\[\]{}]', re.DOTALL)
 
 
 def json_depth(text):
@@ -156,6 +178,31 @@ def json_depth(text):
         elif value in ("]", "}"):
             depth -= 1
     return deepest
+
+
+def reject_json_constant(value):
+    """RFC 8259 numbers never include NaN or either infinity."""
+    raise ValueError(f"non-JSON constant: {value}")
+
+
+def alert_record_texts(text):
+    """Exact JSON spans from an already validated top-level array; exclude only array delimiters/whitespace."""
+    decoder = json.JSONDecoder(parse_float=JsonNumberText, parse_constant=reject_json_constant)
+    spans = []
+    pos = re.compile(r"[ \t\r\n]*").match(text, 0).end()
+    assert pos < len(text) and text[pos] == "[", "validated alerts body must be a JSON array"
+    pos += 1
+    while True:
+        pos = re.compile(r"[ \t\r\n]*").match(text, pos).end()
+        if text[pos] == "]":
+            return spans
+        start = pos
+        _, pos = decoder.raw_decode(text, pos)
+        spans.append(text[start:pos])
+        pos = re.compile(r"[ \t\r\n]*").match(text, pos).end()
+        if text[pos] == "]":
+            return spans
+        pos += 1  # The complete body already passed JSON validation: this is the array's comma.
 
 
 def dump_json(obj) -> bytes:
@@ -190,12 +237,20 @@ STAMP_FORMATS = {SCALES_STAMP: "%Y-%m-%d %H:%M:%S", KP_STAMP: "%Y-%m-%dT%H:%M:%S
                  OVATION_STAMP: "%Y-%m-%dT%H:%M:%SZ"}
 
 
-def geomagnetic_latitude(lat, lon):
+def geomagnetic_latitude_unrounded(lat, lon):
     pole = POLICY["dipolePole"]
     pl, pn = math.radians(pole["latitudeDeg"]), math.radians(pole["longitudeDeg"])
     f, l = math.radians(lat), math.radians(lon)
     value = math.sin(f) * math.sin(pl) + math.cos(f) * math.cos(pl) * math.cos(l - pn)
-    return round(math.degrees(math.asin(value)), 1)
+    return math.degrees(math.asin(value))
+
+
+def geomagnetic_latitude(lat, lon):
+    return round(geomagnetic_latitude_unrounded(lat, lon), 1)
+
+
+def relevance_difference(required, phi):
+    return round(required - phi, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +263,8 @@ WATCH_DAY_RE = re.compile(r"([A-Z][a-z]{2}) ([0-9]{2})\s*:\s+(G[1-5]|None)\b", r
 
 
 class Message:
-    def __init__(self, record, text):
+    def __init__(self, record, text, original_record=None):
+        self.original_record = original_record
         self.record = record
         self.product_id = record["product_id"]
         self.issue_datetime = record["issue_datetime"]
@@ -311,7 +367,7 @@ def watch_days(msg):
     return result
 
 
-def parse_record(record, index):
+def parse_record(record, index, original_record=None):
     """Return (Message, None) or (None, rejection reason)."""
     if not isinstance(record, dict):
         return None, "record-schema"
@@ -338,7 +394,7 @@ def parse_record(record, index):
             or not re.fullmatch(r"Issue Time: [0-9]{4} [A-Z][a-z]{2} [0-9]{2} [0-9]{4} UTC", lines[2])
             or parse_swpc_time(lines[2][len("Issue Time: "):]) is None):
         return None, "message-header"
-    return Message(record, text), None
+    return Message(record, text, original_record), None
 
 
 # ---------------------------------------------------------------------------
@@ -496,7 +552,7 @@ def relevance(group, site):
     if required is None:
         return "Unknown"
     phi = abs(geomagnetic_latitude(site["location"]["latitudeDeg"], site["location"]["longitudeDeg"]))
-    diff = round(required - phi, 1)
+    diff = relevance_difference(required, phi)
     if diff <= 0:
         return "InImpactArea"
     if diff <= 5:
@@ -754,8 +810,8 @@ class Model:
         touched = set()
         added = []
         seen_in_body = {}
-        for index, record in enumerate(records):
-            msg, reason = parse_record(record, index)
+        for index, (record, original_record) in enumerate(records):
+            msg, reason = parse_record(record, index, original_record)
             if msg is None:
                 diagnostics.append(f"record-rejected:{reason}:{index}")
                 continue
@@ -912,7 +968,7 @@ class Model:
         if json_depth(text) > JSON_MAX_DEPTH:
             return "rejected", "malformed-json", None
         try:
-            obj = json.loads(text, parse_float=JsonNumberText)
+            obj = json.loads(text, parse_float=JsonNumberText, parse_constant=reject_json_constant)
         except (ValueError, RecursionError):
             return "rejected", "malformed-json", None
         digest = sha256(data)
@@ -929,7 +985,8 @@ class Model:
                 return "rejected", "no-valid-records", None
             stamp = fmt(max(m.issue for m in accepted))
             return "ok", {"sha256": digest, "stamp": stamp, "facts": {"records": len(obj),
-                                                                         "acceptedRecords": len(accepted)}}, obj
+                                                                         "acceptedRecords": len(accepted)}}, \
+                list(zip(obj, alert_record_texts(text)))
         if name == "scales":
             facts, reason = parse_scales(obj)
             stamp = facts["current"]["stampUtc"] if facts else None
@@ -1003,12 +1060,10 @@ class Model:
             retry = response.get("retryAfter")
             if retry and re.fullmatch(r"[0-9]{1,9}", retry):
                 delay = int(retry)
-            elif retry and retry.isascii():
-                try:
-                    when = dt.datetime.strptime(retry, "%a, %d %b %Y %H:%M:%S GMT").replace(tzinfo=UTC)
+            elif retry:
+                when = retry_after_date(retry)
+                if when is not None:
                     delay = int((when - t).total_seconds())
-                except ValueError:
-                    pass
             delay = min(POLICY["retryAfterCapSeconds"], max(POLICY["minimumAttemptSpacingSeconds"], delay))
             st.in_backoff = True
             if st.rate_limited >= POLICY["rateLimitedHaltCount"]:
@@ -1118,6 +1173,8 @@ class Model:
         if t is not None:
             observed["notices"] = self.notice_view(t)
             observed["products"] = {p: self.product_view(p, t) for p in self.products}
+        observed["originalRecords"] = {identity: [m.original_record for m, _ in versions]
+                                       for identity, versions in self.store.items()}
         return observed
 
     # -- durability -------------------------------------------------------
@@ -1132,7 +1189,7 @@ class Model:
         return {
             "providerHalt": self.provider_halt,
             "seq": self.seq,
-            "store": {identity: [{"record": m.record, "seq": seq} for m, seq in versions]
+            "store": {identity: [{"originalRecord": m.original_record, "seq": seq} for m, seq in versions]
                       for identity, versions in self.store.items()},
             "raised": {node(n): rank for n, rank in self.raised.items()},
             "acks": {node(n): ack for n, ack in self.acks.items()},
@@ -1148,8 +1205,12 @@ class Model:
             return code, int(serial)
         self.provider_halt = state["providerHalt"]
         self.seq = state["seq"]
-        self.store = {identity: [(parse_record(v["record"], 0)[0], v["seq"]) for v in versions]
-                      for identity, versions in state["store"].items()}
+        self.store = {
+            identity: [(parse_record(json.loads(v["originalRecord"], parse_float=JsonNumberText,
+                                               parse_constant=reject_json_constant), 0,
+                                     v["originalRecord"])[0], v["seq"]) for v in versions]
+            for identity, versions in state["store"].items()}
+
         self.raised = {node(n): rank for n, rank in state["raised"].items()}
         self.acks = {node(n): ack for n, ack in state["acks"].items()}
         self.orphans = set(state["orphans"])
@@ -1211,7 +1272,7 @@ def replay(scenario):
 class Capture:
     def __init__(self):
         self.alerts_text = (PACK / CAPTURE / "alerts.json").read_text("ascii")
-        self.alerts = json.loads(self.alerts_text)
+        self.alerts = json.loads(self.alerts_text, parse_constant=reject_json_constant)
         self.by_identity = {}
         for record in self.alerts:
             msg = Message(record, normalize_text(record["message"]))
@@ -1234,6 +1295,14 @@ def synthetic(product_id, issue_datetime, code, serial, lines):
     issue = issue_datetime[:10] + "T" + issue_datetime[11:16] + ":00Z"
     return {"product_id": product_id, "issue_datetime": issue_datetime,
             "message": message_text(code, serial, issue, lines)}
+
+
+def synthetic_scales(year=2026):
+    """Fresh synthetic source data; no captured scale values are reused."""
+    return {str(day): {"DateStamp": f"{year:04d}-10-20", "TimeStamp": "12:00:00",
+                       "R": {"Scale": "0", "MinorProb": "5", "MajorProb": "1"},
+                       "S": {"Scale": "0", "Prob": "2"}, "G": {"Scale": "0"}}
+            for day in range(-1, 4)}
 
 
 def newest_first(records):
@@ -2250,7 +2319,7 @@ def scenarios(cap: Capture):
     out.append(b.build())
 
     # s17 ------------------------------------------------------------------
-    original = json.loads((PACK / THREE_DAY_ORIGINAL).read_text("ascii"))
+    original = json.loads((PACK / THREE_DAY_ORIGINAL).read_text("ascii"), parse_constant=reject_json_constant)
     normalized_sha = sha256(normalize_text(original["text"]).encode("utf-8"))
     renamed = original["text"].replace("NOAA Kp index breakdown", "NOAA Kp Index Forecast Breakdown", 1)
     no_radiation_rows = re.sub(r"(?m)^S1 or greater.*\n", "", original["text"], count=1)
@@ -2307,7 +2376,7 @@ def scenarios(cap: Capture):
     ovation_text = (PACK / OVATION_SUBSET).read_text("ascii")
     ovation_sha = sha256(ovation_text.encode("ascii"))
     # One cell outside the site band and the equatorial rows, [236, 60, 0], gets the JSON number 0.5 as its
-    # value. Nothing else changes, so the body stays the size of the committed subset.
+    # value. Nothing else changes, so the body is the committed subset plus two bytes.
     if ovation_text.count("\n    [236, 60, 0],\n") != 1:
         raise ScenarioError("s18 cell [236, 60, 0] is not unique in the OVATION subset")
     fraction_cell = ovation_text.replace("\n    [236, 60, 0],\n", "\n    [236, 60, 0.5],\n", 1)
@@ -2607,6 +2676,182 @@ def scenarios(cap: Capture):
                     "nextAttemptNotBeforeUtc": "2026-10-19T19:15:00Z"}})
     out.append(b.build())
 
+    # s23 ------------------------------------------------------------------
+    b = Builder("s23-retry-after-forms", "Retry-After accepts only delta-seconds or exact IMF-fixdate",
+                ["retry-after", "imf-fixdate", "calendar-date", "weekday"], synthetic_records=True,
+                notes=["All response headers and the reset alert are synthetic. Each 429 is followed by an "
+                       "accepted reset body so the next case starts with a zero 429 count.",
+                       "Invalid forms give 1800 seconds. A matching weekday is required. Valid years 0001 "
+                       "and 9999 give the existing 60-second floor and 21600-second cap."])
+    reset_record = synthetic("SYNTH", "2026-02-03 00:59:00.000", "ALTZZZ", 1423,
+                             ["ALERT: Synthetic retry reset", "Synthetic fixture; not an SWPC product."])
+    reset = alerts_ok([reset_record], '"fixture-s23"', None)
+    # Delays are hand-authored independently of retry_after_date.
+    forms = [
+        ("Mon, 01 Jan 0000 00:00:00 GMT", 1800),
+        ("Mon, 30 Feb 2026 01:02:03 GMT", 1800),
+        ("tue, 03 feb 2026 01:02:03 GMT", 1800),
+        ("Tue, 3 Feb 2026 01:02:03 GMT", 1800),
+        ("Tue, 03 Feb 2026 1:02:03 GMT", 1800),
+        ("Tue, 03 Feb 2026 01:2:03 GMT", 1800),
+        ("Tue, 03 Feb 2026 01:02:3 GMT", 1800),
+        ("Tue,  03 Feb 2026 01:02:03 GMT", 1800),
+        ("Tuesday, 03-Feb-26 01:02:03 GMT", 1800),
+        ("Tue Feb  3 01:02:03 2026", 1800),
+        ("Mon, 03 Feb 2026 01:02:03 GMT", 1800),
+        ("Tue, 03 Feb 2026 01:02:03 GMT", 123),
+        ("Mon, 01 Jan 0001 00:00:00 GMT", 60),
+        ("Fri, 31 Dec 9999 23:59:59 GMT", 21600),
+    ]
+    # Advance a day per case; only the valid contemporary date tracks the reference time.
+    for index, (header, seconds) in enumerate(forms):
+        at = ts("2026-02-03T01:00:00Z")
+        if index:
+            at += dt.timedelta(days=index)
+        if index == 11:
+            header = http_date(fmt(at + dt.timedelta(seconds=123)))
+        expected_next = at + dt.timedelta(seconds=seconds)
+        b.fetch(fmt(at), {"status": 429, "retryAfter": header}, {
+            "outcome": "rate-limited", "diagnostics": [],
+            "product": {"nextAttemptNotBeforeUtc": fmt(expected_next), "consecutiveRateLimited": 1}})
+        b.fetch(fmt(expected_next), reset, {"outcome": "updated" if index == 0 else "unchanged",
+                                           "product": {"consecutiveRateLimited": 0}})
+    out.append(b.build())
+
+    # s24 ------------------------------------------------------------------
+    record = synthetic("SYNTH", "2026-10-20 12:00:00.000", "ALTZZZ", 1424,
+                       ["ALERT: Synthetic JSON baseline", "Synthetic fixture; not an SWPC product."])
+    bodies = {
+        "alerts": encode_alerts([record]),
+        "scales": json.dumps(synthetic_scales()),
+        "kp-forecast": '[{"time_tag":"2026-10-20T12:00:00","kp":4.67,'
+                       '"observed":"observed","noaa_scale":"G1"}]',
+        "ovation": '{"Observation Time":"2026-10-20T12:00:00Z",'
+                   '"Forecast Time":"2026-10-20T12:30:00Z","coordinates":[[236,60,0]]}',
+    }
+    b = Builder("s24-json-nonfinite", "Non-JSON constants reject every JSON product and preserve last-known-good",
+                ["malformed-json", "nonfinite", "last-known-good"], synthetic_records=True,
+                notes=["Every body is synthetic. Each JSON product first accepts a baseline, then rejects NaN, "
+                       "Infinity and -Infinity before applying product schema or per-record checks."])
+    for product, body in bodies.items():
+        at = ts("2026-10-20T12:00:00Z")
+        response = {"status": 200, "contentType": "application/json", "etag": '"fixture-s24"',
+                    "lastModified": None, "body": body}
+        b.fetch(fmt(at), response, {"outcome": "updated", "diagnostics": []}, product=product)
+        for index, constant in enumerate(("NaN", "Infinity", "-Infinity"), 1):
+            malformed = "[" + constant + "]" if product in ("alerts", "kp-forecast") else '{"x":' + constant + '}'
+            b.fetch(fmt(at + dt.timedelta(seconds=index * POLICY["products"][product]["baseSeconds"])),
+                    dict(response, body=malformed, etag='"fixture-s24-rejected"'), {
+                        "outcome": "rejected", "diagnostics": ["body-rejected:malformed-json"],
+                        "product": {"lkgSha256": sha256(body.encode("ascii")), "lastSuccessUtc": fmt(at),
+                                    "validators": {"etag": '"fixture-s24"', "lastModified": None},
+                                    "consecutiveRejected": index}}, product=product)
+    out.append(b.build())
+
+    # s25 ------------------------------------------------------------------
+    b = Builder("s25-year-bounds", "Source years 1900 and 9998 are inclusive; adjacent years reject",
+                ["source-year", "message-header", "schema", "last-known-good"], synthetic_records=True,
+                notes=["All records and scales are synthetic. Alert years exercise Issue Time; scales exercise "
+                       "JSON product stamps. Boundary outcomes are hand-authored.",
+                       "A restart separates products and preserves the accepted year-9998 alert across the "
+                       "year-9999 rejection. The 9998 record is not purged during this scenario."])
+    at = ts("2026-10-20T12:00:00Z")
+    lkg = None
+    last_success = None
+    for index, (year, accepted) in enumerate(((1899, False), (1900, True), (9998, True), (9999, False))):
+        record = synthetic("SYNTH", f"{year}-10-20 12:00:00.000", "ALTZZZ", 1425,
+                           ["ALERT: Synthetic source-year boundary", "Synthetic fixture; not an SWPC product."])
+        response = alerts_ok([record], f'"fixture-s25-alerts-{year}"', None)
+        when = fmt(at + dt.timedelta(seconds=index * 120))
+        if accepted:
+            lkg = sha256(response["body"].encode("ascii"))
+            last_success = when
+        b.fetch(when, response, {
+            "outcome": "updated" if accepted else "rejected",
+            "diagnostics": [] if accepted else ["body-rejected:no-valid-records"],
+            "product": {"lkgSha256": lkg, "lastSuccessUtc": last_success}})
+    b.step("restart")
+    lkg = None
+    last_success = None
+    for index, (year, accepted) in enumerate(((1899, False), (1900, True), (9998, True), (9999, False))):
+        body = json.dumps(synthetic_scales(year))
+        when = fmt(at + dt.timedelta(seconds=index * 300))
+        if accepted:
+            lkg = sha256(body.encode("ascii"))
+            last_success = when
+        b.fetch(when, {"status": 200, "contentType": "application/json", "body": body}, {
+            "outcome": "updated" if accepted else "rejected",
+            "diagnostics": [] if accepted else ["body-rejected:schema"],
+            "product": {"lkgSha256": lkg, "lastSuccessUtc": last_success}}, product="scales")
+    out.append(b.build())
+
+    # s26 ------------------------------------------------------------------
+    record = synthetic("SYNTH", "2026-10-20 12:00:00.000", "ALTZZZ", 1426,
+                       ["ALERT: Synthetic verbatim record", "Synthetic fixture; not an SWPC product."])
+    # The number, field layout, escape spellings and internal whitespace must all survive unchanged.
+    original = '{ "x": 1.5, "escape": "\\u0061\\/", "nested": {"x": [1, {"y": 2}]},\n  ' + \
+        json.dumps(record, ensure_ascii=True)[1:]
+    body = "[ \n" + original + "\n ]"
+    identity = "ALTZZZ/1426/2026-10-20T12:00:00Z"
+    expected_original = {identity: [original]}
+    response = {"status": 200, "contentType": "application/json", "etag": '"fixture-s26"',
+                "lastModified": None, "body": body}
+    b = Builder("s26-original-record-verbatim", "An alert's exact source JSON span survives restart and refetch",
+                ["original-record", "verbatim-json", "restart", "duplicate"], synthetic_records=True,
+                notes=["The alert and its extra fields are synthetic. The originalRecord span excludes only "
+                       "the array delimiters and surrounding whitespace, and includes the JSON number x: 1.5, "
+                       "escape spellings, nested values, field order and internal whitespace.",
+                       "Exact text equality pins the UTF-8 bytes, including that 1.5 remains a JSON number."])
+    b.fetch("2026-10-20T12:01:00Z", response, {
+        "outcome": "updated", "diagnostics": [], "originalRecords": expected_original})
+    b.step("restart", {"originalRecords": expected_original})
+    b.fetch("2026-10-20T12:03:00Z", response, {
+        "outcome": "unchanged", "diagnostics": [], "attention": [], "originalRecords": expected_original,
+        "notices": {"ALTZZZ/1426": {"versions": 1}}})
+    b.step("restart", {"originalRecords": expected_original})
+    out.append(b.build())
+
+    # s27 ------------------------------------------------------------------
+    first_record = synthetic("SYNTH", "2026-10-20 12:00:00.000", "ALTZZZ", 1427,
+                             ["ALERT: Synthetic outer-whitespace version one",
+                              "Synthetic fixture; not an SWPC product."])
+    second_record = synthetic("SYNTH", "2026-10-20 12:00:00.000", "ALTZZZ", 1427,
+                              ["ALERT: Synthetic outer-whitespace version two",
+                               "Synthetic fixture; not an SWPC product."])
+    # Literal UTF-8 and a JSON Unicode escape must retain their distinct source spellings.
+    prefix = '{ "x": 1.5, "literal": "é", "escaped": "\\u00e9",\n  '
+    first_original = prefix + json.dumps(first_record, ensure_ascii=True)[1:]
+    second_original = prefix + json.dumps(second_record, ensure_ascii=True)[1:]
+    first_body = " \t\n\r[ \n" + first_original + "\n ]\r\n\t "
+    second_body = "\r\n\t [\t" + second_original + "\r]\t \r\n"
+    identity = "ALTZZZ/1427/2026-10-20T12:00:00Z"
+    both_originals = {identity: [first_original, second_original]}
+    first_response = {"status": 200, "contentType": "application/json", "etag": '"fixture-s27-a"',
+                      "lastModified": None, "body": first_body}
+    second_response = dict(first_response, etag='"fixture-s27-b"', body=second_body)
+    b = Builder("s27-original-record-outer-whitespace",
+                "Outer JSON whitespace preserves two verbatim alert versions through restart and refetch",
+                ["original-record", "outer-whitespace", "utf-8", "source-revision", "restart", "duplicate"],
+                synthetic_records=True,
+                notes=["Both alert versions and their extra fields are synthetic. Each body has all four RFC 8259 "
+                       "whitespace characters before its opening array bracket and whitespace after its closing bracket.",
+                       "Exact originalRecord equality includes the JSON number x: 1.5, literal UTF-8 é, the distinct "
+                       "JSON escape \\u00e9 and internal whitespace, excluding every byte outside the record object.",
+                       "The two versions share an identity and source time but have different normalized message "
+                       "hashes. Their original records remain in ingest order across both restarts and the unchanged refetch."])
+    b.fetch("2026-10-20T12:01:00Z", first_response, {
+        "outcome": "updated", "diagnostics": [], "originalRecords": {identity: [first_original]},
+        "notices": {"ALTZZZ/1427": {"versions": 1}}})
+    b.fetch("2026-10-20T12:03:00Z", second_response, {
+        "outcome": "updated", "diagnostics": [f"source-revision:{identity}"], "attention": [],
+        "originalRecords": both_originals, "notices": {"ALTZZZ/1427": {"versions": 2}}})
+    b.step("restart", {"originalRecords": both_originals})
+    b.fetch("2026-10-20T12:05:00Z", second_response, {
+        "outcome": "unchanged", "diagnostics": [], "attention": [], "originalRecords": both_originals,
+        "notices": {"ALTZZZ/1427": {"versions": 2}}})
+    b.step("restart", {"originalRecords": both_originals})
+    out.append(b.build())
+
     return out
 
 
@@ -2654,7 +2899,7 @@ def ovation_subset_bytes(original: Path) -> bytes:
     data = original.read_bytes()
     if len(data) != OVATION_ORIGINAL_BYTES or sha256(data) != OVATION_ORIGINAL_SHA256:
         raise ScenarioError("OVATION original does not match the recorded size and hash")
-    obj = json.loads(data)
+    obj = json.loads(data, parse_constant=reject_json_constant)
     s = OVATION_SECTOR
     cells = [c for c in obj["coordinates"]
              if s["lonMin"] <= c[0] <= s["lonMax"] and s["latMin"] <= c[1] <= s["latMax"]]
@@ -2699,6 +2944,7 @@ def manifest(cap, files):
             "scenarioSchema": SCENARIO_SCHEMA,
             "scenarios": sorted(f for f in files if f.startswith("scenarios/")),
             "generator": "fixtures.py",
+            "roundingVectors": "rounding-vectors.json",
             "normalization": "CRLF to LF, trailing spaces/tabs trimmed per line, trailing blank lines "
                              "removed, every line LF-terminated",
         },
@@ -2711,10 +2957,11 @@ def collect_files(cap, ovation_bytes):
     for rel in ("SOURCE.md", "fixtures.py", CAPTURE + "/alerts.json", CAPTURE + "/noaa-scales.json",
                 CAPTURE + "/noaa-planetary-k-index-forecast.json", THREE_DAY_ORIGINAL):
         files[rel] = (PACK / rel).read_bytes()
-    original = json.loads(files[THREE_DAY_ORIGINAL])
+    original = json.loads(files[THREE_DAY_ORIGINAL], parse_constant=reject_json_constant)
     files[THREE_DAY_NORMALIZED] = normalize_text(original["text"]).encode("utf-8")
     files[OVATION_SUBSET] = ovation_bytes
     files.update(scenario_files(cap))
+    files["rounding-vectors.json"] = (PACK / "rounding-vectors.json").read_bytes()
     return files
 
 
@@ -2723,12 +2970,12 @@ def check_captures(files):
     for fact in CAPTURE_FACTS:
         data = files[fact["file"]]
         if fact["product"] == "3-day-forecast":
-            wrapper = json.loads(data)
+            wrapper = json.loads(data, parse_constant=reject_json_constant)
             raw = wrapper["text"].encode("utf-8")
             if wrapper.get("schemaVersion") != TEXT_CAPTURE_SCHEMA:
                 problems.append("3-day wrapper schema")
         elif fact["product"] == "ovation":
-            subset = json.loads(data)
+            subset = json.loads(data, parse_constant=reject_json_constant)
             if subset["originalSha256"] != fact["sha256"] or subset["originalBytes"] != fact["decodedBytes"]:
                 problems.append("OVATION subset provenance mismatch")
             continue
@@ -2737,9 +2984,65 @@ def check_captures(files):
         if len(raw) != fact["decodedBytes"] or sha256(raw) != fact["sha256"]:
             problems.append(f"{fact['file']}: capture bytes or hash differ from the recorded fetch")
     alerts = files[CAPTURE + "/alerts.json"]
-    if encode_alerts(json.loads(alerts)).encode("ascii") != alerts:
+    if encode_alerts(json.loads(alerts, parse_constant=reject_json_constant)).encode("ascii") != alerts:
         problems.append("alerts encoder does not reproduce the captured bytes")
     return problems
+
+
+def check_rounding_vectors(data):
+    vectors = json.loads(data, parse_constant=reject_json_constant)
+    problems = []
+    for kind in ("geomagneticLatitude", "relevanceDifference"):
+        for index, vector in enumerate(vectors[kind], 1):
+            inputs = vector["input"]
+            if kind == "geomagneticLatitude":
+                lat, lon = inputs["latitudeDeg"], inputs["longitudeDeg"]
+                raw = geomagnetic_latitude_unrounded(lat, lon)
+                rounded = geomagnetic_latitude(lat, lon)
+            else:
+                required, phi = inputs["requiredLatitudeDeg"], inputs["geomagneticLatitudeDeg"]
+                raw = required - phi
+                rounded = relevance_difference(required, phi)
+            expected = vector["expectedRounded"]
+            # Also round the recorded binary double directly, independently of the input computation.
+            direct = round(float(vector["unroundedDouble"]), 1)
+            if repr(raw) != vector["unroundedDouble"] or any(
+                    value != expected or math.copysign(1, value) != math.copysign(1, expected)
+                    for value in (rounded, direct)):
+                problems.append(f"rounding {kind} vector {index}: raw={raw!r}, rounded={rounded!r}, "
+                                f"direct={direct!r}; expected {vector}")
+    return problems
+
+
+ADVERSARIAL_TIMEOUT_SECONDS = 5
+
+
+def command_check_adversarial_json():
+    # 1,048,575 bytes, just below the alert cap. Generate only in memory, never in the fixture tree.
+    body = '"' + '\\"' * 524287
+    model = Model({"sites": [HVO_SITE]})
+    started = time.perf_counter()
+    result = model.validate("alerts", {"contentType": "application/json", "body": body},
+                            ts("2026-10-20T12:00:00Z"), [])
+    elapsed = time.perf_counter() - started
+    if result != ("rejected", "malformed-json", None) or elapsed >= ADVERSARIAL_TIMEOUT_SECONDS:
+        print(f"FAIL adversarial JSON: {result}, {elapsed:.3f}s")
+        return 1
+    print(f"OK adversarial JSON: malformed-json in {elapsed:.3f}s (bound {ADVERSARIAL_TIMEOUT_SECONDS}s)")
+    return 0
+
+
+def check_adversarial_json():
+    # A subprocess timeout also bounds the old regex, so check itself cannot hang on a regression.
+    try:
+        run = subprocess.run([sys.executable, "-I", "-B", str(PACK / "fixtures.py"), "check-adversarial-json"],
+                             capture_output=True, text=True, timeout=ADVERSARIAL_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return [f"adversarial JSON exceeded {ADVERSARIAL_TIMEOUT_SECONDS}s"]
+    if run.returncode:
+        return [f"adversarial JSON: {run.stdout.strip()} {run.stderr.strip()}"]
+    print(run.stdout.strip())
+    return []
 
 
 def command_check():
@@ -2766,9 +3069,11 @@ def command_check():
     if dump_json(manifest(cap, files)) != manifest_path.read_bytes():
         problems.append("manifest.json differs from its regenerated form")
     problems.extend(check_captures(files))
+    problems.extend(check_adversarial_json())
+    problems.extend(check_rounding_vectors(files["rounding-vectors.json"]))
     for rel, data in sorted(files.items()):
         if rel.startswith("scenarios/"):
-            problems.extend(replay(json.loads(data)))
+            problems.extend(replay(json.loads(data, parse_constant=reject_json_constant)))
     for line in problems:
         print("FAIL", line)
     count = len([f for f in files if f.startswith("scenarios/")])
@@ -2786,9 +3091,10 @@ def command_write(ovation_original):
         ovation_bytes = (PACK / OVATION_SUBSET).read_bytes()
     files = collect_files(cap, ovation_bytes)
     problems = check_captures(files)
+    problems.extend(check_rounding_vectors(files["rounding-vectors.json"]))
     for rel, data in sorted(files.items()):
         if rel.startswith("scenarios/"):
-            problems.extend(replay(json.loads(data)))
+            problems.extend(replay(json.loads(data, parse_constant=reject_json_constant)))
     if problems:
         for line in problems:
             print("FAIL", line)
@@ -2810,10 +3116,13 @@ def main(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("check")
+    sub.add_parser("check-adversarial-json")
     write = sub.add_parser("write")
     write.add_argument("--ovation-original")
     args = parser.parse_args(argv)
     try:
+        if args.command == "check-adversarial-json":
+            return command_check_adversarial_json()
         return command_check() if args.command == "check" else command_write(args.ovation_original)
     except ScenarioError as error:
         print("FAIL", error)

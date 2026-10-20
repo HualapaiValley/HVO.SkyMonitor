@@ -1,0 +1,149 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s27-original-record-outer-whitespace",
+  "title": "Outer JSON whitespace preserves two verbatim alert versions through restart and refetch",
+  "covers": [
+    "original-record",
+    "outer-whitespace",
+    "utf-8",
+    "source-revision",
+    "restart",
+    "duplicate"
+  ],
+  "containsSyntheticRecords": true,
+  "notes": [
+    "Both alert versions and their extra fields are synthetic. Each body has all four RFC 8259 whitespace characters before its opening array bracket and whitespace after its closing bracket.",
+    "Exact originalRecord equality includes the JSON number x: 1.5, literal UTF-8 \u00e9, the distinct JSON escape \\u00e9 and internal whitespace, excluding every byte outside the record object.",
+    "The two versions share an identity and source time but have different normalized message hashes. Their original records remain in ingest order across both restarts and the unchanged refetch."
+  ],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:01:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s27-a\"",
+        "lastModified": null,
+        "body": " \t\n\r[ \n{ \"x\": 1.5, \"literal\": \"\u00e9\", \"escaped\": \"\\u00e9\",\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1427\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic outer-whitespace version one\\nSynthetic fixture; not an SWPC product.\"}\n ]\r\n\t "
+      },
+      "expect": {
+        "outcome": "updated",
+        "diagnostics": [],
+        "originalRecords": {
+          "ALTZZZ/1427/2026-10-20T12:00:00Z": [
+            "{ \"x\": 1.5, \"literal\": \"\u00e9\", \"escaped\": \"\\u00e9\",\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1427\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic outer-whitespace version one\\nSynthetic fixture; not an SWPC product.\"}"
+          ]
+        },
+        "notices": {
+          "ALTZZZ/1427": {
+            "versions": 1
+          }
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:03:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s27-b\"",
+        "lastModified": null,
+        "body": "\r\n\t [\t{ \"x\": 1.5, \"literal\": \"\u00e9\", \"escaped\": \"\\u00e9\",\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1427\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic outer-whitespace version two\\nSynthetic fixture; not an SWPC product.\"}\r]\t \r\n"
+      },
+      "expect": {
+        "outcome": "updated",
+        "diagnostics": [
+          "source-revision:ALTZZZ/1427/2026-10-20T12:00:00Z"
+        ],
+        "attention": [],
+        "originalRecords": {
+          "ALTZZZ/1427/2026-10-20T12:00:00Z": [
+            "{ \"x\": 1.5, \"literal\": \"\u00e9\", \"escaped\": \"\\u00e9\",\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1427\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic outer-whitespace version one\\nSynthetic fixture; not an SWPC product.\"}",
+            "{ \"x\": 1.5, \"literal\": \"\u00e9\", \"escaped\": \"\\u00e9\",\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1427\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic outer-whitespace version two\\nSynthetic fixture; not an SWPC product.\"}"
+          ]
+        },
+        "notices": {
+          "ALTZZZ/1427": {
+            "versions": 2
+          }
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "restart",
+      "expect": {
+        "originalRecords": {
+          "ALTZZZ/1427/2026-10-20T12:00:00Z": [
+            "{ \"x\": 1.5, \"literal\": \"\u00e9\", \"escaped\": \"\\u00e9\",\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1427\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic outer-whitespace version one\\nSynthetic fixture; not an SWPC product.\"}",
+            "{ \"x\": 1.5, \"literal\": \"\u00e9\", \"escaped\": \"\\u00e9\",\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1427\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic outer-whitespace version two\\nSynthetic fixture; not an SWPC product.\"}"
+          ]
+        }
+      }
+    },
+    {
+      "step": 4,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:05:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s27-b\"",
+        "lastModified": null,
+        "body": "\r\n\t [\t{ \"x\": 1.5, \"literal\": \"\u00e9\", \"escaped\": \"\\u00e9\",\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1427\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic outer-whitespace version two\\nSynthetic fixture; not an SWPC product.\"}\r]\t \r\n"
+      },
+      "expect": {
+        "outcome": "unchanged",
+        "diagnostics": [],
+        "attention": [],
+        "originalRecords": {
+          "ALTZZZ/1427/2026-10-20T12:00:00Z": [
+            "{ \"x\": 1.5, \"literal\": \"\u00e9\", \"escaped\": \"\\u00e9\",\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1427\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic outer-whitespace version one\\nSynthetic fixture; not an SWPC product.\"}",
+            "{ \"x\": 1.5, \"literal\": \"\u00e9\", \"escaped\": \"\\u00e9\",\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1427\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic outer-whitespace version two\\nSynthetic fixture; not an SWPC product.\"}"
+          ]
+        },
+        "notices": {
+          "ALTZZZ/1427": {
+            "versions": 2
+          }
+        }
+      }
+    },
+    {
+      "step": 5,
+      "kind": "restart",
+      "expect": {
+        "originalRecords": {
+          "ALTZZZ/1427/2026-10-20T12:00:00Z": [
+            "{ \"x\": 1.5, \"literal\": \"\u00e9\", \"escaped\": \"\\u00e9\",\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1427\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic outer-whitespace version one\\nSynthetic fixture; not an SWPC product.\"}",
+            "{ \"x\": 1.5, \"literal\": \"\u00e9\", \"escaped\": \"\\u00e9\",\n  \"product_id\": \"SYNTH\", \"issue_datetime\": \"2026-10-20 12:00:00.000\", \"message\": \"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1427\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic outer-whitespace version two\\nSynthetic fixture; not an SWPC product.\"}"
+          ]
+        }
+      }
+    }
+  ]
+}
