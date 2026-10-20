@@ -17,10 +17,10 @@ public static class SwpcScalesParser
         var records = ImmutableArray.CreateBuilder<ScaleReading>();
         for (var day = -1; day <= 3; day++)
         {
-            if (!root.TryGetProperty(day.ToString(CultureInfo.InvariantCulture), out var obj)
-                || !SwpcJsonBody.String(obj, "DateStamp", out var date) || !SwpcJsonBody.String(obj, "TimeStamp", out var time)
+            if (!SwpcJsonBody.Property(root, day.ToString(CultureInfo.InvariantCulture), out var obj)
+                || !SwpcJsonBody.String(obj, "DateStamp", out var date, maximumBytes: 19) || !SwpcJsonBody.String(obj, "TimeStamp", out var time, maximumBytes: 19)
                 || SwpcText.Stamp(date + " " + time, false) is not { } stamp
-                || !obj.TryGetProperty("R", out var r) || !obj.TryGetProperty("S", out var s) || !obj.TryGetProperty("G", out var g)
+                || !SwpcJsonBody.Property(obj, "R", out var r) || !SwpcJsonBody.Property(obj, "S", out var s) || !SwpcJsonBody.Property(obj, "G", out var g)
                 || !SwpcJsonBody.NullableString(r, "Scale", out var rs) || !SwpcJsonBody.NullableString(r, "MinorProb", out var minor)
                 || !SwpcJsonBody.NullableString(r, "MajorProb", out var major) || !SwpcJsonBody.NullableString(s, "Scale", out var ss)
                 || !SwpcJsonBody.NullableString(s, "Prob", out var prob) || !SwpcJsonBody.NullableString(g, "Scale", out var gs))

@@ -34,7 +34,7 @@ public static class SwpcText
     internal static bool IsBlank(string text) => TrimWhitespace(text.AsSpan()).IsEmpty;
 
     internal static Match Match(string text, string pattern) => Regex.Match(text, pattern,
-        RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking, Regex.InfiniteMatchTimeout);
     internal static bool Whole(string text, string pattern) => Match(text, "\\A(?:" + pattern + ")\\z").Success;
     internal static string? Field(string text, string label)
     {

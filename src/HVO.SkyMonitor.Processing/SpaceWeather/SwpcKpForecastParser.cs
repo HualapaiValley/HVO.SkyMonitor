@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text.Json;
+using System.Runtime.InteropServices;
 
 namespace HVO.SkyMonitor.Processing.SpaceWeather;
 
@@ -19,8 +20,8 @@ public static class SwpcKpForecastParser
         DateTimeOffset? stamp = null;
         foreach (var row in root.EnumerateArray())
         {
-            if (!SwpcJsonBody.String(row, "time_tag", out var time) || SwpcText.Stamp(time, true) is not { } start
-                || !row.TryGetProperty("kp", out var kp) || kp.ValueKind != JsonValueKind.Number || !SwpcText.Whole(kp.GetRawText(), @"[0-9]\.[0-9]{2}")
+            if (!SwpcJsonBody.String(row, "time_tag", out var time, maximumBytes: 19) || SwpcText.Stamp(time, true) is not { } start
+                || !SwpcJsonBody.Property(row, "kp", out var kp) || kp.ValueKind != JsonValueKind.Number || JsonMarshal.GetRawUtf8Value(kp).Length != 4 || !SwpcText.Whole(kp.GetRawText(), @"[0-9]\.[0-9]{2}")
                 || !SwpcJsonBody.String(row, "observed", out var label) || !SwpcJsonBody.NullableString(row, "noaa_scale", out var scale))
                 return SwpcJsonBody.Rejected<KpBin>("schema");
             bins[start] = new(start, kp.GetRawText(), label, scale);

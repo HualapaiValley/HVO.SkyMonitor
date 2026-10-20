@@ -11,31 +11,39 @@ public static class SwpcAttentionEvaluator
         ArgumentNullException.ThrowIfNull(input);
         var groups = input.Groups;
         var now = input.NowUtc;
+        var windows = SwpcNoticeLifecycle.Prepare(groups);
+        var roots = groups.Select(g => g.Root).ToArray();
+        var families = groups.Select(g => g.Family).ToArray();
         var touched = input.Touched;
         var raised = input.RaisedRanks.ToBuilder();
         var events = ImmutableArray.CreateBuilder<SwpcAttentionEvent>();
         int? Rank(SwpcNoticeGroup g)
         {
-            var ranks = g.Nodes.Where(raised.ContainsKey).Select(n => raised[n]).ToArray();
-            return ranks.Length == 0 ? null : ranks.Max();
+            int? maximum = null;
+            foreach (var node in g.Nodes)
+                if (raised.TryGetValue(node, out var rank) && (maximum is null || rank > maximum)) maximum = rank;
+            return maximum;
         }
-        foreach (var group in groups.Where(g => g.Root is not null && g.Family != SpaceWeatherFamily.Summary && g.Nodes.Overlaps(touched))
-            .OrderBy(g => g.Root!.IssueMinuteUtc).ThenBy(g => g.Identity, StringComparer.Ordinal))
+        foreach (var index in Enumerable.Range(0, groups.Length)
+            .Where(i => roots[i] is not null && families[i] != SpaceWeatherFamily.Summary && groups[i].Nodes.Overlaps(touched))
+            .OrderBy(i => roots[i]!.IssueMinuteUtc).ThenBy(i => groups[i].Identity, StringComparer.Ordinal))
         {
+            var group = groups[index];
             var rank = group.Level is null or "K4" ? 0 : group.Level[1] - '0';
             var prior = Rank(group);
             if (prior is null)
             {
-                var state = SwpcNoticeLifecycle.Evaluate(group, groups, now).State;
+                var state = windows[index].StateAt(now);
                 var eligible = state is SwpcNoticeState.Pending or SwpcNoticeState.Active
                     || state == SwpcNoticeState.Recent && now < group.LatestNonCancel!.IssueMinuteUtc.AddSeconds(SwpcLimits.NewGraceSeconds);
                 var reason = "new";
-                if (group.Family == SpaceWeatherFamily.Watch)
+                if (families[index] == SpaceWeatherFamily.Watch)
                 {
-                    var before = group.Root!.IssueMinuteUtc.AddSeconds(-1);
-                    var predecessors = groups.Where(g => g.Family == SpaceWeatherFamily.Watch && g.Identity != group.Identity && g.Root is { } root
-                        && root.IssueMinuteUtc < group.Root.IssueMinuteUtc && SwpcNoticeLifecycle.Evaluate(g, groups, before).State == SwpcNoticeState.Active)
-                        .Select(Rank).Where(r => r.HasValue).Select(r => r!.Value).ToArray();
+                    var rootIssue = roots[index]!.IssueMinuteUtc;
+                    var before = rootIssue.AddSeconds(-1);
+                    var predecessors = Enumerable.Range(0, groups.Length).Where(i => families[i] == SpaceWeatherFamily.Watch && groups[i].Identity != group.Identity && roots[i] is { } root
+                        && root.IssueMinuteUtc < rootIssue && windows[i].StateAt(before) == SwpcNoticeState.Active)
+                        .Select(i => Rank(groups[i])).Where(r => r.HasValue).Select(r => r!.Value).ToArray();
                     if (predecessors.Length > 0 && rank <= predecessors.Max()) { raised[group.CanonicalNode] = rank; continue; }
                     if (predecessors.Length > 0) reason = "escalated";
                 }

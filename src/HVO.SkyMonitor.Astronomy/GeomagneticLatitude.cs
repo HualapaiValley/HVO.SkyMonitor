@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Globalization;
 
 namespace HVO.SkyMonitor.Astronomy;
 
@@ -39,9 +40,10 @@ public static class GeomagneticLatitude
         var rounded = BigInteger.DivRem(numerator, denominator, out var remainder);
         var comparison = (remainder * 2).CompareTo(denominator);
         if (comparison > 0 || comparison == 0 && !rounded.IsEven) rounded++;
-        // For large finite doubles no decimal-tenth adjustment is representable, and converting
-        // the scaled integer to double could overflow before division.
-        if (Math.Abs(value) >= 1e16) return value;
-        return Math.CopySign((double)rounded / 10, value);
+        // Parse the exact decimal tenth once. Converting its numerator to binary64
+        // before division would introduce a second rounding, even below 1e16.
+        var digits = rounded.ToString(CultureInfo.InvariantCulture).PadLeft(2, '0');
+        var exactTenth = digits.Insert(digits.Length - 1, ".");
+        return Math.CopySign(double.Parse(exactTenth, CultureInfo.InvariantCulture), value);
     }
 }

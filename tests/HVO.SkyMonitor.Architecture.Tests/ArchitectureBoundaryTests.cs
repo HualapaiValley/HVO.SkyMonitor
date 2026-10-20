@@ -159,46 +159,63 @@ public sealed class ArchitectureBoundaryTests
         Assert.IsTrue(project.References.All(reference => reference is AgentCore or Astronomy or Imaging));
         Assert.IsEmpty(project.FrameworkReferences);
         Assert.IsEmpty(project.PackageReferences);
-        var folder = Path.Combine(repository.Root, "src", Processing, "SpaceWeather");
-        var forbidden = new System.Text.RegularExpressions.Regex(
-            @"\b(?:HVO\s*\.\s*SkyMonitor\s*\.\s*(?:CameraAgent|LogicHost|Common|Catalog|Storage)|Microsoft\s*\.\s*(?:AspNetCore|EntityFrameworkCore|Data\s*\.\s*Sqlite)|System\s*\.\s*(?:Net|IO)|SQLite|Sqlite|HttpClient|DbContext)\b",
-            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
-        var files = Directory.GetFiles(folder, "*.cs");
-        Assert.IsNotEmpty(files);
-        foreach (var file in files)
-        {
-            var source = MaskCSharpCommentsAndLiterals(File.ReadAllText(file));
-            Assert.IsFalse(forbidden.IsMatch(source), Path.GetRelativePath(repository.Root, file));
-            Assert.IsTrue(source.Contains("namespace HVO.SkyMonitor.Processing.SpaceWeather;", StringComparison.Ordinal));
-        }
-        Assert.IsTrue(forbidden.IsMatch("global::System.Net.Http.HttpClient"));
-        Assert.IsTrue(forbidden.IsMatch("using S = Microsoft.Data.Sqlite;"));
+        var result = CompiledDependencyChecker.Check(ProductionAssembly(project), CompiledDependencyChecker.SpaceWeather, CompiledDependencyChecker.HostHttpOrPersistence);
+        Assert.IsGreaterThan(0, result.TypesChecked);
+        Assert.IsEmpty(result.Violations, string.Join(Environment.NewLine, result.Violations));
     }
 
     [TestMethod]
     [TestCategory("Unit")]
     public void CaptureRawIngressAndRecipesReferenceNoSpaceWeatherFacts()
     {
-        var root = Repository.Value.Root;
-        var files = Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
-            .Where(path => !RepositoryGraph.HasPathSegment(path, "bin") && !RepositoryGraph.HasPathSegment(path, "obj"));
         var checkedCount = 0;
-        foreach (var file in files)
+        foreach (var project in Repository.Value.Projects.Values.Where(p => p.Kind == ProjectKind.Production))
         {
-            var relative = Path.GetRelativePath(root, file);
-            var source = MaskCSharpCommentsAndLiterals(File.ReadAllText(file));
-            // Processing's pre-existing flat files own recipes and frame execution. Only its
-            // new source-neutral facts namespace is excluded from that recipe rule.
-            if (!(relative.Contains("Capture", StringComparison.OrdinalIgnoreCase)
-                || relative.Contains("RawIngress", StringComparison.OrdinalIgnoreCase)
-                || relative.Contains("Recipe", StringComparison.OrdinalIgnoreCase)
-                || relative.StartsWith(Path.Combine("src", Processing), StringComparison.Ordinal)
-                    && !relative.StartsWith(Path.Combine("src", Processing, "SpaceWeather") + Path.DirectorySeparatorChar, StringComparison.Ordinal)
-                || System.Text.RegularExpressions.Regex.IsMatch(source, @"namespace\s+[^;{]*(?:Capture|RawIngress|Recipes)"))) continue;
-            checkedCount++;
-            Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(source, @"\b\w*SpaceWeather\w*\b"), relative);
+            var result = CompiledDependencyChecker.Check(ProductionAssembly(project), CompiledDependencyChecker.CaptureOrRecipe, CompiledDependencyChecker.SpaceWeather);
+            checkedCount += result.TypesChecked;
+            Assert.IsEmpty(result.Violations, string.Join(Environment.NewLine, result.Violations));
         }
         Assert.IsGreaterThan(0, checkedCount);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void SpaceWeatherMetadataRuleRejectsInternalFileCall()
+    {
+        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+            type => CompiledDependencyChecker.SpaceWeather(type) && type.Name == "FileDependencyControl", CompiledDependencyChecker.HostHttpOrPersistence);
+        Assert.AreEqual(1, result.TypesChecked);
+        Assert.IsTrue(result.Violations.Any(v => v.Contains("System.IO.File", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CaptureMetadataRuleRejectsGlobalImportAndSameAssemblyTypeDefinition()
+    {
+        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+            type => CompiledDependencyChecker.CaptureOrRecipe(type) && type.Name == "GlobalImportDependencyControl", CompiledDependencyChecker.SpaceWeather);
+        Assert.AreEqual(1, result.TypesChecked);
+        Assert.IsTrue(result.Violations.Any(v => v.Contains("SpaceWeather.SwpcMessageRecord", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void SpaceWeatherMetadataRuleCoversBaseSignaturesAndAttributeArguments()
+    {
+        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+            type => CompiledDependencyChecker.SpaceWeather(type) && type.Name == "SignatureDependencyControl", CompiledDependencyChecker.HostHttpOrPersistence);
+        Assert.AreEqual(1, result.TypesChecked);
+        foreach (var name in new[] { "System.IO.MemoryStream", "System.IO.FileInfo", "System.IO.DirectoryInfo", "System.IO.BinaryReader", "System.Net.Http.HttpClient" })
+            Assert.IsTrue(result.Violations.Any(v => v.Contains(name, StringComparison.Ordinal)), name);
+    }
+
+    // Use the existing graph's MSBuild evaluation to locate Release outputs,
+    // including RID-specific runners; no new project reference or lane is needed.
+    private static string ProductionAssembly(ProjectInfo project)
+    {
+        var path = project.ReleaseAssemblyPath;
+        Assert.IsTrue(File.Exists(path), $"Build the Release solution before architecture checks: {path}");
+        return path;
     }
 
     [TestMethod]
@@ -1290,7 +1307,10 @@ public sealed class ArchitectureBoundaryTests
         ProjectKind Kind,
         IReadOnlyList<string> References,
         IReadOnlyList<string> PackageReferences,
-        IReadOnlyList<string> FrameworkReferences);
+        IReadOnlyList<string> FrameworkReferences)
+    {
+        internal string ReleaseAssemblyPath { get; init; } = "";
+    }
 
     private sealed class RepositoryGraph
     {
@@ -1346,7 +1366,8 @@ public sealed class ArchitectureBoundaryTests
                     kind,
                     references,
                     evaluations.SelectMany(item => item.PackageReferences).Distinct(StringComparer.Ordinal).ToArray(),
-                    evaluations.SelectMany(item => item.FrameworkReferences).Distinct(StringComparer.Ordinal).ToArray()));
+                    evaluations.SelectMany(item => item.FrameworkReferences).Distinct(StringComparer.Ordinal).ToArray())
+                { ReleaseAssemblyPath = evaluation.TargetPath });
             }
 
             return new RepositoryGraph(root, projects);
@@ -1528,7 +1549,7 @@ public sealed class ArchitectureBoundaryTests
             process.StartInfo.ArgumentList.Add(projectPath);
             process.StartInfo.ArgumentList.Add("-nologo");
             process.StartInfo.ArgumentList.Add($"-property:Configuration={configuration}");
-            process.StartInfo.ArgumentList.Add("-getProperty:AssemblyName");
+            process.StartInfo.ArgumentList.Add("-getProperty:AssemblyName,TargetPath");
             process.StartInfo.ArgumentList.Add("-getItem:ProjectReference,PackageReference,FrameworkReference");
 
             process.Start();
@@ -1555,7 +1576,8 @@ public sealed class ArchitectureBoundaryTests
                 .Select(item => item.GetProperty("Identity").GetString()!)
                 .ToArray();
 
-            return new ProjectEvaluation(assemblyName, projectReferences, packageReferences, frameworkReferences);
+            return new ProjectEvaluation(assemblyName, projectReferences, packageReferences, frameworkReferences)
+            { TargetPath = root.GetProperty("Properties").GetProperty("TargetPath").GetString()! };
         }
 
         private static string[] GetItemValues(JsonElement items, string itemName, string propertyName) =>
@@ -1592,6 +1614,9 @@ public sealed class ArchitectureBoundaryTests
             string AssemblyName,
             string[] ProjectReferencePaths,
             string[] PackageReferences,
-            string[] FrameworkReferences);
+            string[] FrameworkReferences)
+        {
+            internal string TargetPath { get; init; } = "";
+        }
     }
 }

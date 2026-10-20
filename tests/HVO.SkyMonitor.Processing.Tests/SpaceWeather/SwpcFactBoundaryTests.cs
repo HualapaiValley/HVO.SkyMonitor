@@ -226,11 +226,10 @@ public sealed class SwpcFactBoundaryTests
         var now = new DateTimeOffset(2026, 10, 20, 0, 0, 0, TimeSpan.Zero);
         var window = new SwpcNoticeWindow(now, now.AddHours(96), now.AddHours(120), SwpcNoticeState.Active, null, SwpcNoticeEndReason.Expired, false);
         var sun = new RecordingSun();
-        var category = SpaceWeatherRelevance.Categorize(SpaceWeatherFamily.Watch, "WATA50", "G3", null, 42.2);
         var qualifier = SpaceWeatherDarknessQualifier.Qualify(window, new(35.5599378, -113.9119818, 1000), sun);
         Assert.HasCount(16, sun.Queries);
         Assert.IsEmpty(qualifier.Boundaries); // No boundary evidence makes no polar-day/night claim.
-        Assert.AreEqual(LocalRelevanceCategory.Unlikely, category.Category);
+        Assert.IsEmpty(qualifier.Restrictions); // No evidence permits no daylight/twilight restriction.
         Assert.IsTrue(sun.Queries.All(q => q.End - q.Start <= TimeSpan.FromHours(24)));
         Assert.IsTrue(sun.Queries.All(q => q.Start >= window.FromUtc && q.End <= window.UntilUtc));
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => SpaceWeatherDarknessQualifier.Qualify(window with { UntilUtc = now.AddHours(97) }, new(0, 0, 0), sun));

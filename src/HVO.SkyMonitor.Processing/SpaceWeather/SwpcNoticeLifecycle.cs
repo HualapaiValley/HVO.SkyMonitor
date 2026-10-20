@@ -8,6 +8,31 @@ public static class SwpcNoticeLifecycle
     {
         ArgumentNullException.ThrowIfNull(group);
         ArgumentNullException.ThrowIfNull(groups);
+        return Compute(group, NextWatch(group, Watches(groups))).At(nowUtc);
+    }
+
+    // Window bounds and adjustments do not depend on the read instant. Attention
+    // prepares each exactly once, then asks only the cheap state function below.
+    internal static WindowFacts[] Prepare(IReadOnlyList<SwpcNoticeGroup> groups)
+    {
+        var watches = Watches(groups);
+        return groups.Select(group => Compute(group, NextWatch(group, watches))).ToArray();
+    }
+
+    private static (string Identity, DateTimeOffset Issue)[] Watches(IReadOnlyList<SwpcNoticeGroup> groups)
+        => groups.Where(g => g.Family == SpaceWeatherFamily.Watch && g.Root is not null)
+            .Select(g => (g.Identity, g.Root!.IssueMinuteUtc)).OrderBy(w => w.IssueMinuteUtc).ToArray();
+
+    private static DateTimeOffset? NextWatch(SwpcNoticeGroup group, (string Identity, DateTimeOffset Issue)[] watches)
+    {
+        if (group.Family != SpaceWeatherFamily.Watch || group.Root is not { } root) return null;
+        foreach (var watch in watches)
+            if (watch.Issue > root.IssueMinuteUtc && watch.Identity != group.Identity) return watch.Issue;
+        return null;
+    }
+
+    private static WindowFacts Compute(SwpcNoticeGroup group, DateTimeOffset? laterWatch)
+    {
         var root = group.Root;
         var nc = group.LatestNonCancel;
         if (root is null || nc is null) return Result(group.Latest.IssueMinuteUtc, group.Latest.IssueMinuteUtc, SwpcNoticeEndReason.Cancelled, false);
@@ -56,27 +81,30 @@ public static class SwpcNoticeLifecycle
         var fallback = !start.HasValue || !until.HasValue;
         if (fallback) { start = root.IssueMinuteUtc; until = start.Value.AddHours(6); }
         var reason = SwpcNoticeEndReason.Expired;
-        if (group.Family == SpaceWeatherFamily.Watch)
-        {
-            var later = groups.Where(g => g.Identity != group.Identity && g.Family == SpaceWeatherFamily.Watch && g.Root is { } r && r.IssueMinuteUtc > root.IssueMinuteUtc)
-                .Select(g => g.Root!.IssueMinuteUtc).Order().FirstOrDefault();
-            if (later != default && later < until) { until = later; reason = SwpcNoticeEndReason.Superseded; }
-        }
+        if (laterWatch is { } later && later < until) { until = later; reason = SwpcNoticeEndReason.Superseded; }
+
         foreach (var cancel in group.Versions.Where(v => v.Message.Header.Modifier == "CANCEL").OrderBy(v => v.Message.IssueMinuteUtc))
             if (cancel.Message.IssueMinuteUtc < until) { until = cancel.Message.IssueMinuteUtc; reason = SwpcNoticeEndReason.Cancelled; }
         var cap = nc.IssueMinuteUtc.AddHours(SwpcLimits.ActiveCapHours);
         if (until > cap) { until = cap; reason = SwpcNoticeEndReason.Capped; }
         return Result(start!.Value, until!.Value, reason, fallback);
 
-        SwpcNoticeWindow Result(DateTimeOffset from, DateTimeOffset to, SwpcNoticeEndReason? end, bool usedFallback)
+        WindowFacts Result(DateTimeOffset from, DateTimeOffset to, SwpcNoticeEndReason? end, bool usedFallback)
+            => new(from, to, end, usedFallback, group.Family == SpaceWeatherFamily.Summary && nc is not null);
+    }
+
+    internal sealed record WindowFacts(DateTimeOffset From, DateTimeOffset Until, SwpcNoticeEndReason? Reason, bool Fallback, bool Summary)
+    {
+        internal SwpcNoticeState StateAt(DateTimeOffset nowUtc)
+            => Summary ? nowUtc < Until.AddHours(SwpcLimits.RecentHours) ? SwpcNoticeState.Recent : SwpcNoticeState.History
+                : nowUtc >= Until ? nowUtc < Until.AddHours(SwpcLimits.RecentHours) ? SwpcNoticeState.Recent : SwpcNoticeState.History
+                : nowUtc < From ? SwpcNoticeState.Pending : SwpcNoticeState.Active;
+
+        internal SwpcNoticeWindow At(DateTimeOffset nowUtc)
         {
-            var recentUntil = to.AddHours(SwpcLimits.RecentHours);
-            var state = group.Family == SpaceWeatherFamily.Summary && nc is not null
-                ? nowUtc < recentUntil ? SwpcNoticeState.Recent : SwpcNoticeState.History
-                : nowUtc >= to ? nowUtc < recentUntil ? SwpcNoticeState.Recent : SwpcNoticeState.History
-                : nowUtc < from ? SwpcNoticeState.Pending : SwpcNoticeState.Active;
-            return new(from, to, recentUntil, state,
-                state is SwpcNoticeState.Recent or SwpcNoticeState.History ? end : null, end, usedFallback);
+            var state = StateAt(nowUtc);
+            return new(From, Until, Until.AddHours(SwpcLimits.RecentHours), state,
+                state is SwpcNoticeState.Recent or SwpcNoticeState.History ? Reason : null, Reason, Fallback);
         }
     }
 

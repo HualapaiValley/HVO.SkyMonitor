@@ -11,19 +11,18 @@ public static class SwpcAlertsParser
     /// <summary>Parses all records without performing ingest, deduplication or I/O.</summary>
     public static SwpcBodyResult<SwpcMessageRecord> Parse(ReadOnlySpan<byte> decoded, string? mediaType)
     {
-        var body = SwpcJsonBody.Read(decoded, SwpcProduct.Alerts, mediaType);
-        if (body.RejectionReason is { } reason) return SwpcJsonBody.Rejected<SwpcMessageRecord>(reason);
-        var root = body.Root!.Value;
-        if (root.ValueKind != JsonValueKind.Array) return SwpcJsonBody.Rejected<SwpcMessageRecord>("schema");
-        var count = root.GetArrayLength();
-        if (count == 0) return SwpcJsonBody.Rejected<SwpcMessageRecord>("suspect-empty");
-        if (count > SwpcLimits.Records) return SwpcJsonBody.Rejected<SwpcMessageRecord>("too-many-records");
+        var reason = SwpcJsonBody.Validate(decoded, SwpcProduct.Alerts, mediaType, out var count);
+        if (reason is not null) return SwpcJsonBody.Rejected<SwpcMessageRecord>(reason);
         var records = ImmutableArray.CreateBuilder<SwpcMessageRecord>();
         var rejections = ImmutableArray.CreateBuilder<SwpcRecordRejection>();
         var index = 0;
-        foreach (var element in root.EnumerateArray())
+        var reader = new Utf8JsonReader(decoded, new JsonReaderOptions { MaxDepth = SwpcLimits.JsonDepth });
+        reader.Read();
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
         {
-            var message = ParseRecord(element, out reason);
+            var start = (int)reader.TokenStartIndex;
+            reader.Skip();
+            var message = ParseRecord(decoded[start..(int)reader.BytesConsumed], out reason);
             if (message is null) rejections.Add(new(index, reason!));
             else records.Add(message);
             index++;
@@ -50,17 +49,43 @@ public static class SwpcAlertsParser
         return [.. diagnostics.Order(StringComparer.Ordinal)];
     }
 
-    private static SwpcMessageRecord? ParseRecord(JsonElement element, out string? reason)
+    private static SwpcMessageRecord? ParseRecord(ReadOnlySpan<byte> raw, out string? reason)
     {
         reason = "record-schema";
-        if (!SwpcJsonBody.String(element, "product_id", out var product, requireUtf8: true)
-            || !SwpcJsonBody.String(element, "issue_datetime", out var issueText, requireUtf8: true)
-            || !SwpcJsonBody.String(element, "message", out var message, requireUtf8: true)
-            || !SwpcText.Whole(product, "[A-Z0-9]{2,8}")) return null;
+        var reader = new Utf8JsonReader(raw, new JsonReaderOptions { MaxDepth = SwpcLimits.JsonDepth });
+        reader.Read();
+        if (reader.TokenType != JsonTokenType.StartObject) return null;
+        ReadOnlySpan<byte> productRaw = default, issueRaw = default, messageRaw = default;
+        var productString = false;
+        var issueString = false;
+        var messageString = false;
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        {
+            var field = SwpcJsonBody.Key(ref reader, "product_id"u8) ? 1
+                : SwpcJsonBody.Key(ref reader, "issue_datetime"u8) ? 2
+                : SwpcJsonBody.Key(ref reader, "message"u8) ? 3 : 0;
+            reader.Read();
+            var isString = reader.TokenType == JsonTokenType.String;
+            var value = isString ? reader.ValueSpan : default;
+            if (field == 1) { productRaw = value; productString = isString; }
+            if (field == 2) { issueRaw = value; issueString = isString; }
+            if (field == 3) { messageRaw = value; messageString = isString; }
+            reader.Skip();
+        }
+        if (!productString || !issueString || !messageString
+            || !SwpcJsonBody.Utf8Length(productRaw, out var productLength)
+            || !SwpcJsonBody.Utf8Length(issueRaw, out var issueLength)
+            || !SwpcJsonBody.Utf8Length(messageRaw, out var messageLength)
+            || productLength is < 2 or > 8) return null;
+        var product = Materialize(productRaw);
+        if (!SwpcText.Whole(product, "[A-Z0-9]{2,8}")) return null;
         reason = "issue-datetime";
+        if (issueLength != 23) return null;
+        var issueText = Materialize(issueRaw);
         if (!SwpcText.Whole(issueText, @"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}")) return null;
         reason = "record-oversize";
-        if (SwpcText.Utf8.GetByteCount(message) > SwpcLimits.MessageBytes) return null;
+        if (messageLength > SwpcLimits.MessageBytes) return null;
+        var message = Materialize(messageRaw);
         var text = SwpcText.Normalize(message);
         var lines = text.Split('\n');
         reason = "message-header";
@@ -75,7 +100,20 @@ public static class SwpcAlertsParser
         var identity = codeText + "/" + serialNumber.ToString(CultureInfo.InvariantCulture) + "/" + SwpcText.Utc(issue.Value);
         reason = null;
         return new(identity, codeText, serialNumber, issue.Value, issueText, SwpcHash.Sha256UpperHex(SwpcText.Utf8.GetBytes(text)),
-            element.GetRawText(), Header(codeText, text, lines, issue.Value), product, text);
+            SwpcText.Utf8.GetString(raw), Header(codeText, text, lines, issue.Value), product, text);
+    }
+
+    private static string Materialize(ReadOnlySpan<byte> raw)
+    {
+        // Decode only bounded required fields. GetString also validates the
+        // escape spelling, which the completed streaming pass has already read.
+        if (!raw.Contains((byte)'\\')) return SwpcText.Utf8.GetString(raw);
+        var quoted = new byte[raw.Length + 2];
+        quoted[0] = quoted[^1] = (byte)'"';
+        raw.CopyTo(quoted.AsSpan(1));
+        var reader = new Utf8JsonReader(quoted);
+        reader.Read();
+        return reader.GetString()!;
     }
 
     private static SwpcMessageHeader Header(string code, string text, string[] lines, DateTimeOffset issue)
@@ -119,7 +157,7 @@ public static class SwpcAlertsParser
         var k = SwpcText.Match(code, @"\A(?:WARK|ALTK)0([4-9])\z");
         if (k.Success) return k.Groups[1].Value == "4" ? "K4" : "G" + (SwpcText.Number(k.Groups[1].Value) - 4).ToString(CultureInfo.InvariantCulture);
         var level = family == SpaceWeatherFamily.Watch ? SwpcText.Match(headline, "Category (G[1-5])")
-            : SwpcText.Match(text, "(?m)^[nN][oO][aA][aA] [sS][cC][aA][lL][eE]: ([GgRrSs][1-5])(?![A-Za-z0-9_])");
+            : SwpcText.Match(text, "(?m)^[nN][oO][aA][aA] [sS][cC][aA][lL][eE]: ([GgRrSs][1-5])(?:[^A-Za-z0-9_]|\\z)");
         return level.Success ? level.Groups[1].Value.ToUpperInvariant() : null;
     }
 
@@ -127,7 +165,7 @@ public static class SwpcAlertsParser
     {
         var days = ImmutableArray.CreateBuilder<SwpcWatchDay>();
         foreach (var line in text.Split('\n'))
-            foreach (Match m in Regex.Matches(line, @"([A-Z][a-z]{2}) ([0-9]{2})[ \t\r\n\f\v]*:[ \t\r\n\f\v]+(G[1-5]|None)(?![A-Za-z0-9_])", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1)))
+            foreach (Match m in Regex.Matches(line, @"([A-Z][a-z]{2}) ([0-9]{2})[ \t\r\n\f\v]*:[ \t\r\n\f\v]+(G[1-5]|None)(?:[^A-Za-z0-9_]|\z)", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking, Regex.InfiniteMatchTimeout))
             {
                 if (SwpcText.Month(m.Groups[1].Value) == 0) continue;
                 var day = SwpcText.Yearless(m.Groups[1].Value, m.Groups[2].Value, issue);

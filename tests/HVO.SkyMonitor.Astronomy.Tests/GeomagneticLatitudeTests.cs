@@ -59,6 +59,37 @@ public sealed class GeomagneticLatitudeTests
         }
     }
 
+    // Expected constants generated with Python 3 round(x, 1), including nextafter
+    // neighbors of 2**49, 2**52, 1e16 and the maximum finite binary64 value.
+    // Command is recorded in correction-s1-c1/gates/02-reference-probes.txt.
+    [TestMethod]
+    [DataRow(1000000000000000.5, 1000000000000000.5)]
+    [DataRow(-1000000000000000.5, -1000000000000000.5)]
+    [DataRow(562949953421311.94, 562949953421311.9)]
+    [DataRow(-562949953421311.94, -562949953421311.9)]
+    [DataRow(562949953421312.0, 562949953421312.0)]
+    [DataRow(-562949953421312.0, -562949953421312.0)]
+    [DataRow(562949953421312.1, 562949953421312.1)]
+    [DataRow(-562949953421312.1, -562949953421312.1)]
+    [DataRow(4503599627370495.5, 4503599627370495.5)]
+    [DataRow(-4503599627370495.5, -4503599627370495.5)]
+    [DataRow(4503599627370496.0, 4503599627370496.0)]
+    [DataRow(-4503599627370496.0, -4503599627370496.0)]
+    [DataRow(4503599627370497.0, 4503599627370497.0)]
+    [DataRow(-4503599627370497.0, -4503599627370497.0)]
+    [DataRow(9999999999999998.0, 9999999999999998.0)]
+    [DataRow(-9999999999999998.0, -9999999999999998.0)]
+    [DataRow(1e+16, 1e+16)]
+    [DataRow(-1e+16, -1e+16)]
+    [DataRow(1.0000000000000002e+16, 1.0000000000000002e+16)]
+    [DataRow(-1.0000000000000002e+16, -1.0000000000000002e+16)]
+    [DataRow(1.7976931348623155e+308, 1.7976931348623155e+308)]
+    [DataRow(-1.7976931348623155e+308, -1.7976931348623155e+308)]
+    [DataRow(1.7976931348623157e+308, 1.7976931348623157e+308)]
+    [DataRow(-1.7976931348623157e+308, -1.7976931348623157e+308)]
+    public void LargeFiniteValuesRoundOnceLikePython(double input, double expected)
+        => Assert.AreEqual(BitConverter.DoubleToInt64Bits(expected), BitConverter.DoubleToInt64Bits(GeomagneticLatitude.RoundToTenth(input)));
+
     [TestMethod]
     public void DefaultDotnetRoundingDisagreesWithAtLeastOneGoldenVector()
     {
