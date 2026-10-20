@@ -27,6 +27,7 @@ internal sealed partial class CameraAgentOperatorTelemetry : IDisposable
     {
     }
 
+    /// <param name="meter">The meter owned and disposed by this instance.</param>
     internal CameraAgentOperatorTelemetry(Meter meter, ILogger<CameraAgentOperatorTelemetry>? logger = null)
     {
         _meter = meter;
