@@ -43,8 +43,9 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 # Copy published application
 COPY --from=build /app/publish .
 
-# Set environment
+# URLS owns the HTTP binding; clear the runtime image's inherited port default.
 ENV ASPNETCORE_ENVIRONMENT=Production \
+    ASPNETCORE_HTTP_PORTS= \
     ASPNETCORE_URLS=http://+:8080
 
 # Expose port

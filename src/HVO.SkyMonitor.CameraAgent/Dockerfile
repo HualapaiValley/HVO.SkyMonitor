@@ -128,8 +128,9 @@ LABEL io.hvo.skymonitor.component="CameraAgent" \
       org.opencontainers.image.revision="${HVO_SOURCE_REVISION}" \
       org.opencontainers.image.created="${HVO_CREATED}"
 
-# Set environment
+# URLS owns the HTTP binding; clear the runtime image's inherited port default.
 ENV ASPNETCORE_ENVIRONMENT=Production \
+    ASPNETCORE_HTTP_PORTS= \
     ASPNETCORE_URLS=http://+:8080
 
 # Expose port

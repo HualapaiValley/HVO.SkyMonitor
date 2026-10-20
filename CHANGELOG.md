@@ -42,6 +42,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent and LogicHost images no longer warn about overriding the runtime image's HTTP port default during
+  their intended startup binding; listening addresses and ports are unchanged. (#1436)
+
 - While the newest capture is still processing, Current Sky no longer skips a finished capture it could show when the
   retained history spans two agent identities whose capture sequence numbers overlap, which could leave it showing the
   capture still being processed. (#1409)
