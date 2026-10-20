@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Storage.FileSystem;
 using Microsoft.Data.Sqlite;
@@ -147,15 +146,17 @@ public sealed partial class OrbitalSnapshotReader : IOrbitalSnapshotReader
     private async ValueTask<OrbitalSnapshot?> LoadAsync(OrbitalStoredSnapshot row, CancellationToken cancellationToken)
     {
         Interlocked.Increment(ref _loadCount);
-        var manifestBytes = await ReadBoundedAsync(_store.ManifestPath(row.ManifestSha256), row.ManifestLengthBytes,
-            cancellationToken).ConfigureAwait(false);
-        if (manifestBytes is null || !HashEquals(manifestBytes, row.ManifestFileSha256))
+        var manifestBytes = await _store.ReadVerifiedFileAsync(_store.ManifestPath(row.ManifestSha256),
+            row.ManifestLengthBytes, OrbitalContract.MaximumPayloadBytes, row.ManifestFileSha256, cancellationToken)
+            .ConfigureAwait(false);
+        if (manifestBytes is null)
         {
             return null;
         }
-        var payloadBytes = await ReadBoundedAsync(_store.PayloadPath(row.PayloadSha256), row.PayloadLengthBytes,
-            cancellationToken).ConfigureAwait(false);
-        if (payloadBytes is null || !HashEquals(payloadBytes, row.PayloadSha256))
+        var payloadBytes = await _store.ReadVerifiedFileAsync(_store.PayloadPath(row.PayloadSha256),
+            row.PayloadLengthBytes, OrbitalContract.MaximumPayloadBytes, row.PayloadSha256, cancellationToken)
+            .ConfigureAwait(false);
+        if (payloadBytes is null)
         {
             return null;
         }
@@ -166,29 +167,6 @@ public sealed partial class OrbitalSnapshotReader : IOrbitalSnapshotReader
                 ? snapshot
                 : null;
     }
-
-    private async ValueTask<byte[]?> ReadBoundedAsync(string path, long expectedLength, CancellationToken cancellationToken)
-    {
-        _store.VerifyContained(path, "orbital-read");
-        if (!File.Exists(path) || expectedLength is <= 0 or > OrbitalContract.MaximumPayloadBytes)
-        {
-            return null;
-        }
-        DurableSync.RequireRegularFile(path);
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
-        if (stream.Length != expectedLength)
-        {
-            return null;
-        }
-        var buffer = new byte[expectedLength];
-        await stream.ReadExactlyAsync(buffer, cancellationToken).ConfigureAwait(false);
-        var probe = new byte[1];
-        return await stream.ReadAsync(probe.AsMemory(), cancellationToken).ConfigureAwait(false) == 0 ? buffer : null;
-    }
-
-    private static bool HashEquals(byte[] bytes, string sha256)
-        => string.Equals(Convert.ToHexString(SHA256.HashData(bytes)), sha256, StringComparison.Ordinal);
 
     /// <summary>
     /// Missing or contained-violating bytes for a known manifest are integrity failures; database, I/O, disposal and

@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.SiteProfile;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
+using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Services;
@@ -1307,6 +1308,95 @@ public sealed class ObservatoryLocationPageTests
         Assert.Contains("map settings could not be read", cut.Markup, StringComparison.Ordinal);
         Assert.AreEqual("35.200000° N", Facts(cut, "site-profile-heading")["Latitude"]);
         Assert.AreEqual("Deployment location", cut.Find(".ops-map-label").TextContent);
+    }
+
+    [TestMethod]
+    public void OrbitalDataNotice_ShowsTheInstalledSnapshotAbovePassPlanningAndOnlyReadsIt()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState()));
+        var orbital = new TestOrbitalUiService();
+        context.Services.AddSingleton<ICameraAgentOrbitalUiService>(orbital);
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        var notice = cut.WaitForElement("#observatory-orbital-data-notice");
+        Assert.Contains("Orbital elements installed.", notice.TextContent, StringComparison.Ordinal);
+        Assert.Contains("Requested population:", notice.TextContent, StringComparison.Ordinal);
+        Assert.Contains("Orbital data installed now. A completed pass search keeps the snapshot it was computed from.",
+            cut.Find(".observatory-orbital-notice-label").TextContent, StringComparison.Ordinal);
+        // The notice sits in the pass area, directly before the planner, and is a separate element from it.
+        var noticeAt = cut.Markup.IndexOf("id=\"observatory-orbital-data-notice\"", StringComparison.Ordinal);
+        var plannerAt = cut.Markup.IndexOf("id=\"satellite-planner-heading\"", StringComparison.Ordinal);
+        Assert.IsTrue(noticeAt >= 0 && plannerAt > noticeAt, "The orbital notice must precede the pass planner.");
+        Assert.IsEmpty(cut.FindAll("section.satellite-planner #observatory-orbital-data-notice"));
+        Assert.AreEqual(1, orbital.Reads);
+        Assert.IsEmpty(orbital.RefreshKeys);
+        Assert.IsEmpty(orbital.Resumes);
+        Assert.DoesNotContain(TestOrbitalUiService.SyntheticEntityTag, cut.Markup, StringComparison.Ordinal);
+        Assert.DoesNotContain(TestOrbitalUiService.SyntheticStoreRoot, cut.Markup, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow("unavailable")]
+    [DataRow("unauthorized")]
+    public void OrbitalDataNotice_WhenTheStatusCannotBeRead_SaysSoAndKeepsThePage(string failure)
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState()));
+        context.Services.AddSingleton<ICameraAgentOrbitalUiService>(new TestOrbitalUiService
+        {
+            GetHandler = _ => ValueTask.FromResult(OperatorUiResult<OrbitalDataStatusView>.Failure(
+                failure == "unauthorized" ? OperatorUiResultKind.Unauthorized : OperatorUiResultKind.Unavailable,
+                "Orbital data status is unavailable.")),
+        });
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        var notice = cut.WaitForElement("#observatory-orbital-data-notice");
+        Assert.Contains(OrbitalDataStatusNotice.StatusUnavailableText, notice.TextContent, StringComparison.Ordinal);
+        Assert.AreEqual("Observatory & location", cut.Find("h1").TextContent.Trim());
+        Assert.HasCount(1, cut.FindAll("#satellite-planner-heading"));
+        // The page-level authorization already admitted the operator; a failed notice read never navigates away.
+        Assert.DoesNotContain("AccessDenied", context.Services.GetRequiredService<NavigationManager>().Uri, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void OrbitalDataNotice_WithoutTheOrbitalService_SaysTheStatusIsUnavailable()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState()));
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        Assert.Contains(OrbitalDataStatusNotice.StatusUnavailableText,
+            cut.WaitForElement("#observatory-orbital-data-notice").TextContent, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void OrbitalDataNotice_WhenTheReadIsCanceledWhileMounted_SaysTheStatusIsUnavailable()
+    {
+        using var context = CreateContext();
+        context.Services.AddSingleton<ICameraAgentSkyMapUiService>(new SiteUiService(SkyMapTestData.Result(Instant), manual: ManualState()));
+        var pending = new TaskCompletionSource<OperatorUiResult<OrbitalDataStatusView>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        context.Services.AddSingleton<ICameraAgentOrbitalUiService>(new TestOrbitalUiService
+        {
+            GetHandler = _ => new ValueTask<OperatorUiResult<OrbitalDataStatusView>>(pending.Task),
+        });
+
+        var cut = context.Render<ObservatoryLocationPage>();
+
+        // While the read is outstanding the notice makes no claim.
+        cut.WaitForElement("#satellite-planner-heading");
+        Assert.IsEmpty(cut.FindAll("#observatory-orbital-data-notice"));
+
+        // The read is canceled by something other than the notice's own disposal, while the page is still mounted.
+        pending.SetCanceled();
+
+        var notice = cut.WaitForElement("#observatory-orbital-data-notice");
+        Assert.Contains(OrbitalDataStatusNotice.StatusUnavailableText, notice.TextContent, StringComparison.Ordinal);
+        Assert.AreEqual("Observatory & location", cut.Find("h1").TextContent.Trim());
+        Assert.HasCount(1, cut.FindAll("#satellite-planner-heading"));
     }
 
     private static BunitContext CreateContext(OperatorUiResultKind? rigFailure = null)

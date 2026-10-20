@@ -1,0 +1,6 @@
+/* The compact orbital data notice. The banner itself (.ops-note-banner, .status-icon) is the shared Operations
+   vocabulary from OperationsLayout.razor.css; this file only stacks the notice lines. */
+
+.orbital-notice-body { display: grid; gap: .18rem; min-width: 0; }
+.orbital-notice-body strong { color: var(--text); }
+.orbital-notice-line { display: block; overflow-wrap: anywhere; }

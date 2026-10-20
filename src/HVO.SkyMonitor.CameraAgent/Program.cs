@@ -325,6 +325,7 @@ public class Program
         builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();
         builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
         builder.Services.AddScoped<ICameraAgentSystemUiService, CameraAgentSystemUiService>();
+        builder.Services.AddScoped<ICameraAgentOrbitalUiService, CameraAgentOrbitalUiService>();
         builder.Services.AddScoped<ICameraAgentTimeSyncUiService, CameraAgentTimeSyncUiService>();
         builder.Services.AddScoped<ICameraAgentRegistrationUiService, CameraAgentRegistrationUiService>();
         builder.Services.AddCameraAgentReplayFlow();

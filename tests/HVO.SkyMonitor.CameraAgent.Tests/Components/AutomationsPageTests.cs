@@ -2,6 +2,7 @@ using AngleSharp.Dom;
 using Bunit;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
@@ -759,6 +760,127 @@ public sealed class AutomationsPageTests
     public void DescribeTrigger_UsesTheLargestWholeUnit(LocalAutomationTriggerKind trigger, int interval, string expected)
         => Assert.AreEqual(expected, AutomationsPage.DescribeTrigger(trigger, interval));
 
+    [TestMethod]
+    public void Create_TheOrbitalTaskFixesItsIdentifierTargetAndTrigger()
+    {
+        using var context = CreateContext();
+        Register(context, WithOrbital(Automation(definitions: [], calendar: [], runs: [])));
+        var cut = context.Render<AutomationsPage>();
+        OpenCreate(cut);
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.OrbitalElementsRefresh));
+
+        var id = cut.Find("#automation-id");
+        Assert.AreEqual(OrbitalElementsAutomationAdapter.DefinitionId, id.GetAttribute("value"));
+        Assert.IsTrue(id.HasAttribute("readonly"));
+        Assert.AreEqual(AutomationsPage.OrbitalIdentifierHint, cut.Find("#automation-id-help").TextContent);
+        var target = cut.Find("#automation-target");
+        Assert.IsTrue(target.HasAttribute("disabled"));
+        Assert.AreEqual(CelesTrakGpSource.DatasetKey, target.GetAttribute("value"));
+        Assert.HasCount(1, target.QuerySelectorAll("option"), "The only registered target, with no placeholder.");
+        var trigger = cut.Find("#automation-trigger");
+        Assert.IsTrue(trigger.HasAttribute("disabled"));
+        Assert.AreEqual(nameof(LocalAutomationTriggerKind.Periodic), trigger.GetAttribute("value"));
+        Assert.AreEqual(AutomationsPage.DefaultOrbitalInterval, cut.Find("#automation-interval").GetAttribute("value"));
+        Assert.AreEqual($"Every 6 h. {AutomationsPage.OrbitalIntervalHint}.", cut.Find("#automation-interval-help").TextContent);
+
+        // The provider floor is the adapter's rule; the page states it and leaves the decision to the server.
+        cut.Find("#automation-interval").Change("3600");
+        Assert.AreEqual($"{AutomationsPage.OrbitalIntervalHint}.", cut.Find("#automation-interval-help").TextContent);
+    }
+
+    [TestMethod]
+    public void Create_LeavingTheOrbitalTaskReleasesTheReservedIdentifierAndInterval()
+    {
+        using var context = CreateContext();
+        Register(context, WithOrbital(Automation(definitions: [], calendar: [], runs: [])));
+        var cut = context.Render<AutomationsPage>();
+        OpenCreate(cut);
+        Assert.AreEqual("3600", cut.Find("#automation-interval").GetAttribute("value"));
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.OrbitalElementsRefresh));
+
+        cut.Find("#automation-task").Change(nameof(LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition));
+
+        var id = cut.Find("#automation-id");
+        Assert.AreEqual(string.Empty, id.GetAttribute("value") ?? string.Empty);
+        Assert.IsFalse(id.HasAttribute("readonly"));
+        Assert.IsFalse(cut.Find("#automation-target").HasAttribute("disabled"));
+        Assert.IsFalse(cut.Find("#automation-trigger").HasAttribute("disabled"));
+        Assert.AreEqual("3600", cut.Find("#automation-interval").GetAttribute("value"));
+        Assert.AreEqual("virtual-sky-temperature", cut.Find("#automation-target").GetAttribute("value"));
+    }
+
+    [TestMethod]
+    public void DefinitionQuery_FocusesTheOrbitalCardAndScrollsToItOnce()
+    {
+        using var context = CreateContext();
+        var service = Register(context, WithOrbital(Automation(), defined: true));
+        context.Services.GetRequiredService<NavigationManager>()
+            .NavigateTo("/operations/automations?view=runs&definition=orbital-elements-refresh");
+
+        var cut = context.Render<AutomationsPage>();
+
+        var card = cut.WaitForElement($"#{AutomationsPage.CardId(OrbitalElementsAutomationAdapter.DefinitionId)}");
+        Assert.AreEqual("Definitions", cut.Find(".automation-tabs button.active").TextContent.Trim());
+        StringAssert.Contains(card.ClassName, "focused", StringComparison.Ordinal);
+        Assert.AreEqual("true", card.GetAttribute("aria-current"));
+        Assert.IsNotNull(card.QuerySelector(".automation-icon.orbital svg ellipse"));
+        Assert.Contains("within the provider's two-hour floor", card.TextContent, StringComparison.Ordinal);
+        Assert.AreEqual("Every 6 h", Fact(card, "Trigger"));
+        Assert.AreEqual(CelesTrakGpSource.DatasetKey, Fact(card, "Target"));
+        var other = cut.Find($"#{AutomationsPage.CardId("sky-temperature")}");
+        Assert.IsFalse(other.ClassList.Contains("focused"));
+        Assert.IsNull(other.GetAttribute("aria-current"));
+        Assert.IsNotNull(other.QuerySelector(".automation-icon.environment"));
+        Assert.IsEmpty(cut.FindAll("#automation-focus-missing"));
+        cut.WaitForAssertion(() => Assert.AreEqual(1, context.JSInterop.Invocations.Count(static invocation =>
+            invocation.Identifier == "scrollIntoViewById" &&
+            Equals(invocation.Arguments[0], "automation-definition-orbital-elements-refresh"))));
+
+        cut.Find("#automation-refresh").Click();
+
+        cut.WaitForAssertion(() => Assert.AreEqual(2, service.Reads));
+        Assert.IsTrue(cut.Find($"#{AutomationsPage.CardId(OrbitalElementsAutomationAdapter.DefinitionId)}").ClassList.Contains("focused"));
+        Assert.AreEqual(1, context.JSInterop.Invocations.Count(static invocation => invocation.Identifier == "scrollIntoViewById"),
+            "A reload keeps the focus mark but does not scroll again.");
+    }
+
+    [TestMethod]
+    public void DefinitionQuery_ForAMissingDefinitionSaysSoWithoutScrolling()
+    {
+        using var context = CreateContext();
+        Register(context, WithOrbital(Automation()));
+        context.Services.GetRequiredService<NavigationManager>()
+            .NavigateTo("/operations/automations?definition=orbital-elements-refresh");
+
+        var cut = context.Render<AutomationsPage>();
+
+        var note = cut.WaitForElement("#automation-focus-missing");
+        Assert.AreEqual("No automation named orbital-elements-refresh is defined on this CameraAgent. Use Create automation to define it.",
+            note.TextContent.Trim());
+        Assert.IsEmpty(cut.FindAll(".automation-card.focused"));
+        Assert.IsEmpty(context.JSInterop.Invocations.Where(static invocation => invocation.Identifier == "scrollIntoViewById"));
+    }
+
+    [TestMethod]
+    [DataRow("../etc/passwd")]
+    [DataRow("Orbital Elements")]
+    [DataRow("")]
+    public void DefinitionQuery_IgnoresAMalformedIdentifier(string definition)
+    {
+        using var context = CreateContext();
+        Register(context, WithOrbital(Automation(), defined: true));
+        context.Services.GetRequiredService<NavigationManager>()
+            .NavigateTo("/operations/automations?view=runs&definition=" + Uri.EscapeDataString(definition));
+
+        var cut = context.Render<AutomationsPage>();
+
+        cut.WaitForElement("#automation-runs");
+        Assert.AreEqual("Run history", cut.Find(".automation-tabs button.active").TextContent.Trim());
+        Assert.IsEmpty(cut.FindAll("#automation-focus-missing"));
+        Assert.IsEmpty(cut.FindAll(".automation-card.focused"));
+    }
+
     private static void OpenCreate(IRenderedComponent<AutomationsPage> cut)
     {
         cut.WaitForElement("#automation-create:not([disabled])").Click();
@@ -778,6 +900,46 @@ public sealed class AutomationsPageTests
 
     private static string FactText(IRenderedComponent<AutomationsPage> cut, string term)
         => Fact(cut.Find(".ops-facts"), term);
+
+    /// <summary>The orbital refresh descriptor as the adapter registers it.</summary>
+    private static readonly LocalAutomationTaskDescriptor OrbitalDescriptor = new(
+        LocalAutomationTaskKind.OrbitalElementsRefresh,
+        "Refreshes CelesTrak GP active-group orbital elements within the provider's two-hour floor.",
+        [LocalAutomationTriggerKind.Periodic],
+        [CelesTrakGpSource.DatasetKey],
+        true,
+        null);
+
+    /// <summary>Adds the orbital refresh task to the registry and, when <paramref name="defined"/>, its reserved definition.</summary>
+    private static LocalAutomationOperatorState WithOrbital(LocalAutomationOperatorState state, bool defined = false)
+    {
+        var registered = state with { Registry = [.. state.Registry, OrbitalDescriptor] };
+        if (!defined)
+        {
+            return registered;
+        }
+        var definition = new LocalAutomationDefinition(
+            OrbitalElementsAutomationAdapter.DefinitionId,
+            "Orbital elements refresh",
+            true,
+            LocalAutomationTaskKind.OrbitalElementsRefresh,
+            CelesTrakGpSource.DatasetKey,
+            LocalAutomationTriggerKind.Periodic,
+            21_600,
+            Instant.AddDays(-1));
+        var orbital = new LocalAutomationDefinitionState(
+            definition,
+            1,
+            new string('b', 64),
+            Instant.AddDays(-1),
+            "owner",
+            "orbital schedule",
+            Instant.AddHours(3),
+            null,
+            null,
+            [new LocalAutomationRevision(1, new string('b', 64), definition, false, Instant.AddDays(-1), "owner", "orbital schedule")]);
+        return registered with { Definitions = [.. registered.Definitions, orbital] };
+    }
 
     private static BunitContext CreateContext()
     {
