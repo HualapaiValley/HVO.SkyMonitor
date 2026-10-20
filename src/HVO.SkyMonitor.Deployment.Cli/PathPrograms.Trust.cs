@@ -2,6 +2,8 @@ namespace HVO.SkyMonitor.Deployment;
 
 internal static partial class PathPrograms
 {
+    internal static UnixAccountDatabase Accounts { get; set; } = UnixAccountDatabase.System;
+
     // Production checks reach /. An admitted isolated root maps every destination below itself and acts as that
     // test filesystem's root; its external host ancestors are never program destinations.
     internal static string? DestinationRoot(InstallationPaths paths, string productionRoot)
@@ -18,8 +20,7 @@ internal static partial class PathPrograms
             if (Directory.Exists(folder))
             {
                 var owner = NativeLinux.GetDirectoryIdentity(folder);
-                if (owner.Uid != 0 && owner.Uid != NativeLinux.getuid() ||
-                    (owner.Mode & (UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) != 0)
+                if (!IsTrustedDirectory(owner, NativeLinux.getuid(), NativeLinux.getgid(), Accounts))
                     throw InstallerException.Refused($"PATH program folder '{folder}' must be owned by the installing user or root and not writable by other users; it was preserved.");
             }
             else if (NativeLinux.TryGetNodeIdentity(folder) is not null)
@@ -27,6 +28,10 @@ internal static partial class PathPrograms
             if (folder == boundary) break;
         }
     }
+
+    internal static bool IsTrustedDirectory(UnixPathIdentity owner, uint uid, uint gid, UnixAccountDatabase accounts)
+        => (owner.Uid == 0 || owner.Uid == uid) && (owner.Mode & UnixFileMode.OtherWrite) == 0 &&
+           ((owner.Mode & UnixFileMode.GroupWrite) == 0 || accounts.IsPrivateGroup(uid, gid, owner.Gid));
 
     private static void RequirePublishedIdentity(string target, UnixNodeIdentity verified)
     {

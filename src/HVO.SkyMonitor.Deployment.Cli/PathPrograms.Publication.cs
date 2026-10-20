@@ -99,7 +99,10 @@ internal static partial class PathPrograms
         for (var current = folder; !Directory.Exists(current); current = Path.GetDirectoryName(current)!)
             missing.Push(current);
         while (missing.TryPop(out var current))
+        {
             Directory.CreateDirectory(current, mode);
+            File.SetUnixFileMode(current, mode);
+        }
     }
 
     internal static void FlushProgramDirectories(string folder)

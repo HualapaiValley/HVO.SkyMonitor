@@ -134,6 +134,7 @@ public sealed class PathProgramsTests
     [DataRow(true, 0x1ef)]
     public async Task Correction1_UntrustedDestinationOrAncestor_IsRefusedWithoutChangingFiles(bool ancestor, int mode)
     {
+        using var accounts = new PathProgramAccountScope(privateGroup: false);
         using var fixture = new ProgramFixture();
         var source = await fixture.SourceAsync("verified release");
         var folder = Path.Combine(fixture.Root, "untrusted");

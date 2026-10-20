@@ -82,6 +82,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Install and upgrade accept group-writable PATH folders only after verifying the installing user's private group, so stock Debian/Pi accounts with umask `0002` work; newly created program folders have explicit mode `0755`. (#1469)
+
 - Host policy mount metadata can be repaired under the shared policy lock with `host set-product-root <same-root> --repair`, preserving the existing root and its instances. Privileged helper refusals keep exit 3 and the public refusal diagnostics. (#1292)
 
 - Retained time-lapse jobs keep their released renderer and recipe identity across upgrades; new jobs restore white cardinal and corner text and the grey image circle under a distinct renderer version. (#1401)

@@ -24,8 +24,14 @@ rollback and reinstall hints name its path rather than `install.sh`'s temporary 
 the running release installer; a failed initial bootstrap can be repeated with `install.sh` and the same arguments.
 The installer finishes the current operation itself; it does not hand execution to the newly published binary.
 
-Before publishing, the installer requires each destination folder and ancestor to be owned by the runtime user or
-root, with no group or world write permission. This also checks destinations retained by an earlier install. Unsafe
+Before publishing, the installer requires each destination folder and ancestor to be owned by the installing user or
+root, with no world write permission. Group write is allowed only for the installing user's private group: the folder's
+gid must equal the user's primary gid, its group name must equal the account name, no other supplementary member may
+belong to it, and no other account may use that primary gid. The installer enumerates the group and passwd databases
+through `/usr/bin/getent` (including the host's NSS sources); unavailable, failed, malformed or ambiguous results
+refuse group-writable destinations. Shared groups remain refused. Newly created program folders, including
+`~/.local/bin`, receive explicit mode `0755` regardless of umask; existing safe private-group folders keep their modes.
+This also checks destinations retained by an earlier install. Unsafe
 folders are refused before changes; fix their ownership/permissions and retry. Both the current command and
 `.previous` must match publication records before replacement. An unowned or externally changed recovery file is
 preserved and reported; move it aside deliberately before retrying. Publication retains an open verified stage and
