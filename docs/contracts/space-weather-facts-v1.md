@@ -176,7 +176,7 @@ fields (including unread fields), JSON value types and number spellings,
 property order, escape spellings, and internal whitespace, without re-encoding.
 The outer array delimiters and whitespace outside the record are excluded.
 Message normalization and hashing do not change this original record. Restart
-and refetch preserve it unchanged (s26); an unread `"x": 1.5` remains a JSON
+and refetch preserve it unchanged (s26, s27); an unread `"x": 1.5` remains a JSON
 number, byte for byte, rather than becoming the JSON string `"1.5"`.
 
 **Per-record checks.** An `alerts.json` body is a JSON array. Each record is
@@ -755,6 +755,7 @@ A fetch also reports:
 | s24 | NaN, Infinity and -Infinity are malformed-json for alerts, scales, Kp and OVATION; last-known-good is kept |
 | s25 | Inclusive source-year bounds: 1899 and 9999 reject; 1900 and 9998 update, for alerts and scales |
 | s26 | Verbatim original alert JSON (including numeric x: 1.5, escapes and whitespace) survives two restarts and an unchanged refetch |
+| s27 | Outer JSON whitespace; literal UTF-8 and Unicode escape spellings; two message versions retain their exact original-record bytes in ingest order through two restarts and an unchanged refetch |
 
 **Implementation conformance.** An implementation passes when it reproduces each
 scenario's expectations from the same committed bodies. Unit tests use those

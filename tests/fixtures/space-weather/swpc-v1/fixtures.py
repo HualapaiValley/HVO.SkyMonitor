@@ -189,7 +189,9 @@ def alert_record_texts(text):
     """Exact JSON spans from an already validated top-level array; exclude only array delimiters/whitespace."""
     decoder = json.JSONDecoder(parse_float=JsonNumberText, parse_constant=reject_json_constant)
     spans = []
-    pos = 1
+    pos = re.compile(r"[ \t\r\n]*").match(text, 0).end()
+    assert pos < len(text) and text[pos] == "[", "validated alerts body must be a JSON array"
+    pos += 1
     while True:
         pos = re.compile(r"[ \t\r\n]*").match(text, pos).end()
         if text[pos] == "]":
@@ -2807,6 +2809,47 @@ def scenarios(cap: Capture):
         "outcome": "unchanged", "diagnostics": [], "attention": [], "originalRecords": expected_original,
         "notices": {"ALTZZZ/1426": {"versions": 1}}})
     b.step("restart", {"originalRecords": expected_original})
+    out.append(b.build())
+
+    # s27 ------------------------------------------------------------------
+    first_record = synthetic("SYNTH", "2026-10-20 12:00:00.000", "ALTZZZ", 1427,
+                             ["ALERT: Synthetic outer-whitespace version one",
+                              "Synthetic fixture; not an SWPC product."])
+    second_record = synthetic("SYNTH", "2026-10-20 12:00:00.000", "ALTZZZ", 1427,
+                              ["ALERT: Synthetic outer-whitespace version two",
+                               "Synthetic fixture; not an SWPC product."])
+    # Literal UTF-8 and a JSON Unicode escape must retain their distinct source spellings.
+    prefix = '{ "x": 1.5, "literal": "é", "escaped": "\\u00e9",\n  '
+    first_original = prefix + json.dumps(first_record, ensure_ascii=True)[1:]
+    second_original = prefix + json.dumps(second_record, ensure_ascii=True)[1:]
+    first_body = " \t\n\r[ \n" + first_original + "\n ]\r\n\t "
+    second_body = "\r\n\t [\t" + second_original + "\r]\t \r\n"
+    identity = "ALTZZZ/1427/2026-10-20T12:00:00Z"
+    both_originals = {identity: [first_original, second_original]}
+    first_response = {"status": 200, "contentType": "application/json", "etag": '"fixture-s27-a"',
+                      "lastModified": None, "body": first_body}
+    second_response = dict(first_response, etag='"fixture-s27-b"', body=second_body)
+    b = Builder("s27-original-record-outer-whitespace",
+                "Outer JSON whitespace preserves two verbatim alert versions through restart and refetch",
+                ["original-record", "outer-whitespace", "utf-8", "source-revision", "restart", "duplicate"],
+                synthetic_records=True,
+                notes=["Both alert versions and their extra fields are synthetic. Each body has all four RFC 8259 "
+                       "whitespace characters before its opening array bracket and whitespace after its closing bracket.",
+                       "Exact originalRecord equality includes the JSON number x: 1.5, literal UTF-8 é, the distinct "
+                       "JSON escape \\u00e9 and internal whitespace, excluding every byte outside the record object.",
+                       "The two versions share an identity and source time but have different normalized message "
+                       "hashes. Their original records remain in ingest order across both restarts and the unchanged refetch."])
+    b.fetch("2026-10-20T12:01:00Z", first_response, {
+        "outcome": "updated", "diagnostics": [], "originalRecords": {identity: [first_original]},
+        "notices": {"ALTZZZ/1427": {"versions": 1}}})
+    b.fetch("2026-10-20T12:03:00Z", second_response, {
+        "outcome": "updated", "diagnostics": [f"source-revision:{identity}"], "attention": [],
+        "originalRecords": both_originals, "notices": {"ALTZZZ/1427": {"versions": 2}}})
+    b.step("restart", {"originalRecords": both_originals})
+    b.fetch("2026-10-20T12:05:00Z", second_response, {
+        "outcome": "unchanged", "diagnostics": [], "attention": [], "originalRecords": both_originals,
+        "notices": {"ALTZZZ/1427": {"versions": 2}}})
+    b.step("restart", {"originalRecords": both_originals})
     out.append(b.build())
 
     return out

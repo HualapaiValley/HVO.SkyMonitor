@@ -136,7 +136,10 @@ The errata scenarios use entirely synthetic records and bodies:
 - s24 supplies synthetic baselines and nonfinite JSON constants for every JSON product;
 - s25 supplies synthetic alerts and scales at the source-year boundaries;
 - s26 supplies a synthetic alert with an unread fraction-valued field, nested
-  values and deliberate JSON escape spellings and whitespace.
+  values and deliberate JSON escape spellings and whitespace;
+- s27 supplies two synthetic message versions with outer JSON whitespace, an
+  unread fraction-valued field, literal UTF-8 and a Unicode escape spelling,
+  retaining both original records through restart and unchanged refetch.
 
 `rounding-vectors.json` is a separate manifest-listed golden vectors file,
 checked by both `check` and `write`. These are pure numerical probes, so a
