@@ -129,6 +129,37 @@ public sealed class CameraAgentAutomationUiServiceTests
     }
 
     [TestMethod]
+    [DataRow("orbital.reserved-definition-id", "definition.definitionId",
+        "The orbital refresh task accepts only the identifier orbital-elements-refresh.")]
+    [DataRow("orbital.interval-below-provider-floor", "definition.triggerInterval",
+        "The interval must be at least 7,200 seconds; the provider allows at most one attempt every two hours.")]
+    [DataRow("orbital.interval-out-of-range", "definition.triggerInterval",
+        "The interval must be at most 86,400 seconds.")]
+    [DataRow("orbital.store-unavailable", null, "The orbital store is unavailable.")]
+    public void DescribeFailure_UsesTheOrbitalTasksOwnText(string reasonCode, string? fieldPath, string expected)
+    {
+        var message = CameraAgentAutomationUiService.DescribeFailure(
+            new LocalAutomationCommandResult(
+                LocalAutomationCommandStatus.Invalid, reasonCode, fieldPath, LocalAutomationOperatorState.Empty));
+
+        Assert.AreEqual(expected, message);
+    }
+
+    [TestMethod]
+    public void DescribeFailure_AnUnknownOrbitalCodeFallsBackToTheFieldText()
+    {
+        var message = CameraAgentAutomationUiService.DescribeFailure(
+            new LocalAutomationCommandResult(
+                LocalAutomationCommandStatus.Invalid,
+                "orbital.future-rule",
+                "definition.definitionId",
+                LocalAutomationOperatorState.Empty));
+
+        StringAssert.Contains(message, "lower-case letter", StringComparison.Ordinal);
+        Assert.IsFalse(message.Contains("orbital.future-rule", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void DescribeFailure_ExplainsAFieldRejectionWithinItsAdvertisedBounds()
     {
         var message = CameraAgentAutomationUiService.DescribeFailure(

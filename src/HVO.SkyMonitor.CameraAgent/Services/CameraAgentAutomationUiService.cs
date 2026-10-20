@@ -118,6 +118,13 @@ internal sealed class CameraAgentAutomationUiService(
     internal static string DescribeFailure(LocalAutomationCommandResult result)
     {
         ArgumentNullException.ThrowIfNull(result);
+        // A registered task's own validation codes (the orbital refresh schedule's reserved identifier, provider floor,
+        // interval ceiling and store availability) have exact operator text shared with the Software & Catalog page.
+        if (result.ReasonCode is { } code && code.StartsWith("orbital.", StringComparison.Ordinal) &&
+            OrbitalOperatorText.IsKnown(code))
+        {
+            return OrbitalOperatorText.Describe(code);
+        }
         return result.ReasonCode switch
         {
             LocalAutomationContract.ExpectedVersionConflictReasonCode =>

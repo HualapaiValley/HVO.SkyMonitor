@@ -1,4 +1,5 @@
 using Bunit;
+using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
@@ -74,8 +75,101 @@ public sealed class SoftwarePageTests
             }
             StringAssert.Contains(cut.Find("#software-availability-unavailable").TextContent, "never contacts a package source", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find("#software-verify-unavailable").TextContent, "verified every time CameraAgent starts", StringComparison.Ordinal);
-            Assert.IsEmpty(cut.FindAll("button:not([disabled])"));
+            Assert.IsEmpty(cut.FindAll(".ops-page-actions button:not([disabled])"));
         });
+    }
+
+    [TestMethod]
+    public void OrbitalSnapshot_FeedsTheRailAndReplacesTheNoSourceText()
+    {
+        using var context = new BunitContext();
+        var (_, orbital) = ConfigureWithOrbital(context);
+
+        var cut = context.Render<SoftwarePage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Fresh", cut.Find("#software-orbital-state").TextContent);
+            Assert.AreEqual("Newest elements 6h 0m old", cut.Find("#software-orbital-detail").TextContent);
+            Assert.AreEqual("Fresh", cut.Find("#orbital-state").TextContent);
+            Assert.AreEqual("12,345 records / 12,340 objects", cut.Find("#orbital-counts").TextContent);
+            var boundary = cut.FindAll(".software-boundary tbody tr")
+                .Single(row => row.QuerySelector("strong")!.TextContent == "Orbital refresh / resume");
+            StringAssert.Contains(boundary.TextContent, "This page / Automations / API", StringComparison.Ordinal);
+            Assert.IsFalse(cut.Markup.Contains("no orbital source", StringComparison.OrdinalIgnoreCase));
+            Assert.IsFalse(cut.Markup.Contains("No orbital source", StringComparison.Ordinal));
+        });
+        Assert.AreEqual(1, orbital.Reads, "The page reads the orbital status once, through the panel.");
+    }
+
+    [TestMethod]
+    public void OrbitalReload_UpdatesTheRail()
+    {
+        using var context = new BunitContext();
+        var (_, orbital) = ConfigureWithOrbital(context);
+        var cut = context.Render<SoftwarePage>();
+        cut.WaitForAssertion(() => Assert.AreEqual("Fresh", cut.Find("#software-orbital-state").TextContent));
+        var halted = TestOrbitalUiService.Status() with
+        {
+            ProviderHalt = new OrbitalProviderHalt(TestOrbitalUiService.Now.AddHours(-1), 429, "orbital.provider-http-429"),
+            Reason = OrbitalElementsOperations.ProviderHaltedReasonCode,
+            RecoveryAction = OrbitalRefreshRecoveryAction.ResumeProvider,
+        };
+        orbital.GetHandler = _ => ValueTask.FromResult(OperatorUiResult<OrbitalDataStatusView>.Success(
+            TestOrbitalUiService.View(halted, health: OrbitalElementsHealthState.Degraded)));
+
+        cut.Find("#orbital-reload").Click();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Halted", cut.Find("#software-orbital-state").TextContent);
+            Assert.AreEqual("Provider halted: HTTP 429", cut.Find("#software-orbital-detail").TextContent);
+        });
+    }
+
+    [TestMethod]
+    public void OrbitalReadFailure_LeavesTheSoftwareFactsAndSaysUnavailable()
+    {
+        using var context = new BunitContext();
+        var (_, orbital) = ConfigureWithOrbital(context);
+        orbital.GetHandler = _ => ValueTask.FromResult(OperatorUiResult<OrbitalDataStatusView>.Failure(
+            OperatorUiResultKind.Unavailable, "Orbital data status is unavailable."));
+
+        var cut = context.Render<SoftwarePage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Unavailable", cut.Find("#software-orbital-state").TextContent);
+            Assert.AreEqual("Status could not be read", cut.Find("#software-orbital-detail").TextContent);
+            Assert.AreEqual("1.4.2", Fact(cut, "software-agent-heading", "Version"));
+            Assert.IsNotNull(cut.Find("#orbital-error"));
+        });
+    }
+
+    [TestMethod]
+    public void OrbitalRail_SummarizesEachState()
+    {
+        var now = TestOrbitalUiService.Now;
+        var status = TestOrbitalUiService.Status();
+        Assert.AreEqual(("Reading", "Reading the orbital status"), SoftwarePage.OrbitalRail(null, read: false));
+        Assert.AreEqual(("Unavailable", "Status could not be read"), SoftwarePage.OrbitalRail(null, read: true));
+        Assert.AreEqual(("Fresh", "Newest elements 6h 0m old"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(), read: true));
+        Assert.AreEqual(("Stale", "Newest elements 3d 0h old"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
+            manifest: TestOrbitalUiService.Manifest(TimeSpan.FromHours(72), TimeSpan.FromHours(90))), read: true));
+        Assert.AreEqual(("Refresh overdue", "Last retrieval 20h 0m ago"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
+            status with { LastRetrievalSuccessUtc = now.AddHours(-20), LastActivationUtc = now.AddHours(-20) }), read: true));
+        Assert.AreEqual(("No data", "No orbital data installed"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
+            status with { CurrentManifestSha256 = null, CurrentPayloadSha256 = null }), read: true));
+        Assert.AreEqual(("Disabled", "Refresh off; newest elements 6h 0m old"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
+            status with { Enabled = false, RecoveryAction = OrbitalRefreshRecoveryAction.Configure }), read: true));
+        Assert.AreEqual(("Halted", "Provider halted: No valid HTTP status recorded"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
+            status with { ProviderHalt = new OrbitalProviderHalt(now.AddHours(-1), 0, "orbital.provider-outcome-unknown") }), read: true));
+        Assert.AreEqual(("Quarantined", "Last download quarantined"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
+            status with { RecoveryAction = OrbitalRefreshRecoveryAction.InspectQuarantine }), read: true));
+        Assert.AreEqual(("Needs repair", "Orbital storage needs attention"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
+            status with { RecoveryAction = OrbitalRefreshRecoveryAction.RepairStorage }), read: true));
+        Assert.AreEqual(("Unavailable", "Orbital store unavailable"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
+            health: OrbitalElementsHealthState.Unhealthy, healthReason: "orbital.store-unavailable"), read: true));
     }
 
     [TestMethod]
@@ -125,11 +219,16 @@ public sealed class SoftwarePageTests
     public void PackageKindText_ReadsThePackageKind(string kind, string expected)
         => Assert.AreEqual(expected, SoftwarePage.PackageKindText(kind));
 
-    private static TestSystemUiService Configure(BunitContext context)
+    private static TestSystemUiService Configure(BunitContext context) => ConfigureWithOrbital(context).System;
+
+    private static (TestSystemUiService System, TestOrbitalUiService Orbital) ConfigureWithOrbital(BunitContext context)
     {
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
         var system = new TestSystemUiService();
+        var orbital = new TestOrbitalUiService();
         context.Services.AddSingleton<ICameraAgentSystemUiService>(system);
-        return system;
+        context.Services.AddSingleton<ICameraAgentOrbitalUiService>(orbital);
+        return (system, orbital);
     }
 
     private static string Fact(IRenderedComponent<SoftwarePage> cut, string headingId, string term)

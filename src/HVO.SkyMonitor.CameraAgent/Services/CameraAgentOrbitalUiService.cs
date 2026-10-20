@@ -267,7 +267,7 @@ internal sealed class CameraAgentOrbitalUiService(
 /// download). The two are deliberately separate: a fresh download can carry old elements, and current elements can sit
 /// behind an overdue refresh.
 /// </summary>
-internal enum OrbitalDataState
+public enum OrbitalDataState
 {
     Fresh,
     Stale,
@@ -291,7 +291,7 @@ internal sealed record OrbitalCommandView(
 /// The reserved <c>orbital-elements-refresh</c> automation definition as the automation store reports it. The last run
 /// carries only its leading reason code, never the free-text part of its detail.
 /// </summary>
-internal sealed record OrbitalScheduleSummary(
+public sealed record OrbitalScheduleSummary(
     bool Exists,
     bool Enabled,
     int? IntervalSeconds,
@@ -344,9 +344,10 @@ internal sealed record OrbitalScheduleSummary(
 /// The composed operator view of the installed orbital data. Command availability is derived from the status and its
 /// recovery action, never from a separate rule set, and the service and the store re-check every command. Freshness is
 /// derived from facts (element epochs and retrieval times), not from the health reason code, so it does not depend on
-/// which single degrading reason health chose to report.
+/// which single degrading reason health chose to report. The record is public only because Blazor component parameters
+/// must be; its derived members stay internal to the host.
 /// </summary>
-internal sealed record OrbitalDataStatusView(
+public sealed record OrbitalDataStatusView(
     OrbitalRefreshStatus Status,
     OrbitalSnapshotManifestV1? Manifest,
     string? ManifestUnavailableReason,

@@ -1,5 +1,6 @@
 using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
+using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
@@ -30,6 +31,15 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private const string FocusFallbackId = "automation-refresh";
     private const string DefaultPeriodicInterval = "3600";
     private const string DefaultCaptureInterval = "10";
+
+    /// <summary>The orbital refresh schedule's suggested interval: four attempts a day, well above the provider floor.</summary>
+    internal const string DefaultOrbitalInterval = "21600";
+
+    internal const string OrbitalIntervalHint =
+        "7,200 to 86,400 seconds; the provider allows at most one attempt every two hours";
+
+    internal const string OrbitalIdentifierHint =
+        "Reserved for the orbital refresh schedule; this task accepts only this identifier.";
 
     private enum PendingCommandKind
     {
@@ -62,6 +72,8 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private bool _loading = true;
     private AutomationView _view;
     private string? _appliedView;
+    private string? _appliedDefinition;
+    private bool _scrollToDefinitionPending;
 
     private string _idInput = string.Empty;
     private string _nameInput = string.Empty;
@@ -104,7 +116,21 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     [SupplyParameterFromQuery(Name = "view")]
     public string? View { get; set; }
 
+    /// <summary>
+    /// A definition to bring into view, such as <c>?definition=orbital-elements-refresh</c> from Software &amp; Catalog.
+    /// It selects the Definitions view, marks the card, and scrolls to it once after the definitions are read.
+    /// </summary>
+    [SupplyParameterFromQuery(Name = "definition")]
+    public string? Definition { get; set; }
+
     private bool Editing => _editingVersion != 0;
+
+    /// <summary>The orbital refresh task accepts one reserved identifier, its one target and a periodic trigger only.</summary>
+    private bool OrbitalTaskSelected => _taskKindInput == LocalAutomationTaskKind.OrbitalElementsRefresh;
+
+    /// <summary>The requested definition, when it is a well-formed identifier; anything else is ignored.</summary>
+    private string? FocusedDefinitionId => LocalAutomationDefinitionValidator.IsIdentifier(
+        Definition?.Trim(), LocalAutomationContract.MaximumDefinitionIdLength) ? Definition!.Trim() : null;
 
     /// <summary>Why a new definition cannot be created right now, or null when it can.</summary>
     private string? CreateUnavailableReason
@@ -143,12 +169,21 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
 
     protected override void OnParametersSet()
     {
-        if (string.Equals(_appliedView, View, StringComparison.Ordinal))
+        if (!string.Equals(_appliedView, View, StringComparison.Ordinal))
         {
-            return;
+            _appliedView = View;
+            _view = ParseView(View);
         }
-        _appliedView = View;
-        _view = ParseView(View);
+        if (!string.Equals(_appliedDefinition, Definition, StringComparison.Ordinal))
+        {
+            _appliedDefinition = Definition;
+            if (FocusedDefinitionId is not null)
+            {
+                // A focused definition is a card, and cards live in the Definitions view.
+                _view = AutomationView.Definitions;
+                _scrollToDefinitionPending = true;
+            }
+        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -164,7 +199,25 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             _focusTargetId = null;
             await InvokeModuleAsync("focusById", target, FocusFallbackId);
         }
+        if (_scrollToDefinitionPending && !_loading && _automation is not null)
+        {
+            // Scroll once, after the cards exist; a definition that is not there leaves the page where it is.
+            _scrollToDefinitionPending = false;
+            if (FocusedDefinitionId is { } id && _view == AutomationView.Definitions &&
+                _automation.Definitions.Any(item => string.Equals(item.Definition.DefinitionId, id, StringComparison.Ordinal)))
+            {
+                await InvokeModuleAsync("scrollIntoViewById", CardId(id));
+            }
+        }
     }
+
+    internal static string CardId(string definitionId) => $"automation-definition-{definitionId}";
+
+    private bool IsFocusedCard(LocalAutomationDefinition definition)
+        => FocusedDefinitionId is { } id && string.Equals(definition.DefinitionId, id, StringComparison.Ordinal);
+
+    private static string IconClass(LocalAutomationTaskKind kind)
+        => kind == LocalAutomationTaskKind.OrbitalElementsRefresh ? "orbital" : "environment";
 
     internal static AutomationView ParseView(string? value) => value switch
     {
@@ -283,6 +336,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             ? LocalAutomationTriggerKind.Periodic
             : descriptor.CompatibleTriggers[0];
         _targetInput = descriptor.Targets.Count == 0 ? string.Empty : descriptor.Targets[0];
+        ApplyTaskDefaults();
     }
 
     private void FormChanged()
@@ -304,6 +358,37 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         if (!triggers.Contains(_triggerKindInput) && triggers.Count > 0)
         {
             _triggerKindInput = triggers[0];
+        }
+        ApplyTaskDefaults();
+    }
+
+    /// <summary>
+    /// The orbital refresh task fixes its identifier and suggests its own interval. An untouched default follows the
+    /// task it belongs to, and leaving the orbital task releases the reserved identifier. An edit keeps its identity.
+    /// </summary>
+    private void ApplyTaskDefaults()
+    {
+        if (OrbitalTaskSelected)
+        {
+            if (!Editing)
+            {
+                _idInput = OrbitalElementsAutomationAdapter.DefinitionId;
+            }
+            if (_intervalInput is DefaultPeriodicInterval or DefaultCaptureInterval)
+            {
+                _intervalInput = DefaultOrbitalInterval;
+            }
+            return;
+        }
+        if (!Editing && string.Equals(_idInput.Trim(), OrbitalElementsAutomationAdapter.DefinitionId, StringComparison.Ordinal))
+        {
+            _idInput = string.Empty;
+        }
+        if (_intervalInput == DefaultOrbitalInterval)
+        {
+            _intervalInput = _triggerKindInput == LocalAutomationTriggerKind.CaptureRelative
+                ? DefaultCaptureInterval
+                : DefaultPeriodicInterval;
         }
     }
 
@@ -707,6 +792,16 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             return "One run when the retained source window closes and its settle allowance has elapsed. Source-window configuration is supplied by the task definition.";
         }
         var (minimum, maximum) = IntervalBounds(_triggerKindInput);
+        if (OrbitalTaskSelected && _triggerKindInput == LocalAutomationTriggerKind.Periodic)
+        {
+            // The adapter, not this page, enforces the provider floor, so a value below it is still sent and its
+            // reason is shown exactly as the server returns it.
+            return int.TryParse(_intervalInput, NumberStyles.Integer, Invariant, out var orbitalInterval) &&
+                   orbitalInterval >= OrbitalElementsAutomationAdapter.MinimumIntervalSeconds &&
+                   orbitalInterval <= OrbitalElementsAutomationAdapter.MaximumIntervalSeconds
+                ? $"{DescribeTrigger(_triggerKindInput, orbitalInterval)}. {OrbitalIntervalHint}."
+                : $"{OrbitalIntervalHint}.";
+        }
         var bounds = _triggerKindInput == LocalAutomationTriggerKind.Periodic
             ? string.Create(Invariant, $"{minimum} to {maximum} seconds")
             : string.Create(Invariant, $"{minimum} to {maximum} durable captures");

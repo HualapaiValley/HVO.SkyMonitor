@@ -1,0 +1,85 @@
+using System.Globalization;
+using HVO.SkyMonitor.CameraAgent.Components.Pages;
+using HVO.SkyMonitor.CameraAgent.Services;
+using Microsoft.AspNetCore.Components;
+
+namespace HVO.SkyMonitor.CameraAgent.Components.Operations;
+
+/// <summary>
+/// The compact orbital data notice: requested-population coverage, element age and the stale and overdue states, or
+/// the explicit "no orbital data installed" wording. Freshness comes from <see cref="OrbitalDataStatusView"/>, so there
+/// is one freshness rule for every page that embeds this notice.
+/// </summary>
+public sealed partial class OrbitalDataStatusNotice : ComponentBase
+{
+    internal const string StatusUnavailableText =
+        "The orbital data status could not be read, so nothing is known about the installed orbital data. Satellite predictions are unavailable; this does not mean no satellites are overhead.";
+    internal const string StoreUnavailableText =
+        "The orbital store is unavailable, so the installed orbital data cannot be described. Satellite predictions are unavailable; this does not mean no satellites are overhead.";
+    private NoticeContent _content = Compose(null);
+
+    /// <summary>The composed status, or null when it could not be read.</summary>
+    [Parameter] public OrbitalDataStatusView? View { get; set; }
+
+    [Parameter] public string Id { get; set; } = "orbital-data-notice";
+
+    protected override void OnParametersSet() => _content = Compose(View);
+
+    /// <summary>
+    /// The notice content for a view. An unreadable status or store makes no data claim at all; no active snapshot is
+    /// stated as missing data, never as an empty sky; coverage is always relative to the requested population.
+    /// </summary>
+    internal static NoticeContent Compose(OrbitalDataStatusView? view)
+    {
+        if (view is null)
+        {
+            return new NoticeContent("Orbital data status unavailable.", [StatusUnavailableText], "failure");
+        }
+        if (view.StoreUnavailable)
+        {
+            return new NoticeContent("Orbital data unknown.", [StoreUnavailableText], "failure");
+        }
+        if (!view.HasData)
+        {
+            return new NoticeContent(null, [OrbitalOperatorText.NoDataText], "pending");
+        }
+        var lines = new List<string>(4);
+        if (view.Manifest is not { } manifest)
+        {
+            lines.Add(string.Concat("Orbital elements are installed, but their coverage cannot be shown. ",
+                OrbitalOperatorText.Describe(view.ManifestUnavailableReason)));
+        }
+        else
+        {
+            var coverage = manifest.Coverage;
+            lines.Add(string.Concat("Requested population: ", coverage.RequestedPopulation, ". ",
+                OrbitalOperatorText.Completeness(coverage.Completeness), "."));
+            lines.Add(coverage.KnownExclusions.Count == 0
+                ? "No known exclusions are listed."
+                : string.Concat("Known exclusions: ", string.Join(", ", coverage.KnownExclusions), "."));
+            if (view.NewestElementAge is { } newest)
+            {
+                lines.Add(string.Concat("Newest element epoch is ", HealthPage.FormatDuration(newest), " old."));
+            }
+        }
+        if (view.ElementsStale)
+        {
+            lines.Add(string.Create(CultureInfo.InvariantCulture,
+                $"The elements are stale: even the newest epoch is older than {OrbitalDataStatusView.ElementStaleAfter.TotalHours:0} h, so predictions from them are less accurate. They stay in use until a refresh replaces them."));
+        }
+        if (view.RefreshOverdue)
+        {
+            lines.Add(string.Create(CultureInfo.InvariantCulture,
+                $"Refresh is overdue: no successful retrieval in the last {view.StaleAfterHours} h. The installed elements stay in use."));
+        }
+        var headline = view.ElementsStale
+            ? "Orbital elements are stale."
+            : view.RefreshOverdue
+                ? "Orbital refresh is overdue."
+                : "Orbital elements installed.";
+        var tone = view.ElementsStale || view.RefreshOverdue || view.Manifest is null ? "warning" : "success";
+        return new NoticeContent(headline, lines, tone);
+    }
+
+    internal sealed record NoticeContent(string? Headline, IReadOnlyList<string> Lines, string Tone);
+}

@@ -7,7 +7,9 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// <summary>
 /// Software &amp; catalog: the prototype <c>renderSoftware()</c> composition bound to this process and the catalog
 /// snapshot it validated at startup. Availability checks and on-demand checksum verification have no bounded
-/// in-app command, so they stay disabled with the reason; install, select and rollback remain installer driven.
+/// in-app command, so they stay disabled with the reason; install, select and rollback remain installer driven. The
+/// orbital snapshot panel owns its own status read and its bounded Refresh and Resume commands; the summary rail shows
+/// the same view it reports.
 /// </summary>
 public sealed partial class SoftwarePage : SiteTimeComponent, IDisposable
 {
@@ -17,8 +19,10 @@ public sealed partial class SoftwarePage : SiteTimeComponent, IDisposable
         "The selected catalog's checksum is verified every time CameraAgent starts, and it refuses to start on a mismatch.";
     private readonly CancellationTokenSource _lifetime = new();
     private SystemSoftwareView? _software;
+    private OrbitalDataStatusView? _orbitalView;
     private string? _error;
     private bool _loading = true;
+    private bool _orbitalRead;
     private bool _disposed;
 
     [Inject] internal ICameraAgentSystemUiService SystemService { get; set; } = default!;
@@ -48,6 +52,44 @@ public sealed partial class SoftwarePage : SiteTimeComponent, IDisposable
         {
             _loading = false;
         }
+    }
+
+    private void OnOrbitalViewChanged(OrbitalDataStatusView? view)
+    {
+        _orbitalView = view;
+        _orbitalRead = true;
+    }
+
+    /// <summary>
+    /// The summary rail's orbital tile: the panel's state word and one short line. Element age comes from the newest
+    /// epoch and retrieval age from the last successful retrieval; an unreadable status or store makes no data claim.
+    /// </summary>
+    internal static (string State, string Detail) OrbitalRail(OrbitalDataStatusView? view, bool read)
+    {
+        if (view is null)
+        {
+            return read ? ("Unavailable", "Status could not be read") : ("Reading", "Reading the orbital status");
+        }
+        var state = view.State;
+        var label = OrbitalOperatorText.StateLabel(state);
+        var elementAge = view.NewestElementAge is { } age ? string.Concat(HealthPage.FormatDuration(age), " old") : null;
+        return (label, state switch
+        {
+            OrbitalDataState.Unavailable => "Orbital store unavailable",
+            OrbitalDataState.Halted => string.Concat("Provider halted: ", view.Status.ProviderHalt is { } halt
+                ? OrbitalOperatorText.HaltStatus(halt.HttpStatusCode)
+                : OrbitalOperatorText.NoHttpStatusText),
+            OrbitalDataState.Quarantined => "Last download quarantined",
+            OrbitalDataState.NeedsRepair => "Orbital storage needs attention",
+            OrbitalDataState.NoData => "No orbital data installed",
+            OrbitalDataState.Disabled => elementAge is null
+                ? "Refresh off; no data installed"
+                : string.Concat("Refresh off; newest elements ", elementAge),
+            OrbitalDataState.RefreshOverdue => view.RetrievalAge is { } retrieval
+                ? string.Concat("Last retrieval ", HealthPage.FormatDuration(retrieval), " ago")
+                : "No successful retrieval recorded",
+            _ => elementAge is null ? "Element epochs not shown" : string.Concat("Newest elements ", elementAge),
+        });
     }
 
     internal static string PackageKindText(string kind) => kind switch
