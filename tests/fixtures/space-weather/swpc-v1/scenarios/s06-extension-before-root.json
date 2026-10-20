@@ -1,0 +1,92 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s06-extension-before-root",
+  "title": "An extension seen before its root warning is kept as an orphan and joined later",
+  "covers": [
+    "out-of-order",
+    "orphan-link"
+  ],
+  "containsSyntheticRecords": false,
+  "notes": [],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-10T05:40:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s06-a\"",
+        "lastModified": "Sat, 10 Oct 2026 05:39:55 GMT",
+        "body": "[{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-10 05:38:26.220\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 5430\\r\\nIssue Time: 2026 Oct 10 0538 UTC\\r\\n\\r\\nEXTENDED WARNING: Geomagnetic K-index of 4 expected\\nExtension to Serial Number: 5429\\nValid From: 2026 Oct 09 0128 UTC\\nNow Valid Until: 2026 Oct 10 1500 UTC\\nWarning Condition: Persistence\\n\\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [
+          {
+            "group": "WARK04/5429",
+            "reason": "new",
+            "level": "K4"
+          }
+        ],
+        "diagnostics": [
+          "orphan-link:WARK04/5430/2026-10-10T05:38:00Z"
+        ],
+        "notices": {
+          "WARK04/5429": {
+            "orphan": true,
+            "versions": 1,
+            "state": "active",
+            "fromUtc": "2026-10-09T01:28:00Z",
+            "untilUtc": "2026-10-10T15:00:00Z"
+          }
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "fetch",
+      "atUtc": "2026-10-10T05:42:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s06-b\"",
+        "lastModified": "Sat, 10 Oct 2026 05:41:55 GMT",
+        "body": "[{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-10 05:38:26.220\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 5430\\r\\nIssue Time: 2026 Oct 10 0538 UTC\\r\\n\\r\\nEXTENDED WARNING: Geomagnetic K-index of 4 expected\\nExtension to Serial Number: 5429\\nValid From: 2026 Oct 09 0128 UTC\\nNow Valid Until: 2026 Oct 10 1500 UTC\\nWarning Condition: Persistence\\n\\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"},{\"product_id\":\"K04W\",\"issue_datetime\":\"2026-10-09 01:29:51.387\",\"message\":\"Space Weather Message Code: WARK04\\r\\nSerial Number: 5429\\r\\nIssue Time: 2026 Oct 09 0129 UTC\\r\\n\\r\\nWARNING: Geomagnetic K-index of 4 expected \\nValid From: 2026 Oct 09 0128 UTC\\nValid To: 2026 Oct 10 0600 UTC\\nWarning Conditions: Onset\\nComment: \\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact primarily poleward of 65 degrees Geomagnetic Latitude.\\r\\nInduced Currents - Weak power grid fluctuations can occur.\\r\\nAurora - Aurora may be visible at high latitudes such as Canada and Alaska.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [],
+        "diagnostics": [
+          "orphan-resolved:WARK04/5429"
+        ],
+        "notices": {
+          "WARK04/5429": {
+            "orphan": false,
+            "versions": 2,
+            "latest": "WARK04/5430/2026-10-10T05:38:00Z",
+            "untilUtc": "2026-10-10T15:00:00Z"
+          }
+        }
+      }
+    }
+  ]
+}

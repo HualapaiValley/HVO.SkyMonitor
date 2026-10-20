@@ -1,0 +1,93 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s02-same-identity-revised-content",
+  "title": "The same code, serial and issue minute served later with different text",
+  "covers": [
+    "revised",
+    "source-revision"
+  ],
+  "containsSyntheticRecords": true,
+  "notes": [
+    "Step 2 alters the Comment line of a real record to model an in-place source revision. No such revision was observed in the capture."
+  ],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-10T15:10:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s02-a\"",
+        "lastModified": "Sat, 10 Oct 2026 15:09:50 GMT",
+        "body": "[{\"product_id\":\"XM5A\",\"issue_datetime\":\"2026-10-10 15:09:47.723\",\"message\":\"Space Weather Message Code: ALTXMF\\r\\nSerial Number: 543\\r\\nIssue Time: 2026 Oct 10 1509 UTC\\r\\n\\r\\nALERT: X-Ray Flux exceeded M5 \\nThreshold Reached: 2026 Oct 10 1507 UTC\\nNoaa Scale: R2 - Moderate\\nComment: \\r\\n\\r\\nNOAA Scale: R2 - Moderate\\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact centered on sub-solar point on the sunlit side of Earth. Extent of blackout of HF (high frequency) radio communication dependent upon current X-ray Flux intensity. For real-time information on affected area and expected duration please see http:\\/\\/www.swpc.noaa.gov\\/products\\/d-region-absorption-predictions-d-rap.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [
+          {
+            "group": "ALTXMF/543",
+            "reason": "new",
+            "level": "R2"
+          }
+        ],
+        "notices": {
+          "ALTXMF/543": {
+            "family": "xray-alert",
+            "level": "R2",
+            "state": "active",
+            "fromUtc": "2026-10-10T15:07:00Z",
+            "untilUtc": "2026-10-10T18:07:00Z",
+            "relevance": {
+              "hvo": "NoLocalObservingImpact"
+            }
+          }
+        }
+      }
+    },
+    {
+      "step": 2,
+      "kind": "fetch",
+      "atUtc": "2026-10-10T15:12:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "W/\"fixture-s02-b\"",
+        "lastModified": "Sat, 10 Oct 2026 15:11:50 GMT",
+        "body": "[{\"product_id\":\"XM5A\",\"issue_datetime\":\"2026-10-10 15:09:47.723\",\"message\":\"Space Weather Message Code: ALTXMF\\r\\nSerial Number: 543\\r\\nIssue Time: 2026 Oct 10 1509 UTC\\r\\n\\r\\nALERT: X-Ray Flux exceeded M5 \\nThreshold Reached: 2026 Oct 10 1507 UTC\\nNoaa Scale: R2 - Moderate\\nComment: Fixture in-place revision.\\r\\n\\r\\nNOAA Scale: R2 - Moderate\\r\\n\\r\\nNOAA Space Weather Scale descriptions can be found at\\r\\nwww.swpc.noaa.gov\\/noaa-scales-explanation\\r\\n\\r\\nPotential Impacts: Area of impact centered on sub-solar point on the sunlit side of Earth. Extent of blackout of HF (high frequency) radio communication dependent upon current X-ray Flux intensity. For real-time information on affected area and expected duration please see http:\\/\\/www.swpc.noaa.gov\\/products\\/d-region-absorption-predictions-d-rap.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "attention": [],
+        "diagnostics": [
+          "source-revision:ALTXMF/543/2026-10-10T15:09:00Z"
+        ],
+        "notices": {
+          "ALTXMF/543": {
+            "versions": 2,
+            "state": "active",
+            "latest": "ALTXMF/543/2026-10-10T15:09:00Z"
+          }
+        }
+      }
+    }
+  ]
+}
