@@ -12,12 +12,14 @@ public sealed class TimeLapseFrameSequence
     private readonly Func<DateTimeOffset, bool> _daytime;
     private readonly CameraRigConfig _rig;
     private readonly TimeLapseFrameOptions _options;
+    private readonly string _rendererVersion;
     private readonly int _width;
     private readonly int _height;
 
     public TimeLapseFrameSequence(IReadOnlyList<ProcessingArtifact> descriptions, CameraRigConfig rig,
         TimeLapseFrameOptions options, int width, int height,
-        Func<Guid, CancellationToken, ValueTask<ProcessingArtifact>> restore, Func<DateTimeOffset, bool> daytime)
+        Func<Guid, CancellationToken, ValueTask<ProcessingArtifact>> restore, Func<DateTimeOffset, bool> daytime,
+        string rendererVersion = TimeLapseFrameRenderer.Version)
     {
         ArgumentNullException.ThrowIfNull(descriptions);
         ArgumentNullException.ThrowIfNull(restore);
@@ -31,6 +33,7 @@ public sealed class TimeLapseFrameSequence
         _daytime = daytime;
         _rig = rig;
         _options = options;
+        _rendererVersion = rendererVersion;
         _width = width;
         _height = height;
     }
@@ -65,6 +68,6 @@ public sealed class TimeLapseFrameSequence
             }
             sources.Add(restored);
         }
-        return TimeLapseFrameRenderer.Render(sources, _rig, _options, daytime, _width, _height, cancellationToken: token);
+        return TimeLapseFrameRenderer.Render(sources, _rig, _options, daytime, _width, _height, cancellationToken: token, rendererVersion: _rendererVersion);
     }
 }

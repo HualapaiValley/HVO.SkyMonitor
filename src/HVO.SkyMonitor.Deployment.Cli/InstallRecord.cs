@@ -65,7 +65,8 @@ internal sealed record InstallRecordInstance(
     public const string CameraAgent = "CameraAgent";
 
     /// <summary>Whether the two say the same, whenever each was written.</summary>
-    public bool SameAs(InstallRecordInstance? other) => other is not null && this with { UpdatedUtc = other.UpdatedUtc } == other;
+    public bool SameAs(InstallRecordInstance? other) => other is not null &&
+        this with { UpdatedUtc = other.UpdatedUtc } == other;
 }
 
 /// <summary>How an instance's image last changed.</summary>
@@ -92,7 +93,7 @@ internal enum InstallRecordEvent
 }
 
 /// <summary>One change to the record: an instance's entry set, or an instance removed.</summary>
-internal sealed record InstallRecordChange(InstallRecordInstance? Set, Guid? Remove)
+internal sealed record InstallRecordChange(InstallRecordInstance? Set, Guid? Remove, InstallProgramInstance? Programs = null)
 {
     public static InstallRecordChange Of(InstallRecordInstance entry) => new(entry, null);
 
@@ -176,8 +177,10 @@ internal static partial class InstallRecordStore
         var record = await ReadAsync(location, cancellationToken).ConfigureAwait(false);
         var existing = record?.Instances.FirstOrDefault(instance => instance.InstanceId == manifest.InstanceId);
         var entry = await ProjectAsync(paths, manifest, kind, existing, cancellationToken).ConfigureAwait(false);
+        var programAction = await SettleProgramsAsync(location, new(manifest.InstanceId,
+            await PathPrograms.ProjectAsync(paths, cancellationToken).ConfigureAwait(false)), cancellationToken).ConfigureAwait(false);
         return !await ApplyAsync(location, record, InstallRecordChange.Of(entry), cancellationToken).ConfigureAwait(false)
-            ? DeploymentPlanAction.Unchanged
+            ? programAction
             : existing is null ? DeploymentPlanAction.Create : DeploymentPlanAction.Change;
     }
 
@@ -192,6 +195,7 @@ internal static partial class InstallRecordStore
     {
         ArgumentNullException.ThrowIfNull(location);
         var record = await ReadAsync(location, cancellationToken).ConfigureAwait(false);
+        await SettleProgramsAsync(location, new(instanceId, null), cancellationToken).ConfigureAwait(false);
         return await ApplyAsync(location, record, InstallRecordChange.Removing(instanceId), cancellationToken).ConfigureAwait(false)
             ? DeploymentPlanAction.Remove
             : DeploymentPlanAction.Unchanged;
@@ -490,6 +494,8 @@ internal static partial class InstallRecordStore
                 $"The install record names only the production product root; '{productRoot}' is not the root the host policy resolves.");
         }
         var location = InstallRecordLocation.Machine(policy, productRoot);
+        if (change.Programs is { } programs)
+            return ApplyProgramsTrusted(location, programs);
         var content = HostProductRootPolicy.TryReadTrustedFile(policy, location.Path, MaximumRecordBytes, "Install record");
         var record = content is null ? null : Parse(content, location.Path);
         var next = Apply(record, change, productRoot, InstallerBuildIdentity.Current, DateTimeOffset.UtcNow);
@@ -510,7 +516,12 @@ internal static partial class InstallRecordStore
     {
         ArgumentNullException.ThrowIfNull(change);
         List<string> arguments = ["--", $"/proc/{Environment.ProcessId}/exe", CommandName, "--product-root", productRoot];
-        if (change.Set is { } entry)
+        if (change.Programs is { } programs)
+        {
+            arguments.Add("--programs");
+            arguments.Add(JsonSerializer.Serialize(programs, CompactOptions.GetTypeInfo(typeof(InstallProgramInstance))));
+        }
+        else if (change.Set is { } entry)
         {
             arguments.Add("--set");
             arguments.Add(JsonSerializer.Serialize(entry, CompactOptions.GetTypeInfo(typeof(InstallRecordInstance))));
@@ -542,12 +553,19 @@ internal static partial class InstallRecordStore
             (productRoot, change) = (args[2], InstallRecordChange.Removing(removed));
             return true;
         }
-        if (args[3] != "--set" || Encoding.UTF8.GetByteCount(args[4]) > MaximumEntryBytes)
+        if (args[3] is not ("--set" or "--programs") || Encoding.UTF8.GetByteCount(args[4]) > MaximumEntryBytes)
         {
             return false;
         }
         try
         {
+            if (args[3] == "--programs")
+            {
+                var programs = JsonSerializer.Deserialize(args[4], InstallRecordJsonContext.Default.InstallProgramInstance);
+                if (ProgramEntryProblem(programs) is not null) return false;
+                (productRoot, change) = (args[2], new(null, null, programs));
+                return true;
+            }
             var entry = (InstallRecordInstance?)JsonSerializer.Deserialize(
                 args[4], CompactOptions.GetTypeInfo(typeof(InstallRecordInstance)));
             if (EntryProblem(entry) is not null)
@@ -613,4 +631,6 @@ internal static partial class InstallRecordStore
     UseStringEnumConverter = true)]
 [JsonSerializable(typeof(InstallRecord))]
 [JsonSerializable(typeof(InstallRecordInstance))]
+[JsonSerializable(typeof(InstallProgramRecord))]
+[JsonSerializable(typeof(InstallProgramInstance))]
 internal sealed partial class InstallRecordJsonContext : JsonSerializerContext;

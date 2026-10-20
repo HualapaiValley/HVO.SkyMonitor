@@ -100,6 +100,7 @@ internal sealed partial class CameraAgentInstaller
         bool FilesDiffer,
         bool ContainerDiffers,
         bool ResultModelStale,
+        bool ProgramsChange,
         InstallRecordLocation RecordLocation,
         DeploymentPlanAction RecordAction)
     {
@@ -110,7 +111,7 @@ internal sealed partial class CameraAgentInstaller
         /// </summary>
         public bool NeedsDeploy => LimitsChange || FilesDiffer || ContainerDiffers;
 
-        public bool HasChanges => NeedsDeploy || ResultModelStale || RecordAction != DeploymentPlanAction.Unchanged;
+        public bool HasChanges => NeedsDeploy || ResultModelStale || ProgramsChange || RecordAction != DeploymentPlanAction.Unchanged;
     }
 
     /// <summary>
@@ -251,6 +252,9 @@ internal sealed partial class CameraAgentInstaller
             !filesMatch,
             !await RunsAsync(docker, recorded.Files, image, manifest.Resources, cancellationToken).ConfigureAwait(false),
             result.ComposeModelSha256 != manifest.ComposeModelSha256,
+            (await PathPrograms.PlanAsync(paths, request.ProductionProductRoot, request.Release, image.ImageId,
+                operation: null, cancellationToken).ConfigureAwait(false)).Any(item => item.Action != DeploymentPlanAction.Unchanged) ||
+                await InstallRecordStore.ProgramsDifferAsync(location, paths, cancellationToken).ConfigureAwait(false),
             location,
             existing is null ? DeploymentPlanAction.Create
             : existing.SameAs(entry) ? DeploymentPlanAction.Unchanged : DeploymentPlanAction.Change);
@@ -365,6 +369,8 @@ internal sealed partial class CameraAgentInstaller
         // The install record is a view of the instance's own records, so an interruption here leaves those agreeing
         // with the container and the next run settles the view.
         cancellationToken.ThrowIfCancellationRequested();
+        await PathPrograms.SettleAsync(paths, request.ProductionProductRoot, request.Release, manifest.Image.ImageId,
+            cancellationToken).ConfigureAwait(false);
         var recordAction = await InstallRecordStore.SettleInstanceAsync(
                 instance.RecordLocation, paths, manifest, InstallRecordEvent.Install, cancellationToken)
             .ConfigureAwait(false);

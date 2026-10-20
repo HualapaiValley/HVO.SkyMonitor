@@ -61,7 +61,9 @@ cleanup() {
   # A run stopped between the two renames puts the old set back rather than losing it.
   if [[ -n "$retired" && ! -e "$target" ]]; then mv -- "$retired" "$target" && retired=""; fi
   if [[ -n "$staging" ]]; then rm -rf -- "$staging"; fi
-  if [[ -n "$retired" ]]; then rm -rf -- "$retired"; fi
+  if [[ -n "$retired" && -e "$retired" ]]; then
+    printf 'The previous screenshots are retained at %s.\n' "$retired" >&2
+  fi
 }
 trap cleanup EXIT
 for project in "${render_projects[@]}"; do

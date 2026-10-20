@@ -79,7 +79,7 @@ public sealed partial class ExecutionEvidenceIntegrationTests
             }
             using var probe = new BindingReadProbe();
             var timer = Stopwatch.StartNew();
-            using var response = await client.GetAsync(BindingPath(device.ObservatoryId, camera, device.InstallationId)).ConfigureAwait(false);
+            using var response = await probe.GetAsync(client, BindingPath(device.ObservatoryId, camera, device.InstallationId)).ConfigureAwait(false);
             var bytes = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
             timer.Stop();
             Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
@@ -89,7 +89,7 @@ public sealed partial class ExecutionEvidenceIntegrationTests
             Assert.AreEqual(overflow, result.Truncated);
             CollectionAssert.AreEqual(expected, result.Bindings.Select(b => b.Id).ToArray());
             Assert.IsTrue(result.Bindings.All(b => b.LogicalCameraInstallationId == device.InstallationId));
-            Assert.HasCount(2, probe.Commands, "One authorized relationship query, then one bounded binding query.");
+            Assert.HasCount(2, probe.Commands, "One authorized relationship query, then one bounded binding query. " + probe.Describe());
             Assert.IsTrue(probe.Commands.All(c => c.Sql.TrimStart().StartsWith("SELECT", StringComparison.Ordinal)));
             var query = probe.Commands.Last();
             Assert.IsTrue(query.Sql.Contains("TOP(@", StringComparison.Ordinal));
