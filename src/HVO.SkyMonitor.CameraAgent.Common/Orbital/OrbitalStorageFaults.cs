@@ -1,13 +1,16 @@
 namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;
 
-/// <summary>Crash and disk-full boundaries of orbital publication and retention, for deterministic tests.</summary>
+/// <summary>Crash and disk-full boundaries of orbital publication, retention and reads, for deterministic tests.</summary>
 internal enum OrbitalStorageFaultPoint
 {
     AfterRaw,
     AfterPayload,
     AfterManifest,
     BeforeActivationCommit,
-    AfterTombstone
+    AfterTombstone,
+
+    /// <summary>A manifest read holds its pin and has found a published row, but has not yet opened the file.</summary>
+    BeforeManifestRead
 }
 
 /// <summary>
