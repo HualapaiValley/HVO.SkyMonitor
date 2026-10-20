@@ -5,6 +5,7 @@ import io
 import json
 import pathlib
 import re
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -111,6 +112,25 @@ class ReleaseImages(unittest.TestCase):
             for member in archive.getmembers():
                 if member.name.startswith("blobs/sha256/"):
                     self.assertEqual(sha(archive.extractfile(member).read()), member.name.split("/")[-1])
+
+    def test_combined_archive_names_its_directories_for_unprivileged_readers(self):
+        result = self.combine()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        combined = self.root / "combined.tar"
+        with tarfile.open(combined) as archive:
+            members = archive.getmembers()
+        names = [member.name for member in members]
+        directories = {member.name: member for member in members if member.isdir()}
+        self.assertEqual(sorted(directories), ["blobs", "blobs/sha256"])
+        self.assertTrue(all(directory.mode == 0o755 for directory in directories.values()))
+        first_blob = min(position for position, name in enumerate(names) if name.startswith("blobs/sha256/"))
+        self.assertLess(names.index("blobs"), names.index("blobs/sha256"))
+        self.assertLess(names.index("blobs/sha256"), first_blob)
+        skopeo = shutil.which("skopeo")
+        if skopeo:  # GitHub-hosted runners provide skopeo; Draft's image push reads the archive unprivileged.
+            inspected = subprocess.run([skopeo, "inspect", "--raw", f"oci-archive:{combined}"],
+                                       capture_output=True, text=True)
+            self.assertEqual(inspected.returncode, 0, inspected.stderr)
 
     def test_rejects_transfer_digest_mismatch(self):
         self.inputs[0] = (self.inputs[0][0], "0" * 64)

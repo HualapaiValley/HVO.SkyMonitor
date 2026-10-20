@@ -114,6 +114,25 @@ public static class SwpcSource
         return value;
     }
 
+    /// <summary>Returns the contract-trimmed media token as bounded printable ASCII, without parameters (T4).</summary>
+    internal static string? MediaTypeToken(string? value)
+    {
+        var token = value.AsSpan();
+        var semicolon = token.IndexOf(';');
+        if (semicolon >= 0) token = token[..semicolon];
+        while (!token.IsEmpty && IsFieldWhitespace(token[0])) token = token[1..];
+        while (!token.IsEmpty && IsFieldWhitespace(token[^1])) token = token[..^1];
+        if (token.IsEmpty || token.Length > MaximumMediaTypeLength) return null;
+        foreach (var character in token)
+        {
+            if (character is < ' ' or > '~') return null;
+        }
+        return token.ToString();
+    }
+
+    // The contract's field-whitespace rule uses Unicode whitespace plus U+001C through U+001F.
+    private static bool IsFieldWhitespace(char character) => char.IsWhiteSpace(character) || character is >= '\u001c' and <= '\u001f';
+
     /// <summary>Returns exactly one raw field value; commas within that value are preserved.</summary>
     internal static string? SingleHeaderValue(HttpHeaders headers, string name)
     {

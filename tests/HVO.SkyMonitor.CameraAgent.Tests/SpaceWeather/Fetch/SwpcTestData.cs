@@ -36,13 +36,21 @@ internal sealed class SwpcStubHandler(Func<HttpRequestMessage, CancellationToken
 }
 
 internal sealed class SwpcContent(byte[] bytes, bool unbounded = false, bool pending = false,
-    Exception? failure = null, int chunk = int.MaxValue, int[]? chunks = null, int afterBytes = 0) : HttpContent
+    Exception? failure = null, int chunk = int.MaxValue, int[]? chunks = null, int afterBytes = 0,
+    bool faultOnce = false, bool limitAtOutcome = false) : HttpContent
 {
     private int readIndex;
     public bool Opened { get; private set; }
     public bool Disposed { get; private set; }
     public int BytesRead { get; private set; }
     public int LargestRead { get; private set; }
+    public int ReadCalls { get; private set; }
+    public int LastReadRequest { get; private set; }
+    public int ZeroReadCalls { get; private set; }
+    public int FaultCount { get; private set; }
+    public int ReadsAfterThrow { get; private set; }
+    public int? BytesAtThrow { get; private set; }
+    public bool ReaderDisposed { get; private set; }
     public TaskCompletionSource BlockedReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource ReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     protected override bool TryComputeLength(out long length) { length = 0; return false; }
@@ -52,6 +60,10 @@ internal sealed class SwpcContent(byte[] bytes, bool unbounded = false, bool pen
     protected override void Dispose(bool disposing) { Disposed = true; base.Dispose(disposing); }
     private async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken token)
     {
+        ObjectDisposedException.ThrowIf(ReaderDisposed, this);
+        if (FaultCount > 0) ReadsAfterThrow++;
+        ReadCalls++;
+        LastReadRequest = buffer.Length;
         ReadStarted.TrySetResult();
         LargestRead = Math.Max(LargestRead, buffer.Length);
         if (BytesRead >= afterBytes)
@@ -61,20 +73,32 @@ internal sealed class SwpcContent(byte[] bytes, bool unbounded = false, bool pen
                 BlockedReadStarted.TrySetResult();
                 await Task.Delay(Timeout.Infinite, token).ConfigureAwait(false);
             }
-            if (failure is not null) throw failure;
+            if (failure is not null && (!faultOnce || FaultCount == 0))
+            {
+                BytesAtThrow ??= BytesRead;
+                FaultCount++;
+                throw failure;
+            }
         }
         var count = Math.Min(buffer.Length, chunks is null ? chunk : chunks[readIndex++ % chunks.Length]);
+        if (limitAtOutcome && BytesRead < afterBytes) count = Math.Min(count, afterBytes - BytesRead);
         if (unbounded) buffer.Span[..count].Clear();
         else
         {
             count = Math.Min(count, bytes.Length - BytesRead);
             bytes.AsMemory(BytesRead, count).CopyTo(buffer);
         }
+        if (count == 0) ZeroReadCalls++;
         BytesRead += count;
         return count;
     }
     private sealed class Reader(SwpcContent owner) : Stream
     {
+        protected override void Dispose(bool disposing)
+        {
+            owner.ReaderDisposed = true;
+            base.Dispose(disposing);
+        }
         public override bool CanRead => true;
         public override bool CanSeek => false;
         public override bool CanWrite => false;

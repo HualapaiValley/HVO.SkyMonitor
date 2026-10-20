@@ -26,8 +26,30 @@ public sealed record SwpcRequestValidators(string? EntityTag, string? LastModifi
 /// ID1/ID2 and CM=8 are required; reserved flags are rejected; MTIME, XFL and OS are ignored. FEXTRA is skipped;
 /// FNAME and FCOMMENT are zero-terminated within 1,024 bytes each, including the terminator. FHCRC is the low
 /// 16 bits of the header's IEEE CRC-32. Raw deflate must finish immediately before the eight-byte trailer,
-/// whose IEEE CRC-32 and ISIZE must match the decoded body (length modulo 2^32). Oversize takes priority over framing checks;
-/// connection truncation remains NetworkError. The response owns an exact-length copy of its body.
+/// whose IEEE CRC-32 and ISIZE must match the decoded body (length modulo 2^32). Oversize takes priority over framing checks.
+/// Owner decision T3: before any gzip rejection after opening the body, drain the counting wire under the same
+/// linked token with one fixed buffer of at most 8 KiB. Discard at most maximum+1 further wire bytes, with each
+/// read bounded by the remaining allowance; stop at that bound without another read and return BodyUndecodable.
+/// At EOF before the bound (or EOF already observed), check declared Content-Length: a mismatch is NetworkError;
+/// a match or absent length is BodyUndecodable. Drain IOException/HttpIOException propagate as NetworkError;
+/// the deadline is Timeout and caller cancellation throws. Decoded oversize keeps priority and never drains.
+/// Unsupported codings and identity oversize by declared length are never opened or read, so their wire length
+/// is never judged.
+/// Owner decision T3a: one rejection, one drain, at most once per response, outside the decoding try/catch.
+/// Only framing/inflater InvalidDataException faults are decoding rejections; source faults are recorded and
+/// propagate unchanged, with no further source read. This includes source InvalidDataException, which remains
+/// unexpected and propagates from FetchAsync as the same object. The existing transport boundary alone maps
+/// I/O, HTTP, authentication and socket failures to NetworkError, the deadline to Timeout, and throws caller
+/// cancellation. On every path the aggregate wire bytes read after rejection are bounded by maximum+1.
+/// Owner decision T4: Content-Type is reduced to its media token. Absent or repeated fields give null.
+/// Cut the single raw field before the first semicolon and trim both ends with char.IsWhiteSpace plus
+/// U+001C through U+001F. Empty tokens, tokens longer than 256 characters and tokens outside U+0020 through
+/// U+007E give null; otherwise preserve the token's case. This is exactly the information the contract's
+/// content-type check uses. The transport makes no content-type decision: T1 is unchanged, and S1/S2b decide.
+/// The returned value stays bounded printable ASCII, so persistence and replay are unchanged in kind.
+/// The 256 bound applies to the token, not the raw field; parameters may be long because the handler's
+/// MaxResponseHeadersLength already bounds the raw field. Processing is linear in the field length.
+/// The response owns an exact-length copy of its body.
 /// </summary>
 public sealed record SwpcHttpResponse
 {
@@ -75,7 +97,7 @@ public sealed record SwpcHttpResponse
     public int? StatusCode { get; }
     /// <summary>Whether at least one conditional validator was sent.</summary>
     public bool ValidatorsSent { get; }
-    /// <summary>One bounded printable-ASCII raw Content-Type, including parameters.</summary>
+    /// <summary>The single Content-Type media token, contract-trimmed and bounded to 256 printable-ASCII characters (T4), or null.</summary>
     public string? MediaType { get; }
     /// <summary>One sanitized response ETag.</summary>
     public string? EntityTag { get; }

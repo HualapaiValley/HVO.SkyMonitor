@@ -22,7 +22,7 @@ public enum OrbitalElementsAvailabilityState
 
 /// <summary>
 /// Fail-closed availability of the optional orbital store. Initialization failure never stops the CameraAgent host:
-/// it is recorded once, the refresh task, operations and health report it, and every later probe retries, so a repaired
+/// it is recorded once, the refresh task, operations and health report it, and later probes retry after the shared initialization backoff, so a repaired
 /// root recovers without a restart. Logs carry the state and a stable reason code, never a path.
 /// </summary>
 public sealed partial class OrbitalElementsAvailability
@@ -196,7 +196,8 @@ public sealed partial class OrbitalElementsAvailability
 internal sealed class OrbitalElementsInitializationService(
     OrbitalElementsAvailability availability,
     TimeProvider timeProvider,
-    OrbitalElementsRefreshJob? job = null) : BackgroundService
+    OrbitalElementsRefreshJob? job = null,
+    OrbitalSnapshotReader? reader = null) : BackgroundService
 {
     internal static readonly TimeSpan RetryInterval = TimeSpan.FromMinutes(5);
 
@@ -235,6 +236,15 @@ internal sealed class OrbitalElementsInitializationService(
         }
     }
 
-    private ValueTask PublishStateAsync(CancellationToken cancellationToken)
-        => job?.PublishStateAsync(cancellationToken) ?? ValueTask.CompletedTask;
+    private async ValueTask PublishStateAsync(CancellationToken cancellationToken)
+    {
+        if (reader is not null)
+        {
+            await reader.PrepareCurrentAsync(cancellationToken).ConfigureAwait(false);
+        }
+        if (job is not null)
+        {
+            await job.PublishStateAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
 }
