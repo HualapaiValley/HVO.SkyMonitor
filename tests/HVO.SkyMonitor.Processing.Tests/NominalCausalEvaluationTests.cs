@@ -227,6 +227,7 @@ public sealed class NominalCausalEvaluationTests
             ObservationStartedUtc = canonical[0].RequestedInterval.StartUtc.AddSeconds((n - 3) * 5),
             ObservationEndedUtc = canonical[0].RequestedInterval.EndUtc.AddSeconds((n - 3) * 5),
             GeometryIdentitySha256 = NominalPredictionComparison.GeometryHash(canonical[0].Geometry),
+            Observer = canonical[0].Observer,
             Compatibility = package.Frame(n).Compatibility with { Rig = canonical[0].Geometry.RigIdentitySha256 }
         }).ToArray();
         package.Write(frames);
@@ -249,6 +250,62 @@ public sealed class NominalCausalEvaluationTests
             Assert.AreEqual(JsonSerializer.Serialize(report, Json), JsonSerializer.Serialize(NominalPredictionComparison.Compare(evaluation, package.Root), Json));
             Assert.Contains("unavailable", report.MotionFeatures);
         }
+    }
+
+    [TestMethod]
+    [DataRow("unknown")]
+    [DataRow("latitude")]
+    [DataRow("longitude")]
+    [DataRow("elevation")]
+    [DataRow("matched")]
+    public void ComparisonRequiresExplicitMatchingCaptureObserver(string variant)
+    {
+        using var package = new Package();
+        var bytes = Fixture("iss", 3);
+        var track = OrbitalPredictionJson.ParseTrack(bytes);
+        ObserverLocation? observer = variant switch
+        {
+            "unknown" => null,
+            "latitude" => track.Observer with { LatitudeDegrees = track.Observer.LatitudeDegrees + 1 },
+            "longitude" => track.Observer with { LongitudeDegrees = track.Observer.LongitudeDegrees + 1 },
+            "elevation" => track.Observer with { ElevationMeters = track.Observer.ElevationMeters + 1 },
+            _ => track.Observer
+        };
+        package.Write(Enumerable.Range(1, 3).Select(n => package.Frame(n, width: 640, signals: n == 3 ? 2 : 0) with
+        {
+            ObservationStartedUtc = track.RequestedInterval.StartUtc.AddSeconds((n - 3) * 5),
+            ObservationEndedUtc = track.RequestedInterval.EndUtc.AddSeconds((n - 3) * 5),
+            GeometryIdentitySha256 = NominalPredictionComparison.GeometryHash(track.Geometry),
+            Observer = observer,
+            Compatibility = package.Frame(n).Compatibility with { Rig = track.Geometry.RigIdentitySha256 }
+        }).ToArray());
+        var path = Path.Combine(package.Root, "evaluation.json");
+        Publish(path, Evaluate(package.Root));
+        package.Predictions([bytes]);
+        var report = NominalPredictionComparison.Compare(path, package.Root);
+        Assert.HasCount(2, report.Frames[2].Components);
+        foreach (var component in report.Frames[2].Components)
+        {
+            Assert.HasCount(1, component.Hypotheses);
+            var hypothesis = component.Hypotheses[0];
+            Assert.AreEqual(variant == "matched", hypothesis.Eligible);
+            Assert.AreEqual(variant == "matched", hypothesis.Segments.Count > 0);
+            if (variant != "matched")
+                Assert.Contains(variant == "unknown" ? "capture-observer-unknown" : "capture-observer-mismatch", hypothesis.Reasons);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(91d, 0d)]
+    [DataRow(0d, 181d)]
+    [DataRow(-91d, -181d)]
+    public void InvalidObserverIsRejectedBeforeRawFilesAreOpened(double latitude, double longitude)
+    {
+        using var package = new Package();
+        package.Write([package.Frame(1) with { Observer = new(latitude, longitude, 0) }]);
+        var reads = new List<string>();
+        ExpectRejected(() => Evaluate(package.Root, reads.Add));
+        CollectionAssert.AreEqual(InputOnly, reads);
     }
 
     [TestMethod]
@@ -294,6 +351,7 @@ public sealed class NominalCausalEvaluationTests
             ObservationStartedUtc = track.RequestedInterval.StartUtc.AddSeconds((n - 3) * 5),
             ObservationEndedUtc = track.RequestedInterval.EndUtc.AddSeconds((n - 3) * 5),
             GeometryIdentitySha256 = NominalPredictionComparison.GeometryHash(track.Geometry),
+            Observer = track.Observer,
             Compatibility = package.Frame(n).Compatibility with { Rig = track.Geometry.RigIdentitySha256 }
         }).ToArray());
         var path = Path.Combine(package.Root, "evaluation.json");
@@ -339,6 +397,7 @@ public sealed class NominalCausalEvaluationTests
             ObservationStartedUtc = actual.RequestedInterval.StartUtc.AddSeconds((n - 3) * 5),
             ObservationEndedUtc = actual.RequestedInterval.EndUtc.AddSeconds((n - 3) * 5),
             GeometryIdentitySha256 = NominalPredictionComparison.GeometryHash(actual.Geometry),
+            Observer = actual.Observer,
             Compatibility = package.Frame(n).Compatibility with { Rig = actual.Geometry.RigIdentitySha256 }
         }).ToArray());
         var evaluation = Path.Combine(package.Root, "evaluation.json");
@@ -418,7 +477,7 @@ public sealed class NominalCausalEvaluationTests
                 { StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1, LevelCodeSpace = FrameLevelCodeSpace.NativeSample },
                 new(64, 4095, 4095), new("nominal-rig", "orientation", "raw", "empty", "native12", "fixed", "nominal"),
                 new("response", 1, 1), new("explicit-empty-v1", "explicit-empty-v1", "explicit-empty-v1", "explicit-empty-v1",
-                    "explicit-empty-v1", new("empty", null, null, null)), null);
+                    "explicit-empty-v1", new("empty", null, null, null)), null, null);
         }
 
         internal void Write(IReadOnlyList<NominalRawFrame> frames)

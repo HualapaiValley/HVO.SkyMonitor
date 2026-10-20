@@ -87,7 +87,8 @@ explicit, positive and at most 3600 seconds.
         "star": "explicit-empty-v1",
         "imageCircle": { "mode": "circle", "centerX": 320, "centerY": 320, "radius": 313.6 }
       },
-      "geometryIdentitySha256": null
+      "geometryIdentitySha256": null,
+      "observer": null
     }
   ]
 }
@@ -113,7 +114,12 @@ An optional geometry pin is the uppercase
 `CaptureContractJson.ComputeCanonicalJsonSha256(OrbitalGeometryFacts)` of the
 capture's **public capture-time** nominal geometry. Pin it from retained public
 geometry facts, never from private labels or from a proposed match. Null pins
-allow detection but withhold comparison residuals. Rig identity, raster size,
+allow detection but withhold comparison residuals. The required `observer` field
+is either null (unknown) or the public capture-time location object with finite
+`latitudeDegrees` (-90..90), `longitudeDegrees` (-180..180, east positive) and
+`elevationMeters`. Unknown locations withhold residuals; supplied coordinates
+must match the prediction exactly. Camera geometry does not establish location.
+Rig identity, raster size,
 full geometry hash, readout-view coordinates and identity image transform must
 also match the prediction. Other image transforms are explicitly unavailable in
 this slice. The inverse `SourceToDetectorTransform` in each actual detector
@@ -213,7 +219,8 @@ track-file hash order and canonical segment order; no identity wins by ordering.
 
 Every component has every supplied prediction alternative, including ineligible
 ones with reasons. Per-frame coverage is retained even if no component exists.
-Numerical residuals require exact exposure interval and compatible pinned nominal
+Numerical residuals require exact exposure interval, explicit matching observer
+coordinates and compatible pinned nominal
 geometry. Partial products use only their actual returned segments; no gaps are
 joined. Each segment reports RMS/maximum perpendicular distance and the minimum
 of the two unordered maximum endpoint errors. There is no acceptance threshold,

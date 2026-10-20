@@ -140,6 +140,10 @@ internal static class NominalPredictionComparison
     private static bool Eligible(NominalFrameOutcome frame, OrbitalExposureTrackV1 track, List<string> reasons)
     {
         var eligible = true;
+        if (frame.Raw.Observer is null)
+        { reasons.Add("capture-observer-unknown"); eligible = false; }
+        else if (frame.Raw.Observer.Value != track.Observer)
+        { reasons.Add("capture-observer-mismatch"); eligible = false; }
         if (track.RequestedInterval.StartUtc != frame.Raw.ObservationStartedUtc ||
             track.RequestedInterval.EndUtc != frame.Raw.ObservationEndedUtc ||
             track.Timing.Exposure.StartUtc != frame.Raw.ObservationStartedUtc || track.Timing.Exposure.EndUtc != frame.Raw.ObservationEndedUtc)

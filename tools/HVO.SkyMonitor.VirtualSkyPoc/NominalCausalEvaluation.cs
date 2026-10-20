@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 
@@ -19,7 +20,7 @@ internal sealed record NominalRawFrame(Guid CaptureId, long CaptureSequence, str
     string Sha256, string RecipeIdentitySha256, DateTimeOffset ObservationStartedUtc, DateTimeOffset ObservationEndedUtc,
     TransientTimingQuality TimingQuality, FrameLayoutDescriptor Layout, TransientLinearLevelsV1 Levels,
     ProcessingCompatibilityIdentity Compatibility, TransientSensitivityV1 Sensitivity, NominalMasks Masks,
-    string? GeometryIdentitySha256);
+    string? GeometryIdentitySha256, ObserverLocation? Observer);
 internal sealed record NominalRawManifest(string Schema, double MaximumAdjacentStartIntervalSeconds,
     IReadOnlyList<NominalRawFrame> Frames);
 internal sealed record NominalFileRead(string Path, int Bytes, string Sha256);
@@ -155,6 +156,7 @@ internal static class NominalCausalEvaluation
                 (frame.GeometryIdentitySha256 is null || Sha(frame.GeometryIdentitySha256)) &&
                 frame.Path == "raw/" + frame.Sha256 + ".raw", "raw-identity-or-path");
             previous = frame.CaptureSequence;
+            if (frame.Observer is { } observer) observer.Validate();
             Require(frame.ObservationStartedUtc != default && frame.ObservationEndedUtc != default &&
                 frame.ObservationStartedUtc.Offset == TimeSpan.Zero && frame.ObservationEndedUtc.Offset == TimeSpan.Zero &&
                 frame.ObservationEndedUtc > frame.ObservationStartedUtc &&
