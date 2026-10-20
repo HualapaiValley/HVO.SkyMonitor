@@ -41,6 +41,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
     private static readonly TimeSpan Floor = SqliteOrbitalElementsStore.MinimumProviderAttemptInterval;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private readonly Dictionary<string, List<Sample>> _samples = new(StringComparer.Ordinal);
+    private readonly object _sampleSync = new();
     private readonly List<object> _facts = [];
     private readonly List<object> _boundaries = [];
     private readonly List<WeakReference<OrbitalSnapshotReader>> _disposedReaders = [];
@@ -461,15 +462,18 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
         {
             return;
         }
-        if (!_samples.TryGetValue(name, out var samples))
+        lock (_sampleSync)
         {
-            samples = [];
-            _samples.Add(name, samples);
+            if (!_samples.TryGetValue(name, out var samples))
+            {
+                samples = [];
+                _samples.Add(name, samples);
+            }
+            samples.Add(new(wall, allocated, cpu, process.PeakWorkingSet64, Math.Max(0, process.PeakWorkingSet64 - start.Peak),
+                io is not null && start.Io is not null ? io - start.Io : null, _repeat,
+                gc.Gen0 - start.Gc.Gen0, gc.Gen1 - start.Gc.Gen1, gc.Gen2 - start.Gc.Gen2,
+                gc.PauseMs - start.Gc.PauseMs, start.Gc.Index, gc.Index, gc.PromotedBytes));
         }
-        samples.Add(new(wall, allocated, cpu, process.PeakWorkingSet64, Math.Max(0, process.PeakWorkingSet64 - start.Peak),
-            io is not null && start.Io is not null ? io - start.Io : null, _repeat,
-            gc.Gen0 - start.Gc.Gen0, gc.Gen1 - start.Gc.Gen1, gc.Gen2 - start.Gc.Gen2,
-            gc.PauseMs - start.Gc.PauseMs, start.Gc.Index, gc.Index, gc.PromotedBytes));
     }
 
     private static Io? ReadIo()
