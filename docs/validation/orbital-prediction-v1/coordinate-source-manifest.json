@@ -1,0 +1,158 @@
+{
+  "schema": "coordinate-time-reference-v1",
+  "generator": "coordinate-reference-generator.py",
+  "versions": {
+    "skyfield": "1.55",
+    "sgp4": "2.27",
+    "numpy": "2.5.4",
+    "jplephem": "2.24"
+  },
+  "conventions": {
+    "rotation": "GMST82 analytic derivative per UT1 second, nominal UTC rate, no DUT1-slope/LOD correction",
+    "polar": "Rx(yp) Ry(xp), zero polar derivative, TIO s-prime zero",
+    "observer": "WGS84 geodetic, east-positive, ellipsoidal height",
+    "refraction": "none"
+  },
+  "eopSource": {
+    "url": "https://maia.usno.navy.mil/ser7/finals2000A.all",
+    "sha256": "BFA2066AAB0400B075357F573AF6081E0068A518993609EEE0C5CA991BAB0845",
+    "bytes": 3769212,
+    "retrievedUtc": "2026-10-19T17:40:05.574120Z",
+    "transformation": "Select lines by inclusive MJD bounds, trim trailing ASCII spaces and normalize line endings to LF; preserve all numeric columns. B final, A P predicted; no I-only final promotion.",
+    "terms": "IERS scientific EOP values distributed by USNO; attribution retained. No bespoke license grant in raw input; institutional redistribution approval is not inferred."
+  },
+  "leapSource": {
+    "url": "https://hpiers.obspm.fr/iers/bul/bulc/ntp/leap-seconds.list",
+    "retrievedUtc": "2026-10-19T22:11:00Z",
+    "retrievalPrecision": "minute",
+    "terms": "Raw file explicitly declares public domain.",
+    "coverageStartUtc": "1972-01-01T00:00:00Z",
+    "expiresUtc": "2027-06-28T00:00:00Z",
+    "approval": "Authoritative bounded fixture; no production source/clock/physical accuracy approval or updater introduced."
+  },
+  "gpSource": {
+    "path": "docs/validation/orbital-reference-v1/gp-source-facts.json",
+    "sha256": "2FCA7AC8926E890D271E5BC4AE1E018CF21BDFE4CFAB535DEDDFFB28CC93C134"
+  },
+  "softwareSources": [
+    {
+      "package": "Skyfield",
+      "version": "1.55",
+      "path": "tests/test_earth_satellites.py",
+      "bytes": 7904,
+      "sha256": "C4BD148A75DD12FBFD1111CD5B28E8E4A1846BD2E0AEF6B06CADD6F2796ACFC9",
+      "license": "MIT",
+      "source": "https://github.com/skyfielders/python-skyfield/tree/1.55/skyfield/tests/test_earth_satellites.py"
+    },
+    {
+      "package": "Skyfield",
+      "version": "1.55",
+      "path": "tests/test_satellite_events.py",
+      "bytes": 5883,
+      "sha256": "FEEA3C241A4212109637627D87B8258479A0B63E583AC98559DD21F7B520A834",
+      "license": "MIT",
+      "source": "https://github.com/skyfielders/python-skyfield/tree/1.55/skyfield/tests/test_satellite_events.py"
+    },
+    {
+      "package": "Skyfield",
+      "version": "1.55",
+      "path": "sgp4lib.py",
+      "bytes": 14233,
+      "sha256": "385C73A4437CA96A926330DDC3166DE295015601C3014C95ABF44743F138E5E8",
+      "license": "MIT",
+      "source": "https://github.com/skyfielders/python-skyfield/tree/1.55/skyfield/sgp4lib.py"
+    },
+    {
+      "package": "Skyfield",
+      "version": "1.55",
+      "path": "toposlib.py",
+      "bytes": 13682,
+      "sha256": "280F95AA7D09DEA982BBCECF476312A31C7C16123C71D2D2E06F91C0F952D045",
+      "license": "MIT",
+      "source": "https://github.com/skyfielders/python-skyfield/tree/1.55/skyfield/toposlib.py"
+    },
+    {
+      "package": "Skyfield",
+      "version": "1.55",
+      "path": "timelib.py",
+      "bytes": 47950,
+      "sha256": "A949B768909835CE3B504E89321241FBB5647065CFB17B0DB225A285896109FD",
+      "license": "MIT",
+      "source": "https://github.com/skyfielders/python-skyfield/tree/1.55/skyfield/timelib.py"
+    },
+    {
+      "package": "python-sgp4",
+      "version": "2.27",
+      "path": "api.py",
+      "bytes": 882,
+      "sha256": "E61F7A4B1DDD026A0CFD147EF18CF2EAF1AEE9E05EAE9098677CBD811F519BF3",
+      "license": "MIT",
+      "source": "https://github.com/brandon-rhodes/python-sgp4/tree/092d206d6e6556a3cbbbe86f6ba4293c1f4ec646/sgp4/api.py"
+    },
+    {
+      "package": "python-sgp4",
+      "version": "2.27",
+      "path": "wrapper.py",
+      "bytes": 2283,
+      "sha256": "F73CBAF65E1594C3B6B565212677F066B90EFC9EBEC31EA3633A893EA3116D67",
+      "license": "MIT",
+      "source": "https://github.com/brandon-rhodes/python-sgp4/tree/092d206d6e6556a3cbbbe86f6ba4293c1f4ec646/sgp4/wrapper.py"
+    },
+    {
+      "package": "python-sgp4",
+      "version": "2.27",
+      "path": "omm.py",
+      "bytes": 1995,
+      "sha256": "4945D86C08EE94E28F2CA561519497D6892B231CAF12409E770A0B16410E88E6",
+      "license": "MIT",
+      "source": "https://github.com/brandon-rhodes/python-sgp4/tree/092d206d6e6556a3cbbbe86f6ba4293c1f4ec646/sgp4/omm.py"
+    }
+  ],
+  "files": [
+    {
+      "path": "docs/validation/orbital-prediction-v1/coordinate-PYTHON-SGP4-LICENSE.txt",
+      "bytes": 1086,
+      "sha256": "4474EA9ECCBB829C6BC3652381BFE78B1C815DE021D4A284A2A5B383A374D030"
+    },
+    {
+      "path": "docs/validation/orbital-prediction-v1/coordinate-SKYFIELD-LICENSE.txt",
+      "bytes": 1101,
+      "sha256": "4B3CAD9301FC389F9545079B43384659B908E94D6AB271474B3F6DA2BD20D65A"
+    },
+    {
+      "path": "docs/validation/orbital-prediction-v1/coordinate-reference-generator.py",
+      "bytes": 13890,
+      "sha256": "47DEFF6FA0B236598EB6EBF99716C69E2A6A8E08256E4695C3F7048BED51F4D7"
+    },
+    {
+      "path": "tests/fixtures/orbital-prediction-v1/coordinates/pass-references.json",
+      "bytes": 43519,
+      "sha256": "9280F5FF6AB295B0D50613380BFD58A544DA9002FDA994CC85A37AFE2E7B8C87"
+    },
+    {
+      "path": "tests/fixtures/orbital-prediction-v1/coordinates/reference-states.json",
+      "bytes": 15839,
+      "sha256": "3A4DA3C4CBD36A10E53693236434690D97904D00059AEA6B1CABB27D9DDFE26A"
+    },
+    {
+      "path": "tests/fixtures/orbital-prediction-v1/time/final-2004.finals2000A",
+      "bytes": 744,
+      "sha256": "29F801AC6B5F130F3E506221759F6DAE8B5F7844A860E66D6E02CDD61946E62E"
+    },
+    {
+      "path": "tests/fixtures/orbital-prediction-v1/time/leap-2016.finals2000A",
+      "bytes": 930,
+      "sha256": "622C6A6FD33796A1DF811D86943F286245DA7C7FB7A32513ECC31CCCC0D3C57E"
+    },
+    {
+      "path": "tests/fixtures/orbital-prediction-v1/time/leap-seconds.list",
+      "bytes": 5065,
+      "sha256": "DB5A895F16853B03BFC865E8D68F9FC8710EF1740E3400C701CD46A5BBBC3433"
+    },
+    {
+      "path": "tests/fixtures/orbital-prediction-v1/time/predicted-2026.finals2000A",
+      "bytes": 1080,
+      "sha256": "A11AD9627063DC10FA59FE25B9F9C07F0BACF81EA65F9405F40E4055DAA42E8B"
+    }
+  ]
+}

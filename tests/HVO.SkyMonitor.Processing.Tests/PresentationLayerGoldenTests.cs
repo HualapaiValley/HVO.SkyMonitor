@@ -9,10 +9,11 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed class PresentationLayerGoldenTests
 {
-    // Captured for projected-scene-presentation-v11-original-colours (#1383), which restored the overlay colours
-    // #1035 replaced. A scene without resolved footprints keeps producing these payload bytes; a change to them must
-    // also bump PresentationLayerProducers.SceneProducerVersion, so retained layers stay distinguishable.
-    private const string ExpectedPayloadsSha256 = "5933EFD082FF77976C9FA73EC640FF41992C172B5093FCCB94383BCA82698C79";
+    // Captured for projected-scene-presentation-v12-plain-circle-markers (#1415), which draws star markers as the
+    // plain circle outline again, after #1383 restored the overlay colours #1035 replaced. A scene without resolved
+    // footprints keeps producing these payload bytes; a change to them must also bump
+    // PresentationLayerProducers.SceneProducerVersion, so retained layers stay distinguishable.
+    private const string ExpectedPayloadsSha256 = "BD810160A4B84168CF445D4B86DFCC74630B443BD11A7491606CA7A3E258265E";
 
     [TestMethod]
     public async Task FootprintFreeScenesProduceThePinnedPayloadBytes()

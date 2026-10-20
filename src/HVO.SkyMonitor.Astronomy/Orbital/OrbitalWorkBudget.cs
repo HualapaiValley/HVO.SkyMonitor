@@ -1,0 +1,118 @@
+namespace HVO.SkyMonitor.Astronomy;
+
+/// <summary>One query's monotonic work counters; owned by its sequential numerical execution.</summary>
+internal sealed class OrbitalWorkBudget
+{
+    private readonly int maximumEvaluations, maximumSamples, maximumTracks, maximumPasses;
+    private readonly double maximumElapsedMilliseconds;
+    private readonly CancellationToken cancellationToken;
+    private readonly TimeProvider time;
+    private readonly long started;
+    private OrbitalPredictionReason reason;
+
+    internal OrbitalWorkBudget(OrbitalQueryBounds bounds, CancellationToken cancellationToken, TimeProvider? time = null)
+    {
+        ArgumentNullException.ThrowIfNull(bounds);
+        bounds.Validate();
+        maximumEvaluations = bounds.MaximumEvaluations; maximumSamples = bounds.MaximumSamples;
+        maximumTracks = bounds.MaximumTracks; maximumPasses = bounds.MaximumPasses;
+        maximumElapsedMilliseconds = bounds.MaximumElapsedMilliseconds;
+        this.cancellationToken = cancellationToken;
+        this.time = time ?? TimeProvider.System;
+        started = this.time.GetTimestamp();
+    }
+
+    internal OrbitalWorkBudget(OrbitalPassArcBounds bounds, CancellationToken cancellationToken, TimeProvider? time = null)
+    {
+        ArgumentNullException.ThrowIfNull(bounds);
+        bounds.Validate();
+        maximumEvaluations = bounds.MaximumEvaluations;
+        maximumSamples = Math.Min(bounds.MaximumSamples, OrbitalPassArcJson.MaximumMaterializedSamples);
+        maximumTracks = maximumPasses = 1;
+        maximumElapsedMilliseconds = bounds.MaximumElapsedMilliseconds;
+        this.cancellationToken = cancellationToken;
+        this.time = time ?? TimeProvider.System;
+        started = this.time.GetTimestamp();
+    }
+
+    internal OrbitalWorkCounter Work { get; } = new();
+    internal int Evaluations { get; private set; }
+    internal int Samples { get; private set; }
+    internal int Tracks { get; private set; }
+    internal int Passes { get; private set; }
+    internal double ElapsedMilliseconds => time.GetElapsedTime(started, time.GetTimestamp()).TotalMilliseconds;
+    internal OrbitalPredictionReason Reason
+    {
+        get
+        {
+            // Deadline takes precedence if final preparation outlives an earlier work limit.
+            if (ElapsedMilliseconds > maximumElapsedMilliseconds) reason = OrbitalPredictionReason.Deadline;
+            return reason;
+        }
+    }
+
+    internal bool CanContinue()
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Reason == OrbitalPredictionReason.None;
+    }
+
+    internal bool TryEvaluation()
+    {
+        if (!CanContinue()) return false;
+        if (Evaluations == maximumEvaluations) return Stop(OrbitalPredictionReason.EvaluationBudget);
+        Evaluations++;
+        return true;
+    }
+
+    internal bool TryInitializationEvaluation()
+    {
+        if (!TryEvaluation()) return false;
+        Work.Initialize();
+        return true;
+    }
+
+    internal bool TryPointEvaluation()
+    {
+        if (!TryEvaluation()) return false;
+        Work.PropagatePoint();
+        return true;
+    }
+
+    internal bool TrySample()
+    {
+        if (!CanContinue()) return false;
+        if (Samples == maximumSamples) return Stop(OrbitalPredictionReason.SampleBudget);
+        Samples++;
+        return true;
+    }
+
+    internal bool TryTrack()
+    {
+        if (!CanContinue()) return false;
+        if (Tracks == maximumTracks) return Stop(OrbitalPredictionReason.ResultBudget);
+        Tracks++;
+        return true;
+    }
+
+    internal bool TryPass()
+    {
+        if (!CanContinue()) return false;
+        if (Passes == maximumPasses) return Stop(OrbitalPredictionReason.ResultBudget);
+        Passes++;
+        return true;
+    }
+
+    /// <summary>Sequential owner returns an output reservation when no product was created.</summary>
+    internal void ReleaseUnusedTrack()
+    {
+        if (Tracks == 0) throw new InvalidOperationException("No track reservation can be released.");
+        Tracks--;
+    }
+
+    private bool Stop(OrbitalPredictionReason failure)
+    {
+        reason = failure;
+        return false;
+    }
+}

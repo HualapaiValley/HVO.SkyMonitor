@@ -9,8 +9,8 @@ namespace HVO.SkyMonitor.Processing.Tests;
 
 /// <summary>
 /// #1383: the overlay defaults are the ones #1035 replaced (as at 08b79fb7^), with solid constellation lines and the
-/// image circle at full opacity and their original widths. The cardinal badge, the corner-text panel and the crosshair
-/// marker from #1035 stay.
+/// image circle at full opacity and their original widths. The cardinal badge and the corner-text panel from #1035 stay.
+/// #1415: star markers are the original plain circle outline again, without the #1035 crosshair.
 /// LogicHost draws these payloads with both the grouped SVG renderer and the raster compositor, so both are checked.
 /// </summary>
 [TestClass]
@@ -30,7 +30,7 @@ public sealed class PresentationOverlayDefaultsTests
     private static readonly string[] WhiteFill = ["#FFFFFF"];
 
     [TestMethod]
-    public async Task SceneLayersUseTheOriginalColoursWithSolidLinesBadgesAndCrosshairs()
+    public async Task SceneLayersUseTheOriginalColoursWithSolidLinesBadgesAndPlainCircleMarkers()
     {
         var groups = PresentationLayerProducers.FromProjectedSceneGroupsV2(await SceneAsync().ConfigureAwait(false));
 
@@ -38,7 +38,8 @@ public sealed class PresentationOverlayDefaultsTests
         foreach (var marker in groups.StarAnnotations.Markers)
         {
             Assert.AreEqual(Marker, marker.Color);
-            Assert.IsTrue(marker.Crosshair);
+            Assert.AreEqual(6, marker.Radius);
+            Assert.IsFalse(marker.Crosshair, "Star markers are a plain circle outline (#1415).");
         }
         Assert.IsNotEmpty(groups.StarAnnotations.TextBlocks);
         foreach (var label in groups.StarAnnotations.TextBlocks)
@@ -132,9 +133,15 @@ public sealed class PresentationOverlayDefaultsTests
             Assert.IsNull(line.Attribute("stroke-dasharray"));
             Assert.IsNull(line.Attribute("stroke-opacity"));
         }
-        var markers = Elements(svg, "scene-annotation", "circle").Concat(Elements(svg, "scene-annotation", "path")).ToArray();
-        Assert.IsNotEmpty(markers);
-        Assert.IsTrue(markers.All(static marker => (string?)marker.Attribute("stroke") == "#909090"));
+        var markers = Elements(svg, "scene-annotation", "circle");
+        Assert.HasCount(groups.StarAnnotations.Markers.Count, markers);
+        foreach (var marker in markers)
+        {
+            Assert.AreEqual("#909090", (string?)marker.Attribute("stroke"));
+            Assert.AreEqual("none", (string?)marker.Attribute("fill"));
+            Assert.AreEqual("6", (string?)marker.Attribute("r"));
+        }
+        Assert.IsEmpty(Elements(svg, "scene-annotation", "path"), "No crosshair is drawn inside the star marker.");
         foreach (var (kind, plate) in new[] { ("scene-cardinals", "#02080E"), ("environment", "#050A11") })
         {
             CollectionAssert.AreEquivalent(WhiteFill,
@@ -156,6 +163,22 @@ public sealed class PresentationOverlayDefaultsTests
             Assert.IsLessThanOrEqualTo(2, Math.Abs(brightest.Green - color.Green * coverage), kind);
             Assert.IsLessThanOrEqualTo(2, Math.Abs(brightest.Blue - color.Blue * coverage), kind);
         }
+
+        // The raster draws the same plain outline: every lit pixel lies on a marker's ring, none on a crosshair arm.
+        var annotation = PresentationLayerCompositor.Composite(layout, new byte[Width * Height * 3],
+            [new(payloads.Single(static item => item.Kind == "scene-annotation").Payload, true, PresentationRasterBlendMode.Normal, 1_000_000)]);
+        var lit = 0;
+        for (var offset = 0; offset < annotation.Length; offset += 3)
+        {
+            if (annotation[offset] + annotation[offset + 1] + annotation[offset + 2] == 0) continue;
+            lit++;
+            var x = offset / 3 % Width + .5;
+            var y = offset / 3 / Width + .5;
+            var ring = groups.StarAnnotations.Markers.Min(marker => Math.Abs(Math.Sqrt(
+                (x - marker.Center.X) * (x - marker.Center.X) + (y - marker.Center.Y) * (y - marker.Center.Y)) - marker.Radius));
+            Assert.IsLessThanOrEqualTo(1.5, ring, $"pixel ({x}, {y})");
+        }
+        Assert.IsGreaterThan(0, lit);
     }
 
     private static XElement[] Elements(XDocument svg, string kind, string name) => svg.Descendants()

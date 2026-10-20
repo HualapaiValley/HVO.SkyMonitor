@@ -64,6 +64,65 @@ public sealed class CameraAgentProcessingCompletionTests
         }
     }
 
+    /// <summary>
+    /// Capture sequences are unique only per agent, so a history kept across an agent identity change has tied
+    /// sequences. Each page continues after the last candidate tried in the whole order, sequence and then row, so a
+    /// capture that ties it is neither skipped nor read again (#1409).
+    /// </summary>
+    [TestMethod]
+    public async Task TiedSequencesOfTwoAgentIdentitiesAreNeitherSkippedNorRepeatedAcrossAPageBoundary()
+    {
+        var root = EdgeUpgradeLaneTests.CreateRoot("processing-completion-ties");
+        try
+        {
+            using var provider = EdgeUpgradeLaneTests.CreateProvider(
+                root, new EdgeUpgradeLaneTests.MutableTimeProvider(DateTimeOffset.UtcNow));
+            var fixture = await EdgeUpgradeLaneTests.StartAsync(provider, root).ConfigureAwait(false);
+            var former = fixture with { Configuration = fixture.Configuration with { AgentId = "former-agent" } };
+            // The former identity's captures came first: sequences 1 and 2, then the current identity's 1 to 6.
+            var formerCaptures = new[]
+            {
+                await former.AcceptAsync(0).ConfigureAwait(false),
+                await former.AcceptAsync(1).ConfigureAwait(false)
+            };
+            var current = new List<Guid>();
+            for (var index = 2; index < 8; index++)
+            {
+                current.Add(await fixture.AcceptAsync(index).ConfigureAwait(false));
+            }
+            Assert.AreEqual(
+                "former-agent:1 former-agent:2 edge-upgrade-agent:1 edge-upgrade-agent:2 edge-upgrade-agent:3 "
+                    + "edge-upgrade-agent:4 edge-upgrade-agent:5 edge-upgrade-agent:6",
+                string.Join(' ', formerCaptures.Concat(current).Select(id => fixture.Receipts[id].Manifest.Descriptor.Capture)
+                    .Select(static capture => $"{capture.AgentId}:{capture.CaptureSequence}")));
+            foreach (var captureId in formerCaptures.Concat(current.Take(5)))
+            {
+                await SetStandardStateAsync(root, captureId, "completed").ConfigureAwait(false);
+            }
+            var completion = provider.GetRequiredService<ICameraAgentProcessingCompletion>();
+
+            // Behind the pending 6: 5, 4, 3 and the current identity's 2, the later of the two 2s.
+            AssertCompletion(await ReadAsync(completion, current[5]).ConfigureAwait(false), true,
+                current[4], current[3], current[2], current[1]);
+            // The next page starts with the former identity's 2, which ties the last candidate tried.
+            CollectionAssert.AreEqual(new[] { formerCaptures[1], current[0], formerCaptures[0] },
+                (await completion.ReadFinishedBeforeAsync(current[1], 4, CancellationToken.None).ConfigureAwait(false)).ToArray());
+            // A boundary between the two 1s, one candidate a page.
+            CollectionAssert.AreEqual(new[] { formerCaptures[0] },
+                (await completion.ReadFinishedBeforeAsync(current[0], 1, CancellationToken.None).ConfigureAwait(false)).ToArray());
+            Assert.IsEmpty(await completion.ReadFinishedBeforeAsync(formerCaptures[0], 1, CancellationToken.None).ConfigureAwait(false));
+
+            // The first page behind a pending capture takes in an earlier capture that ties it too.
+            await SetStandardStateAsync(root, current[1], "pending").ConfigureAwait(false);
+            AssertCompletion(await ReadAsync(completion, current[1]).ConfigureAwait(false), true,
+                formerCaptures[1], current[0], formerCaptures[0]);
+        }
+        finally
+        {
+            EdgeUpgradeLaneTests.Cleanup(root);
+        }
+    }
+
     private static async Task<CameraAgentProcessingCompletion> ReadAsync(ICameraAgentProcessingCompletion completion, Guid captureId)
         => await completion.ReadAsync(captureId, 4, CancellationToken.None).ConfigureAwait(false);
 
