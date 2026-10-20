@@ -12,6 +12,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- Star markers are the original plain grey (`#909090`) circle outline again, without the crosshair inside them; so is
+  the marker of a Sun or Moon too small to outline. Captures already retained keep the markers they were drawn with,
+  and time-lapse frames, which draw no star markers, are unchanged. (#1415)
 - The pre-release and release **Build** jobs may run for 120 minutes (it was 60): the arm64 image is built under
   emulation, and its publish alone has taken 46 minutes, which cancelled the first `0.9.1` pre-release. (#1410)
 - The product version is `0.9.1`, the next release (owner decision 2026-10-19). Integration pre-releases are
