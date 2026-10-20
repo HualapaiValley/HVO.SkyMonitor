@@ -97,7 +97,7 @@ public sealed class OrbitalWarmHandoffTests : OrbitalStoreTestBase
     public async Task ConcurrentInitializationFailuresBackOffAndResetAfterRecovery()
     {
         var root = CreateRoot();
-        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        var clock = new InitializationClock();
         using var owner = OrbitalElementsStoreTestData.Open(root, clock);
         await owner.InitializeAsync(default).ConfigureAwait(false);
         using var store = OrbitalElementsStoreTestData.Open(root, clock);
@@ -127,7 +127,7 @@ public sealed class OrbitalWarmHandoffTests : OrbitalStoreTestBase
     public async Task CancellationAndClockRollbackCannotPoisonInitializationRecovery()
     {
         var root = CreateRoot();
-        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        var clock = new InitializationClock();
         using var store = OrbitalElementsStoreTestData.Open(root, clock);
         using var clean = OrbitalElementsStoreTestData.Open(CreateRoot(), clock);
         using var cancelled = new CancellationTokenSource();
@@ -144,5 +144,33 @@ public sealed class OrbitalWarmHandoffTests : OrbitalStoreTestBase
         clock.Advance(TimeSpan.FromDays(-1));
         await store.InitializeAsync(default).ConfigureAwait(false);
         Assert.IsTrue(store.IsInitialized, "A rollback expires the window rather than extending it beyond the cap.");
+
+        var cappedRoot = CreateRoot();
+        using var cappedOwner = OrbitalElementsStoreTestData.Open(cappedRoot, clock);
+        await cappedOwner.InitializeAsync(default).ConfigureAwait(false);
+        using var cappedStore = OrbitalElementsStoreTestData.Open(cappedRoot, clock);
+        await Assert.ThrowsExactlyAsync<OrbitalStorageException>(() => cappedStore.InitializeAsync(default).AsTask()).ConfigureAwait(false);
+        cappedOwner.Dispose();
+        clock.AdvanceMonotonic(TimeSpan.FromSeconds(1));
+        await cappedStore.InitializeAsync(default).ConfigureAwait(false);
+        Assert.IsTrue(cappedStore.IsInitialized, "Monotonic elapsed time expires the delay even when UTC is frozen.");
+    }
+
+    private sealed class InitializationClock : TimeProvider
+    {
+        private DateTimeOffset _utcNow = OrbitalElementsStoreTestData.Start;
+        private long _timestamp;
+
+        public override DateTimeOffset GetUtcNow() => _utcNow;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => _timestamp;
+
+        public void Advance(TimeSpan delta)
+        {
+            _utcNow += delta;
+            AdvanceMonotonic(delta > TimeSpan.Zero ? delta : TimeSpan.Zero);
+        }
+
+        public void AdvanceMonotonic(TimeSpan delta) => _timestamp += delta.Ticks;
     }
 }
