@@ -17,6 +17,8 @@ public sealed partial class SatellitePassArc : ComponentBase
 
     private IReadOnlyList<string> _fullPaths = [];
     private IReadOnlyList<string> _rigPaths = [];
+    private IReadOnlyList<PredictionPoint> _fullPoints = [];
+    private IReadOnlyList<PredictionPoint> _rigPoints = [];
     private IReadOnlyList<Anchor> _anchors = [];
     private OrbitalPassArcV1? _projectedArc;
     private CameraAgentSatellitePlanningContext? _projectedContext;
@@ -28,14 +30,15 @@ public sealed partial class SatellitePassArc : ComponentBase
     [Parameter] public bool ShowRigPreview { get; set; }
 
     private sealed record Anchor(string Name, OrbitalTrackSample? Sample, PixelPoint? Point, string? LabelX, string? LabelY);
+    private readonly record struct PredictionPoint(DateTimeOffset Utc, PixelPoint Point);
 
     protected override void OnParametersSet()
     {
         if (ReferenceEquals(_projectedArc, Arc) && ReferenceEquals(_projectedContext, Context)) return;
         _projectedArc = Arc;
         _projectedContext = Context;
-        _fullPaths = ProjectSegments(FullSky);
-        _rigPaths = ProjectSegments(ProjectorFactory.Create(Context.RigProjection));
+        (_fullPaths, _fullPoints) = ProjectSegments(FullSky);
+        (_rigPaths, _rigPoints) = ProjectSegments(ProjectorFactory.Create(Context.RigProjection));
         var anchors = new List<Anchor>(3);
         AddAnchor(Boundary(Arc.Pass.StartBoundary, true), Arc.Anchors.StartSampleIndex);
         AddAnchor("Peak", Arc.Anchors.PeakSampleIndex);
@@ -67,15 +70,16 @@ public sealed partial class SatellitePassArc : ComponentBase
         }
     }
 
-    private List<string> ProjectSegments(IImageProjector projector)
+    private (List<string> Paths, List<PredictionPoint> Points) ProjectSegments(IImageProjector projector)
     {
         var paths = new List<string>();
+        var points = new List<PredictionPoint>();
         foreach (var segment in Arc.Segments)
         {
             // Products are validated by the facade. Still refuse malformed ranges at this presentation boundary.
             if (segment.StartSampleIndex < 0 || segment.SampleCount < 1 ||
                 (long)segment.StartSampleIndex + segment.SampleCount > Arc.Samples.Count) continue;
-            var run = new List<string>();
+            var run = new List<PredictionPoint>();
             DateTimeOffset? previous = null;
             for (var i = segment.StartSampleIndex; i < segment.StartSampleIndex + segment.SampleCount; i++)
             {
@@ -87,18 +91,19 @@ public sealed partial class SatellitePassArc : ComponentBase
                     previous = null;
                     continue;
                 }
-                run.Add($"{Number(point.Value.X)},{Number(point.Value.Y)}");
+                run.Add(new(sample.Utc, point.Value));
                 previous = sample.Utc;
             }
             Flush();
 
             void Flush()
             {
-                if (run.Count >= 2) paths.Add(string.Join(' ', run));
+                if (run.Count >= 2) paths.Add(string.Join(' ', run.Select(value => $"{Number(value.Point.X)},{Number(value.Point.Y)}")));
+                else if (run.Count == 1) points.Add(run[0]);
                 run.Clear();
             }
         }
-        return paths;
+        return (paths, points);
     }
 
     private static PixelPoint? ProjectValid(IImageProjector projector, OrbitalTrackSample sample)

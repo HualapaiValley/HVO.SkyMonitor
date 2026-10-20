@@ -1,5 +1,5 @@
 <figure class="satellite-arc">
-    <svg viewBox="0 0 512 512" role="img" aria-label="Full angular satellite planning arc on a fixed full-sky hemisphere">
+    <svg viewBox="0 0 512 512" role="img" aria-label="Full angular satellite planning paths and prediction points on a fixed full-sky hemisphere">
         <circle class="sky-disc" cx="256" cy="256" r="240" />
         <circle class="sky-grid" cx="256" cy="256" r="160" />
         <circle class="sky-grid" cx="256" cy="256" r="80" />
@@ -14,6 +14,10 @@
             {
                 @if (anchor.Point is { } point) { <circle class="arc-anchor" cx="@Number(point.X)" cy="@Number(point.Y)" r="5"><title>@anchor.Name: @Timestamp(anchor.Sample!.Utc)</title></circle> }
             }
+            @foreach (var prediction in _fullPoints)
+            {
+                <circle class="prediction-point" cx="@Number(prediction.Point.X)" cy="@Number(prediction.Point.Y)" r="4"><title>Single prediction point: @Timestamp(prediction.Utc)</title></circle>
+            }
         }
         @if (ShowLabels)
         {
@@ -26,8 +30,8 @@
             }
         }
     </svg>
-    <figcaption>Full-pass angular planning view, including off-rig portions. Fixed equidistant hemisphere; orange dashes are predictions. Time labels use UTC; up to three non-overlapping labels. Hidden or omitted labels retain their facts below. No exact capture segment or measured trail is drawn.</figcaption>
-    @if (_fullPaths.Count == 0) { <p>No connected projected arc samples are available.</p> }
+    <figcaption>Full-pass angular planning view, including off-rig portions. Fixed equidistant hemisphere; orange dashes are predicted paths and orange dots mark single prediction points. Time labels and point titles include UTC; up to three non-overlapping labels. Hidden or omitted labels retain their facts below. No exact capture segment or measured trail is drawn.</figcaption>
+    @if (_fullPaths.Count == 0 && _fullPoints.Count == 0) { <p>No projected arc samples are available.</p> }
     <dl class="anchor-facts">
         @foreach (var anchor in _anchors)
         {
@@ -40,10 +44,17 @@
     {
         <div class="rig-preview">
             <h4>Configured-rig portion — lower confidence</h4>
-            <svg viewBox="@($"0 0 {Context.RigProjection.WidthPixels} {Context.RigProjection.HeightPixels}")" role="img" aria-label="Configured rig projection of connected planning samples">
-                @if (ShowPath) { @foreach (var path in _rigPaths) { <polyline class="predicted-path" points="@path" /> } }
+            <svg viewBox="@($"0 0 {Context.RigProjection.WidthPixels} {Context.RigProjection.HeightPixels}")" role="img" aria-label="Configured rig projection of planning paths and prediction points">
+                @if (ShowPath)
+                {
+                    @foreach (var path in _rigPaths) { <polyline class="predicted-path" points="@path" /> }
+                    @foreach (var prediction in _rigPoints)
+                    {
+                        <circle class="prediction-point" cx="@Number(prediction.Point.X)" cy="@Number(prediction.Point.Y)" r="4"><title>Single prediction point: @Timestamp(prediction.Utc)</title></circle>
+                    }
+                }
             </svg>
-            <p>Direct shared projection of the configured geometry, not measured calibration. Only declared connected samples inside the rig are shown; boundary intersections are not inferred. The full-pass view above retains off-rig geometry.</p>
+            <p>Direct shared projection of the configured geometry, not measured calibration. Only declared samples inside the rig are shown, joined within connected runs. Orange dots mark single prediction points with UTC titles; boundary intersections are not inferred. The full-pass view above retains off-rig geometry.</p>
         </div>
     }
 </figure>
