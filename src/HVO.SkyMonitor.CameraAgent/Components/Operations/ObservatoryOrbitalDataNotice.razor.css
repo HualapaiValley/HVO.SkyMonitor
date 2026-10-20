@@ -1,0 +1,4 @@
+/* Spacing for the Observatory placement of the shared compact orbital data notice. */
+
+.observatory-orbital-notice { display: grid; gap: .4rem; margin-block: 1rem; }
+.observatory-orbital-notice-label { margin: 0; font-size: .85rem; color: var(--text-muted, #a6b1c3); }

@@ -31,6 +31,8 @@ public sealed class OrbitalElementsCompositionTests : OrbitalStoreTestBase
         Assert.AreSame(store, provider.GetRequiredService<IOrbitalElementsStore>());
         Assert.IsInstanceOfType<OrbitalSnapshotReader>(provider.GetRequiredService<IOrbitalSnapshotReader>());
         Assert.AreSame(provider.GetRequiredService<IOrbitalSnapshotReader>(), provider.GetRequiredService<IOrbitalSnapshotReader>());
+        Assert.AreSame(provider.GetRequiredService<SqliteOrbitalElementsStore>(), provider.GetRequiredService<IOrbitalSnapshotManifestReader>(),
+            "Manifest reads come from the store that owns the root.");
         Assert.IsInstanceOfType<CelesTrakGpClient>(provider.GetRequiredService<IOrbitalElementsProviderClient>());
         var adapter = provider.GetRequiredService<OrbitalElementsAutomationAdapter>();
         Assert.AreSame(adapter, provider.GetServices<ILocalAutomationPeriodicTaskAdapter>()
