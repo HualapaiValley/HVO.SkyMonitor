@@ -73,14 +73,29 @@ Choose a new `sync_branch` on each attempt; do not reuse or force-push a prior a
     exit 1
   fi
   git commit -m "Merge main into development/v1 before promotion"
-  [[ "$(git rev-parse HEAD^1)" == "$development" ]]
-  [[ "$(git rev-parse HEAD^2)" == "$stable" ]]
-  [[ "$(git rev-parse 'HEAD^{tree}')" == "$before_tree" ]]
+  [[ "$(git rev-parse HEAD^1)" == "$development" ]] || {
+    echo "Refusing sync: first parent differs from the captured development/v1 head." >&2
+    exit 1
+  }
+  [[ "$(git rev-parse HEAD^2)" == "$stable" ]] || {
+    echo "Refusing sync: second parent differs from the captured main head." >&2
+    exit 1
+  }
+  [[ "$(git rev-parse 'HEAD^{tree}')" == "$before_tree" ]] || {
+    echo "Refusing sync: committed tree differs from the pre-sync development/v1 tree." >&2
+    exit 1
+  }
 
   # Stop if either branch moved while preparing the proof.
   git fetch origin main development/v1
-  [[ "$(git rev-parse origin/development/v1)" == "$development" ]]
-  [[ "$(git rev-parse origin/main)" == "$stable" ]]
+  [[ "$(git rev-parse origin/development/v1)" == "$development" ]] || {
+    echo "Refusing sync: development/v1 moved during preparation; restart from fresh tips." >&2
+    exit 1
+  }
+  [[ "$(git rev-parse origin/main)" == "$stable" ]] || {
+    echo "Refusing sync: main moved during preparation; restart from fresh tips." >&2
+    exit 1
+  }
   printf 'Pre-sync development=%s main=%s tree=%s sync=%s\n' \
     "$development" "$stable" "$before_tree" "$(git rev-parse HEAD)"
   git push origin "HEAD:refs/heads/$sync_branch"
