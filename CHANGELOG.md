@@ -12,6 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Offline tools evaluate causal streak detections across retained virtual-camera sequences and compare every measured candidate with explicitly supplied satellite predictions, while preserving missing context, competing alternatives and unavailable observer or geometry facts. (#530)
 - CameraAgent can acquire orbital elements locally: one bounded CelesTrak GP request for the `active` group, strictly
   parsed into the `orbital-elements-v1` contract, published as an immutable verified snapshot and activated atomically,
   with the last-known-good snapshot kept readable through every failure. Refresh is off by default. Turn it on with
