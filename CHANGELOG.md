@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Shared space-weather storage contracts define snapshot comparison, atomic completion and bounded local history for the upcoming SWPC refresh service. (#1398)
+
 - Space-weather fact model (#1398 S1).
 - Software & Catalog shows orbital snapshot coverage, element age, refresh status and storage repair guidance, with
   bounded Refresh and Resume commands. Automations edits the same orbital refresh schedule and links to its run
