@@ -275,7 +275,10 @@
                     <div class="overlay-group" role="group" aria-label="Diagnostics layers"><p><strong>Diagnostics</strong><span>Never a measured-visibility claim</span></p>
                         <label><input type="checkbox" disabled /><span class="layer-swatch expected"></span><span><strong>Expected, not detected</strong><small>diagnostic catalog positions / arrives with #526</small></span></label>
                         <label><input type="checkbox" disabled /><span class="layer-swatch residuals"></span><span><strong>Astrometric residuals</strong><small>fit vectors / arrives with #523</small></span></label>
-                        <label><input type="checkbox" disabled /><span class="layer-swatch satellites"></span><span><strong>Predicted satellite tracks</strong><small>geometry only / arrives with #529</small></span></label>
+                        @if (!HasLayer(HVO.SkyMonitor.Processing.OrbitalTrackPresentation.LayerKind))
+                        {
+                            <label><input type="checkbox" disabled /><span class="layer-swatch satellites"></span><span><strong>Predicted satellite tracks</strong><small>No compatible prediction retained for this capture</small></span></label>
+                        }
                         @foreach (var layer in RetainedLayers("Diagnostics")) { @LayerToggle(layer) }
                         @if (!HasLayer("cloud-mask", "cloud-labels")) { <label><input type="checkbox" disabled /><span class="layer-swatch cloud"></span><span><strong>Measured cloud assessment</strong><small>image analyzer / no layer retained, #1004</small></span></label> }
                         @if (!HasLayer("scene-image-circle", "image-circle")) { <label><input type="checkbox" disabled /><span class="layer-swatch boundary"></span><span><strong>Image geometry</strong><small>native coordinates / not retained</small></span></label> }

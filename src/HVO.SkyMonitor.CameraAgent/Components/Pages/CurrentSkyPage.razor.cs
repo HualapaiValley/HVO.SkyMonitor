@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 
@@ -824,6 +825,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private static string LayerDescription(string kind) => kind switch
     {
         "MeasuredTransientTrails" => "durable measured trails / positional uncertainty unavailable; no uncertainty band",
+        OrbitalTrackPresentation.LayerKind => "predicted / exact exposure segment; geometry only, not a detection or visibility claim",
         "scene-annotation" or "star-annotations" => "expected / may include catalog stars, Sun/Moon outlines and curated deep-sky labels/outlines; not measured associations",
         "scene-constellations" or "constellations" => "expected / HYG topology",
         "scene-cardinals" or "cardinal-directions" => "configured rig geometry",
@@ -1094,6 +1096,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private static string LayerLabel(string kind) => kind switch
     {
         "MeasuredTransientTrails" => "Measured transient trails",
+        OrbitalTrackPresentation.LayerKind => "Predicted satellite tracks",
         "scene-annotation" or "star-annotations" => "Sky annotations",
         "scene-cardinals" or "cardinal-directions" => "Cardinal directions",
         "scene-image-circle" or "image-circle" => "Image geometry",

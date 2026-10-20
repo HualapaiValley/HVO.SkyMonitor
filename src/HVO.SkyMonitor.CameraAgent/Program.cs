@@ -16,6 +16,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.RandomImage;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Modules.Zwo;
 using HVO.SkyMonitor.CameraAgent.Extensions;
@@ -335,6 +336,8 @@ public class Program
             .ValidateOnStart();
         builder.Services.AddInstalledCelestialCatalog();
         builder.Services.AddCameraAgentInfrastructure(builder.Configuration);
+        builder.Services.AddCameraAgentSatellitePlanning(builder.Configuration);
+        builder.Services.AddCameraAgentSatellitePlanningUi();
         builder.Services.AddSingleton<CalibrationOperationsTokenService>();
         healthChecks.AddCheck<CameraAgentConfigurationHealthCheck>("camera-configuration", tags: ["dependency"]);
         healthChecks.AddCheck<DiskPressureHealthCheck>("disk-pressure", tags: ["dependency"]);

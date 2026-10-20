@@ -1,0 +1,125 @@
+{
+  "schema": "satellite-planning-runtime-adoption-v1",
+  "sourceCommit": "2e0f67e210cac3ba226b268d40e194ba40aa0ec5",
+  "producerMerge": "bf573720dc7f8810d9b489ee4f9dcf2eef4ded60",
+  "dependencyIntegrationCommit": "eafaea65",
+  "childIntegrationCommit": "85c0b3cc",
+  "newUnitCases": 44,
+  "newStandaloneIntegrationCases": 1,
+  "declarations": {
+    "Unit": 10100,
+    "Integration": 847,
+    "Manual": 258,
+    "Soak": 1,
+    "External": 0,
+    "Hardware": 1
+  },
+  "actualChangedProjectDiscovery": {
+    "cameraUnit": 5298,
+    "standaloneIntegration": 29,
+    "executedIdsEqualDiscoveredIds": true
+  },
+  "tests": {
+    "cameraUnit": {
+      "file": "runtime-camera-unit.trx",
+      "sha256": "C29B016F74A71845A8029261211270CC38A4E5B3F5307460BDF1B8B028802D4E",
+      "selected": 5298,
+      "outcomes": {
+        "Passed": 5297,
+        "NotExecuted": 1
+      }
+    },
+    "standaloneIntegration": {
+      "file": "runtime-host-integration.trx",
+      "sha256": "586253C9E87EBF9F1F38586D98D58B567A4D8CEA768D3F4C149BA1DF974D686C",
+      "selected": 29,
+      "outcomes": {
+        "Passed": 29
+      }
+    },
+    "actualHostFirstProof": {
+      "file": "runtime-host-composition-r1.trx",
+      "sha256": "2FFF3E6EA318DF69C40ED179A7246988AFF5FB7D64EBA94CDA95AECA30EE48F6",
+      "selected": 1,
+      "outcomes": {
+        "Passed": 1
+      }
+    },
+    "focusedRuntimeAndUi": {
+      "file": "runtime-and-session-r2.trx",
+      "sha256": "13E6DE127015B65C3E5CB435C052145436D908750D1F4A2D3F859E09C9C340E0",
+      "selected": 126,
+      "outcomes": {
+        "Passed": 126
+      }
+    },
+    "uiExport": {
+      "file": "runtime-ui-export-correct.trx",
+      "sha256": "BEE939BB428DC4AE9AEFECAB785C0760CA76608439BF933DE6C13298B665964F",
+      "selected": 1,
+      "outcomes": {
+        "Passed": 1
+      }
+    }
+  },
+  "proofs": [
+    "Actual Program entrypoint resolves singleton planner, concrete installed OrbitalSnapshotReader and pinned-file time source plus scoped authenticated UI adapter; defaults remain disabled with absent time pins.",
+    "Real SqliteOrbitalElementsStore publication, real reader, real pinned actual time bytes and real numerical engines preserve manifest/payload/record/model/parent identities through search and detail.",
+    "Disabled or unknown-status halted refresh preserves unchanged last-known-good planning; manifest activation invalidates old detail without rebinding.",
+    "Wrong time pins reject before store initialization; empty installed store is unavailable rather than no matches.",
+    "Observed incompatible session handles cannot revive after inputs return; generation-safe component clears stale rows/details; cancellation and transport/busy semantics retained."
+  ],
+  "sourceFixturePins": "Existing synthetic store fixture plus original frozen time bytes; no scientific expected values or canonical fixtures regenerated.",
+  "controls": "Four coordination/CI guards and operations-doc audit pass at source commit. Four scoped full formatter verification commands pass.",
+  "selector": {
+    "correction": "scripts/ci:classify 6186b9fd..2e0f67e2: full/complete/all five lanes; deployment shards+installer selected by carried upstream528 changes.",
+    "fullPrAgainstProducer": "scripts/ci:classify bf573720..2e0f67e2: full/complete/all five lanes; deployment=false.",
+    "disposition": "TierC affected correction; prior full6186 qualification evidence preserved; current actual host/component gates and source-preservation proof; final target profile development/v1 Preflight+BuildUnit. No ordinary fullci dispatch."
+  },
+  "visual": {
+    "source": "2e0f67e210cac3ba226b268d40e194ba40aa0ec5",
+    "verifiedFiles": 57,
+    "arcPins": [
+      {
+        "file": "iss-25544-arc.json",
+        "sha256": "B2A9E544C382994A52B28CE6E72B21F9F27A4DA34B7DA12763715501FFB59001",
+        "oldBytesEqual": true
+      },
+      {
+        "file": "starlinks-56838-arc.json",
+        "sha256": "00238EAB3E8981AC3A69C60F55C0C8126BCC4B3105A254A4163CB3FE68A93F99",
+        "oldBytesEqual": true
+      },
+      {
+        "file": "starlinks-65283-arc.json",
+        "sha256": "218BB546691093AE5CB61613004DD1ABC55FC3E83C08C2924B43FD75C73013FC",
+        "oldBytesEqual": true
+      }
+    ],
+    "actualManualCase": 1
+  },
+  "preservedFailures": [
+    {
+      "artifact": "runtime-adoption-r1.log",
+      "nativeExit": 1,
+      "meaning": "First6 runtime cases passed but5 CA2007 configured-disposal analyzer errors kept native gate red. Fixed before current successful rebuild."
+    },
+    {
+      "artifact": "runtime-ui-export-trx/runtime-ui-export.trx",
+      "nativeExit": 0,
+      "selected": 0,
+      "meaning": "Wrong class filter; not evidence. Corrected export runs1actualManualcase."
+    },
+    {
+      "artifact": "runtime-solution-format-verify-unavailable.json",
+      "meaning": "Native session result unavailable; empty log not treated as pass. Replaced with four recorded scoped verifies."
+    }
+  ],
+  "qualificationLimits": [
+    "Configured/nominal virtual diagnostics; no accepted measured-calibration or physical visibility accuracy.",
+    "Reader cold-load/allocation work remains1425/1422; numerical1500ms bounds exclude loading; no five-second/full-resolution/capture-publication claim.",
+    "Prior full6186 nativeIntegration failure and faithful replay, plus native coverage-floor failures, remain historical evidence; not relabeled current or waived.1420 coverage-lane fix has since merged upstream but was not requalified here.",
+    "No live HTTP login or mounted-device acceptance in visual export; actual host DI separately tested.",
+    "No new provider/network fetch, automatic time-source adoption, capture prediction persistence, production association, idle manifest-push guarantee or1392notice duplication."
+  ]
+}
