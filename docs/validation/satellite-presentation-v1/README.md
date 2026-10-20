@@ -52,10 +52,11 @@ Root validation checked:
   prediction checkbox hides its overlay while retaining the base, and no console
   error is reported.
 
-The examples were regenerated after review corrections from the Release CLI at
-source commit `0cddb869895f725eea2ae6d393f37a9754052b71`. Base image and canonical
-track bytes are unchanged; mandatory source-validity/configured-geometry text
-now remains visible even when every optional object label is omitted. Each
+The examples were regenerated from the Release CLI at source commit
+`0a249abd5eb772709d08ee45a010ac983dce6f92`, using one-pixel track strokes and
+two-pixel-radius endpoint rings. Base image and canonical track bytes are
+unchanged; mandatory source-validity/configured-geometry text remains visible
+even when every optional object label is omitted. Each
 validation file pins its exact assembly identity and SHA-256. These are output
 checks and component integration evidence, not a new numerical oracle,
 performance baseline, live cadence result or measured satellite identification.

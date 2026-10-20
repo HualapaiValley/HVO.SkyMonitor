@@ -95,6 +95,10 @@ independent from measured transient trails. Orange dashed paths, endpoint
 circles and bounded optional labels identify predictions without implying a
 detection. No uncertainty band is invented. Optional label omission does not
 remove the canonical source facts.
+Image-layer strokes default to one pixel, with two-pixel-radius endpoint rings.
+Planning paths also use a one-pixel stroke; pass-event and isolated-point radii
+are three and two SVG units, with one-unit outlines. Per-overlay line width,
+marker size and marker visibility settings remain future configuration work.
 Mandatory caption text also retains applicable stale-element, source-validity,
 configured-geometry and nominal-zero-EOP diagnostic warnings. These qualifications
 remain visible when every optional object label is omitted; a raster unable to

@@ -1,62 +1,87 @@
-[
-  {
-    "name": "iss-25544",
-    "sourceHead": "d7814be3a00c926b9d4cf469a8f8dedc84cf399b",
-    "inputHtmlSha256": "26ADBF52CD79574E326CC232649747732385B75092FB32A091B022EB1B0FBC59",
-    "screenshotFile": "iss-25544-selected.png",
-    "screenshotSha256": "A681D4D711C37D8FF7567E07F7770C8601F5A781FAB6A1B7BFC162DC16A12273",
-    "check": {
-      "title": "ISS (ZARYA): real full-pass angular arc and configured-rig preview",
-      "overflow": false,
-      "viewport": [
-        1024,
-        1000
-      ],
-      "scrollY": 1167.5,
-      "points": 662
+{
+  "sourceHead": "0a249abd5eb772709d08ee45a010ac983dce6f92",
+  "method": "Native T3 browser over actual frozen Manual export; DOM SVG plus exact component CSS; inert backend controls, native provenance disclosures",
+  "rows": [
+    {
+      "name": "iss-25544",
+      "metrics": {
+        "title": "ISS (ZARYA): real full-pass angular arc and configured-rig preview",
+        "viewport": [
+          1024,
+          1000
+        ],
+        "overflow": false,
+        "pathStroke": "1px",
+        "anchors": [
+          {
+            "r": "3",
+            "stroke": "1px"
+          },
+          {
+            "r": "3",
+            "stroke": "1px"
+          }
+        ],
+        "projectedSamples": 662,
+        "scrollY": 1187
+      },
+      "consoleErrors": 0,
+      "screenshot": "iss-25544-selected.png",
+      "standaloneSvg": "iss-25544-full-sky.svg"
     },
-    "consoleEntries": [],
-    "networkFailures": [],
-    "meaning": "Actual frozen component page, scrolled to selected pass; CSS viewport recorded independently of screenshot device scale."
-  },
-  {
-    "name": "starlinks-56838",
-    "sourceHead": "d7814be3a00c926b9d4cf469a8f8dedc84cf399b",
-    "inputHtmlSha256": "B112FC5FEC4DB9E8806C8688913482783B9D6AF8ACFDD0ABDCE36B59DDA4F4E6",
-    "screenshotFile": "starlinks-56838-selected.png",
-    "screenshotSha256": "442BE7256DFC3618C959319D6799A318363AFABBD1B6406F8B0DBEA8EA82F11B",
-    "check": {
-      "title": "STARLINK-30123: real full-pass angular arc and configured-rig preview",
-      "overflow": false,
-      "viewport": [
-        1024,
-        1000
-      ],
-      "scrollY": 1297.5,
-      "points": 663
+    {
+      "name": "starlinks-56838",
+      "metrics": {
+        "title": "STARLINK-30123: real full-pass angular arc and configured-rig preview",
+        "viewport": [
+          1024,
+          1000
+        ],
+        "overflow": false,
+        "pathStroke": "1px",
+        "anchors": [
+          {
+            "r": "3",
+            "stroke": "1px"
+          },
+          {
+            "r": "3",
+            "stroke": "1px"
+          }
+        ],
+        "projectedSamples": 663,
+        "scrollY": 1316.5
+      },
+      "consoleErrors": 0,
+      "screenshot": "starlinks-56838-selected.png",
+      "standaloneSvg": "starlinks-56838-full-sky.svg"
     },
-    "consoleEntries": [],
-    "networkFailures": [],
-    "meaning": "Actual frozen component page, scrolled to selected pass; CSS viewport recorded independently of screenshot device scale."
-  },
-  {
-    "name": "starlinks-65283",
-    "sourceHead": "d7814be3a00c926b9d4cf469a8f8dedc84cf399b",
-    "inputHtmlSha256": "981A9B509DDC5B2B9807331FCC6BFAFD66CBDB6A99D106FBC5D0A93E45E43FAC",
-    "screenshotFile": "starlinks-65283-selected.png",
-    "screenshotSha256": "CFDE260852C2FB76C156B7CB0BF67D4E3C58DB321B8C5C551D9786D40D0638C1",
-    "check": {
-      "title": "STARLINK-35015: real full-pass angular arc and configured-rig preview",
-      "overflow": false,
-      "viewport": [
-        1024,
-        1000
-      ],
-      "scrollY": 1297.5,
-      "points": 623
-    },
-    "consoleEntries": [],
-    "networkFailures": [],
-    "meaning": "Actual frozen component page, scrolled to selected pass; CSS viewport recorded independently of screenshot device scale."
-  }
-]
+    {
+      "name": "starlinks-65283",
+      "metrics": {
+        "title": "STARLINK-35015: real full-pass angular arc and configured-rig preview",
+        "viewport": [
+          1024,
+          1000
+        ],
+        "overflow": false,
+        "pathStroke": "1px",
+        "anchors": [
+          {
+            "r": "3",
+            "stroke": "1px"
+          },
+          {
+            "r": "3",
+            "stroke": "1px"
+          }
+        ],
+        "projectedSamples": 623,
+        "scrollY": 1316.5
+      },
+      "consoleErrors": 0,
+      "screenshot": "starlinks-65283-selected.png",
+      "standaloneSvg": "starlinks-65283-full-sky.svg"
+    }
+  ]
+}

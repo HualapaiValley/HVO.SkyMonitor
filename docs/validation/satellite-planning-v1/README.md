@@ -55,9 +55,10 @@ files, retaining screenshots outside Git with their input HTML checksums.
 
 ## Retained integrated examples
 
-The current integrated export at `d7814be3a00c926b9d4cf469a8f8dedc84cf399b`
-passed this Manual case after the same source passed 83 focused planning/UI Unit
-cases with a warning-clean Release build. Root checked all 57 output hashes and inspected the actual frozen
+The current integrated export at `0a249abd5eb772709d08ee45a010ac983dce6f92`
+passed this Manual case, 45 presentation Unit cases and 16 arc-component Unit
+cases with warning-clean Release builds. Paths use a one-pixel stroke and
+smaller point markers. Root checked all 57 output hashes and inspected the actual frozen
 component pages in the native browser. Desktop 1024×1000 CSS-pixel views had no
 page overflow or console errors; the retained screenshots are scrolled to the
 selected pass. A 390×844 CSS-pixel Starlink view with both provenance panels
@@ -71,7 +72,7 @@ checks do not qualify full-resolution camera processing.
 | STARLINK-35015 / NORAD 65283 | [PNG](samples/starlinks-65283-selected.png) | [SVG](samples/starlinks-65283-full-sky.svg) | [JSON](samples/starlinks-65283-arc.json) |
 
 The standalone SVGs preserve the exact component geometry and labels; their
-wrappers add the SVG namespace and the component's unchanged CSS so they can be
+wrappers add the SVG namespace and the component CSS from the recorded source so they can be
 opened independently. The screenshots retain the actual frozen component page.
 The [portable checksums](samples/checksums.json), [browser proof](samples/browser-proof.json)
 and [integrated source/input/product evidence](samples/export-evidence.json)
@@ -135,3 +136,20 @@ The integrated correction at `d7814be3` passed 83 focused CameraAgent and 45
 presentation cases plus the real-engine UI Manual export. Broader affected
 validation and independent correction review remain separately recorded in the
 issue/PR ledger.
+
+The [C1 correction coverage manifest](correction-coverage.json) records the
+subsequent frozen `6186b9fd` source: full Unit selection 9,098 passed, 119 existing
+qualification-limited skips and no failures. Original Integration had 842 passes
+and one standalone capture/outage timeout; the unchanged complete 26-case
+affected assembly then passed with the identical case IDs and coverage settings.
+The other 817 passing cases remain selected. The failed run is retained;
+[timeout diagnostics follow-up #1428](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1428)
+records the unknown cause, rather than asserting a repair.
+
+All 23 exact coverage inputs were consumed and all six native input guards passed.
+Shared, CameraAgent and combined component floors passed. Aggregate/delivery
+still failed the existing ReleaseTool file floor; LogicHost still failed its
+existing aggregate floor tracked in #1420. No baseline changed. The manifest uses
+native enforcer aggregates with their configured exclusions. These results
+precede the separately checked one-pixel/smaller-marker revision and pending
+runtime composition; they are not a final-source coverage or cadence claim.
