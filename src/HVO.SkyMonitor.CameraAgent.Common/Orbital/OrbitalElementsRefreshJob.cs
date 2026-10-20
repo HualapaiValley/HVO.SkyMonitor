@@ -46,6 +46,9 @@ public sealed partial class OrbitalElementsRefreshJob
     /// <summary>The deadline for closing an admitted attempt after cancellation or an unexpected failure.</summary>
     internal static readonly TimeSpan CloseTimeout = TimeSpan.FromSeconds(5);
 
+    /// <summary>The longest a gauge publication outside an occurrence waits for the single-flight lock.</summary>
+    internal static readonly TimeSpan PublishLockWait = TimeSpan.FromSeconds(2);
+
     internal const string DisabledReasonCode = "orbital.disabled";
     internal const string ManualRequestExpiredReasonCode = "orbital.manual-request-expired";
     internal const string ProviderHaltedReasonCode = "orbital.provider-halted";
@@ -108,11 +111,50 @@ public sealed partial class OrbitalElementsRefreshJob
         Interlocked.Increment(ref _activity);
         try
         {
-            return await ExecuteCoreAsync(runKey, trigger, scheduledForUtc, cancellationToken).ConfigureAwait(false);
+            var execution = await ExecuteCoreAsync(runKey, trigger, scheduledForUtc, cancellationToken).ConfigureAwait(false);
+            // Every occurrence, skipped ones included, publishes the gauge state before it releases the lock.
+            await ObserveBestEffortAsync(cancellationToken).ConfigureAwait(false);
+            return execution;
         }
         finally
         {
             Interlocked.Increment(ref _activity);
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Publishes the durable provider state to the gauges, best-effort and serialized with occurrences, so a
+    /// publication never replaces a newer one with an older read. Store initialization (after restart reconciliation)
+    /// and an applied operator resume call this. When an occurrence holds the single-flight lock for longer than
+    /// <see cref="PublishLockWait"/>, that occurrence publishes from a later read before it releases the lock, so this
+    /// call leaves the publication to it rather than delay the caller. Never throws, and never changes durable state.
+    /// </summary>
+    public async ValueTask PublishStateAsync(CancellationToken cancellationToken)
+    {
+        if (_telemetry is null)
+        {
+            return;
+        }
+        bool entered;
+        try
+        {
+            entered = await _gate.WaitAsync(PublishLockWait, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+        if (!entered)
+        {
+            return;
+        }
+        try
+        {
+            await ObserveBestEffortAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
             _gate.Release();
         }
     }
@@ -257,7 +299,6 @@ public sealed partial class OrbitalElementsRefreshJob
                 ? "orbital storage could not complete durably; the last-known-good snapshot remains active"
                 : string.Concat("the attempt failed unexpectedly and was closed; ", detail));
         }
-        await ObserveBestEffortAsync(cancellationToken).ConfigureAwait(false);
         return execution;
     }
 

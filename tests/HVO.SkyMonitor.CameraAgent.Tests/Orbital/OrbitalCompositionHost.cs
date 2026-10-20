@@ -60,10 +60,11 @@ internal sealed class OrbitalCompositionHost : IAsyncDisposable
 
     /// <summary>
     /// Composes and starts the feature the way the host does: the orbital initializer first, then the automation
-    /// store the runner initializes. The runner's own polling loop is never started; tests sweep explicitly.
+    /// store the runner initializes. The runner's own polling loop is never started; tests sweep explicitly. A
+    /// <paramref name="meter"/> replaces only the telemetry's meter, so a listener can observe exactly this host.
     /// </summary>
     public static async Task<OrbitalCompositionHost> StartAsync(string rawIngressRoot, SignalingTimeProvider clock,
-        bool? enabled = true, ScriptedCelesTrakHandler? handler = null)
+        bool? enabled = true, ScriptedCelesTrakHandler? handler = null, System.Diagnostics.Metrics.Meter? meter = null)
     {
         handler ??= new ScriptedCelesTrakHandler();
         var settings = new Dictionary<string, string?>(StringComparer.Ordinal)
@@ -82,6 +83,10 @@ internal sealed class OrbitalCompositionHost : IAsyncDisposable
         services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(settings).Build());
         services.AddSingleton<IDeploymentLocationProtector>(new OrbitalPassThroughLocationProtector());
         services.AddHttpClient(CelesTrakGpSource.HttpClientName).ConfigurePrimaryHttpMessageHandler(() => handler);
+        if (meter is not null)
+        {
+            services.AddSingleton(_ => new OrbitalElementsTelemetry(clock, meter));
+        }
         var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         OrbitalCompositionHost? host = null;
         try

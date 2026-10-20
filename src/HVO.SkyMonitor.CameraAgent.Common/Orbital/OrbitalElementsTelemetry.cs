@@ -5,9 +5,16 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;
 
 /// <summary>
 /// Orbital-element acquisition metrics. Labels are bounded enum names only; no attempt identity, run key, digest,
-/// path, actor or provider text ever becomes a label. The gauges read a cached provider-state snapshot that the
-/// refresh job and operations publish after durable reads, so an observation callback never performs I/O.
+/// path, actor or provider text ever becomes a label. The gauges read a cached provider-state snapshot, so an
+/// observation callback never performs I/O.
 /// </summary>
+/// <remarks>
+/// Only the refresh job publishes that snapshot, from a durable read serialized with its single-flight lock: at the end
+/// of every occurrence (skipped ones included), once the store initializes (after restart reconciliation, so a halt
+/// that survived a restart reads 1 before any attempt), and after an applied operator resume. Status reads and health
+/// evaluation never publish. Nothing is emitted until the first publication, and a store that later becomes unusable
+/// leaves the last published values in place.
+/// </remarks>
 public sealed class OrbitalElementsTelemetry : IDisposable
 {
     public const string MeterName = "HVO.SkyMonitor.CameraAgent.OrbitalElements";

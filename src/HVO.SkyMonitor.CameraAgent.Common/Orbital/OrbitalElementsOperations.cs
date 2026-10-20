@@ -254,7 +254,8 @@ public sealed partial class OrbitalElementsOperations
 
     /// <summary>
     /// Clears a provider halt through the store's idempotent resume command. Resume never moves the attempt floor, and it
-    /// is permitted while refresh is disabled so an operator can clear a halt before re-enabling.
+    /// is permitted while refresh is disabled so an operator can clear a halt before re-enabling. An applied resume
+    /// publishes the cleared state to the gauges through the refresh job.
     /// </summary>
     public async ValueTask<OrbitalElementsCommandResult> ResumeAsync(
         OrbitalResumeRequest request,
@@ -281,6 +282,11 @@ public sealed partial class OrbitalElementsOperations
         if (status is OrbitalElementsCommandStatus.Conflict or OrbitalElementsCommandStatus.Invalid)
         {
             ResumeRejected(_logger, reasonCode);
+        }
+        else if (status == OrbitalElementsCommandStatus.Applied)
+        {
+            // The halt gauge reads 0 now rather than after the next attempt.
+            await _job.PublishStateAsync(cancellationToken).ConfigureAwait(false);
         }
         return new OrbitalElementsCommandResult(status, reasonCode, null,
             (await ReadAsync(cancellationToken).ConfigureAwait(false)).Status);

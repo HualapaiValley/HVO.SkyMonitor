@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
+using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
@@ -92,6 +93,90 @@ public sealed class OrbitalElementsTelemetryTests : OrbitalStoreTestBase
         Assert.AreEqual(2d, measurements.Single(static m => m.Name == "active_records").Value);
         Assert.AreEqual(0d, measurements.Single(static m => m.Name == "halted").Value);
     }
+
+    [TestMethod]
+    public async Task StartupPublishesTheReconciledHaltBeforeAnyAttemptAndAnAppliedResumeClearsIt()
+    {
+        var root = CreateRoot();
+        var clock = new SignalingTimeProvider(OrbitalElementsStoreTestData.Start);
+        var before = await OrbitalCompositionHost.StartAsync(root, clock).ConfigureAwait(false);
+        await using (before.ConfigureAwait(false))
+        {
+            // An attempt left in flight by a crash: it may have reached a provider that refused it.
+            var admission = await before.Store.TryBeginAttemptAsync("crash-probe", OrbitalAttemptTrigger.Scheduled,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OrbitalAdmissionStatus.Admitted, admission.Status);
+        }
+
+        using var meter = new Meter(OrbitalElementsTelemetry.MeterName);
+        using var recorder = new MeasurementRecorder(meter);
+        var after = await OrbitalCompositionHost.StartAsync(root, clock, meter: meter).ConfigureAwait(false);
+        await using var lifetime = after.ConfigureAwait(false);
+
+        recorder.Collect();
+        Assert.AreEqual(1d, Halted(recorder.Snapshot()),
+            "Startup publishes the halt that restart reconciliation recorded, before any attempt.");
+        var halt = (await after.StateAsync().ConfigureAwait(false)).Halt;
+        Assert.IsNotNull(halt);
+        Assert.IsNull(halt.HttpStatusCode);
+
+        recorder.Clear();
+        var resumed = await after.Operations.ResumeAsync(new OrbitalResumeRequest(halt.SinceUtc, "resume-gauge", "owner",
+            "provider access confirmed"), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalElementsCommandStatus.Applied, resumed.Status, resumed.ReasonCode);
+        recorder.Collect();
+        Assert.AreEqual(0d, Halted(recorder.Snapshot()), "An applied resume publishes now, not after the next attempt.");
+        Assert.AreEqual(0, after.Handler.Count, "No provider request was made.");
+    }
+
+    [TestMethod]
+    public async Task ASkippedOccurrencePublishesTheGaugeState()
+    {
+        using var meter = new Meter(OrbitalElementsTelemetry.MeterName);
+        using var harness = await OrbitalRefreshTestHarness.CreateAsync(CreateRoot(), enabled: false, meter: meter)
+            .ConfigureAwait(false);
+        using var recorder = new MeasurementRecorder(meter);
+
+        var execution = await harness.RunAsync().ConfigureAwait(false);
+
+        Assert.AreEqual(LocalAutomationRunOutcome.Skipped, execution.Outcome);
+        recorder.Collect();
+        Assert.AreEqual(0d, Halted(recorder.Snapshot()));
+        Assert.AreEqual(0, harness.Client.Calls);
+    }
+
+    [TestMethod]
+    public async Task APublicationLeavesItToAnOccurrenceHoldingTheLockWhichPublishesALaterRead()
+    {
+        using var meter = new Meter(OrbitalElementsTelemetry.MeterName);
+        using var harness = await OrbitalRefreshTestHarness.CreateAsync(CreateRoot(), meter: meter).ConfigureAwait(false);
+        using var recorder = new MeasurementRecorder(meter);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Client.Enqueue(async _ =>
+        {
+            await release.Task.ConfigureAwait(false);
+            return harness.Halt(429);
+        });
+        var run = harness.RunAsync().AsTask();
+        await harness.Client.RequestStarted.Task.ConfigureAwait(false);
+
+        var waited = System.Diagnostics.Stopwatch.StartNew();
+        await harness.Job.PublishStateAsync(CancellationToken.None).ConfigureAwait(false);
+        waited.Stop();
+        recorder.Collect();
+        Assert.IsEmpty(recorder.Snapshot().Where(static m => m.Name == "halted"),
+            "Nothing is published while an occurrence holds the lock.");
+        Assert.IsGreaterThanOrEqualTo(OrbitalElementsRefreshJob.PublishLockWait - TimeSpan.FromMilliseconds(50), waited.Elapsed);
+        Assert.IsFalse(run.IsCompleted);
+
+        release.SetResult();
+        await run.ConfigureAwait(false);
+        recorder.Collect();
+        Assert.AreEqual(1d, Halted(recorder.Snapshot()), "The occurrence publishes its own later read.");
+    }
+
+    private static double Halted(IEnumerable<Measurement> measurements)
+        => measurements.Single(static m => m.Name == "halted").Value;
 
     private static (string, double, string)[] Select(IEnumerable<Measurement> measurements, string name)
         => measurements.Where(m => m.Name == name).Select(static m => (m.Name, m.Value, m.TagText)).ToArray();
