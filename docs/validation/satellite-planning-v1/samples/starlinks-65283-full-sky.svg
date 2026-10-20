@@ -1,9 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Full angular satellite planning arc on a fixed full-sky hemisphere" b-cd9nkyb1lk=""><style>.satellite-arc { margin: 1rem 0; }
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Full angular satellite planning paths and prediction points on a fixed full-sky hemisphere" b-cd9nkyb1lk=""><style>.satellite-arc { margin: 1rem 0; }
 .satellite-arc > svg { display: block; width: min(100%, 36rem); margin-inline: auto; }
 .sky-disc { fill: #0c1422; stroke: #536176; }
 .sky-grid { fill: none; stroke: #29384b; stroke-dasharray: 2 5; }
 .sky-axis { fill: #9caabe; font: 12px sans-serif; }
 .predicted-path { fill: none; stroke: #f4a44e; stroke-width: 2.5; stroke-dasharray: 8 5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.prediction-point { fill: #f4a44e; stroke: #f4a44e; stroke-width: 2; vector-effect: non-scaling-stroke; }
 .arc-anchor { fill: #101b2b; stroke: #f4a44e; stroke-width: 2; }
 .arc-time-label text { fill: #ffc689; stroke: #0c1422; stroke-width: 3px; paint-order: stroke; font: 10px sans-serif; }
 figcaption, .anchor-facts, .satellite-arc p { font-size: .82rem; line-height: 1.6; }

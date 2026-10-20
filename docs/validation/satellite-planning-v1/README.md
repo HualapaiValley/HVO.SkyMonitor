@@ -55,12 +55,13 @@ files, retaining screenshots outside Git with their input HTML checksums.
 
 ## Retained integrated examples
 
-The integrated run at `ac1713ffc1b07d576c6a4056cdeb2ec5dd04cd85` passed this
-Manual case and all 19 planner Unit cases together with a warning-clean Release
-build. Root checked all 57 output hashes and inspected the actual frozen
+The current integrated export at `d7814be3a00c926b9d4cf469a8f8dedc84cf399b`
+passed this Manual case after the same source passed 83 focused planning/UI Unit
+cases with a warning-clean Release build. Root checked all 57 output hashes and inspected the actual frozen
 component pages in the native browser. Desktop 1024×1000 CSS-pixel views had no
-page overflow or console errors. A 390×844 CSS-pixel Starlink view also had no
-page overflow; its wider table scrolls inside its own container. These viewport
+page overflow or console errors; the retained screenshots are scrolled to the
+selected pass. A 390×844 CSS-pixel Starlink view with both provenance panels
+expanded also had no page overflow; its wider table scrolls inside its own container. These viewport
 checks do not qualify full-resolution camera processing.
 
 | Selected object | Actual component screenshot | Standalone full-sky diagram | Exact canonical arc |

@@ -1,0 +1,18 @@
+{
+  "sourceHead": "d7814be3a00c926b9d4cf469a8f8dedc84cf399b",
+  "check": {
+    "title": "STARLINK-35015: real full-pass angular arc and configured-rig preview",
+    "overflow": false,
+    "width": 390,
+    "documentWidth": 390,
+    "openDetails": 2,
+    "viewport": [
+      390,
+      844
+    ],
+    "scrollY": 2862.5
+  },
+  "consoleEntries": [],
+  "screenshotFile": "starlinks-65283-mobile-provenance.png",
+  "screenshotSha256": "FFFAAE6117F00468C0ED180CAC1C72D8CD425A30EE64FB9A3D4E869919629DB7"
+}

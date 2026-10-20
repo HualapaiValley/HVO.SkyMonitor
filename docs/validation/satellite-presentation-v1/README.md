@@ -14,7 +14,8 @@ input to the original simulation, independent of orbital elements.
 
 The short paths cover five-second exposures. Full-pass diagrams are a separate
 planning product. Optional object labels may be omitted when they do not fit;
-the mandatory prediction/uncertainty legend and canonical facts remain. The HVO
+mandatory prediction/uncertainty and applicable source/geometry/stale/zero-EOP
+qualifications remain visible, along with the canonical facts. The HVO
 scenario uses its documented nominal configured rig and fixture location,
 35.347 degrees north, 113.878 degrees west, assumed ellipsoidal height 0 m.
 This is not measured camera calibration or a verified HVO elevation.
@@ -51,8 +52,10 @@ Root validation checked:
   prediction checkbox hides its overlay while retaining the base, and no console
   error is reported.
 
-The examples were generated from the Release CLI at source commit
-`c2beaef8` before later unrelated consumer admission/inventory changes. Each
+The examples were regenerated after review corrections from the Release CLI at
+source commit `0cddb869895f725eea2ae6d393f37a9754052b71`. Base image and canonical
+track bytes are unchanged; mandatory source-validity/configured-geometry text
+now remains visible even when every optional object label is omitted. Each
 validation file pins its exact assembly identity and SHA-256. These are output
 checks and component integration evidence, not a new numerical oracle,
 performance baseline, live cadence result or measured satellite identification.

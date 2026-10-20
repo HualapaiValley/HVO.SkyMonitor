@@ -1,56 +1,62 @@
 [
   {
     "name": "iss-25544",
-    "url": "http://localhost:53291/root-real-ui-export/iss-25544-selected.html",
-    "screenshotPath": "/home/roys/.t3/userdata/browser-artifacts/browser-screenshot-localhost-mvg42ik1-bc480bee.png",
-    "consoleEntries": [],
+    "sourceHead": "d7814be3a00c926b9d4cf469a8f8dedc84cf399b",
+    "inputHtmlSha256": "26ADBF52CD79574E326CC232649747732385B75092FB32A091B022EB1B0FBC59",
+    "screenshotFile": "iss-25544-selected.png",
+    "screenshotSha256": "A681D4D711C37D8FF7567E07F7770C8601F5A781FAB6A1B7BFC162DC16A12273",
     "check": {
       "title": "ISS (ZARYA): real full-pass angular arc and configured-rig preview",
       "overflow": false,
-      "fullSkyPoints": 662,
       "viewport": [
         1024,
         1000
-      ]
+      ],
+      "scrollY": 1167.5,
+      "points": 662
     },
-    "retainedScreenshot": "iss-25544-selected.png",
-    "sha256": "E0101BC8CE5B5CEFCD938FE3F935656E3D81E4150CF507B7AD882C11D3D1B728",
-    "inputHtmlSha256": "E66D472963D6649DEDD8605C1F8EFE48582924A165886505E3B9B2A578BB585F"
+    "consoleEntries": [],
+    "networkFailures": [],
+    "meaning": "Actual frozen component page, scrolled to selected pass; CSS viewport recorded independently of screenshot device scale."
   },
   {
     "name": "starlinks-56838",
-    "url": "http://localhost:53291/root-real-ui-export/starlinks-56838-selected.html",
-    "screenshotPath": "/home/roys/.t3/userdata/browser-artifacts/browser-screenshot-localhost-mvg42iq8-22349578.png",
-    "consoleEntries": [],
+    "sourceHead": "d7814be3a00c926b9d4cf469a8f8dedc84cf399b",
+    "inputHtmlSha256": "B112FC5FEC4DB9E8806C8688913482783B9D6AF8ACFDD0ABDCE36B59DDA4F4E6",
+    "screenshotFile": "starlinks-56838-selected.png",
+    "screenshotSha256": "442BE7256DFC3618C959319D6799A318363AFABBD1B6406F8B0DBEA8EA82F11B",
     "check": {
       "title": "STARLINK-30123: real full-pass angular arc and configured-rig preview",
       "overflow": false,
-      "fullSkyPoints": 663,
       "viewport": [
         1024,
         1000
-      ]
+      ],
+      "scrollY": 1297.5,
+      "points": 663
     },
-    "retainedScreenshot": "starlinks-56838-selected.png",
-    "sha256": "FEAC3C7779B5B2FEEC5720B5F388E949373A39883F9BFB89CA944A762762AA36",
-    "inputHtmlSha256": "7A7857857C3AE48905742F21482B93D02E5C740475732A7BAE6D19DFE044F32C"
+    "consoleEntries": [],
+    "networkFailures": [],
+    "meaning": "Actual frozen component page, scrolled to selected pass; CSS viewport recorded independently of screenshot device scale."
   },
   {
     "name": "starlinks-65283",
-    "url": "http://localhost:53291/root-real-ui-export/starlinks-65283-selected.html",
-    "screenshotPath": "/home/roys/.t3/userdata/browser-artifacts/browser-screenshot-localhost-mvg42iv0-6c968ce4.png",
-    "consoleEntries": [],
+    "sourceHead": "d7814be3a00c926b9d4cf469a8f8dedc84cf399b",
+    "inputHtmlSha256": "981A9B509DDC5B2B9807331FCC6BFAFD66CBDB6A99D106FBC5D0A93E45E43FAC",
+    "screenshotFile": "starlinks-65283-selected.png",
+    "screenshotSha256": "CFDE260852C2FB76C156B7CB0BF67D4E3C58DB321B8C5C551D9786D40D0638C1",
     "check": {
       "title": "STARLINK-35015: real full-pass angular arc and configured-rig preview",
       "overflow": false,
-      "fullSkyPoints": 623,
       "viewport": [
         1024,
         1000
-      ]
+      ],
+      "scrollY": 1297.5,
+      "points": 623
     },
-    "retainedScreenshot": "starlinks-65283-selected.png",
-    "sha256": "DD98D7BEE7E955EAC4308E57BC8497996CC5A604CB293B89600D06988CF1EEC2",
-    "inputHtmlSha256": "74AA22F76C459F5D88EBD5426BE7A4F16C69698FEAEED87C186601F6C80F9224"
+    "consoleEntries": [],
+    "networkFailures": [],
+    "meaning": "Actual frozen component page, scrolled to selected pass; CSS viewport recorded independently of screenshot device scale."
   }
 ]
