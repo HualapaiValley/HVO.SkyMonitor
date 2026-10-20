@@ -164,7 +164,10 @@ public sealed class OrbitalSnapshotPanelTests
             RecoveryAction = OrbitalRefreshRecoveryAction.Configure,
         };
         service.GetHandler = _ => Success(TestOrbitalUiService.View(status,
-            health: OrbitalElementsHealthState.Degraded) with { Schedule = null });
+            health: OrbitalElementsHealthState.Degraded) with
+        {
+            Schedule = null,
+        });
 
         var cut = context.Render<OrbitalSnapshotPanel>();
 
