@@ -1,0 +1,14 @@
+.satellite-arc { margin: 1rem 0; }
+.satellite-arc > svg { display: block; width: min(100%, 36rem); margin-inline: auto; }
+.sky-disc { fill: #0c1422; stroke: #536176; }
+.sky-grid { fill: none; stroke: #29384b; stroke-dasharray: 2 5; }
+.sky-axis { fill: #9caabe; font: 12px sans-serif; }
+.predicted-path { fill: none; stroke: #f4a44e; stroke-width: 1; stroke-dasharray: 8 5; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.prediction-point { fill: #f4a44e; stroke: #f4a44e; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.arc-anchor { fill: #101b2b; stroke: #f4a44e; stroke-width: 1; }
+.arc-time-label text { fill: #ffc689; stroke: #0c1422; stroke-width: 3px; paint-order: stroke; font: 10px sans-serif; }
+figcaption, .anchor-facts, .satellite-arc p { font-size: .82rem; line-height: 1.6; }
+.anchor-facts dt { margin-top: .6rem; font-weight: 600; }
+.anchor-facts dd { margin: .2rem 0; }
+.rig-preview { border: 1px solid #344258; border-radius: .5rem; padding: 1rem; }
+.rig-preview svg { display: block; width: min(100%, 36rem); max-height: 30rem; margin-inline: auto; background: #0c1422; }

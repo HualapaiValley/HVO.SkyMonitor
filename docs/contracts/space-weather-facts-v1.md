@@ -14,7 +14,9 @@ The decision's ledger and its U1 to U15 table give each rule's status:
 Approved, Proposed or Unresolved. The numbers in this document follow those
 statuses. For example, the per-product structure of the request policy is
 Approved, while the base interval values and the 35-day retention period are
-Proposed values (U1, U8, U15).
+Proposed values (U1, U8, U15). The 64-level JSON nesting limit and the
+1900–9998 source-year range are also **Proposed**, under the decision's
+"Proposed limits" section.
 
 ## Scope and ownership
 
@@ -55,7 +57,7 @@ other than its probabilities, and none is invented.
 | Fact | Kind | Content |
 | --- | --- | --- |
 | `SourceSnapshot` | provenance | Product key; canonical URL path; fetch start (UTC); HTTP status; media type; decoded byte count; snapshot SHA-256; validators; in-file stamp; outcome |
-| `SwpcMessage` | issued notice version | Identity (message code, serial, issue minute); `product_id` and `issue_datetime` as attributes; headline kind and modifier; corrected flag; link (extension, continuation or cancel target serial); scale token and raw descriptor; impact latitude when stated; parsed time fields; watch day lines; the normalized text and its SHA-256; the original record |
+| `SwpcMessage` | issued notice version | Identity (message code, serial, issue minute); `product_id` and `issue_datetime` as attributes; headline kind and modifier; corrected flag; link (extension, continuation or cancel target serial); scale token and raw descriptor; impact latitude when stated; parsed time fields; watch day lines; the normalized text and its SHA-256; the original record's verbatim source JSON text |
 | `ScaleReading` | observation or forecast | Window (`observed24hMax`, `current`, `predictedDay1..3`), stamp, and the R, S and G scale values and probabilities as SWPC wrote them (JSON strings), including `null` |
 | `KpBin` | observation or forecast | Bin start (UTC); bin end (start plus 3 hours); Kp as the source text of the JSON number (`4.67` is kept as `"4.67"`, never rounded to `4+`); the source label verbatim (`observed`, `estimated` or `predicted`); NOAA scale or `null`. The relation to now (`past`, `current` or `future`) is computed when the bin is read and is not stored |
 | `IssuedForecast` | forecast | `:Issued:` time (UTC); 24 Kp breakdown bins with G marks; the solar radiation (S) and radio blackout (R) probabilities, keyed by the row label as printed and the UTC date; normalized-text SHA-256 |
@@ -113,7 +115,8 @@ the content does not change (s01, s17). They may be sent as `If-None-Match` and
 - Every letter and digit that a rule matches is ASCII. A "digit" is `0` to `9`
   only, so a field written with other Unicode digits does not match (s12).
   Case-insensitive matching folds ASCII letters only.
-- A source time with a year parses only when the year is 1900 to 9998. A
+- Under the **Proposed** source-year limit, a source time with a year parses
+  only when the year is 1900 to 9998 inclusive (s25). A
   source time is a message time (`Issue Time`, `Valid From`, `Valid To`,
   `Now Valid Until`, `Threshold Reached` or `Begin Time`), the 3-day
   forecast's `:Issued:` time, or a JSON product stamp. Every time derived from
@@ -123,14 +126,18 @@ the content does not change (s01, s17). They may be sent as `If-None-Match` and
   unparseable where it is used.
 - `issue_datetime` is never read as a time. It is checked by its layout, and
   its minute and its place in version order are compared as text.
-  A `Retry-After` HTTP-date is not limited to those years, because its delay
-  is clamped (see "Fetch policy").
+  A `Retry-After` IMF-fixdate uses years 0001 to 9999 instead, because its
+  delay is clamped (see "Fetch policy").
 - The JSON product stamps are matched whole: scales `DateStamp` and
   `TimeStamp` joined by one space as `YYYY-MM-DD HH:MM:SS`, Kp `time_tag` as
   `YYYY-MM-DDTHH:MM:SS`, and the OVATION times as `YYYY-MM-DDTHH:MM:SSZ`.
-- A JSON body nested more than 64 levels deep is `malformed-json`. The
+- Under the **Proposed** nesting limit, a JSON body nested more than 64
+  levels deep is `malformed-json`. The
   outermost array or object is level 1, and brackets inside strings do not
   count (s12).
+- For every JSON product, `NaN`, `Infinity` and `-Infinity` are not JSON
+  numbers (RFC 8259 §6). Their presence anywhere in a body is `malformed-json`,
+  before product schema checks; last-known-good and its validators are kept (s24).
 - A JSON number is valid whatever its length. A body is never rejected because
   a number has many digits. A long number is still a number, not a string, so
   a 4,301-digit `product_id` is `record-schema` (s12; see "JSON value types").
@@ -161,6 +168,16 @@ Fields not listed are not read, and their types are not checked.
 | OVATION | `coordinates` | array of cells, each an array of exactly three integers (longitude, latitude, value). One cell outside every site band with the value `0.5` still rejects the body (s18) | `schema` |
 
 ## Alert records
+
+**Original record.** Every accepted message version stores its verbatim source
+JSON text: the exact UTF-8 byte span of that record in the decoded source body,
+from its opening `{` through its matching `}`, inclusive. This preserves all
+fields (including unread fields), JSON value types and number spellings,
+property order, escape spellings, and internal whitespace, without re-encoding.
+The outer array delimiters and whitespace outside the record are excluded.
+Message normalization and hashing do not change this original record. Restart
+and refetch preserve it unchanged (s26, s27); an unread `"x": 1.5` remains a JSON
+number, byte for byte, rather than becoming the JSON string `"1.5"`.
 
 **Per-record checks.** An `alerts.json` body is a JSON array. Each record is
 validated on its own. A failure rejects only that record. The checks run in
@@ -432,7 +449,7 @@ merged. The first matching row applies:
 | --- | --- |
 | Timeout, network error, 5xx, any other status below 300 except 200, or 304 when no validators were sent | `transient-failure`. With n consecutive transient failures, including this one, the next attempt is after min(1,800 s, max(60 s, base × 2ⁿ)). Last-known-good is kept. The 429 and rejected counts are unchanged (s13, s22) |
 | 304, validators sent | `not-modified`. A success. The stored validators are kept |
-| 429 | `rate-limited`. The 429 count rises; the transient and rejected counts are unchanged. The next attempt is after `Retry-After`, otherwise after 1,800 s. `Retry-After` is read as delta-seconds (1 to 9 ASCII digits) or an ASCII HTTP-date; any other value is ignored. The delay is clamped to between 60 s and 21,600 s. The third consecutive 429 for a product halts the provider (`rate-limited`) instead. That 429's clamped time is kept as `retryNotBeforeUtc` and applied when the halt is resumed (s13, s19) |
+| 429 | `rate-limited`. The 429 count rises; the transient and rejected counts are unchanged. The next attempt is after `Retry-After`, otherwise after 1,800 s. `Retry-After` is read as delta-seconds (1 to 9 ASCII digits) or IMF-fixdate only (RFC 9110 §5.6.7); any other value is ignored and gives the 1,800 s fallback. The delay is clamped to between 60 s and 21,600 s. The third consecutive 429 for a product halts the provider (`rate-limited`) instead. That 429's clamped time is kept as `retryNotBeforeUtc` and applied when the halt is resumed (s13, s19) |
 | 403 | Provider halt (`forbidden`). The halt leaves the transient, 429 and rejected counts unchanged |
 | 3xx other than 304 | Product halt (`endpoint-moved`). Redirects are never followed. The halt leaves the transient, 429 and rejected counts unchanged |
 | 404, 410 or any other 4xx | Product halt (`not-found`, `gone` or `client-error`). The halt leaves the transient, 429 and rejected counts unchanged (s13, s22) |
@@ -440,6 +457,14 @@ merged. The first matching row applies:
 | 200, accepted, same snapshot hash | `unchanged`. A success. Alert records are not merged again. The validators are replaced |
 | 200, accepted, in-file stamp older than last-known-good's | `stale-snapshot`. Last-known-good, the validators and the last success time are not changed, so freshness does not improve. For the counters and the next attempt it acts as a success. Alert records with new identities are merged; new text for a stored identity is not (s11) |
 | 200, accepted, otherwise | `updated`. A success. Replaces last-known-good and the validators |
+
+An IMF-fixdate has exactly the layout `Tue, 03 Feb 2026 01:02:03 GMT`:
+case-sensitive English weekday and month names, two-digit day, four-digit year,
+and two-digit hour, minute and second, with exactly the shown spaces and `GMT`.
+The date and time must exist in the calendar, in years 0001 to 9999, and the
+weekday must agree with the date. Year 0000, impossible dates, lower-case names,
+one-digit fields, extra whitespace, obsolete rfc850 and asctime forms, and
+mismatched weekdays are ignored (s23). Valid dates keep the delay clamp above.
 
 A success (`not-modified`, `unchanged` or `updated`) records the retrieval time
 as the last success. It resets the transient, 429 and rejected counts, ends any
@@ -464,7 +489,8 @@ gives the reason:
    - the column header does not name three days;
    - a row does not parse;
    - the Kp rows are not exactly 00 to 21 UT in 3-hour steps.
-5. For JSON products, `malformed-json`.
+5. For JSON products, `malformed-json`, including `NaN`, `Infinity` and
+   `-Infinity` anywhere in the body (s24).
 6. For alerts:
    - `schema` if the body is not an array;
    - `suspect-empty` for `[]`;
@@ -546,6 +572,11 @@ them sorted in ordinal (code-point) order:
 - `body-rejected:<reason>`
 - `stale-snapshot`
 
+`record-rejected`, `issue-time-mismatch` and `duplicate-record-in-body` are
+reported only for `updated` and `stale-snapshot` bodies, never for `unchanged`
+bodies. s20 steps 3 and 5 pin the silent unchanged case; step 10 pins a
+`record-rejected` diagnostic on a stale snapshot.
+
 They never contain a credential, an authorization or cookie header, a CDN
 request identifier, a secret-bearing URI, or message text.
 
@@ -567,7 +598,20 @@ request identifier, a secret-bearing URI, or message text.
   NOAA scale descriptions.
 - **Site geomagnetic latitude.** A centred dipole with its pole at 80.8 N,
   72.6 W, rounded to 0.1° (U10).
-- **The difference** d = required − |site geomagnetic latitude|.
+- **The difference** d = required − |site geomagnetic latitude|, rounded to
+  0.1° before comparison.
+
+Both one-decimal operations reproduce Python `round(value, 1)` on the actual
+binary64 double: nearest decimal tenth, with ties to even. Rounding an exact
+decimal interpretation of its shortest `repr` text, or using .NET's default
+`Math.Round(value, 1)`, can disagree near half-way boundaries. For example,
+`2.25` rounds to `2.2`, `2.45` to `2.5` and `2.55` to `2.5`. The pack's
+`rounding-vectors.json` pins the inputs, exact unrounded doubles as `repr`
+text, expected rounded outputs and signed zero. It checks both latitude and
+relevance-difference operations. Directly parsing `unroundedDouble` allows the
+C# implementation to verify rounding separately from trigonometric-library
+last-bit differences. Synthetic intermediate relevance latitudes exercise
+half-way boundaries that normal one-decimal latitude outputs do not reach.
 
 | d | Category |
 | --- | --- |
@@ -643,7 +687,7 @@ has:
 - **`evaluate`.** Has `atUtc` and observes state without acting.
 
 **Durable state** is the provider halt; the stored message versions and their
-ingest order; the raised ranks; the acknowledgements; the orphan set; and, per
+verbatim original-record text and ingest order; the raised ranks; the acknowledgements; the orphan set; and, per
 product:
 
 - last-known-good;
@@ -656,7 +700,8 @@ product:
 - the last outcome;
 - the record-drift stamp, which is `null` when no episode is open.
 
-**Observed output.** Every step that has `atUtc` first purges by retention.
+**Observed output.** Every step reports `originalRecords`: identity to the
+ordered verbatim source texts of its stored versions (s26). Every step that has `atUtc` first purges by retention.
 It then reports `notices` and, for every product:
 
 - `lastOutcome`, `freshness`, `lkgSha256` and `lastSuccessUtc`;
@@ -706,6 +751,11 @@ A fetch also reports:
 | s20 | Record drift raised once per episode, kept across a restart; equal-stamp bodies alternating neither close nor re-raise it; a stale-snapshot drifted body neither raises, closes nor advances it; closed by a clean body with a newer stamp and raised again |
 | s21 | Pending before `Valid From`; short-window alert inside and outside the new-notice grace; 96-hour cap |
 | s22 | 410 and 400 product halts; network error backoff; 304 without validators; product resume; an attempt ends the backoff before it |
+| s23 | Exact Retry-After grammar; invalid forms give 1,800 s; matching weekday; valid dates in years 0001 and 9999 keep the clamp |
+| s24 | NaN, Infinity and -Infinity are malformed-json for alerts, scales, Kp and OVATION; last-known-good is kept |
+| s25 | Inclusive source-year bounds: 1899 and 9999 reject; 1900 and 9998 update, for alerts and scales |
+| s26 | Verbatim original alert JSON (including numeric x: 1.5, escapes and whitespace) survives two restarts and an unchanged refetch |
+| s27 | Outer JSON whitespace; literal UTF-8 and Unicode escape spellings; two message versions retain their exact original-record bytes in ingest order through two restarts and an unchanged refetch |
 
 **Implementation conformance.** An implementation passes when it reproduces each
 scenario's expectations from the same committed bodies. Unit tests use those
@@ -727,3 +777,9 @@ regenerates the fixture pack:
 Proposed defaults may be tuned before the first implementation without a
 version change, provided the reference model, the scenarios and this document
 change together.
+
+The v1 errata in Refs #1412 (2026-10-20), before the first implementation,
+make Retry-After grammar, JSON constants and bounds, diagnostic scope and
+verbatim original records explicit, bound model scanning work, and add binary64
+rounding vectors. The model, new scenarios and document change together;
+s01–s22 and captured bytes retain their original expectations and contents.
