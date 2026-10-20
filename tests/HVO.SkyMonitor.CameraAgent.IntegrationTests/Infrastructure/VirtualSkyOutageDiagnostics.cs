@@ -22,6 +22,7 @@ internal sealed class VirtualSkyOutageDiagnostics(IServiceProvider services, str
     internal const int SampleLimit = 16;
     internal const int ManifestByteLimit = 256 * 1024;
     internal const int OutputLimit = 32 * 1024;
+    private static readonly TimeSpan CollectionBudget = TimeSpan.FromSeconds(2);
     private static readonly JsonSerializerOptions JsonOptions = new() { Converters = { new JsonStringEnumConverter() } };
     public string Stage { get; set; } = "initial capture";
     public DateTimeOffset? CheckpointUtc { get; set; }
@@ -50,21 +51,29 @@ internal sealed class VirtualSkyOutageDiagnostics(IServiceProvider services, str
             Section("capture loop/metering/admission", () =>
             {
                 var task = services.GetServices<IHostedService>().OfType<CameraCaptureService>().SingleOrDefault()?.ExecuteTask;
-                var sample = services.GetRequiredService<ICaptureTelemetryProvider>().Latest;
                 var latest = services.GetRequiredService<ILatestFrameAccessor>();
                 latest.TryGetSnapshot(FrameArtifactRole.Raw, out var raw);
                 latest.TryGetSnapshot(FrameArtifactRole.Preview, out var preview);
-                var fleet = services.GetRequiredService<FleetRuntimeState>().Snapshot.Capture;
                 return Json(new
                 {
                     LoopTask = task?.Status, FaultType = task?.Exception?.GetBaseException().GetType().Name,
-                    fleet.Availability, fleet.LastSucceededUtc, fleet.LastFailedUtc, fleet.LastRecoveredUtc,
                     LatestRawUtc = raw?.TimestampUtc, LatestPreviewUtc = preview?.TimestampUtc,
-                    Sample = sample is null ? null : new { sample.StartedUtc, sample.FrameStored, sample.Exposure, sample.ProcessingLatency, sample.LoopDuration },
                     Admission = services.GetRequiredService<CaptureAdmissionCoordinator>().Snapshot,
                     Metering = "latest durable metering outcome and times are in journal and storage observations"
                 });
             }),
+            Section("capture telemetry", () => ReadSnapshot(budget,
+                services.GetRequiredService<ICaptureTelemetryProvider>(), static telemetry =>
+                {
+                    var sample = telemetry.Latest;
+                    return Json(sample is null ? null : new { sample.StartedUtc, sample.FrameStored, sample.Exposure, sample.ProcessingLatency, sample.LoopDuration });
+                })),
+            Section("fleet capture", () => ReadSnapshot(budget,
+                services.GetRequiredService<FleetRuntimeState>(), static state =>
+                {
+                    var fleet = state.Snapshot.Capture;
+                    return Json(new { fleet.Availability, fleet.LastSucceededUtc, fleet.LastFailedUtc, fleet.LastRecoveredUtc });
+                })),
             Section("ingress queues/bytes/oldest age", () =>
             {
                 var ingress = services.GetRequiredService<RawIngressState>().Snapshot;
@@ -82,16 +91,17 @@ internal sealed class VirtualSkyOutageDiagnostics(IServiceProvider services, str
                     }).ToArray()
                 });
             }),
-            Section("durable processing/publication", () =>
-            {
-                var p = services.GetRequiredService<CaptureProcessingState>().Snapshot;
-                return Json(new
+            Section("durable processing/publication", () => ReadSnapshot(budget,
+                services.GetRequiredService<CaptureProcessingState>(), static state =>
                 {
-                    p.Availability, p.PendingCount, p.LeasedCount, p.RetryCount, p.TerminalCount,
-                    p.ProcessingQuarantineCount, p.MissingProductCount, p.DurableStateUnavailable, p.ReconciliationFailed,
-                    p.OldestPendingUtc, p.EvaluatedUtc, OldestPendingSeconds = Age(now, p.OldestPendingUtc)
-                });
-            }),
+                    var p = state.Snapshot;
+                    return Json(new
+                    {
+                        p.Availability, p.PendingCount, p.LeasedCount, p.RetryCount, p.TerminalCount,
+                        p.ProcessingQuarantineCount, p.MissingProductCount, p.DurableStateUnavailable, p.ReconciliationFailed,
+                        p.OldestPendingUtc, p.EvaluatedUtc, OldestPendingSeconds = Age(DateTimeOffset.UtcNow, p.OldestPendingUtc)
+                    });
+                })),
             Section("journal capture sequence/publication/metering", () => ReadJournal(budget)),
             Section("storage list/manifest filtering", () =>
             {
@@ -102,23 +112,36 @@ internal sealed class VirtualSkyOutageDiagnostics(IServiceProvider services, str
                 {
                     foreach (var item in listed.OrderByDescending(item => item.TimestampUtc).Take(SampleLimit))
                     {
-                        if (budget.Elapsed >= TimeSpan.FromSeconds(2)) break;
+                        if (budget.Elapsed >= CollectionBudget) break;
                         observed.Add(ReadObservation(item));
                     }
                 }
                 return FormatStorage(listed?.Count, observed, LastListCapReached);
             })
         };
-        var result = string.Join(Environment.NewLine, sections) + $"\ncollectionElapsedMs={budget.Elapsed.TotalMilliseconds:F0}; budgetReached={budget.Elapsed >= TimeSpan.FromSeconds(2)}";
+        var result = string.Join(Environment.NewLine, sections) + $"\ncollectionElapsedMs={budget.Elapsed.TotalMilliseconds:F0}; budgetReached={budget.Elapsed >= CollectionBudget}";
         return result.Length <= OutputLimit ? result : result[..(OutputLimit - 24)] + "\n<snapshot truncated>";
     }
 
+    private static string ReadSnapshot<T>(Stopwatch budget, T state, Func<T, string> read)
+    {
+        var remaining = CollectionBudget - budget.Elapsed;
+        if (remaining <= TimeSpan.Zero) return "unavailable(timeout)";
+        // Only non-disposable singleton state and a static projection cross this boundary. A stuck getter
+        // may outlive collection, but it owns no fixture scope, file stream or database connection.
+        var snapshot = Task.Run(() => Read(() => read(state)));
+        try { return snapshot.WaitAsync(remaining).GetAwaiter().GetResult(); }
+        catch (TimeoutException) { return "unavailable(timeout)"; }
+    }
+
+    internal static string Section(string label, Func<string> read) => label + ": " + Read(read);
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "Timeout diagnostics must preserve the original assertion if a snapshot provider fails; only the exception type is emitted.")]
-    internal static string Section(string label, Func<string> read)
+    private static string Read(Func<string> read)
     {
-        try { return label + ": " + read(); }
-        catch (Exception error) { return label + ": unavailable(" + error.GetType().Name + ")"; }
+        try { return read(); }
+        catch (Exception error) { return "unavailable(" + error.GetType().Name + ")"; }
     }
 
     internal static string FormatStorage(int? listedCount, IEnumerable<Observation> observations, bool? listCapReached = null) => Json(new
@@ -154,7 +177,7 @@ internal sealed class VirtualSkyOutageDiagnostics(IServiceProvider services, str
 
     private string ReadJournal(Stopwatch budget)
     {
-        if (budget.Elapsed >= TimeSpan.FromSeconds(2)) return "<collection budget reached>";
+        if (budget.Elapsed >= CollectionBudget) return "<collection budget reached>";
         using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = Path.Combine(storageRoot, "journal", "raw-ingress.db"),
@@ -179,7 +202,7 @@ internal sealed class VirtualSkyOutageDiagnostics(IServiceProvider services, str
         command.Parameters.AddWithValue("$take", SampleLimit);
         using var reader = command.ExecuteReader();
         var captures = new List<object>();
-        while (budget.Elapsed < TimeSpan.FromSeconds(2) && reader.Read())
+        while (budget.Elapsed < CollectionBudget && reader.Read())
         {
             var metering = reader.IsDBNull(8) ? null : CaptureContractJson.ParseManifest((byte[])reader.GetValue(8)).Document?.Manifest?.Descriptor.CycleEvidence?.Metering;
             captures.Add(new

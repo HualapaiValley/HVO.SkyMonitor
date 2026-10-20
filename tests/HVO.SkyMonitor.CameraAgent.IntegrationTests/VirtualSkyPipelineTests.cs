@@ -4,12 +4,14 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Runtime.CompilerServices;
+using System.Reflection;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Frames;
+using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -233,7 +235,7 @@ public sealed class VirtualSkyPipelineTests
         diagnostics.LastListCapReached = diagnostics.LastListedFrames.Count >= 10_000;
         var error = await Assert.ThrowsAsync<AssertFailedException>(() => WaitUntilAsync(
             () => false, TimeSpan.Zero, describeTimeout: diagnostics.Describe)).ConfigureAwait(false);
-        foreach (var field in new[] { "checkpoint:", "capture loop/metering/admission:", "ingress queues/bytes/oldest age:", "durable processing/publication:", "journal capture sequence/publication/metering:", "storage list/manifest filtering:" })
+        foreach (var field in new[] { "checkpoint:", "capture loop/metering/admission:", "capture telemetry:", "fleet capture:", "ingress queues/bytes/oldest age:", "durable processing/publication:", "journal capture sequence/publication/metering:", "storage list/manifest filtering:" })
         {
             StringAssert.Contains(error.Message, field, StringComparison.Ordinal);
         }
@@ -244,6 +246,63 @@ public sealed class VirtualSkyPipelineTests
         Console.WriteLine(error.Message);
         await WaitUntilAsync(() => true, TimeSpan.Zero,
             describeTimeout: () => throw new InvalidOperationException("Success must not collect diagnostics.")).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow("fleet capture")]
+    [DataRow("capture telemetry")]
+    [DataRow("durable processing/publication")]
+    public async Task StandaloneHeldProductLockDoesNotDelayOriginalTimeout(string section)
+    {
+        using var scope = Fixture.CreateCameraAgentScope();
+        var services = scope.ServiceProvider;
+        var diagnostics = new VirtualSkyOutageDiagnostics(services, Fixture.StorageRoot);
+        object state = section switch
+        {
+            "fleet capture" => services.GetRequiredService<FleetRuntimeState>(),
+            "capture telemetry" => services.GetRequiredService<ICaptureTelemetryProvider>(),
+            _ => services.GetRequiredService<CaptureProcessingState>()
+        };
+        var gate = state.GetType().GetField("_gate", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(state);
+        Assert.IsNotNull(gate, "The regression must hold the real product snapshot gate.");
+        using var held = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var holder = new Thread(() =>
+        {
+            lock (gate)
+            {
+                held.Set();
+                release.Wait();
+            }
+        })
+        { IsBackground = true };
+        Task? assertion = null;
+        holder.Start();
+        try
+        {
+            Assert.IsTrue(held.Wait(TimeSpan.FromSeconds(5)), "The product gate was not acquired.");
+            var elapsed = Stopwatch.StartNew();
+            assertion = Task.Run(() => WaitUntilAsync(() => false, TimeSpan.Zero, describeTimeout: diagnostics.Describe));
+            // The collector has two seconds; allow scheduling slack without releasing the gate to unblock it.
+            var error = await Assert.ThrowsAsync<AssertFailedException>(
+                () => assertion.WaitAsync(TimeSpan.FromSeconds(2.75))).ConfigureAwait(false);
+            Assert.IsFalse(release.IsSet, "The assertion must surface while the gate is still held.");
+            Assert.IsTrue(holder.IsAlive);
+            StringAssert.Contains(error.Message, "Timed out waiting for the configured VirtualSky pipeline", StringComparison.Ordinal);
+            StringAssert.Contains(error.Message, section + ": unavailable(timeout)", StringComparison.Ordinal);
+            Console.WriteLine($"held snapshot={section}; assertionElapsedMs={elapsed.Elapsed.TotalMilliseconds:F0}\n{error.Message}");
+        }
+        finally
+        {
+            release.Set();
+            Assert.IsTrue(holder.Join(TimeSpan.FromSeconds(5)), "The product gate holder did not stop.");
+            if (assertion is not null)
+            {
+                // Drain the real helper after release, including on the red path, before disposing the fixture scope.
+                try { await assertion.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
+                catch (AssertFailedException) { }
+            }
+        }
     }
 
 #endif
