@@ -3,11 +3,8 @@ using HVO.SkyMonitor.Deployment.Wizard;
 namespace HVO.SkyMonitor.Deployment;
 
 /// <summary>
-/// How the installer names itself in its usage and in the commands its messages tell the operator to run (#1384): by the
-/// path of the program that is running, as the shell takes it. A release's installer is
-/// <c>hvo-sky-install-linux-&lt;arch&gt;</c> in the release folder and nothing puts it on PATH, so the bare name would be
-/// a command that is not there. A process that is not the installer itself, such as <c>dotnet</c> running it, says the
-/// product's name.
+/// How the installer names itself in usage and recovery commands: an executable durable copy, once installed, or the
+/// running release file before one exists. This keeps bootstrap hints valid after its temporary download is removed.
 /// </summary>
 internal static class InstallerProgram
 {
@@ -15,7 +12,14 @@ internal static class InstallerProgram
     public const string ProductName = "hvo-sky-install";
 
     /// <summary>This process's installer, as the commands it prints name it.</summary>
-    public static string Current { get; } = Of(Environment.ProcessPath);
+    public static string Current => DurableOf(Environment.ProcessPath,
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin", ProductName),
+        PathPrograms.SystemInstaller);
+
+    internal static string DurableOf(string? processPath, params string[] candidates)
+        => candidates.FirstOrDefault(path => File.Exists(path) && new FileInfo(path).LinkTarget is null &&
+               (File.GetUnixFileMode(path) & UnixFileMode.UserExecute) != 0) is { } durable
+            ? InstallWizardRunner.Quote([durable]) : Of(processPath);
 
     /// <summary>The installer running from <paramref name="processPath"/>, as the shell takes it.</summary>
     internal static string Of(string? processPath)
