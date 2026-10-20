@@ -12,6 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Space-weather fact model (#1398 S1).
 - Software & Catalog shows orbital snapshot coverage, element age, refresh status and storage repair guidance, with
   bounded Refresh and Resume commands. Automations edits the same orbital refresh schedule and links to its run
   history. Missing orbital data never implies an empty sky. The Automations UI service applies the 1–128-character
