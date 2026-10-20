@@ -116,4 +116,5 @@ internal sealed record RawIngressPlannedQuarantine(
     string? CompanionRelativePath,
     string QuarantineRelativePath,
     string Reason,
-    long ObservedBytes);
+    long ObservedBytes,
+    Guid? CaptureId = null);

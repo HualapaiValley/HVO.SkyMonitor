@@ -95,6 +95,49 @@ public sealed class ProjectedSceneStageReconciliationServiceTests
     }
 
     [TestMethod]
+    public async Task ReconcileOnceAsync_PendingPauseFinishesStageSyncAndResumesItsCursor()
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Inconclusive("The directory-sync fault hook uses Linux handles.");
+        using var hold = new Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: false).ConfigureAwait(false);
+        var stageRoot = Path.Combine(hold.Path, "staging", "projected-scenes");
+        Directory.CreateDirectory(stageRoot);
+        foreach (var index in Enumerable.Range(0, 3))
+            await File.WriteAllTextAsync(Path.Combine(stageRoot, $".{index}.tmp"), "temporary").ConfigureAwait(false);
+        using var store = new ProjectedSceneStagingStore(Microsoft.Extensions.Options.Options.Create(
+            new HVO.SkyMonitor.CameraAgent.Common.Options.CameraAgentHostOptions { RawIngressRoot = hold.Path }));
+        Task<CaptureControlCommandResult>? pause = null;
+        var syncs = 0;
+        store.BeforeDirectorySyncForTest = _ =>
+        {
+            syncs++;
+            if (syncs != 1) return;
+            pause = admission.PauseAsync("stage-interrupt", null, "test", null, CancellationToken.None);
+            Assert.IsFalse(pause.IsCompleted, "Acknowledgement cannot precede the active deletion's directory sync.");
+        };
+        var state = new RawIngressState(TimeProvider.System);
+        using var telemetry = new RawIngressTelemetry(state);
+        using var lifecycle = new ProjectedSceneStageLifecycleCoordinator();
+        using var service = new ProjectedSceneStageReconciliationService(
+            new StubIngress(), new RecordingOwnerProvider(), store, state, telemetry, TimeProvider.System, lifecycle,
+            NullLogger<ProjectedSceneStageReconciliationService>.Instance, admission);
+        var interrupted = await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(1, interrupted.Deleted);
+        Assert.AreEqual(2, interrupted.BacklogCount);
+        Assert.IsNotNull(pause);
+        await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.AreEqual(2, Directory.EnumerateFiles(stageRoot).Count());
+        Assert.AreEqual(0, (await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false)).Deleted);
+        await admission.ResumeAsync("stage-interrupt-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        var resumed = await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(2, resumed.Deleted);
+        Assert.AreEqual(0, resumed.BacklogCount);
+        Assert.AreEqual(0, (await service.ReconcileOnceAsync(CancellationToken.None).ConfigureAwait(false)).Deleted);
+        Assert.AreEqual(3, syncs, "Each stage must be deleted and synced once.");
+        Assert.IsFalse(Directory.EnumerateFiles(stageRoot).Any());
+    }
+
+    [TestMethod]
     public async Task ReconcileLease_BlocksConcurrentStageRegistrationUntilSnapshotAndScanComplete()
     {
         using var lifecycle = new ProjectedSceneStageLifecycleCoordinator();
@@ -171,7 +214,8 @@ public sealed class ProjectedSceneStageReconciliationServiceTests
 
         public ValueTask<ProjectedSceneStageReconciliationResult> ReconcileAsync(
             IReadOnlySet<string> ownedStageKeys,
-            CancellationToken cancellationToken) => ValueTask.FromResult(_results.Dequeue());
+            CancellationToken cancellationToken,
+            CancellationToken interruptionToken = default) => ValueTask.FromResult(_results.Dequeue());
     }
 
     private sealed class MutableOwnerProvider : IProjectedSceneStageOwnerProvider
@@ -190,7 +234,8 @@ public sealed class ProjectedSceneStageReconciliationServiceTests
 
         public async ValueTask<ProjectedSceneStageReconciliationResult> ReconcileAsync(
             IReadOnlySet<string> ownedStageKeys,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            CancellationToken interruptionToken = default)
         {
             LastProtectedKeys = new HashSet<string>(ownedStageKeys, StringComparer.Ordinal);
             Entered.SetResult();

@@ -9,6 +9,8 @@ to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 
 with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
 
 ## [Unreleased]
+- Capture pauses interrupt retention and reconciliation between complete deletions, so a large expired backlog no longer holds an upgrade drain for an entire sweep. Interrupted passes continue after capture resumes. (#1342)
+
 - LogicHost uses stable bounded query ordering for projected-scene checks, diagnostics and transient submission conflicts, and keeps publication event and version identities paired when reading history. (#1444)
 
 

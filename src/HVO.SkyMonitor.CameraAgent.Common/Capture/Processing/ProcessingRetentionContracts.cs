@@ -21,7 +21,8 @@ internal interface IProcessingOutputExpiration
         string storageRoot,
         DateTimeOffset committedBeforeUtc,
         IReadOnlySet<string> heldAbsolutePaths,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        CancellationToken interruptionToken = default);
 }
 
 internal interface IAcceptanceRetentionControl : IProcessingRetentionHolds;
@@ -75,6 +76,7 @@ internal sealed class CompositeProcessingRetentionHolds(
         string storageRoot,
         DateTimeOffset committedBeforeUtc,
         IReadOnlySet<string> heldAbsolutePaths,
-        CancellationToken cancellationToken)
-        => persistence.ExpireOutputsAsync(storageRoot, committedBeforeUtc, heldAbsolutePaths, cancellationToken);
+        CancellationToken cancellationToken,
+        CancellationToken interruptionToken = default)
+        => persistence.ExpireOutputsAsync(storageRoot, committedBeforeUtc, heldAbsolutePaths, cancellationToken, interruptionToken);
 }
