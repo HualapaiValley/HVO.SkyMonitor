@@ -46,13 +46,18 @@ public sealed partial class SqliteSwpcStore
         if (id == Guid.Empty || expectedRevision < 0) throw new ArgumentException("A durable command requires an identity and revision.");
         return ExecuteAsync(null, (db, tx) =>
         {
+            var identityConflict = false;
             using (var receipt = Command(db, tx, "SELECT fingerprint,added,diagnostics FROM swpc_receipts WHERE kind=$k AND id=$id;", ("$k", kind), ("$id", id.ToString("N"))))
             using (var reader = receipt.ExecuteReader())
                 if (reader.Read())
-                    return reader.GetString(0) == fingerprint
-                        ? Result(db, tx, atUtc, SwpcWriteStatus.Replayed, added: reader.GetInt32(1), diagnostics: Parse<ImmutableArray<string>>(reader.GetString(2)))
-                        : Result(db, tx, atUtc, SwpcWriteStatus.Conflict, "space-weather.idempotency-conflict");
+                {
+                    if (reader.GetString(0) == fingerprint)
+                        return Result(db, tx, atUtc, SwpcWriteStatus.Replayed, added: reader.GetInt32(1), diagnostics: Parse<ImmutableArray<string>>(reader.GetString(2)));
+                    identityConflict = true;
+                }
             Purge(db, tx, atUtc);
+            if (identityConflict && Scalar(db, tx, "SELECT 1 FROM swpc_receipts WHERE kind=$k AND id=$id;", ("$k", kind), ("$id", id.ToString("N"))) is not null)
+                return Result(db, tx, atUtc, SwpcWriteStatus.Conflict, "space-weather.idempotency-conflict");
             if (Revision(db, tx) != expectedRevision) return Result(db, tx, atUtc, SwpcWriteStatus.Conflict, "space-weather.revision-conflict");
             var result = action(db, tx);
             if (result.Status != SwpcWriteStatus.Applied) return result;

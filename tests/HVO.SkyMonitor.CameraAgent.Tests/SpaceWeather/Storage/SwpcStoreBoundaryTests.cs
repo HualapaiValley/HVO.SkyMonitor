@@ -206,6 +206,10 @@ public sealed class SwpcStoreBoundaryTests
                 .Replace("2026 Oct 20", "2026 Sep 01", StringComparison.Ordinal);
             var saved = await store.CompleteAttemptAsync(Completion(begun, SwpcStoreTests.Alerts(oldBody)), Preserve, CancellationToken.None).ConfigureAwait(false);
             Assert.HasCount(1, saved.View.Notices.Versions, "There is no second notice purge after merging.");
+            var replay = await store.CompleteAttemptAsync(Completion(begun, SwpcStoreTests.Alerts(oldBody)),
+                _ => throw new InvalidOperationException(), CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(SwpcWriteStatus.Replayed, replay.Status);
+            Assert.HasCount(1, replay.View.Notices.Versions, "Exact replay continues the same logical step without a purge.");
             Assert.IsEmpty((await store.ReadAsync(Now.AddSeconds(2), CancellationToken.None).ConfigureAwait(false)).Notices.Versions);
         }
         using var reopened = Open();
@@ -214,6 +218,51 @@ public sealed class SwpcStoreBoundaryTests
             Preserve, CancellationToken.None).ConfigureAwait(false);
         Assert.HasCount(1, result.View.Notices.Versions);
         Assert.AreEqual(2L, result.View.Notices.Versions[0].Version.IngestSequence);
+    }
+
+    [TestMethod]
+    [DataRow("begin")]
+    [DataRow("complete")]
+    [DataRow("halt")]
+    public async Task ConflictingIdentityPurgesBeforeReturningItsCurrentView(string operation)
+    {
+        using var store = Open();
+        var initial = await store.ReadAsync(Now, CancellationToken.None).ConfigureAwait(false);
+        var halt = new SwpcHaltCommand(Guid.NewGuid(), initial.Revision, Now, new(null, null),
+            ImmutableDictionary<SwpcProduct, SwpcFetchCheckpoint>.Empty);
+        await store.ChangeHaltAsync(halt, CancellationToken.None).ConfigureAwait(false);
+        var begun = await Begin(store).ConfigureAwait(false);
+        var body = SwpcStoreTests.Message().Replace("2026-10-20", "2026-09-01", StringComparison.Ordinal)
+            .Replace("2026 Oct 20", "2026 Sep 01", StringComparison.Ordinal);
+        var completion = Completion(begun, SwpcStoreTests.Alerts(body));
+        var saved = await store.CompleteAttemptAsync(completion, Preserve, CancellationToken.None).ConfigureAwait(false);
+        Assert.HasCount(1, saved.View.Notices.Versions);
+        SwpcWriteResult result;
+        if (operation == "begin")
+            result = await store.BeginAttemptAsync(begun.Start with { RunKey = "changed" }, CancellationToken.None).ConfigureAwait(false);
+        else if (operation == "halt")
+            result = await store.ChangeHaltAsync(halt with { Change = new(null, new("changed", Now)) }, CancellationToken.None).ConfigureAwait(false);
+        else
+            result = await store.CompleteAttemptAsync(completion with { BytesRead = completion.BytesRead + 1 },
+                _ => throw new InvalidOperationException(), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(SwpcWriteStatus.Conflict, result.Status);
+        Assert.AreEqual("space-weather.idempotency-conflict", result.ReasonCode);
+        Assert.IsEmpty(result.View.Notices.Versions);
+        Assert.IsTrue(result.View.Revision > saved.View.Revision);
+        Assert.IsNotNull(result.View.Products[SwpcProduct.Alerts].LastKnownGood);
+    }
+
+    [TestMethod]
+    public async Task CompletionIdentityPrunedByThisCallReturnsNotFoundBeforeRevisionCheck()
+    {
+        using var store = Open();
+        var old = await Begin(store, Now.AddDays(-36)).ConfigureAwait(false);
+        var completion = Completion(old);
+        await store.CompleteAttemptAsync(completion, Preserve, CancellationToken.None).ConfigureAwait(false);
+        var result = await store.CompleteAttemptAsync(completion with { AtUtc = Now },
+            _ => throw new InvalidOperationException(), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(SwpcWriteStatus.NotFound, result.Status);
+        Assert.AreEqual(0L, (await store.ReadHealthAsync(Now, CancellationToken.None).ConfigureAwait(false)).AttemptCount);
     }
 
     private SqliteConnection Database()

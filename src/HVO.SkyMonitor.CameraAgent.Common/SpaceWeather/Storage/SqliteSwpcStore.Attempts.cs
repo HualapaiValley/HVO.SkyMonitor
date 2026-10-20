@@ -21,11 +21,10 @@ public sealed partial class SqliteSwpcStore
         return ExecuteAsync(null, (db, tx) =>
         {
             var prior = Scalar(db, tx, "SELECT start_fingerprint FROM swpc_attempts WHERE id=$id;", ("$id", request.AttemptId.ToString("N"))) as string;
-            if (prior is not null)
-                return prior == fingerprint
-                    ? Result(db, tx, request.StartedUtc, SwpcWriteStatus.Replayed)
-                    : Result(db, tx, request.StartedUtc, SwpcWriteStatus.Conflict, "space-weather.idempotency-conflict");
+            if (prior == fingerprint) return Result(db, tx, request.StartedUtc, SwpcWriteStatus.Replayed);
             Purge(db, tx, request.StartedUtc);
+            if (prior is not null && Scalar(db, tx, "SELECT 1 FROM swpc_attempts WHERE id=$id;", ("$id", request.AttemptId.ToString("N"))) is not null)
+                return Result(db, tx, request.StartedUtc, SwpcWriteStatus.Conflict, "space-weather.idempotency-conflict");
             if (Revision(db, tx) != request.ExpectedRevision)
                 return Result(db, tx, request.StartedUtc, SwpcWriteStatus.Conflict, "space-weather.revision-conflict");
             if (Scalar(db, tx, "SELECT 1 FROM swpc_attempts WHERE completion IS NULL LIMIT 1;") is not null)
@@ -60,6 +59,7 @@ public sealed partial class SqliteSwpcStore
         return ExecuteAsync(null, (db, tx) =>
         {
             SwpcAttemptStart? start = null;
+            var terminalConflict = false;
             using (var command = Command(db, tx, "SELECT start,completion_fingerprint,added,diagnostics FROM swpc_attempts WHERE id=$id;",
                 ("$id", request.AttemptId.ToString("N"))))
             using (var reader = command.ExecuteReader())
@@ -67,13 +67,18 @@ public sealed partial class SqliteSwpcStore
                 {
                     start = Parse<SwpcAttemptStart>(reader.GetString(0));
                     if (!reader.IsDBNull(1))
-                        return reader.GetString(1) == fingerprint
-                            ? Result(db, tx, request.AtUtc, SwpcWriteStatus.Replayed, added: reader.GetInt32(2),
-                                diagnostics: Parse<ImmutableArray<string>>(reader.GetString(3)))
-                            : Result(db, tx, request.AtUtc, SwpcWriteStatus.Conflict, "space-weather.idempotency-conflict");
+                    {
+                        if (reader.GetString(1) == fingerprint)
+                            return Result(db, tx, request.AtUtc, SwpcWriteStatus.Replayed, added: reader.GetInt32(2),
+                                diagnostics: Parse<ImmutableArray<string>>(reader.GetString(3)));
+                        terminalConflict = true;
+                    }
                 }
             Purge(db, tx, request.AtUtc);
-            if (start is null) return Result(db, tx, request.AtUtc, SwpcWriteStatus.NotFound, "space-weather.attempt-not-found");
+            if (start is null || terminalConflict && Scalar(db, tx, "SELECT 1 FROM swpc_attempts WHERE id=$id;", ("$id", request.AttemptId.ToString("N"))) is null)
+                return Result(db, tx, request.AtUtc, SwpcWriteStatus.NotFound, "space-weather.attempt-not-found");
+            if (terminalConflict)
+                return Result(db, tx, request.AtUtc, SwpcWriteStatus.Conflict, "space-weather.idempotency-conflict");
             if (Revision(db, tx) != request.ExpectedRevision)
                 return Result(db, tx, request.AtUtc, SwpcWriteStatus.Conflict, "space-weather.revision-conflict");
             if (request.EndedUtc < start.StartedUtc) throw new ArgumentException("Attempt end precedes its start.", nameof(request));
