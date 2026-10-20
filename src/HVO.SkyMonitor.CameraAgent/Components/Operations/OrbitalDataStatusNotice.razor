@@ -1,0 +1,16 @@
+@* A compact, reusable notice of what the installed orbital data covers and how old it is. It reads only the composed
+   status view (the verified manifest and the refresh read model), never the payload, and it never turns missing or
+   unreadable data into a claim that no satellites are overhead. *@
+<div id="@Id" class="ops-note-banner compact orbital-data-notice" role="status">
+    <span class="status-icon @_content.Tone" aria-hidden="true"></span>
+    <span class="orbital-notice-body">
+        @if (_content.Headline is { } headline)
+        {
+            <strong>@headline</strong>
+        }
+        @foreach (var line in _content.Lines)
+        {
+            <span class="orbital-notice-line">@line</span>
+        }
+    </span>
+</div>

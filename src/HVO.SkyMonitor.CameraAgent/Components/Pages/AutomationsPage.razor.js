@@ -21,3 +21,7 @@ export function focusById(id, fallbackId) {
   }
   document.getElementById(fallbackId)?.focus();
 }
+
+export function scrollIntoViewById(id) {
+  document.getElementById(id)?.scrollIntoView({ block: "center", behavior: "smooth" });
+}
