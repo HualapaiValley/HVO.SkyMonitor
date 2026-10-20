@@ -10,12 +10,9 @@ The provider decision and its terms are recorded in
 Refresh is disabled by default. Nothing on the frame path makes a network request:
 consumers read the last activated snapshot from local storage.
 
-The Software & Catalog page does not show orbital status yet; that UI belongs to
-#1392. Its "Orbital-element snapshot" panel (`/operations/software`) still reads "Not
-collected" and says this version does not acquire orbital elements. The "Orbital
-elements" health entry links to that page. Until #1392 replaces the panel text, ignore
-it: it does not reflect refresh, the halt or the active snapshot. Use the endpoints
-below, the `orbital-elements` health entry and the metrics instead.
+Operators normally read status, refresh and resume from the Software & Catalog page
+(#1392), described under "Software & Catalog And Automations" below. The endpoints,
+the `orbital-elements` health entry and the metrics remain available.
 
 ## Credentials
 
@@ -305,12 +302,110 @@ advances `lastRetrievalSuccessUtc` before the body is parsed. A valid 200 whose 
 is later quarantined or fails storage still counts as a retrieval. A 200 rejected by
 the response checks does not.
 
+## Software & Catalog And Automations
+
+`/operations/software` has an **Orbital-element snapshot** panel. It reads the refresh
+status above, the reserved definition and the verified manifest of the active snapshot.
+It never loads the payload, and it never shows a path, an ETag or Last-Modified value,
+a credential or a provider body. Diagnostics show only whether the ETag and
+Last-Modified were recorded. Reason codes appear as operator text; an unknown code is
+shown as the code itself. The page does not poll: use **Reload status**.
+
+What the panel shows:
+
+- One state: Fresh, Stale, Refresh overdue, No data, Disabled, Halted, Quarantined,
+  Needs repair or Unavailable. The page rail repeats it.
+- Coverage relative to the requested population, its known exclusions, record and
+  object counts, and the epoch range.
+- Element age and retrieval time, kept separate. Both use the health check's own rules
+  (`OrbitalElementsHealthEvaluator.IsElementStale` and `IsRefreshOverdue`, see "Health
+  And Metrics"), so the page and `/health` never disagree about the same facts:
+  - **Stale** means even the newest element epoch in the active snapshot's verified
+    manifest is more than 48 h old, however recently it was downloaded. Stale elements
+    stay in use until a refresh replaces them. If the manifest cannot be read, the
+    element age is unknown and the elements read as stale, fail safe.
+  - **Refresh overdue** means an active snapshot is installed, refresh is on, and no
+    valid provider retrieval (an HTTP 200 the store recorded) has succeeded within
+    `StaleAfterHours`. With no recorded retrieval at all it is overdue: the activation
+    time is not used in its place.
+- Validity reads "Unknown": the source supplies no validity window.
+- Provider and dataset, terms, fetch and activation times, the schedule, the last
+  attempt, the next permitted attempt and the next due time.
+- Any provider halt (time, HTTP status and reason) and any quarantined response. A halt
+  with no valid HTTP status recorded (`orbital.provider-outcome-unknown` or
+  `orbital.invalid-http-status`) reads "No valid HTTP status recorded" in the panel,
+  the resume dialog, the data notice and the page rail. No status number is ever shown
+  for it. The last-known-good snapshot stays visible beside a quarantine.
+- If the store is unavailable, or no snapshot is installed, the panel says so. It never
+  reads either case as an empty sky.
+
+The panel embeds the compact orbital data notice. It lists the requested population and
+its coverage, the newest element age, and then each of these that applies: stale
+elements, refresh overdue, and a provider halt with its status. These are separate
+facts, so stale and overdue still show while refresh is halted, quarantined or needs
+repair. A `StorageFailed` last attempt can carry its specific storage reason, such as
+`orbital.storage-no-space`, rather than the generic `orbital.storage-failed`. The panel
+and notice translate that reason and the `RepairStorage` recommendation into operator
+text, without inventing an HTTP status or a provider halt. The installed snapshot, if
+any, remains visible, and the failed attempt still holds the provider floor.
+
+The Observatory & location page shows the same notice, read-only, directly above the
+satellite pass planner. It describes the snapshot installed now; a completed pass search
+keeps the snapshot it was computed from.
+
+The page and the health check agree on every fact, but they summarize differently, by
+design:
+
+- Health reports only its first degrading reason (see the order under "Health And
+  Metrics"). The panel shows one state word but lists every freshness fact.
+- The state word puts an unavailable store first, then a halt. Quarantined and Needs
+  repair follow the status `recoveryAction`, so a definition that needs configuring is
+  reported before them. A quarantine kept after a later attempt that did not
+  quarantine still degrades health, but the state word does not show it; the panel's
+  quarantine section does.
+- With refresh off, health is Healthy, but the panel still reads Stale for stale
+  elements. It never reads Refresh overdue while refresh is off.
+- With no active snapshot, the state word is No data (or Disabled). **Exact
+  diagnostics** shows health's own state and reason, for example
+  `orbital.first-snapshot-overdue`.
+- If the manifest cannot be read, the panel reads Stale with the element age unknown.
+  Health uses the epoch the store recorded at activation, so it can still read the
+  elements as fresh.
+
+Commands need `CameraAgent.Operations.Mutate.V1`. A read-only operator sees the same
+facts with the commands disabled.
+
+- **Refresh now** sends the refresh command with a fixed reason. The button is
+  disabled, with the cause, whenever the command would be refused: refresh is off, the
+  definition is missing or disabled, a halt is in force, or the floor has not elapsed
+  (the next permitted time is shown).
+- **Resume provider** appears only during a halt. It opens a dialog that shows the halt
+  and asks for a single-line reason of 1 to 256 characters. It sends the halt time the
+  page read, so a halt that has since changed is never cleared. Resume never moves the
+  floor.
+- Each command intent uses one idempotency key. If the outcome is unknown (503), the
+  button changes to a retry that sends the identical request with the same key, so the
+  command is never applied twice. After any other outcome, the next click is a new
+  intent with a new key. A refresh, and a resume that succeeds or conflicts, re-reads
+  the status. An invalid resume reason keeps the dialog open.
+
+The **Schedule** and **Run history** links open
+`/operations/automations?definition=orbital-elements-refresh` and
+`/operations/automations?view=runs`. The `?definition=` link highlights that
+definition's card and scrolls to it once. If the definition does not exist, the page
+says so, and it ignores an identifier that is not valid.
+
+In Automations, choosing the `OrbitalElementsRefresh` task fixes the identifier to
+`orbital-elements-refresh`, the target to `celestrak:gp:active` and the trigger to
+Periodic. It defaults the interval to 21600 s. The server enforces the 7200–86400 s
+range, and its rejections in the table above appear as operator text.
+
 ## Health And Metrics
 
 `/health` includes the `orbital-elements` check, tagged `dependency`. The CameraAgent
 health UI lists it as "Orbital elements", scope Local, linked to
-`/operations/software` (see the #1392 note at the top). No path or provider body ever
-appears in its data, which holds only these allowlisted keys:
+`/operations/software` (see "Software & Catalog And Automations" above). No path or
+provider body ever appears in its data, which holds only these allowlisted keys:
 
 | Key | Meaning |
 | --- | --- |

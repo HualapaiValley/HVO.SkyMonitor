@@ -12,6 +12,13 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Software & Catalog shows orbital snapshot coverage, element age, refresh status and storage repair guidance, with
+  bounded Refresh and Resume commands. Automations edits the same orbital refresh schedule and links to its run
+  history. Missing orbital data never implies an empty sky. The Automations UI service applies the 1–128-character
+  operator actor bound and logs failures without exception text. The Observatory pass area shows the same orbital
+  data notice. (#1392)
+- Local satellite pass planning from verified local snapshots and explicitly pinned time data for the selected observatory and rig, with separate full-pass diagrams and retained predicted capture layers, thin dashed paths and small point markers, explicit data availability and source age, and independent presentation controls. (#1393)
+- Offline tools evaluate causal streak detections across retained virtual-camera sequences and compare every measured candidate with explicitly supplied satellite predictions, while preserving missing context, competing alternatives and unavailable observer or geometry facts. (#530)
 - CameraAgent can acquire orbital elements locally: one bounded CelesTrak GP request for the `active` group, strictly
   parsed into the `orbital-elements-v1` contract, published as an immutable verified snapshot and activated atomically,
   with the last-known-good snapshot kept readable through every failure. Refresh is off by default. Turn it on with
@@ -26,7 +33,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   include them, so keep those archives owner-only. The image's `io.hvo.skymonitor.state-contracts` label, and so
   `release.json`, now declares the `orbitalElements` store (writes 1, reads 1 to 1). Installer snapshots exclude it, so
   the provider floor and halt survive a rollback. Operation, removal, backup, restore and recovery are in
-  `docs/runbooks/orbital-elements-refresh.md`. The Software & Catalog page does not show orbital status until #1392.
+  `docs/runbooks/orbital-elements-refresh.md`.
   (#528)
 - Bounded local satellite exposure tracks, future-pass predictions and complete sky arcs pinned to their original orbital record, with reproducible virtual-camera fixtures, explicit source/time/geometry provenance and unavailable or partial outcomes when inputs or work limits prevent completion. (#529)
 
@@ -60,6 +67,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent no longer warns about unordered database queries during API-key authentication or local owner recovery;
   ambiguous matches continue to be rejected. (#1437)
+
+- CameraAgent and LogicHost images no longer warn about overriding the runtime image's HTTP port default during
+  their intended startup binding; listening addresses and ports are unchanged. (#1436)
 
 - While the newest capture is still processing, Current Sky no longer skips a finished capture it could show when the
   retained history spans two agent identities whose capture sequence numbers overlap, which could leave it showing the
