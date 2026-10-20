@@ -14,7 +14,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Software & Catalog shows orbital snapshot coverage, element age, refresh status and storage repair guidance, with
   bounded Refresh and Resume commands. Automations edits the same orbital refresh schedule and links to its run
-  history. Missing orbital data never implies an empty sky. (#1392)
+  history. Missing orbital data never implies an empty sky. The Automations UI service applies the 1–128-character
+  operator actor bound and logs failures without exception text. (#1392)
 - CameraAgent can acquire orbital elements locally: one bounded CelesTrak GP request for the `active` group, strictly
   parsed into the `orbital-elements-v1` contract, published as an immutable verified snapshot and activated atomically,
   with the last-known-good snapshot kept readable through every failure. Refresh is off by default. Turn it on with

@@ -50,7 +50,7 @@ internal sealed class CameraAgentAutomationUiService(
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "CameraAgent local automation read failed.");
+            logger.LogWarning("CameraAgent local automation read failed ({FailureType}).", exception.GetType().Name);
             return OperatorUiResult<LocalAutomationOperatorState>.Failure(
                 OperatorUiResultKind.Unavailable, "Local automation state is unavailable.");
         }
@@ -83,7 +83,7 @@ internal sealed class CameraAgentAutomationUiService(
         var principal = await GetAuthorizedPrincipalAsync(
             CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false);
         var actor = principal is null ? null : CameraAgentCredentialAccess.GetOwnerId(principal);
-        if (string.IsNullOrWhiteSpace(actor))
+        if (actor is not { Length: > 0 and <= 128 } || string.IsNullOrWhiteSpace(actor))
         {
             return OperatorUiResult<LocalAutomationCommandResult>.Failure(
                 OperatorUiResultKind.Unauthorized, "Authorization is required.");
@@ -108,7 +108,7 @@ internal sealed class CameraAgentAutomationUiService(
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "CameraAgent local automation command failed.");
+            logger.LogWarning("CameraAgent local automation command failed ({FailureType}).", exception.GetType().Name);
             return OperatorUiResult<LocalAutomationCommandResult>.Failure(
                 OperatorUiResultKind.Unavailable, "The automation command could not be completed.");
         }

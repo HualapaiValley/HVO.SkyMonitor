@@ -393,7 +393,8 @@ public sealed record OrbitalDataStatusView(
             {
                 return OrbitalElementsOperations.DefinitionMissingReasonCode;
             }
-            if (Schedule is { Enabled: false })
+            if (Schedule is { Enabled: false } ||
+                (Schedule is null && Status.Reason == OrbitalElementsOperations.DefinitionDisabledReasonCode))
             {
                 return OrbitalElementsOperations.DefinitionDisabledReasonCode;
             }

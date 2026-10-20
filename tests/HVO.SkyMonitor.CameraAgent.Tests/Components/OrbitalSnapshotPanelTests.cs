@@ -154,6 +154,31 @@ public sealed class OrbitalSnapshotPanelTests
     }
 
     [TestMethod]
+    public void DisabledDefinitionWithAnUnavailableSchedule_DisablesRefreshAndStillShowsTheStatus()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var status = TestOrbitalUiService.Status() with
+        {
+            Reason = OrbitalElementsOperations.DefinitionDisabledReasonCode,
+            RecoveryAction = OrbitalRefreshRecoveryAction.Configure,
+        };
+        service.GetHandler = _ => Success(TestOrbitalUiService.View(status,
+            health: OrbitalElementsHealthState.Degraded) with { Schedule = null });
+
+        var cut = context.Render<OrbitalSnapshotPanel>();
+
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("Fresh", cut.Find("#orbital-state").TextContent);
+            Assert.AreEqual("12,345 records / 12,340 objects", cut.Find("#orbital-counts").TextContent);
+            Assert.IsTrue(cut.Find("#orbital-refresh").HasAttribute("disabled"));
+            Assert.AreEqual(OrbitalOperatorText.Describe(OrbitalElementsOperations.DefinitionDisabledReasonCode),
+                cut.Find("#orbital-refresh-unavailable").TextContent);
+        });
+    }
+
+    [TestMethod]
     public void UnauthorizedRefresh_NavigatesToAccessDenied()
     {
         using var context = new BunitContext();

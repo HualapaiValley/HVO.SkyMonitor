@@ -105,6 +105,36 @@ public sealed class CameraAgentOrbitalUiServiceTests : OrbitalStoreTestBase
     }
 
     [TestMethod]
+    public async Task GetAsync_WhenOnlyTheScheduleSummaryFails_KeepsADisabledDefinitionsRefreshBlockedAsync()
+    {
+        using var fixture = await OrbitalAutomationFixture.CreateAsync(CreateRoot()).ConfigureAwait(false);
+        await fixture.SaveDefinitionAsync(enabled: false).ConfigureAwait(false);
+        // Operations and health retain the real store; only the final, optional summary read fails.
+        var scheduleStore = new Mock<ILocalAutomationStore>(MockBehavior.Strict);
+        scheduleStore.Setup(store => store.GetStateAsync(CancellationToken.None))
+            .Returns(ValueTask.FromException<LocalAutomationOperatorState>(
+                new IOException("Synthetic schedule-summary read failure.")));
+        var service = CreateService(fixture, read: true, mutate: true, out _, scheduleStore: scheduleStore.Object);
+
+        var result = await service.GetAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OperatorUiResultKind.Success, result.Kind, "The optional summary never hides the status.");
+        var view = result.Value;
+        Assert.IsNotNull(view);
+        Assert.IsTrue(view.Status.Enabled);
+        Assert.IsNotNull(view.Status.Automation, "Operations read the existing definition successfully.");
+        Assert.AreEqual(OrbitalElementsOperations.DefinitionDisabledReasonCode, view.Status.Reason);
+        Assert.AreEqual(OrbitalElementsHealthState.Degraded, view.HealthState);
+        Assert.AreEqual(OrbitalElementsOperations.DefinitionDisabledReasonCode, view.HealthReason);
+        Assert.IsNull(view.Schedule);
+        Assert.IsFalse(view.CanRefresh);
+        Assert.AreEqual(OrbitalElementsOperations.DefinitionDisabledReasonCode, view.RefreshBlockedReasonCode);
+        Assert.IsFalse(view.CanResume);
+        scheduleStore.Verify(store => store.GetStateAsync(CancellationToken.None), Times.Once);
+        scheduleStore.VerifyNoOtherCalls();
+    }
+
+    [TestMethod]
     public async Task GetAsync_AfterAnActivation_ReportsFreshWithTheVerifiedManifestAsync()
     {
         using var fixture = await OrbitalAutomationFixture.CreateAsync(CreateRoot()).ConfigureAwait(false);
@@ -527,7 +557,8 @@ public sealed class CameraAgentOrbitalUiServiceTests : OrbitalStoreTestBase
         bool read,
         bool mutate,
         out Mock<IAuthorizationService> authorization,
-        ILogger<CameraAgentOrbitalUiService>? logger = null)
+        ILogger<CameraAgentOrbitalUiService>? logger = null,
+        ILocalAutomationStore? scheduleStore = null)
     {
         var user = new ClaimsPrincipal(new ClaimsIdentity(
             [
@@ -548,7 +579,7 @@ public sealed class CameraAgentOrbitalUiServiceTests : OrbitalStoreTestBase
             fixture.Operations,
             fixture.Orbital.Store,
             new OrbitalElementsHealthEvaluator(fixture.Operations, fixture.AutomationOptions, fixture.Clock),
-            fixture.Automation,
+            scheduleStore ?? fixture.Automation,
             fixture.AutomationOptions,
             logger ?? new OrbitalTestLogger<CameraAgentOrbitalUiService>());
     }
