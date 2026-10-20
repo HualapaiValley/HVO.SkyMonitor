@@ -53,6 +53,9 @@ public interface ILocalAutomationTaskRegistry
 
     /// <summary>Whether an explicit operator run-now may be queued for this definition's registered task.</summary>
     bool SupportsRunNow(LocalAutomationDefinition definition) => false;
+
+    /// <summary>Whether this adapter requires the bounded worker instead of inline sweep execution.</summary>
+    bool RunsOffSweep(LocalAutomationDefinition definition) => false;
 }
 
 /// <summary>

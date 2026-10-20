@@ -15,8 +15,21 @@ same kind of client, and `hvo-sky` follows it where the contract agrees.
 
 `hvo-sky` is one self-contained file, so the machine needs no .NET runtime. Every release and integration pre-release
 carries it for both platforms, as `hvo-sky-linux-arm64` and `hvo-sky-linux-x64` (asset kind `cli`), listed in
-`SHA256SUMS` and attested like every other file ([prereleases.md](prereleases.md)). The installer does not install it
-yet. Install it by hand on the CameraAgent host, or on any Linux machine that can reach the instance:
+`SHA256SUMS` and attested like every other file ([prereleases.md](prereleases.md)). A release-based
+`cameraagent install` or `upgrade` verifies the host platform's file against `release.json` and `SHA256SUMS` and
+installs it as `hvo-sky`, mode `0755`. It tries `~/.local/bin` first, then `/usr/local/bin` only when the runtime user
+can write there without sudo. Include the chosen folder in your shell's PATH; `--plan` lists the exact destination.
+Upgrade replaces a stale copy and keeps it as `hvo-sky.previous`; rollback restores the image's retained verified
+client without downloading it again. Uninstall removes the recorded client and its previous copy when no other
+installed instance uses that path. Purge also removes the installer's last-owner copies. A file changed outside the
+installer is preserved and reported rather than deleted. The same applies before replacing either the current file
+or `.previous`; an unowned recovery copy is never silently overwritten. Destination folders and ancestors must be
+owned by the runtime user or root and must not be group/world writable. Missing commands are repaired by re-running
+the matching release install, even when the instance is already completed. Program summaries live in the separate
+`install-programs.json` sidecar beside `install.json`, keeping older strict install-record readers compatible. Older
+installers do not manage those command files or that sidecar.
+
+For a client-only Linux machine that can reach the instance, install it by hand:
 
 ```bash
 version=0.9.0-dev.4

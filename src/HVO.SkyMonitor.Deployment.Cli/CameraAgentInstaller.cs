@@ -41,6 +41,20 @@ internal sealed partial class CameraAgentInstaller
         Action<string, int>? portAvailabilityProbe = null,
         IHostEnvironment? hostEnvironment = null)
     {
+        var result = await InstallCoreAsync(request, processRunner, ownerClientFactory, uid, gid,
+            portAvailabilityProbe, hostEnvironment, cancellationToken).ConfigureAwait(false);
+        var paths = InstallationPaths.Create(request.ProductRoot, result.InstanceId, ProductionCatalog.DefaultCatalogId);
+        var programs = await PathPrograms.PlanAsync(paths, request.ProductionProductRoot, request.Release, result.Image.ImageId,
+            operation: null, cancellationToken).ConfigureAwait(false);
+        return programs.Count == 0 ? result : result with { Plan = DeploymentPlan.Of([.. result.Plan?.Items ?? [], .. programs]) };
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Operational failures must retain their durable phase journal.")]
+    private static async Task<InstallationResult> InstallCoreAsync(
+        InstallRequest request, IProcessRunner processRunner, Func<Uri, IOwnerBootstrapClient> ownerClientFactory,
+        uint uid, uint gid, Action<string, int>? portAvailabilityProbe,
+        IHostEnvironment? hostEnvironment, CancellationToken cancellationToken)
+    {
         request.Validate();
         // The public entry point never supplies a host environment, so a production install always measures the real
         // filesystems and PATH; unit flows substitute one so shared-host disk and tool state cannot decide them.
@@ -76,6 +90,9 @@ internal sealed partial class CameraAgentInstaller
         // the Docker daemon is contacted, so an unsupported architecture or tampered file fails with nothing yet mutated.
         var acquiredImage = await ReleaseAcquirer.AcquireImageAsync(request, cancellationToken).ConfigureAwait(false);
         request = ApplyReleaseImage(request, acquiredImage);
+        if (request.Release is not null)
+            _ = await PathPrograms.PlanAsync(paths, request.ProductionProductRoot, request.Release, string.Empty,
+                operation: null, cancellationToken).ConfigureAwait(false);
 
         // Every host prerequisite is evaluated, and every finding reported together, before the product root is
         // prepared or anything else is created.
@@ -435,6 +452,8 @@ internal sealed partial class CameraAgentInstaller
             }
             // The install record follows the instance's own records, so it is settled once they are complete and before
             // the installation is recorded as completed: an interruption between the two is finished by a re-run.
+            await PathPrograms.SettleAsync(paths, request.ProductionProductRoot, request.Release, result.Image.ImageId,
+                cancellationToken).ConfigureAwait(false);
             var recordLocation = InstallRecordLocation.For(paths.ProductRoot, request.ProductionProductRoot);
             var recordAction = await InstallRecordStore.SettleInstanceAsync(
                     recordLocation,

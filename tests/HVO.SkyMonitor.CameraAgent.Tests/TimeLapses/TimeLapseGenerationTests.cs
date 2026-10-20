@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -160,6 +161,50 @@ public sealed class TimeLapseGenerationTests
         finally { Directory.Delete(root, true); }
     }
 
+    [TestMethod]
+    [TestCategory("Manual")]
+    public async Task ZeroNineStoredJobResumesAndProducesItsOriginalFrames()
+    {
+        if (!OperatingSystem.IsLinux() || !File.Exists("/usr/bin/ffmpeg")) Assert.Inconclusive("Requires qualified Linux FFmpeg.");
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-upgrade-native");
+        try
+        {
+            await SqliteTimeLapseStoreTests.RestoreZeroNineAsync(root);
+            using var provider = Provider(root);
+            var (_, captures) = await CaptureAsync(provider);
+            var store = provider.GetRequiredService<SqliteTimeLapseStore>();
+            using var lease = await store.AcquireWorkerAsync(CancellationToken.None);
+            var job = await store.ClaimAsync(CancellationToken.None);
+            Assert.IsNotNull(job);
+            var capability = await provider.GetRequiredService<HVO.SkyMonitor.Video.FFmpeg.FFmpegTimeLapseEncoder>()
+                .QualifyAsync(HVO.SkyMonitor.Video.FFmpeg.TimeLapseEncoderProfile.Software, CancellationToken.None);
+            Assert.IsTrue(capability.Available, capability.ReasonCode);
+            await provider.GetRequiredService<TimeLapseGenerator>().RunAsync(job, CancellationToken.None);
+            var day = await store.GetDayAsync(job.Window.ReportingPeriod.ReportDate, CancellationToken.None);
+            Assert.AreEqual(CameraAgentTimeLapseState.Produced, day.Jobs.Single().State);
+            var product = day.Products.Single();
+            Assert.AreEqual(job.Preset.IdentitySha256, product.PresetIdentitySha256);
+            CollectionAssert.AreEqual(captures.Select(capture => capture.Manifest.Descriptor.Artifact.ArtifactId).ToArray(),
+                product.Frames.Select(frame => frame.ArtifactId).ToArray());
+            using var file = await store.OpenVideoAsync(product.ProductId, CancellationToken.None);
+            Assert.IsNotNull(file);
+            Assert.IsGreaterThan(1000L, file.Length);
+            var plan = await store.GetPlanAsync(job.JobId, CancellationToken.None);
+            Assert.IsNotNull(plan);
+            var source = await provider.GetRequiredService<TimeLapseSourceReader>().RestoreAsync(plan.Sources[0], CancellationToken.None);
+            var size = TimeLapseFrameRenderer.Fit(source.Layout!.Width, source.Layout.Height, job.Preset.MaximumDimension);
+            var daytime = provider.GetRequiredService<TimeLapseSourceReader>().IsDaytime(job, source.ObservationStartedUtc!.Value);
+            var original = TimeLapseFrameRenderer.Render([source], job.Preset.Rig, job.Preset.Frames, daytime, size.Width, size.Height,
+                rendererVersion: TimeLapseFrameRenderer.LegacyVersion);
+            Assert.AreEqual(original.RenderingIdentitySha256, product.Frames[0].RenderingIdentitySha256);
+            Assert.AreNotEqual(TimeLapseFrameRenderer.Render([source], job.Preset.Rig, job.Preset.Frames, daytime, size.Width, size.Height)
+                .RenderingIdentitySha256, product.Frames[0].RenderingIdentitySha256);
+            Console.WriteLine(FormattableString.Invariant($"Upgrade fixture: {captures.Length} sources, {product.Frames.Count} frames, {file.Length} MP4 bytes, {product.Encoding.PayloadSha256}"));
+            await TimeLapseAccessTests.VerifyActualMediaAsync(store, product);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     private static ServiceProvider Provider(string root, bool missingEncoder = false, int? saturationGate = null, long publicationBudget = 32L * 1024 * 1024 * 1024,
         ObservingDayCalendar? calendar = null, int compression = 180, ObservatoryLocation? observatory = null)
     {
@@ -176,9 +221,9 @@ public sealed class TimeLapseGenerationTests
             ["CameraAgent:TimeLapses:RigProfileSha256"] = RigProjectionContextFactory.CreateProfileHashSha256(Rig()),
             ["CameraAgent:TimeLapses:Frames:MaximumSaturatedMillionths"] = saturationGate?.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["CameraAgent:TimeLapses:MaximumPublishedBytes"] = publicationBudget.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            // The unavailable-encoder fixture has four small frames, not a production-sized encode workspace.
-            ["CameraAgent:TimeLapses:Encoder:MaximumScratchBytes"] = missingEncoder ? "67108864" : null,
-            ["CameraAgent:TimeLapses:Encoder:MaximumOutputBytes"] = missingEncoder ? "67108864" : null,
+            // Reserve prepared-image headroom beyond the output allowance; explicit nulls bind numeric limits to zero.
+            ["CameraAgent:TimeLapses:Encoder:MaximumScratchBytes"] = "134217728",
+            ["CameraAgent:TimeLapses:Encoder:MaximumOutputBytes"] = "67108864",
             ["CameraAgent:TimeLapses:Encoder:ExecutablePath"] = missingEncoder ? Path.Combine(root, "missing-ffmpeg") : "/usr/bin/ffmpeg"
         }).Build());
         services.AddSingleton<IObservingDayCalendarProvider>(new FixedObservingDayCalendarProvider(calendar ?? NightlyProductFixture.Calendar));
