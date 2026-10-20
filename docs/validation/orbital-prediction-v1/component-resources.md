@@ -218,12 +218,10 @@ Projected objects count only returned objects with non-null emitted pixels;
 internal projection attempts are unknown. The static domain mirror performs
 no initialization, EOP-span validation, propagation or geometric exclusion.
 
-Exact object counts for initialization, point propagation and internal projection
-remain **open #529 resource-accounting acceptance**. This frozen-input baseline
-does not complete that broader criterion: lower bounds and emitted-product counts
-must not be relabeled as exact work counts. Completing the criterion requires
-instrumenting the actual query boundaries, retaining their definitions and
-reproducing the bounded population workload before claiming #529 complete.
+The original run left exact initialization, point and internal projection object
+counts open. The actual-operation rerun below now records them directly. Its
+returned prefix still does not complete the population; unvisited objects stay
+unknown, and integrated cadence remains separate.
 
 ## Ordinary one-object completion
 
@@ -282,3 +280,85 @@ the full issue candidate gate, independent review and lifecycle. Its target is
 `Development v1 / Build and Unit`; a full-matrix classifier output does not
 authorize full qualification CI. This delegate performs no GitHub mutation,
 push, PR, source refresh or merge.
+
+
+## Actual-operation accounting rerun
+
+Source `494ad721ff79784e59a30bb5caadad9e9dc32243`, 2026-10-20, adds immutable
+query-owned [WorkDiagnostics](../../astronomy/orbital-work-accounting-v1.md).
+The original nine scenarios, two repetitions, retained input hashes, geometries,
+UTCs and bounds are unchanged. Only the measured source and reporting differ;
+no network fetch occurred. The updated command writes workload schema v2.
+Legacy manually constructed results retain null diagnostics, meaning unknown.
+
+All 18 queries pass their original status/output gates: 12 ordinary calls are
+Complete; six population calls remain Partial/EvaluationBudget at 150,000
+reservations. All **1,186 canonical track files** match the original bytes,
+including partial tracks. Actual query counters, rather than products or static
+mirrors, give the following values in both repetitions:
+
+| Actual operation facts | Supplied | W1 | W2 |
+| --- | ---: | ---: | ---: |
+| Requested / visited objects | 16,754 / 1,969 | 16,754 / 1,969 | 16,754 / 1,965 |
+| Selected / static-support rejection | 1,815 / 14 | 1,815 / 14 | 1,812 / 14 |
+| Initialization-attempted objects / core calls | 1,801 / 3,602 | 1,801 / 3,602 | 1,798 / 3,596 |
+| Point-attempted objects / core calls | 1,801 / 146,398 | 1,801 / 146,398 | 1,798 / 146,404 |
+| Successful / failed point calls | 146,398 / 0 | 146,398 / 0 | 146,404 / 0 |
+| Projection-attempted objects | 199 | 199 | 199 |
+| Projector calls / native-coordinate successes | 19,446 / 19,424 | 19,446 / 19,424 | 20,722 / 19,705 |
+| Returned tracks with pixels | 199 | 199 | 189 |
+| Unvisited objects | 14,785 | 14,785 | 14,789 |
+
+Initialization means the pinned initializer operation (including its internal
+epoch propagation) and separate epoch validation call, two reservations on
+success. Point success means a valid TEME state before coordinate conversion.
+Projector attempts include bounded, unbounded and chart calls; success means
+native coordinates, even if later cropped or excluded. W2 therefore attempts
+projection for ten objects that emit no track. Every row satisfies initialization
+plus point calls equals the existing propagation reservation count. Cache reuse
+adds no core attempts; cache-hit totals are still not collected. These facts
+close the exact-count evidence gap for this **bounded workload**, not population
+search completeness or physical visibility.
+
+| Default-runtime population pair | Method first / repeat, ms | CPU first / repeat, ms | Allocations first / repeat, bytes |
+| --- | ---: | ---: | ---: |
+| Supplied | 713.95 / 710.99 | 1,042.74 / 1,020.28 | 692,470,096 / 691,567,968 |
+| W1 | 353.44 / 352.56 | 501.38 / 435.19 | 689,910,224 / 689,895,144 |
+| W2 | 344.31 / 352.52 | 361.92 / 369.40 | 682,806,016 / 682,807,376 |
+
+The maximum process peak working set is 585,715,712 bytes versus the original
+585,003,008. Snapshot preparation remains outside query timing. The first
+population pair uses more CPU than the historical run, W1 uses less, and W2
+varies. Default-run allocation changes range from -0.274% to +0.00244% across
+all 18 observations. Do not pool first/repeat observations into an improvement
+or isolated cold/warm claim.
+
+To investigate that timing variation, one additional **ordered reference/current
+pair** ran the same workload with `DOTNET_TieredCompilation=0` equally for both
+binaries, no extra warm-up query, no forced GC and no concurrent test/build.
+The retained reference binary and current binary are hash-bound in its declaration.
+This is a diagnostic control, kept separate from default qualification. Repeat
+population results after each same-path first call were:
+
+| Controlled repeat | Reference / current method, ms | Reference / current CPU, ms | CPU change | Allocation increase |
+| --- | ---: | ---: | ---: | ---: |
+| Supplied | 470.82 / 477.13 | 470.80 / 477.22 | +1.36% | 12,176 bytes |
+| W1 | 454.78 / 476.58 | 454.97 / 476.59 | +4.75% | 14,600 bytes |
+| W2 | 457.53 / 467.27 | 457.50 / 467.25 | +2.13% | 12,152 bytes |
+
+The control exposes a small recurring accounting cost: roughly 6–22ms more CPU
+on these repeat population calls and less than 0.003% additional allocation.
+The larger default initial-pair difference is consistent with tiered-JIT/order
+confounding; this single pair cannot prove its precise cause or statistical size.
+The current default queries stay below 714ms of their unchanged 1,500ms bound.
+All 1,186 control canonical files also agree. No zero-overhead, performance
+improvement, full-frame or integrated five-second claim is made.
+
+[Machine-readable summary](work-accounting-resource-summary.json) retains the
+before/after rows, actual counts, working sets and controlled observations.
+External durable evidence under `batch-a-529-2026-10-19/work-accounting-resources/`
+contains `run-v1/command.sh`, clean source/binary hashes, all results, comparison
+and checksum manifests, and `controlled-pair-v1/` with its predeclared two-process
+limit, exact environment, binary hashes, commands and outcomes. The historical
+run is preserved. Reproduce the original command above with a fresh versioned
+output directory using this source; diagnostics require no extra switch.

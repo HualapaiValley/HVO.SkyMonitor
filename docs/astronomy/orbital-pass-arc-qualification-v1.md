@@ -206,3 +206,21 @@ full affected Astronomy Unit/CI-control evidence, independent deep review and
 the `development/v1` protected profile. Local fixture attributes preserve pinned
 bytes on every host, including the raw upstream TLE's intentional CRLF/trailing
 comment space; no oracle bytes are normalized by this implementation.
+
+
+## Work-accounting correction check
+
+At source `494ad721ff79784e59a30bb5caadad9e9dc32243`, the same six Manual calls
+all complete within the unchanged 1,500ms bound and preserve their original
+parent/product hashes. Public first/repeat boundaries are ISS101.54/112.92ms,
+Vanguard154.82/137.20ms and Molniya545.00/408.37ms. Each result reports one
+initialized and point-attempted object, two initialization calls, respectively
+6,705/13,001/58,409 query-time point calls, and zero image projections. All point
+calls succeed in these selected cases. The
+[full observations](../validation/orbital-prediction-v1/pass-arc-resources-work-accounting.json)
+retain allocations, CPU, working set, actual operation definitions and source
+version; they are first/repeat observations, not statistical cold/warm estimates.
+The final-deadline regression separately covers all six last-checkpoint expiry
+positions; observed expiry cannot return Complete. Cancellation remains an
+exception, distinct from useful budget/deadline prefixes. None of the numerical
+reference gates, fixture bytes, model identities or canonical products changed.
