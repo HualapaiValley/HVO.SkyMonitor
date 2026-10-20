@@ -147,9 +147,10 @@ public sealed class OrbitalTrackPresentationTests
         var shortSteps = Enumerable.Range(0, 1024).Select(index => (PixelPoint?)new PixelPoint(200 + index % 2, 200)).ToArray();
         var overPrimitives = Enumerable.Range(1, 5).Select(index => Track(index.ToString(CultureInfo.InvariantCulture), shortSteps)).ToArray();
         Assert.ThrowsExactly<ArgumentException>(() => Payload(overPrimitives));
-        var longSteps = Enumerable.Range(0, 1024).Select(index => (PixelPoint?)(index % 2 == 0 ? new PixelPoint(10, 10) : new PixelPoint(630, 470))).ToArray();
-        var overWork = Enumerable.Range(1, 2).Select(index => Track(index.ToString(CultureInfo.InvariantCulture), longSteps)).ToArray();
-        Assert.ThrowsExactly<ArgumentException>(() => Payload(overWork));
+        // Keep the primitive count below its cap while exceeding the work bound with one-pixel strokes.
+        var longSteps = Enumerable.Range(0, 1024).Select(index => (PixelPoint?)(index % 2 == 0 ? new PixelPoint(10, 10) : new PixelPoint(1270, 950))).ToArray();
+        var overWork = Enumerable.Range(1, 2).Select(index => Track(index.ToString(CultureInfo.InvariantCulture), longSteps, width: 1280, height: 960)).ToArray();
+        Assert.ThrowsExactly<ArgumentException>(() => OrbitalTrackPresentation.CreatePayload(1280, 960, overWork));
     }
 
     [TestMethod]
@@ -479,7 +480,8 @@ public sealed class OrbitalTrackPresentationTests
     [TestMethod]
     public void ExistingSvgAndRasterConsumersPreserveDashesAndIndependentLayerSelection()
     {
-        var payload = Payload(Track(pixels: [new(10, 100), new(13, 100), new(30, 100)]));
+        // Center the stroke on a raster row so this checks dash continuity, not half-pixel antialias coverage.
+        var payload = Payload(Track(pixels: [new(10, 100.5), new(13, 100.5), new(30, 100.5)]));
         var compatibility = new PresentationCompatibilityDescriptor(640, 480, Sha('D'), Sha('E'));
         var source = new PresentationProductReference(Guid.Parse("11111111-1111-1111-1111-111111111111"), Sha('A'), "image/png", compatibility);
         PresentationLayerV1 Layer(string kind, bool enabled, int order) => LayeredPresentationJson.CreateLayer(kind,
