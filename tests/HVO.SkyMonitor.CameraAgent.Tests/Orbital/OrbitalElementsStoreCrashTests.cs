@@ -31,6 +31,8 @@ public sealed class OrbitalElementsStoreCrashTests : OrbitalStoreTestBase
             faults.ArmedPoint = Enum.Parse<OrbitalStorageFaultPoint>(point);
             faults.Throw = static () => new InvalidOperationException("simulated process crash");
             var attemptId = await OrbitalElementsStoreTestData.AdmitAsync(store).ConfigureAwait(false);
+            // As the refresh job does, the valid 200 is recorded before publication begins.
+            await store.RecordRetrievalAsync(attemptId, clock.GetUtcNow(), CancellationToken.None).ConfigureAwait(false);
 
             await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => store.PublishAndActivateAsync(
                 attemptId, Next.Snapshot, Next.Raw, CancellationToken.None).AsTask()).ConfigureAwait(false);
@@ -45,6 +47,9 @@ public sealed class OrbitalElementsStoreCrashTests : OrbitalStoreTestBase
         var state = await reopened.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(Good.Manifest, state.CurrentManifestSha256);
         Assert.AreEqual(OrbitalAttemptOutcome.Interrupted, state.LastAttemptOutcome);
+        Assert.AreEqual("orbital.attempt-interrupted", state.LastAttemptReasonCode,
+            "The provider outcome was recorded before the crash, so it is a plain interruption.");
+        Assert.IsNull(state.Halt);
         AssertOnlyGoodFiles(root);
         Assert.IsEmpty(OrbitalElementsStoreTestData.Files(root, "staging"));
 

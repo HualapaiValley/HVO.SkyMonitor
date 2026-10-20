@@ -775,14 +775,41 @@ public sealed class OwnerAuthorizationTests
                 expectedVersion = 0
             }).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.BadRequest, missingAutomationAntiforgery.StatusCode);
-        using var missingOrbitalRefreshAntiforgery = await ownerClient.PostAsJsonAsync(
-            new Uri("/api/v1/operations/orbital-elements/refresh", UriKind.Relative),
-            new { reason = "unprotected refresh" }).ConfigureAwait(false);
-        Assert.AreEqual(HttpStatusCode.BadRequest, missingOrbitalRefreshAntiforgery.StatusCode);
-        using var missingOrbitalResumeAntiforgery = await ownerClient.PostAsJsonAsync(
-            new Uri("/api/v1/operations/orbital-elements/resume", UriKind.Relative),
-            new { expectedHaltSinceUtc = DateTimeOffset.UnixEpoch, reason = "unprotected resume" }).ConfigureAwait(false);
-        Assert.AreEqual(HttpStatusCode.BadRequest, missingOrbitalResumeAntiforgery.StatusCode);
+        // The orbital commands carry a valid Idempotency-Key and body, so the only thing missing is the antiforgery
+        // token; the rejection must be the antiforgery one, not the key or body check (which would otherwise answer 400
+        // or, for a disabled refresh, 409 orbital.disabled).
+        using (var missingOrbitalRefreshAntiforgeryRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/orbital-elements/refresh", UriKind.Relative)))
+        {
+            missingOrbitalRefreshAntiforgeryRequest.Headers.Add("Idempotency-Key", $"orbital-{Guid.NewGuid():N}");
+            missingOrbitalRefreshAntiforgeryRequest.Content = JsonContent.Create(new { reason = "unprotected refresh" });
+            using var missingOrbitalRefreshAntiforgery = await ownerClient.SendAsync(missingOrbitalRefreshAntiforgeryRequest)
+                .ConfigureAwait(false);
+            var missingOrbitalRefreshAntiforgeryJson = await missingOrbitalRefreshAntiforgery.Content.ReadAsStringAsync()
+                .ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.BadRequest, missingOrbitalRefreshAntiforgery.StatusCode,
+                missingOrbitalRefreshAntiforgeryJson);
+            StringAssert.Contains(missingOrbitalRefreshAntiforgeryJson, "orbital.antiforgery-invalid", StringComparison.Ordinal);
+        }
+        using (var missingOrbitalResumeAntiforgeryRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            new Uri("/api/v1/operations/orbital-elements/resume", UriKind.Relative)))
+        {
+            missingOrbitalResumeAntiforgeryRequest.Headers.Add("Idempotency-Key", $"orbital-{Guid.NewGuid():N}");
+            missingOrbitalResumeAntiforgeryRequest.Content = JsonContent.Create(new
+            {
+                expectedHaltSinceUtc = DateTimeOffset.UnixEpoch,
+                reason = "unprotected resume"
+            });
+            using var missingOrbitalResumeAntiforgery = await ownerClient.SendAsync(missingOrbitalResumeAntiforgeryRequest)
+                .ConfigureAwait(false);
+            var missingOrbitalResumeAntiforgeryJson = await missingOrbitalResumeAntiforgery.Content.ReadAsStringAsync()
+                .ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.BadRequest, missingOrbitalResumeAntiforgery.StatusCode,
+                missingOrbitalResumeAntiforgeryJson);
+            StringAssert.Contains(missingOrbitalResumeAntiforgeryJson, "orbital.antiforgery-invalid", StringComparison.Ordinal);
+        }
 
         var token = await GetAntiforgeryTokenAsync(ownerClient).ConfigureAwait(false);
         using (var authorizedRigRequest = new HttpRequestMessage(

@@ -37,7 +37,10 @@ public sealed class OrbitalElementsOptions
     [Range(1, 16)]
     public int MaximumQuarantinedPayloads { get; init; } = 4;
 
-    /// <summary>Health is degraded once the active snapshot was activated longer ago than this.</summary>
+    /// <summary>
+    /// Health is degraded (<c>orbital.refresh-overdue</c>) once no valid provider retrieval has succeeded for longer than
+    /// this. Element staleness is separate: it follows the newest element epoch, not this setting.
+    /// </summary>
     [Range(3, 168)]
     public int StaleAfterHours { get; init; } = 12;
 }

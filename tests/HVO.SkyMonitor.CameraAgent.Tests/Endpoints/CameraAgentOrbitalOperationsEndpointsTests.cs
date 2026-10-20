@@ -137,6 +137,28 @@ public sealed class CameraAgentOrbitalOperationsEndpointsTests : OrbitalStoreTes
     }
 
     [TestMethod]
+    [DataRow(Refresh, null)]
+    [DataRow(Refresh, false)]
+    [DataRow(Resume, null)]
+    [DataRow(Resume, false)]
+    public async Task ASessionCommandWithoutAValidAntiforgeryTokenIsRefusedBeforeAnythingDurableHappens(string name,
+        bool? antiforgeryValid)
+    {
+        using var fixture = await OrbitalAutomationFixture.CreateAsync(CreateRoot()).ConfigureAwait(false);
+        await fixture.SaveDefinitionAsync().ConfigureAwait(false);
+        var since = await HaltAsync(fixture).ConfigureAwait(false);
+        using var app = CreateApp(fixture);
+
+        var response = await InvokeAsync(app, name, name == Refresh ? RefreshBody : ResumeBody(since), "forged-key",
+            antiforgeryValid: antiforgeryValid).ConfigureAwait(false);
+
+        Assert.AreEqual(StatusCodes.Status400BadRequest, response.Status);
+        Assert.AreEqual(CameraAgentOrbitalOperationsEndpoints.AntiforgeryInvalidReasonCode, Json(response.Body, "reasonCode"));
+        Assert.IsNotNull((await fixture.Orbital.StateAsync().ConfigureAwait(false)).Halt, "The halt is untouched.");
+        Assert.IsEmpty((await fixture.AutomationStateAsync().ConfigureAwait(false)).Runs);
+    }
+
+    [TestMethod]
     [DataRow(Refresh, 0, OrbitalElementsOperations.InvalidIdempotencyKeyReasonCode)]
     [DataRow(Refresh, 1, OrbitalElementsOperations.InvalidIdempotencyKeyReasonCode)]
     [DataRow(Refresh, 2, OrbitalElementsOperations.InvalidIdempotencyKeyReasonCode)]
@@ -352,11 +374,16 @@ public sealed class CameraAgentOrbitalOperationsEndpointsTests : OrbitalStoreTes
     }
 
     private static Task<(int Status, string Body, string? Location)> InvokeAsync(WebApplication app, string name,
-        string? json = null, string? idempotencyKey = null, bool anonymous = false)
-        => InvokeAsync(app, name, json, idempotencyKey is null ? (StringValues?)null : new StringValues(idempotencyKey), anonymous);
+        string? json = null, string? idempotencyKey = null, bool anonymous = false, bool? antiforgeryValid = true)
+        => InvokeAsync(app, name, json, idempotencyKey is null ? (StringValues?)null : new StringValues(idempotencyKey),
+            anonymous, antiforgeryValid);
 
+    /// <summary>
+    /// Invokes the route's request delegate. <paramref name="antiforgeryValid"/> stands in for <c>UseAntiforgery</c>:
+    /// true or false sets its validation feature, and null leaves it absent, as for a request that never reached it.
+    /// </summary>
     private static async Task<(int Status, string Body, string? Location)> InvokeAsync(WebApplication app, string name,
-        string? json, StringValues? idempotencyKeys, bool anonymous = false)
+        string? json, StringValues? idempotencyKeys, bool anonymous = false, bool? antiforgeryValid = true)
     {
         var endpoint = FindEndpoint(app, name);
         var context = new DefaultHttpContext
@@ -372,6 +399,10 @@ public sealed class CameraAgentOrbitalOperationsEndpointsTests : OrbitalStoreTes
                     IdentityConstants.ApplicationScheme))
         };
         context.Request.Method = name == Get ? HttpMethods.Get : HttpMethods.Post;
+        if (name != Get && antiforgeryValid is { } valid)
+        {
+            context.Features.Set<IAntiforgeryValidationFeature>(new AntiforgeryFeature(valid));
+        }
         if (json is not null)
         {
             var payload = Encoding.UTF8.GetBytes(json);
@@ -393,6 +424,13 @@ public sealed class CameraAgentOrbitalOperationsEndpointsTests : OrbitalStoreTes
         var location = context.Response.Headers.Location;
         return (context.Response.StatusCode, Encoding.UTF8.GetString(body.ToArray()),
             location.Count == 0 ? null : location.ToString());
+    }
+
+    private sealed class AntiforgeryFeature(bool valid) : IAntiforgeryValidationFeature
+    {
+        public bool IsValid => valid;
+
+        public Exception? Error => valid ? null : new AntiforgeryValidationException("No token.");
     }
 
     private sealed class BodyDetectionFeature : IHttpRequestBodyDetectionFeature

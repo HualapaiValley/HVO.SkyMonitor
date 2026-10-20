@@ -145,9 +145,12 @@ public sealed partial class OrbitalElementsOperations
     }
 
     /// <summary>
-    /// Queues one run-now occurrence of the reserved definition after checking configuration, the store, the definition,
-    /// the provider halt and the attempt floor, in that order. The store re-applies the halt and the floor when the
-    /// runner claims the occurrence, so a race between this check and execution can never cause an early request.
+    /// Queues one run-now occurrence of the reserved definition. A recorded idempotency key is answered first, as a
+    /// replay of the same request or a conflict with a different one, so a client retry of a request that has already
+    /// executed is never refused by the floor or halt its own run created. Otherwise it checks configuration, the store,
+    /// the definition, the provider halt and the attempt floor, in that order. The store re-applies the halt and the
+    /// floor when the runner claims the occurrence, so a race between this check and execution can never cause an early
+    /// request, and a replay never queues anything.
     /// </summary>
     public async ValueTask<OrbitalElementsCommandResult> RefreshAsync(
         OrbitalElementsRefreshRequest request,
@@ -157,6 +160,10 @@ public sealed partial class OrbitalElementsOperations
         if (ValidateRefresh(request) is { } invalid)
         {
             return Rejected(OrbitalElementsCommandStatus.Invalid, invalid, null, null);
+        }
+        if (await FindRecordedRefreshAsync(request, cancellationToken).ConfigureAwait(false) is { } recorded)
+        {
+            return recorded;
         }
         if (!_options.Value.OrbitalElements.Enabled)
         {
@@ -188,10 +195,8 @@ public sealed partial class OrbitalElementsOperations
             return Rejected(OrbitalElementsCommandStatus.Unavailable, LocalAutomationContract.RunNowUnavailableReasonCode,
                 null, observation.Status);
         }
-        var queued = await occurrences.RunNowAsync(
-            new LocalAutomationRunNowRequest(definition.Definition.DefinitionId, definition.Version,
-                request.IdempotencyKey, request.Actor, request.Reason),
-            cancellationToken).ConfigureAwait(false);
+        var queued = await occurrences.RunNowAsync(RunNowRequest(definition, request), cancellationToken)
+            .ConfigureAwait(false);
         var (status, reasonCode) = queued.Status switch
         {
             LocalAutomationCommandStatus.Applied => (OrbitalElementsCommandStatus.Accepted, RefreshQueuedReasonCode),
@@ -215,8 +220,42 @@ public sealed partial class OrbitalElementsOperations
     }
 
     /// <summary>
+    /// The answer for an idempotency key the automation store already recorded, or null when it has none. The key's
+    /// recorded identity includes the reserved definition's version, so without a definition there is nothing to match.
+    /// This reads only the automation store; the orbital store is read afterwards for the result's read model.
+    /// </summary>
+    private async ValueTask<OrbitalElementsCommandResult?> FindRecordedRefreshAsync(
+        OrbitalElementsRefreshRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (_automation is not ILocalAutomationOccurrenceStore occurrences ||
+            FindDefinition(await _automation.GetStateAsync(cancellationToken).ConfigureAwait(false)) is not { } definition ||
+            await occurrences.FindRunNowReplayAsync(RunNowRequest(definition, request), cancellationToken)
+                .ConfigureAwait(false) is not { } recorded)
+        {
+            return null;
+        }
+        var (status, reasonCode) = recorded.Status == LocalAutomationCommandStatus.Replayed
+            ? (OrbitalElementsCommandStatus.Replayed, RefreshReplayedReasonCode)
+            : (OrbitalElementsCommandStatus.Conflict,
+                recorded.ReasonCode ?? LocalAutomationContract.IdempotencyKeyConflictReasonCode);
+        if (status == OrbitalElementsCommandStatus.Conflict)
+        {
+            RefreshRejected(_logger, reasonCode);
+        }
+        return new OrbitalElementsCommandResult(status, reasonCode, null,
+            (await ReadAsync(cancellationToken).ConfigureAwait(false)).Status);
+    }
+
+    private static LocalAutomationRunNowRequest RunNowRequest(LocalAutomationDefinitionState definition,
+        OrbitalElementsRefreshRequest request)
+        => new(definition.Definition.DefinitionId, definition.Version, request.IdempotencyKey, request.Actor,
+            request.Reason);
+
+    /// <summary>
     /// Clears a provider halt through the store's idempotent resume command. Resume never moves the attempt floor, and it
-    /// is permitted while refresh is disabled so an operator can clear a halt before re-enabling.
+    /// is permitted while refresh is disabled so an operator can clear a halt before re-enabling. An applied resume
+    /// publishes the cleared state to the gauges through the refresh job.
     /// </summary>
     public async ValueTask<OrbitalElementsCommandResult> ResumeAsync(
         OrbitalResumeRequest request,
@@ -243,6 +282,11 @@ public sealed partial class OrbitalElementsOperations
         if (status is OrbitalElementsCommandStatus.Conflict or OrbitalElementsCommandStatus.Invalid)
         {
             ResumeRejected(_logger, reasonCode);
+        }
+        else if (status == OrbitalElementsCommandStatus.Applied)
+        {
+            // The halt gauge reads 0 now rather than after the next attempt.
+            await _job.PublishStateAsync(cancellationToken).ConfigureAwait(false);
         }
         return new OrbitalElementsCommandResult(status, reasonCode, null,
             (await ReadAsync(cancellationToken).ConfigureAwait(false)).Status);

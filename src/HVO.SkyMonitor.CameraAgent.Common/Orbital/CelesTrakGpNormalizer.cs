@@ -25,15 +25,18 @@ public static class CelesTrakGpNormalizer
     internal const string NoradAuthority = "norad";
     private const int MaximumContractReasonLength = 64;
 
-    /// <summary>What the <c>GROUP=active</c> population excludes. Sorted ordinally, as the contract requires.</summary>
+    /// <summary>
+    /// What the <c>GROUP=active</c> population excludes. Sorted ordinally, as the contract requires. Rocket bodies
+    /// attached to an active payload are in the population, so only unattached ones are an exclusion (#527).
+    /// </summary>
     internal static IReadOnlyList<string> KnownExclusions { get; } = Array.AsReadOnly(new[]
     {
         "analyst-objects",
         "debris",
         "inactive-payloads",
         "missing-records",
-        "rocket-bodies",
         "supplemental-gp",
+        "unattached-rocket-bodies",
         "unpublicized-objects"
     });
 

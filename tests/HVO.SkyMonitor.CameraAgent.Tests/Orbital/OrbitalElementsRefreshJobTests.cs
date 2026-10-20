@@ -108,18 +108,28 @@ public sealed class OrbitalElementsRefreshJobTests : OrbitalStoreTestBase
     [DataRow(200, "status=200")]
     [DataRow(600, "status=600")]
     [DataRow(-1, "status=none")]
-    public async Task AHaltDispositionWithoutAHaltStatusIsQuarantinedNotHalted(int status, string detail)
+    public async Task AHaltDispositionWithoutAValidHaltStatusHaltsWithNoRecordedStatus(int status, string detail)
     {
         using var harness = await OrbitalRefreshTestHarness.CreateAsync(CreateRoot()).ConfigureAwait(false);
         harness.Client.Enqueue(harness.Result(OrbitalFetchDisposition.HttpStatusHalt, status < 0 ? null : status,
-            "orbital.non-200-response", "synthetic"));
+            "orbital.invalid-http-status", "synthetic"));
 
         var execution = await harness.RunAsync().ConfigureAwait(false);
 
         AssertExecution(execution, LocalAutomationRunOutcome.Failed, "orbital.invalid-http-status");
         StringAssert.Contains(execution.Detail, detail, StringComparison.Ordinal);
-        Assert.AreEqual("Quarantined|orbital.invalid-http-status|Scheduled", harness.LastAttempt());
-        Assert.IsNull((await harness.StateAsync().ConfigureAwait(false)).Halt);
+        StringAssert.Contains(execution.Detail, "halted provider-wide", StringComparison.Ordinal);
+        Assert.AreEqual("ProviderHalted|orbital.invalid-http-status|Scheduled", harness.LastAttempt());
+        var halt = (await harness.StateAsync().ConfigureAwait(false)).Halt;
+        Assert.IsNotNull(halt);
+        Assert.IsNull(halt.HttpStatusCode);
+        Assert.StartsWith("orbital.invalid-http-status: ", halt.Reason);
+
+        harness.Clock.Advance(Floor * 3);
+        var later = await harness.RunAsync().ConfigureAwait(false);
+        AssertExecution(later, LocalAutomationRunOutcome.Skipped, "orbital.provider-halted");
+        StringAssert.Contains(later.Detail, "no valid HTTP status recorded", StringComparison.Ordinal);
+        Assert.AreEqual(1, harness.Client.Calls);
     }
 
     [TestMethod]
@@ -160,6 +170,24 @@ public sealed class OrbitalElementsRefreshJobTests : OrbitalStoreTestBase
         AssertExecution(execution, LocalAutomationRunOutcome.Failed, "orbital.media-type");
         StringAssert.Contains(execution.Detail, "media-type=text/html", StringComparison.Ordinal);
         Assert.AreEqual("Quarantined|orbital.media-type|Scheduled", harness.LastAttempt());
+    }
+
+    [TestMethod]
+    public async Task AQuarantinedValidResponseStillAdvancesTheLastSuccessfulRetrieval()
+    {
+        using var harness = await OrbitalRefreshTestHarness.CreateAsync(CreateRoot()).ConfigureAwait(false);
+        var invalid = Encoding.UTF8.GetBytes("{\"not\":\"an array\"}");
+        var fetch = harness.Retrieved(invalid);
+        harness.Client.Enqueue(fetch);
+
+        var execution = await harness.RunAsync().ConfigureAwait(false);
+
+        Assert.AreEqual(LocalAutomationRunOutcome.Failed, execution.Outcome);
+        StringAssert.StartsWith(harness.LastAttempt(), "Quarantined|orbital.", StringComparison.Ordinal);
+        var state = await harness.StateAsync().ConfigureAwait(false);
+        Assert.AreEqual(fetch.CompletedUtc, state.LastRetrievalSuccessUtc, "The provider answered with a valid 200.");
+        Assert.IsNull(state.LastActivationUtc);
+        Assert.AreEqual(1, harness.Intercept.Retrievals);
     }
 
     [TestMethod]
@@ -230,7 +258,7 @@ public sealed class OrbitalElementsRefreshJobTests : OrbitalStoreTestBase
     }
 
     [TestMethod]
-    public async Task ACancelledFetchIsClosedSoTheNextDueRunIsAdmitted()
+    public async Task ACancelledFetchIsClosedAsAnUnknownOutcomeThatHaltsUntilAnOperatorResumes()
     {
         using var harness = await OrbitalRefreshTestHarness.CreateAsync(CreateRoot()).ConfigureAwait(false);
         harness.Client.EnqueueHang();
@@ -241,15 +269,77 @@ public sealed class OrbitalElementsRefreshJobTests : OrbitalStoreTestBase
         await cancellation.CancelAsync().ConfigureAwait(false);
 
         await Assert.ThrowsAsync<OperationCanceledException>(() => run).ConfigureAwait(false);
-        Assert.AreEqual("TransportFailed|orbital.attempt-cancelled|Scheduled", harness.LastAttempt());
+        // The request may have reached the provider and been refused: fail safe, so it halts rather than retrying.
+        Assert.AreEqual("Interrupted|orbital.provider-outcome-unknown|Scheduled", harness.LastAttempt());
         Assert.IsFalse(harness.Logger.EventIds.Contains(7748));
+        Assert.AreEqual(1, harness.Intercept.Interruptions);
+        Assert.AreEqual(0, harness.Intercept.Transports);
+        var halt = (await harness.StateAsync().ConfigureAwait(false)).Halt;
+        Assert.IsNotNull(halt);
+        Assert.IsNull(halt.HttpStatusCode);
 
         harness.Clock.Advance(Floor);
+        var blocked = await harness.RunAsync().ConfigureAwait(false);
+        AssertExecution(blocked, LocalAutomationRunOutcome.Skipped, "orbital.provider-halted");
+        var resumed = await harness.Store.ResumeProviderAsync(new OrbitalResumeRequest(halt.SinceUtc, "resume-cancelled",
+            "operator@example.test", "provider access confirmed"), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalCommandStatus.Applied, resumed.Status);
         harness.Client.Enqueue(harness.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
         var later = await harness.RunAsync().ConfigureAwait(false);
 
         AssertExecution(later, LocalAutomationRunOutcome.Succeeded, "orbital.activated");
         Assert.AreEqual(2L, harness.AttemptCount());
+    }
+
+    [TestMethod]
+    public async Task ACancellationAfterARecordedRetrievalIsAPlainInterruptionWithoutAHalt()
+    {
+        using var harness = await OrbitalRefreshTestHarness.CreateAsync(CreateRoot()).ConfigureAwait(false);
+        using var cancellation = new CancellationTokenSource();
+        harness.Intercept.PublishFault = _ =>
+        {
+            cancellation.Cancel();
+            return new OperationCanceledException(cancellation.Token);
+        };
+        harness.Client.Enqueue(harness.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => harness.RunAsync(cancellationToken: cancellation.Token).AsTask()).ConfigureAwait(false);
+
+        Assert.AreEqual("Interrupted|orbital.attempt-cancelled|Scheduled", harness.LastAttempt());
+        var state = await harness.StateAsync().ConfigureAwait(false);
+        Assert.IsNull(state.Halt);
+        Assert.IsNotNull(state.LastRetrievalSuccessUtc);
+        harness.Intercept.PublishFault = null;
+        harness.Clock.Advance(Floor);
+        harness.Client.Enqueue(harness.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
+        AssertExecution(await harness.RunAsync().ConfigureAwait(false), LocalAutomationRunOutcome.Succeeded, "orbital.activated");
+    }
+
+    [TestMethod]
+    public async Task ACrashAfterARecordedRetrievalRestartsAsAPlainInterruptionWithoutAHalt()
+    {
+        var root = CreateRoot();
+        using (var harness = await OrbitalRefreshTestHarness.CreateAsync(root).ConfigureAwait(false))
+        {
+            // Every record after the retrieval fails, so the attempt is left in flight as a crash would leave it.
+            harness.Intercept.PublishFault = static _ => new InvalidOperationException("simulated process crash");
+            harness.Intercept.TransportFault = static _ => new IOException("synthetic");
+            harness.Client.Enqueue(harness.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
+            await harness.RunAsync().ConfigureAwait(false);
+            Assert.AreEqual("InFlight||Scheduled", harness.LastAttempt());
+            Assert.AreEqual(1, harness.Intercept.Retrievals);
+        }
+
+        using var restarted = await OrbitalRefreshTestHarness.CreateAsync(root).ConfigureAwait(false);
+        var state = await restarted.StateAsync().ConfigureAwait(false);
+
+        Assert.AreEqual("Interrupted|orbital.attempt-interrupted|Scheduled", restarted.LastAttempt());
+        Assert.IsNull(state.Halt);
+        AssertExecution(await restarted.RunAsync().ConfigureAwait(false), LocalAutomationRunOutcome.Skipped, "orbital.floor-not-elapsed");
+        restarted.Clock.Advance(Floor);
+        restarted.Client.Enqueue(restarted.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
+        AssertExecution(await restarted.RunAsync().ConfigureAwait(false), LocalAutomationRunOutcome.Succeeded, "orbital.activated");
     }
 
     [TestMethod]
@@ -347,6 +437,41 @@ public sealed class OrbitalElementsRefreshJobTests : OrbitalStoreTestBase
         var blocked = await harness.RunAsync().ConfigureAwait(false);
         AssertExecution(blocked, LocalAutomationRunOutcome.Skipped, "orbital.attempt-in-flight");
         Assert.AreEqual(1, harness.Client.Calls, "A provider that refused is never asked again while its halt is pending.");
+    }
+
+    [TestMethod]
+    public async Task AHaltThatCannotBeRecordedBecomesADurableHaltAfterARestartUntilResumed()
+    {
+        var root = CreateRoot();
+        using (var harness = await OrbitalRefreshTestHarness.CreateAsync(root).ConfigureAwait(false))
+        {
+            harness.Intercept.HaltFault = static _ => new OrbitalStorageException("orbital.storage-io", "synthetic", null);
+            harness.Client.Enqueue(harness.Halt(429));
+            await harness.RunAsync().ConfigureAwait(false);
+            Assert.AreEqual("InFlight||Scheduled", harness.LastAttempt());
+        }
+
+        // The process restarts: a new store over the same root reconciles the attempt whose 429 was never recorded.
+        using var restarted = await OrbitalRefreshTestHarness.CreateAsync(root).ConfigureAwait(false);
+        var state = await restarted.StateAsync().ConfigureAwait(false);
+        var admission = await restarted.Store.TryBeginAttemptAsync("after-restart", OrbitalAttemptTrigger.Manual,
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual("Interrupted|orbital.provider-outcome-unknown|Scheduled", restarted.LastAttempt());
+        Assert.AreEqual(OrbitalAdmissionStatus.Halted, admission.Status);
+        Assert.IsNotNull(state.Halt);
+        Assert.IsNull(state.Halt.HttpStatusCode, "The refused status was never recorded, so none is claimed.");
+        Assert.StartsWith("orbital.provider-outcome-unknown: ", state.Halt.Reason);
+        restarted.Clock.Advance(Floor * 3);
+        AssertExecution(await restarted.RunAsync().ConfigureAwait(false), LocalAutomationRunOutcome.Skipped, "orbital.provider-halted");
+        Assert.AreEqual(0, restarted.Client.Calls);
+
+        var resumed = await restarted.Store.ResumeProviderAsync(new OrbitalResumeRequest(state.Halt.SinceUtc, "resume-restart",
+            "operator@example.test", "provider access confirmed"), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalCommandStatus.Applied, resumed.Status);
+        Assert.IsNull(resumed.State.Halt);
+        restarted.Client.Enqueue(restarted.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
+        AssertExecution(await restarted.RunAsync().ConfigureAwait(false), LocalAutomationRunOutcome.Succeeded, "orbital.activated");
     }
 
     [TestMethod]

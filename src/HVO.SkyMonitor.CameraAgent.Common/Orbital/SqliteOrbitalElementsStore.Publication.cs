@@ -310,15 +310,27 @@ public sealed partial class SqliteOrbitalElementsStore
         var nextPrevious = active is not null && !string.Equals(active, prepared.ManifestSha256, StringComparison.Ordinal)
             ? active
             : previous;
+        // A caller that did not record the retrieval first (the refresh job always does) records it with the activation.
+        await ExecuteAsync(connection, transaction, """
+            UPDATE orbital_attempts SET retrieved_utc_ticks = $retrieved
+            WHERE attempt_id = $attempt AND retrieved_utc_ticks IS NULL;
+            """, cancellationToken, ("$retrieved", prepared.Source.RetrievedUtc.UtcTicks), ("$attempt", attemptId))
+            .ConfigureAwait(false);
+        // An unchanged payload is a successful retrieval, not a new activation: re-downloading old elements must never
+        // make them look fresh, so last_activation keeps the time the active payload last changed.
         await ExecuteAsync(connection, transaction, """
             UPDATE orbital_provider_state
             SET active_manifest_sha256 = $sha, previous_manifest_sha256 = $previous, snapshot_sequence = $sequence,
-                last_retrieval_success_utc_ticks = $retrieved, last_activation_unix_ms = $now, revision = revision + 1,
+                last_retrieval_success_utc_ticks = $retrieved,
+                last_activation_unix_ms = CASE WHEN $unchanged = 1 AND last_activation_unix_ms IS NOT NULL
+                    THEN last_activation_unix_ms ELSE $now END,
+                revision = revision + 1,
                 quarantine_observed_unix_ms = NULL, quarantine_raw_sha256 = NULL, quarantine_reason = NULL
             WHERE provider = 'celestrak';
             """, cancellationToken,
             ("$sha", prepared.ManifestSha256), ("$previous", (object?)nextPrevious ?? DBNull.Value),
-            ("$sequence", snapshotSequence), ("$retrieved", prepared.Source.RetrievedUtc.UtcTicks), ("$now", now))
+            ("$sequence", snapshotSequence), ("$retrieved", prepared.Source.RetrievedUtc.UtcTicks), ("$now", now),
+            ("$unchanged", unchanged ? 1 : 0))
             .ConfigureAwait(false);
         var kind = unchanged ? "unchanged-payload" : "activated";
         await ExecuteAsync(connection, transaction, """

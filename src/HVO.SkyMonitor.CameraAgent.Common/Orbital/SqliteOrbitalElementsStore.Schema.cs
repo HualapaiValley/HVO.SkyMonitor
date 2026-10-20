@@ -90,7 +90,8 @@ public sealed partial class SqliteOrbitalElementsStore
             quarantine_observed_unix_ms INTEGER CHECK(quarantine_observed_unix_ms IS NULL OR quarantine_observed_unix_ms >= 0),
             quarantine_raw_sha256 TEXT CHECK(quarantine_raw_sha256 IS NULL OR (length(quarantine_raw_sha256) = 64 AND quarantine_raw_sha256 NOT GLOB '*[^0-9A-F]*')),
             quarantine_reason TEXT CHECK(quarantine_reason IS NULL OR length(quarantine_reason) BETWEEN 1 AND 512),
-            CHECK((halt_since_unix_ms IS NULL) = (halt_http_status IS NULL) AND (halt_since_unix_ms IS NULL) = (halt_reason IS NULL)),
+            CHECK((halt_since_unix_ms IS NULL) = (halt_reason IS NULL)),
+            CHECK(halt_http_status IS NULL OR halt_since_unix_ms IS NOT NULL),
             CHECK((quarantine_observed_unix_ms IS NULL) = (quarantine_reason IS NULL)),
             CHECK(quarantine_raw_sha256 IS NULL OR quarantine_observed_unix_ms IS NOT NULL),
             CHECK(previous_manifest_sha256 IS NULL OR active_manifest_sha256 IS NOT NULL)
@@ -121,9 +122,10 @@ public sealed partial class SqliteOrbitalElementsStore
             raw_sha256 TEXT CHECK(raw_sha256 IS NULL OR (length(raw_sha256) = 64 AND raw_sha256 NOT GLOB '*[^0-9A-F]*')),
             raw_length_bytes INTEGER CHECK(raw_length_bytes IS NULL OR raw_length_bytes >= 0),
             quarantine_retained INTEGER NOT NULL DEFAULT 0 CHECK(quarantine_retained IN (0, 1)),
+            retrieved_utc_ticks INTEGER CHECK(retrieved_utc_ticks IS NULL OR retrieved_utc_ticks >= 0),
             CHECK((outcome = 'InFlight') = (completed_unix_ms IS NULL)),
             CHECK((outcome = 'InFlight') = (reason_code IS NULL)),
-            CHECK((outcome = 'ProviderHalted') = (http_status IS NOT NULL)),
+            CHECK(http_status IS NULL OR outcome = 'ProviderHalted'),
             CHECK(quarantine_retained = 0 OR (outcome = 'Quarantined' AND raw_sha256 IS NOT NULL))
         ) STRICT;
         CREATE UNIQUE INDEX orbital_attempts_single_flight ON orbital_attempts(outcome) WHERE outcome = 'InFlight';
@@ -139,8 +141,12 @@ public sealed partial class SqliteOrbitalElementsStore
         WHEN OLD.outcome <> 'InFlight' AND (NEW.outcome IS NOT OLD.outcome OR NEW.completed_unix_ms IS NOT OLD.completed_unix_ms
             OR NEW.reason_code IS NOT OLD.reason_code OR NEW.detail IS NOT OLD.detail OR NEW.http_status IS NOT OLD.http_status
             OR NEW.manifest_sha256 IS NOT OLD.manifest_sha256 OR NEW.raw_sha256 IS NOT OLD.raw_sha256
-            OR NEW.raw_length_bytes IS NOT OLD.raw_length_bytes OR NEW.quarantine_retained > OLD.quarantine_retained)
+            OR NEW.raw_length_bytes IS NOT OLD.raw_length_bytes OR NEW.quarantine_retained > OLD.quarantine_retained
+            OR NEW.retrieved_utc_ticks IS NOT OLD.retrieved_utc_ticks)
         BEGIN SELECT RAISE(ABORT, 'a completed orbital attempt is immutable'); END;
+        CREATE TRIGGER orbital_attempts_retrieval_final BEFORE UPDATE ON orbital_attempts
+        WHEN OLD.retrieved_utc_ticks IS NOT NULL AND NEW.retrieved_utc_ticks IS NOT OLD.retrieved_utc_ticks
+        BEGIN SELECT RAISE(ABORT, 'a recorded orbital provider retrieval is final'); END;
 
         CREATE TABLE orbital_activation_history(
             history_sequence INTEGER PRIMARY KEY CHECK(history_sequence > 0),
@@ -169,7 +175,7 @@ public sealed partial class SqliteOrbitalElementsStore
             command_kind TEXT NOT NULL CHECK(command_kind = 'resume'),
             payload_sha256 TEXT NOT NULL CHECK(length(payload_sha256) = 64 AND payload_sha256 NOT GLOB '*[^0-9A-F]*'),
             halt_since_unix_ms INTEGER NOT NULL CHECK(halt_since_unix_ms >= 0),
-            halt_http_status INTEGER NOT NULL CHECK(halt_http_status BETWEEN 100 AND 599 AND halt_http_status <> 200),
+            halt_http_status INTEGER CHECK(halt_http_status IS NULL OR (halt_http_status BETWEEN 100 AND 599 AND halt_http_status <> 200)),
             actor TEXT NOT NULL CHECK(length(actor) BETWEEN 1 AND 128),
             reason TEXT NOT NULL CHECK(length(reason) BETWEEN 1 AND 512),
             revision INTEGER NOT NULL CHECK(revision > 0),
@@ -184,8 +190,11 @@ public sealed partial class SqliteOrbitalElementsStore
     /// <summary>
     /// Creates schema 1 in an empty database or proves an existing one is exactly schema 1, then settles every
     /// InFlight attempt as Interrupted. Interrupted attempts keep their start time, so they still hold the floor.
+    /// An InFlight attempt with no durably recorded provider outcome (no valid 200 retrieval) may have been refused by
+    /// the provider, so it also records a provider-wide halt with no HTTP status (fail-safe); an existing halt is kept.
     /// </summary>
-    private async ValueTask<int> EnsureSchemaAndReconcileLedgerAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    private async ValueTask<LedgerReconciliation> EnsureSchemaAndReconcileLedgerAsync(SqliteConnection connection,
+        CancellationToken cancellationToken)
     {
         using var transaction = BeginImmediate(connection);
         var version = await ScalarLongAsync(connection, transaction, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false);
@@ -217,18 +226,36 @@ public sealed partial class SqliteOrbitalElementsStore
                 : "Orbital elements storage has an unknown schema version.");
         }
         await ValidateSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        var reconciledAt = ToUnixMilliseconds(Truncate(Now()));
+        var unknown = await ScalarStringAsync(connection, transaction, """
+            SELECT attempt_id FROM orbital_attempts WHERE outcome = 'InFlight' AND retrieved_utc_ticks IS NULL;
+            """, cancellationToken).ConfigureAwait(false);
         var interrupted = await ExecuteAsync(connection, transaction, """
             UPDATE orbital_attempts
             SET outcome = 'Interrupted', completed_unix_ms = MAX(started_unix_ms, $now),
-                reason_code = 'orbital.attempt-interrupted', detail = 'The process stopped before the attempt completed.'
+                reason_code = CASE WHEN retrieved_utc_ticks IS NULL THEN $unknownCode ELSE 'orbital.attempt-interrupted' END,
+                detail = CASE WHEN retrieved_utc_ticks IS NULL
+                    THEN 'The process stopped after the request may have reached the provider and before its outcome was recorded.'
+                    ELSE 'The process stopped after a valid provider response was recorded and before publication completed.' END
             WHERE outcome = 'InFlight';
-            """, cancellationToken, ("$now", ToUnixMilliseconds(Truncate(Now())))).ConfigureAwait(false);
+            """, cancellationToken, ("$now", reconciledAt), ("$unknownCode", ProviderOutcomeUnknownReasonCode))
+            .ConfigureAwait(false);
+        var haltRecorded = false;
+        if (unknown is not null)
+        {
+            haltRecorded = await ExecuteAsync(connection, transaction, """
+                UPDATE orbital_provider_state
+                SET halt_since_unix_ms = $now, halt_http_status = NULL, halt_reason = $reason
+                WHERE provider = 'celestrak' AND halt_since_unix_ms IS NULL;
+                """, cancellationToken, ("$now", reconciledAt), ("$reason", ProviderOutcomeUnknownHaltReason))
+                .ConfigureAwait(false) > 0;
+        }
         if (interrupted > 0)
         {
             await BumpRevisionAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return interrupted;
+        return new(interrupted, unknown, haltRecorded);
     }
 
     private static async ValueTask ValidateSchemaAsync(

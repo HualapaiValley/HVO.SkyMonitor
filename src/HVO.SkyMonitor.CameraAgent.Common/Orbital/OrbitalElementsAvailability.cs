@@ -188,18 +188,25 @@ public sealed partial class OrbitalElementsAvailability
 
 /// <summary>
 /// Initializes the orbital store before the automation runner starts, whether or not refresh is enabled, so the
-/// reserved definition's phase offset is in memory and restart reconciliation has run. Failure never stops the host;
-/// while the store is unavailable this service retries on a fixed bounded cadence until it recovers.
+/// reserved definition's phase offset is in memory and restart reconciliation has run. Once the store is available it
+/// publishes the reconciled provider state to the gauges, so a halt that survived a restart (or that reconciliation
+/// just recorded) reads <c>halted = 1</c> before any attempt. Failure never stops the host; while the store is
+/// unavailable this service retries on a fixed bounded cadence until it recovers.
 /// </summary>
 internal sealed class OrbitalElementsInitializationService(
     OrbitalElementsAvailability availability,
-    TimeProvider timeProvider) : BackgroundService
+    TimeProvider timeProvider,
+    OrbitalElementsRefreshJob? job = null) : BackgroundService
 {
     internal static readonly TimeSpan RetryInterval = TimeSpan.FromMinutes(5);
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
-        await availability.EnsureAvailableAsync(cancellationToken).ConfigureAwait(false);
+        if (await availability.EnsureAvailableAsync(cancellationToken).ConfigureAwait(false) ==
+            OrbitalElementsAvailabilityState.Available)
+        {
+            await PublishStateAsync(cancellationToken).ConfigureAwait(false);
+        }
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -217,6 +224,7 @@ internal sealed class OrbitalElementsInitializationService(
                 if (await availability.EnsureAvailableAsync(stoppingToken).ConfigureAwait(false) ==
                     OrbitalElementsAvailabilityState.Available)
                 {
+                    await PublishStateAsync(stoppingToken).ConfigureAwait(false);
                     return;
                 }
             }
@@ -226,4 +234,7 @@ internal sealed class OrbitalElementsInitializationService(
             // Host shutdown.
         }
     }
+
+    private ValueTask PublishStateAsync(CancellationToken cancellationToken)
+        => job?.PublishStateAsync(cancellationToken) ?? ValueTask.CompletedTask;
 }

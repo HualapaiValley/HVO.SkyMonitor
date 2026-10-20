@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using Microsoft.Extensions.Options;
 
@@ -23,13 +24,33 @@ public sealed record OrbitalElementsHealthSnapshot(
 
 /// <summary>
 /// Evaluates orbital-elements health from the same read model the operator status uses. Disabled refresh is healthy;
-/// an unusable store is unhealthy; a halt, a quarantine, an unsettled or storage-failed attempt, a stale snapshot, or no
-/// snapshot once one was due is degraded, because the last-known-good snapshot (if any) remains readable.
+/// an unusable store is unhealthy; a halt, a quarantine, an unsettled or storage-failed attempt, stale elements, an
+/// overdue refresh, or no snapshot once one was due is degraded, because the last-known-good snapshot (if any) remains
+/// readable.
 /// </summary>
+/// <remarks>
+/// Element freshness and acquisition are separate facts. Freshness derives from the newest element epoch in the active
+/// snapshot against the <see cref="OrbitalSelectionPolicy.StaleAbsoluteAgeHours"/> envelope, so re-downloading an
+/// unchanged old payload never makes it look fresh. Refresh is overdue when no valid provider retrieval succeeded within
+/// <see cref="OrbitalElementsOptions.StaleAfterHours"/>. Activation age is reported separately and only moves when the
+/// active payload changes.
+/// </remarks>
 public sealed class OrbitalElementsHealthEvaluator
 {
+    /// <summary>The newest element epoch in the active snapshot is older than <see cref="ElementStaleAge"/>.</summary>
     public const string SnapshotStaleReasonCode = "orbital.snapshot-stale";
+
+    /// <summary>No valid provider retrieval succeeded within <see cref="OrbitalElementsOptions.StaleAfterHours"/>.</summary>
+    public const string RefreshOverdueReasonCode = "orbital.refresh-overdue";
+
     public const string FirstSnapshotOverdueReasonCode = "orbital.first-snapshot-overdue";
+
+    /// <summary>
+    /// The element-age envelope beyond which the #527 selection policy treats an element set as stale (48 hours). It is
+    /// read from <see cref="OrbitalSelectionPolicy"/> rather than restated, so the two cannot drift.
+    /// </summary>
+    public static readonly TimeSpan ElementStaleAge = TimeSpan.FromHours(
+        new OrbitalSelectionPolicy([new OrbitalSourcePriority(CelesTrakGpSource.DatasetKey, 0)]).StaleAbsoluteAgeHours);
 
     /// <summary>How long after a due time the first snapshot may still be pending before health degrades.</summary>
     public static readonly TimeSpan DueGrace = TimeSpan.FromMinutes(5);
@@ -93,17 +114,33 @@ public sealed class OrbitalElementsHealthEvaluator
             ["RecoveryAction"] = observation.Status.RecoveryAction.ToString(),
             ["Halted"] = state.Halt is not null
         };
-        if (state.Halt is { } halt)
+        if (state.Halt?.HttpStatusCode is { } haltStatus)
         {
-            data["HaltHttpStatus"] = halt.HttpStatusCode;
+            data["HaltHttpStatus"] = haltStatus;
         }
         if (state.CurrentRecordCount is { } records)
         {
             data["ActiveRecordCount"] = records;
         }
+        if (state.CurrentObjectCount is { } objects)
+        {
+            data["ActiveObjectCount"] = objects;
+        }
+        if (state.CurrentMaximumEpochUtc is { } newest)
+        {
+            data["NewestElementAgeSeconds"] = AgeSeconds(now, newest);
+        }
+        if (state.CurrentMinimumEpochUtc is { } oldest)
+        {
+            data["OldestElementAgeSeconds"] = AgeSeconds(now, oldest);
+        }
         if (state.LastActivationUtc is { } activated)
         {
-            data["ActiveAgeSeconds"] = (long)Math.Max(0, (now - activated).TotalSeconds);
+            data["ActivationAgeSeconds"] = AgeSeconds(now, activated);
+        }
+        if (state.LastRetrievalSuccessUtc is { } retrieved)
+        {
+            data["RetrievalAgeSeconds"] = AgeSeconds(now, retrieved);
         }
         if (state.LastAttemptOutcome is { } outcome)
         {
@@ -113,6 +150,26 @@ public sealed class OrbitalElementsHealthEvaluator
             ? new(OrbitalElementsHealthState.Healthy, "Orbital elements are current.", data)
             : new(OrbitalElementsHealthState.Degraded,
                 "Orbital elements need operator attention; the last-known-good snapshot remains readable.", data);
+    }
+
+    /// <summary>
+    /// Whether the active snapshot's elements are stale: there is no newest element epoch (fail safe, because then no
+    /// element could be fresh), or it is more than <see cref="ElementStaleAge"/> before <paramref name="now"/>. An epoch
+    /// exactly at the threshold, or ahead of the clock, is not stale. Pure, so the operator UI applies the same rule.
+    /// </summary>
+    public static bool IsElementStale(DateTimeOffset now, DateTimeOffset? newestEpochUtc)
+        => newestEpochUtc is not { } newest || now - newest > ElementStaleAge;
+
+    /// <summary>
+    /// Whether a refresh is overdue: no valid provider retrieval has succeeded, or the last one is more than
+    /// <see cref="OrbitalElementsOptions.StaleAfterHours"/> before <paramref name="now"/>. A retrieval exactly at the
+    /// threshold is not overdue. Pure, so the operator UI applies the same rule.
+    /// </summary>
+    public static bool IsRefreshOverdue(DateTimeOffset now, DateTimeOffset? lastRetrievalSuccessUtc,
+        OrbitalElementsOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return lastRetrievalSuccessUtc is not { } retrieved || now - retrieved > TimeSpan.FromHours(options.StaleAfterHours);
     }
 
     /// <summary>The first degrading condition in precedence order, or null when the snapshot is healthy.</summary>
@@ -139,13 +196,13 @@ public sealed class OrbitalElementsHealthEvaluator
         {
             return state.LastAttemptReasonCode ?? OrbitalElementsOperations.StorageFailedReasonCode;
         }
-        if (state.LastActivationUtc is { } activated && now - activated > TimeSpan.FromHours(configured.StaleAfterHours))
-        {
-            return SnapshotStaleReasonCode;
-        }
         if (state.CurrentManifestSha256 is not null)
         {
-            return null;
+            if (IsElementStale(now, state.CurrentMaximumEpochUtc))
+            {
+                return SnapshotStaleReasonCode;
+            }
+            return IsRefreshOverdue(now, state.LastRetrievalSuccessUtc, configured) ? RefreshOverdueReasonCode : null;
         }
         if (observation.Definition is not { Definition.Enabled: true } definition)
         {
@@ -156,6 +213,9 @@ public sealed class OrbitalElementsHealthEvaluator
             ? FirstSnapshotOverdueReasonCode
             : null;
     }
+
+    /// <summary>Whole seconds since <paramref name="then"/>, never negative (an epoch ahead of the clock reads as 0).</summary>
+    private static long AgeSeconds(DateTimeOffset now, DateTimeOffset then) => (long)Math.Max(0, (now - then).TotalSeconds);
 
     private static OrbitalElementsHealthSnapshot Unhealthy(OrbitalElementsAvailabilityState availability, string reasonCode)
         => new(OrbitalElementsHealthState.Unhealthy, "Orbital elements storage is unavailable.",

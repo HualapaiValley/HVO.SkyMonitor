@@ -92,7 +92,8 @@ public static class SkyMonitorObservabilityExtensions
     };
     private static readonly HashSet<string> OrbitalElementsHealthDataKeys = new(StringComparer.Ordinal)
     {
-        "Availability", "Reason", "RecoveryAction", "Halted", "HaltHttpStatus", "ActiveRecordCount", "ActiveAgeSeconds",
+        "Availability", "Reason", "RecoveryAction", "Halted", "HaltHttpStatus", "ActiveRecordCount", "ActiveObjectCount",
+        "NewestElementAgeSeconds", "OldestElementAgeSeconds", "ActivationAgeSeconds", "RetrievalAgeSeconds",
         "LastAttemptOutcome"
     };
     private static readonly HashSet<string> CalibrationLibraryHealthDataKeys = new(StringComparer.Ordinal)

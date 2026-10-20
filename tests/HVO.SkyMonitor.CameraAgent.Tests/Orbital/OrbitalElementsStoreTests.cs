@@ -411,13 +411,14 @@ public sealed class OrbitalElementsStoreTests : OrbitalStoreTestBase
     }
 
     [TestMethod]
-    public async Task AnInFlightAttemptBecomesInterruptedOnReopenAndStillHoldsTheFloor()
+    public async Task AnInFlightAttemptWithARecordedRetrievalBecomesInterruptedOnReopenAndStillHoldsTheFloor()
     {
         var root = CreateRoot();
         var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
         using (var store = OrbitalElementsStoreTestData.Open(root, clock))
         {
-            await OrbitalElementsStoreTestData.AdmitAsync(store).ConfigureAwait(false);
+            var attemptId = await OrbitalElementsStoreTestData.AdmitAsync(store).ConfigureAwait(false);
+            await store.RecordRetrievalAsync(attemptId, clock.GetUtcNow(), CancellationToken.None).ConfigureAwait(false);
         }
         clock.Advance(TimeSpan.FromMinutes(30));
 
@@ -425,7 +426,9 @@ public sealed class OrbitalElementsStoreTests : OrbitalStoreTestBase
         var state = await reopened.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(OrbitalAttemptOutcome.Interrupted, state.LastAttemptOutcome);
         Assert.AreEqual("orbital.attempt-interrupted", state.LastAttemptReasonCode);
+        Assert.IsNull(state.Halt, "A recorded 200 is a known provider outcome; the interruption does not halt.");
         Assert.AreEqual(OrbitalElementsStoreTestData.Start, state.LastAttemptUtc);
+        Assert.AreEqual(OrbitalElementsStoreTestData.Start, state.LastRetrievalSuccessUtc);
         var blocked = await reopened.TryBeginAttemptAsync("run", OrbitalAttemptTrigger.Manual, CancellationToken.None)
             .ConfigureAwait(false);
         Assert.AreEqual(OrbitalAdmissionStatus.FloorNotElapsed, blocked.Status);
@@ -434,6 +437,191 @@ public sealed class OrbitalElementsStoreTests : OrbitalStoreTestBase
         clock.Advance(TimeSpan.FromMinutes(90));
         Assert.AreEqual(OrbitalAdmissionStatus.Admitted, (await reopened.TryBeginAttemptAsync(
             "run", OrbitalAttemptTrigger.Manual, CancellationToken.None).ConfigureAwait(false)).Status);
+    }
+
+    [TestMethod]
+    public async Task AnInFlightAttemptWithNoRecordedOutcomeHaltsOnReopenUntilResumedAndStillHoldsTheFloor()
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        using (var store = OrbitalElementsStoreTestData.Open(root, clock))
+        {
+            await OrbitalElementsStoreTestData.AdmitAsync(store).ConfigureAwait(false);
+        }
+        clock.Advance(TimeSpan.FromMinutes(30));
+        var reopenedAt = clock.GetUtcNow();
+
+        using var reopened = OrbitalElementsStoreTestData.Open(root, clock);
+        var state = await reopened.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalAttemptOutcome.Interrupted, state.LastAttemptOutcome);
+        Assert.AreEqual("orbital.provider-outcome-unknown", state.LastAttemptReasonCode);
+        Assert.IsNotNull(state.Halt);
+        Assert.IsNull(state.Halt.HttpStatusCode, "No valid HTTP status was recorded.");
+        Assert.AreEqual(reopenedAt, state.Halt.SinceUtc);
+        Assert.StartsWith("orbital.provider-outcome-unknown: ", state.Halt.Reason);
+        Assert.IsNull(state.LastRetrievalSuccessUtc);
+        AssertReadModelAccepts(state);
+
+        clock.Advance(OrbitalElementsStoreTestData.Interval);
+        var halted = await reopened.TryBeginAttemptAsync("run", OrbitalAttemptTrigger.Manual, CancellationToken.None)
+            .ConfigureAwait(false);
+        Assert.AreEqual(OrbitalAdmissionStatus.Halted, halted.Status, "Elapsed time never clears a fail-safe halt.");
+
+        var resumed = await reopened.ResumeProviderAsync(new OrbitalResumeRequest(reopenedAt, "resume-unknown",
+            "operator@example.test", "provider access confirmed"), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalCommandStatus.Applied, resumed.Status);
+        Assert.IsNull(OrbitalElementsStoreTestData.Scalar(root, "SELECT halt_http_status FROM orbital_commands;") as long?);
+        Assert.AreEqual(OrbitalAdmissionStatus.Admitted, (await reopened.TryBeginAttemptAsync(
+            "run", OrbitalAttemptTrigger.Manual, CancellationToken.None).ConfigureAwait(false)).Status);
+    }
+
+    [TestMethod]
+    public async Task AResumeAfterAnUnknownOutcomeHaltStillRespectsTheFloor()
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        using (var store = OrbitalElementsStoreTestData.Open(root, clock))
+        {
+            await OrbitalElementsStoreTestData.AdmitAsync(store).ConfigureAwait(false);
+        }
+        using var reopened = OrbitalElementsStoreTestData.Open(root, clock);
+        var halt = (await reopened.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Halt!;
+
+        var resumed = await reopened.ResumeProviderAsync(new OrbitalResumeRequest(halt.SinceUtc, "resume-early",
+            "operator@example.test", "provider access confirmed"), CancellationToken.None).ConfigureAwait(false);
+        var blocked = await reopened.TryBeginAttemptAsync("run", OrbitalAttemptTrigger.Manual, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        Assert.AreEqual(OrbitalCommandStatus.Applied, resumed.Status);
+        Assert.AreEqual(OrbitalAdmissionStatus.FloorNotElapsed, blocked.Status);
+        Assert.AreEqual(OrbitalElementsStoreTestData.Start + OrbitalElementsStoreTestData.Interval, blocked.NextPermittedAttemptUtc);
+    }
+
+    [TestMethod]
+    public async Task ReconciliationNeverReplacesAnExistingHalt()
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        using (var store = OrbitalElementsStoreTestData.Open(root, clock))
+        {
+            await OrbitalElementsStoreTestData.AdmitAsync(store).ConfigureAwait(false);
+        }
+        // Not reachable through the API (a halt refuses admission); written directly to prove the guard.
+        OrbitalElementsStoreTestData.Execute(root, """
+            UPDATE orbital_provider_state SET halt_since_unix_ms = 1000, halt_http_status = 429, halt_reason = 'synthetic existing halt';
+            """);
+        clock.Advance(TimeSpan.FromMinutes(30));
+
+        using var reopened = OrbitalElementsStoreTestData.Open(root, clock);
+        var state = await reopened.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual("orbital.provider-outcome-unknown", state.LastAttemptReasonCode);
+        Assert.AreEqual(new OrbitalProviderHalt(DateTimeOffset.FromUnixTimeMilliseconds(1000), 429, "synthetic existing halt"),
+            state.Halt);
+    }
+
+    [TestMethod]
+    public async Task AHaltWithNoValidHttpStatusIsRecordedWithANullStatus()
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        using var store = OrbitalElementsStoreTestData.Open(root, clock);
+        var attemptId = await OrbitalElementsStoreTestData.AdmitAsync(store).ConfigureAwait(false);
+
+        await store.RecordHaltAsync(attemptId, null, " ", CancellationToken.None).ConfigureAwait(false);
+
+        var state = await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual((OrbitalAttemptOutcome.ProviderHalted, "orbital.invalid-http-status"),
+            (state.LastAttemptOutcome!.Value, state.LastAttemptReasonCode));
+        Assert.IsNull(state.Halt!.HttpStatusCode);
+        Assert.StartsWith("orbital.invalid-http-status: ", state.Halt.Reason);
+        Assert.IsNull(OrbitalElementsStoreTestData.Scalar(root, "SELECT http_status FROM orbital_attempts;") as long?);
+        AssertReadModelAccepts(state);
+        clock.Advance(OrbitalElementsStoreTestData.Interval);
+        Assert.AreEqual(OrbitalAdmissionStatus.Halted, (await store.TryBeginAttemptAsync(
+            "run", OrbitalAttemptTrigger.Manual, CancellationToken.None).ConfigureAwait(false)).Status);
+    }
+
+    [TestMethod]
+    public async Task AHaltWithoutARecordedStatusIsLoggedWithoutAnyHttpLabelThroughResume()
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        var logger = new OrbitalTestLogger<SqliteOrbitalElementsStore>();
+        using var store = new SqliteOrbitalElementsStore(OrbitalElementsStoreTestData.Settings(root), clock, logger,
+            NullOrbitalStorageFaultInjector.Instance);
+        await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var attemptId = await OrbitalElementsStoreTestData.AdmitAsync(store).ConfigureAwait(false);
+
+        await store.RecordHaltAsync(attemptId, null, "orbital.invalid-http-status: synthetic", CancellationToken.None)
+            .ConfigureAwait(false);
+        var halt = (await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Halt!;
+        var resumed = await store.ResumeProviderAsync(new OrbitalResumeRequest(halt.SinceUtc, "resume-null-status",
+            "operator@example.test", "provider status confirmed"), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OrbitalCommandStatus.Applied, resumed.Status);
+        var events = logger.EventIds;
+        Assert.Contains(7716, events);
+        Assert.Contains(7717, events);
+        Assert.DoesNotContain(7703, events);
+        Assert.DoesNotContain(7711, events);
+        var rendered = logger.Rendered();
+        StringAssert.Contains(rendered, "no valid HTTP status recorded", StringComparison.Ordinal);
+        Assert.DoesNotContain("HTTP (null)", rendered);
+        StringAssert.DoesNotMatch(rendered, new System.Text.RegularExpressions.Regex(@"HTTP \d"),
+            "No HTTP status label is invented for a halt that has none.");
+    }
+
+    [TestMethod]
+    public async Task ARecordedRetrievalAdvancesTheLastRetrievalSuccessAndAQuarantineKeepsIt()
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        using var store = OrbitalElementsStoreTestData.Open(root, clock);
+        var attemptId = await OrbitalElementsStoreTestData.AdmitAsync(store).ConfigureAwait(false);
+        var retrievedAt = clock.GetUtcNow().AddSeconds(3);
+
+        await store.RecordRetrievalAsync(attemptId, retrievedAt, CancellationToken.None).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => store.RecordRetrievalAsync(
+            attemptId, retrievedAt.AddSeconds(1), CancellationToken.None).AsTask()).ConfigureAwait(false);
+        await store.RecordQuarantineAsync(attemptId, OrbitalElementsStoreTestData.Raw("quarantined"), null, "orbital.schema",
+            "synthetic", CancellationToken.None).ConfigureAwait(false);
+
+        var state = await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(OrbitalAttemptOutcome.Quarantined, state.LastAttemptOutcome);
+        Assert.AreEqual(retrievedAt, state.LastRetrievalSuccessUtc);
+        Assert.IsNull(state.LastActivationUtc);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => store.RecordRetrievalAsync(
+            attemptId, retrievedAt, CancellationToken.None).AsTask()).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task AnInterruptedAttemptHaltsOnlyWhenNoProviderOutcomeWasRecorded(bool retrieved)
+    {
+        var root = CreateRoot();
+        var clock = new OrbitalElementsStoreTestData.Clock(OrbitalElementsStoreTestData.Start);
+        using var store = OrbitalElementsStoreTestData.Open(root, clock);
+        var attemptId = await OrbitalElementsStoreTestData.AdmitAsync(store).ConfigureAwait(false);
+        if (retrieved)
+        {
+            await store.RecordRetrievalAsync(attemptId, clock.GetUtcNow(), CancellationToken.None).ConfigureAwait(false);
+        }
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync().ConfigureAwait(false);
+
+        var unknown = await store.RecordInterruptedAsync(attemptId, cancelled.Token).ConfigureAwait(false);
+
+        var state = await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(!retrieved, unknown);
+        Assert.AreEqual(OrbitalAttemptOutcome.Interrupted, state.LastAttemptOutcome);
+        Assert.AreEqual(retrieved ? "orbital.attempt-cancelled" : "orbital.provider-outcome-unknown", state.LastAttemptReasonCode);
+        Assert.AreEqual(!retrieved, state.Halt is not null);
+        Assert.IsNull(state.Halt?.HttpStatusCode);
+        AssertReadModelAccepts(state);
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => store.RecordInterruptedAsync(attemptId, CancellationToken.None).AsTask()).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -738,6 +926,7 @@ public sealed class OrbitalElementsStoreTests : OrbitalStoreTestBase
     [DataRow("UPDATE orbital_attempts SET outcome = 'Activated' WHERE outcome = 'UnchangedPayload';")]
     [DataRow("UPDATE orbital_installation SET created_unix_ms = 0;")]
     [DataRow("UPDATE orbital_snapshots SET payload_sha256 = lower(payload_sha256);")]
+    [DataRow("UPDATE orbital_attempts SET retrieved_utc_ticks = 0;")]
     public async Task DurableHistoryCountersAndIdentitiesCannotBeRewritten(string sql)
     {
         var root = CreateRoot();

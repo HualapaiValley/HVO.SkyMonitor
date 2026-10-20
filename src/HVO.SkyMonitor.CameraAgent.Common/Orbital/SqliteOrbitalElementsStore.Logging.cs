@@ -48,6 +48,10 @@ public sealed partial class SqliteOrbitalElementsStore
     [LoggerMessage(7711, LogLevel.Information, "Orbital provider halt for HTTP {HttpStatusCode} resumed by an operator at revision {Revision}")]
     private static partial void ProviderResumed(ILogger logger, int httpStatusCode, long revision);
 
+    [LoggerMessage(7717, LogLevel.Information,
+        "Orbital provider halt with no valid HTTP status recorded resumed by an operator at revision {Revision}")]
+    private static partial void ProviderResumedWithoutStatus(ILogger logger, long revision);
+
     [LoggerMessage(7712, LogLevel.Information, "Orbital snapshot {ManifestSha256} retired by retention")]
     private static partial void SnapshotRetired(ILogger logger, string manifestSha256);
 
@@ -57,4 +61,12 @@ public sealed partial class SqliteOrbitalElementsStore
 
     [LoggerMessage(7714, LogLevel.Warning, "Orbital attempt {AttemptId} was interrupted before it completed")]
     private static partial void AttemptInterrupted(ILogger logger, string attemptId);
+
+    [LoggerMessage(7715, LogLevel.Warning,
+        "Orbital attempt {AttemptId} stopped before its provider outcome was recorded; refresh is halted provider-wide until an operator resumes it (new halt recorded: {HaltRecorded})")]
+    private static partial void ProviderOutcomeUnknown(ILogger logger, string attemptId, bool haltRecorded);
+
+    [LoggerMessage(7716, LogLevel.Warning,
+        "Orbital provider halted on attempt {AttemptId} with no valid HTTP status recorded because the status line was outside 100-599; no further attempts until an operator resumes it")]
+    private static partial void ProviderHaltedInvalidStatus(ILogger logger, string attemptId);
 }

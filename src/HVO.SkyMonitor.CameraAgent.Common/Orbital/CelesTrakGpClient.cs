@@ -107,11 +107,12 @@ public sealed class CelesTrakGpClient : IOrbitalElementsProviderClient
             CelesTrakGpSource.SingleHeaderValue(response.Content.Headers, "Last-Modified"),
             CelesTrakGpSource.MaximumLastModifiedLength);
 
-        // RFC 9110 defines status codes only in 100..599; anything else is an invalid response, not a provider status
-        // the halt policy can name. It is rejected (and quarantined by the caller) without reading the body.
+        // RFC 9110 defines status codes only in 100..599; anything else is not a status the halt record can name, but
+        // the request did reach something answering for the provider. Fail safe: it halts provider-wide with no
+        // recorded status (orbital.invalid-http-status) until an operator resumes, and the body is not read.
         if (status is < 100 or > 599)
         {
-            return state.Complete(this, OrbitalFetchDisposition.ResponseRejected, "orbital.invalid-http-status",
+            return state.Complete(this, OrbitalFetchDisposition.HttpStatusHalt, "orbital.invalid-http-status",
                 FormattableString.Invariant($"status={status}"));
         }
 

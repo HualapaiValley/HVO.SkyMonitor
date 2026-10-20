@@ -5,9 +5,16 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;
 
 /// <summary>
 /// Orbital-element acquisition metrics. Labels are bounded enum names only; no attempt identity, run key, digest,
-/// path, actor or provider text ever becomes a label. The gauges read a cached provider-state snapshot that the
-/// refresh job and operations publish after durable reads, so an observation callback never performs I/O.
+/// path, actor or provider text ever becomes a label. The gauges read a cached provider-state snapshot, so an
+/// observation callback never performs I/O.
 /// </summary>
+/// <remarks>
+/// Only the refresh job publishes that snapshot, from a durable read serialized with its single-flight lock: at the end
+/// of every occurrence (skipped ones included), once the store initializes (after restart reconciliation, so a halt
+/// that survived a restart reads 1 before any attempt), and after an applied operator resume. Status reads and health
+/// evaluation never publish. Nothing is emitted until the first publication, and a store that later becomes unusable
+/// leaves the last published values in place.
+/// </remarks>
 public sealed class OrbitalElementsTelemetry : IDisposable
 {
     public const string MeterName = "HVO.SkyMonitor.CameraAgent.OrbitalElements";
@@ -44,8 +51,17 @@ public sealed class OrbitalElementsTelemetry : IDisposable
             "skymonitor.cameraagent.orbital_elements.active_records", ObserveActiveRecords, "{record}",
             "Records in the active orbital snapshot.");
         _meter.CreateObservableGauge(
-            "skymonitor.cameraagent.orbital_elements.active_age", ObserveActiveAge, "s",
-            "Seconds since the active orbital snapshot was activated.");
+            "skymonitor.cameraagent.orbital_elements.active_objects", ObserveActiveObjects, "{object}",
+            "Distinct objects in the active orbital snapshot.");
+        _meter.CreateObservableGauge(
+            "skymonitor.cameraagent.orbital_elements.newest_element_age", ObserveNewestElementAge, "s",
+            "Seconds since the newest element epoch in the active snapshot; element freshness follows this.");
+        _meter.CreateObservableGauge(
+            "skymonitor.cameraagent.orbital_elements.oldest_element_age", ObserveOldestElementAge, "s",
+            "Seconds since the oldest element epoch in the active snapshot.");
+        _meter.CreateObservableGauge(
+            "skymonitor.cameraagent.orbital_elements.activation_age", ObserveActivationAge, "s",
+            "Seconds since the active payload last changed; an unchanged re-download does not reset it.");
         _meter.CreateObservableGauge(
             "skymonitor.cameraagent.orbital_elements.halted", ObserveHalted, "{halt}",
             "1 while a provider-wide halt is in force, otherwise 0.");
@@ -70,7 +86,8 @@ public sealed class OrbitalElementsTelemetry : IDisposable
     public void Observe(OrbitalProviderState state)
     {
         ArgumentNullException.ThrowIfNull(state);
-        _observed = new ObservedState(state.CurrentRecordCount, state.LastActivationUtc, state.Halt is not null);
+        _observed = new ObservedState(state.CurrentRecordCount, state.CurrentObjectCount, state.CurrentMaximumEpochUtc,
+            state.CurrentMinimumEpochUtc, state.LastActivationUtc, state.Halt is not null);
     }
 
     public void Dispose()
@@ -82,18 +99,21 @@ public sealed class OrbitalElementsTelemetry : IDisposable
     private IEnumerable<Measurement<long>> ObserveActiveRecords()
         => _observed is { ActiveRecords: { } records } ? [new Measurement<long>(records)] : [];
 
-    private IEnumerable<Measurement<double>> ObserveActiveAge()
-    {
-        if (_observed is not { LastActivationUtc: { } activated })
-        {
-            return [];
-        }
-        var age = _timeProvider.GetUtcNow() - activated;
-        return [new Measurement<double>(Math.Max(0, age.TotalSeconds))];
-    }
+    private IEnumerable<Measurement<long>> ObserveActiveObjects()
+        => _observed is { ActiveObjects: { } objects } ? [new Measurement<long>(objects)] : [];
+
+    private IEnumerable<Measurement<double>> ObserveNewestElementAge() => Age(_observed?.NewestEpochUtc);
+
+    private IEnumerable<Measurement<double>> ObserveOldestElementAge() => Age(_observed?.OldestEpochUtc);
+
+    private IEnumerable<Measurement<double>> ObserveActivationAge() => Age(_observed?.LastActivationUtc);
+
+    private IEnumerable<Measurement<double>> Age(DateTimeOffset? since)
+        => since is { } value ? [new Measurement<double>(Math.Max(0, (_timeProvider.GetUtcNow() - value).TotalSeconds))] : [];
 
     private IEnumerable<Measurement<int>> ObserveHalted()
         => _observed is { } observed ? [new Measurement<int>(observed.Halted ? 1 : 0)] : [];
 
-    private sealed record ObservedState(int? ActiveRecords, DateTimeOffset? LastActivationUtc, bool Halted);
+    private sealed record ObservedState(int? ActiveRecords, int? ActiveObjects, DateTimeOffset? NewestEpochUtc,
+        DateTimeOffset? OldestEpochUtc, DateTimeOffset? LastActivationUtc, bool Halted);
 }
