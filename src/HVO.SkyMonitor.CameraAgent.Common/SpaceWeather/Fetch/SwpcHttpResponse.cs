@@ -26,8 +26,15 @@ public sealed record SwpcRequestValidators(string? EntityTag, string? LastModifi
 /// ID1/ID2 and CM=8 are required; reserved flags are rejected; MTIME, XFL and OS are ignored. FEXTRA is skipped;
 /// FNAME and FCOMMENT are zero-terminated within 1,024 bytes each, including the terminator. FHCRC is the low
 /// 16 bits of the header's IEEE CRC-32. Raw deflate must finish immediately before the eight-byte trailer,
-/// whose IEEE CRC-32 and ISIZE must match the decoded body (length modulo 2^32). Oversize takes priority over framing checks;
-/// connection truncation remains NetworkError. The response owns an exact-length copy of its body.
+/// whose IEEE CRC-32 and ISIZE must match the decoded body (length modulo 2^32). Oversize takes priority over framing checks.
+/// Owner decision T3: before any gzip rejection after opening the body, drain the counting wire under the same
+/// linked token with one fixed buffer of at most 8 KiB. Discard at most maximum+1 further wire bytes, with each
+/// read bounded by the remaining allowance; stop at that bound without another read and return BodyUndecodable.
+/// At EOF before the bound (or EOF already observed), check declared Content-Length: a mismatch is NetworkError;
+/// a match or absent length is BodyUndecodable. Drain IOException/HttpIOException propagate as NetworkError;
+/// the deadline is Timeout and caller cancellation throws. Decoded oversize keeps priority and never drains.
+/// Unsupported codings and identity oversize by declared length are never opened or read, so their wire length
+/// is never judged. The response owns an exact-length copy of its body.
 /// </summary>
 public sealed record SwpcHttpResponse
 {

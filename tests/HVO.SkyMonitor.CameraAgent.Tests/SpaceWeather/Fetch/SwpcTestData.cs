@@ -43,6 +43,9 @@ internal sealed class SwpcContent(byte[] bytes, bool unbounded = false, bool pen
     public bool Disposed { get; private set; }
     public int BytesRead { get; private set; }
     public int LargestRead { get; private set; }
+    public int ReadCalls { get; private set; }
+    public int LastReadRequest { get; private set; }
+    public bool ReaderDisposed { get; private set; }
     public TaskCompletionSource BlockedReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource ReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     protected override bool TryComputeLength(out long length) { length = 0; return false; }
@@ -52,6 +55,9 @@ internal sealed class SwpcContent(byte[] bytes, bool unbounded = false, bool pen
     protected override void Dispose(bool disposing) { Disposed = true; base.Dispose(disposing); }
     private async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken token)
     {
+        ObjectDisposedException.ThrowIf(ReaderDisposed, this);
+        ReadCalls++;
+        LastReadRequest = buffer.Length;
         ReadStarted.TrySetResult();
         LargestRead = Math.Max(LargestRead, buffer.Length);
         if (BytesRead >= afterBytes)
@@ -75,6 +81,11 @@ internal sealed class SwpcContent(byte[] bytes, bool unbounded = false, bool pen
     }
     private sealed class Reader(SwpcContent owner) : Stream
     {
+        protected override void Dispose(bool disposing)
+        {
+            owner.ReaderDisposed = true;
+            base.Dispose(disposing);
+        }
         public override bool CanRead => true;
         public override bool CanSeek => false;
         public override bool CanWrite => false;

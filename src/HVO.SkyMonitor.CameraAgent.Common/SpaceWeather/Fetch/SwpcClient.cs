@@ -124,19 +124,40 @@ public sealed class SwpcClient : ISwpcClient
             // A zero decoded read proves completion only if the inflater did not request source EOF.
             // Requiring the isolated final byte excludes unseen input left in any preceding bulk read.
             if (!member.LoneByteDelivered || member.DecoderStarved || !member.HasExactTrailer)
-                return new(default, false, true);
+                return await RejectGzipAsync(wire, declared, maximum, token).ConfigureAwait(false);
             if (BinaryPrimitives.ReadUInt32LittleEndian(member.Trailer.Span) != SwpcCrc32.Compute(body.Bytes.Span))
-                return new(default, false, true);
+                return await RejectGzipAsync(wire, declared, maximum, token).ConfigureAwait(false);
             if (BinaryPrimitives.ReadUInt32LittleEndian(member.Trailer.Span[4..]) != (uint)body.Bytes.Length)
-                return new(default, false, true);
+                return await RejectGzipAsync(wire, declared, maximum, token).ConfigureAwait(false);
             return body;
         }
         catch (InvalidDataException)
         {
-            // A connection ending before its declared length is transport failure, including inside a gzip read.
-            if (wire.Ended) wire.CheckLength(declared);
-            return new(default, false, true);
+            return await RejectGzipAsync(wire, declared, maximum, token).ConfigureAwait(false);
         }
+    }
+
+    // T3: the wire includes all member read-ahead, and remains open even after the member/decoder are disposed.
+    private static async Task<BodyResult> RejectGzipAsync(CountingStream wire, long? declared, int maximum,
+        CancellationToken token)
+    {
+        if (!wire.Ended)
+        {
+            var scratch = new byte[8192];
+            var discarded = 0;
+            var bound = maximum + 1;
+            while (discarded < bound)
+            {
+                token.ThrowIfCancellationRequested();
+                var read = await wire.ReadAsync(scratch.AsMemory(0, Math.Min(scratch.Length, bound - discarded)), token)
+                    .ConfigureAwait(false);
+                if (read == 0) break;
+                discarded += read;
+            }
+        }
+        // Reaching the discard bound does not authorize a further EOF probe or a length verdict.
+        if (wire.Ended) wire.CheckLength(declared);
+        return new(default, false, true);
     }
 
     private static async Task<BodyResult> ReadBoundedAsync(Stream stream, int maximum, CancellationToken token)
