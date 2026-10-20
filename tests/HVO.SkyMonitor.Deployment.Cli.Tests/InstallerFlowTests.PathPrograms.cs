@@ -61,6 +61,7 @@ public sealed partial class InstallerFlowTests
     [DataRow("hvo-sky-install")]
     public async Task PathPrograms_MismatchedReleaseProgram_IsRefusedBeforeDockerOrWrites(string name)
     {
+        var bundle = RequireCatalogBundle();
         var root = Path.Combine(Path.GetTempPath(), $"hvo-path-mismatch-{Guid.NewGuid():N}");
         using var release = ReleaseFixture.Create(root);
         var runtime = ReleaseAcquirer.HostImageArchitecture() == "amd64" ? "linux-x64" : "linux-arm64";
@@ -71,10 +72,11 @@ public sealed partial class InstallerFlowTests
         var instanceId = Guid.NewGuid();
         var runner = new InstallerProcessRunner(release.ConfigDigest($"linux/{ReleaseAcquirer.HostImageArchitecture()}"), root, instanceId)
         { Labels = release.Labels() };
+        var request = ReleaseRequest(root, bundle, instanceId, release.Folder);
         try
         {
             var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
-                ReleaseRequest(root, RequireCatalogBundle(), instanceId, release.Folder), runner, _ => new InstallerOwnerClient(),
+                request, runner, _ => new InstallerOwnerClient(),
                 RuntimeUid, RuntimeGid, CancellationToken.None, portAvailabilityProbe: new RecordingPortProbe().Probe));
 
             Assert.IsTrue(failure.IsRefusal);
