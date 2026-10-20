@@ -123,18 +123,17 @@ public sealed class SwpcClient : ISwpcClient
             if (wire.Ended) wire.CheckLength(declared);
             // A zero decoded read proves completion only if the inflater did not request source EOF.
             // Requiring the isolated final byte excludes unseen input left in any preceding bulk read.
-            if (!member.LoneByteDelivered || member.DecoderStarved || !member.HasExactTrailer)
-                return await RejectGzipAsync(wire, declared, maximum, token).ConfigureAwait(false);
-            if (BinaryPrimitives.ReadUInt32LittleEndian(member.Trailer.Span) != SwpcCrc32.Compute(body.Bytes.Span))
-                return await RejectGzipAsync(wire, declared, maximum, token).ConfigureAwait(false);
-            if (BinaryPrimitives.ReadUInt32LittleEndian(member.Trailer.Span[4..]) != (uint)body.Bytes.Length)
-                return await RejectGzipAsync(wire, declared, maximum, token).ConfigureAwait(false);
-            return body;
+            if (member.LoneByteDelivered && !member.DecoderStarved && member.HasExactTrailer &&
+                BinaryPrimitives.ReadUInt32LittleEndian(member.Trailer.Span) == SwpcCrc32.Compute(body.Bytes.Span) &&
+                BinaryPrimitives.ReadUInt32LittleEndian(member.Trailer.Span[4..]) == (uint)body.Bytes.Length)
+                return body;
         }
-        catch (InvalidDataException)
+        catch (InvalidDataException) when (!wire.SourceFaulted)
         {
-            return await RejectGzipAsync(wire, declared, maximum, token).ConfigureAwait(false);
+            // Only framing/inflater faults reject decoding; source exceptions retain their identity and boundary.
         }
+        // T3a: exactly one rejection drain, outside both the decoding try and its catch.
+        return await RejectGzipAsync(wire, declared, maximum, token).ConfigureAwait(false);
     }
 
     // T3: the wire includes all member read-ahead, and remains open even after the member/decoder are disposed.
@@ -183,6 +182,7 @@ public sealed class SwpcClient : ISwpcClient
     {
         private long count;
         public bool Ended { get; private set; }
+        public bool SourceFaulted { get; private set; }
         public override bool CanRead => true;
         public override bool CanSeek => false;
         public override bool CanWrite => false;
@@ -193,7 +193,17 @@ public sealed class SwpcClient : ISwpcClient
             ReadAsync(buffer.AsMemory(offset, length)).AsTask().GetAwaiter().GetResult();
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
-            var read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            int read;
+            try
+            {
+                read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Sticky provenance: never reclassify a source exception or resume reading after it.
+                SourceFaulted = true;
+                throw;
+            }
             if (read == 0) Ended = true;
             count += read;
             return read;

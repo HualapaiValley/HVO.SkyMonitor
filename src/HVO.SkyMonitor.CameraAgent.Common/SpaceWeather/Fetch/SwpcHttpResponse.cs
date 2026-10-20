@@ -34,7 +34,14 @@ public sealed record SwpcRequestValidators(string? EntityTag, string? LastModifi
 /// a match or absent length is BodyUndecodable. Drain IOException/HttpIOException propagate as NetworkError;
 /// the deadline is Timeout and caller cancellation throws. Decoded oversize keeps priority and never drains.
 /// Unsupported codings and identity oversize by declared length are never opened or read, so their wire length
-/// is never judged. The response owns an exact-length copy of its body.
+/// is never judged.
+/// Owner decision T3a: one rejection, one drain, at most once per response, outside the decoding try/catch.
+/// Only framing/inflater InvalidDataException faults are decoding rejections; source faults are recorded and
+/// propagate unchanged, with no further source read. This includes source InvalidDataException, which remains
+/// unexpected and propagates from FetchAsync as the same object. The existing transport boundary alone maps
+/// I/O, HTTP, authentication and socket failures to NetworkError, the deadline to Timeout, and throws caller
+/// cancellation. On every path the aggregate wire bytes read after rejection are bounded by maximum+1.
+/// The response owns an exact-length copy of its body.
 /// </summary>
 public sealed record SwpcHttpResponse
 {
