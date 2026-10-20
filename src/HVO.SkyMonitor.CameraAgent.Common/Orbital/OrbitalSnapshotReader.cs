@@ -45,6 +45,39 @@ public sealed partial class OrbitalSnapshotReader : IOrbitalSnapshotReader
 
     private int _loadCount;
 
+    /// <summary>
+    /// Prepares the active committed identity through the same pinned, verified path as a consumer read.
+    /// Always prepares, even before the first consumer, with the same two-entry cache. Failure leaves
+    /// durable activation and prior cache entries intact and is reported independently.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Preparation is best-effort after durable activation and cannot change its outcome.")]
+    public async ValueTask<bool> PrepareCurrentAsync(CancellationToken cancellationToken)
+    {
+        PreparationStarted(_logger);
+        var prepared = false;
+        try
+        {
+            var result = await ReadCurrentAsync(cancellationToken).ConfigureAwait(false);
+            // An empty startup has nothing to prepare and is successful.
+            prepared = result.Snapshot is not null || result.UnavailableReason == OrbitalSnapshotUnavailableReason.NoActiveSnapshot;
+            if (!prepared)
+            {
+                PreparationUnavailable(_logger, result.UnavailableReason?.ToString() ?? "unknown");
+            }
+            return prepared;
+        }
+        catch (Exception exception)
+        {
+            PreparationFailed(_logger, exception);
+            return false;
+        }
+        finally
+        {
+            PreparationCompleted(_logger, prepared);
+        }
+    }
+
     /// <inheritdoc />
     public async ValueTask<OrbitalSnapshotReadResult> ReadCurrentAsync(CancellationToken cancellationToken)
     {
@@ -256,6 +289,18 @@ public sealed partial class OrbitalSnapshotReader : IOrbitalSnapshotReader
 
         public long Generation { get; set; } = generation;
     }
+
+    [LoggerMessage(7722, LogLevel.Debug, "Preparing the committed orbital snapshot in the shared reader")]
+    private static partial void PreparationStarted(ILogger logger);
+
+    [LoggerMessage(7723, LogLevel.Debug, "Orbital snapshot preparation completed (Prepared={Prepared})")]
+    private static partial void PreparationCompleted(ILogger logger, bool prepared);
+
+    [LoggerMessage(7724, LogLevel.Warning, "Orbital snapshot preparation unavailable ({Reason}); durable activation is unchanged")]
+    private static partial void PreparationUnavailable(ILogger logger, string reason);
+
+    [LoggerMessage(7725, LogLevel.Warning, "Orbital snapshot preparation failed; durable activation is unchanged")]
+    private static partial void PreparationFailed(ILogger logger, Exception exception);
 
     // Event IDs 7720-7729 belong to the orbital snapshot reader.
     [LoggerMessage(7720, LogLevel.Warning, "An orbital snapshot read was unavailable ({Reason})")]

@@ -23,7 +23,8 @@ internal sealed partial class CentralTimeLapseScheduler(CentralTimeLapseStore st
         else capability = await encoder.QualifyAsync(TimeLapseEncoderProfile.Software, token).ConfigureAwait(false);
         // Pin a profile for a complete scan. A change of available hardware/binary creates a successor set of hours.
         var preset = new CentralTimeLapsePreset(resolved.Rig, settings.Frames, settings.Timing, settings.MaximumDimension,
-            profile, CaptureContractJson.ComputeCanonicalJsonSha256(capability), target.Generation);
+            profile, CaptureContractJson.ComputeCanonicalJsonSha256(capability), target.Generation)
+        { RendererVersion = HVO.SkyMonitor.Processing.TimeLapseFrameRenderer.Version };
         for (var offset = settings.CatchUpDays; offset >= 0; offset--)
         {
             var period = calendar.Resolve(currentDate.AddDays(-offset)).Period;

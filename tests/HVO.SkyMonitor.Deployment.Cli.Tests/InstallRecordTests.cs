@@ -14,7 +14,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
-public sealed class InstallRecordTests
+public sealed partial class InstallRecordTests
 {
     private const UnixFileMode SharedDirectory =
         UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |

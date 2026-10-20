@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Processing;
@@ -43,7 +44,12 @@ internal sealed class CentralTimeLapseOptions
 }
 
 internal sealed record CentralTimeLapsePreset(CameraRigConfig Rig, TimeLapseFrameOptions Frames,
-    TimeLapseTimingOptions Timing, int MaximumDimension, TimeLapseEncoderProfile EncoderProfile, string CapabilityIdentity, int Generation = 1);
+    TimeLapseTimingOptions Timing, int MaximumDimension, TimeLapseEncoderProfile EncoderProfile, string CapabilityIdentity, int Generation = 1)
+{
+    // 0.9.0 omitted the renderer. Keep that JSON shape and select its released implementation on read.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RendererVersion { get; init; }
+}
 
 internal sealed record CentralTimeLapseSource(Guid CentralArtifactId, ReconstructionDescriptor Descriptor, string StorageReference, long ByteLength);
 

@@ -55,6 +55,7 @@ public sealed class OrbitalElementsAvailabilityTests : OrbitalStoreTestBase
         Assert.IsFalse(logger.Rendered().Contains(root, StringComparison.Ordinal), "Logs never carry the store path.");
 
         owner.Dispose();
+        clock.Advance(TimeSpan.FromSeconds(1));
         var recovered = await availability.EnsureAvailableAsync(CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(OrbitalElementsAvailabilityState.Available, recovered);

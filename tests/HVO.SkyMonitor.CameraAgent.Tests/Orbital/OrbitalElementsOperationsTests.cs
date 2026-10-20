@@ -86,7 +86,9 @@ public sealed class OrbitalElementsOperationsTests : OrbitalStoreTestBase
         using var runner = fixture.CreateRunner();
 
         await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        await fixture.Worker.WhenIdleAsync().ConfigureAwait(false);
         await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        await fixture.Worker.WhenIdleAsync().ConfigureAwait(false);
 
         var run = (await fixture.AutomationStateAsync().ConfigureAwait(false)).Runs.Single();
         Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, run.Outcome);
@@ -119,7 +121,9 @@ public sealed class OrbitalElementsOperationsTests : OrbitalStoreTestBase
                 : first.Orbital.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
             using var runner = first.CreateRunner();
             await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+            await first.Worker.WhenIdleAsync().ConfigureAwait(false);
             await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+            await first.Worker.WhenIdleAsync().ConfigureAwait(false);
             Assert.AreEqual(1, first.Orbital.Client.Calls, "The queued refresh executed once.");
         }
         // The retry arrives after a restart, inside the floor the executed run created (and, for "halted", under the
@@ -330,6 +334,7 @@ public sealed class OrbitalElementsOperationsTests : OrbitalStoreTestBase
         Assert.IsTrue(fixture.Logger.EventIds.Contains(7757));
 
         owner.Dispose();
+        fixture.Clock.Advance(TimeSpan.FromSeconds(1));
         var recovered = await fixture.Operations.GetStatusAsync(CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(OrbitalElementsOperations.DefinitionMissingReasonCode, recovered.Reason);
