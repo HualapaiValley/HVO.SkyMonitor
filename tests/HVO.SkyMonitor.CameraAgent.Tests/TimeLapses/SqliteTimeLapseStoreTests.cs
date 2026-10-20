@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 
@@ -14,6 +15,86 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.TimeLapses;
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused MSTest methods.")]
 public sealed class SqliteTimeLapseStoreTests
 {
+    [TestMethod]
+    public async Task ZeroNineStoredJobReadsRecoversAndCompletesWithoutChangingItsPreset()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-upgrade");
+        try
+        {
+            await RestoreZeroNineAsync(root);
+            var options = Options(root);
+            var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
+            Guid jobId;
+            string presetIdentity;
+            using (var store = new SqliteTimeLapseStore(options, clock))
+            {
+                var retained = (await store.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None)).Jobs.Single();
+                jobId = retained.JobId;
+                presetIdentity = retained.Preset.IdentitySha256;
+                Assert.AreEqual(CameraAgentTimeLapseState.Working, retained.State);
+                Assert.IsNull(retained.Preset.RendererVersion);
+                await store.EnqueueAsync(retained.Occurrence, retained.Preset, [], CancellationToken.None);
+                Assert.AreEqual("5EDB50EBB57E57FC43B575269FD2DF62AF6D30760DFB8807C421B69D026D98A2", presetIdentity);
+                using var lease = await store.AcquireWorkerAsync(CancellationToken.None);
+                var recovered = await store.ClaimAsync(CancellationToken.None);
+                Assert.IsNotNull(recovered);
+                Assert.AreEqual(jobId, recovered.JobId);
+                Assert.AreEqual(retained.Preset, recovered.Preset);
+                await store.FreezePlanAsync(jobId, new([], new Dictionary<string, int>()), CancellationToken.None);
+                await store.CompleteAsync(jobId, CameraAgentTimeLapseState.NoSources, "timelapse.no-admitted-sources", null, CancellationToken.None);
+            }
+            using var reopened = new SqliteTimeLapseStore(options, clock);
+            var completed = (await reopened.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None)).Jobs.Single();
+            Assert.AreEqual(jobId, completed.JobId);
+            Assert.AreEqual(presetIdentity, completed.Preset.IdentitySha256);
+            Assert.AreEqual(CameraAgentTimeLapseState.NoSources, completed.State);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [TestMethod]
+    public async Task NewPresetRecordsItsRendererAndCannotMasqueradeAsAReleasedOrUnknownRecipe()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-renderer-preset");
+        try
+        {
+            await RestoreZeroNineAsync(root);
+            var options = Options(root);
+            using var store = new SqliteTimeLapseStore(options, new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10)));
+            var legacy = (await store.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None)).Jobs.Single().Preset;
+            var settings = new TimeLapseOptions
+            {
+                RigProfileSha256 = HVO.SkyMonitor.Astronomy.RigProjectionContextFactory.CreateProfileHashSha256(legacy.Rig),
+                Frames = legacy.Frames,
+                Timing = legacy.Timing,
+                MaximumDimension = legacy.MaximumDimension
+            };
+            var current = settings.Freeze(NightlyProductFixture.Configuration() with { Rig = legacy.Rig });
+            Assert.AreEqual(TimeLapseFrameRenderer.Version, current.RendererVersion);
+            Assert.IsTrue(TimeLapseOptions.Matches(current));
+            Assert.IsTrue(TimeLapseOptions.Matches(legacy));
+            Assert.AreNotEqual(legacy.IdentitySha256, current.IdentitySha256);
+            Assert.AreNotEqual("time-lapse:" + legacy.IdentitySha256, settings.Target);
+            Assert.IsFalse(TimeLapseOptions.Matches(legacy with { RendererVersion = TimeLapseFrameRenderer.Version }));
+            Assert.IsFalse(TimeLapseOptions.Matches(current with { RendererVersion = "unknown" }));
+            Assert.IsFalse(TimeLapseOptions.Matches(current with { RendererVersion = null }));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only the checked-in 0.9.0 fixture is executed; no user input.")]
+    internal static async Task RestoreZeroNineAsync(string root)
+    {
+        var directory = Path.Combine(root, ".time-lapses");
+        Directory.CreateDirectory(directory);
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        { DataSource = Path.Combine(directory, "time-lapses.db"), Pooling = false }.ToString());
+        await connection.OpenAsync();
+        using var command = connection.CreateCommand();
+        command.CommandText = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "time-lapse-v090", "working-job.sql"));
+        await command.ExecuteNonQueryAsync();
+    }
+
     [TestMethod]
     public async Task Restart_RetainsFrozenOccurrenceAndPlanAndRecoversOnlyWorkingJobs()
     {
