@@ -354,8 +354,11 @@ public sealed class CentralProjectedSceneResolverTests
         for (var index = 1; index < count; index++)
             fixture.Insert(new CentralArtifact
             {
-                CentralFrameId = frame.Id, ArtifactId = Guid.NewGuid(), Role = FrameArtifactRole.Metadata,
-                MediaType = first.MediaType, ObjectState = CentralArtifactObjectState.Available,
+                CentralFrameId = frame.Id,
+                ArtifactId = Guid.NewGuid(),
+                Role = FrameArtifactRole.Metadata,
+                MediaType = first.MediaType,
+                ObjectState = CentralArtifactObjectState.Available,
                 ReconstructionState = CentralReconstructionState.Complete
             });
         var reader = new SceneReader(ProjectedSceneJson.Serialize(scene));

@@ -29,7 +29,9 @@ public sealed class LogicHostRowLimitQueryTests
         foreach (var id in new[] { 3, 1, 2 })
             fixture.Insert(new CentralDerivativeJob
             {
-                Id = Key(id), RecipeName = "unknown-recipe", RequestedRecipeIdentitySha256 = new string('A', 64),
+                Id = Key(id),
+                RecipeName = "unknown-recipe",
+                RequestedRecipeIdentitySha256 = new string('A', 64),
                 Status = CentralDerivativeJobStatus.Pending
             });
         Assert.AreEqual(3, await CanonicalCentralGraphSeedDiagnostics.CountFrozenIdentityMismatchesAsync(fixture.Db));
@@ -45,11 +47,17 @@ public sealed class LogicHostRowLimitQueryTests
         var eventId = Key(200);
         fixture.Insert(new CentralTransientValidationIdentitySlot
         {
-            Id = Key(2), CentralDerivativeJobId = Key(12), CandidateId = candidateId, AgentId = "other"
+            Id = Key(2),
+            CentralDerivativeJobId = Key(12),
+            CandidateId = candidateId,
+            AgentId = "other"
         });
         fixture.Insert(new CentralTransientValidationIdentitySlot
         {
-            Id = Key(1), CentralDerivativeJobId = Key(11), AgentId = "agent", SubmittedEventId = eventId
+            Id = Key(1),
+            CentralDerivativeJobId = Key(11),
+            AgentId = "agent",
+            SubmittedEventId = eventId
         });
         Assert.AreEqual(Key(11), await CentralTransientSubmissionService.FindIdentityConflictAsync(
             fixture.Db, candidateId, "agent", eventId, CancellationToken.None));
@@ -81,7 +89,9 @@ public sealed class LogicHostRowLimitQueryTests
         }
         fixture.Insert(new RegisteredUserTransientEventBookmark
         {
-            UserId = "reader", CentralTransientEventId = latest.CentralTransientEventId!.Value, CreatedUtc = Now
+            UserId = "reader",
+            CentralTransientEventId = latest.CentralTransientEventId!.Value,
+            CreatedUtc = Now
         });
         var withdrawal = Decision(3, old.PublicId, latest.CentralTransientEventId!.Value,
             latest.SourceEventVersionId!.Value, sameTime ? latest.OccurredAtUtc : Now.AddMinutes(1));
@@ -104,7 +114,9 @@ public sealed class LogicHostRowLimitQueryTests
         fixture.Insert(observatory);
         fixture.Insert(new ObservatoryPublicationProfileVersion
         {
-            ObservatoryId = observatory.Id, PublicSlug = "test", PublicDisplayName = "Test",
+            ObservatoryId = observatory.Id,
+            PublicSlug = "test",
+            PublicDisplayName = "Test",
             ProfileVisibility = ObservatoryProfileVisibility.Public
         });
         var old = Decision(1, Key(100), Key(201), Key(301), Now.AddMinutes(-1));
@@ -117,19 +129,24 @@ public sealed class LogicHostRowLimitQueryTests
         fixture.Insert(new CentralTransientEventRecord { Id = latest.CentralTransientEventId!.Value, EventCreatedUtc = Now });
         fixture.Insert(new CentralTransientEventVersionRecord
         {
-            EventVersionId = latest.SourceEventVersionId!.Value, CentralTransientEventId = latest.CentralTransientEventId.Value,
-            FirstObservedUtc = Now, LastObservedUtc = Now
+            EventVersionId = latest.SourceEventVersionId!.Value,
+            CentralTransientEventId = latest.CentralTransientEventId.Value,
+            FirstObservedUtc = Now,
+            LastObservedUtc = Now
         });
         var assessment = new CentralTransientAssessmentRecord
         {
-            AssessmentId = Key(400), CentralTransientEventId = latest.CentralTransientEventId.Value,
+            AssessmentId = Key(400),
+            CentralTransientEventId = latest.CentralTransientEventId.Value,
             Authority = TransientAssessmentAuthority.Authoritative
         };
         fixture.Insert(assessment);
         fixture.Insert(new CentralTransientEventCurrent
         {
-            CentralTransientEventId = latest.CentralTransientEventId.Value, LatestEventVersionId = latest.SourceEventVersionId.Value,
-            ActiveAssessmentId = assessment.AssessmentId, ReviewState = CentralTransientReviewState.Reviewed,
+            CentralTransientEventId = latest.CentralTransientEventId.Value,
+            LatestEventVersionId = latest.SourceEventVersionId.Value,
+            ActiveAssessmentId = assessment.AssessmentId,
+            ReviewState = CentralTransientReviewState.Reviewed,
             EffectiveConfidenceMillionths = 750000
         });
         // A newer withdrawal does not make a different authority's release disappear.
@@ -163,8 +180,12 @@ public sealed class LogicHostRowLimitQueryTests
     private static PublicRecordPublicationDecision Decision(int id, Guid publicId, Guid eventId, Guid versionId,
         DateTimeOffset occurredAtUtc) => new()
         {
-            Id = Key(id), PublicId = publicId, CentralTransientEventId = eventId, SourceEventVersionId = versionId,
-            SubjectKind = PublicRecordSubjectKind.TransientEvent, State = PublicationDecisionState.Released,
+            Id = Key(id),
+            PublicId = publicId,
+            CentralTransientEventId = eventId,
+            SourceEventVersionId = versionId,
+            SubjectKind = PublicRecordSubjectKind.TransientEvent,
+            State = PublicationDecisionState.Released,
             OccurredAtUtc = occurredAtUtc
         };
 }
