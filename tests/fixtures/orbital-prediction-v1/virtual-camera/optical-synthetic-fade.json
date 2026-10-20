@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "satellite-synthetic-optical-v1",
+  "isSynthetic": true,
+  "magnitude": -3,
+  "angularWidthDegrees": 0.05,
+  "redWeight": 1,
+  "greenWeight": 1,
+  "blueWeight": 1,
+  "exposureSeconds": 5,
+  "seed": 527,
+  "lightCurve": [
+    {
+      "offsetSeconds": 0,
+      "magnitudeDelta": 0
+    },
+    {
+      "offsetSeconds": 10,
+      "magnitudeDelta": 0
+    },
+    {
+      "offsetSeconds": 12.5,
+      "magnitudeDelta": 12
+    },
+    {
+      "offsetSeconds": 25,
+      "magnitudeDelta": 12
+    }
+  ]
+}

@@ -1,0 +1,1801 @@
+{
+  "schema": "additional-orbital-pass-reference-v1",
+  "catalogNumber": "28623",
+  "objectIdentity": {
+    "authority": "norad",
+    "catalogNumber": "28623"
+  },
+  "regime": "GTO-deep-space-high-eccentricity-low-perigee",
+  "sourceTle": {
+    "line1": "1 28623U 05006B   06177.81079184  .00637644  69054-6  96390-3 0  6000",
+    "line2": "2 28623  28.5200 114.9834 6249053 170.2550 212.8965  3.79477162 12753      0.0      1440.0        120.00",
+    "sourceSha256": "76727A72FC0D0A1AF115E03AF487C33213BEC8842AE6C32B5F0829454C8A45D7"
+  },
+  "epochUtc": "2006-06-26T19:27:32.414976Z",
+  "elements": {
+    "meanMotionRevolutionsPerDay": 3.79477162,
+    "eccentricity": 0.6249053,
+    "inclinationDegrees": 28.52,
+    "ascendingNodeDegrees": 114.9834,
+    "argumentOfPericenterDegrees": 170.255,
+    "meanAnomalyDegrees": 212.8965,
+    "bStarInverseEarthRadii": 0.0009639,
+    "meanMotionDot": 0.00637644,
+    "meanMotionDdot": 6.9054e-07,
+    "ephemerisType": 0,
+    "classification": "U",
+    "elementSetNumber": null,
+    "revolutionNumber": null
+  },
+  "numericalSupportProfile": {
+    "nominalKeplerPerigeeKilometers": 134.43598224783364,
+    "supported": true
+  },
+  "initializer": {
+    "twoline2rvDefaultMode": "i",
+    "reinitializedMode": "a",
+    "gravity": "WGS72",
+    "meanMotionDotRawGp": 0.00637644,
+    "meanMotionDdotRawGp": 6.9054e-07,
+    "ndotRadiansPerMinuteSquared": 1.932115842983806e-08,
+    "nddotRadiansPerMinuteCubed": 1.4530522541379297e-15,
+    "epochDaysSince1949December31": 20631.81079184,
+    "derivativeConvention": "gp-tle-field-values-rev-per-day-powers-v1; no extra factors2/6",
+    "propagationTime": "sgp4_tsince with exact UTC elapsed difference from decimal TLE epoch, including negative minutes; coordinate rotation gets independently split UTC JD."
+  },
+  "observer": {
+    "latitudeDegrees": 35.347,
+    "longitudeDegrees": -113.878,
+    "elevationMeters": 0,
+    "heightDatum": "wgs84-ellipsoidal-assumed"
+  },
+  "timeModel": {
+    "nominalZeroEarthOrientation": true,
+    "dut1Seconds": 0,
+    "polarMotionXArcseconds": 0,
+    "polarMotionYArcseconds": 0,
+    "conversionVersion": "teme-gmst82-ut1-pm-no-sp-nominal-rate-v1",
+    "ut1Convention": "UT1=UTC; explicit degraded diagnostic",
+    "refraction": "none",
+    "leapSecondsSha256": "DB5A895F16853B03BFC865E8D68F9FC8710EF1740E3400C701CD46A5BBBC3433",
+    "leapCoverageStartUtc": "1972-01-01T00:00:00Z",
+    "leapCoverageEndExclusiveUtc": "2027-06-28T00:00:00Z",
+    "leapCrossing": false
+  },
+  "windowStartUtc": "2006-06-26T07:27:32.414976Z",
+  "windowEndUtc": "2006-06-28T19:27:32.414976Z",
+  "windowSeconds": 216000.0,
+  "negativeEpochOffsetMinutes": -720.0,
+  "negativeEpochOffsetPropagationSucceeded": true,
+  "independentBracketMaximumSeconds": 0.001,
+  "rootEngineAgreementMaximumSeconds": 0.02,
+  "endpoints": {
+    "start": {
+      "secondsSinceWindowStart": 0,
+      "utc": "2006-06-26T07:27:32.414976Z",
+      "altitudeDegrees": -47.86542734308324,
+      "azimuthDegrees": 315.4534540198701,
+      "rangeKilometers": 29432.170777917392,
+      "rangeRateKilometersPerSecond": -1.6654234239348422
+    },
+    "end": {
+      "secondsSinceWindowStart": 216000.0,
+      "utc": "2006-06-28T19:27:32.414976Z",
+      "altitudeDegrees": 12.868799118345738,
+      "azimuthDegrees": 205.58932971335875,
+      "rangeKilometers": 18274.175351802944,
+      "rangeRateKilometersPerSecond": 1.7861615574405134
+    }
+  },
+  "seed": {
+    "keplerPerigeeAngularRateRadiansPerSecond": 0.001531279279405553,
+    "maxKeplerPhaseStepDegrees": 2,
+    "primaryStepSeconds": 22.795,
+    "qualificationStepSeconds": 11.3975,
+    "qualificationPhaseSeconds": 5.69875,
+    "caveat": "This nominal Kepler rate selects a practical seed for these retained records; it is not a rigorous SGP4/topocentric rate or whole-cell cap."
+  },
+  "extrema": [
+    {
+      "kind": "maximum",
+      "bracketSeconds": [
+        6718.664447354952,
+        6718.665249782071
+      ],
+      "bracketWidthSeconds": 0.0008024271191970911,
+      "bracketUtc": [
+        "2006-06-26T09:19:31.079423Z",
+        "2006-06-26T09:19:31.080226Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -14.184363431716749,
+        -14.184363431716323
+      ],
+      "secondsSinceWindowStart": 6718.664848568512,
+      "utc": "2006-06-26T09:19:31.079825Z",
+      "altitudeDegrees": -14.184363431713791
+    },
+    {
+      "kind": "minimum",
+      "bracketSeconds": [
+        12307.988527554495,
+        12307.989329981616
+      ],
+      "bracketWidthSeconds": 0.0008024271210160805,
+      "bracketUtc": [
+        "2006-06-26T10:52:40.403504Z",
+        "2006-06-26T10:52:40.404306Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -41.06259144821092,
+        -41.06259144821094
+      ],
+      "secondsSinceWindowStart": 12307.988928768056,
+      "utc": "2006-06-26T10:52:40.403905Z",
+      "altitudeDegrees": -41.06259144821105
+    },
+    {
+      "kind": "maximum",
+      "bracketSeconds": [
+        23213.867212426983,
+        23213.868014854103
+      ],
+      "bracketWidthSeconds": 0.0008024271191970911,
+      "bracketUtc": [
+        "2006-06-26T13:54:26.282188Z",
+        "2006-06-26T13:54:26.282991Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -31.630292837741795,
+        -31.630292837741866
+      ],
+      "secondsSinceWindowStart": 23213.86761364054,
+      "utc": "2006-06-26T13:54:26.282590Z",
+      "altitudeDegrees": -31.630292837741706
+    },
+    {
+      "kind": "minimum",
+      "bracketSeconds": [
+        29238.11238688765,
+        29238.11318931477
+      ],
+      "bracketWidthSeconds": 0.0008024271191970911,
+      "bracketUtc": [
+        "2006-06-26T15:34:50.527363Z",
+        "2006-06-26T15:34:50.528165Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -55.09960027992792,
+        -55.09960027992663
+      ],
+      "secondsSinceWindowStart": 29238.112788101207,
+      "utc": "2006-06-26T15:34:50.527764Z",
+      "altitudeDegrees": -55.09960027992938
+    },
+    {
+      "kind": "maximum",
+      "bracketSeconds": [
+        46949.44654507204,
+        46949.44734749916
+      ],
+      "bracketWidthSeconds": 0.0008024271228350699,
+      "bracketUtc": [
+        "2006-06-26T20:30:01.861521Z",
+        "2006-06-26T20:30:01.862323Z"
+      ],
+      "bracketAltitudeDegrees": [
+        43.92063601550358,
+        43.92063601550358
+      ],
+      "secondsSinceWindowStart": 46949.4469462856,
+      "utc": "2006-06-26T20:30:01.861922Z",
+      "altitudeDegrees": 43.92063601550366
+    },
+    {
+      "kind": "minimum",
+      "bracketSeconds": [
+        53016.14194429342,
+        53016.14274672054
+      ],
+      "bracketWidthSeconds": 0.0008024271228350699,
+      "bracketUtc": [
+        "2006-06-26T22:11:08.556920Z",
+        "2006-06-26T22:11:08.557723Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -77.97453568346688,
+        -77.97453568346434
+      ],
+      "secondsSinceWindowStart": 53016.14234550698,
+      "utc": "2006-06-26T22:11:08.557322Z",
+      "altitudeDegrees": -77.97453568347412
+    },
+    {
+      "kind": "maximum",
+      "bracketSeconds": [
+        74317.46487078408,
+        74317.46567321119
+      ],
+      "bracketWidthSeconds": 0.0008024271082831547,
+      "bracketUtc": [
+        "2006-06-27T04:06:09.879847Z",
+        "2006-06-27T04:06:09.880649Z"
+      ],
+      "bracketAltitudeDegrees": [
+        60.26470345210527,
+        60.26470345214776
+      ],
+      "secondsSinceWindowStart": 74317.46527199764,
+      "utc": "2006-06-27T04:06:09.880248Z",
+      "altitudeDegrees": 60.26470345219842
+    },
+    {
+      "kind": "minimum",
+      "bracketSeconds": [
+        78494.9061929723,
+        78494.90699539942
+      ],
+      "bracketWidthSeconds": 0.0008024271228350699,
+      "bracketUtc": [
+        "2006-06-27T05:15:47.321169Z",
+        "2006-06-27T05:15:47.321971Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -81.84692408094438,
+        -81.84692408094469
+      ],
+      "secondsSinceWindowStart": 78494.90659418586,
+      "utc": "2006-06-27T05:15:47.321570Z",
+      "altitudeDegrees": -81.84692408094493
+    },
+    {
+      "kind": "maximum",
+      "bracketSeconds": [
+        98544.0173287855,
+        98544.01813121262
+      ],
+      "bracketWidthSeconds": 0.0008024271228350699,
+      "bracketUtc": [
+        "2006-06-27T10:49:56.432305Z",
+        "2006-06-27T10:49:56.433107Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -17.712361661377884,
+        -17.712361661378665
+      ],
+      "secondsSinceWindowStart": 98544.01772999906,
+      "utc": "2006-06-27T10:49:56.432706Z",
+      "altitudeDegrees": -17.71236166137664
+    },
+    {
+      "kind": "minimum",
+      "bracketSeconds": [
+        102627.44812641258,
+        102627.44892883972
+      ],
+      "bracketWidthSeconds": 0.0008024271373869851,
+      "bracketUtc": [
+        "2006-06-27T11:57:59.863102Z",
+        "2006-06-27T11:57:59.863905Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -27.302572782456537,
+        -27.302572782456622
+      ],
+      "secondsSinceWindowStart": 102627.44852762614,
+      "utc": "2006-06-27T11:57:59.863504Z",
+      "altitudeDegrees": -27.302572782457148
+    },
+    {
+      "kind": "maximum",
+      "bracketSeconds": [
+        113613.92495148304,
+        113613.92575391017
+      ],
+      "bracketWidthSeconds": 0.0008024271228350699,
+      "bracketUtc": [
+        "2006-06-27T15:01:06.339927Z",
+        "2006-06-27T15:01:06.340730Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -17.448961776752196,
+        -17.448961776751975
+      ],
+      "secondsSinceWindowStart": 113613.9253526966,
+      "utc": "2006-06-27T15:01:06.340329Z",
+      "altitudeDegrees": -17.44896177675192
+    },
+    {
+      "kind": "minimum",
+      "bracketSeconds": [
+        120448.90016756247,
+        120448.9009699896
+      ],
+      "bracketWidthSeconds": 0.0008024271228350699,
+      "bracketUtc": [
+        "2006-06-27T16:55:01.315144Z",
+        "2006-06-27T16:55:01.315946Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -60.32819421025676,
+        -60.32819421025895
+      ],
+      "secondsSinceWindowStart": 120448.90056877604,
+      "utc": "2006-06-27T16:55:01.315545Z",
+      "altitudeDegrees": -60.32819421026172
+    },
+    {
+      "kind": "maximum",
+      "bracketSeconds": [
+        139256.73778265415,
+        139256.73858508127
+      ],
+      "bracketWidthSeconds": 0.0008024271228350699,
+      "bracketUtc": [
+        "2006-06-27T22:08:29.152759Z",
+        "2006-06-27T22:08:29.153561Z"
+      ],
+      "bracketAltitudeDegrees": [
+        57.87213855760087,
+        57.872138557600564
+      ],
+      "secondsSinceWindowStart": 139256.7381838677,
+      "utc": "2006-06-27T22:08:29.153160Z",
+      "altitudeDegrees": 57.872138557601176
+    },
+    {
+      "kind": "minimum",
+      "bracketSeconds": [
+        144138.1278175692,
+        144138.12861999637
+      ],
+      "bracketWidthSeconds": 0.0008024271519389004,
+      "bracketUtc": [
+        "2006-06-27T23:29:50.542794Z",
+        "2006-06-27T23:29:50.543596Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -81.69221754933129,
+        -81.69221754933382
+      ],
+      "secondsSinceWindowStart": 144138.12821878277,
+      "utc": "2006-06-27T23:29:50.543195Z",
+      "altitudeDegrees": -81.6922175493416
+    },
+    {
+      "kind": "maximum",
+      "bracketSeconds": [
+        165340.26006782177,
+        165340.2608702489
+      ],
+      "bracketWidthSeconds": 0.0008024271228350699,
+      "bracketUtc": [
+        "2006-06-28T05:23:12.675044Z",
+        "2006-06-28T05:23:12.675846Z"
+      ],
+      "bracketAltitudeDegrees": [
+        35.326053453128,
+        35.326053453066876
+      ],
+      "secondsSinceWindowStart": 165340.26046903533,
+      "utc": "2006-06-28T05:23:12.675445Z",
+      "altitudeDegrees": 35.32605345314583
+    },
+    {
+      "kind": "minimum",
+      "bracketSeconds": [
+        170524.46377109396,
+        170524.46457352105
+      ],
+      "bracketWidthSeconds": 0.0008024270937312394,
+      "bracketUtc": [
+        "2006-06-28T06:49:36.878747Z",
+        "2006-06-28T06:49:36.879550Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -74.90090814322575,
+        -74.9009081432253
+      ],
+      "secondsSinceWindowStart": 170524.46417230752,
+      "utc": "2006-06-28T06:49:36.879148Z",
+      "altitudeDegrees": -74.900908143226
+    },
+    {
+      "kind": "maximum",
+      "bracketSeconds": [
+        190331.55783416843,
+        190331.55863659558
+      ],
+      "bracketWidthSeconds": 0.0008024271519389004,
+      "bracketUtc": [
+        "2006-06-28T12:19:43.972810Z",
+        "2006-06-28T12:19:43.973613Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -14.571809908258071,
+        -14.571809908258139
+      ],
+      "secondsSinceWindowStart": 190331.55823538202,
+      "utc": "2006-06-28T12:19:43.973211Z",
+      "altitudeDegrees": -14.571809908257912
+    },
+    {
+      "kind": "minimum",
+      "bracketSeconds": [
+        191958.56523528392,
+        191958.56603771108
+      ],
+      "bracketWidthSeconds": 0.0008024271519389004,
+      "bracketUtc": [
+        "2006-06-28T12:46:50.980211Z",
+        "2006-06-28T12:46:50.981014Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -15.075498542083954,
+        -15.075498542084151
+      ],
+      "secondsSinceWindowStart": 191958.56563649751,
+      "utc": "2006-06-28T12:46:50.980612Z",
+      "altitudeDegrees": -15.075498542084176
+    },
+    {
+      "kind": "maximum",
+      "bracketSeconds": [
+        204071.7859606482,
+        204071.78676307536
+      ],
+      "bracketWidthSeconds": 0.0008024271519389004,
+      "bracketUtc": [
+        "2006-06-28T16:08:44.200937Z",
+        "2006-06-28T16:08:44.201739Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -2.8541186474772693,
+        -2.854118647476986
+      ],
+      "secondsSinceWindowStart": 204071.7863618618,
+      "utc": "2006-06-28T16:08:44.201338Z",
+      "altitudeDegrees": -2.8541186474768914
+    },
+    {
+      "kind": "minimum",
+      "bracketSeconds": [
+        211272.91192224124,
+        211272.91272466836
+      ],
+      "bracketWidthSeconds": 0.0008024271228350699,
+      "bracketUtc": [
+        "2006-06-28T18:08:45.326898Z",
+        "2006-06-28T18:08:45.327701Z"
+      ],
+      "bracketAltitudeDegrees": [
+        -65.2651024180647,
+        -65.26510241806857
+      ],
+      "secondsSinceWindowStart": 211272.9123234548,
+      "utc": "2006-06-28T18:08:45.327299Z",
+      "altitudeDegrees": -65.26510241807179
+    }
+  ],
+  "thresholds": [
+    {
+      "thresholdDegrees": 0,
+      "startAboveThreshold": false,
+      "endAboveThreshold": true,
+      "crossings": [
+        {
+          "kind": "rise",
+          "thresholdDegrees": 0,
+          "seedBracketSeconds": [
+            32140.95,
+            32163.745000000003
+          ],
+          "bracketSeconds": [
+            32163.653870086673,
+            32163.654565734865
+          ],
+          "bracketWidthSeconds": 0.0006956481920497026,
+          "bracketUtc": [
+            "2006-06-26T16:23:36.068846Z",
+            "2006-06-26T16:23:36.069542Z"
+          ],
+          "bracketAltitudeDegrees": [
+            -2.012210304975148e-06,
+            5.636254484481951e-06
+          ],
+          "secondsSinceWindowStart": 32163.65421791077,
+          "utc": "2006-06-26T16:23:36.069194Z",
+          "altitudeDegrees": 1.8120225323285103e-06
+        },
+        {
+          "kind": "set",
+          "thresholdDegrees": 0,
+          "seedBracketSeconds": [
+            50901.235,
+            50924.030000000006
+          ],
+          "bracketSeconds": [
+            50904.070462036136,
+            50904.07115768433
+          ],
+          "bracketWidthSeconds": 0.0006956481956876814,
+          "bracketUtc": [
+            "2006-06-26T21:35:56.485438Z",
+            "2006-06-26T21:35:56.486134Z"
+          ],
+          "bracketAltitudeDegrees": [
+            1.0418572877239012e-05,
+            -1.4988692899453342e-05
+          ],
+          "secondsSinceWindowStart": 50904.07080986023,
+          "utc": "2006-06-26T21:35:56.485786Z",
+          "altitudeDegrees": -2.2850589201218482e-06
+        },
+        {
+          "kind": "rise",
+          "thresholdDegrees": 0,
+          "seedBracketSeconds": [
+            65307.675,
+            65330.47000000001
+          ],
+          "bracketSeconds": [
+            65319.63180114747,
+            65319.63249679566
+          ],
+          "bracketWidthSeconds": 0.0006956481884117238,
+          "bracketUtc": [
+            "2006-06-27T01:36:12.046777Z",
+            "2006-06-27T01:36:12.047473Z"
+          ],
+          "bracketAltitudeDegrees": [
+            -6.273599598244006e-07,
+            1.9370714439855928e-07
+          ],
+          "secondsSinceWindowStart": 65319.63214897156,
+          "utc": "2006-06-27T01:36:12.047125Z",
+          "altitudeDegrees": -2.168266719326164e-07
+        },
+        {
+          "kind": "set",
+          "thresholdDegrees": 0,
+          "seedBracketSeconds": [
+            74767.6,
+            74790.395
+          ],
+          "bracketSeconds": [
+            74775.88447433474,
+            74775.88516998294
+          ],
+          "bracketWidthSeconds": 0.0006956481956876814,
+          "bracketUtc": [
+            "2006-06-27T04:13:48.299450Z",
+            "2006-06-27T04:13:48.300146Z"
+          ],
+          "bracketAltitudeDegrees": [
+            1.4166752096917566e-07,
+            -7.368987120340203e-05
+          ],
+          "secondsSinceWindowStart": 74775.88482215884,
+          "utc": "2006-06-27T04:13:48.299798Z",
+          "altitudeDegrees": -3.677412249086701e-05
+        },
+        {
+          "kind": "rise",
+          "thresholdDegrees": 0,
+          "seedBracketSeconds": [
+            123412.13,
+            123434.925
+          ],
+          "bracketSeconds": [
+            123412.62043197633,
+            123412.62112762453
+          ],
+          "bracketWidthSeconds": 0.0006956481956876814,
+          "bracketUtc": [
+            "2006-06-27T17:44:25.035408Z",
+            "2006-06-27T17:44:25.036104Z"
+          ],
+          "bracketAltitudeDegrees": [
+            -2.8353748890684503e-06,
+            6.008912018869301e-06
+          ],
+          "secondsSinceWindowStart": 123412.62077980043,
+          "utc": "2006-06-27T17:44:25.035756Z",
+          "altitudeDegrees": 1.5867689394978604e-06
+        },
+        {
+          "kind": "set",
+          "thresholdDegrees": 0,
+          "seedBracketSeconds": [
+            142126.825,
+            142149.62000000002
+          ],
+          "bracketSeconds": [
+            142131.19993148802,
+            142131.20062713622
+          ],
+          "bracketWidthSeconds": 0.0006956481956876814,
+          "bracketUtc": [
+            "2006-06-27T22:56:23.614907Z",
+            "2006-06-27T22:56:23.615603Z"
+          ],
+          "bracketAltitudeDegrees": [
+            3.319192167025995e-06,
+            -3.3200348225800904e-05
+          ],
+          "secondsSinceWindowStart": 142131.20027931212,
+          "utc": "2006-06-27T22:56:23.615255Z",
+          "altitudeDegrees": -1.4940577163460143e-05
+        },
+        {
+          "kind": "rise",
+          "thresholdDegrees": 0,
+          "seedBracketSeconds": [
+            162893.07,
+            162915.86500000002
+          ],
+          "bracketSeconds": [
+            162895.69120239257,
+            162895.69189804076
+          ],
+          "bracketWidthSeconds": 0.0006956481956876814,
+          "bracketUtc": [
+            "2006-06-28T04:42:28.106178Z",
+            "2006-06-28T04:42:28.106874Z"
+          ],
+          "bracketAltitudeDegrees": [
+            -3.4094217393478007e-06,
+            4.3093327528816964e-07
+          ],
+          "secondsSinceWindowStart": 162895.69155021667,
+          "utc": "2006-06-28T04:42:28.106526Z",
+          "altitudeDegrees": -1.4892447684014528e-06
+        },
+        {
+          "kind": "set",
+          "thresholdDegrees": 0,
+          "seedBracketSeconds": [
+            165674.06000000003,
+            165696.855
+          ],
+          "bracketSeconds": [
+            165686.53505905153,
+            165686.53575469973
+          ],
+          "bracketWidthSeconds": 0.0006956481956876814,
+          "bracketUtc": [
+            "2006-06-28T05:28:58.950035Z",
+            "2006-06-28T05:28:58.950731Z"
+          ],
+          "bracketAltitudeDegrees": [
+            2.4164826752952158e-05,
+            -4.790416087809824e-05
+          ],
+          "secondsSinceWindowStart": 165686.53540687563,
+          "utc": "2006-06-28T05:28:58.950383Z",
+          "altitudeDegrees": -1.1869681763509572e-05
+        },
+        {
+          "kind": "rise",
+          "thresholdDegrees": 0,
+          "seedBracketSeconds": [
+            214569.33500000002,
+            214592.13
+          ],
+          "bracketSeconds": [
+            214572.45289520267,
+            214572.45359085087
+          ],
+          "bracketWidthSeconds": 0.0006956481956876814,
+          "bracketUtc": [
+            "2006-06-28T19:03:44.867871Z",
+            "2006-06-28T19:03:44.868567Z"
+          ],
+          "bracketAltitudeDegrees": [
+            -3.9303696216578874e-06,
+            4.1343559984801275e-06
+          ],
+          "secondsSinceWindowStart": 214572.45324302677,
+          "utc": "2006-06-28T19:03:44.868219Z",
+          "altitudeDegrees": 1.0199397275623975e-07
+        }
+      ],
+      "peaks": [
+        {
+          "kind": "maximum",
+          "bracketSeconds": [
+            46949.44654507204,
+            46949.44734749916
+          ],
+          "bracketWidthSeconds": 0.0008024271228350699,
+          "bracketUtc": [
+            "2006-06-26T20:30:01.861521Z",
+            "2006-06-26T20:30:01.862323Z"
+          ],
+          "bracketAltitudeDegrees": [
+            43.92063601550358,
+            43.92063601550358
+          ],
+          "secondsSinceWindowStart": 46949.4469462856,
+          "utc": "2006-06-26T20:30:01.861922Z",
+          "altitudeDegrees": 43.92063601550366
+        },
+        {
+          "kind": "maximum",
+          "bracketSeconds": [
+            74317.46487078408,
+            74317.46567321119
+          ],
+          "bracketWidthSeconds": 0.0008024271082831547,
+          "bracketUtc": [
+            "2006-06-27T04:06:09.879847Z",
+            "2006-06-27T04:06:09.880649Z"
+          ],
+          "bracketAltitudeDegrees": [
+            60.26470345210527,
+            60.26470345214776
+          ],
+          "secondsSinceWindowStart": 74317.46527199764,
+          "utc": "2006-06-27T04:06:09.880248Z",
+          "altitudeDegrees": 60.26470345219842
+        },
+        {
+          "kind": "maximum",
+          "bracketSeconds": [
+            139256.73778265415,
+            139256.73858508127
+          ],
+          "bracketWidthSeconds": 0.0008024271228350699,
+          "bracketUtc": [
+            "2006-06-27T22:08:29.152759Z",
+            "2006-06-27T22:08:29.153561Z"
+          ],
+          "bracketAltitudeDegrees": [
+            57.87213855760087,
+            57.872138557600564
+          ],
+          "secondsSinceWindowStart": 139256.7381838677,
+          "utc": "2006-06-27T22:08:29.153160Z",
+          "altitudeDegrees": 57.872138557601176
+        },
+        {
+          "kind": "maximum",
+          "bracketSeconds": [
+            165340.26006782177,
+            165340.2608702489
+          ],
+          "bracketWidthSeconds": 0.0008024271228350699,
+          "bracketUtc": [
+            "2006-06-28T05:23:12.675044Z",
+            "2006-06-28T05:23:12.675846Z"
+          ],
+          "bracketAltitudeDegrees": [
+            35.326053453128,
+            35.326053453066876
+          ],
+          "secondsSinceWindowStart": 165340.26046903533,
+          "utc": "2006-06-28T05:23:12.675445Z",
+          "altitudeDegrees": 35.32605345314583
+        }
+      ],
+      "passes": [
+        {
+          "startSeconds": 32163.65421791077,
+          "endSeconds": 50904.07080986023,
+          "startUtc": "2006-06-26T16:23:36.069194Z",
+          "endUtc": "2006-06-26T21:35:56.485786Z",
+          "startsAtWindowBoundary": false,
+          "endsAtWindowBoundary": false,
+          "rise": {
+            "kind": "rise",
+            "thresholdDegrees": 0,
+            "seedBracketSeconds": [
+              32140.95,
+              32163.745000000003
+            ],
+            "bracketSeconds": [
+              32163.653870086673,
+              32163.654565734865
+            ],
+            "bracketWidthSeconds": 0.0006956481920497026,
+            "bracketUtc": [
+              "2006-06-26T16:23:36.068846Z",
+              "2006-06-26T16:23:36.069542Z"
+            ],
+            "bracketAltitudeDegrees": [
+              -2.012210304975148e-06,
+              5.636254484481951e-06
+            ],
+            "secondsSinceWindowStart": 32163.65421791077,
+            "utc": "2006-06-26T16:23:36.069194Z",
+            "altitudeDegrees": 1.8120225323285103e-06
+          },
+          "set": {
+            "kind": "set",
+            "thresholdDegrees": 0,
+            "seedBracketSeconds": [
+              50901.235,
+              50924.030000000006
+            ],
+            "bracketSeconds": [
+              50904.070462036136,
+              50904.07115768433
+            ],
+            "bracketWidthSeconds": 0.0006956481956876814,
+            "bracketUtc": [
+              "2006-06-26T21:35:56.485438Z",
+              "2006-06-26T21:35:56.486134Z"
+            ],
+            "bracketAltitudeDegrees": [
+              1.0418572877239012e-05,
+              -1.4988692899453342e-05
+            ],
+            "secondsSinceWindowStart": 50904.07080986023,
+            "utc": "2006-06-26T21:35:56.485786Z",
+            "altitudeDegrees": -2.2850589201218482e-06
+          },
+          "peak": {
+            "kind": "maximum",
+            "bracketSeconds": [
+              46949.44654507204,
+              46949.44734749916
+            ],
+            "bracketWidthSeconds": 0.0008024271228350699,
+            "bracketUtc": [
+              "2006-06-26T20:30:01.861521Z",
+              "2006-06-26T20:30:01.862323Z"
+            ],
+            "bracketAltitudeDegrees": [
+              43.92063601550358,
+              43.92063601550358
+            ],
+            "secondsSinceWindowStart": 46949.4469462856,
+            "utc": "2006-06-26T20:30:01.861922Z",
+            "altitudeDegrees": 43.92063601550366
+          }
+        },
+        {
+          "startSeconds": 65319.63214897156,
+          "endSeconds": 74775.88482215884,
+          "startUtc": "2006-06-27T01:36:12.047125Z",
+          "endUtc": "2006-06-27T04:13:48.299798Z",
+          "startsAtWindowBoundary": false,
+          "endsAtWindowBoundary": false,
+          "rise": {
+            "kind": "rise",
+            "thresholdDegrees": 0,
+            "seedBracketSeconds": [
+              65307.675,
+              65330.47000000001
+            ],
+            "bracketSeconds": [
+              65319.63180114747,
+              65319.63249679566
+            ],
+            "bracketWidthSeconds": 0.0006956481884117238,
+            "bracketUtc": [
+              "2006-06-27T01:36:12.046777Z",
+              "2006-06-27T01:36:12.047473Z"
+            ],
+            "bracketAltitudeDegrees": [
+              -6.273599598244006e-07,
+              1.9370714439855928e-07
+            ],
+            "secondsSinceWindowStart": 65319.63214897156,
+            "utc": "2006-06-27T01:36:12.047125Z",
+            "altitudeDegrees": -2.168266719326164e-07
+          },
+          "set": {
+            "kind": "set",
+            "thresholdDegrees": 0,
+            "seedBracketSeconds": [
+              74767.6,
+              74790.395
+            ],
+            "bracketSeconds": [
+              74775.88447433474,
+              74775.88516998294
+            ],
+            "bracketWidthSeconds": 0.0006956481956876814,
+            "bracketUtc": [
+              "2006-06-27T04:13:48.299450Z",
+              "2006-06-27T04:13:48.300146Z"
+            ],
+            "bracketAltitudeDegrees": [
+              1.4166752096917566e-07,
+              -7.368987120340203e-05
+            ],
+            "secondsSinceWindowStart": 74775.88482215884,
+            "utc": "2006-06-27T04:13:48.299798Z",
+            "altitudeDegrees": -3.677412249086701e-05
+          },
+          "peak": {
+            "kind": "maximum",
+            "bracketSeconds": [
+              74317.46487078408,
+              74317.46567321119
+            ],
+            "bracketWidthSeconds": 0.0008024271082831547,
+            "bracketUtc": [
+              "2006-06-27T04:06:09.879847Z",
+              "2006-06-27T04:06:09.880649Z"
+            ],
+            "bracketAltitudeDegrees": [
+              60.26470345210527,
+              60.26470345214776
+            ],
+            "secondsSinceWindowStart": 74317.46527199764,
+            "utc": "2006-06-27T04:06:09.880248Z",
+            "altitudeDegrees": 60.26470345219842
+          }
+        },
+        {
+          "startSeconds": 123412.62077980043,
+          "endSeconds": 142131.20027931212,
+          "startUtc": "2006-06-27T17:44:25.035756Z",
+          "endUtc": "2006-06-27T22:56:23.615255Z",
+          "startsAtWindowBoundary": false,
+          "endsAtWindowBoundary": false,
+          "rise": {
+            "kind": "rise",
+            "thresholdDegrees": 0,
+            "seedBracketSeconds": [
+              123412.13,
+              123434.925
+            ],
+            "bracketSeconds": [
+              123412.62043197633,
+              123412.62112762453
+            ],
+            "bracketWidthSeconds": 0.0006956481956876814,
+            "bracketUtc": [
+              "2006-06-27T17:44:25.035408Z",
+              "2006-06-27T17:44:25.036104Z"
+            ],
+            "bracketAltitudeDegrees": [
+              -2.8353748890684503e-06,
+              6.008912018869301e-06
+            ],
+            "secondsSinceWindowStart": 123412.62077980043,
+            "utc": "2006-06-27T17:44:25.035756Z",
+            "altitudeDegrees": 1.5867689394978604e-06
+          },
+          "set": {
+            "kind": "set",
+            "thresholdDegrees": 0,
+            "seedBracketSeconds": [
+              142126.825,
+              142149.62000000002
+            ],
+            "bracketSeconds": [
+              142131.19993148802,
+              142131.20062713622
+            ],
+            "bracketWidthSeconds": 0.0006956481956876814,
+            "bracketUtc": [
+              "2006-06-27T22:56:23.614907Z",
+              "2006-06-27T22:56:23.615603Z"
+            ],
+            "bracketAltitudeDegrees": [
+              3.319192167025995e-06,
+              -3.3200348225800904e-05
+            ],
+            "secondsSinceWindowStart": 142131.20027931212,
+            "utc": "2006-06-27T22:56:23.615255Z",
+            "altitudeDegrees": -1.4940577163460143e-05
+          },
+          "peak": {
+            "kind": "maximum",
+            "bracketSeconds": [
+              139256.73778265415,
+              139256.73858508127
+            ],
+            "bracketWidthSeconds": 0.0008024271228350699,
+            "bracketUtc": [
+              "2006-06-27T22:08:29.152759Z",
+              "2006-06-27T22:08:29.153561Z"
+            ],
+            "bracketAltitudeDegrees": [
+              57.87213855760087,
+              57.872138557600564
+            ],
+            "secondsSinceWindowStart": 139256.7381838677,
+            "utc": "2006-06-27T22:08:29.153160Z",
+            "altitudeDegrees": 57.872138557601176
+          }
+        },
+        {
+          "startSeconds": 162895.69155021667,
+          "endSeconds": 165686.53540687563,
+          "startUtc": "2006-06-28T04:42:28.106526Z",
+          "endUtc": "2006-06-28T05:28:58.950383Z",
+          "startsAtWindowBoundary": false,
+          "endsAtWindowBoundary": false,
+          "rise": {
+            "kind": "rise",
+            "thresholdDegrees": 0,
+            "seedBracketSeconds": [
+              162893.07,
+              162915.86500000002
+            ],
+            "bracketSeconds": [
+              162895.69120239257,
+              162895.69189804076
+            ],
+            "bracketWidthSeconds": 0.0006956481956876814,
+            "bracketUtc": [
+              "2006-06-28T04:42:28.106178Z",
+              "2006-06-28T04:42:28.106874Z"
+            ],
+            "bracketAltitudeDegrees": [
+              -3.4094217393478007e-06,
+              4.3093327528816964e-07
+            ],
+            "secondsSinceWindowStart": 162895.69155021667,
+            "utc": "2006-06-28T04:42:28.106526Z",
+            "altitudeDegrees": -1.4892447684014528e-06
+          },
+          "set": {
+            "kind": "set",
+            "thresholdDegrees": 0,
+            "seedBracketSeconds": [
+              165674.06000000003,
+              165696.855
+            ],
+            "bracketSeconds": [
+              165686.53505905153,
+              165686.53575469973
+            ],
+            "bracketWidthSeconds": 0.0006956481956876814,
+            "bracketUtc": [
+              "2006-06-28T05:28:58.950035Z",
+              "2006-06-28T05:28:58.950731Z"
+            ],
+            "bracketAltitudeDegrees": [
+              2.4164826752952158e-05,
+              -4.790416087809824e-05
+            ],
+            "secondsSinceWindowStart": 165686.53540687563,
+            "utc": "2006-06-28T05:28:58.950383Z",
+            "altitudeDegrees": -1.1869681763509572e-05
+          },
+          "peak": {
+            "kind": "maximum",
+            "bracketSeconds": [
+              165340.26006782177,
+              165340.2608702489
+            ],
+            "bracketWidthSeconds": 0.0008024271228350699,
+            "bracketUtc": [
+              "2006-06-28T05:23:12.675044Z",
+              "2006-06-28T05:23:12.675846Z"
+            ],
+            "bracketAltitudeDegrees": [
+              35.326053453128,
+              35.326053453066876
+            ],
+            "secondsSinceWindowStart": 165340.26046903533,
+            "utc": "2006-06-28T05:23:12.675445Z",
+            "altitudeDegrees": 35.32605345314583
+          }
+        },
+        {
+          "startSeconds": 214572.45324302677,
+          "endSeconds": 216000.0,
+          "startUtc": "2006-06-28T19:03:44.868219Z",
+          "endUtc": "2006-06-28T19:27:32.414976Z",
+          "startsAtWindowBoundary": false,
+          "endsAtWindowBoundary": true,
+          "rise": {
+            "kind": "rise",
+            "thresholdDegrees": 0,
+            "seedBracketSeconds": [
+              214569.33500000002,
+              214592.13
+            ],
+            "bracketSeconds": [
+              214572.45289520267,
+              214572.45359085087
+            ],
+            "bracketWidthSeconds": 0.0006956481956876814,
+            "bracketUtc": [
+              "2006-06-28T19:03:44.867871Z",
+              "2006-06-28T19:03:44.868567Z"
+            ],
+            "bracketAltitudeDegrees": [
+              -3.9303696216578874e-06,
+              4.1343559984801275e-06
+            ],
+            "secondsSinceWindowStart": 214572.45324302677,
+            "utc": "2006-06-28T19:03:44.868219Z",
+            "altitudeDegrees": 1.0199397275623975e-07
+          },
+          "set": null,
+          "peak": {
+            "kind": "window-boundary",
+            "secondsSinceWindowStart": 216000.0,
+            "utc": "2006-06-28T19:27:32.414976Z",
+            "altitudeDegrees": 12.868799118345738,
+            "azimuthDegrees": 205.58932971335875,
+            "rangeKilometers": 18274.175351802944,
+            "rangeRateKilometersPerSecond": 1.7861615574405134
+          }
+        }
+      ]
+    },
+    {
+      "thresholdDegrees": 10,
+      "startAboveThreshold": false,
+      "endAboveThreshold": true,
+      "crossings": [
+        {
+          "kind": "rise",
+          "thresholdDegrees": 10,
+          "seedBracketSeconds": [
+            33417.47,
+            33440.265
+          ],
+          "bracketSeconds": [
+            33423.33361862182,
+            33423.33431427002
+          ],
+          "bracketWidthSeconds": 0.0006956481956876814,
+          "bracketUtc": [
+            "2006-06-26T16:44:35.748595Z",
+            "2006-06-26T16:44:35.749290Z"
+          ],
+          "bracketAltitudeDegrees": [
+            9.999996568384507,
+            10.000000612757523
+          ],
+          "secondsSinceWindowStart": 33423.33396644592,
+          "utc": "2006-06-26T16:44:35.748942Z",
+          "altitudeDegrees": 9.999998587661484
+        },
+        {
+          "kind": "set",
+          "thresholdDegrees": 10,
+          "seedBracketSeconds": [
+            50604.9,
+            50627.69500000001
+          ],
+          "bracketSeconds": [
+            50607.33963821411,
+            50607.3403338623
+          ],
+          "bracketWidthSeconds": 0.0006956481956876814,
+          "bracketUtc": [
+            "2006-06-26T21:30:59.754614Z",
+            "2006-06-26T21:30:59.755310Z"
+          ],
+          "bracketAltitudeDegrees": [
+            10.000017591307817,
+            9.999996155419588
+          ],
+          "secondsSinceWindowStart": 50607.339986038205,
+          "utc": "2006-06-26T21:30:59.754962Z",
+          "altitudeDegrees": 10.000006873364637
+        },
+        {
+          "kind": "rise",
+          "thresholdDegrees": 10,
+          "seedBracketSeconds": [
+            70801.27,
+            70824.065
+          ],
+          "bracketSeconds": [
+            70822.8601373291,
+            70822.86083297728
+          ],
+          "bracketWidthSeconds": 0.0006956481811357662,
+          "bracketUtc": [
+            "2006-06-27T03:07:55.275113Z",
+            "2006-06-27T03:07:55.275809Z"
+          ],
+          "bracketAltitudeDegrees": [
+            9.99999881147425,
+            10.0000013055017
+          ],
+          "secondsSinceWindowStart": 70822.86048515319,
+          "utc": "2006-06-27T03:07:55.275461Z",
+          "altitudeDegrees": 10.000000058487892
+        },
+        {
+          "kind": "set",
+          "thresholdDegrees": 10,
+          "seedBracketSeconds": [
+            74676.42000000001,
+            74699.21500000001
+          ],
+          "bracketSeconds": [
+            74692.87138412477,
+            74692.87207977296
+          ],
+          "bracketWidthSeconds": 0.0006956481956876814,
+          "bracketUtc": [
+            "2006-06-27T04:12:25.286360Z",
+            "2006-06-27T04:12:25.287056Z"
+          ],
+          "bracketAltitudeDegrees": [
+            10.000075415977731,
+            9.999980684555949
+          ],
+          "secondsSinceWindowStart": 74692.87173194886,
+          "utc": "2006-06-27T04:12:25.286708Z",
+          "altitudeDegrees": 10.000028050242584
+        },
+        {
+          "kind": "rise",
+          "thresholdDegrees": 10,
+          "seedBracketSeconds": [
+            124369.52,
+            124392.315
+          ],
+          "bracketSeconds": [
+            124387.4259844971,
+            124387.42668014529
+          ],
+          "bracketWidthSeconds": 0.0006956481956876814,
+          "bracketUtc": [
+            "2006-06-27T18:00:39.840960Z",
+            "2006-06-27T18:00:39.841656Z"
+          ],
+          "bracketAltitudeDegrees": [
+            9.999998450158134,
+            10.000004222441007
+          ],
+          "secondsSinceWindowStart": 124387.42633232119,
+          "utc": "2006-06-27T18:00:39.841308Z",
+          "altitudeDegrees": 10.00000133629966
+        },
+        {
+          "kind": "set",
+          "thresholdDegrees": 10,
+          "seedBracketSeconds": [
+            141921.67,
+            141944.465
+          ],
+          "bracketSeconds": [
+            141935.7373977661,
+            141935.7380934143
+          ],
+          "bracketWidthSeconds": 0.0006956481956876814,
+          "bracketUtc": [
+            "2006-06-27T22:53:08.152374Z",
+            "2006-06-27T22:53:08.153069Z"
+          ],
+          "bracketAltitudeDegrees": [
+            10.000019082778643,
+            9.999984676798151
+          ],
+          "secondsSinceWindowStart": 141935.7377455902,
+          "utc": "2006-06-27T22:53:08.152722Z",
+          "altitudeDegrees": 10.000001855036302
+        },
+        {
+          "kind": "rise",
+          "thresholdDegrees": 10,
+          "seedBracketSeconds": [
+            164146.795,
+            164169.59000000003
+          ],
+          "bracketSeconds": [
+            164155.50868927006,
+            164155.50938491826
+          ],
+          "bracketWidthSeconds": 0.0006956481956876814,
+          "bracketUtc": [
+            "2006-06-28T05:03:27.923665Z",
+            "2006-06-28T05:03:27.924361Z"
+          ],
+          "bracketAltitudeDegrees": [
+            9.999996768634654,
+            10.000004841760978
+          ],
+          "secondsSinceWindowStart": 164155.50903709416,
+          "utc": "2006-06-28T05:03:27.924013Z",
+          "altitudeDegrees": 10.00000080519742
+        },
+        {
+          "kind": "set",
+          "thresholdDegrees": 10,
+          "seedBracketSeconds": [
+            165582.88,
+            165605.67500000002
+          ],
+          "bracketSeconds": [
+            165602.5348440552,
+            165602.53553970339
+          ],
+          "bracketWidthSeconds": 0.0006956481956876814,
+          "bracketUtc": [
+            "2006-06-28T05:27:34.949820Z",
+            "2006-06-28T05:27:34.950516Z"
+          ],
+          "bracketAltitudeDegrees": [
+            10.00004364190682,
+            9.99995020292795
+          ],
+          "secondsSinceWindowStart": 165602.5351918793,
+          "utc": "2006-06-28T05:27:34.950168Z",
+          "altitudeDegrees": 9.999996922397878
+        },
+        {
+          "kind": "rise",
+          "thresholdDegrees": 10,
+          "seedBracketSeconds": [
+            215595.11000000002,
+            215617.90500000003
+          ],
+          "bracketSeconds": [
+            215615.81666412356,
+            215615.81735977175
+          ],
+          "bracketWidthSeconds": 0.0006956481956876814,
+          "bracketUtc": [
+            "2006-06-28T19:21:08.231640Z",
+            "2006-06-28T19:21:08.232336Z"
+          ],
+          "bracketAltitudeDegrees": [
+            9.99999825529304,
+            10.000003776809448
+          ],
+          "secondsSinceWindowStart": 215615.81701194766,
+          "utc": "2006-06-28T19:21:08.231988Z",
+          "altitudeDegrees": 10.000001016051666
+        }
+      ],
+      "peaks": [
+        {
+          "kind": "maximum",
+          "bracketSeconds": [
+            46949.44654507204,
+            46949.44734749916
+          ],
+          "bracketWidthSeconds": 0.0008024271228350699,
+          "bracketUtc": [
+            "2006-06-26T20:30:01.861521Z",
+            "2006-06-26T20:30:01.862323Z"
+          ],
+          "bracketAltitudeDegrees": [
+            43.92063601550358,
+            43.92063601550358
+          ],
+          "secondsSinceWindowStart": 46949.4469462856,
+          "utc": "2006-06-26T20:30:01.861922Z",
+          "altitudeDegrees": 43.92063601550366
+        },
+        {
+          "kind": "maximum",
+          "bracketSeconds": [
+            74317.46487078408,
+            74317.46567321119
+          ],
+          "bracketWidthSeconds": 0.0008024271082831547,
+          "bracketUtc": [
+            "2006-06-27T04:06:09.879847Z",
+            "2006-06-27T04:06:09.880649Z"
+          ],
+          "bracketAltitudeDegrees": [
+            60.26470345210527,
+            60.26470345214776
+          ],
+          "secondsSinceWindowStart": 74317.46527199764,
+          "utc": "2006-06-27T04:06:09.880248Z",
+          "altitudeDegrees": 60.26470345219842
+        },
+        {
+          "kind": "maximum",
+          "bracketSeconds": [
+            139256.73778265415,
+            139256.73858508127
+          ],
+          "bracketWidthSeconds": 0.0008024271228350699,
+          "bracketUtc": [
+            "2006-06-27T22:08:29.152759Z",
+            "2006-06-27T22:08:29.153561Z"
+          ],
+          "bracketAltitudeDegrees": [
+            57.87213855760087,
+            57.872138557600564
+          ],
+          "secondsSinceWindowStart": 139256.7381838677,
+          "utc": "2006-06-27T22:08:29.153160Z",
+          "altitudeDegrees": 57.872138557601176
+        },
+        {
+          "kind": "maximum",
+          "bracketSeconds": [
+            165340.26006782177,
+            165340.2608702489
+          ],
+          "bracketWidthSeconds": 0.0008024271228350699,
+          "bracketUtc": [
+            "2006-06-28T05:23:12.675044Z",
+            "2006-06-28T05:23:12.675846Z"
+          ],
+          "bracketAltitudeDegrees": [
+            35.326053453128,
+            35.326053453066876
+          ],
+          "secondsSinceWindowStart": 165340.26046903533,
+          "utc": "2006-06-28T05:23:12.675445Z",
+          "altitudeDegrees": 35.32605345314583
+        }
+      ],
+      "passes": [
+        {
+          "startSeconds": 33423.33396644592,
+          "endSeconds": 50607.339986038205,
+          "startUtc": "2006-06-26T16:44:35.748942Z",
+          "endUtc": "2006-06-26T21:30:59.754962Z",
+          "startsAtWindowBoundary": false,
+          "endsAtWindowBoundary": false,
+          "rise": {
+            "kind": "rise",
+            "thresholdDegrees": 10,
+            "seedBracketSeconds": [
+              33417.47,
+              33440.265
+            ],
+            "bracketSeconds": [
+              33423.33361862182,
+              33423.33431427002
+            ],
+            "bracketWidthSeconds": 0.0006956481956876814,
+            "bracketUtc": [
+              "2006-06-26T16:44:35.748595Z",
+              "2006-06-26T16:44:35.749290Z"
+            ],
+            "bracketAltitudeDegrees": [
+              9.999996568384507,
+              10.000000612757523
+            ],
+            "secondsSinceWindowStart": 33423.33396644592,
+            "utc": "2006-06-26T16:44:35.748942Z",
+            "altitudeDegrees": 9.999998587661484
+          },
+          "set": {
+            "kind": "set",
+            "thresholdDegrees": 10,
+            "seedBracketSeconds": [
+              50604.9,
+              50627.69500000001
+            ],
+            "bracketSeconds": [
+              50607.33963821411,
+              50607.3403338623
+            ],
+            "bracketWidthSeconds": 0.0006956481956876814,
+            "bracketUtc": [
+              "2006-06-26T21:30:59.754614Z",
+              "2006-06-26T21:30:59.755310Z"
+            ],
+            "bracketAltitudeDegrees": [
+              10.000017591307817,
+              9.999996155419588
+            ],
+            "secondsSinceWindowStart": 50607.339986038205,
+            "utc": "2006-06-26T21:30:59.754962Z",
+            "altitudeDegrees": 10.000006873364637
+          },
+          "peak": {
+            "kind": "maximum",
+            "bracketSeconds": [
+              46949.44654507204,
+              46949.44734749916
+            ],
+            "bracketWidthSeconds": 0.0008024271228350699,
+            "bracketUtc": [
+              "2006-06-26T20:30:01.861521Z",
+              "2006-06-26T20:30:01.862323Z"
+            ],
+            "bracketAltitudeDegrees": [
+              43.92063601550358,
+              43.92063601550358
+            ],
+            "secondsSinceWindowStart": 46949.4469462856,
+            "utc": "2006-06-26T20:30:01.861922Z",
+            "altitudeDegrees": 43.92063601550366
+          }
+        },
+        {
+          "startSeconds": 70822.86048515319,
+          "endSeconds": 74692.87173194886,
+          "startUtc": "2006-06-27T03:07:55.275461Z",
+          "endUtc": "2006-06-27T04:12:25.286708Z",
+          "startsAtWindowBoundary": false,
+          "endsAtWindowBoundary": false,
+          "rise": {
+            "kind": "rise",
+            "thresholdDegrees": 10,
+            "seedBracketSeconds": [
+              70801.27,
+              70824.065
+            ],
+            "bracketSeconds": [
+              70822.8601373291,
+              70822.86083297728
+            ],
+            "bracketWidthSeconds": 0.0006956481811357662,
+            "bracketUtc": [
+              "2006-06-27T03:07:55.275113Z",
+              "2006-06-27T03:07:55.275809Z"
+            ],
+            "bracketAltitudeDegrees": [
+              9.99999881147425,
+              10.0000013055017
+            ],
+            "secondsSinceWindowStart": 70822.86048515319,
+            "utc": "2006-06-27T03:07:55.275461Z",
+            "altitudeDegrees": 10.000000058487892
+          },
+          "set": {
+            "kind": "set",
+            "thresholdDegrees": 10,
+            "seedBracketSeconds": [
+              74676.42000000001,
+              74699.21500000001
+            ],
+            "bracketSeconds": [
+              74692.87138412477,
+              74692.87207977296
+            ],
+            "bracketWidthSeconds": 0.0006956481956876814,
+            "bracketUtc": [
+              "2006-06-27T04:12:25.286360Z",
+              "2006-06-27T04:12:25.287056Z"
+            ],
+            "bracketAltitudeDegrees": [
+              10.000075415977731,
+              9.999980684555949
+            ],
+            "secondsSinceWindowStart": 74692.87173194886,
+            "utc": "2006-06-27T04:12:25.286708Z",
+            "altitudeDegrees": 10.000028050242584
+          },
+          "peak": {
+            "kind": "maximum",
+            "bracketSeconds": [
+              74317.46487078408,
+              74317.46567321119
+            ],
+            "bracketWidthSeconds": 0.0008024271082831547,
+            "bracketUtc": [
+              "2006-06-27T04:06:09.879847Z",
+              "2006-06-27T04:06:09.880649Z"
+            ],
+            "bracketAltitudeDegrees": [
+              60.26470345210527,
+              60.26470345214776
+            ],
+            "secondsSinceWindowStart": 74317.46527199764,
+            "utc": "2006-06-27T04:06:09.880248Z",
+            "altitudeDegrees": 60.26470345219842
+          }
+        },
+        {
+          "startSeconds": 124387.42633232119,
+          "endSeconds": 141935.7377455902,
+          "startUtc": "2006-06-27T18:00:39.841308Z",
+          "endUtc": "2006-06-27T22:53:08.152722Z",
+          "startsAtWindowBoundary": false,
+          "endsAtWindowBoundary": false,
+          "rise": {
+            "kind": "rise",
+            "thresholdDegrees": 10,
+            "seedBracketSeconds": [
+              124369.52,
+              124392.315
+            ],
+            "bracketSeconds": [
+              124387.4259844971,
+              124387.42668014529
+            ],
+            "bracketWidthSeconds": 0.0006956481956876814,
+            "bracketUtc": [
+              "2006-06-27T18:00:39.840960Z",
+              "2006-06-27T18:00:39.841656Z"
+            ],
+            "bracketAltitudeDegrees": [
+              9.999998450158134,
+              10.000004222441007
+            ],
+            "secondsSinceWindowStart": 124387.42633232119,
+            "utc": "2006-06-27T18:00:39.841308Z",
+            "altitudeDegrees": 10.00000133629966
+          },
+          "set": {
+            "kind": "set",
+            "thresholdDegrees": 10,
+            "seedBracketSeconds": [
+              141921.67,
+              141944.465
+            ],
+            "bracketSeconds": [
+              141935.7373977661,
+              141935.7380934143
+            ],
+            "bracketWidthSeconds": 0.0006956481956876814,
+            "bracketUtc": [
+              "2006-06-27T22:53:08.152374Z",
+              "2006-06-27T22:53:08.153069Z"
+            ],
+            "bracketAltitudeDegrees": [
+              10.000019082778643,
+              9.999984676798151
+            ],
+            "secondsSinceWindowStart": 141935.7377455902,
+            "utc": "2006-06-27T22:53:08.152722Z",
+            "altitudeDegrees": 10.000001855036302
+          },
+          "peak": {
+            "kind": "maximum",
+            "bracketSeconds": [
+              139256.73778265415,
+              139256.73858508127
+            ],
+            "bracketWidthSeconds": 0.0008024271228350699,
+            "bracketUtc": [
+              "2006-06-27T22:08:29.152759Z",
+              "2006-06-27T22:08:29.153561Z"
+            ],
+            "bracketAltitudeDegrees": [
+              57.87213855760087,
+              57.872138557600564
+            ],
+            "secondsSinceWindowStart": 139256.7381838677,
+            "utc": "2006-06-27T22:08:29.153160Z",
+            "altitudeDegrees": 57.872138557601176
+          }
+        },
+        {
+          "startSeconds": 164155.50903709416,
+          "endSeconds": 165602.5351918793,
+          "startUtc": "2006-06-28T05:03:27.924013Z",
+          "endUtc": "2006-06-28T05:27:34.950168Z",
+          "startsAtWindowBoundary": false,
+          "endsAtWindowBoundary": false,
+          "rise": {
+            "kind": "rise",
+            "thresholdDegrees": 10,
+            "seedBracketSeconds": [
+              164146.795,
+              164169.59000000003
+            ],
+            "bracketSeconds": [
+              164155.50868927006,
+              164155.50938491826
+            ],
+            "bracketWidthSeconds": 0.0006956481956876814,
+            "bracketUtc": [
+              "2006-06-28T05:03:27.923665Z",
+              "2006-06-28T05:03:27.924361Z"
+            ],
+            "bracketAltitudeDegrees": [
+              9.999996768634654,
+              10.000004841760978
+            ],
+            "secondsSinceWindowStart": 164155.50903709416,
+            "utc": "2006-06-28T05:03:27.924013Z",
+            "altitudeDegrees": 10.00000080519742
+          },
+          "set": {
+            "kind": "set",
+            "thresholdDegrees": 10,
+            "seedBracketSeconds": [
+              165582.88,
+              165605.67500000002
+            ],
+            "bracketSeconds": [
+              165602.5348440552,
+              165602.53553970339
+            ],
+            "bracketWidthSeconds": 0.0006956481956876814,
+            "bracketUtc": [
+              "2006-06-28T05:27:34.949820Z",
+              "2006-06-28T05:27:34.950516Z"
+            ],
+            "bracketAltitudeDegrees": [
+              10.00004364190682,
+              9.99995020292795
+            ],
+            "secondsSinceWindowStart": 165602.5351918793,
+            "utc": "2006-06-28T05:27:34.950168Z",
+            "altitudeDegrees": 9.999996922397878
+          },
+          "peak": {
+            "kind": "maximum",
+            "bracketSeconds": [
+              165340.26006782177,
+              165340.2608702489
+            ],
+            "bracketWidthSeconds": 0.0008024271228350699,
+            "bracketUtc": [
+              "2006-06-28T05:23:12.675044Z",
+              "2006-06-28T05:23:12.675846Z"
+            ],
+            "bracketAltitudeDegrees": [
+              35.326053453128,
+              35.326053453066876
+            ],
+            "secondsSinceWindowStart": 165340.26046903533,
+            "utc": "2006-06-28T05:23:12.675445Z",
+            "altitudeDegrees": 35.32605345314583
+          }
+        },
+        {
+          "startSeconds": 215615.81701194766,
+          "endSeconds": 216000.0,
+          "startUtc": "2006-06-28T19:21:08.231988Z",
+          "endUtc": "2006-06-28T19:27:32.414976Z",
+          "startsAtWindowBoundary": false,
+          "endsAtWindowBoundary": true,
+          "rise": {
+            "kind": "rise",
+            "thresholdDegrees": 10,
+            "seedBracketSeconds": [
+              215595.11000000002,
+              215617.90500000003
+            ],
+            "bracketSeconds": [
+              215615.81666412356,
+              215615.81735977175
+            ],
+            "bracketWidthSeconds": 0.0006956481956876814,
+            "bracketUtc": [
+              "2006-06-28T19:21:08.231640Z",
+              "2006-06-28T19:21:08.232336Z"
+            ],
+            "bracketAltitudeDegrees": [
+              9.99999825529304,
+              10.000003776809448
+            ],
+            "secondsSinceWindowStart": 215615.81701194766,
+            "utc": "2006-06-28T19:21:08.231988Z",
+            "altitudeDegrees": 10.000001016051666
+          },
+          "set": null,
+          "peak": {
+            "kind": "window-boundary",
+            "secondsSinceWindowStart": 216000.0,
+            "utc": "2006-06-28T19:27:32.414976Z",
+            "altitudeDegrees": 12.868799118345738,
+            "azimuthDegrees": 205.58932971335875,
+            "rangeKilometers": 18274.175351802944,
+            "rangeRateKilometersPerSecond": 1.7861615574405134
+          }
+        }
+      ]
+    }
+  ],
+  "qualification": {
+    "method": "Second half-step phase-shifted independent numerical scan; same declared solver and immutable inputs.",
+    "comparisons": [
+      {
+        "thresholdDegrees": 0,
+        "crossingCount": 9,
+        "peakCount": 4,
+        "passCount": 5,
+        "maximumCrossingTimestampDifferenceSeconds": 0.0,
+        "maximumPeakTimestampDifferenceSeconds": 0.0006096286306274123
+      },
+      {
+        "thresholdDegrees": 10,
+        "crossingCount": 9,
+        "peakCount": 4,
+        "passCount": 5,
+        "maximumCrossingTimestampDifferenceSeconds": 5.820766091346741e-11,
+        "maximumPeakTimestampDifferenceSeconds": 0.0006096286306274123
+      }
+    ]
+  },
+  "finiteSuccessfulStateEvaluations": 30778,
+  "limitations": [
+    "These are historical reference numerical/diagnostic scenarios, not current orbit or physical accuracy claims.",
+    "Nominal zero EOP is explicitly degraded; no final/predicted EOP, physical observer/clock precision, illumination or brightness claim.",
+    "Seed selection, refined extrema and agreement under a finer shifted scan qualify these two fixtures numerically; this is not a rigorous global completeness proof.",
+    "Crossing brackets are sign-changing numerical intervals; extremum brackets use local unimodality found from the stated seed, not interval-certified global extrema.",
+    "The existing source oracles and tolerances are untouched. Root still must compare its actual engine products with these added fixed expectations."
+  ]
+}

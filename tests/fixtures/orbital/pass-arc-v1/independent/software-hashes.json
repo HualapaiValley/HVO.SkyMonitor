@@ -1,0 +1,55 @@
+{
+  "versions": {
+    "sgp4": "2.27",
+    "skyfield": "1.55",
+    "numpy": "2.5.4",
+    "jplephem": "2.24"
+  },
+  "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "usedFiles": [
+    {
+      "package": "sgp4",
+      "path": "api.py",
+      "bytes": 882,
+      "sha256": "E61F7A4B1DDD026A0CFD147EF18CF2EAF1AEE9E05EAE9098677CBD811F519BF3"
+    },
+    {
+      "package": "sgp4",
+      "path": "wrapper.py",
+      "bytes": 2283,
+      "sha256": "F73CBAF65E1594C3B6B565212677F066B90EFC9EBEC31EA3633A893EA3116D67"
+    },
+    {
+      "package": "sgp4",
+      "path": "vallado_cpp.abi3.so",
+      "bytes": 248600,
+      "sha256": "B732180C8B101D657E2F63EA6B186A1D747B0BE56288051E220CECD1BBE38183"
+    },
+    {
+      "package": "skyfield",
+      "path": "sgp4lib.py",
+      "bytes": 14233,
+      "sha256": "385C73A4437CA96A926330DDC3166DE295015601C3014C95ABF44743F138E5E8"
+    },
+    {
+      "package": "skyfield",
+      "path": "toposlib.py",
+      "bytes": 13682,
+      "sha256": "280F95AA7D09DEA982BBCECF476312A31C7C16123C71D2D2E06F91C0F952D045"
+    },
+    {
+      "package": "skyfield",
+      "path": "timelib.py",
+      "bytes": 47950,
+      "sha256": "A949B768909835CE3B504E89321241FBB5647065CFB17B0DB225A285896109FD"
+    },
+    {
+      "package": "skyfield",
+      "path": "functions.py",
+      "bytes": 6460,
+      "sha256": "671C0316723482371437D69C39499CBBB0DBABC65E9CA73C6BEA7510A694D9C1"
+    }
+  ],
+  "referenceSourceManifest": "inputs/coordinate-source-manifest-original.json",
+  "licenses": "notices/"
+}
