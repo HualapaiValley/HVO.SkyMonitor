@@ -96,7 +96,7 @@ validated at startup.
 | --- | --- | --- | --- |
 | `Enabled` | `false` | — | Allows provider attempts. While `false`, scheduled and manual occurrences skip with `orbital.disabled`. Retained snapshots stay readable either way. |
 | `RequestTimeoutSeconds` | `30` | 1–30 | Client deadline for one request. |
-| `MaximumWireBytes` | `33554432` | 1 B–32 MiB | Largest accepted response body on the wire. |
+| `MaximumWireBytes` | `33554432` | 1 MiB–32 MiB | Largest accepted response body on the wire. |
 | `MaximumRetainedSnapshots` | `12` | 2–64 | Newest snapshots that retention always keeps. |
 | `MinimumRetentionHours` | `48` | 1–720 | Snapshots younger than this are always kept. |
 | `MaximumQuarantinedPayloads` | `4` | 1–16 | Newest quarantined raw bodies that are kept as evidence. |
@@ -105,8 +105,8 @@ validated at startup.
 The store root is `<RawIngressRoot>/.orbital-elements/`. The store is initialized
 before the automation runner starts, whether or not refresh is enabled. If it cannot
 be initialized, the host keeps running and retries every five minutes. Every status
-request, and every health probe while refresh is enabled, also retries, so a repaired
-root recovers without a restart.
+request, and every health probe while refresh is enabled, may also retry after the shared
+initialization backoff (1, 2, 4, 8, 16, then 30 seconds). A repaired root recovers without a restart.
 
 ### Create The Reserved Definition
 
@@ -507,7 +507,7 @@ event IDs are:
 | Event IDs | Source |
 | --- | --- |
 | 7700–7717 | The store. 7715 is an unknown provider outcome halted fail-safe, 7716 a halt for a status line outside 100–599, and 7717 the resume of a halt with no valid HTTP status recorded. |
-| 7720–7721 | The snapshot reader. |
+| 7720–7725 | The snapshot reader and best-effort preparation. |
 | 7730–7731 | Store availability. |
 | 7740–7751 | The refresh job. |
 | 7755–7757 | Operator commands. |
@@ -881,3 +881,31 @@ in `docs/hvo-install-contract.md`.
   inputs. The host must resolve approved local EOP and leap-second inputs separately.
   #528 adds no implicit zero-EOP or default-clock behaviour.
 - **Scope.** #528 registers no prediction engine or consumer.
+
+### Warm preparation and bounded execution (Refs #1425)
+
+The initializer prepares persisted active state in the shared reader before the runner starts, even with refresh
+disabled. After durable activation and retention, the job prepares the new manifest identity through the same
+pinned, verified materialization path. This policy always prepares, including on hosts with no reader consumers;
+it holds at most two materialized snapshots. The job's candidate and prepared copy can overlap in memory.
+Preparation failure never changes durable activation or the prior cache: reader events 7724/7725 report it, and the
+successful automation outcome includes `orbital.preparation-unavailable` when job-side preparation fails.
+
+A consumer arriving between activation and preparation completion can still pay the cold load or wait for its load
+lease. Reads after preparation use the cache. A prepared-only Astronomy contract is a possible coordinated follow-up;
+this change preserves the existing consumer contract and typed unavailable reasons.
+
+Failed initialization has one shared backoff window across reader, operator and initializer entry points: 1, 2, 4,
+8, 16 and then 30 seconds, capped at 30 seconds, using the injected clock. Reads during the window return
+`StorageUnavailable` without initialization I/O. Success resets the window; caller cancellation never creates one.
+Monotonic elapsed time bounds a wall-clock correction, and observing a backwards clock expires the window.
+The initializer's existing five-minute recovery probe cadence remains in force when no other caller probes.
+
+Only the orbital adapter opts into a single bounded worker outside the sequential automation sweep. The runner
+reserves capacity before claiming periodic or run-now work; when occupied, the occurrence stays due or queued.
+Dispatch never executes even a synchronous adapter inline. The original occurrence and run key remain authoritative,
+and the automation journal stays `Running` until the real terminal result is committed. Run-now keeps priority and
+its existing fifteen-minute age check. Host shutdown cancels and drains work while holding execution authority;
+restart records interruption and never automatically replays provider work. Floor, halt, precision wait, request
+deadline and single-flight policy remain in the existing refresh job. See the Refs #1425 measurements in
+[performance validation](../planning/performance-validation.md) for the transferred job cost and memory evidence.
