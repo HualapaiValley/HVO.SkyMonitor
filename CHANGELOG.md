@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
-- Local satellite pass planning for the selected observatory and rig, with separate full-pass diagrams and predicted capture layers, explicit data availability and source age, and independent presentation controls. (#1393)
+- Local satellite pass planning for the selected observatory and rig, with separate full-pass diagrams and retained predicted capture layers, explicit data availability and source age, and independent presentation controls. (#1393)
 - Bounded local satellite exposure tracks, future-pass predictions and complete sky arcs pinned to their original orbital record, with reproducible virtual-camera fixtures, explicit source/time/geometry provenance and unavailable or partial outcomes when inputs or work limits prevent completion. (#529)
 
 ### Changed

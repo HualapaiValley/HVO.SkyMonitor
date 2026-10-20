@@ -23,13 +23,18 @@ public sealed class CameraAgentSatellitePlannerTests
         input.Snapshots.Current = null;
         Assert.AreEqual(CameraAgentSatellitePlanningOutcome.NoSnapshot, (await input.Planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
         input.Snapshots.Current = PlanningTestInputs.Snapshot();
+        var readsBeforeUnavailableTime = input.Snapshots.Reads;
         input.Options.CurrentValue.Enabled = false;
         Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, (await input.Planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+        Assert.AreEqual(readsBeforeUnavailableTime, input.Snapshots.Reads,
+            "A disabled planner must not materialize the local GP population.");
         input.Options.CurrentValue.Enabled = true;
         input.Times.Current = null;
         Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, (await input.Planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
         input.Times.Current = OrbitalTimeData.CreateNominalZeroDiagnostic(PlanningTestInputs.Bytes("time", "leap-seconds.list"));
         Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, (await input.Planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+        Assert.AreEqual(readsBeforeUnavailableTime, input.Snapshots.Reads,
+            "Unavailable actual time inputs must be rejected before materializing orbital data.");
         Assert.AreEqual(0, input.Engine.Searches);
     }
 

@@ -1,0 +1,42 @@
+{
+  "schema": "hvo-orbital-presentation-example-v1",
+  "scope": "Offline presentation of retained virtual-camera display pixels and supplied canonical exposure products; not a stored capture or live prediction stage",
+  "basePngSha256": "7E30DF3A26A65FC7C80585A2A5F0392E25F8A80167AE5A84AB42EB40BD07B94C",
+  "baseRgbSha256": "ED98D0A3C24C7BEE764585ED9E4CCCAF552EFC02067D56B769E2AA9F03E21A14",
+  "disabledRgbSha256": "ED98D0A3C24C7BEE764585ED9E4CCCAF552EFC02067D56B769E2AA9F03E21A14",
+  "predictedRgbSha256": "B1215EE29CCE6600DBBFB0C860B2CFDF8CA493E4C2CABD2235EA1E73537F3450",
+  "disabledPreservesBase": true,
+  "width": 640,
+  "height": 640,
+  "sourceIdentitySha256": "50C53AE47DCF2F25D17EFCD6BEBE5FCBE6A7A1CC6D788911272C24EDBD879DDF",
+  "contentIdentitySha256": "64F367A1F6BE36406D41ECE14BB62279C99A64C915164648479B71362F1C13C4",
+  "layerIdentitySha256": "6CC923C6E2B10563FE798F23BC638D8A02FB5BC76CC05507D10BCB62698B7D87",
+  "manifestIdentitySha256": "D2EBD238A37EC50FA28C86B03B39998CD5A6DBEE725E22816D4F1FA16A562B93",
+  "tracks": [
+    {
+      "inputSha256": "FD44F43B3D992A9355DA87840B7974F8C9C43755372DC18422454B4A95F3E659",
+      "productSha256": "FFABDD4C757A63583FB699BB064B409E5CC8E3362628FA6AF868DCB94B80472D",
+      "objectIdentity": {
+        "authority": "norad",
+        "catalogNumber": "25544"
+      },
+      "requestedInterval": {
+        "startUtc": "2026-10-20T13:03:42.287674+00:00",
+        "endUtc": "2026-10-20T13:03:47.287674+00:00"
+      },
+      "snapshotManifestSha256": "93394726FB5E5320162A97AE5AC2BC16EACBE683624C348D243C25E0E96E711F",
+      "recordSha256": "AFE1587168B92200430CF1B612698335031E43F8B8E6C8FBC6CB505A9FF965EC",
+      "status": "Complete",
+      "reason": "None"
+    }
+  ],
+  "assembly": "0.9.1-dev\u002Bc2beaef833a42c90af1211157f140d5e7c91db66",
+  "assemblySha256": "8EA99E14569B0BE981E6F6044F3286667D742880E064B69E77D39B858B55E082",
+  "limitations": [
+    "Caller supplies the base/track pairing; this tool does not authenticate a capture manifest or recover geometry from image pixels.",
+    "The retained base is a display derivative from explicit synthetic satellite brightness; source raw/detector evidence is unchanged.",
+    "Only exact declared exposure segments are drawn. Full-pass planning and measured associations remain separate.",
+    "Source age/coverage, query failures and empty populations remain caller facts. Optional labels may be omitted.",
+    "This is no live cadence, physical orbit/brightness/visibility or automatic classification qualification."
+  ]
+}

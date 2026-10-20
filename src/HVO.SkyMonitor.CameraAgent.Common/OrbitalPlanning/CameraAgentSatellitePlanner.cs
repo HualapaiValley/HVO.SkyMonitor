@@ -92,8 +92,8 @@ public sealed class CameraAgentSatellitePlanner(
         var filter = ParseFilter(request.ObjectFilter);
         var settings = options.CurrentValue.Copy();
         var settingsIdentity = Hash(settings);
-        var snapshot = await ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
         var time = await ReadTimeAsync(settings, cancellationToken).ConfigureAwait(false);
+        var snapshot = await ReadSnapshotAsync(cancellationToken).ConfigureAwait(false);
         var interval = new OrbitalUtcInterval(request.StartUtc, request.EndUtc);
         var context = await ReadContextAsync(interval, cancellationToken).ConfigureAwait(false);
         if (context.Observer.CanonicalSha256 != request.ExpectedObserverSha256 || context.Rig.RigProfileHashSha256 != request.ExpectedRigSha256)

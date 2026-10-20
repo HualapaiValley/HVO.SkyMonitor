@@ -1,0 +1,58 @@
+{
+  "schema": "hvo-orbital-presentation-example-v1",
+  "scope": "Offline presentation of retained virtual-camera display pixels and supplied canonical exposure products; not a stored capture or live prediction stage",
+  "basePngSha256": "64B0459DD9271AECC55F8156A693143B6BF3DCCD9B53C1226D5A44B53A3E6411",
+  "baseRgbSha256": "C40AFAED5841A1493F2C5D847241696B41B02DA9DF737D2477D9F6C7224AB668",
+  "disabledRgbSha256": "C40AFAED5841A1493F2C5D847241696B41B02DA9DF737D2477D9F6C7224AB668",
+  "predictedRgbSha256": "34D810B24B3C7DAC4CA3862E13A6B343835106F7C4F19AE0FB2C5921DD3C8A16",
+  "disabledPreservesBase": true,
+  "width": 640,
+  "height": 640,
+  "sourceIdentitySha256": "89BF9E03F46D1DC1D59B050217B8932BE4B40D1D2C820F81609AB1271E268F45",
+  "contentIdentitySha256": "10B725FC8EA367DD53FB70FAAE4AE566A647919C228F9574E82B26279A794C08",
+  "layerIdentitySha256": "2797F7C2AF5F5DFFF81DEEC38AC46C7238CB8E619FE85C65F4936952B279F46E",
+  "manifestIdentitySha256": "E501A70B6F277E051A218E38077EAD8A13331E055A59EF68A457CD27531BB1AE",
+  "tracks": [
+    {
+      "inputSha256": "6F7598DC9B4593E57EE5429E8C28486466FA409F8A9B4D6F8DF2943E17417DFB",
+      "productSha256": "AA5B4DF44335FD450FC73F3EB363E4F11B81763D16A34D4AC7DEE485C28947D9",
+      "objectIdentity": {
+        "authority": "norad",
+        "catalogNumber": "56838"
+      },
+      "requestedInterval": {
+        "startUtc": "2026-10-20T04:00:10+00:00",
+        "endUtc": "2026-10-20T04:00:15+00:00"
+      },
+      "snapshotManifestSha256": "4EA272750551B4B67427DFDD0519BC0E2FA4A0ED6D6392BADF88ACDE762374DB",
+      "recordSha256": "C45C22A901B3F97C6584A20FB77D8D422C551095F1669FE800B85BF863C254DE",
+      "status": "Complete",
+      "reason": "None"
+    },
+    {
+      "inputSha256": "082AEA48F1DC663353C1B8B43A44E826196B027A6055F114926E6524DEA1B87F",
+      "productSha256": "94D3B55563C54CB44F71F7C96440C572BC2374FC36F68FA4F348FF003FE234AC",
+      "objectIdentity": {
+        "authority": "norad",
+        "catalogNumber": "65283"
+      },
+      "requestedInterval": {
+        "startUtc": "2026-10-20T04:00:10+00:00",
+        "endUtc": "2026-10-20T04:00:15+00:00"
+      },
+      "snapshotManifestSha256": "4EA272750551B4B67427DFDD0519BC0E2FA4A0ED6D6392BADF88ACDE762374DB",
+      "recordSha256": "4D2C6D3DE43E59BBDAAB7BD69EF440E09979567E53AFB9550E73BC9762D35962",
+      "status": "Complete",
+      "reason": "None"
+    }
+  ],
+  "assembly": "0.9.1-dev\u002Bc2beaef833a42c90af1211157f140d5e7c91db66",
+  "assemblySha256": "8EA99E14569B0BE981E6F6044F3286667D742880E064B69E77D39B858B55E082",
+  "limitations": [
+    "Caller supplies the base/track pairing; this tool does not authenticate a capture manifest or recover geometry from image pixels.",
+    "The retained base is a display derivative from explicit synthetic satellite brightness; source raw/detector evidence is unchanged.",
+    "Only exact declared exposure segments are drawn. Full-pass planning and measured associations remain separate.",
+    "Source age/coverage, query failures and empty populations remain caller facts. Optional labels may be omitted.",
+    "This is no live cadence, physical orbit/brightness/visibility or automatic classification qualification."
+  ]
+}
