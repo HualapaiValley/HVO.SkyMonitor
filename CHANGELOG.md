@@ -58,6 +58,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent no longer warns about unordered database queries during API-key authentication or local owner recovery;
+  ambiguous matches continue to be rejected. (#1437)
+
 - While the newest capture is still processing, Current Sky no longer skips a finished capture it could show when the
   retained history spans two agent identities whose capture sequence numbers overlap, which could leave it showing the
   capture still being processed. (#1409)
