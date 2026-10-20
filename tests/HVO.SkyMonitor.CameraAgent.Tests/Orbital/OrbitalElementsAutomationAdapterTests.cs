@@ -39,6 +39,9 @@ public sealed class OrbitalElementsAutomationAdapterTests : OrbitalStoreTestBase
         CollectionAssert.AreEqual(new[] { CelesTrakGpSource.DatasetKey }, descriptor.Targets.ToArray());
         Assert.IsTrue(descriptor.Available);
         Assert.IsNull(descriptor.UnavailableReason);
+        Assert.AreEqual(
+            "Refreshes CelesTrak GP active-group orbital elements within the provider's two-hour floor.",
+            descriptor.Description);
         Assert.IsTrue(adapter.SupportsRunNow);
     }
 

@@ -1,9 +1,11 @@
 using HVO.SkyMonitor.CameraAgent.Authentication;
 using HVO.SkyMonitor.CameraAgent.Data;
+using HVO.SkyMonitor.CameraAgent.Tests.Data;
 using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Authentication;
@@ -241,6 +243,41 @@ public sealed class CameraAgentApiKeyStoreTests
         Assert.IsTrue(await fixture.Store.RevokeAsync(StoreFixture.OwnerId, id, CancellationToken.None).ConfigureAwait(false));
     }
 
+    [TestMethod]
+    public async Task Find_DuplicateIdentifiersUseAnOrderedBoundedProbeAndNeverAuthenticateAsync()
+    {
+        var queries = new IdentityRowLimitQueryRecorder();
+        var fixture = await StoreFixture.CreateAsync(queries).ConfigureAwait(false);
+        await using var fixtureLease = fixture.ConfigureAwait(false);
+        var created = await fixture.Store.CreateAsync(StoreFixture.OwnerId, "owner key", ApiKeyAccessLevel.Read,
+            CancellationToken.None).ConfigureAwait(false);
+        var stored = await fixture.Context.UserTokens.SingleAsync().ConfigureAwait(false);
+        fixture.Context.Users.Add(new ApplicationUser { Id = "a-third-account", UserName = "third" });
+        fixture.Context.UserTokens.AddRange(
+            new IdentityUserToken<string>
+            {
+                UserId = StoreFixture.OtherUserId,
+                LoginProvider = stored.LoginProvider,
+                Name = stored.Name,
+                Value = stored.Value
+            },
+            new IdentityUserToken<string>
+            {
+                UserId = "a-third-account",
+                LoginProvider = stored.LoginProvider,
+                Name = stored.Name,
+                Value = stored.Value
+            });
+        await fixture.Context.SaveChangesAsync().ConfigureAwait(false);
+        queries.Commands.Clear();
+
+        var match = await fixture.Store.FindAsync(created.Token!, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.IsNull(match, "A shared identifier must never select one account from ambiguous matches.");
+        queries.AssertOrderedBy("UserId");
+        Assert.AreEqual(3, await fixture.Context.UserTokens.CountAsync().ConfigureAwait(false));
+    }
+
     /// <summary>A real identity database in memory with two accounts.</summary>
     private sealed class StoreFixture : IAsyncDisposable
     {
@@ -260,13 +297,18 @@ public sealed class CameraAgentApiKeyStoreTests
 
         internal CameraAgentApiKeyStore Store { get; }
 
-        internal static async Task<StoreFixture> CreateAsync()
+        internal static async Task<StoreFixture> CreateAsync(IdentityRowLimitQueryRecorder? queries = null)
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync().ConfigureAwait(false);
-            var context = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+            var options = new DbContextOptionsBuilder<ApplicationDbContext>()
                 .UseSqlite(connection)
-                .Options);
+                .ConfigureWarnings(warnings => warnings.Throw(CoreEventId.RowLimitingOperationWithoutOrderByWarning));
+            if (queries is not null)
+            {
+                options.AddInterceptors(queries);
+            }
+            var context = new ApplicationDbContext(options.Options);
             await context.Database.EnsureCreatedAsync().ConfigureAwait(false);
             context.Users.AddRange(
                 new ApplicationUser { Id = OwnerId, UserName = "owner", IsSiteOwner = true },

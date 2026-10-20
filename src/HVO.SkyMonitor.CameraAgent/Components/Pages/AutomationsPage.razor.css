@@ -15,6 +15,7 @@
 
 .automation-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
 .automation-card { padding: .8rem; border: 1px solid var(--border); border-radius: .5rem; background: rgba(9, 15, 24, .86); }
+.automation-card.focused { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue-soft); }
 .automation-card.unsupported { opacity: .78; background: rgba(13, 20, 32, .45); }
 .automation-card > header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: .65rem; align-items: start; }
 .automation-card h3 { margin: 0; font-size: .72rem; overflow-wrap: anywhere; }
@@ -23,6 +24,7 @@
 .automation-icon svg { width: 1.1rem; height: 1.1rem; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.6; }
 .automation-icon.environment { color: var(--cyan); background: rgba(57, 197, 207, .12); }
 .automation-icon.reboot { color: var(--muted); background: var(--surface-raised); }
+.automation-icon.orbital { color: #b9a4ff; background: rgba(150, 120, 255, .13); }
 .automation-card dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: .65rem 0 0; border-top: 1px solid var(--border); }
 .automation-card dl > div { padding: .5rem 0; border-bottom: 1px solid var(--border); }
 .automation-card dl > div:nth-child(even) { padding-left: .55rem; border-left: 1px solid var(--border); }
