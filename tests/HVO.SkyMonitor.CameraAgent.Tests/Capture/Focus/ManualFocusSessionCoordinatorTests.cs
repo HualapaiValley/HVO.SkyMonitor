@@ -102,30 +102,24 @@ public sealed class ManualFocusSessionCoordinatorTests
         var fixture = await FocusOwnerFixture.CreateAsync().ConfigureAwait(false);
         await using var fixtureScope = fixture.ConfigureAwait(false);
         var module = await fixture.PublishScriptedAsync().ConfigureAwait(false);
-        var at560 = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var at1000 = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var exposures = new SemaphoreSlim(1);
         // The loop is unpaced and the history keeps only the newest samples, so a starved poll could otherwise observe it
-        // after the samples at 200 and 560 were evicted. Each adjustment releases two exposures, since one may already be
-        // in flight with the old position, and every exposure after the fifth waits until Stop cancels it.
-        module.BeforePreview = (number, token) => number switch
-        {
-            1 => Task.CompletedTask,
-            2 or 3 => at560.Task.WaitAsync(token),
-            4 or 5 => at1000.Task.WaitAsync(token),
-            _ => Task.Delay(Timeout.Infinite, token)
-        };
+        // after the samples at 200 and 560 were evicted. Each exposure waits for a permit: one at the start, then two per
+        // adjustment, since one may already be in flight with the old position. An exposure whose sample deadline passes
+        // while it waits takes no permit, so its retry still gets one.
+        module.BeforePreview = (_, token) => exposures.WaitAsync(token);
         using var coordinator = new ManualFocusSessionCoordinator(fixture.Source, TimeProvider.System, Limits());
         var session = await coordinator.StartAsync(new(Gain20, 200), "alice", CancellationToken.None).ConfigureAwait(false);
 
         await FocusWait.UntilAsync(coordinator, static s => s.History.Any(static x => x.SimulatedFocusPosition == 200),
             "a sample at 200").ConfigureAwait(false);
         coordinator.Adjust(session.SessionId, "alice", new(SimulatedFocusPosition: 560));
-        at560.TrySetResult();
+        exposures.Release(2);
         await FocusWait.UntilAsync(coordinator, static s => s.History.Any(static x => x.SimulatedFocusPosition == 560),
             "a sample at 560").ConfigureAwait(false);
         var brighter = new ManualFocusPreviewSettings(TimeSpan.FromSeconds(2), 10);
         coordinator.Adjust(session.SessionId, "alice", new(Settings: brighter, SimulatedFocusPosition: 1000));
-        at1000.TrySetResult();
+        exposures.Release(2);
         var final = await FocusWait.UntilAsync(coordinator,
             static s => s.History.Any(static x => x.SimulatedFocusPosition == 1000), "a sample at 1000").ConfigureAwait(false);
         await coordinator.StopAsync(session.SessionId, "alice", CancellationToken.None).ConfigureAwait(false);
