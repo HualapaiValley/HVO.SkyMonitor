@@ -204,6 +204,9 @@ CameraAgent.Common owns a separate operational DTO for #528/#1392. It includes
 observed UTC/revision, enabled state, current manifest identity, last attempt,
 retrieval success and activation, next due and next permitted attempt, current
 run, provider halt, candidate quarantine, reasons and permitted recovery action.
+A provider halt carries the HTTP status when one was recorded; it is null when
+the outcome of a dispatched request is unknown or the status line was outside
+100–599.
 Reference existing automation definition/run/revision identities. Connectivity,
 halt and per-record scientific age are independent. A failed refresh does not
 erase the active manifest or make old elements new. Refresh commands and their

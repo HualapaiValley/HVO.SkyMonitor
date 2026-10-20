@@ -430,6 +430,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(new CaptureProcessingStepRegistration(
             "PresentationMaterializer", typeof(PresentationMaterializerCaptureProcessingStep),
             typeof(PresentationMaterializerProcessingStepOptions), 81, AutoInclude: false));
+        // Registers the orbital store initializer, so it runs before the automation runner's first sweep.
+        services.AddCameraAgentOrbitalElements();
         services.AddHostedService<LocalAutomationRunnerService>();
         services.AddHostedService<EnvironmentalObservationSchemaInitializationService>();
         services.AddHostedService(provider => provider.GetRequiredService<EnvironmentalAcquisitionService>());
