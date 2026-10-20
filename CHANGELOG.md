@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- CameraAgent restore warnings identify every omitted counter and its escaped key; carry trials budget for rollback journals while keeping space for the restore. Pure image swaps keep their archive/headroom admission without a snapshot reservation, and carry failure reasons escape automation keys. (#1347)
+- CameraAgent restore warnings identify every omitted counter and its escaped key; carry trials budget for rollback journals while keeping space for the restore. Pure image swaps keep their archive/headroom admission without a snapshot reservation, and carry failure reasons redact and escape all diagnostic text, including keys echoed by SQLite. (#1347)
 - LogicHost uses stable bounded query ordering for projected-scene checks, diagnostics and transient submission conflicts, and keeps publication event and version identities paired when reading history. (#1444)
 
 

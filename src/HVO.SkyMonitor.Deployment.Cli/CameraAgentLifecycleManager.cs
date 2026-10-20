@@ -1361,7 +1361,7 @@ internal sealed partial class CameraAgentLifecycleManager
         var target = await CameraAgentStateSnapshot.VerifyAsync(paths, manifest.InstanceId, snapshot, cancellationToken)
             .ConfigureAwait(false);
         var (observed, unreadable) = CameraAgentStateCounters.ReadReadable(paths.StateRoot);
-        incomplete.AddRange(unreadable.Select(static entry => $"the counters of '{entry.Store}' ({Redaction.SafeDiagnostic(entry.Reason)})"));
+        incomplete.AddRange(unreadable.Select(static entry => $"the counters of '{entry.Store}' ({CameraAgentStateDiagnostics.Reason(entry.Reason)})"));
         if (incomplete.Count > 0)
         {
             await CameraAgentStateSnapshot.ShowRestoreIncompleteAsync(snapshot, string.Join("; ", incomplete), json, error)

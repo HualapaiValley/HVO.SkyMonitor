@@ -67,7 +67,9 @@ public sealed partial class LifecycleContractTests
         Console.WriteLine(JsonSerializer.Serialize(warning));
         Assert.IsFalse(warning.Contains(key, StringComparison.Ordinal), "The reason echoed the raw counter key.");
         Assert.IsFalse(warning.Contains('\u001b', StringComparison.Ordinal), "The warning contains a terminal escape character.");
-        StringAssert.Contains(warning, $"automation definition '{JsonEncodedText.Encode(key)}'.", StringComparison.Ordinal);
+        StringAssert.Contains(warning,
+            JsonEncodedText.Encode($"The restored '{AutomationStore}' cannot continue the version line of automation definition '{key}'.").ToString(),
+            StringComparison.Ordinal);
         using var redactedError = new StringWriter();
         await CameraAgentStateSnapshot.ShowRestoreUncarriedAsync(
             new(Guid.NewGuid(), Guid.NewGuid(), new string('a', 64), DateTimeOffset.UtcNow),

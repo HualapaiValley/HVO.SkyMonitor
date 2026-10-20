@@ -229,7 +229,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (plan.Uncarried.Count > 0)
         {
             throw new InstallerException(
-                $"The restore would hand out again counters the live instance issued after the backup: {string.Join("; ", plan.Uncarried.Select(static entry => $"{entry.What} ({Redaction.SafeDiagnostic(entry.Reason)})"))}. Nothing was replaced.");
+                $"The restore would hand out again counters the live instance issued after the backup: {CameraAgentStateDiagnostics.CarryFailures(plan.Uncarried)}. Nothing was replaced.");
         }
     }
 
@@ -263,7 +263,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (uncarried.Count > 0)
         {
             throw new InstallerException(
-                $"The restore could not carry {string.Join("; ", uncarried.Select(static entry => $"{entry.What} ({Redaction.SafeDiagnostic(entry.Reason)})"))}, so it is not done.");
+                $"The restore could not carry {CameraAgentStateDiagnostics.CarryFailures(uncarried)}, so it is not done.");
         }
         EnsureFloorsHold(paths, operation.StateCounterFloors ?? []);
         return await RecordAsync(paths, operation with { StateSnapshotRestoredUtc = DateTimeOffset.UtcNow }, cancellationToken)
@@ -334,9 +334,9 @@ internal sealed partial class CameraAgentLifecycleManager
             var value = observed.FirstOrDefault(entry => entry.Store == floor.Store && entry.Counter == floor.Counter && entry.Key == floor.Key);
             if (value is not null ? value.Value >= floor.Value : counter is not null && floor.Value <= counter.MissingRowAllowance) continue;
             lowered.Add(string.Create(CultureInfo.InvariantCulture,
-                $"the {floor.Counter} counter of '{floor.Store}' ({floor.Key}) is {value?.Value.ToString(CultureInfo.InvariantCulture) ?? "missing"}, below {floor.Value}"));
+                $"{CameraAgentStateCounters.Describe(floor)} is {value?.Value.ToString(CultureInfo.InvariantCulture) ?? "missing"}, below {floor.Value}"));
         }
-        lowered.AddRange(unreadable.Where(entry => floors.Any(floor => floor.Store == entry.Store)).Select(static entry => $"'{entry.Store}' cannot be read"));
+        lowered.AddRange(unreadable.Where(entry => floors.Any(floor => floor.Store == entry.Store)).Select(static entry => $"'{System.Text.Json.JsonEncodedText.Encode(entry.Store)}' cannot be read"));
         if (lowered.Count > 0)
         {
             throw new InstallerException($"The restore would hand out again counters the live instance issued: {string.Join("; ", lowered)}.");
