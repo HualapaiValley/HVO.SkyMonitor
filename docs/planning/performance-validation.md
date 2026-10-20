@@ -431,6 +431,82 @@ not clear the performance acceptance gate. No production behavior is changed by 
 samples preserve the observations and limits. The owner needs CPU/allocation profiling and, where available,
 physical-host telemetry before accepting a causal explanation or selecting a mitigation.
 
+**Per-thread CPU and settle-control correction (c2).** Eight fresh-process runs on 2026-10-20 use
+identical test-only harness `edf50864`, one warmup, ten repetitions, Release and `-m:4`. Baseline is
+`bdc9da83` plus the byte-identical two-file overlay; after production source still matches reviewed
+`547c6145`. Each run has its own measurement marker, build-server shutdown, entry load below 2, more
+than 8 GiB available and no competing test; before/during/after samples are 20 seconds apart. All eight
+are quiet on their first measurement attempt. An initial Razor shutdown failed before measurement,
+then succeeded on retry. No profiler, package/tool installation, Docker or provider was used.
+
+Changed-job snapshots read `/proc/self/task/<tid>/schedstat` and `comm` at job start/end, fetch return,
+7741, 7749 and 7722/7723. Stat utime/stime with the process clock tick is the fallback; every actual
+sample used schedstat. GC-background, finalizer, JIT and mutator CPU are separated, with the executing
+thread's read CPU bracket charged to instrumentation. The 480 measured boundaries average
+0.526 ms wall / 0.300 ms CPU per read
+(maximum wall 6.718 ms). Sequential reads have that sampling skew;
+small leading/trailing bookkeeping is outside the self-CPU bracket. Foreground GC remains on its mutator.
+
+The default-off `HVO_ORBITAL_PERF_SETTLE=1` control (`s` rows) runs only before each repetition,
+outside all timed windows: LOH CompactOnce, full blocking compacting collection, finalizer drain,
+second collection, then less than 5 ms GC-background CPU over a 500 ms window, bounded at 10 seconds.
+Each settled run records eleven successful controls, including warmup. This settles a repetition boundary;
+the first activation/consumer still precedes the changed job inside the repetition.
+
+| Run | UTC start–end (2026-10-20) | Verdict | Max load1 | JSON SHA-256 |
+| --- | --- | --- | --- | --- |
+| baseline-05 | 16:17:04–16:22:25 | quiet; exit 0 | 1.92 | `31c9501609e3231dc5c000536a972d675f359effbb4417cf557c90128c725d5c` |
+| after-05 | 16:22:25–16:28:40 | quiet; exit 0 | 1.32 | `4296bcff67d7e0622f6581309ec900c30ab9a722850765e7689ad3d631b1844f` |
+| baseline-05s | 16:28:40–16:34:28 | quiet; exit 0 | 1.3 | `53b08d62a63eba4b806231acf93b1a135ff3a7ce53038d1804a8b7f2d07f195a` |
+| after-05s | 16:34:28–16:41:36 | quiet; exit 0 | 1.56 | `854ef0937bef777b88c69c5609769963fedc5b962c7f66e9198cc69cf37a615b` |
+| after-06s | 16:41:36–16:47:53 | quiet; exit 0 | 1.24 | `43a7b212d9f0f70cd515e4efe2c19a5c6e36cab018991ce492c62b06f007627b` |
+| baseline-06s | 16:47:53–16:54:14 | quiet; exit 0 | 1.25 | `3441a629a2d67a3ed7f27f2d809fd8bbd62a754a29d0cc1c1b80cc39de213700` |
+| after-06 | 16:54:14–17:00:41 | quiet; exit 0 | 1.43 | `2ec3090f84eb81b9e92fe0ec13f8358114733e5c528c9a50fa7fe816d49561c1` |
+| baseline-06 | 17:00:41–17:06:05 | quiet; exit 0 | 1.56 | `a92e73aa56ed81db04b2ed14a69bd9514b01ed637473e98ea7c74619cfca5fdf` |
+
+Outside-preparation changed-job mean differences (after minus baseline), milliseconds:
+
+| Pair | Outside wall Δ | Mutator CPU Δ | GC-background CPU Δ | Other CPU Δ | Instrumentation CPU Δ | Pause Δ | Wall residual | GC+pause / wall Δ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 05 | 202.49 | 214.78 | -12.63 | -1.84 | 2.08 | 51.75 | -51.65 | 19.32% |
+| 05s | 563.00 | 540.21 | 39.29 | -3.08 | -0.04 | 95.49 | -108.87 | 23.94% |
+| 06s | -555.24 | -549.23 | -5.04 | -2.30 | -0.22 | -57.14 | 58.68 | 11.20% |
+| 06 | 375.66 | 370.21 | 10.50 | -3.13 | 1.14 | 67.99 | -71.06 | 20.89% |
+
+CPU classes overlap wall and pause. The residual is the requested arithmetic difference after subtracting
+all listed CPU and pause deltas, not an independent causal wall-time partition. A negative value reflects
+overlap and counter/sampling differences. Per-thread counters, phase/count/pause deltas, per-repetition
+tables and process-vs-thread counter disagreement are preserved in external `c2/analysis.md`, `phases.tsv`,
+`per-repetition.tsv`, `paired-deltas.tsv` and the eight JSONs.
+
+**E3: inconclusive; R0-F1 remains blocking.** E1 fails: unsettled pair 05 GC-background CPU plus pause
+accounts arithmetically for 19.32% of its +202.49 ms wall delta.
+Settled pair 05s adds 563.0017 ms, compared with the settled baseline mean spread
+of 560.2847 ms (the excess is 2.7171 ms; it is not rounded into a pass).
+Pair 06s reverses to -555.24 ms wall / -549.23 ms mutator CPU.
+E2 also fails: that is not a positive mutator regression beyond the 543.28 ms settled
+baseline mutator spread. Pair 05s mutator delta is 540.21 ms, also within that band.
+Unsettled mutator deltas (214.78/370.21 ms) do exceed their native
+14.95 ms baseline band; that increase does not persist under both settled comparisons.
+The first pair's excess is principally normalize/publish; retention is negligible. The c2 unsettled
+baseline mean spread is 23.10 ms wall / 14.95 ms mutator CPU;
+including c1 baselines 02/03/04 gives a 939.08 ms conventional wall-mean range.
+These observed spreads are not confidence intervals. c1 has no phase-aligned historical mutator counters.
+
+The 20 settled changed-job preparations average 1035.88 ms wall,
+1048.89 ms process CPU and 2,103,975,788 B allocation.
+Settled changed first-consumer mean is 1009.2852 ms baseline versus
+0.0029 ms after. This quantifies preparation and consumer transfer;
+it does not establish a steady production bound or attribute the historical tail. No production defect
+or safe production remedy is established. Missing evidence is a causal split of mutator CPU (including
+foreground GC/allocator/cache/memory effects), and an activation-boundary or genuinely spaced control
+under representative production GC/heap conditions. Guest load and fixed CPU probes do not observe
+physical-host frequency or memory bandwidth.
+
+The periodic definition minimum is 7,200 s (`src/HVO.SkyMonitor.CameraAgent.Common/Orbital/OrbitalElementsAutomationAdapter.cs:21`, validation at `:73`). The host supplies the two-hour `MinimumProviderAttemptInterval` as `MinimumAttemptInterval` (`src/HVO.SkyMonitor.CameraAgent.Common/DependencyInjection/OrbitalElementsServiceCollectionExtensions.cs:79`; `src/HVO.SkyMonitor.CameraAgent.Common/Orbital/SqliteOrbitalElementsStore.cs:30`). The durable last-attempt floor is checked for every trigger before admission and committed before fetching (`SqliteOrbitalElementsStore.cs:164`, `:171`, `:187`, `:192`); smaller configured intervals are rejected at `:780`. Run-now maps to Manual at `OrbitalElementsAutomationAdapter.cs:106`, then uses the same job/admission; precision wait can wait up to 120 s and rechecks admission (`OrbitalElementsRefreshJob.cs:239`, `:245`, `:256`). These are two-hour attempt-start intervals, not a guarantee of two-hour activation-completion gaps or a quiet heap. Startup preparation also does not represent a newly admitted provider attempt.
+
+All eight effective test hosts report `IsServerGC=false`, `LatencyMode=Interactive`, and 12 processors. Both AppContext switches `System.GC.Concurrent` and `System.GC.Server` are absent (TryGetSwitch=false, data=null); absent does not mean an explicit false configuration. The command-line-selected runtimeconfig is `HVO.SkyMonitor.CameraAgent.Tests.runtimeconfig.json`, with neither GC property; `.NET BGC` CPU is observed. The production CameraAgent uses the Web SDK (`src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj:1`); its generated Release runtimeconfig has `System.GC.Server=true`, concurrent GC left at the runtime default. The Dockerfile publishes and runs that host (`src/HVO.SkyMonitor.CameraAgent/Dockerfile:73`, `:132`, `:143`), with no GC override in the Dockerfile or supplied Compose environment. `deploy/split-host/compose.cameraagent.yml:5` supplies the production environment and `:30` defaults to one CPU. Thus these workstation-GC, 12-processor tests do not establish production server-GC behavior; effective production mode also depends on deployed CPU/resource limits. No live production process was inspected. The generated host config is preserved as `c2/production-cameraagent.runtimeconfig.json`; each run JSON embeds the effective test config and all adjacent configs.
+
 Workload hashes: raw `9F75308EAFF68ED921A3CBBFCFFF771A67E4041E272A17E8E6FD868BF213718E`;
 changed `6601B2C2227405C0273C9613059F0E88FD6E041C60640E2DFA33C6B567292FB9` (16,754 records, 7,147,269 raw bytes).
 
