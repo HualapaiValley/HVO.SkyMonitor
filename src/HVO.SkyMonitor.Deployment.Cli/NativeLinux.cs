@@ -78,6 +78,12 @@ internal static partial class NativeLinux
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static partial IntPtr getpwuid(uint uid);
 
+    [LibraryImport("libc", EntryPoint = "access", StringMarshalling = StringMarshalling.Utf8)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static partial int Access(string path, int mode);
+
+    internal static bool CanWriteAndSearch(string path) => Access(path, 3) == 0;
+
     [LibraryImport("libc", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static partial int chown(string path, uint owner, uint group);
@@ -423,6 +429,12 @@ internal static partial class NativeLinux
             throw new InstallerException($"Directory '{path}' could not be flushed to disk.");
         }
         DirectoryFlushed(path);
+    }
+
+    internal static void FlushProgramFile(SafeFileHandle handle)
+    {
+        if (FSync(handle.DangerousGetHandle().ToInt32()) != 0)
+            throw new InstallerException("The installed program's metadata could not be flushed to disk.");
     }
 
     public static bool IsClockSynchronized()

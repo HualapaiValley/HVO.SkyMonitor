@@ -32,6 +32,10 @@ internal static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == PrivilegedPathInstaller.CommandName)
+        {
+            return PrivilegedPathInstaller.RunInternal(args);
+        }
         if (args.Length > 0 && args[0] == "internal-prepare")
         {
             return PrivilegedPreparation.RunInternal(args);
