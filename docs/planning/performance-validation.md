@@ -507,6 +507,62 @@ The periodic definition minimum is 7,200 s (`src/HVO.SkyMonitor.CameraAgent.Comm
 
 All eight effective test hosts report `IsServerGC=false`, `LatencyMode=Interactive`, and 12 processors. Both AppContext switches `System.GC.Concurrent` and `System.GC.Server` are absent (TryGetSwitch=false, data=null); absent does not mean an explicit false configuration. The command-line-selected runtimeconfig is `HVO.SkyMonitor.CameraAgent.Tests.runtimeconfig.json`, with neither GC property; `.NET BGC` CPU is observed. The production CameraAgent uses the Web SDK (`src/HVO.SkyMonitor.CameraAgent/HVO.SkyMonitor.CameraAgent.csproj:1`); its generated Release runtimeconfig has `System.GC.Server=true`, concurrent GC left at the runtime default. The Dockerfile publishes and runs that host (`src/HVO.SkyMonitor.CameraAgent/Dockerfile:73`, `:132`, `:143`), with no GC override in the Dockerfile or supplied Compose environment. `deploy/split-host/compose.cameraagent.yml:5` supplies the production environment and `:30` defaults to one CPU. Thus these workstation-GC, 12-processor tests do not establish production server-GC behavior; effective production mode also depends on deployed CPU/resource limits. No live production process was inspected. The generated host config is preserved as `c2/production-cameraagent.runtimeconfig.json`; each run JSON embeds the effective test config and all adjacent configs.
 
+**Within-process settle and kernel-counter correction (c3).**
+
+All twelve fresh processes use identical test-only harness d69c280c, one excluded warmup, ten measured repetitions (five S and five U), Release, -m:4, and the unchanged synthetic workload. Alternate settling never runs in warmup. S runs immediately before M1.job.changed, after M1.job.first and its first consumer, outside all timed windows: LOH CompactOnce, full blocking compacting collection, finalizer drain, second collection, then a GC-thread-CPU window below 5 ms per 500 ms, bounded at 10 s. SETTLE_FIRST chooses the first condition. SETTLE=1 keeps c2's original before-whole-repetition behavior; default remains off.
+
+Each run has its own MEASURING marker, removed on exit, with build-server shutdown, bounded 30 s entry polls (at most 3 h), entry load1 <2, MemAvailable >8 GiB and no competing dotnet test. Before/during/after host samples are 20 s apart; quiet requires every load1 <4. DOTNET_gcServer=1 is set only in g runs, whose JSON must prove IsServerGC=true. Workstation JSON must prove false. All use the same 12-processor test environment; this server arm checks mode sensitivity, not the one-CPU deployed resource envelope. No profiler, tool/package installation, Docker or provider/network request is used.
+
+Outside preparation is defined as in c2: sum adjacent changed-job boundary deltas from job-start to job-end, subtracting only event-7722→event-7723 in after. Boundaries also cover fetch-return, 7741, 7749. Summing adjacent deltas retains observations before a transient thread exits. Source identity holds for executed source operations: the only after-only operation is preparation and its constant call/result plumbing; backoff lies beyond an initialized early return. The optional reader is constructed outside measurement; runner and worker are bypassed. This is not byte identity of JIT output or async layouts/lifetimes. See external code-identity.md for full call inventory, exact 547c6145 locations and hunks.
+
+| Run | GC / first | UTC start–end | Verdict | Max load1 | JSON SHA-256 |
+| --- | --- | --- | --- | --- | --- |
+| baseline-w1 | workstation / U | 2026-10-20T17:45:35.104703+00:00–2026-10-20T17:51:32.618481+00:00 | quiet; exit 0 | 1.79 | `b5d7dc8071321de7fb7c4d8e9757d1c4457b26a477325a5197ad0bb4320854ab` |
+| after-w1 | workstation / S | 2026-10-20T17:51:32.910742+00:00–2026-10-20T17:57:36.194067+00:00 | quiet; exit 0 | 1.27 | `69503153c580751b5f862926e3fb750d61933fd08c7a4c898262030add994edc` |
+| after-w2 | workstation / U | 2026-10-20T18:03:14.323415+00:00–2026-10-20T18:08:53.048618+00:00 | quiet; exit 0 | 1.33 | `3463052493f0b8b04bbd342ba5ac6dc1964335e167315e837f081522bacef720` |
+| baseline-w2 | workstation / S | 2026-10-20T18:08:53.312588+00:00–2026-10-20T18:14:02.561609+00:00 | quiet; exit 0 | 1.51 | `92540422dd2facc08d3ce726b618b0dce8d62f4b0ce62bd5f2bb52d13214c377` |
+| baseline-w3 | workstation / U | 2026-10-20T18:14:02.841488+00:00–2026-10-20T18:19:10.448202+00:00 | quiet; exit 0 | 1.39 | `6c78b95914865240c93c1a5553799aff7ff7469dd29522db32ab47d0ff8100a2` |
+| after-w3 | workstation / S | 2026-10-20T18:19:10.745619+00:00–2026-10-20T18:25:17.619928+00:00 | quiet; exit 0 | 1.2 | `de36106dde0c1f175387c852655f5ed8c1fe2618f2c725a7c8eadaafec440783` |
+| after-w4 | workstation / U | 2026-10-20T18:25:17.878222+00:00–2026-10-20T18:31:03.781664+00:00 | quiet; exit 0 | 1.18 | `c98c60c6bf846353ca90ad35cd8b6e7c7dd8ee40c375d7f048c2404498b90886` |
+| baseline-w4 | workstation / S | 2026-10-20T18:31:04.067268+00:00–2026-10-20T18:36:33.516878+00:00 | quiet; exit 0 | 1.66 | `6afbb566b07f4e479f8d37a99ba899416136d0732754becbaa0b22d3abfed0f3` |
+| baseline-g1 | server / U | 2026-10-20T18:36:33.872149+00:00–2026-10-20T18:42:58.687080+00:00 | quiet; exit 0 | 3.26 | `67a0123054632ba32e869d84e50e1d020ba9ef996e9d13c25416781aee24e1bb` |
+| after-g1 | server / S | 2026-10-20T18:42:59.024462+00:00–2026-10-20T18:50:54.079468+00:00 | quiet; exit 0 | 2.52 | `d9cf6e566d09f4bf602f4bcb25c835ec0c9b6e6de329d617bdc263b25f84ec8a` |
+| after-g2 | server / U | 2026-10-20T18:50:54.343157+00:00–2026-10-20T18:57:28.246349+00:00 | quiet; exit 0 | 2.5 | `93f96a40c173e803ed7cf623f3701beed772896269f4c49dcea0041454a6a113` |
+| baseline-g2 | server / S | 2026-10-20T18:57:28.518461+00:00–2026-10-20T19:03:21.416234+00:00 | quiet; exit 0 | 2.73 | `087a2e2a78f3893a7e2a80e753a498cc514ca55d1877a1d37d90c6c48ebfcd4a` |
+
+Excluded contaminated attempts: after-w2 attempt 1, max load1 4.69, UTC 2026-10-20T17:57:36.469437+00:00–2026-10-20T18:03:14.067005+00:00, SHA-256 `931122294a03247360408d23dc830f88fbae8e8531747feaaaace4f2dc210b60`. Accepted retries retain their -retry directories; the twelve-run table lists only accepted runs.
+
+Code-identity result: **PASS** for executed production source/work; full call inventory/hunks are in external `c3/code-identity.md`. Production remains byte-identical to reviewed `547c6145`.
+
+**G1** under the pre-registered definitions.
+
+| GC | ΔU ms | ΔS ms | DiD ms | BandS ms | BandU ms | B ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| w | 17.00712674999977 | -25.413576999999805 | 42.4207037499998 | 609.1379670000001 | 241.414667 | 3307.2551715 |
+| g | 167.96281199999976 | 221.99916750000057 | -54.0363554999999 | 91.071684 | 1185.735959 | 3551.6154109999998 |
+
+- G1(i): PASS.
+- G1(ii): PASS.
+- G1(iii): PASS.
+- G1(iv): PASS.
+
+G1(ii): |ΔS| = 25.413576999999805; BandS = 609.1379670000001; 0.10 × B = 330.72551715000003 ms.
+G1(iii): ΔU = 17.00712674999977; BandU = 241.414667; DiD = 42.4207037499998; 0.5 × ΔU = 8.503563374999885 ms.
+G1(iv): server ΔS = 221.99916750000057; server BandS = 91.071684; 0.10 × B(server) = 355.1615411 ms.
+G2 wall criterion = False; mutator ΔS = -33.259116749999976, BandS(cpu) = 606.3989889999998, 0.10 × B(cpu) = 327.40952172500005 ms. For the G2 CPU conjunct, B and BandS are applied analogously to per-process mutator medians. G2 = False.
+
+Mechanism: None distinguishable as a causal carryover mechanism. The workstation unsettled after excess is only 17.00712675 ms versus BandU 241.414667 ms; settled after is 25.413577 ms faster. U after-minus-baseline counters are +25 ms mutator user, -2.5 ms mutator system, +5,091.75 minor faults, +12.81075 ms pause and +5.40714325 ms GC-thread CPU; S differences are -30 ms user, 0 ms system, +10,244.5 faults, -6.768 ms pause and -4.87487325 ms GC CPU. Settling increases system CPU/faults in both arms rather than removing a unique after-arm fault cost. The small differences do not isolate a heap/GC mechanism. Server settled after increases 221.9991675 ms (6.25065335% of B), above its 91.071684 ms band but below 355.1615411 ms (10% of B), so G1(iv) passes. That server difference is predominantly normalize/publish (+221.0986405 ms), tracks mutator user CPU (+225 ms overall; +220 ms in the phase), and has no increased minor-fault or system-CPU cost; retention adds only 0.5631645 ms. Mutator user CPU still includes foreground GC and does not identify application instructions versus allocator/cache/memory effects.
+
+Allocation limitation: Server allocation cost is unavailable. All four server processes contain negative process-wide precise-allocation sample deltas (baseline-g1: 12; after-g1: 29; after-g2: 28; baseline-g2: 17). Twenty of 140 recorded after preparations are negative; positive jumps are also implausible. Raw preparation allocations range from -208,931,411,232 to +162,317,372,776 B. The raw signed server preparation mean is -6,626,729,609.542857 B, which is not an allocation cost. No samples are discarded to manufacture a positive mean. Non-precise cumulative heap counters remain monotonic but sometimes flat, so they cannot repair precise deltas. Raw JSONs and hashes are preserved, with allocation-counter-anomaly.json providing counts/ranges. Cause is not established; no production defect is inferred. Workstation preparation deltas are nonnegative and average 2,101,818,967.6285715 B over 280 recorded preparations. Wall, per-thread CPU, faults, pauses and every pre-registered G1/G2/G3 input are separate from allocation deltas; the outcome remains G1. Reliable server/combined allocation means require further evidence.
+
+w: all 160 measured M1 preparations average 888.623394 ms wall, 900.255744 ms process CPU and 2,102,719,619.000 B allocation. The 40 changed-job preparations average 884.990413 ms phase wall, 895.263975 ms phase CPU and 2,102,325,619.200 B. Changed first-consumer mean is 902.792058 ms baseline versus 0.003295 ms after (saving 902.788763 ms). All 280 recorded M1/M3 preparations average 893.168229 ms wall, 905.917711 ms process CPU and 2,101,818,967.629 B.
+
+g: all 80 measured M1 preparations average 1107.042791 ms wall, 1638.608712 ms process CPU and unavailable (invalid server counter) allocation. The 20 changed-job preparations average 1157.901413 ms phase wall, 1723.158850 ms phase CPU and unavailable (invalid server counter). Changed first-consumer mean is 1017.415555 ms baseline versus 0.005225 ms after (saving 1017.410330 ms). All 140 recorded M1/M3 preparations average 1106.588004 ms wall, 1625.638979 ms process CPU and unavailable (invalid server counter).
+
+Across GC modes, all 420 recorded preparations average 964.308154 ms wall / 1145.824800 ms process CPU / unavailable (invalid server counter) allocation; the per-mode values above preserve the GC distinction.
+
+CPU uses schedstat plus separate stat user/system ticks (AT_CLKTCK=100); process minflt/majflt, statm RSS and last-GC heap/committed/fragmented/promoted counters are captured at each boundary. User/system resolution is 10 ms. Foreground GC remains on mutators; process faults include all threads. The self CPU bracket is charged to instrumentation; CPU/pause overlap wall. Heap values describe the last completed collection. Full boundary overhead and additional-counter sub-brackets are recorded in external `c3/instrumentation.tsv`; all per-process medians, K values, arm means and phase/heap evidence are in `c3/analysis.md` and adjacent TSV/JSON. No test inventory changed.
+
 Workload hashes: raw `9F75308EAFF68ED921A3CBBFCFFF771A67E4041E272A17E8E6FD868BF213718E`;
 changed `6601B2C2227405C0273C9613059F0E88FD6E041C60640E2DFA33C6B567292FB9` (16,754 records, 7,147,269 raw bytes).
 
