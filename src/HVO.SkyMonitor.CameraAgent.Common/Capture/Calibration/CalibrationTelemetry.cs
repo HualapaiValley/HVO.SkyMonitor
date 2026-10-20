@@ -12,7 +12,7 @@ public sealed class CalibrationTelemetry : IDisposable
 
     internal static readonly ActivitySource ActivitySource = new(ActivitySourceName);
 
-    private readonly Meter _meter = new(MeterName);
+    private readonly Meter _meter;
     private readonly Counter<long> _acquisitions;
     private readonly Histogram<double> _acquisitionDuration;
     private readonly Histogram<double> _masterBuildDuration;
@@ -24,7 +24,14 @@ public sealed class CalibrationTelemetry : IDisposable
     private CalibrationTelemetryInventory _inventory = CalibrationTelemetryInventory.Empty;
 
     public CalibrationTelemetry(ILogger<CalibrationTelemetry> logger)
+        : this(new Meter(MeterName), logger)
     {
+    }
+
+    /// <param name="meter">The meter owned and disposed by this instance.</param>
+    internal CalibrationTelemetry(Meter meter, ILogger<CalibrationTelemetry> logger)
+    {
+        _meter = meter;
         _logger = logger;
         _acquisitions = _meter.CreateCounter<long>("camera_agent.calibration.acquisitions", "{acquisition}");
         _acquisitionDuration = _meter.CreateHistogram<double>("camera_agent.calibration.acquisition.duration", "ms");
