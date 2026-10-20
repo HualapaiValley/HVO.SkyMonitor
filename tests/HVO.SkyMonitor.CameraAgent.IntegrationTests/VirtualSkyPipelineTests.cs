@@ -59,12 +59,13 @@ public sealed class VirtualSkyPipelineTests
     {
         using var scope = Fixture.CreateCameraAgentScope();
         var services = scope.ServiceProvider;
+        var diagnostics = new VirtualSkyOutageDiagnostics(services, Fixture.StorageRoot);
         var telemetry = services.GetRequiredService<ICaptureTelemetryProvider>();
         var latest = services.GetRequiredService<ILatestFrameAccessor>();
         await WaitUntilAsync(
             () => telemetry.Latest is { FrameStored: true }
                 && latest.TryGetSnapshot(FrameArtifactRole.Raw, out _),
-            TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+            TimeSpan.FromSeconds(20), describeTimeout: diagnostics.Describe).ConfigureAwait(false);
         Assert.IsTrue(latest.TryGetSnapshot(FrameArtifactRole.Raw, out var before));
         var storage = services.GetRequiredService<IFrameStorageService>();
         var storageDate = DateOnly.FromDateTime(before.TimestampUtc.UtcDateTime);
@@ -72,9 +73,12 @@ public sealed class VirtualSkyPipelineTests
         {
             var checkpointDateFrames = storage.List(Fixture.StorageRoot, storageDate, null, 10_000);
             var currentDate = DateOnly.FromDateTime(DateTime.UtcNow);
-            return currentDate == storageDate
+            IReadOnlyList<StoredFrameReference> frames = currentDate == storageDate
                 ? checkpointDateFrames
                 : [.. checkpointDateFrames, .. storage.List(Fixture.StorageRoot, currentDate, null, 10_000)];
+            diagnostics.LastListedFrames = frames;
+            diagnostics.LastListCapReached = checkpointDateFrames.Count >= 10_000 || frames.Count - checkpointDateFrames.Count >= 10_000;
+            return frames;
         }
 
         var configured = services.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value;
@@ -105,9 +109,10 @@ public sealed class VirtualSkyPipelineTests
         await drain.StartAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
+            diagnostics.Stage = "outage retry";
             await WaitUntilAsync(
                 HasTransportFailureRetry,
-                TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+                TimeSpan.FromSeconds(20), describeTimeout: diagnostics.Describe).ConfigureAwait(false);
             var outageCheckpointUtc = DateTimeOffset.UtcNow;
             var checkpointCaptureIds = ListStoredFrames()
                 .Where(static item => item.Role == FrameArtifactRole.Raw)
@@ -117,6 +122,9 @@ public sealed class VirtualSkyPipelineTests
                 .Select(static parsed => parsed.Document!.Manifest!.Descriptor.Capture.CaptureId)
                 .ToHashSet();
             Assert.IsNotEmpty(checkpointCaptureIds);
+            diagnostics.CheckpointUtc = outageCheckpointUtc;
+            diagnostics.CheckpointCaptureIds = checkpointCaptureIds;
+            diagnostics.Stage = "post-checkpoint same-capture raw and preview";
             (StoredFrameReference Stored, ArtifactManifestParseResult Parsed)[] measuredCapture = [];
             await WaitUntilAsync(
                 () =>
@@ -151,7 +159,7 @@ public sealed class VirtualSkyPipelineTests
                     return true;
                 },
                 TimeSpan.FromSeconds(20),
-                TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+                TimeSpan.FromSeconds(1), describeTimeout: diagnostics.Describe).ConfigureAwait(false);
 
             Assert.IsNotEmpty(measuredCapture);
             var transient = measuredCapture
@@ -183,6 +191,7 @@ public sealed class VirtualSkyPipelineTests
         // Healthy is a conjunction of eight conditions, two of which count work still in flight on a producer
         // that never stops, so waiting for it asks a live agent to fall idle. Gate the six that are defects at
         // any sequence and report the other two, exactly as the capture-fence wait below does.
+        diagnostics.Stage = "processing after publication";
         await WaitUntilAsync(
             () =>
             {
@@ -194,7 +203,7 @@ public sealed class VirtualSkyPipelineTests
                     !live.DurableStateUnavailable &&
                     !live.ReconciliationFailed;
             },
-            TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+            TimeSpan.FromSeconds(20), describeTimeout: diagnostics.Describe).ConfigureAwait(false);
         var processingState = processingStateService.Snapshot;
         Console.WriteLine(string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
@@ -206,6 +215,35 @@ public sealed class VirtualSkyPipelineTests
         Assert.AreEqual(0L, processingState.ReplayTerminalCount, processingState.Reason);
         Assert.IsFalse(processingState.DurableStateUnavailable, processingState.Reason);
         Assert.IsFalse(processingState.ReconciliationFailed, processingState.Reason);
+    }
+
+    [TestMethod]
+    public async Task StandaloneForcedTimeoutIncludesBoundedRuntimeStateAndSuccessDoesNotCollect()
+    {
+        using var scope = Fixture.CreateCameraAgentScope();
+        var diagnostics = new VirtualSkyOutageDiagnostics(scope.ServiceProvider, Fixture.StorageRoot)
+        {
+            Stage = "forced timeout proof",
+            CheckpointUtc = DateTimeOffset.UtcNow
+        };
+        var telemetry = scope.ServiceProvider.GetRequiredService<ICaptureTelemetryProvider>();
+        await WaitUntilAsync(() => telemetry.Latest is { FrameStored: true }, TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+        diagnostics.LastListedFrames = scope.ServiceProvider.GetRequiredService<IFrameStorageService>().List(
+            Fixture.StorageRoot, DateOnly.FromDateTime(telemetry.Latest!.StartedUtc.UtcDateTime), null, 10_000);
+        diagnostics.LastListCapReached = diagnostics.LastListedFrames.Count >= 10_000;
+        var error = await Assert.ThrowsAsync<AssertFailedException>(() => WaitUntilAsync(
+            () => false, TimeSpan.Zero, describeTimeout: diagnostics.Describe)).ConfigureAwait(false);
+        foreach (var field in new[] { "checkpoint:", "capture loop/metering/admission:", "ingress queues/bytes/oldest age:", "durable processing/publication:", "journal capture sequence/publication/metering:", "storage list/manifest filtering:" })
+        {
+            StringAssert.Contains(error.Message, field, StringComparison.Ordinal);
+        }
+        StringAssert.Contains(error.Message, "CaptureSequence", StringComparison.Ordinal);
+        StringAssert.Contains(error.Message, "ListedRole", StringComparison.Ordinal);
+        Assert.IsFalse(error.Message.Contains("unavailable(", StringComparison.Ordinal), error.Message);
+        Assert.IsTrue(error.Message.Length < VirtualSkyOutageDiagnostics.OutputLimit + 1024);
+        Console.WriteLine(error.Message);
+        await WaitUntilAsync(() => true, TimeSpan.Zero,
+            describeTimeout: () => throw new InvalidOperationException("Success must not collect diagnostics.")).ConfigureAwait(false);
     }
 
 #endif
@@ -1206,7 +1244,8 @@ public sealed class VirtualSkyPipelineTests
         TimeSpan timeout,
         TimeSpan? pollInterval = null,
         [CallerArgumentExpression(nameof(condition))] string? conditionExpression = null,
-        [CallerLineNumber] int conditionLineNumber = 0)
+        [CallerLineNumber] int conditionLineNumber = 0,
+        Func<string>? describeTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(condition);
         var stopwatch = Stopwatch.StartNew();
@@ -1214,7 +1253,7 @@ public sealed class VirtualSkyPipelineTests
         {
             if (stopwatch.Elapsed >= timeout)
             {
-                throw CreateWaitTimeout(stopwatch.Elapsed, timeout, conditionLineNumber, conditionExpression);
+                throw CreateWaitTimeout(stopwatch.Elapsed, timeout, conditionLineNumber, conditionExpression, describeTimeout);
             }
             await Task.Delay(pollInterval ?? TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
         }
@@ -1253,7 +1292,8 @@ public sealed class VirtualSkyPipelineTests
         TimeSpan elapsed,
         TimeSpan timeout,
         int lineNumber,
-        string? expression)
+        string? expression,
+        Func<string>? describeTimeout = null)
         => new(
             FormattableString.Invariant(
                 $"Timed out waiting for the configured VirtualSky pipeline after ") +
@@ -1264,7 +1304,7 @@ public sealed class VirtualSkyPipelineTests
 #if COMBINED_INTEGRATION_TESTS
             + Environment.NewLine + Fixture.DescribeRuntimeState()
 #endif
-            );
+            + (describeTimeout is null ? string.Empty : Environment.NewLine + describeTimeout()));
 
     /// One atomic view of the capture prefix at or below <paramref name="Watermark"/>, plus evidence of work
     /// beyond it. Every field comes from a single statement, so they all describe the same database state
