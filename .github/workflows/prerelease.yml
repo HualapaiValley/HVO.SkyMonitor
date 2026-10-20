@@ -63,7 +63,8 @@ jobs:
     name: Pre-release / Build
     needs: gate
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # The arm64 image is built under emulation; its publish alone has taken 46 minutes (#1410).
+    timeout-minutes: 120
     permissions:
       contents: read
     steps:

@@ -96,7 +96,7 @@ public sealed record PresentationMetadataFactsProductV1(
 /// <summary>Host-neutral producers that consume canonical facts, never base image pixels.</summary>
 public static class PresentationLayerProducers
 {
-    public const string SceneProducerVersion = "projected-scene-presentation-v11-original-colours";
+    public const string SceneProducerVersion = "projected-scene-presentation-v12-plain-circle-markers";
 
     /// <summary>
     /// Output-pixel clearance between a resolved footprint's limb and its drawn outline, and the floor of the
@@ -193,9 +193,9 @@ public static class PresentationLayerProducers
         // A resolved body whose padded disc is wider than the point marker is annotated by its outline alone.
         var markers = includeMarkers ? annotatedObjects
             .Where(item => !footprints.TryGetValue(item.Id, out var footprint) || PaddedHalfExtent(footprint, scene.ImageTransform) <= style.MarkerRadius)
-            .Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor, Crosshair: true))
+            .Select(item => new PresentationMarkerV1(item.Pixel, style.MarkerRadius, markerColor))
             .Concat(footprintOnly.Where(item => PaddedHalfExtent(item.Footprint, scene.ImageTransform) <= style.MarkerRadius)
-                .Select(item => new PresentationMarkerV1(item.Anchor, style.MarkerRadius, markerColor, Crosshair: true))).ToArray() : [];
+                .Select(item => new PresentationMarkerV1(item.Anchor, style.MarkerRadius, markerColor))).ToArray() : [];
         var segments = includeConstellations ? scene.Segments.Where(item => style.ConstellationIds.Count == 0 ||
             style.ConstellationIds.Contains(item.ConstellationId, StringComparer.OrdinalIgnoreCase))
             .Select(item => new PresentationSegmentV1(item.FromPixel, item.ToPixel, style.SegmentThickness, segmentColor))
