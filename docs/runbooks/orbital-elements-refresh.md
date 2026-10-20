@@ -525,8 +525,10 @@ never downgraded to another outcome. Later attempts refuse with
 recorded first, the restart settles the attempt as `orbital.provider-outcome-unknown`
 and holds refresh with a halt that has no valid HTTP status recorded. The status that
 could not be written is not recorded anywhere. Event 7747 names the settlement that
-failed (`Halt`, `Quarantine`, `Transport` or `Interrupted`); `Settlement=Halt` means
-the provider answered with a halt status or a status line outside 100–599.
+failed (`Halt`, `Quarantine`, `Transport`, `Interrupted` or `Storage`); `Settlement=Halt`
+means the provider answered with a halt status or a status line outside 100–599, and
+`Settlement=Storage` means the storage-failure fallback for an unsettled storage fault
+(such as a retrieval record that could not be written) could not be written either.
 
 The unknown-outcome halt is deliberately conservative. It also holds refresh in cases
 where the provider did answer but nothing durable recorded it:
