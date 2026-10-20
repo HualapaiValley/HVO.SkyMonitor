@@ -301,6 +301,90 @@ dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Te
   --filter "FullyQualifiedName~OrbitalElementsRefreshPerformanceTests"
 ```
 
+### Orbital consumer and sweep interference (Refs #1425)
+
+`OrbitalConsumerAndSweepInterferencePerformanceTests` extends the same in-process synthetic workload above. It
+keeps all 39 phase-1 series and adds three job-occurrence series, seven real terminal-completion series and an
+after-only preparation interval. Both sources use exactly the same harness (`bdc9da83`), one warmup and ten
+fresh-root measured repetitions. Production baseline is `939b46d6`; after production is `65fd790e`. The phase-1
+contended timings are excluded from acceptance. These are x64 integration measurements, without edge-hardware
+or production qualification. Page cache is retained; restart means a new store/reader, not a new process.
+
+On 2026-10-20, baseline ran 13:07:25–13:12:59 UTC and after ran 13:28:42–13:34:32 UTC on the same 12-CPU host.
+Build servers were shut down before each run, entry load was below 2.0 and available memory exceeded 8 GiB.
+Conditions were sampled every 20 seconds. Maximum sampled one-minute load was 1.83 baseline and 1.63 after;
+minimum available memory was 11,415,960 / 11,275,004 KiB. Each run used three test processes and no Testcontainers.
+Both runs are **quiet** under the issue protocol. Implementation and an eight-minute wait for other host work
+separated the runs; that other work did not overlap either measurement.
+
+Every latency cell below is **p50 / p95 in milliseconds** (nearest-rank p95 is the maximum with ten samples).
+
+| Series | Baseline ms | After ms |
+| --- | ---: | ---: |
+| First activation read | 928.8911 / 1076.3635 | 0.0019 / 0.0078 |
+| Changed activation read | 937.0607 / 1155.4517 | 0.0014 / 0.0124 |
+| Unchanged-body reacquisition read | 934.5405 / 1280.8775 | 0.0014 / 0.0110 |
+| Persisted-state startup read | 908.7179 / 952.4833 | 0.0031 / 0.0077 |
+| Read after overlap publication | 900.9581 / 1015.9806 | 0.0018 / 0.0153 |
+| Due full-body delay to next definition | 3320.4806 / 3689.1237 | 7.1587 / 24.3897 |
+| Precision-wait delay to next definition | 3533.6141 / 3758.4985 | 9.4132 / 12.6353 |
+| Run-now delay to next definition | 3452.8981 / 3715.7510 | 7.9492 / 9.6380 |
+| Full-body occurrence completion | 3323.0792 / 3692.6884 | 4061.7996 / 4869.5317 |
+| Precision-wait occurrence completion | 3537.4269 / 3762.2454 | 4054.5772 / 5802.5075 |
+| Timeout occurrence completion | 19.1307 / 23.4515 | 17.0710 / 20.0055 |
+| First job occurrence including handoff | 3526.1731 / 3669.2057 | 4002.5126 / 5204.4365 |
+
+All shared-reader first reads after preparation allocate **32 B**, compared with about **2.10 GB** before.
+The job-side preparation interval is measured directly between reader events 7722/7723, after activation and
+retention and outside the following-definition delay: p50/p95 **857.24 / 1014.30 ms**, **2,098,377,616 /
+2,165,454,400 B** allocated and **866.94 / 1018.24 ms** CPU. It has 40 observations across ten repetitions
+(four activations each). Physical reads are 0/0 B; writes 32,768/32,768 B; read syscalls 446/464 and write
+syscalls 8/8, including instrumentation. CPU, allocation and `/proc/self/io` are process-scoped. Preparation
+transfers verified materialization to the worker; it does not remove that work. Completion timings include the
+real committed journal outcome. The precision/deadline cases simulate 120/30 seconds on the injected clock, so
+reported wall time excludes the simulated passage of time. The `.full-sweep` series also includes controller
+work to advance those timers; `.delay-to-other` is the precise following-definition interval.
+
+The chosen policy **always prepares**, even without a consumer since startup, using the existing pinned and
+verified reader path rather than reusing an unproved candidate. This ensures the first future consumer is warm
+after preparation and keeps the cache at two snapshots. The measured process peak rises from **2,175,938,560 B**
+baseline to **2,596,007,936 B** after (about 19.3%). Candidate/prepared-copy overlap and their GC lifetime are
+part of this cost. The measurement is a process lifetime high water, not isolated retained-cache memory; zero
+stage increases do not mean zero memory use. This policy spends memory and job CPU to avoid the first-consumer
+cold load; smaller devices still need their separate qualification.
+
+Ten unavailable reads now make **one** initialization attempt, compared with ten before. After releasing the
+root lock, recovery takes two observed reads and **one virtual second**, compared with one immediate baseline
+read. The recovery-read distribution therefore has 20 after samples versus ten baseline samples. Subsequent
+failure delays are covered deterministically at 1, 2, 4, 8, 16, 30 and 30 seconds.
+
+A strict prepared-only Astronomy read remains a possible coordinated follow-up. The residual activation-to-ready
+window includes retention and the measured preparation interval (p50/p95 857/1014 ms); neither it nor the load
+lease has a hard overall deadline. A consumer in that window can still perform the cold load or wait for the
+preparer. An independently constructed cold reader still pays materialization, and storage recovery observed
+before the initializer prepares persisted state can also be cold. No Astronomy contract or unavailable enum
+changed in this issue.
+
+The external issue-1425 phase-2 evidence bundle contains `baseline-01/` and `after-01/`, each with the JSON below,
+exact `command.txt`, host before/during/after logs, verdict and full metric distributions. `comparison.md` contains
+every series with p50/p95 wall, allocation, CPU, peak and peak increase, physical I/O and syscall counts.
+
+| Evidence JSON (`orbital-consumer-and-sweep-performance.json`) | SHA-256 |
+| --- | --- |
+| `p2/baseline-01/` | `2dabf7c7b872958c9031413b35c44971b20208c82c785baa75b6abb83b19f26b` |
+| `p2/after-01/` | `ffb59c7c5dcfd952ad7395dc6c86d2773aa9e177651b93d5eda3acde406b7c3e` |
+
+Workload hashes: raw `9F75308EAFF68ED921A3CBBFCFFF771A67E4041E272A17E8E6FD868BF213718E`;
+changed `6601B2C2227405C0273C9613059F0E88FD6E041C60640E2DFA33C6B567292FB9` (16,754 records, 7,147,269 raw bytes).
+
+```bash
+HVO_ISSUE1425_SOURCE_COMMIT="$SOURCE_COMMIT" HVO_ISSUE1425_EVIDENCE_ROOT="$EVIDENCE_ROOT" \
+  dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  --no-build --no-restore --configuration Release \
+  --filter "FullyQualifiedName~OrbitalConsumerAndSweepInterferencePerformanceTests" \
+  --logger "trx;LogFileName=issue-1425.trx" --results-directory "$EVIDENCE_ROOT/test-results"
+```
+
 Live derived-window resolution evidence (#608):
 `W6RollingWindowCaptureTimingTests` (Manual, CameraAgent test project) runs the
 `W6` frame dimensions through the real raw ingress and standard lane with a
