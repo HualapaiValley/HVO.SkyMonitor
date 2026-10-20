@@ -58,6 +58,13 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   them across page loads for each CameraAgent. An archived capture's view keeps its own choices. Restore profile
   defaults clears the remembered choice of the view it is used in. (#1382)
 
+### Security
+
+- `hvo-sky` reaches a loopback address (`127.0.0.1`, `localhost`, `[::1]`) directly, never through an HTTP proxy.
+  With `http_proxy` set and no `no_proxy` entry for it, the owner API key went to the proxy unencrypted, without the
+  plain-HTTP warning, and the request reached the proxy's own loopback rather than this machine's CameraAgent. Any
+  other address still uses the proxy as before. (#1404)
+
 ## [0.9.0] - 2026-10-19
 
 ### Added
