@@ -94,7 +94,15 @@ The label never decides the relation, because SWPC labels future bins
 - CRLF becomes LF.
 - Trailing spaces, tabs and carriage returns are removed from every line.
 - Trailing blank lines are removed.
-- The result ends in exactly one LF.
+- A nonempty result ends in exactly one LF. If no lines remain, the result is
+  the empty string.
+
+**Field whitespace.** For parsing, message field values, headlines, media types
+and times in the `YYYY Mon DD HHMM UTC` layout are trimmed at both ends using
+Python whitespace semantics: Unicode whitespace plus U+001C to U+001F. The
+headline is the first nonblank line after the three header lines; blank-line
+checks use the same whitespace set. This trimming is separate from text
+normalization and does not alter the normalized text or its hash.
 
 **Hashes:**
 
@@ -193,7 +201,9 @@ the order below, and the first failure gives the reason (s12):
 **Identity.** Message identity is `CODE/serial/issue-minute`, all parsed from
 the message text. Link values (`Extension to Serial Number`, `Continuation of
 Serial Number`, `Cancel Serial Number`) are used only when they are 1 to 6
-ASCII digits.
+ASCII digits. When several link fields are valid, the last valid one in
+extension, continuation, cancel order supplies the single link, regardless of
+their order in the message.
 
 **Version handling:**
 
@@ -254,13 +264,18 @@ kind:
 | `summary` | `SUM*` with headline `SUMMARY` |
 | `unclassified` | Anything else, shown raw (U9) |
 
+A group's family comes from its first non-cancel version. For a group containing
+only cancels, `WATA*` is `watch` regardless of headline kind; any other group
+takes its first version's family.
+
 **Levels:**
 
 - `WARK0n` and `ALTK0n` map to K4 for n = 4, otherwise to G(n−4).
 - A watch takes its level from `Category G<n>` in its headline.
 - Any other message takes its level from its `NOAA Scale:` token, matched
   without regard to case.
-- Level rank is 0 for K4, otherwise the scale number.
+- Level rank is 0 for K4 or an absent level, otherwise the scale number. An
+  absent source level stays `null` (s12).
 
 **Dates without a year.** Watch day lines carry no year, and neither do the 3-day
 forecast's table columns. The year is inferred from a reference time: the
@@ -268,6 +283,7 @@ message issue time for a watch, and the `:Issued:` time for the 3-day forecast.
 A month more than six months earlier than the reference month belongs to the
 next year, and one more than six months later belongs to the previous year. A
 year printed in a 3-day table title is not used (s14).
+A watch day line with an unrecognized month token is ignored.
 
 ## Notice lifecycle
 
@@ -278,7 +294,7 @@ from the group's latest non-cancel version:
 | --- | --- | --- |
 | `watch` | Root issue time | 24:00 UTC at the end of the last listed day whose level is not `None`, or `from` if every listed day is `None` |
 | `warning` | The root's `Valid From` only. A later version's `Valid From` is never used | The latest `Now Valid Until`, otherwise `Valid To` |
-| `k-alert` | `Threshold Reached` | End of the `Synoptic Period` on that UTC date (`2400` is the next midnight). An end that is not after `Threshold Reached` counts as missing |
+| `k-alert` | `Threshold Reached` | For a `Synoptic Period` matching `HHMM-HHMM` in ASCII digits, UTC midnight on the threshold date plus 60 × the end's two-digit hour + its two-digit minute, in minutes, without hour or minute range checks (`2400` is the next midnight). An end that is not after `Threshold Reached` counts as missing |
 | `xray-alert` | `Threshold Reached` | 3 hours later |
 | `radio-sweep` | `Begin Time` | 1 hour later |
 | `flux-alert` | The root's `Threshold Reached`, otherwise `Begin Time` | 30 hours after the latest non-cancel issue time |
@@ -287,8 +303,9 @@ from the group's latest non-cancel version:
 
 **Fallback.** If a required time is missing or unparseable, the window becomes
 the root issue time to 6 hours later. Both bounds are replaced. A watch's day
-lines are unparseable when a listed day is not a real date, such as `Oct 32`.
-The watch then takes the fallback window and its watch days are `null` (s12).
+lines are unparseable when a listed day with a recognized month is not a real
+date, such as `Oct 32`. The watch then takes the fallback window and its watch
+days are `null` (s12).
 
 **Adjustments.** The following are applied in this order. Each applies only if
 it is earlier than the current `until`, and each sets the end reason:
@@ -296,18 +313,19 @@ it is earlier than the current `until`, and each sets the end reason:
 1. **Watch supersession** (`superseded`). Every watch states that it supersedes
    all prior watches. A later watch of any level ends an earlier watch at the
    later watch's root issue time (s07, s08).
-2. **Cancel** (`cancelled`). The group ends at its earliest cancel's issue time
-   (s07, s09). If a cancel's target is absent, the group contains only the
-   cancel. Its window starts and ends at the cancel's issue time, so it is
-   recent from then, and it never raises attention (s09).
+2. **Cancel** (`cancelled`). A group with a non-cancel version ends at its
+   earliest cancel's issue time (s07, s09). A group containing only cancels
+   bypasses all adjustments: both window bounds are its latest version's issue
+   time and its end reason is `cancelled`. It is recent from then and never
+   raises attention. A single cancel of an absent target is this case (s09).
 3. **Cap** (`capped`). No group stays active later than 96 hours after its
    latest non-cancel issue time (s21).
 
 Otherwise the end reason is `expired`.
 
-**States** at time `t`. A summary is `recent` for 24 hours from its root issue
-time and `history` after that. For every other group, the first matching row
-applies:
+**States** at time `t`. A summary with a non-cancel version is `recent` whenever
+`t < root issue time + 24 h`, including before its issue time, and `history`
+otherwise. For every other group, the first matching row applies:
 
 | State | Condition |
 | --- | --- |
@@ -340,7 +358,8 @@ evaluated before it in the same merge (s08).
   `active`, or when it is `recent` and the merge happens less than 300 seconds
   (`newGraceSeconds`) after its latest non-cancel issue time. The grace keeps a
   short-window alert that ended before the next poll from being silenced (s11,
-  s21).
+  s21). This state and grace gate applies to first raises and higher watch
+  replacements.
 - **New.** A group that has never raised attention raises `new` when it is
   eligible. Otherwise it raises nothing and no rank is recorded, which keeps a
   first run on a 28-day backlog quiet (s04, s11, s15, s21). A group that raised
@@ -348,7 +367,7 @@ evaluated before it in the same merge (s08).
   version while it is eligible. For a watch with a raised predecessor, "Watch
   replacement" applies instead of this rule.
 - **Escalated.** A group that has raised and later reaches a higher level rank
-  raises `escalated`.
+  raises `escalated` and records the higher rank without rechecking eligibility.
 - **Watch replacement.** A watch that has never raised is compared with the
   earlier watches that were active one second before its root issue time and
   had raised, including any that raised earlier in the same merge. A rank
@@ -477,10 +496,12 @@ gives the reason:
 
 1. `oversize`: the decoded body exceeds the product's maximum.
 2. `content-type`: the media type, without parameters and ignoring case, is
-   not the product's.
+   not the product's. Trim it using the field-whitespace rule; case folding
+   still matches ASCII letters only.
 3. `encoding`: the body is not UTF-8.
 4. For the 3-day forecast, `schema` for any of the following (s14, s17):
-   - the normalized text does not start with `:Product: 3-Day Forecast`;
+   - the normalized text does not start with `:Product: 3-Day Forecast`
+     immediately followed by LF;
    - `:Issued:` is missing or not a valid time;
    - a Kp breakdown, solar radiation or radio blackout table is missing (for
      example after a rename);
@@ -593,9 +614,10 @@ request identifier, a secret-bearing URI, or message text.
 **Inputs:**
 
 - **Required latitude.** The message's stated
-  `poleward of NN degrees Geomagnetic Latitude`, or otherwise the typical
-  latitude for the level: K4 65, G1 60, G2 55, G3 50, G4 45, G5 40, from the
-  NOAA scale descriptions.
+  `poleward of NN degrees Geomagnetic Latitude` when nonzero, or otherwise the
+  typical latitude for the level: K4 65, G1 60, G2 55, G3 50, G4 45, G5 40,
+  from the NOAA scale descriptions. A stated zero counts as absent; without a
+  typical latitude, the category is `Unknown`.
 - **Site geomagnetic latitude.** A centred dipole with its pole at 80.8 N,
   72.6 W, rounded to 0.1° (U10).
 - **The difference** d = required − |site geomagnetic latitude|, rounded to
@@ -783,3 +805,11 @@ make Retry-After grammar, JSON constants and bounds, diagnostic scope and
 verbatim original records explicit, bound model scanning work, and add binary64
 rounding vectors. The model, new scenarios and document change together;
 s01–s22 and captured bytes retain their original expectations and contents.
+
+The v1 errata in Refs #1398 (2026-10-20) clarify empty/all-blank normalization,
+zero stated latitudes, summaries before issue, multiple cancel-only versions,
+cancel-only families, competing link fields, unrecognized watch months,
+synoptic end components, field/headline/media whitespace, missing-level rank,
+the 3-day product marker and escalation after an earlier raise, to state the
+reference model's existing behaviour. The model, scenarios, captured bytes and
+every expectation are unchanged.
