@@ -17,6 +17,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 using HVO.SkyMonitor.CameraAgent.Tests.Automation;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Orbital;
@@ -35,7 +37,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
     private const int Repeats = 10;
     private const int UnavailableReads = 10;
     private const string OtherId = "z-environmental-probe";
-    private const string SourceCommit = "bf573720dc7f8810d9b489ee4f9dcf2eef4ded60";
+    private const string SourceCommit = "939b46d6";
     private static readonly TimeSpan Floor = SqliteOrbitalElementsStore.MinimumProviderAttemptInterval;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private readonly Dictionary<string, List<Sample>> _samples = new(StringComparer.Ordinal);
@@ -97,6 +99,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
                     wallMs = Distribution.Of(pair.Value.Select(static sample => sample.WallMs)),
                     allocatedBytes = Distribution.Of(pair.Value.Select(static sample => (double)sample.AllocatedBytes)),
                     cpuMs = Distribution.Of(pair.Value.Select(static sample => sample.CpuMs)),
+                    peakWorkingSetBytes = Distribution.Of(pair.Value.Select(static sample => (double)sample.PeakWorkingSetBytes)),
                     peakWorkingSetIncreaseBytes = Distribution.Of(pair.Value.Select(static sample => (double)sample.PeakWorkingSetIncreaseBytes)),
                     readBytes = Distribution.Optional(pair.Value.Select(static sample => sample.Io?.ReadBytes)),
                     writeBytes = Distribution.Optional(pair.Value.Select(static sample => sample.Io?.WriteBytes)),
@@ -117,16 +120,16 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
         var clock = new SignalingTimeProvider(OrbitalElementsStoreTestData.Start);
         var faults = new OrbitalElementsStoreTestData.Faults();
         string lastManifest;
-        using (var host = await Harness.CreateAsync(root, clock, faults: faults).ConfigureAwait(false))
+        using (var host = await Harness.CreateAsync(root, clock, faults: faults, preparationLogger: new PreparationLogger(this, "M1.job.handoff")).ConfigureAwait(false))
         {
-            await ActivateAsync(host, workload.Raw, "first").ConfigureAwait(false);
+            await MeasureActivationAsync(host, workload.Raw, "first").ConfigureAwait(false);
             var first = await ReadPairAsync(host.Reader, "M1.a.first").ConfigureAwait(false);
             clock.Advance(Floor);
-            await ActivateAsync(host, workload.ChangedRaw, "changed").ConfigureAwait(false);
+            await MeasureActivationAsync(host, workload.ChangedRaw, "changed").ConfigureAwait(false);
             var changed = await ReadPairAsync(host.Reader, "M1.b.changed").ConfigureAwait(false);
             Assert.AreNotEqual(first.Manifest.ManifestSha256, changed.Manifest.ManifestSha256);
             clock.Advance(Floor);
-            await ActivateAsync(host, workload.ChangedRaw, "unchanged").ConfigureAwait(false);
+            await MeasureActivationAsync(host, workload.ChangedRaw, "unchanged").ConfigureAwait(false);
             var reacquired = await ReadPairAsync(host.Reader, "M1.c.unchanged-body").ConfigureAwait(false);
             Assert.AreNotEqual(changed.Manifest.ManifestSha256, reacquired.Manifest.ManifestSha256);
             Assert.AreEqual(changed.Manifest.NormalizedPayloadSha256, reacquired.Manifest.NormalizedPayloadSha256);
@@ -182,6 +185,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
         using var restarted = OrbitalElementsStoreTestData.Open(Path.Combine(root, OrbitalElementsServiceCollectionExtensions.StoreDirectoryName), clock);
         Assert.IsFalse(restarted.IsInitialized);
         var reader = new OrbitalSnapshotReader(restarted, true, NullLogger<OrbitalSnapshotReader>.Instance);
+        await PrepareIfSupportedAsync(reader).ConfigureAwait(false);
         var recovered = await ReadPairAsync(reader, "M1.d.restart").ConfigureAwait(false);
         Assert.AreEqual(lastManifest, recovered.Manifest.ManifestSha256);
         Assert.IsTrue(restarted.IsInitialized);
@@ -199,10 +203,10 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
         return cold.Snapshot;
     }
 
-    private static async Task ActivateAsync(Harness host, byte[] body, string key)
+    private async Task MeasureActivationAsync(Harness host, byte[] body, string key)
     {
         host.Handler.EnqueueBody(body);
-        var execution = await host.ExecuteAsync(key).ConfigureAwait(false);
+        var execution = await MeasureAsync("M1.job." + key, () => new ValueTask<LocalAutomationExecution>(host.ExecuteAsync(key))).ConfigureAwait(false);
         Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, execution.Outcome, execution.Detail);
     }
 
@@ -357,6 +361,11 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
         }
         await sweep.WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
         Record("M3." + scenario + ".full-sweep", start);
+        await host.DrainAsync().WaitAsync(TimeSpan.FromSeconds(60)).ConfigureAwait(false);
+        if (scenario != SweepCase.NotDue)
+        {
+            Record("M3." + scenario + ".worker-completion", start);
+        }
         Assert.AreEqual(expectsRequest ? 1 : 0, host.Handler.Count);
         Assert.AreEqual(1, host.Probe.ExecutedRunKeys.Count);
         var state = await host.Automation.GetStateAsync(default).ConfigureAwait(false);
@@ -435,7 +444,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
             samples = [];
             _samples.Add(name, samples);
         }
-        samples.Add(new(wall, allocated, cpu, Math.Max(0, process.PeakWorkingSet64 - start.Peak),
+        samples.Add(new(wall, allocated, cpu, process.PeakWorkingSet64, Math.Max(0, process.PeakWorkingSet64 - start.Peak),
             io is not null && start.Io is not null ? io - start.Io : null));
     }
 
@@ -462,7 +471,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
     }
 
     private readonly record struct Stamp(long Peak, Io? Io, TimeSpan Cpu, long Allocated, long Timestamp);
-    private sealed record Sample(double WallMs, long AllocatedBytes, double CpuMs, long PeakWorkingSetIncreaseBytes, Io? Io);
+    private sealed record Sample(double WallMs, long AllocatedBytes, double CpuMs, long PeakWorkingSetBytes, long PeakWorkingSetIncreaseBytes, Io? Io);
     private sealed record Distribution(int Count, double P50, double P95, double Max)
     {
         public static Distribution Of(IEnumerable<double> values)
@@ -478,19 +487,47 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
         }
     }
 
+    // Reflection keeps the exact same harness buildable against the unchanged production baseline.
+    private static object ConstructWithOptionalReader(Type type, object?[] arguments, object? extra)
+        => Activator.CreateInstance(type, type.GetConstructors().Single().GetParameters().Length == arguments.Length
+            ? arguments : [.. arguments, extra])!;
+
+    private static async Task PrepareIfSupportedAsync(OrbitalSnapshotReader reader)
+    {
+        if (reader.GetType().GetMethod("PrepareCurrentAsync") is { } method)
+        {
+            await ((ValueTask<bool>)method.Invoke(reader, new object[] { CancellationToken.None })!).ConfigureAwait(false);
+        }
+    }
+
+    private sealed class PreparationLogger(OrbitalConsumerAndSweepInterferencePerformanceTests owner, string series)
+        : ILogger<OrbitalSnapshotReader>
+    {
+        private Stamp _start;
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (eventId.Id == 7722) { _start = Capture(); }
+            if (eventId.Id == 7723) { owner.Record(series, _start); }
+        }
+    }
+
     private enum SweepCase { NotDue, FullBody, PrecisionWait, Timeout, Halted, Disabled, FloorSkip, RunNow }
 
     /// <summary>Real acquisition/automation components; only HTTP, time and the following environmental command are synthetic.</summary>
     private sealed class Harness : IDisposable
     {
         private readonly HttpClient _http;
+        private readonly BackgroundService? _worker;
         private readonly OrbitalElementsTelemetry _telemetry;
         private readonly OrbitalElementsAutomationAdapter _adapter;
         private readonly SignalingTimeProvider _clock;
         private readonly EnvironmentalAcquisitionCoordinator _environmental;
         private readonly ServiceProvider _services;
 
-        private Harness(string root, SignalingTimeProvider clock, bool enabled, OrbitalElementsStoreTestData.Faults? faults)
+        private Harness(string root, SignalingTimeProvider clock, bool enabled, OrbitalElementsStoreTestData.Faults? faults, ILogger<OrbitalSnapshotReader>? preparationLogger)
         {
             _clock = clock;
             Handler = new ScriptedCelesTrakHandler();
@@ -519,7 +556,9 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
                 OrbitalElementsServiceCollectionExtensions.CreateStoreSettings(options.Value).RootDirectory,
                 clock, OrbitalElementsServiceCollectionExtensions.CreateStoreSettings(options.Value), faults);
             _telemetry = new OrbitalElementsTelemetry(clock);
-            var job = new OrbitalElementsRefreshJob(Store, client, options, clock, _telemetry, NullLogger<OrbitalElementsRefreshJob>.Instance);
+            Reader = new OrbitalSnapshotReader(Store, true, preparationLogger ?? NullLogger<OrbitalSnapshotReader>.Instance);
+            var jobArgs = new object?[] { Store, client, options, clock, _telemetry, NullLogger<OrbitalElementsRefreshJob>.Instance };
+            var job = (OrbitalElementsRefreshJob)ConstructWithOptionalReader(typeof(OrbitalElementsRefreshJob), jobArgs, Reader);
             _adapter = new(new OrbitalElementsAvailability(Store, NullLogger<OrbitalElementsAvailability>.Instance), job);
             Probe = new ExecutionProbe();
             _services = new ServiceCollection().BuildServiceProvider();
@@ -531,8 +570,12 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
             var registry = new ProbeRegistry(new LocalAutomationTaskRegistry(environmentalRegistry, [], clock, [_adapter]), Probe);
             var captures = new StubCaptureSequenceSource();
             Automation = new(registry, captures, options, clock, NullLogger<SqliteLocalAutomationStore>.Instance);
-            Runner = new(Automation, registry, captures, options, clock, NullLogger<LocalAutomationRunnerService>.Instance);
-            Reader = new OrbitalSnapshotReader(Store, true, NullLogger<OrbitalSnapshotReader>.Instance);
+            var workerType = typeof(LocalAutomationRunnerService).Assembly.GetType(
+                "HVO.SkyMonitor.CameraAgent.Common.Automation.LocalAutomationOffSweepWorker");
+            _worker = workerType is null ? null : (BackgroundService)Activator.CreateInstance(workerType)!;
+            var runnerArgs = new object?[] { Automation, registry, captures, options, clock,
+                NullLogger<LocalAutomationRunnerService>.Instance, null, null };
+            Runner = (LocalAutomationRunnerService)ConstructWithOptionalReader(typeof(LocalAutomationRunnerService), runnerArgs, _worker);
         }
 
         public SqliteOrbitalElementsStore Store { get; }
@@ -543,13 +586,16 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
         public ExecutionProbe Probe { get; }
 
         public static async Task<Harness> CreateAsync(string root, SignalingTimeProvider clock, bool enabled = true,
-            OrbitalElementsStoreTestData.Faults? faults = null)
+            OrbitalElementsStoreTestData.Faults? faults = null, ILogger<OrbitalSnapshotReader>? preparationLogger = null)
         {
-            var host = new Harness(root, clock, enabled, faults);
+            var host = new Harness(root, clock, enabled, faults, preparationLogger);
             await host.Store.InitializeAsync(default).ConfigureAwait(false);
             await host.Automation.InitializeAsync(default).ConfigureAwait(false);
             return host;
         }
+
+        public Task DrainAsync() => _worker is null ? Task.CompletedTask
+            : (Task)_worker.GetType().GetMethod("WhenIdleAsync")!.Invoke(_worker, null)!;
 
         public async Task<LocalAutomationExecution> ExecuteAsync(string key)
         {
@@ -581,6 +627,8 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
 
         public void Dispose()
         {
+            _worker?.StopAsync(default).GetAwaiter().GetResult();
+            _worker?.Dispose();
             Runner.Dispose();
             _environmental.Dispose();
             _services.Dispose();
@@ -605,6 +653,8 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
         public DateTimeOffset ResolveInitialTriggerEpoch(LocalAutomationDefinition proposed, DateTimeOffset nowUtc)
             => inner.ResolveInitialTriggerEpoch(proposed, nowUtc);
         public bool SupportsRunNow(LocalAutomationDefinition definition) => inner.SupportsRunNow(definition);
+        public bool RunsOffSweep(LocalAutomationDefinition definition)
+            => (bool?)inner.GetType().GetMethod("RunsOffSweep")?.Invoke(inner, [definition]) ?? false;
         public ValueTask<LocalAutomationExecution> ExecuteAsync(LocalAutomationDefinition definition, string runKey, CancellationToken cancellationToken)
             => inner.ExecuteAsync(definition, runKey, cancellationToken);
         public ValueTask<LocalAutomationExecution> ExecuteAsync(LocalAutomationOccurrence occurrence, CancellationToken cancellationToken)
