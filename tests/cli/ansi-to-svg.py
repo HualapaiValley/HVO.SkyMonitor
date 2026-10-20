@@ -203,19 +203,25 @@ def parse(text):
 REGIONAL_INDICATORS = range(0x1F1E6, 0x1F200)
 EMOJI_MODIFIERS = range(0x1F3FB, 0x1F400)
 ZERO_WIDTH_JOINER = "\u200d"
-VARIATION_SELECTORS = ("\ufe0e", "\ufe0f")
 
 
 def is_flag(text):
     return len(text) >= 2 and ord(text[0]) in REGIONAL_INDICATORS and ord(text[1]) in REGIONAL_INDICATORS
 
 
+def is_extender(ch):
+    # Wcwidth 4.0.1 treats all Mn/Me/Mc marks (including variation selectors) and emoji modifiers as zero width.
+    # Combining class alone misses class-zero marks. Keep joining and width on the same rule, including ZWJ.
+    return (unicodedata.category(ch) in ("Mn", "Me", "Mc") or ch == ZERO_WIDTH_JOINER
+            or ord(ch) in EMOJI_MODIFIERS)
+
+
 def is_wide(text):
     """
     True when a cell's text (a character, with what joins it) takes two columns, as Terminal.Gui draws it: when any of
-    its non-combining characters are wide, or it is a flag's two regional indicators.
+    its non-extender characters are wide, or it is a flag's two regional indicators.
     """
-    return is_flag(text) or any(not unicodedata.combining(ch) and unicodedata.east_asian_width(ch) in ("W", "F") for ch in text)
+    return is_flag(text) or any(not is_extender(ch) and unicodedata.east_asian_width(ch) in ("W", "F") for ch in text)
 
 
 def joins(previous, ch, after_joiner):
@@ -223,8 +229,7 @@ def joins(previous, ch, after_joiner):
     True when ch belongs to the cell before it, one grapheme as Terminal.Gui draws it: a combining mark, a variation
     selector, a skin tone, a zero-width joiner and the character it joins, or a flag's second regional indicator.
     """
-    return (after_joiner or unicodedata.combining(ch) or ch == ZERO_WIDTH_JOINER or ch in VARIATION_SELECTORS
-            or ord(ch) in EMOJI_MODIFIERS
+    return (after_joiner or is_extender(ch)
             or (len(previous) == 1 and ord(previous) in REGIONAL_INDICATORS and ord(ch) in REGIONAL_INDICATORS))
 
 
