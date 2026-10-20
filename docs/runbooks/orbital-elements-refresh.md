@@ -314,19 +314,52 @@ What the panel shows:
   Needs repair or Unavailable. The page rail repeats it.
 - Coverage relative to the requested population, its known exclusions, record and
   object counts, and the epoch range.
-- Element age and retrieval time, kept separate:
-  - **Stale** means even the newest element epoch is older than 48 h, however recently
-    it was downloaded. Stale elements stay in use until a refresh replaces them.
-  - **Refresh overdue** means refresh is on and there has been no successful retrieval
-    within `StaleAfterHours`.
+- Element age and retrieval time, kept separate. Both use the health check's own rules
+  (`OrbitalElementsHealthEvaluator.IsElementStale` and `IsRefreshOverdue`, see "Health
+  And Metrics"), so the page and `/health` never disagree about the same facts:
+  - **Stale** means even the newest element epoch in the active snapshot's verified
+    manifest is more than 48 h old, however recently it was downloaded. Stale elements
+    stay in use until a refresh replaces them. If the manifest cannot be read, the
+    element age is unknown and the elements read as stale, fail safe.
+  - **Refresh overdue** means an active snapshot is installed, refresh is on, and no
+    valid provider retrieval (an HTTP 200 the store recorded) has succeeded within
+    `StaleAfterHours`. With no recorded retrieval at all it is overdue: the activation
+    time is not used in its place.
 - Validity reads "Unknown": the source supplies no validity window.
 - Provider and dataset, terms, fetch and activation times, the schedule, the last
   attempt, the next permitted attempt and the next due time.
-- Any provider halt (time, HTTP status and reason) and any quarantined response.
-  A missing or invalid HTTP status reads "No valid HTTP status recorded". The
-  last-known-good snapshot stays visible beside a quarantine.
+- Any provider halt (time, HTTP status and reason) and any quarantined response. A halt
+  with no valid HTTP status recorded (`orbital.provider-outcome-unknown` or
+  `orbital.invalid-http-status`) reads "No valid HTTP status recorded" in the panel,
+  the resume dialog, the data notice and the page rail. No status number is ever shown
+  for it. The last-known-good snapshot stays visible beside a quarantine.
 - If the store is unavailable, or no snapshot is installed, the panel says so. It never
   reads either case as an empty sky.
+
+The panel embeds the compact orbital data notice. It lists the requested population and
+its coverage, the newest element age, and then each of these that applies: stale
+elements, refresh overdue, and a provider halt with its status. These are separate
+facts, so stale and overdue still show while refresh is halted, quarantined or needs
+repair.
+
+The page and the health check agree on every fact, but they summarize differently, by
+design:
+
+- Health reports only its first degrading reason (see the order under "Health And
+  Metrics"). The panel shows one state word but lists every freshness fact.
+- The state word puts an unavailable store first, then a halt. Quarantined and Needs
+  repair follow the status `recoveryAction`, so a definition that needs configuring is
+  reported before them. A quarantine kept after a later attempt that did not
+  quarantine still degrades health, but the state word does not show it; the panel's
+  quarantine section does.
+- With refresh off, health is Healthy, but the panel still reads Stale for stale
+  elements. It never reads Refresh overdue while refresh is off.
+- With no active snapshot, the state word is No data (or Disabled). **Exact
+  diagnostics** shows health's own state and reason, for example
+  `orbital.first-snapshot-overdue`.
+- If the manifest cannot be read, the panel reads Stale with the element age unknown.
+  Health uses the epoch the store recorded at activation, so it can still read the
+  elements as fresh.
 
 Commands need `CameraAgent.Operations.Mutate.V1`. A read-only operator sees the same
 facts with the commands disabled.
