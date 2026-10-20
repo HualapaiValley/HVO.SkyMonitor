@@ -105,6 +105,18 @@ public sealed class SwpcFactBoundaryTests
     }
 
     [TestMethod]
+    public void IssueMismatchDiagnosticsKeepTheirPerRecordMultiplicity()
+    {
+        var scenario = JsonNode.Parse(File.ReadAllText(Path.Combine(SwpcScenarioFactsTests.Pack, "scenarios/s12-malformed-bodies.json")))!;
+        var step = scenario["steps"]!.AsArray().First(s => s?["expect"]?["diagnostics"] is JsonArray diagnostics && diagnostics.Any(d => d!.GetValue<string>().StartsWith("issue-time-mismatch:", StringComparison.Ordinal)))!;
+        var mismatch = step["expect"]!["diagnostics"]!.AsArray().First(d => d!.GetValue<string>().StartsWith("issue-time-mismatch:", StringComparison.Ordinal))!.GetValue<string>();
+        var record = SwpcAlertsParser.Parse(SwpcScenarioFactsTests.Bytes(step["response"]!), "application/json").Records.Single(r => "issue-time-mismatch:" + r.Identity == mismatch);
+        var doubled = Encoding.UTF8.GetBytes("[" + record.OriginalRecordJson + "," + record.OriginalRecordJson + "]");
+        var actual = SwpcAlertsParser.Diagnostics(SwpcAlertsParser.Parse(doubled, "application/json"));
+        CollectionAssert.AreEqual(new[] { mismatch, mismatch, "duplicate-record-in-body:" + record.Identity }.Order(StringComparer.Ordinal).ToArray(), actual.ToArray());
+    }
+
+    [TestMethod]
     public void RecordChecksStopAtFirstFailure()
     {
         var scenario = JsonNode.Parse(File.ReadAllText(Path.Combine(SwpcScenarioFactsTests.Pack, "scenarios/s01-duplicate-refetch.json")))!;

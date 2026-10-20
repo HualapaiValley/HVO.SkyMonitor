@@ -30,8 +30,19 @@ public static class SwpcText
 
     internal static int Month(string name) => name switch
     {
-        "Jan" => 1, "Feb" => 2, "Mar" => 3, "Apr" => 4, "May" => 5, "Jun" => 6,
-        "Jul" => 7, "Aug" => 8, "Sep" => 9, "Oct" => 10, "Nov" => 11, "Dec" => 12, _ => 0
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => 0
     };
     internal static int Number(string text) => int.Parse(text, CultureInfo.InvariantCulture);
     internal static DateTimeOffset? SourceTime(string? text)

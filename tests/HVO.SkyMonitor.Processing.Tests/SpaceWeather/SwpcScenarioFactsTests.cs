@@ -105,8 +105,13 @@ public sealed class SwpcScenarioFactsTests
                         rejection = scales.RejectionReason; hash = scales.SnapshotSha256;
                         facts = new JsonObject(scales.Records.Select(r => KeyValuePair.Create<string, JsonNode?>(r.Window, JsonSerializer.SerializeToNode(new
                         {
-                            stampUtc = Utc(r.StampUtc), rScale = r.RScale, rMinorProbPct = r.RMinorProbPct, rMajorProbPct = r.RMajorProbPct,
-                            sScale = r.SScale, sProbPct = r.SProbPct, gScale = r.GScale
+                            stampUtc = Utc(r.StampUtc),
+                            rScale = r.RScale,
+                            rMinorProbPct = r.RMinorProbPct,
+                            rMajorProbPct = r.RMajorProbPct,
+                            sScale = r.SScale,
+                            sProbPct = r.SProbPct,
+                            gScale = r.GScale
                         }))));
                         break;
                     case "kp-forecast":
@@ -194,9 +199,16 @@ public sealed class SwpcScenarioFactsTests
                     var ack = SwpcGroupBuilder.Acknowledgement(group, acks);
                     var actual = JsonSerializer.SerializeToNode(new
                     {
-                        family = group.Family.Token(), level = group.Level, state = window.State.Token(), fromUtc = Utc(window.FromUtc), untilUtc = Utc(window.UntilUtc),
-                        endReason = window.EndReason?.Token(), latest = group.Latest.Identity, versions = group.Versions.Length,
-                        corrected = group.Versions.Any(v => v.Message.Header.Corrected), orphan = group.Orphan,
+                        family = group.Family.Token(),
+                        level = group.Level,
+                        state = window.State.Token(),
+                        fromUtc = Utc(window.FromUtc),
+                        untilUtc = Utc(window.UntilUtc),
+                        endReason = window.EndReason?.Token(),
+                        latest = group.Latest.Identity,
+                        versions = group.Versions.Length,
+                        corrected = group.Versions.Any(v => v.Message.Header.Corrected),
+                        orphan = group.Orphan,
                         acknowledged = ack is null ? null : new { @operator = ack.Operator, atUtc = Utc(ack.AtUtc) },
                         days = group.LatestNonCancel?.Header.Days?.Select(d => new { dateUtc = d.DateUtc.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), level = d.Level })
                     })!;
@@ -243,7 +255,8 @@ public sealed class SwpcScenarioFactsTests
 
     private static JsonNode Forecast(IssuedForecast f) => JsonSerializer.SerializeToNode(new
     {
-        issuedUtc = Utc(f.IssuedUtc), kpBreakdownBins = f.KpBreakdown.Count,
+        issuedUtc = Utc(f.IssuedUtc),
+        kpBreakdownBins = f.KpBreakdown.Count,
         kpBreakdown = f.KpBreakdown.ToDictionary(p => Utc(p.Key), p => new { kp = p.Value.KpText, noaaScale = p.Value.NoaaScale }),
         radiationProbabilities = f.RadiationProbabilities.ToDictionary(p => p.Key, p => p.Value.ToDictionary(d => d.Key.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), d => d.Value)),
         radioBlackoutProbabilities = f.RadioBlackoutProbabilities.ToDictionary(p => p.Key, p => p.Value.ToDictionary(d => d.Key.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), d => d.Value))

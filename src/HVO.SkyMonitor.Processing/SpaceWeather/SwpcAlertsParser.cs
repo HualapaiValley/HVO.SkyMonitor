@@ -37,14 +37,15 @@ public static class SwpcAlertsParser
     {
         ArgumentNullException.ThrowIfNull(body);
         if (!body.Accepted) return ["body-rejected:" + body.RejectionReason];
-        var diagnostics = new HashSet<string>(StringComparer.Ordinal);
+        var diagnostics = new List<string>();
+        var reportedDuplicates = new HashSet<string>(StringComparer.Ordinal);
         foreach (var rejection in body.Rejections) diagnostics.Add($"record-rejected:{rejection.Reason}:{rejection.Index.ToString(CultureInfo.InvariantCulture)}");
         var seen = new HashSet<(string Identity, string Hash)>();
         foreach (var record in body.Records)
         {
             if (!string.Equals(record.IssueDatetimeText[..16], record.IssueMinuteUtc.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture), StringComparison.Ordinal))
                 diagnostics.Add("issue-time-mismatch:" + record.Identity);
-            if (!seen.Add((record.Identity, record.ContentSha256))) diagnostics.Add("duplicate-record-in-body:" + record.Identity);
+            if (!seen.Add((record.Identity, record.ContentSha256)) && reportedDuplicates.Add(record.Identity)) diagnostics.Add("duplicate-record-in-body:" + record.Identity);
         }
         return [.. diagnostics.Order(StringComparer.Ordinal)];
     }
@@ -126,13 +127,13 @@ public static class SwpcAlertsParser
     {
         var days = ImmutableArray.CreateBuilder<SwpcWatchDay>();
         foreach (var line in text.Split('\n'))
-        foreach (Match m in Regex.Matches(line, @"([A-Z][a-z]{2}) ([0-9]{2})[ \t\r\n\f\v]*:[ \t\r\n\f\v]+(G[1-5]|None)(?![A-Za-z0-9_])", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1)))
-        {
-            if (SwpcText.Month(m.Groups[1].Value) == 0) continue;
-            var day = SwpcText.Yearless(m.Groups[1].Value, m.Groups[2].Value, issue);
-            if (day is null) return null;
-            days.Add(new(day.Value, m.Groups[3].Value));
-        }
+            foreach (Match m in Regex.Matches(line, @"([A-Z][a-z]{2}) ([0-9]{2})[ \t\r\n\f\v]*:[ \t\r\n\f\v]+(G[1-5]|None)(?![A-Za-z0-9_])", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1)))
+            {
+                if (SwpcText.Month(m.Groups[1].Value) == 0) continue;
+                var day = SwpcText.Yearless(m.Groups[1].Value, m.Groups[2].Value, issue);
+                if (day is null) return null;
+                days.Add(new(day.Value, m.Groups[3].Value));
+            }
         return days.ToImmutable();
     }
 }

@@ -18,7 +18,13 @@ public static class SpaceWeatherRelevance
         // fixtures.py uses `poleward or typical`: a stated zero therefore falls back to the typical level.
         var required = statedLatitude is > 0 ? statedLatitude : level switch
         {
-            "K4" => 65d, "G1" => 60d, "G2" => 55d, "G3" => 50d, "G4" => 45d, "G5" => 40d, _ => (double?)null
+            "K4" => 65d,
+            "G1" => 60d,
+            "G2" => 55d,
+            "G3" => 50d,
+            "G4" => 45d,
+            "G5" => 40d,
+            _ => (double?)null
         };
         if (required is null) return Unknown(LocalRelevanceCategory.Unknown);
         var difference = Difference(required.Value, siteGeomagneticLatitude.Value);
