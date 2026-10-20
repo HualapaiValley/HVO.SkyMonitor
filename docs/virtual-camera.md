@@ -543,10 +543,12 @@ display pixels together with the point objects. Inputs without footprints,
 including every `projected-scene-v1` scene and the standalone CameraAgent path,
 render the released bytes. Golden hashes pin this.
 
-The presentation layers have since changed colour once: #1383 restored the
-original overlay colours in `projected-scene-presentation-v11-original-colours`,
-so footprint outlines and point markers are drawn in the marker grey and the
-layers' golden hash pins the v11 bytes. The Annotation raster is unchanged.
+The presentation layers have since changed twice: #1383 restored the original
+overlay colours in `projected-scene-presentation-v11-original-colours`, so
+footprint outlines and point markers are drawn in the marker grey, and #1415
+drew the point marker as the original plain circle outline, without the
+crosshair, in `projected-scene-presentation-v12-plain-circle-markers`. The
+layers' golden hash pins the v12 bytes. The Annotation raster is unchanged.
 
 Reference values come from offline JPL Horizons responses in
 `tests/fixtures/horizons/issue-518/`:

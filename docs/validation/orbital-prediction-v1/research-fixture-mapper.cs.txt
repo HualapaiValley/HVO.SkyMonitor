@@ -1,0 +1,197 @@
+using System.Globalization;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
+
+// OFFLINE RESEARCH FIXTURE MAPPER ONLY. No acquisition, production #528 parser/adoption,
+// provider status inference, validity inference, or propagation. Only the pinned 2026-10-19
+// raw GP artifact and its retained six source facts are accepted. Public HVO factories own
+// normalization, identities and snapshot materialization; this program only maps factual fields.
+internal static class Program
+{
+    private const string RawHash = "DFEE7C9E5D9D58E1889200A4610F278D3E9809A8A3FA0A5E392040D52C96B62A";
+    private const string FactsHash = "2FCA7AC8926E890D271E5BC4AE1E018CF21BDFE4CFAB535DEDDFFB28CC93C134";
+    private const string SourceManifestHash = "9E014CD5F99F037ADDC67A098818019DDA4E243EAEEE32634A525DF3F178F759";
+    private const string Dataset = "celestrak:gp:active";
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() }
+    };
+
+    public static int Main(string[] args)
+    {
+        if (args.Length != 4)
+            throw new ArgumentException("Expected REPO_ROOT RETAINED_ACTIVE_GP_JSON NEW_OUTPUT_DIRECTORY SETTINGS_SEATTLE_JSON.");
+        var repo = Path.GetFullPath(args[0]);
+        var rawPath = Path.GetFullPath(args[1]);
+        var output = Path.GetFullPath(args[2]);
+        var settingsPath = Path.GetFullPath(args[3]);
+        if (Directory.Exists(output) && Directory.EnumerateFileSystemEntries(output).Any())
+            throw new ArgumentException("Use a new empty output directory; retained inputs are immutable.");
+        var raw = ReadPinned(rawPath, RawHash, 7057239);
+        var factsPath = Path.Combine(repo, "docs/validation/orbital-reference-v1/gp-source-facts.json");
+        var facts = ReadPinned(factsPath, FactsHash, 3173);
+        var sourceManifestPath = Path.Combine(repo, "docs/validation/orbital-reference-v1/manifest.json");
+        var sourceManifestBytes = File.ReadAllBytes(sourceManifestPath);
+        if (Hash(sourceManifestBytes) != SourceManifestHash)
+            throw new InvalidDataException("Unrecognized source manifest.");
+        using var originalManifest = JsonDocument.Parse(sourceManifestBytes);
+        var sourceFacts = originalManifest.RootElement.GetProperty("sourceSnapshot");
+        if (!sourceFacts.GetProperty("sha256").GetString()!.Equals(RawHash, StringComparison.OrdinalIgnoreCase) ||
+            sourceFacts.GetProperty("bytes").GetInt64() != raw.Length || sourceFacts.GetProperty("records").GetInt32() != 16754)
+            throw new InvalidDataException("Retained manifest disagrees with pinned source identity.");
+        var retrieved = Utc(sourceFacts.GetProperty("retrievedUtc").GetString()!);
+        var sourceUri = new Uri(sourceFacts.GetProperty("uri").GetString()!);
+        var programSource = SourcePath();
+        var parser = new OrbitalSoftwareIdentity("hvo-offline-qualification-gp-map", "529-fixture-v1", Hash(File.ReadAllBytes(programSource)));
+        var normalizer = new OrbitalSoftwareIdentity("hvo-public-orbital-factories-fixture", "529-fixture-v1",
+            Hash(OrbitalContract.SerializeCanonical(new
+            {
+                parser.ImplementationSha256,
+                astronomyAssemblySha256 = Hash(File.ReadAllBytes(typeof(OrbitalContract).Assembly.Location)),
+                agentCoreAssemblySha256 = Hash(File.ReadAllBytes(typeof(CaptureContractJson).Assembly.Location))
+            })));
+        var model = new OrbitalElementModel("EARTH", "TEME", "UTC", "SGP4", OrbitalContract.GpDerivativeConvention,
+            OrbitalContract.CelesTrakGpProfile, parser, normalizer);
+        var source = new OrbitalSnapshotSource(Dataset, "celestrak", "USSF/Space-Track public GP via CelesTrak", sourceUri,
+            retrieved, null, null, null, RawHash, raw.Length, parser, normalizer, new Uri("https://celestrak.org/usage-policy.php"),
+            "Local research fixture derived from retained 2026-10-19 provider active-group facts; no provider endorsement, global-population completeness, physical-type inference or production #528 adoption claim. Retain source attribution and CelesTrak usage policy; do not publish the whole retained feed as repository test data.");
+        using var rawDocument = JsonDocument.Parse(raw);
+        using var factsDocument = JsonDocument.Parse(facts);
+        var fullRecords = Map(rawDocument.RootElement, model);
+        var sixRecords = Map(factsDocument.RootElement, model);
+        if (fullRecords.Length != 16754 || sixRecords.Length != 6 || fullRecords.Select(r => r.ObjectIdentity).Distinct().Count() != 16754)
+            throw new InvalidDataException("Unexpected pinned population cardinality.");
+        var fullRecordHashes = fullRecords.Select(r => r.RecordSha256).ToHashSet(StringComparer.Ordinal);
+        if (sixRecords.Any(r => !fullRecordHashes.Contains(r.RecordSha256)))
+            throw new InvalidDataException("The six retained source facts do not map identically to the actual retained raw feed.");
+        Directory.CreateDirectory(output);
+        var ledgers = new[]
+        {
+            Materialize("six-facts", sixRecords, new("six-retained-facts-from-celestrak-active-2026-10-19", OrbitalPopulationCompleteness.Partial,
+                ["Other objects in the retained provider active group are excluded.", "Objects absent from the provider active group are excluded.", "Historical analyst records and physical type/status are not qualified."]), output, source),
+            Materialize("active-population", fullRecords, new("retained-celestrak-active-group-2026-10-19", OrbitalPopulationCompleteness.CompleteForRequestedPopulation,
+                ["Completeness applies only to this retained provider active-group response.", "Objects absent from that provider response are excluded.", "Physical type/status and historical analyst records are not qualified."]), output, source)
+        };
+        var geometry = SettingsFacts(settingsPath, output);
+        var evidence = new
+        {
+            schema = "orbital-offline-qualification-materialization-v1",
+            limitation = "Research fixture mapper only; not the production #528 acquisition/parser/normalizer/adoption path. No new network access, propagation, test-suite run, physical accuracy or cadence qualification. Full-population files remain external artifacts.",
+            parser, normalizer,
+            normalizerIdentityRule = "SHA256 of public-factory canonical JSON containing mapper Program.cs SHA and exact loaded Astronomy and AgentCore assembly SHA values; the factories generate canonical record/snapshot identities.",
+            parserRules = "Pinned GP JSON factual fields; optional blank aliases become null; missing approved GP constants resolve EARTH/TEME/UTC/SGP4 only; DOT/DDOT keep raw GP/TLE-field units without extra factors 2 or 6; epoch without suffix explicitly interpreted UTC; physical type/status, record validity and source record ID remain null.",
+            rawInput = FileFacts(rawPath), sourceFactsInput = FileFacts(factsPath), sourceManifestInput = FileFacts(sourceManifestPath),
+            retainedSubsetMatchesRawCanonicalRecords = true,
+            programSource = FileFacts(programSource),
+            assemblies = new[] { AssemblyFacts(typeof(OrbitalContract).Assembly), AssemblyFacts(typeof(CaptureContractJson).Assembly) },
+            geometry, snapshots = ledgers
+        };
+        WriteJson(Path.Combine(output, "materialization-evidence.json"), evidence);
+        Console.WriteLine(JsonSerializer.Serialize(new { output, snapshots = ledgers }, Json));
+        return 0;
+    }
+
+    private static OrbitalRecordV1[] Map(JsonElement input, OrbitalElementModel model)
+    {
+        if (input.ValueKind != JsonValueKind.Array || input.GetArrayLength() > OrbitalContract.MaximumRecords)
+            throw new InvalidDataException("Expected bounded GP array.");
+        return input.EnumerateArray().Select(row =>
+        {
+            foreach (var (key, expected) in new[] { ("CENTER_NAME", "EARTH"), ("REF_FRAME", "TEME"), ("TIME_SYSTEM", "UTC"), ("MEAN_ELEMENT_THEORY", "SGP4") })
+                if (row.TryGetProperty(key, out var value) && value.GetString() != expected)
+                    throw new InvalidDataException($"Unsupported supplied {key}.");
+            var catalogValue = row.GetProperty("NORAD_CAT_ID");
+            var catalog = catalogValue.ValueKind == JsonValueKind.String ? catalogValue.GetString()! : catalogValue.GetRawText();
+            var identity = new OrbitalObjectIdentity("norad", catalog);
+            if (!OrbitalContract.IsObjectIdentity(identity)) throw new InvalidDataException("Noncanonical catalog identity.");
+            var elements = new OrbitalMeanElements(Number(row, "MEAN_MOTION"), Number(row, "ECCENTRICITY"), Number(row, "INCLINATION"),
+                Number(row, "RA_OF_ASC_NODE"), Number(row, "ARG_OF_PERICENTER"), Number(row, "MEAN_ANOMALY"),
+                Number(row, "BSTAR"), Number(row, "MEAN_MOTION_DOT"), Number(row, "MEAN_MOTION_DDOT"),
+                row.GetProperty("EPHEMERIS_TYPE").GetInt32(), row.GetProperty("CLASSIFICATION_TYPE").GetString()!,
+                OptionalLong(row, "ELEMENT_SET_NO"), OptionalLong(row, "REV_AT_EPOCH"));
+            return OrbitalContract.CreateRecord(new("", identity, Dataset, null, OptionalText(row, "OBJECT_NAME"),
+                OptionalText(row, "OBJECT_ID"), null, null, Utc(row.GetProperty("EPOCH").GetString()!), null, null, model, elements));
+        }).ToArray();
+    }
+
+    private static object Materialize(string name, OrbitalRecordV1[] records, OrbitalPopulationCoverage coverage,
+        string output, OrbitalSnapshotSource source)
+    {
+        var snapshot = OrbitalSnapshot.Create(records, [source], coverage);
+        var manifestBytes = snapshot.SerializeManifest();
+        var payloadBytes = snapshot.SerializePayload();
+        var parsed = OrbitalSnapshot.Parse(manifestBytes, payloadBytes);
+        if (!parsed.IsValid || parsed.Snapshot!.Manifest != snapshot.Manifest && parsed.Snapshot.Manifest.ManifestSha256 != snapshot.Manifest.ManifestSha256)
+            throw new InvalidDataException($"Public parse rejected generated canonical input: {parsed.Reason}");
+        var directory = Path.Combine(output, name);
+        Directory.CreateDirectory(directory);
+        var manifestPath = Path.Combine(directory, "manifest.json");
+        var payloadPath = Path.Combine(directory, "records.json");
+        File.WriteAllBytes(manifestPath, manifestBytes);
+        File.WriteAllBytes(payloadPath, payloadBytes);
+        return new
+        {
+            name, manifestIdentitySha256 = snapshot.Manifest.ManifestSha256,
+            payloadIdentitySha256 = snapshot.Manifest.NormalizedPayloadSha256,
+            snapshot.Manifest.RecordCount, snapshot.Manifest.ObjectCount,
+            snapshot.Manifest.MinimumEpochUtc, snapshot.Manifest.MaximumEpochUtc, snapshot.Manifest.Coverage,
+            canonicalPublicParseAccepted = parsed.IsValid,
+            manifestFile = FileFacts(manifestPath), payloadFile = FileFacts(payloadPath),
+            selectedRecords = records.Length <= 6 ? snapshot.Records.Select(r => new { r.ObjectIdentity, r.RecordSha256, r.ObjectName, r.EpochUtc }).ToArray() : null
+        };
+    }
+
+    private static object SettingsFacts(string path, string output)
+    {
+        var config = JsonSerializer.Deserialize<CameraModuleConfig>(File.ReadAllBytes(path), Json) ?? throw new InvalidDataException("Missing settings.");
+        var rigHash = RigProjectionContextFactory.CreateProfileHashSha256(config.Rig).ToUpperInvariant();
+        var readout = config.Rig.Readout is { } r ? SensorReadoutResolver.Resolve(config.Rig.Sensor, r).Geometry :
+            new FrameReadoutDescriptor(config.Rig.Sensor.WidthPixels, config.Rig.Sensor.HeightPixels, 0, 0,
+                config.Rig.Sensor.WidthPixels, config.Rig.Sensor.HeightPixels, 1, 1, FrameBinningAlgorithm.IdentityV1, 0, 0);
+        var readoutHash = CaptureContractJson.ComputeCanonicalJsonSha256(readout);
+        var projection = RigProjectionContextFactory.Create(config.Rig);
+        var calibration = new AstrometricCalibration(projection, config.Rig.Optics.CalibrationVersion, readoutHash);
+        var geometry = new OrbitalGeometryFacts(OrbitalGeometryBasis.ConfiguredRig, rigHash, readoutHash, readout,
+            calibration.IdentitySha256.ToUpperInvariant(), null, null, OrbitalProjectionCoordinates.ReadoutView, projection,
+            ProjectedSceneImageTransformV1.Identity(projection.WidthPixels, projection.HeightPixels), HorizonPolicy.GeometricHorizon);
+        geometry.Validate();
+        File.WriteAllBytes(Path.Combine(output, "configured-seattle-geometry.canonical.json"), OrbitalContract.SerializeCanonical(geometry));
+        var first = Utc("2026-10-20T13:03:32.287674Z");
+        var timing = Enumerable.Range(0, 5).Select(i => new OrbitalTimingFacts(new(first.AddSeconds(5 * i), first.AddSeconds(5 * (i + 1))),
+            OrbitalTimingBasis.Estimated, null, OrbitalTimingBasis.Unknown,
+            "virtual-poc-logical-shutter-estimated; not sensor-actual", AstrometricClockFacts.NotSupplied)).ToArray();
+        foreach (var item in timing) item.Validate();
+        File.WriteAllBytes(Path.Combine(output, "estimated-five-exposures.canonical.json"), OrbitalContract.SerializeCanonical(timing));
+        return new
+        {
+            settingsFile = FileFacts(path), observer = config.Observatory, rigHash, readout, canonicalReadoutHash = readoutHash,
+            harnessIndentedReadoutHash = Hash(JsonSerializer.SerializeToUtf8Bytes(readout, Json)),
+            configuredCalibrationIdentity = calibration.IdentitySha256.ToUpperInvariant(), geometry,
+            geometryFile = FileFacts(Path.Combine(output, "configured-seattle-geometry.canonical.json")),
+            timingFile = FileFacts(Path.Combine(output, "estimated-five-exposures.canonical.json")),
+            limitation = "Configured calibration identity derives only from declared rig projection/readout; no measured calibration or accepted assessment. Pipeline exposure settings remain unchanged; five-second intervals are explicit logical request overrides. Parent tool may choose a different identity convention but must use it consistently."
+        };
+    }
+
+    private static double Number(JsonElement row, string key) => row.GetProperty(key).GetDouble();
+    private static long? OptionalLong(JsonElement row, string key) => row.TryGetProperty(key, out var value) && value.ValueKind != JsonValueKind.Null ? value.GetInt64() : null;
+    private static string? OptionalText(JsonElement row, string key) => row.TryGetProperty(key, out var value) && value.ValueKind != JsonValueKind.Null && !string.IsNullOrWhiteSpace(value.GetString()) ? value.GetString() : null;
+    private static DateTimeOffset Utc(string text) => DateTimeOffset.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
+    private static string Hash(ReadOnlySpan<byte> bytes) => Convert.ToHexString(SHA256.HashData(bytes));
+    private static string SourcePath([CallerFilePath] string path = "") => path;
+    private static object FileFacts(string path) { var bytes = File.ReadAllBytes(path); return new { path = Path.GetFullPath(path), bytes = bytes.Length, sha256 = Hash(bytes) }; }
+    private static object AssemblyFacts(Assembly assembly) => new { file = FileFacts(assembly.Location), name = assembly.GetName().Name, version = assembly.GetName().Version?.ToString(), informationalVersion = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion };
+    private static void WriteJson(string path, object value) => File.WriteAllBytes(path, JsonSerializer.SerializeToUtf8Bytes(value, Json));
+    private static byte[] ReadPinned(string path, string expectedHash, long expectedLength)
+    {
+        var bytes = File.ReadAllBytes(path);
+        if (bytes.LongLength != expectedLength || Hash(bytes) != expectedHash) throw new InvalidDataException($"Unrecognized retained input: {path}");
+        return bytes;
+    }
+}

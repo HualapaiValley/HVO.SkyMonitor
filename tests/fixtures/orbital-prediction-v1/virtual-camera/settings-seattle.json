@@ -1,0 +1,101 @@
+{
+  "observatory": {
+    "latitudeDegrees": 47.6062,
+    "longitudeDegrees": -122.3321,
+    "elevationMeters": 50,
+    "timeZoneId": "America/Los_Angeles"
+  },
+  "module": {
+    "type": "VirtualSky",
+    "options": {
+      "illuminationMode": "SolarDriven",
+      "fixedSceneUtc": null,
+      "renderSolarSystemDisks": true,
+      "seed": 1131,
+      "maximumMagnitude": 6.5,
+      "maximumResults": 32768,
+      "magnitudeZeroElectronsPerSecond": 1000,
+      "bortleClass": 3,
+      "asi676Sensor": {
+        "enabled": true,
+        "blackLevelAdu": 64
+      },
+      "shotNoiseEnabled": true,
+      "vignettingStrength": 0.15,
+      "psfSigmaPixels": 0.85,
+      "psfRadiusPixels": 3.5
+    }
+  },
+  "rig": {
+    "sensor": {
+      "name": "POC reduced all-sky sensor",
+      "widthPixels": 640,
+      "heightPixels": 640,
+      "pixelSizeMicrons": 2,
+      "colorMode": "Color",
+      "pixelFormat": "BayerRggb16",
+      "responseMode": "BayerRaw",
+      "strideBytes": null,
+      "byteOrder": "LittleEndian",
+      "sensorRecipeVersion": "poc-asi676-reduced-native12-v1"
+    },
+    "optics": {
+      "projectionModel": "EquidistantFisheye",
+      "focalLengthMillimeters": 0,
+      "fieldOfViewDegrees": 180,
+      "rollDegrees": 0,
+      "lensKind": "Fisheye",
+      "principalPointX": 320,
+      "principalPointY": 320,
+      "imageCircleRadiusPixels": 313.6,
+      "focalLengthXPixels": null,
+      "focalLengthYPixels": null,
+      "verticalFieldOfViewDegrees": null,
+      "horizontalFlip": true,
+      "crop": null,
+      "calibrationVersion": "poc-640-upward-equidistant-180-v2"
+    },
+    "orientation": {
+      "boresightAltitudeDegrees": 90,
+      "boresightAzimuthDegrees": 0,
+      "rollAdjustmentDegrees": 0
+    },
+    "pipeline": {
+      "captureInterval": "00:01:00",
+      "dayExposure": "00:00:00.0010000",
+      "nightExposure": "00:00:20",
+      "dayGain": 0,
+      "nightGain": 0,
+      "envelope": null,
+      "captureFailureInitialDelay": null,
+      "captureFailureMaximumDelay": null
+    },
+    "controlPolicy": null,
+    "profileVersion": "unversioned"
+  },
+  "pipeline": {
+    "steps": [],
+    "schemaVersion": "cameraagent-capture-pipeline-v2",
+    "dependencyPolicy": "reject-enabled-dependent-v1"
+  },
+  "agentId": null,
+  "moduleType": "VirtualSky",
+  "moduleOptions": {
+    "illuminationMode": "SolarDriven",
+    "fixedSceneUtc": null,
+    "renderSolarSystemDisks": true,
+    "seed": 1131,
+    "maximumMagnitude": 6.5,
+    "maximumResults": 32768,
+    "magnitudeZeroElectronsPerSecond": 1000,
+    "bortleClass": 3,
+    "asi676Sensor": {
+      "enabled": true,
+      "blackLevelAdu": 64
+    },
+    "shotNoiseEnabled": true,
+    "vignettingStrength": 0.15,
+    "psfSigmaPixels": 0.85,
+    "psfRadiusPixels": 3.5
+  }
+}
