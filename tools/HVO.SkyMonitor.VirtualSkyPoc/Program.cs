@@ -35,6 +35,11 @@ internal static partial class Program
 
     public static async Task Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "satellite-overlay")
+        {
+            SatelliteOverlayPoc(args);
+            return;
+        }
         if (args.Length > 0 && args[0] == "satellite-resources")
         {
             OrbitalPopulationPoc(args);

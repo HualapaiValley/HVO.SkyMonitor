@@ -19,6 +19,46 @@ public sealed class OrbitalTrackPresentationTests
     private static readonly OrbitalSnapshot SyntheticSnapshot = CreateSyntheticSnapshot();
 
     [TestMethod]
+    public void SourceIdentityBytesCanBeRetainedWithExactTracksThroughExistingLayerProductLineage()
+    {
+        var track = Track();
+        var converted = OrbitalTrackPresentation.CreatePayloadAndSourceFacts(640, 480, [track]);
+        var sourceHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(converted.SourceFactsJson));
+        Assert.AreEqual(converted.Payload.SourceIdentitySha256, sourceHash);
+        Assert.AreEqual(Payload(track).ContentIdentitySha256, converted.Payload.ContentIdentitySha256);
+        using var facts = JsonDocument.Parse(converted.SourceFactsJson);
+        Assert.AreEqual(OrbitalTrackPresentation.ProducerVersion, facts.RootElement.GetProperty("ProducerVersion").GetString());
+        Assert.AreEqual(track.ProductSha256,
+            facts.RootElement.GetProperty("Tracks")[0].GetProperty("ProductSha256").GetString());
+
+        var compatibility = new ProcessingCompatibilityIdentity("rig", "orientation", "calibration", "mask", "sensor", "setpoint", "profile");
+        var trackArtifact = new ProcessingArtifact(Guid.NewGuid(), FrameArtifactRole.Metadata, "orbital-track", Sha('A'),
+            "application/json", null, OrbitalPredictionJson.SerializeTrack(track), Epoch, TimeSpan.Zero, compatibility)
+        {
+            ProductKind = ProcessingProductKind.Metadata,
+            SchemaVersion = track.SchemaVersion,
+            ContentIdentitySha256 = track.ProductSha256
+        };
+        var sourceArtifact = new ProcessingArtifact(Guid.NewGuid(), FrameArtifactRole.Metadata, "orbital-presentation-source", Sha('B'),
+            "application/json", null, converted.SourceFactsJson, Epoch, TimeSpan.Zero, compatibility,
+            SourceArtifactIds: [trackArtifact.ArtifactId])
+        {
+            ProductKind = ProcessingProductKind.Metadata,
+            SchemaVersion = OrbitalTrackPresentation.ProducerVersion,
+            ContentIdentitySha256 = sourceHash
+        };
+        var layer = PresentationProcessingProducts.CreateLayerProduct(converted.Payload, "satellites",
+            [sourceArtifact, trackArtifact], OrbitalTrackPresentation.ProducerVersion);
+
+        CollectionAssert.AreEqual(new[] { sourceArtifact.ArtifactId, trackArtifact.ArtifactId }, layer.SourceArtifactIds.ToArray());
+        Assert.AreEqual(converted.Payload.ContentIdentitySha256, layer.ContentIdentitySha256);
+        var parsed = PresentationLayerPayloadJson.Parse(layer.Payload);
+        Assert.IsNotNull(parsed.Payload);
+        Assert.AreEqual(converted.Payload.ContentIdentitySha256,
+            parsed.Payload.ContentIdentitySha256);
+    }
+
+    [TestMethod]
     [DataRow("snapshot")]
     [DataRow("normalized-payload")]
     [DataRow("source")]

@@ -46,6 +46,16 @@ public static class OrbitalTrackPresentation
     public static PresentationLayerPayloadV1 CreatePayload(
         int sourceWidth, int sourceHeight, IReadOnlyList<OrbitalExposureTrackV1> tracks,
         IReadOnlyDictionary<OrbitalObjectIdentity, string>? displayNames = null)
+        => CreatePayloadAndSourceFacts(sourceWidth, sourceHeight, tracks, displayNames).Payload;
+
+    /// <summary>
+    /// Returns the payload and its exact source-identity bytes for retention through existing metadata/artifact
+    /// lineage. The caller owns the returned bytes and retains the referenced canonical tracks as source artifacts.
+    /// No pixels or captured source facts are changed. The source envelope is versioned by the producer identity.
+    /// </summary>
+    public static (PresentationLayerPayloadV1 Payload, byte[] SourceFactsJson) CreatePayloadAndSourceFacts(
+        int sourceWidth, int sourceHeight, IReadOnlyList<OrbitalExposureTrackV1> tracks,
+        IReadOnlyDictionary<OrbitalObjectIdentity, string>? displayNames = null)
     {
         ArgumentNullException.ThrowIfNull(tracks);
         if (sourceWidth is < 1 or > 65_536 || sourceHeight is < 1 or > 65_536 ||
@@ -145,9 +155,9 @@ public static class OrbitalTrackPresentation
         if (primitives > MaximumPrimitives || work > MaximumWork)
             throw new ArgumentException("Predicted tracks exceed the presentation primitive/work budget.", nameof(tracks));
 
-        // A private identity envelope, not another durable product schema. Include names even if a label
-        // cannot fit so every display-affecting input remains bound to the returned immutable payload.
-        var sourceIdentity = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
+        // Include names even if a label cannot fit. Returning the exact bytes lets an artifact adapter retain
+        // the same inputs the payload hashes, rather than inventing an unrelated source descriptor identity.
+        var sourceFacts = JsonSerializer.SerializeToUtf8Bytes(new
         {
             ProducerVersion,
             LayerKind,
@@ -158,9 +168,10 @@ public static class OrbitalTrackPresentation
                 track.ProductSha256,
                 DisplayName = names.GetValueOrDefault(track.Lineage.ObjectIdentity)
             }).ToArray()
-        })));
-        return PresentationLayerPayloadJson.Create(sourceIdentity, sourceWidth, sourceHeight,
-            markers: markers, segments: segments, textBlocks: texts);
+        });
+        var sourceIdentity = Convert.ToHexString(SHA256.HashData(sourceFacts));
+        return (PresentationLayerPayloadJson.Create(sourceIdentity, sourceWidth, sourceHeight,
+            markers: markers, segments: segments, textBlocks: texts), sourceFacts);
     }
 
     private static bool Compatible(OrbitalExposureTrackV1 a, OrbitalExposureTrackV1 b) =>
