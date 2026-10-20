@@ -231,6 +231,8 @@ expect_release_scripts true push "$base_sha" "$head_sha"
 expect_release_scripts true workflow_dispatch "$base_sha" "$head_sha"
 release_scripts_paths=(
   "scripts/release:assets"
+  "scripts/release:combine-images"
+  "scripts/test:release-images"
   "scripts/release:check-image-labels"
   "scripts/release:push-image"
   "scripts/release:prerelease-gate"
@@ -252,6 +254,7 @@ release_scripts_paths=(
   "tests/fixtures/install-sh/fake-command"
   "tests/fixtures/install-sh/hvo-sky-install"
   ".github/workflows/prerelease.yml"
+  ".github/workflows/release-image.yml"
   ".github/workflows/release.yml"
   "Directory.Build.props"
   "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"
@@ -609,6 +612,7 @@ complete_matrix_paths=(
   ".github/workflows/ci.yml"
   ".github/workflows/release.yml"
   ".github/workflows/prerelease.yml"
+  ".github/workflows/release-image.yml"
   "scripts/ci:classify"
   "scripts/ci:require"
   "scripts/ci:component-build"
@@ -718,6 +722,7 @@ verify_targeted_suites() {
 verify_targeted_suites ".github/workflows/ci.yml" true true true
 verify_targeted_suites ".github/workflows/release.yml" true false true
 verify_targeted_suites ".github/workflows/prerelease.yml" true false true
+verify_targeted_suites ".github/workflows/release-image.yml" true false true
 verify_targeted_suites "scripts/catalog/install-hyg-v42.sh" true true false
 verify_targeted_suites "scripts/ci:component-build" true true true
 verify_targeted_suites "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite" true true false

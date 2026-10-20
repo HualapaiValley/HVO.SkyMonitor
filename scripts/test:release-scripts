@@ -1421,9 +1421,11 @@ require(re.findall(r"^      - '(.*)'$", on, re.M) == ["v[0-9]+.[0-9]+.[0-9]+", "
         "release.yml runs on tags other than vX.Y.Z and vX.Y.Z-rc.N")
 require(re.search(r"^on:\n(?:.*\n)*?  workflow_call:\n", ci, re.M) is not None, "ci.yml cannot be called")
 jobs = re.findall(r"^  ([\w-]+):\n", release.split("\njobs:\n", 1)[1], re.M)
-require(jobs == ["gate", "ci", "build", "draft", "install-test", "publish", "latest"], f"release.yml's jobs are {jobs}")
+require(jobs == ["gate", "ci", "build-amd64", "build-arm64", "build", "draft", "install-test", "publish", "latest"], f"release.yml's jobs are {jobs}")
 require("uses: ./.github/workflows/ci.yml" in job("ci"), "the ci job does not call ci.yml")
-require("needs: [gate, ci]" in job("build"), "the build job does not wait for CI")
+for arch in ("amd64", "arm64"):
+    require("needs: [gate, ci]" in job(f"build-{arch}"), "the image build does not wait for CI")
+require("needs: [gate, build-amd64, build-arm64]" in job("build"), "packaging does not wait for both native images")
 install = job("install-test")
 require("platform: linux-x64" in install and "platform: linux-arm64" in install and "fail-fast: false" in install,
         "the install test does not run on linux-x64 and linux-arm64 alike")
@@ -1451,6 +1453,8 @@ if errors:
     print("\n".join(errors), file=sys.stderr)
     sys.exit(1)
 PY
+
+"$repo_root/scripts/test:release-images" || fail "the native release image tests failed."
 
 # install.sh's tests bring their own fake commands, so they run on the PATH this script was given.
 PATH="${PATH#"$fake_bin:"}" "$repo_root/scripts/test:install-sh" || fail "the install.sh tests failed."

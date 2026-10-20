@@ -211,7 +211,7 @@
 .layer-swatch.environment, .layer-swatch.corner-annotations { background: #ffffff; }
 .layer-swatch.expected { border: 1px dashed var(--amber); background: transparent; }
 .layer-swatch.residuals { background: #f1c96f; }
-.layer-swatch.satellites { background: #ff9f43; }
+.layer-swatch.satellites, .layer-swatch.PredictedSatelliteTracks { border: 1px dashed #ffa64d; background: transparent; }
 .layer-swatch.meteor { border: 1px solid #ff9f43; background: transparent; }
 .overlay-actions { display: flex; flex-wrap: wrap; gap: 0 1.2rem; }
 .sky-layer-save { margin-left: auto; text-align: right; }

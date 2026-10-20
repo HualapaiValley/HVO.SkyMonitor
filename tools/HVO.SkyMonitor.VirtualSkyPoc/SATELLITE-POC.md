@@ -249,3 +249,36 @@ not loaded by the C# runtime. The generator's single Vallado vector is not the
 complete SGP4 qualification suite. Its pinned mode-i source branch is
 `research/527-satellite-virtual-poc` at
 `d97607b09f5433e3f0f1b8b5582286a37ea5ae43`; that branch is preserved unchanged.
+
+## Retained exposure presentation example (#1393)
+
+The `satellite-overlay` command uses the shared typed prediction converter and
+the existing SVG/raster presentation renderers. It reads a checksum-pinned PNG
+display derivative and canonical exposure tracks. It does not rerun capture,
+detection, propagation or acquisition. The caller supplies the base/track
+pairing; it is not authenticated historical-capture lookup.
+
+```bash
+dotnet build tools/HVO.SkyMonitor.VirtualSkyPoc/HVO.SkyMonitor.VirtualSkyPoc.csproj --configuration Release -warnaserror
+dotnet tools/HVO.SkyMonitor.VirtualSkyPoc/bin/Release/net10.0/HVO.SkyMonitor.VirtualSkyPoc.dll satellite-overlay \
+  /tmp/iss-presentation-v1 \
+  docs/validation/orbital-prediction-v1/samples/iss-injected-03.png \
+  7E30DF3A26A65FC7C80585A2A5F0392E25F8A80167AE5A84AB42EB40BD07B94C \
+  tests/fixtures/orbital-prediction-v1/virtual-camera/tracks/iss/track-03.json
+```
+
+Use a new empty output directory. The output includes an interactive HTML
+comparison, separate base/predicted/disabled PNGs, grouped SVG, source-envelope
+bytes, typed payload and standalone overlay manifest, plus checksums and
+validation. Disabling the layer must preserve every decoded base RGB byte.
+The source-envelope SHA-256 must equal the typed payload's source identity.
+Adjacent HYG attribution/license notices are copied and included in the HTML
+and checksum manifest for the committed examples. Other input images retain
+their original terms; the command does not grant a license to them.
+
+For the paired Starlinks, use `samples/constellation-injected-03.png` with SHA-256
+`64B0459DD9271AECC55F8156A693143B6BF3DCCD9B53C1226D5A44B53A3E6411`,
+and supply `tracks/starlink-56838/track-03.json` and
+`tracks/starlink-65283/track-03.json` from the same virtual-camera fixture root.
+The source pixels retain explicit synthetic brightness. Prediction labels are
+presentation derivatives, never detector inputs or measured identities.
