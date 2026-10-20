@@ -159,9 +159,36 @@ job-summary block.
       reported twice, identical in every field, is counted once.
     - A file that `.gitattributes` marks as binary is therefore read in full at
       every commit that changes it.
-  - Every text line in a scanned tree is therefore either a line some commit's
-    text diff added or part of a file scanned in full. Only content that is
-    binary by Git's rule is not read.
+  - For paths outside gitleaks' exclusions, a text line is covered when a
+    reachable commit added it in a text diff or the script scanned its file in
+    full. Binary content is not read. The pinned [gitleaks v8.30.1 default
+    path allowlist](https://github.com/gitleaks/gitleaks/blob/v8.30.1/config/gitleaks.toml#L18-L46)
+    also excludes these paths, even when their content is text:
+    - Any path containing `gitleaks.toml`, including `.gitleaks.toml`.
+    - Images (`bmp`, `gif`, `jpg`, `jpeg`, `png`, `svg`, `tif`, `tiff`) and
+      fonts (`eot`, `otf`, `ttf`, `woff`, `woff2`), case-insensitively.
+    - Document/binary extensions: `doc`, `docx`, `xls`, `xlsx`, `pdf`, `bin`,
+      `socket`, `vsidx`, `v2`, `suo`, `wsuo`, `.dll`, `pdb`, `exe`, `gltf`
+      (the linked regular expression is authoritative), case-insensitively.
+    - Go `go.mod`, `go.sum`, `go.work`, `go.work.sum`, `vendor/modules.txt`,
+      and vendor trees for `github.com`, `golang.org/x`, `google.golang.org`,
+      `gopkg.in`, `istio.io`, `k8s.io`, and `sigs.k8s.io`.
+    - Gradle/Maven wrappers (`gradlew`, `gradlew.bat`, `mvnw`, `mvnw.cmd`,
+      `.mvn/wrapper/MavenWrapperDownloader.java`) and `gradle.lockfile`.
+    - `node_modules`, `bower_components`, `deno.lock`, `npm-shrinkwrap.json`,
+      `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `javascript.json`,
+      and the allowlisted Angular, Bootstrap, jQuery/UI, Plotly and Swagger UI
+      JavaScript bundles and maps.
+    - `Pipfile.lock`, `poetry.lock`, Python environment/library and
+      versioned `.dist-info` paths; Ruby `vendor/bundle`, `vendor/ruby`,
+      and paths ending in `.gem`.
+    - Paths containing `verification-metadata.xml` or `Database.refactorlog`,
+      and a final `.git` path component.
+  - A credential introduced only in an excluded path is not reported. A pure
+    rename from an excluded path to an included path adds no lines, so it does
+    not establish coverage of the unchanged content either. A rename with edits
+    covers the added lines, not all unchanged lines. Reachable-commit and byte
+    counts prove scan delivery, not detection coverage for excluded paths.
   - A merge of more than two parents is refused, because Git shows no diff for
     one.
   - Other branches in the clone are not scanned; their own pull requests scan
