@@ -12,13 +12,18 @@ namespace HVO.SkyMonitor.Tests;
 internal static class CompiledDependencyChecker
 {
     internal sealed record TypeName(string Assembly, string Namespace, string Name);
-    internal sealed record Result(int TypesChecked, string[] Violations);
+    internal sealed record OwnedType(TypeName Type, ImmutableHashSet<string> Documents);
+    internal sealed record Result(int TypesChecked, string[] Violations, OwnedType[] SelectedTypes);
 
     internal static bool SpaceWeather(TypeName type) => Subtree(type.Namespace, "HVO.SkyMonitor.Processing.SpaceWeather");
     internal static bool CaptureOrRecipe(TypeName type) => !SpaceWeather(type) &&
         (Subtree(type.Namespace, "HVO.SkyMonitor.Processing")
         || type.Namespace.Split('.').Any(segment => segment.Contains("Capture", StringComparison.Ordinal)
-            || segment.Contains("RawIngress", StringComparison.Ordinal) || segment.Contains("Recipe", StringComparison.Ordinal)));
+            || segment.Contains("RawIngress", StringComparison.Ordinal) || segment.Contains("Recipe", StringComparison.Ordinal))
+        // Name already includes declaring types, including compiler-generated nested types.
+        || new[] { "Capture", "RawIngress", "Recipe" }.Any(word => type.Name.Contains(word, StringComparison.OrdinalIgnoreCase)));
+    internal static bool CaptureOrRecipe(OwnedType type, IReadOnlySet<string> sourceOwners) => !SpaceWeather(type.Type)
+        && (CaptureOrRecipe(type.Type) || type.Documents.Overlaps(sourceOwners));
     internal static bool HostHttpOrPersistence(TypeName type) =>
         new[] { "HVO.SkyMonitor.CameraAgent", "HVO.SkyMonitor.LogicHost", "HVO.SkyMonitor.Common", "HVO.SkyMonitor.Catalog", "HVO.SkyMonitor.Storage",
             "Microsoft.AspNetCore", "Microsoft.EntityFrameworkCore", "Microsoft.Data.Sqlite", "System.Net", "System.IO", "System.Data", "SQLite", "Sqlite" }
@@ -26,20 +31,67 @@ internal static class CompiledDependencyChecker
 
     private static bool Subtree(string value, string prefix) => value == prefix || value.StartsWith(prefix + ".", StringComparison.Ordinal);
 
-    internal static Result Check(string assemblyPath, Func<TypeName, bool> select, Func<TypeName, bool> forbidden)
+    internal static Result Check(string assemblyPath, Func<OwnedType, bool> select, Func<TypeName, bool> forbidden)
     {
         using var stream = File.OpenRead(assemblyPath);
         using var pe = new PEReader(stream);
         var metadata = pe.GetMetadataReader();
+        var pdbPath = Path.ChangeExtension(assemblyPath, ".pdb");
+        if (!File.Exists(pdbPath))
+            throw new FileNotFoundException($"Portable PDB required for complete source ownership selection: {pdbPath}", pdbPath);
+        using var pdbStream = File.OpenRead(pdbPath);
+        using var pdbProvider = MetadataReaderProvider.FromPortablePdbStream(pdbStream);
+        var pdb = pdbProvider.GetMetadataReader();
+        var pdbId = new BlobContentId(pdb.DebugMetadataHeader!.Id);
+        if (!pe.ReadDebugDirectory().Any(entry => entry.Type == DebugDirectoryEntryType.CodeView
+            && pe.ReadCodeViewDebugDirectoryData(entry).Guid == pdbId.Guid && entry.Stamp == pdbId.Stamp))
+            throw new InvalidDataException($"Portable PDB does not match assembly: {pdbPath}");
+        var documents = new SourceDocuments(metadata, pdb);
         var inspection = new Inspection(assemblyPath, pe, metadata, forbidden);
-        var count = 0;
+        var selected = new List<OwnedType>();
         foreach (var handle in metadata.TypeDefinitions)
         {
-            if (!select(inspection.Name(handle))) continue;
-            count++;
+            var type = new OwnedType(inspection.Name(handle), documents.ForType(handle));
+            if (!select(type)) continue;
+            selected.Add(type);
             inspection.Inspect(handle);
         }
-        return new(count, [.. inspection.Violations]);
+        return new(selected.Count, [.. inspection.Violations], [.. selected]);
+    }
+
+    private sealed class SourceDocuments(MetadataReader metadata, MetadataReader pdb)
+    {
+        // Portable PDB TypeDefinitionDocuments holds compressed Document row IDs,
+        // including declarations (interfaces/enums, partial files) with no method bodies.
+        private static readonly Guid TypeDefinitionDocuments = new("932e74bc-dba9-4478-8d46-0f32a7bab3d3");
+        private readonly Dictionary<TypeDefinitionHandle, ImmutableHashSet<string>> cache = [];
+
+        internal ImmutableHashSet<string> ForType(TypeDefinitionHandle handle)
+        {
+            if (cache.TryGetValue(handle, out var cached)) return cached;
+            var documents = ImmutableHashSet.CreateBuilder<string>(StringComparer.Ordinal);
+            var type = metadata.GetTypeDefinition(handle);
+            foreach (var method in type.GetMethods())
+            {
+                var debug = pdb.GetMethodDebugInformation(method);
+                Add(debug.Document);
+                foreach (var point in debug.GetSequencePoints()) Add(point.Document);
+            }
+            foreach (var debugHandle in pdb.GetCustomDebugInformation(handle))
+            {
+                var debug = pdb.GetCustomDebugInformation(debugHandle);
+                if (pdb.GetGuid(debug.Kind) != TypeDefinitionDocuments) continue;
+                var blob = pdb.GetBlobReader(debug.Value);
+                while (blob.RemainingBytes > 0) Add(MetadataTokens.DocumentHandle(blob.ReadCompressedInteger()));
+            }
+            if (!type.GetDeclaringType().IsNil) documents.UnionWith(ForType(type.GetDeclaringType()));
+            return cache[handle] = documents.ToImmutable();
+
+            void Add(DocumentHandle document)
+            {
+                if (!document.IsNil) documents.Add(Path.GetFullPath(pdb.GetString(pdb.GetDocument(document).Name)));
+            }
+        }
     }
 
     private sealed class Inspection

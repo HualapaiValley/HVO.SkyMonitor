@@ -9,6 +9,7 @@ namespace HVO.SkyMonitor.Tests;
 [TestClass]
 public sealed class ArchitectureBoundaryTests
 {
+    public TestContext TestContext { get; set; } = null!;
     private const string AgentCore = "HVO.SkyMonitor.AgentCore";
     private const string Astronomy = "HVO.SkyMonitor.Astronomy";
     private const string Imaging = "HVO.SkyMonitor.Imaging";
@@ -159,7 +160,7 @@ public sealed class ArchitectureBoundaryTests
         Assert.IsTrue(project.References.All(reference => reference is AgentCore or Astronomy or Imaging));
         Assert.IsEmpty(project.FrameworkReferences);
         Assert.IsEmpty(project.PackageReferences);
-        var result = CompiledDependencyChecker.Check(ProductionAssembly(project), CompiledDependencyChecker.SpaceWeather, CompiledDependencyChecker.HostHttpOrPersistence);
+        var result = CompiledDependencyChecker.Check(ProductionAssembly(project), type => CompiledDependencyChecker.SpaceWeather(type.Type), CompiledDependencyChecker.HostHttpOrPersistence);
         Assert.IsGreaterThan(0, result.TypesChecked);
         Assert.IsEmpty(result.Violations, string.Join(Environment.NewLine, result.Violations));
     }
@@ -169,13 +170,17 @@ public sealed class ArchitectureBoundaryTests
     public void CaptureRawIngressAndRecipesReferenceNoSpaceWeatherFacts()
     {
         var checkedCount = 0;
+        var violations = new List<string>();
+        var sourceOwners = ReviewedCaptureOrRecipeFiles();
         foreach (var project in Repository.Value.Projects.Values.Where(p => p.Kind == ProjectKind.Production))
         {
-            var result = CompiledDependencyChecker.Check(ProductionAssembly(project), CompiledDependencyChecker.CaptureOrRecipe, CompiledDependencyChecker.SpaceWeather);
+            var result = CompiledDependencyChecker.Check(ProductionAssembly(project),
+                type => CompiledDependencyChecker.CaptureOrRecipe(type, sourceOwners), CompiledDependencyChecker.SpaceWeather);
             checkedCount += result.TypesChecked;
-            Assert.IsEmpty(result.Violations, string.Join(Environment.NewLine, result.Violations));
+            violations.AddRange(result.Violations);
         }
         Assert.IsGreaterThan(0, checkedCount);
+        Assert.IsEmpty(violations, string.Join(Environment.NewLine, violations));
     }
 
     [TestMethod]
@@ -183,7 +188,7 @@ public sealed class ArchitectureBoundaryTests
     public void SpaceWeatherMetadataRuleRejectsInternalFileCall()
     {
         var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
-            type => CompiledDependencyChecker.SpaceWeather(type) && type.Name == "FileDependencyControl", CompiledDependencyChecker.HostHttpOrPersistence);
+            type => CompiledDependencyChecker.SpaceWeather(type.Type) && type.Type.Name == "FileDependencyControl", CompiledDependencyChecker.HostHttpOrPersistence);
         Assert.AreEqual(1, result.TypesChecked);
         Assert.IsTrue(result.Violations.Any(v => v.Contains("System.IO.File", StringComparison.Ordinal)));
     }
@@ -193,7 +198,7 @@ public sealed class ArchitectureBoundaryTests
     public void CaptureMetadataRuleRejectsGlobalImportAndSameAssemblyTypeDefinition()
     {
         var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
-            type => CompiledDependencyChecker.CaptureOrRecipe(type) && type.Name == "GlobalImportDependencyControl", CompiledDependencyChecker.SpaceWeather);
+            type => CompiledDependencyChecker.CaptureOrRecipe(type.Type) && type.Type.Name == "GlobalImportDependencyControl", CompiledDependencyChecker.SpaceWeather);
         Assert.AreEqual(1, result.TypesChecked);
         Assert.IsTrue(result.Violations.Any(v => v.Contains("SpaceWeather.SwpcMessageRecord", StringComparison.Ordinal)));
     }
@@ -203,10 +208,121 @@ public sealed class ArchitectureBoundaryTests
     public void SpaceWeatherMetadataRuleCoversBaseSignaturesAndAttributeArguments()
     {
         var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
-            type => CompiledDependencyChecker.SpaceWeather(type) && type.Name == "SignatureDependencyControl", CompiledDependencyChecker.HostHttpOrPersistence);
+            type => CompiledDependencyChecker.SpaceWeather(type.Type) && type.Type.Name == "SignatureDependencyControl", CompiledDependencyChecker.HostHttpOrPersistence);
         Assert.AreEqual(1, result.TypesChecked);
         foreach (var name in new[] { "System.IO.MemoryStream", "System.IO.FileInfo", "System.IO.DirectoryInfo", "System.IO.BinaryReader", "System.Net.Http.HttpClient" })
             Assert.IsTrue(result.Violations.Any(v => v.Contains(name, StringComparison.Ordinal)), name);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CaptureOrRecipeSelectionCoversReviewedSourceFiles()
+    {
+        var files = ReviewedCaptureOrRecipeFiles();
+        var selected = SelectedCaptureOrRecipeTypes(files);
+        var covered = files.Where(file => selected.Any(type => type.Documents.Contains(file))).ToArray();
+        // Conservative declaration detection: an ambiguous keyword stays required,
+        // so a source file cannot silently disappear from the parity assertion.
+        var excluded = files.Except(covered).Where(file => !System.Text.RegularExpressions.Regex.IsMatch(
+            MaskCSharpCommentsAndLiterals(File.ReadAllText(file)), @"\b(?:class|struct|interface|enum|record|delegate)\b")).ToArray();
+        TestContext.WriteLine($"Reviewed source set={files.Count}; covered={covered.Length}; excluded without types={excluded.Length}");
+        foreach (var file in excluded) TestContext.WriteLine($"Excluded without types: {Path.GetRelativePath(Repository.Value.Root, file)}");
+        Assert.IsGreaterThan(0, files.Count);
+        var missing = files.Except(covered).Except(excluded).Select(file => Path.GetRelativePath(Repository.Value.Root, file)).ToArray();
+        Assert.IsEmpty(missing, "Reviewed source owners absent from compiled selection: " + string.Join(", ", missing));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CaptureOrRecipeSelectionIncludesReviewedNamedOwners()
+    {
+        var selected = SelectedCaptureOrRecipeTypes(ReviewedCaptureOrRecipeFiles());
+        foreach (var name in new[] { "LogicHostRecipeExecutionAdapter", "CentralDerivativeRecipeCatalog" })
+        {
+            Assert.IsTrue(selected.Any(type => type.Type.Name == name), name);
+            TestContext.WriteLine($"Selected named owner: {name}");
+        }
+        var schedulePath = Path.Combine(Repository.Value.Root, "src", CameraAgentCommon, "Scheduling", "CaptureScheduleEngine.cs");
+        var scheduleTypes = selected.Where(type => type.Documents.Contains(schedulePath)).ToArray();
+        Assert.IsNotEmpty(scheduleTypes);
+        foreach (var type in scheduleTypes) TestContext.WriteLine($"Selected schedule owner: {type.Type.Namespace}.{type.Type.Name}");
+        var agentTypes = selected.Where(type => type.Type.Assembly == AgentCore && type.Type.Name.StartsWith("Capture", StringComparison.Ordinal)).ToArray();
+        Assert.IsNotEmpty(agentTypes);
+        foreach (var type in agentTypes) TestContext.WriteLine($"Selected AgentCore owner: {type.Type.Name}");
+        Assert.IsTrue(CompiledDependencyChecker.CaptureOrRecipe(new(AgentCore, "Flat", "recipeOwner+Nested")));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CaptureMetadataRuleRejectsSourcePathOnlyOwnersIncludingBodylessAndNestedTypes()
+    {
+        var file = Path.Combine(Repository.Value.Root, "tests", "HVO.SkyMonitor.Architecture.Tests", "RecipeOwnershipControls.cs");
+        var sourceOwners = new HashSet<string>(StringComparer.Ordinal) { file };
+        Assert.IsTrue(ReviewedCaptureOrRecipeFile(file));
+        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+            type => type.Type.Namespace == "HVO.SkyMonitor.Tests.Flat" && type.Documents.Contains(file)
+                && CompiledDependencyChecker.CaptureOrRecipe(type, sourceOwners), CompiledDependencyChecker.SpaceWeather);
+        Assert.AreEqual(3, result.TypesChecked);
+        foreach (var type in result.SelectedTypes)
+        {
+            Assert.IsFalse(CompiledDependencyChecker.CaptureOrRecipe(type.Type), type.Type.Name);
+            Assert.IsTrue(result.Violations.Any(v => v.Contains(type.Type.Name + " ->", StringComparison.Ordinal)
+                && v.Contains("SpaceWeather.SwpcMessageRecord", StringComparison.Ordinal)), type.Type.Name);
+            TestContext.WriteLine($"Source-only control rejected: {type.Type.Name}");
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CaptureMetadataRuleRejectsTypeNameOnlyOwner()
+    {
+        var file = Path.Combine(Repository.Value.Root, "tests", "HVO.SkyMonitor.Architecture.Tests", "BoundaryNameControl.cs");
+        Assert.IsFalse(ReviewedCaptureOrRecipeFile(file));
+        var sourceOwners = ReviewedCaptureOrRecipeFiles();
+        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+            type => type.Type.Name == "RecipeNameDependencyControl" && CompiledDependencyChecker.CaptureOrRecipe(type, sourceOwners),
+            CompiledDependencyChecker.SpaceWeather);
+        Assert.AreEqual(1, result.TypesChecked);
+        Assert.IsFalse(result.SelectedTypes.Single().Documents.Overlaps(sourceOwners));
+        Assert.AreEqual("HVO.SkyMonitor.Tests.Flat", result.SelectedTypes.Single().Type.Namespace);
+        Assert.IsTrue(result.Violations.Any(v => v.Contains("SpaceWeather.SwpcMessageRecord", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CompiledOwnershipFailsWhenPortablePdbIsMissing()
+    {
+        var directory = Directory.CreateTempSubdirectory("hvo-ownership-");
+        try
+        {
+            var path = Path.Combine(directory.FullName, "control.dll");
+            File.Copy(typeof(ArchitectureBoundaryTests).Assembly.Location, path);
+            var error = Assert.Throws<FileNotFoundException>(() => CompiledDependencyChecker.Check(path, _ => true, _ => false));
+            StringAssert.Contains(error.Message, "Portable PDB required for complete source ownership selection");
+        }
+        finally { directory.Delete(recursive: true); }
+    }
+
+    private static CompiledDependencyChecker.OwnedType[] SelectedCaptureOrRecipeTypes(IReadOnlySet<string> sourceOwners) =>
+        [.. Repository.Value.Projects.Values.Where(project => project.Kind == ProjectKind.Production)
+            .SelectMany(project => CompiledDependencyChecker.Check(ProductionAssembly(project),
+                type => CompiledDependencyChecker.CaptureOrRecipe(type, sourceOwners), CompiledDependencyChecker.SpaceWeather).SelectedTypes)];
+
+    private static HashSet<string> ReviewedCaptureOrRecipeFiles() => Directory.EnumerateFiles(Path.Combine(Repository.Value.Root, "src"), "*.cs", SearchOption.AllDirectories)
+        .Where(path => !RepositoryGraph.HasPathSegment(path, "bin") && !RepositoryGraph.HasPathSegment(path, "obj"))
+        .Where(ReviewedCaptureOrRecipeFile).ToHashSet(StringComparer.Ordinal);
+
+    private static bool ReviewedCaptureOrRecipeFile(string file)
+    {
+        var relative = Path.GetRelativePath(Repository.Value.Root, file);
+        var source = MaskCSharpCommentsAndLiterals(File.ReadAllText(file));
+        // Exact fc52a26f reviewed selector; paths are repository-relative.
+        return relative.Contains("Capture", StringComparison.OrdinalIgnoreCase)
+            || relative.Contains("RawIngress", StringComparison.OrdinalIgnoreCase)
+            || relative.Contains("Recipe", StringComparison.OrdinalIgnoreCase)
+            || relative.StartsWith(Path.Combine("src", Processing), StringComparison.Ordinal)
+                && !relative.StartsWith(Path.Combine("src", Processing, "SpaceWeather") + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            || System.Text.RegularExpressions.Regex.IsMatch(source, @"namespace\s+[^;{]*(?:Capture|RawIngress|Recipes)");
     }
 
     // Use the existing graph's MSBuild evaluation to locate Release outputs,

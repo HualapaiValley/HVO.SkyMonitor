@@ -79,6 +79,10 @@ public sealed class SwpcCorrectionTests
     {
         // Deterministic combinations include same-minute roots, raised carry-over,
         // missing ranks, cancels, extensions, orphan links, and Dec/Jan rollover.
+        var orphanGroups = 0;
+        var presentTargetGroups = 0;
+        var neverIssuedLinks = 0;
+        var differentCodeLinks = 0;
         for (var seed = 0; seed < 32; seed++)
         {
             var versions = new List<SwpcMessageVersion>();
@@ -95,7 +99,18 @@ public sealed class SwpcCorrectionTests
                 if ((seed + i) % 7 == 0)
                     versions.Add(new(message with { Serial = i + 100, Header = message.Header with { Link = new("continuation", i) } }, versions.Count));
             }
+            // These targets never arrive under the linked code. The second serial
+            // exists under an original code, proving links remain code-local.
+            var anchor = versions[0].Message;
+            versions.Add(new(anchor with { Serial = 2001, Header = anchor.Header with { Link = new("continuation", 1001) } }, versions.Count));
+            neverIssuedLinks++;
+            versions.Add(new(anchor with { Code = "OTHER", Serial = 2002, Header = anchor.Header with { Link = new("continuation", anchor.Serial) } }, versions.Count));
+            differentCodeLinks++;
             var groups = SwpcGroupBuilder.Build(versions);
+            var known = versions.Select(version => version.Message.Node).ToHashSet();
+            orphanGroups += groups.Count(group => group.Orphan);
+            presentTargetGroups += groups.Count(group => !group.Orphan && group.Versions.Any(version =>
+                version.Message.Header.Link is { } link && known.Contains(new(version.Message.Code, link.TargetSerial))));
             var raised = groups.Where((_, i) => (i + seed) % 3 == 0).ToImmutableDictionary(g => g.Nodes.Last(), _ => seed % 5);
             var touched = groups.Where((_, i) => (i + seed) % 4 != 0).SelectMany(g => g.Nodes).ToImmutableHashSet();
             foreach (var now in new[] { Epoch.AddHours(-1), Epoch.AddMinutes(5), Epoch.AddHours(2), Epoch.AddDays(5) })
@@ -110,6 +125,11 @@ public sealed class SwpcCorrectionTests
                     SwpcAttentionEvaluator.Evaluate(input with { RaisedRanks = actual.RaisedRanks }));
             }
         }
+        TestContext.WriteLine($"Generated histories: orphan groups={orphanGroups}; present-target groups={presentTargetGroups}; never-issued links={neverIssuedLinks}; different-code links={differentCodeLinks}");
+        Assert.IsGreaterThan(0, orphanGroups);
+        Assert.IsGreaterThan(0, presentTargetGroups);
+        Assert.IsGreaterThan(0, neverIssuedLinks);
+        Assert.IsGreaterThan(0, differentCodeLinks);
     }
 
     [TestMethod]
