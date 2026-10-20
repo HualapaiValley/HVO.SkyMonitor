@@ -29,7 +29,7 @@ public sealed class OrbitalElementsAutomationAdapter : ILocalAutomationPeriodicT
 
     private static readonly LocalAutomationTaskDescriptor Descriptor = new(
         LocalAutomationTaskKind.OrbitalElementsRefresh,
-        "Refreshes the local CelesTrak GP active-group orbital snapshot within the provider policy.",
+        "Refreshes CelesTrak GP active-group orbital elements within the provider's two-hour floor.",
         [LocalAutomationTriggerKind.Periodic],
         [CelesTrakGpSource.DatasetKey],
         Available: true,

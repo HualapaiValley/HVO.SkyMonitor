@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Native release job and OCI handoff regressions, without Docker or GitHub."""
+import hashlib
+import io
+import json
+import pathlib
+import re
+import subprocess
+import tarfile
+import tempfile
+import unittest
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+COMBINE = ROOT / "scripts/release:combine-images"
+
+
+def encoded(value):
+    return json.dumps(value, separators=(",", ":")).encode()
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def job(text, name):
+    return re.search(rf"^  {name}:\n(.*?)(?=^  [\w-]+:|\Z)", text, re.M | re.S).group(1)
+
+
+class ReleaseImages(unittest.TestCase):
+    def test_native_hosted_jobs_and_trust_chain(self):
+        reusable = (ROOT / ".github/workflows/release-image.yml").read_text()
+        self.assertIn("ubuntu-24.04-arm", reusable)
+        self.assertIn("inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04'", reusable)
+        self.assertIn("amd64:x86_64 | arm64:aarch64", reusable)
+        self.assertNotIn("self-hosted", reusable)
+        self.assertNotIn("setup-qemu", reusable)
+        self.assertIn("timeout-minutes: 120", reusable)
+        self.assertIn("sha256sum", reusable)
+        for name in ("prerelease", "release"):
+            text = (ROOT / f".github/workflows/{name}.yml").read_text()
+            for arch in ("amd64", "arm64"):
+                build = job(text, f"build-{arch}")
+                self.assertIn("uses: ./.github/workflows/release-image.yml", build)
+                self.assertIn(f"architecture: {arch}", build)
+                self.assertIn("needs: [gate, ci]" if name == "release" else "needs: gate", build)
+                self.assertIn("commit: ${{ needs.gate.outputs.commit }}", build)
+            build = job(text, "build")
+            self.assertIn("needs: [gate, build-amd64, build-arm64]", build)
+            self.assertIn("./scripts/release:combine-images", build)
+            for arch in ("amd64", "arm64"):
+                self.assertIn(f"needs.build-{arch}.outputs.sha256", build)
+            self.assertIn('--prebuilt-image "$RUNNER_TEMP/image/skymonitor-cameraagent.oci.tar"', build)
+            draft = job(text, "draft")
+            self.assertIn("needs: [gate, build]", draft)
+            self.assertIn("subject-path: ${{ runner.temp }}/release/*", draft)
+            publish = job(text, "publish")
+            self.assertIn("needs: [gate, draft, install-test]", publish)
+            self.assertIn("--deny-self-hosted-runners", publish)
+            self.assertIn(f".github/workflows/{name}.yml@$GITHUB_REF", publish)
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = pathlib.Path(self.temp.name)
+        self.inputs = []
+        self.manifests = []
+        for arch in ("amd64", "arm64"):
+            blobs = {}
+            def blob(value, media):
+                data = encoded(value) if isinstance(value, dict) else value
+                digest = sha(data)
+                blobs[f"blobs/sha256/{digest}"] = data
+                return {"mediaType": media, "digest": f"sha256:{digest}", "size": len(data)}
+            config = blob({"os": "linux", "architecture": arch, "config": {"Labels": {
+                "org.opencontainers.image.version": "0.9.1-dev.2", "test-label": "preserved"}}},
+                "application/vnd.oci.image.config.v1+json")
+            layer = blob(b"shared-layer", "application/vnd.oci.image.layer.v1.tar+gzip")
+            manifest = blob({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                             "config": config, "layers": [layer]}, "application/vnd.oci.image.manifest.v1+json")
+            self.manifests.append(manifest)
+            blobs["index.json"] = encoded({"schemaVersion": 2, "manifests": [manifest]})
+            blobs["oci-layout"] = encoded({"imageLayoutVersion": "1.0.0"})
+            path = self.root / f"{arch}.tar"
+            self.write_tar(path, blobs)
+            self.inputs.append((path, sha(path.read_bytes())))
+
+    def write_tar(self, path, blobs):
+        with tarfile.open(path, "w") as archive:
+            for name, data in blobs.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+
+    def combine(self):
+        return subprocess.run([str(COMBINE), "--output", str(self.root / "combined.tar"),
+                               "--amd64", str(self.inputs[0][0]), "--amd64-sha256", self.inputs[0][1],
+                               "--arm64", str(self.inputs[1][0]), "--arm64-sha256", self.inputs[1][1]],
+                              capture_output=True, text=True)
+
+    def test_combines_without_changing_blob_digests(self):
+        result = self.combine()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with tarfile.open(self.root / "combined.tar") as archive:
+            layout = json.load(archive.extractfile("index.json"))
+            top = layout["manifests"][0]
+            index_bytes = archive.extractfile("blobs/sha256/" + top["digest"][7:]).read()
+            self.assertEqual(top["digest"], "sha256:" + sha(index_bytes))
+            manifests = json.loads(index_bytes)["manifests"]
+            for arch, actual, original in zip(("amd64", "arm64"), manifests, self.manifests):
+                self.assertEqual(actual, dict(original, platform={"os": "linux", "architecture": arch}))
+            for member in archive.getmembers():
+                if member.name.startswith("blobs/sha256/"):
+                    self.assertEqual(sha(archive.extractfile(member).read()), member.name.split("/")[-1])
+
+    def test_rejects_transfer_digest_mismatch(self):
+        self.inputs[0] = (self.inputs[0][0], "0" * 64)
+        result = self.combine()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("archive SHA-256", result.stderr)
+        self.assertFalse((self.root / "combined.tar").exists())
+
+    def test_rejects_wrong_platform(self):
+        self.inputs.reverse()
+        result = self.combine()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("platform", result.stderr)
+        self.assertFalse((self.root / "combined.tar").exists())
+
+    def test_rejects_corrupt_blob_even_with_matching_transfer_digest(self):
+        path = self.inputs[0][0]
+        data = path.read_bytes().replace(b"shared-layer", b"broken-layer")
+        path.write_bytes(data)
+        self.inputs[0] = (path, sha(data))
+        result = self.combine()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("blob", result.stderr)
+        self.assertFalse((self.root / "combined.tar").exists())
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

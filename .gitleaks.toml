@@ -85,3 +85,12 @@ paths = [
   '''^scripts/release:cameraagent-image$''',
   '''^tests/fixtures/issue-535/final-head/(green|replay-nodes-definition-order)\.json$''',
 ]
+
+[[allowlists]]
+description = """Not a secret. The nominal satellite replay summary (#530) uses a content-addressed input-sequence \
+identifier computed as the first 20 hexadecimal SHA-256 characters of public frame metadata. It grants no access \
+and authenticates no service. Only the introduction of that public evidence file in this historical commit is covered."""
+targetRules = ["generic-api-key"]
+condition = "AND"
+commits = ["b246422f38bcb39058b0b4fecd3991f83a06f2e8"]
+paths = ['''^docs/validation/satellite-nominal-evaluation-v1/replay-summary\.json$''']

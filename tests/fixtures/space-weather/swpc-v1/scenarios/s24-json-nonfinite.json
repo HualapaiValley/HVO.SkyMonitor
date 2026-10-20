@@ -1,0 +1,450 @@
+{
+  "schemaVersion": "hvo-space-weather-swpc-scenario-v1",
+  "scenarioId": "s24-json-nonfinite",
+  "title": "Non-JSON constants reject every JSON product and preserve last-known-good",
+  "covers": [
+    "malformed-json",
+    "nonfinite",
+    "last-known-good"
+  ],
+  "containsSyntheticRecords": true,
+  "notes": [
+    "Every body is synthetic. Each JSON product first accepts a baseline, then rejects NaN, Infinity and -Infinity before applying product schema or per-record checks."
+  ],
+  "sites": [
+    {
+      "siteId": "hvo",
+      "location": {
+        "latitudeDeg": 35.5599378,
+        "longitudeDeg": -113.9119818
+      },
+      "timeZoneId": "America/Phoenix"
+    }
+  ],
+  "configuration": {
+    "jitterFraction": 0,
+    "policy": "docs/contracts/space-weather-facts-v1.md"
+  },
+  "steps": [
+    {
+      "step": 1,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:00:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24\"",
+        "lastModified": null,
+        "body": "[{\"product_id\":\"SYNTH\",\"issue_datetime\":\"2026-10-20 12:00:00.000\",\"message\":\"Space Weather Message Code: ALTZZZ\\r\\nSerial Number: 1424\\r\\nIssue Time: 2026 Oct 20 1200 UTC\\r\\n\\r\\nALERT: Synthetic JSON baseline\\nSynthetic fixture; not an SWPC product.\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "diagnostics": []
+      }
+    },
+    {
+      "step": 2,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:02:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24-rejected\"",
+        "lastModified": null,
+        "body": "[NaN]"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:malformed-json"
+        ],
+        "product": {
+          "lkgSha256": "D9E7EB10DC1674246C2804112692A522DD246280398C3923C026B5265A5582EA",
+          "lastSuccessUtc": "2026-10-20T12:00:00Z",
+          "validators": {
+            "etag": "\"fixture-s24\"",
+            "lastModified": null
+          },
+          "consecutiveRejected": 1
+        }
+      }
+    },
+    {
+      "step": 3,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:04:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24-rejected\"",
+        "lastModified": null,
+        "body": "[Infinity]"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:malformed-json"
+        ],
+        "product": {
+          "lkgSha256": "D9E7EB10DC1674246C2804112692A522DD246280398C3923C026B5265A5582EA",
+          "lastSuccessUtc": "2026-10-20T12:00:00Z",
+          "validators": {
+            "etag": "\"fixture-s24\"",
+            "lastModified": null
+          },
+          "consecutiveRejected": 2
+        }
+      }
+    },
+    {
+      "step": 4,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:06:00Z",
+      "product": "alerts",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24-rejected\"",
+        "lastModified": null,
+        "body": "[-Infinity]"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:malformed-json"
+        ],
+        "product": {
+          "lkgSha256": "D9E7EB10DC1674246C2804112692A522DD246280398C3923C026B5265A5582EA",
+          "lastSuccessUtc": "2026-10-20T12:00:00Z",
+          "validators": {
+            "etag": "\"fixture-s24\"",
+            "lastModified": null
+          },
+          "consecutiveRejected": 3
+        }
+      }
+    },
+    {
+      "step": 5,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:00:00Z",
+      "product": "scales",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24\"",
+        "lastModified": null,
+        "body": "{\"-1\": {\"DateStamp\": \"2026-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"0\": {\"DateStamp\": \"2026-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"1\": {\"DateStamp\": \"2026-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"2\": {\"DateStamp\": \"2026-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}, \"3\": {\"DateStamp\": \"2026-10-20\", \"TimeStamp\": \"12:00:00\", \"R\": {\"Scale\": \"0\", \"MinorProb\": \"5\", \"MajorProb\": \"1\"}, \"S\": {\"Scale\": \"0\", \"Prob\": \"2\"}, \"G\": {\"Scale\": \"0\"}}}"
+      },
+      "expect": {
+        "outcome": "updated",
+        "diagnostics": []
+      }
+    },
+    {
+      "step": 6,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:05:00Z",
+      "product": "scales",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24-rejected\"",
+        "lastModified": null,
+        "body": "{\"x\":NaN}"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:malformed-json"
+        ],
+        "product": {
+          "lkgSha256": "03C20572E782448F71C1773999F93F84CCB5FFECBFD78D8383BB646F555443DE",
+          "lastSuccessUtc": "2026-10-20T12:00:00Z",
+          "validators": {
+            "etag": "\"fixture-s24\"",
+            "lastModified": null
+          },
+          "consecutiveRejected": 1
+        }
+      }
+    },
+    {
+      "step": 7,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:10:00Z",
+      "product": "scales",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24-rejected\"",
+        "lastModified": null,
+        "body": "{\"x\":Infinity}"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:malformed-json"
+        ],
+        "product": {
+          "lkgSha256": "03C20572E782448F71C1773999F93F84CCB5FFECBFD78D8383BB646F555443DE",
+          "lastSuccessUtc": "2026-10-20T12:00:00Z",
+          "validators": {
+            "etag": "\"fixture-s24\"",
+            "lastModified": null
+          },
+          "consecutiveRejected": 2
+        }
+      }
+    },
+    {
+      "step": 8,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:15:00Z",
+      "product": "scales",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24-rejected\"",
+        "lastModified": null,
+        "body": "{\"x\":-Infinity}"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:malformed-json"
+        ],
+        "product": {
+          "lkgSha256": "03C20572E782448F71C1773999F93F84CCB5FFECBFD78D8383BB646F555443DE",
+          "lastSuccessUtc": "2026-10-20T12:00:00Z",
+          "validators": {
+            "etag": "\"fixture-s24\"",
+            "lastModified": null
+          },
+          "consecutiveRejected": 3
+        }
+      }
+    },
+    {
+      "step": 9,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:00:00Z",
+      "product": "kp-forecast",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24\"",
+        "lastModified": null,
+        "body": "[{\"time_tag\":\"2026-10-20T12:00:00\",\"kp\":4.67,\"observed\":\"observed\",\"noaa_scale\":\"G1\"}]"
+      },
+      "expect": {
+        "outcome": "updated",
+        "diagnostics": []
+      }
+    },
+    {
+      "step": 10,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:15:00Z",
+      "product": "kp-forecast",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24-rejected\"",
+        "lastModified": null,
+        "body": "[NaN]"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:malformed-json"
+        ],
+        "product": {
+          "lkgSha256": "2F7E5B2A98E59EF2773F4D9D63A98A0D40BA7EFAFA309D3B9EB04EC9EBC1D45E",
+          "lastSuccessUtc": "2026-10-20T12:00:00Z",
+          "validators": {
+            "etag": "\"fixture-s24\"",
+            "lastModified": null
+          },
+          "consecutiveRejected": 1
+        }
+      }
+    },
+    {
+      "step": 11,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:30:00Z",
+      "product": "kp-forecast",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24-rejected\"",
+        "lastModified": null,
+        "body": "[Infinity]"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:malformed-json"
+        ],
+        "product": {
+          "lkgSha256": "2F7E5B2A98E59EF2773F4D9D63A98A0D40BA7EFAFA309D3B9EB04EC9EBC1D45E",
+          "lastSuccessUtc": "2026-10-20T12:00:00Z",
+          "validators": {
+            "etag": "\"fixture-s24\"",
+            "lastModified": null
+          },
+          "consecutiveRejected": 2
+        }
+      }
+    },
+    {
+      "step": 12,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:45:00Z",
+      "product": "kp-forecast",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24-rejected\"",
+        "lastModified": null,
+        "body": "[-Infinity]"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:malformed-json"
+        ],
+        "product": {
+          "lkgSha256": "2F7E5B2A98E59EF2773F4D9D63A98A0D40BA7EFAFA309D3B9EB04EC9EBC1D45E",
+          "lastSuccessUtc": "2026-10-20T12:00:00Z",
+          "validators": {
+            "etag": "\"fixture-s24\"",
+            "lastModified": null
+          },
+          "consecutiveRejected": 3
+        }
+      }
+    },
+    {
+      "step": 13,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:00:00Z",
+      "product": "ovation",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24\"",
+        "lastModified": null,
+        "body": "{\"Observation Time\":\"2026-10-20T12:00:00Z\",\"Forecast Time\":\"2026-10-20T12:30:00Z\",\"coordinates\":[[236,60,0]]}"
+      },
+      "expect": {
+        "outcome": "updated",
+        "diagnostics": []
+      }
+    },
+    {
+      "step": 14,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:10:00Z",
+      "product": "ovation",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24-rejected\"",
+        "lastModified": null,
+        "body": "{\"x\":NaN}"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:malformed-json"
+        ],
+        "product": {
+          "lkgSha256": "2D5796E9EEF954E36DE44DB454876EB0622ED63B03B6F5148709BEC0921FF88B",
+          "lastSuccessUtc": "2026-10-20T12:00:00Z",
+          "validators": {
+            "etag": "\"fixture-s24\"",
+            "lastModified": null
+          },
+          "consecutiveRejected": 1
+        }
+      }
+    },
+    {
+      "step": 15,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:20:00Z",
+      "product": "ovation",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24-rejected\"",
+        "lastModified": null,
+        "body": "{\"x\":Infinity}"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:malformed-json"
+        ],
+        "product": {
+          "lkgSha256": "2D5796E9EEF954E36DE44DB454876EB0622ED63B03B6F5148709BEC0921FF88B",
+          "lastSuccessUtc": "2026-10-20T12:00:00Z",
+          "validators": {
+            "etag": "\"fixture-s24\"",
+            "lastModified": null
+          },
+          "consecutiveRejected": 2
+        }
+      }
+    },
+    {
+      "step": 16,
+      "kind": "fetch",
+      "atUtc": "2026-10-20T12:30:00Z",
+      "product": "ovation",
+      "trigger": "scheduled",
+      "response": {
+        "status": 200,
+        "contentType": "application/json",
+        "etag": "\"fixture-s24-rejected\"",
+        "lastModified": null,
+        "body": "{\"x\":-Infinity}"
+      },
+      "expect": {
+        "outcome": "rejected",
+        "diagnostics": [
+          "body-rejected:malformed-json"
+        ],
+        "product": {
+          "lkgSha256": "2D5796E9EEF954E36DE44DB454876EB0622ED63B03B6F5148709BEC0921FF88B",
+          "lastSuccessUtc": "2026-10-20T12:00:00Z",
+          "validators": {
+            "etag": "\"fixture-s24\"",
+            "lastModified": null
+          },
+          "consecutiveRejected": 3
+        }
+      }
+    }
+  ]
+}

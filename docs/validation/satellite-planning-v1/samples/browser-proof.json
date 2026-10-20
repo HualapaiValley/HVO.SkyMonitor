@@ -1,0 +1,87 @@
+{
+  "sourceHead": "0a249abd5eb772709d08ee45a010ac983dce6f92",
+  "method": "Native T3 browser over actual frozen Manual export; DOM SVG plus exact component CSS; inert backend controls, native provenance disclosures",
+  "rows": [
+    {
+      "name": "iss-25544",
+      "metrics": {
+        "title": "ISS (ZARYA): real full-pass angular arc and configured-rig preview",
+        "viewport": [
+          1024,
+          1000
+        ],
+        "overflow": false,
+        "pathStroke": "1px",
+        "anchors": [
+          {
+            "r": "3",
+            "stroke": "1px"
+          },
+          {
+            "r": "3",
+            "stroke": "1px"
+          }
+        ],
+        "projectedSamples": 662,
+        "scrollY": 1187
+      },
+      "consoleErrors": 0,
+      "screenshot": "iss-25544-selected.png",
+      "standaloneSvg": "iss-25544-full-sky.svg"
+    },
+    {
+      "name": "starlinks-56838",
+      "metrics": {
+        "title": "STARLINK-30123: real full-pass angular arc and configured-rig preview",
+        "viewport": [
+          1024,
+          1000
+        ],
+        "overflow": false,
+        "pathStroke": "1px",
+        "anchors": [
+          {
+            "r": "3",
+            "stroke": "1px"
+          },
+          {
+            "r": "3",
+            "stroke": "1px"
+          }
+        ],
+        "projectedSamples": 663,
+        "scrollY": 1316.5
+      },
+      "consoleErrors": 0,
+      "screenshot": "starlinks-56838-selected.png",
+      "standaloneSvg": "starlinks-56838-full-sky.svg"
+    },
+    {
+      "name": "starlinks-65283",
+      "metrics": {
+        "title": "STARLINK-35015: real full-pass angular arc and configured-rig preview",
+        "viewport": [
+          1024,
+          1000
+        ],
+        "overflow": false,
+        "pathStroke": "1px",
+        "anchors": [
+          {
+            "r": "3",
+            "stroke": "1px"
+          },
+          {
+            "r": "3",
+            "stroke": "1px"
+          }
+        ],
+        "projectedSamples": 623,
+        "scrollY": 1316.5
+      },
+      "consoleErrors": 0,
+      "screenshot": "starlinks-65283-selected.png",
+      "standaloneSvg": "starlinks-65283-full-sky.svg"
+    }
+  ]
+}

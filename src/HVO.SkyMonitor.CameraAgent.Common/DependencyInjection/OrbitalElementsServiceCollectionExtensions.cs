@@ -13,7 +13,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 /// Composes CameraAgent-local orbital-element acquisition: the durable store under
 /// <c>{RawIngressRoot}/.orbital-elements/</c>, its fail-closed availability and initializer, the CelesTrak GP client,
 /// the single-flight refresh job and its periodic automation adapter, operator operations, health evaluation,
-/// telemetry, and the <see cref="IOrbitalSnapshotReader"/> consumers resolve. Called once by
+/// telemetry, and the <see cref="IOrbitalSnapshotReader"/> and <see cref="IOrbitalSnapshotManifestReader"/> consumers
+/// resolve. Called once by
 /// <see cref="CameraAgentServiceCollectionExtensions.AddCameraAgentInfrastructure"/>, before the automation runner is
 /// registered, so the store is initialized before the runner's first sweep.
 /// </summary>
@@ -34,6 +35,9 @@ internal static class OrbitalElementsServiceCollectionExtensions
             provider.GetRequiredService<TimeProvider>(),
             provider.GetRequiredService<ILogger<SqliteOrbitalElementsStore>>()));
         services.AddSingleton<IOrbitalElementsStore>(static provider =>
+            provider.GetRequiredService<SqliteOrbitalElementsStore>());
+        // Operator pages describe the installed snapshot from its small manifest only, never the payload.
+        services.AddSingleton<IOrbitalSnapshotManifestReader>(static provider =>
             provider.GetRequiredService<SqliteOrbitalElementsStore>());
         services.AddSingleton<OrbitalElementsAvailability>();
         services.AddSingleton<OrbitalElementsTelemetry>();
