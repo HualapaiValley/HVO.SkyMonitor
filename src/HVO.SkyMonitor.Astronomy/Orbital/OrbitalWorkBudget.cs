@@ -3,7 +3,8 @@ namespace HVO.SkyMonitor.Astronomy;
 /// <summary>One query's monotonic work counters; owned by its sequential numerical execution.</summary>
 internal sealed class OrbitalWorkBudget
 {
-    private readonly OrbitalQueryBounds bounds;
+    private readonly int maximumEvaluations, maximumSamples, maximumTracks, maximumPasses;
+    private readonly double maximumElapsedMilliseconds;
     private readonly CancellationToken cancellationToken;
     private readonly TimeProvider time;
     private readonly long started;
@@ -13,7 +14,22 @@ internal sealed class OrbitalWorkBudget
     {
         ArgumentNullException.ThrowIfNull(bounds);
         bounds.Validate();
-        this.bounds = bounds;
+        maximumEvaluations = bounds.MaximumEvaluations; maximumSamples = bounds.MaximumSamples;
+        maximumTracks = bounds.MaximumTracks; maximumPasses = bounds.MaximumPasses;
+        maximumElapsedMilliseconds = bounds.MaximumElapsedMilliseconds;
+        this.cancellationToken = cancellationToken;
+        this.time = time ?? TimeProvider.System;
+        started = this.time.GetTimestamp();
+    }
+
+    internal OrbitalWorkBudget(OrbitalPassArcBounds bounds, CancellationToken cancellationToken, TimeProvider? time = null)
+    {
+        ArgumentNullException.ThrowIfNull(bounds);
+        bounds.Validate();
+        maximumEvaluations = bounds.MaximumEvaluations;
+        maximumSamples = Math.Min(bounds.MaximumSamples, OrbitalPassArcJson.MaximumMaterializedSamples);
+        maximumTracks = maximumPasses = 1;
+        maximumElapsedMilliseconds = bounds.MaximumElapsedMilliseconds;
         this.cancellationToken = cancellationToken;
         this.time = time ?? TimeProvider.System;
         started = this.time.GetTimestamp();
@@ -29,7 +45,7 @@ internal sealed class OrbitalWorkBudget
         get
         {
             // Deadline takes precedence if final preparation outlives an earlier work limit.
-            if (ElapsedMilliseconds > bounds.MaximumElapsedMilliseconds) reason = OrbitalPredictionReason.Deadline;
+            if (ElapsedMilliseconds > maximumElapsedMilliseconds) reason = OrbitalPredictionReason.Deadline;
             return reason;
         }
     }
@@ -43,7 +59,7 @@ internal sealed class OrbitalWorkBudget
     internal bool TryEvaluation()
     {
         if (!CanContinue()) return false;
-        if (Evaluations == bounds.MaximumEvaluations) return Stop(OrbitalPredictionReason.EvaluationBudget);
+        if (Evaluations == maximumEvaluations) return Stop(OrbitalPredictionReason.EvaluationBudget);
         Evaluations++;
         return true;
     }
@@ -51,7 +67,7 @@ internal sealed class OrbitalWorkBudget
     internal bool TrySample()
     {
         if (!CanContinue()) return false;
-        if (Samples == bounds.MaximumSamples) return Stop(OrbitalPredictionReason.SampleBudget);
+        if (Samples == maximumSamples) return Stop(OrbitalPredictionReason.SampleBudget);
         Samples++;
         return true;
     }
@@ -59,7 +75,7 @@ internal sealed class OrbitalWorkBudget
     internal bool TryTrack()
     {
         if (!CanContinue()) return false;
-        if (Tracks == bounds.MaximumTracks) return Stop(OrbitalPredictionReason.ResultBudget);
+        if (Tracks == maximumTracks) return Stop(OrbitalPredictionReason.ResultBudget);
         Tracks++;
         return true;
     }
@@ -67,7 +83,7 @@ internal sealed class OrbitalWorkBudget
     internal bool TryPass()
     {
         if (!CanContinue()) return false;
-        if (Passes == bounds.MaximumPasses) return Stop(OrbitalPredictionReason.ResultBudget);
+        if (Passes == maximumPasses) return Stop(OrbitalPredictionReason.ResultBudget);
         Passes++;
         return true;
     }

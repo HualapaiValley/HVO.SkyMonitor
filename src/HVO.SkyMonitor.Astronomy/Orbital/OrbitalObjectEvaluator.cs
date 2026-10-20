@@ -14,15 +14,19 @@ internal sealed class OrbitalObjectEvaluator
     internal OrbitalPredictionReason FailureReason { get; private set; }
     internal string FailureDetail { get; private set; } = "none";
 
-    private OrbitalObjectEvaluator(OrbitalPredictionRequest request, OrbitalTimeData time,
+    private OrbitalObjectEvaluator(ObserverLocation location, OrbitalUtcInterval interval, OrbitalTimeData time,
         OrbitalWorkBudget budget, Sgp4ObjectPropagator propagator)
     {
         this.time = time; this.budget = budget; this.propagator = propagator;
-        observer = OrbitalObserverFrame.Create(request.Observer);
-        interval = request.Interval;
+        observer = OrbitalObserverFrame.Create(location);
+        this.interval = interval;
     }
 
     internal static OrbitalObjectEvaluator? Create(OrbitalPredictionRequest request, OrbitalRecordV1 record,
+        OrbitalTimeData time, OrbitalWorkBudget budget, out OrbitalPredictionReason reason, out string detail)
+        => Create(request.Observer, request.Interval, record, time, budget, out reason, out detail);
+
+    internal static OrbitalObjectEvaluator? Create(ObserverLocation location, OrbitalUtcInterval interval, OrbitalRecordV1 record,
         OrbitalTimeData time, OrbitalWorkBudget budget, out OrbitalPredictionReason reason, out string detail)
     {
         reason = OrbitalPredictionReason.None; detail = "none";
@@ -32,11 +36,11 @@ internal sealed class OrbitalObjectEvaluator
         var perigee = Math.Cbrt(398600.8 / (n * n)) * (1 - e.Eccentricity) - 6378.135;
         if (e.MeanMotionRevolutionsPerDay is < .5 or > 18 || e.Eccentricity > .9 ||
             Math.Abs(e.BStarInverseEarthRadii) > .01 || perigee < 100 ||
-            request.Observer.ElevationMeters is < -1000 or > 10000)
+            location.ElevationMeters is < -1000 or > 10000)
         {
             reason = OrbitalPredictionReason.PropagationFailure; detail = "outside-numerical-support-profile-v1"; return null;
         }
-        try { time.ValidatePropagationInterval(record.EpochUtc, request.Interval); }
+        try { time.ValidatePropagationInterval(record.EpochUtc, interval); }
         catch (ArgumentException exception)
         {
             reason = TimeFailure(exception); detail = exception.Message; return null;
@@ -46,7 +50,7 @@ internal sealed class OrbitalObjectEvaluator
             reason = budget.Reason != OrbitalPredictionReason.None ? budget.Reason : OrbitalPredictionReason.PropagationFailure;
             detail = $"sgp4-{failure.Kind}-code-{failure.CoreErrorCode}"; return null;
         }
-        return new(request, time, budget, initialized);
+        return new(location, interval, time, budget, initialized);
     }
 
     internal OrbitalTopocentricState? Evaluate(DateTimeOffset utc)

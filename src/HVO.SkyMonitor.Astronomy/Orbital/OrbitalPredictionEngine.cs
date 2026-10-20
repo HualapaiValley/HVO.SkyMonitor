@@ -4,7 +4,7 @@ namespace HVO.SkyMonitor.Astronomy;
 /// Bounded host-neutral numerical predictions from pre-resolved immutable snapshots and time data.
 /// No network, persistence, ambient wall clock, physical visibility or image classification.
 /// </summary>
-public sealed class OrbitalPredictionEngine : IOrbitalPredictionEngine
+public sealed partial class OrbitalPredictionEngine : IOrbitalPredictionEngine, IOrbitalPassArcEngine
 {
     private readonly OrbitalTimeData timeData;
     private readonly TimeProvider timeProvider;
