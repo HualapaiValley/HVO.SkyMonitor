@@ -47,6 +47,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="../fixtures/orbital-prediction-v1/time/*" Link="Fixtures/orbital-prediction-v1/time/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/six-facts/*" Link="Fixtures/orbital-prediction-v1/virtual-camera/snapshots/six-facts/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/two-starlinks/*" Link="Fixtures/orbital-prediction-v1/virtual-camera/snapshots/two-starlinks/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\fixtures\state-compatibility\previous-release\*" Link="Fixtures\previous-release\%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
