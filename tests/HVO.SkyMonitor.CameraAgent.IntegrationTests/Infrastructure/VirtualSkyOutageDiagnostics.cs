@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
@@ -112,6 +113,8 @@ internal sealed class VirtualSkyOutageDiagnostics(IServiceProvider services, str
         return result.Length <= OutputLimit ? result : result[..(OutputLimit - 24)] + "\n<snapshot truncated>";
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Timeout diagnostics must preserve the original assertion if a snapshot provider fails; only the exception type is emitted.")]
     internal static string Section(string label, Func<string> read)
     {
         try { return label + ": " + read(); }
