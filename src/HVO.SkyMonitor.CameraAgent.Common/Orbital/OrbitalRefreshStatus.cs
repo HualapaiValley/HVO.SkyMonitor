@@ -32,7 +32,7 @@ public sealed record OrbitalRefreshStatus(string SchemaVersion, DateTimeOffset O
                 .Any(static value => value is { Offset.Ticks: not 0 }) ||
             Automation is not null && (string.IsNullOrWhiteSpace(Automation.DefinitionId) || Automation.DefinitionId.Length > 64 ||
                 !OrbitalContract.IsSha256(Automation.RevisionSha256) || Automation.RunKey is not null && (string.IsNullOrWhiteSpace(Automation.RunKey) || Automation.RunKey.Length > 128)) ||
-            ProviderHalt is not null && (ProviderHalt.SinceUtc.Offset != TimeSpan.Zero || ProviderHalt.HttpStatusCode is { } status && status is < 100 or > 599 or 200 ||
+            ProviderHalt is not null && (ProviderHalt.SinceUtc.Offset != TimeSpan.Zero || ProviderHalt.HttpStatusCode is { } status && (status is < 100 or > 599 or 200) ||
                 string.IsNullOrWhiteSpace(ProviderHalt.Reason) || ProviderHalt.Reason.Length > 512) ||
             CandidateQuarantine is not null && (CandidateQuarantine.ObservedUtc.Offset != TimeSpan.Zero ||
                 CandidateQuarantine.RawSha256 is not null && !OrbitalContract.IsSha256(CandidateQuarantine.RawSha256) ||
