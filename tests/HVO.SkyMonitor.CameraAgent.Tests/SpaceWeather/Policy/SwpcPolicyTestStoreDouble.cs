@@ -9,6 +9,7 @@ internal sealed class SwpcPolicyTestStoreDouble : ISwpcStore
 {
     private readonly Dictionary<Guid, SwpcAttemptStart> starts = [];
     private readonly Dictionary<Guid, SwpcWriteResult> completed = [];
+    private readonly Dictionary<Guid, SwpcWriteResult> haltCommands = [];
     public SwpcStoreView View { get; set; } = EmptyView();
     public List<SwpcAttemptStart> Begins { get; } = [];
     public List<SwpcAttemptCompletion> Completions { get; } = [];
@@ -67,6 +68,10 @@ internal sealed class SwpcPolicyTestStoreDouble : ISwpcStore
         return Write(SwpcWriteStatus.Applied);
     }
 
+    /// <summary>
+    /// R2: candidate-less completions project over Before for both views with empty
+    /// Touched; configured merge/touched values apply only when a candidate is present.
+    /// </summary>
     public async ValueTask<SwpcWriteResult> CompleteAttemptAsync(SwpcAttemptCompletion request, SwpcCommitProjection project, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -82,7 +87,10 @@ internal sealed class SwpcPolicyTestStoreDouble : ISwpcStore
         if (request.Candidate is { } candidate)
             Assert.AreEqual(SwpcSnapshotComparison.Classify(View.Products[start.Product].LastKnownGood, candidate), request.Outcome);
         if (ProjectionFailure is { } failure && request.Outcome is not null) throw failure;
-        var effects = project(new(request, View, AfterMerge ?? View, Touched));
+        var context = request.Candidate is null
+            ? new SwpcCommitContext(request, View, View, ImmutableHashSet<SwpcMessageNode>.Empty)
+            : new SwpcCommitContext(request, View, AfterMerge ?? View, Touched);
+        var effects = project(context);
         var product = View.Products[start.Product];
         if (request.Outcome is not null)
         {
@@ -122,17 +130,26 @@ internal sealed class SwpcPolicyTestStoreDouble : ISwpcStore
         return result;
     }
 
+    /// <summary>
+    /// R3: check revision before retained command identity. A replay returns the stored
+    /// result with current View and Replayed status, without halt/checkpoint effects or
+    /// a revision advance. Each first applied command retains its result by CommandId.
+    /// </summary>
     public ValueTask<SwpcWriteResult> ChangeHaltAsync(SwpcHaltCommand request, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         Calls.Add("ChangeHalt");
         Halts.Add(request);
         if (request.ExpectedRevision != View.Revision) return Write(SwpcWriteStatus.Conflict);
+        if (haltCommands.TryGetValue(request.CommandId, out var previous))
+            return ValueTask.FromResult(previous with { Status = SwpcWriteStatus.Replayed, View = View });
         ApplyHalt(request.Change);
         foreach (var (key, checkpoint) in request.Checkpoints)
             View = View with { Products = View.Products.SetItem(key, View.Products[key] with { Checkpoint = checkpoint }) };
         View = View with { Revision = View.Revision + 1 };
-        return Write(SwpcWriteStatus.Applied);
+        var result = new SwpcWriteResult(SwpcWriteStatus.Applied, null, View, 0, [], []);
+        haltCommands.Add(request.CommandId, result);
+        return ValueTask.FromResult(result);
     }
 
     public ValueTask<SwpcDiagnosticsPage> ReadDiagnosticsAsync(SwpcDiagnosticsQuery request, CancellationToken ct)

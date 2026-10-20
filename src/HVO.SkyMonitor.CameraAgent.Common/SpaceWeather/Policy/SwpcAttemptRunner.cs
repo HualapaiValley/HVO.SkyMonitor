@@ -50,9 +50,20 @@ public sealed class SwpcAttemptRunner : IDisposable
 
     /// <summary>
     /// P10: settles retained incomplete entries once per instance, before any run or resume.
-    /// Reads at most 50,000/page-size + 1 pages, stopping when the health count is found
-    /// or the journal ends. Settlements preserve the checkpoint and use settlement time
-    /// for both AtUtc and EndedUtc (P1), with Preserved validators and no response facts.
+    /// R1: each recovery pass reads health once and scans at most its retained entry
+    /// count, requesting up to 256 entries per page. Short non-final pages are allowed.
+    /// Paging requires strictly descending Sequence and exclusive BeforeSequence;
+    /// NextBeforeSequence is null only at journal end, otherwise lower than the sent
+    /// cursor and no higher than the page minimum. Non-final pages must be non-empty,
+    /// and health counts must describe the same journal. Every page is validated before
+    /// settlement. The entry bound also bounds calls to retained count plus one.
+    /// Recovery is complete only when every reported incomplete attempt is settled.
+    /// Missing entries fail closed; the next recovery, run or resume starts a new pass.
+    /// Paging/count violations use space-weather.journal-paging; an exhausted scan uses
+    /// space-weather.recovery-incomplete. Both propagate without Begin, fetch or halt
+    /// writes, and the serialization gate is released. Settlements preserve checkpoints
+    /// and use settlement time for AtUtc and EndedUtc (P1), Preserved validators and no
+    /// response facts. Non-Applied/Replayed settlements also fail without completing recovery.
     /// </summary>
     public async ValueTask SettleIncompleteAsync(CancellationToken ct = default)
     {
@@ -68,6 +79,7 @@ public sealed class SwpcAttemptRunner : IDisposable
     /// the same sample survives revision retries. P1 uses admission t, exchange r and
     /// a separate clock reading at each completion submission. P8 unions S2 and store
     /// diagnostics ordinally and reports notice attention before provider attention.
+    /// R1 recovery failures propagate before Begin or fetch and release the gate.
     /// </summary>
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "Every failed completion must attempt settlement; failed cleanup preserves the original exception.")]
@@ -179,7 +191,10 @@ public sealed class SwpcAttemptRunner : IDisposable
         finally { gate.Release(); }
     }
 
-    /// <summary>P9/P10: serializes explicit resume with runs and automatic startup recovery.</summary>
+    /// <summary>
+    /// P9/P10: serializes explicit resume with runs and automatic startup recovery.
+    /// R1 recovery failures propagate before any halt write and release the gate.
+    /// </summary>
     public async ValueTask<SwpcResumeResult> ResumeAsync(SwpcProduct? product, Guid commandId, CancellationToken ct = default)
     {
         await gate.WaitAsync(ct).ConfigureAwait(false);
@@ -206,10 +221,20 @@ public sealed class SwpcAttemptRunner : IDisposable
         if (settled) return;
         var health = await store.ReadHealthAsync(Now(), ct).ConfigureAwait(false);
         var remaining = health.IncompleteAttempts;
+        if (remaining <= 0)
+        {
+            settled = true;
+            return;
+        }
+        var retained = health.AttemptCount;
+        if (remaining > retained) throw JournalPagingFailure();
+        long seen = 0;
         long? cursor = null;
-        for (var page = 0; remaining > 0 && page < 50_000 / JournalPageSize + 1; page++)
+        while (remaining > 0)
         {
             var entries = await store.ReadDiagnosticsAsync(new(Now(), null, cursor, JournalPageSize), ct).ConfigureAwait(false);
+            ValidateJournalPage(entries, cursor, retained - seen);
+            seen += entries.Attempts.Length;
             foreach (var entry in entries.Attempts)
             {
                 if (entry.EndedUtc is not null) continue;
@@ -221,8 +246,30 @@ public sealed class SwpcAttemptRunner : IDisposable
             if (entries.NextBeforeSequence is null) break;
             cursor = entries.NextBeforeSequence;
         }
+        if (remaining > 0)
+            throw new SwpcStorageException("space-weather.recovery-incomplete", "Space-weather startup recovery is incomplete.", null);
         settled = true;
     }
+
+    private static void ValidateJournalPage(SwpcDiagnosticsPage page, long? cursor, long entriesLeft)
+    {
+        if (page.Attempts.Length > JournalPageSize || page.Attempts.Length > entriesLeft
+            || (page.Attempts.IsEmpty && page.NextBeforeSequence is not null))
+            throw JournalPagingFailure();
+        var previous = cursor;
+        foreach (var entry in page.Attempts)
+        {
+            if (previous is { } sequence && entry.Sequence >= sequence) throw JournalPagingFailure();
+            previous = entry.Sequence;
+        }
+        if (page.NextBeforeSequence is { } next
+            && ((cursor is { } before && next >= before)
+                || (!page.Attempts.IsEmpty && next > page.Attempts[^1].Sequence)))
+            throw JournalPagingFailure();
+    }
+
+    private static SwpcStorageException JournalPagingFailure() =>
+        new("space-weather.journal-paging", "Space-weather journal paging is inconsistent.", null);
 
     private async ValueTask<SwpcWriteResult> SettleAttemptAsync(Guid id, SwpcProduct product,
         DateTimeOffset startedUtc, string reason, CancellationToken ct)

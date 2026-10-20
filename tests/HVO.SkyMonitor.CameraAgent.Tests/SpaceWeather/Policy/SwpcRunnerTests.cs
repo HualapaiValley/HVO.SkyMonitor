@@ -1,4 +1,6 @@
 using System.Collections.Immutable;
+using System.Text;
+using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Fetch;
 using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Policy;
 using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Storage;
@@ -223,8 +225,10 @@ public sealed class SwpcRunnerTests
         var start = PolicyData.Start();
         await h.Store.BeginAttemptAsync(start, default).ConfigureAwait(false);
         var incomplete = h.Store.Journal.Single();
+        var completed = incomplete with { Sequence = 500, AttemptId = Guid.NewGuid(), EndedUtc = h.Clock.GetUtcNow() };
+        h.Store.Journal.Add(completed);
         h.Store.DiagnosticsPage = query => query.BeforeSequence is null
-            ? new([incomplete with { Sequence = 500, EndedUtc = h.Clock.GetUtcNow() }], 500)
+            ? new([completed], 500)
             : new([incomplete], null);
         await h.Runner.ResumeAsync(null, Guid.NewGuid()).ConfigureAwait(false);
         Assert.AreEqual(2, h.Store.Queries.Count);
@@ -256,14 +260,16 @@ public sealed class SwpcRunnerTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task RecoveryStopsAtJournalEndOrBoundedPageLimit(bool endless)
+    public async Task RecoveryRejectsJournalEndWithIncompleteOrEmptyNonFinalPage(bool endless)
     {
         using var h = new Harness();
-        h.Store.HealthIncompleteOverride = 1;
+        await h.Store.BeginAttemptAsync(PolicyData.Start(), default).ConfigureAwait(false);
         h.Store.DiagnosticsPage = query => new([], endless ? (query.BeforeSequence ?? 50_001) - 1 : null);
-        await h.Runner.SettleIncompleteAsync().ConfigureAwait(false);
-        Assert.AreEqual(endless ? 50_000 / 256 + 1 : 1, h.Store.Queries.Count);
+        var exception = await Assert.ThrowsExactlyAsync<SwpcStorageException>(() => h.Runner.SettleIncompleteAsync().AsTask()).ConfigureAwait(false);
+        Assert.AreEqual(endless ? "space-weather.journal-paging" : "space-weather.recovery-incomplete", exception.ReasonCode);
+        Assert.AreEqual(1, h.Store.Queries.Count);
         Assert.IsTrue(h.Store.Queries.All(q => q.Limit == 256));
+        Assert.IsTrue(h.Store.Incomplete);
     }
 
     [TestMethod]
@@ -325,23 +331,30 @@ public sealed class SwpcRunnerTests
     public async Task AppliedAttentionUsesProjectionEffectsAndReplayUsesStoredAttention()
     {
         using var h = new Harness();
-        var record = SwpcAlertsParser.Parse(PolicyData.Alerts, "application/json").Records.Single();
-        var groups = SwpcGroupBuilder.Build([new(record, 1)]);
+        using var scenario = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(
+            SwpcScenarioPolicyTests.Pack, "scenarios", "s12-malformed-bodies.json")).ConfigureAwait(false));
+        var step = scenario.RootElement.GetProperty("steps").EnumerateArray().Single(s => s.GetProperty("step").GetInt32() == 5);
+        var now = SwpcTestData.Time(step.GetProperty("atUtc").GetString()!);
+        h.Clock.Advance(now - h.Clock.GetUtcNow());
+        var bytes = Encoding.UTF8.GetBytes(step.GetProperty("response").GetProperty("body").GetString()!);
+        var parsed = SwpcAlertsParser.Parse(bytes, "application/json");
+        Assert.IsTrue(parsed.Accepted);
+        Assert.IsFalse(parsed.Rejections.IsEmpty);
+        var groups = SwpcGroupBuilder.Build(parsed.Records.Select((record, index) => new SwpcMessageVersion(record, index + 1)).ToImmutableArray());
         h.Store.AfterMerge = h.Store.View with { Notices = h.Store.View.Notices with { Groups = groups } };
-        h.Store.Touched = ImmutableHashSet.Create(record.Node);
+        h.Store.Touched = parsed.Records.Select(record => record.Node).ToImmutableHashSet();
         h.Store.AppliedAttentionOverride = [new("provider/alerts/store-only", "new", null)];
-        // A rejected third body can still exercise the store-supplied touched context for ordering.
-        var stored = h.Store.View.Products[SwpcProduct.Alerts];
-        h.Store.View = h.Store.View with
-        {
-            Products = h.Store.View.Products.SetItem(SwpcProduct.Alerts,
-            stored with { Checkpoint = stored.Checkpoint with { ConsecutiveRejected = 2 } })
-        };
-        h.Client.Response = new(SwpcProduct.Alerts, SwpcTestData.Now, SwpcTestData.Now, SwpcTransportFailure.None, 200, mediaType: "application/json", body: "[]"u8.ToArray());
+        h.Client.Response = new(SwpcProduct.Alerts, now, now, SwpcTransportFailure.None, 200,
+            mediaType: "application/json", body: bytes);
         var result = await h.Runner.RunAsync(SwpcProduct.Alerts, SwpcAttemptTrigger.Scheduled, "attention").ConfigureAwait(false);
-        Assert.AreEqual(2, result.Attention.Length);
-        Assert.AreEqual("ALTZZZ/1", result.Attention[0].Group);
-        Assert.AreEqual("provider/alerts/format-drift", result.Attention[1].Group);
+        Assert.AreEqual(SwpcFetchOutcome.Updated, result.Outcome);
+        Assert.IsNotNull(h.Store.Completions.Single().Candidate);
+        Assert.AreEqual(5, result.Attention.Length);
+        string[] expectedGroups = ["ALTEF3/3754", "ALTZZZ/1", "WARK04/5436", "WATA20/950", "provider/alerts/record-drift"];
+        CollectionAssert.AreEqual(expectedGroups, result.Attention.Select(e => e.Group).ToArray());
+        var expected = step.GetProperty("expect").GetProperty("attention").EnumerateArray()
+            .Select(e => new SwpcAttentionEvent(e.GetProperty("group").GetString()!, e.GetProperty("reason").GetString()!, e.GetProperty("level").GetString())).ToArray();
+        CollectionAssert.AreEqual(expected, result.Attention.ToArray());
         using var replay = new Harness();
         replay.Store.CompleteStatus = SwpcWriteStatus.Replayed;
         replay.Store.ReplayAttention = [new("provider/alerts/format-drift", "new", null)];
@@ -453,6 +466,73 @@ public sealed class SwpcRunnerTests
         Assert.AreEqual(1, client.Calls);
         Assert.AreEqual(1, store.Completions.Count);
         Assert.AreEqual(2, store.Begins.Count);
+    }
+
+    [TestMethod]
+    public async Task CandidateLessCompletionIgnoresConfiguredMergeAndTouched()
+    {
+        using var store = new SwpcPolicyTestStoreDouble();
+        var start = PolicyData.Start();
+        await store.BeginAttemptAsync(start, default).ConfigureAwait(false);
+        var before = store.View;
+        var record = SwpcAlertsParser.Parse(PolicyData.Alerts, "application/json").Records.Single();
+        store.AfterMerge = before with { Notices = before.Notices with { Groups = SwpcGroupBuilder.Build([new(record, 1)]) } };
+        store.Touched = ImmutableHashSet.Create(record.Node);
+        var response = new SwpcHttpResponse(SwpcProduct.Alerts, SwpcTestData.Now, SwpcTestData.Now,
+            SwpcTransportFailure.None, 200, mediaType: "application/json", body: "[]"u8.ToArray());
+        var completion = SwpcPolicy.Classify(start, before.Products[SwpcProduct.Alerts], response, SwpcTestData.Now)
+            with
+        { ExpectedRevision = before.Revision };
+        Assert.AreEqual(SwpcFetchOutcome.Rejected, completion.Outcome);
+        Assert.IsNull(completion.Candidate);
+        var projected = false;
+        var write = await store.CompleteAttemptAsync(completion, context =>
+        {
+            projected = true;
+            Assert.AreSame(before, context.Before);
+            Assert.AreSame(context.Before, context.AfterMerge);
+            Assert.IsTrue(context.Touched.IsEmpty);
+            return SwpcProjection.Create(SwpcProduct.Alerts, start.StartedUtc, null, 0)(context);
+        }, default).ConfigureAwait(false);
+        Assert.IsTrue(projected);
+        Assert.AreEqual(SwpcWriteStatus.Applied, write.Status);
+    }
+
+    [TestMethod]
+    public async Task ReplayedResumePreservesNewHaltCheckpointsAndRevision()
+    {
+        using var h = new Harness();
+        var product = SwpcProduct.Alerts;
+        var commandId = Guid.NewGuid();
+        h.Store.View = h.Store.View with
+        {
+            Products = h.Store.View.Products.SetItem(product, h.Store.View.Products[product] with
+            {
+                ProductHalt = new("not-found", h.Clock.GetUtcNow())
+            })
+        };
+        var first = await h.Runner.ResumeAsync(product, commandId).ConfigureAwait(false);
+        Assert.AreEqual(SwpcWriteStatus.Applied, first.Write!.Status);
+        Assert.IsNull(first.View.Products[product].ProductHalt);
+        var checkpoint = new SwpcFetchCheckpoint(h.Clock.GetUtcNow().AddHours(1), h.Clock.GetUtcNow().AddHours(2), true, 3, 4, 5, h.Clock.GetUtcNow());
+        var newHalt = new SwpcHalt("gone", h.Clock.GetUtcNow().AddSeconds(1));
+        var halted = await h.Store.ChangeHaltAsync(new(Guid.NewGuid(), first.View.Revision, h.Clock.GetUtcNow(),
+            new(product, newHalt), ImmutableDictionary<SwpcProduct, SwpcFetchCheckpoint>.Empty.Add(product, checkpoint)), default).ConfigureAwait(false);
+        Assert.AreEqual(SwpcWriteStatus.Applied, halted.Status);
+        var beforeReplay = h.Store.View;
+        var stale = await h.Store.ChangeHaltAsync(h.Store.Halts[0], default).ConfigureAwait(false);
+        Assert.AreEqual(SwpcWriteStatus.Conflict, stale.Status, "Revision must be checked before command identity.");
+        h.Clock.Advance(TimeSpan.FromMinutes(1));
+        var replay = await h.Runner.ResumeAsync(product, commandId).ConfigureAwait(false);
+        Assert.IsFalse(replay.NotHalted);
+        Assert.AreEqual(SwpcWriteStatus.Replayed, replay.Write!.Status);
+        Assert.AreEqual(first.Write with { Status = SwpcWriteStatus.Replayed, View = beforeReplay }, replay.Write);
+        Assert.AreSame(beforeReplay, replay.View);
+        Assert.AreSame(beforeReplay, h.Store.View);
+        Assert.AreSame(newHalt, replay.View.Products[product].ProductHalt);
+        Assert.AreEqual(beforeReplay.Revision, replay.View.Revision);
+        foreach (var p in Enum.GetValues<SwpcProduct>())
+            Assert.AreSame(beforeReplay.Products[p].Checkpoint, replay.View.Products[p].Checkpoint);
     }
 
     private static void AssertSettlement(SwpcAttemptCompletion completion, string reason)
