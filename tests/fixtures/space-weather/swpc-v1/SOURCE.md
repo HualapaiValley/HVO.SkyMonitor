@@ -130,6 +130,10 @@ records that SWPC did not publish. These include:
   - a 3-day forecast with a renamed table, and one whose solar radiation
     table has no rows (s17).
 
+The errata scenarios use entirely synthetic records and bodies:
+
+- s23 supplies synthetic Retry-After headers and a fresh synthetic reset alert.
+
 No third-party copy of any SWPC message is included.
 
 ## Verify and regenerate

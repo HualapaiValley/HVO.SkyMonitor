@@ -142,6 +142,26 @@ def encode_alerts(records) -> str:
     return json.dumps(records, separators=(",", ":"), ensure_ascii=True).replace("/", "\\/")
 
 
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+IMF_FIXDATE_RE = re.compile(
+    r"(Mon|Tue|Wed|Thu|Fri|Sat|Sun), ([0-9]{2}) "
+    r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) ([0-9]{4}) "
+    r"([0-9]{2}):([0-9]{2}):([0-9]{2}) GMT")
+
+
+def retry_after_date(value):
+    """Exact IMF-fixdate, including a matching weekday and a real year in 0001..9999."""
+    match = IMF_FIXDATE_RE.fullmatch(value)
+    if match is None:
+        return None
+    weekday, day, month, year, hour, minute, second = match.groups()
+    try:
+        when = dt.datetime(int(year), MONTHS[month], int(day), int(hour), int(minute), int(second), tzinfo=UTC)
+    except ValueError:
+        return None
+    return when if WEEKDAYS[when.weekday()] == weekday else None
+
+
 JSON_TOKEN_RE = re.compile(r'"[^"\\]*(?:\\.[^"\\]*)*"|[\[\]{}]', re.DOTALL)
 
 
@@ -1003,12 +1023,10 @@ class Model:
             retry = response.get("retryAfter")
             if retry and re.fullmatch(r"[0-9]{1,9}", retry):
                 delay = int(retry)
-            elif retry and retry.isascii():
-                try:
-                    when = dt.datetime.strptime(retry, "%a, %d %b %Y %H:%M:%S GMT").replace(tzinfo=UTC)
+            elif retry:
+                when = retry_after_date(retry)
+                if when is not None:
                     delay = int((when - t).total_seconds())
-                except ValueError:
-                    pass
             delay = min(POLICY["retryAfterCapSeconds"], max(POLICY["minimumAttemptSpacingSeconds"], delay))
             st.in_backoff = True
             if st.rate_limited >= POLICY["rateLimitedHaltCount"]:
@@ -2605,6 +2623,48 @@ def scenarios(cap: Capture):
         "outcome": "unchanged",
         "product": {"consecutiveTransientFailures": 0, "halt": None,
                     "nextAttemptNotBeforeUtc": "2026-10-19T19:15:00Z"}})
+    out.append(b.build())
+
+    # s23 ------------------------------------------------------------------
+    b = Builder("s23-retry-after-forms", "Retry-After accepts only delta-seconds or exact IMF-fixdate",
+                ["retry-after", "imf-fixdate", "calendar-date", "weekday"], synthetic_records=True,
+                notes=["All response headers and the reset alert are synthetic. Each 429 is followed by an "
+                       "accepted reset body so the next case starts with a zero 429 count.",
+                       "Invalid forms give 1800 seconds. A matching weekday is required. Valid years 0001 "
+                       "and 9999 give the existing 60-second floor and 21600-second cap."])
+    reset_record = synthetic("SYNTH", "2026-02-03 00:59:00.000", "ALTZZZ", 1423,
+                             ["ALERT: Synthetic retry reset", "Synthetic fixture; not an SWPC product."])
+    reset = alerts_ok([reset_record], '"fixture-s23"', None)
+    # Delays are hand-authored independently of retry_after_date.
+    forms = [
+        ("Mon, 01 Jan 0000 00:00:00 GMT", 1800),
+        ("Mon, 30 Feb 2026 01:02:03 GMT", 1800),
+        ("tue, 03 feb 2026 01:02:03 GMT", 1800),
+        ("Tue, 3 Feb 2026 01:02:03 GMT", 1800),
+        ("Tue, 03 Feb 2026 1:02:03 GMT", 1800),
+        ("Tue, 03 Feb 2026 01:2:03 GMT", 1800),
+        ("Tue, 03 Feb 2026 01:02:3 GMT", 1800),
+        ("Tue,  03 Feb 2026 01:02:03 GMT", 1800),
+        ("Tuesday, 03-Feb-26 01:02:03 GMT", 1800),
+        ("Tue Feb  3 01:02:03 2026", 1800),
+        ("Mon, 03 Feb 2026 01:02:03 GMT", 1800),
+        ("Tue, 03 Feb 2026 01:02:03 GMT", 123),
+        ("Mon, 01 Jan 0001 00:00:00 GMT", 60),
+        ("Fri, 31 Dec 9999 23:59:59 GMT", 21600),
+    ]
+    # Advance a day per case; only the valid contemporary date tracks the reference time.
+    for index, (header, seconds) in enumerate(forms):
+        at = ts("2026-02-03T01:00:00Z")
+        if index:
+            at += dt.timedelta(days=index)
+        if index == 11:
+            header = http_date(fmt(at + dt.timedelta(seconds=123)))
+        expected_next = at + dt.timedelta(seconds=seconds)
+        b.fetch(fmt(at), {"status": 429, "retryAfter": header}, {
+            "outcome": "rate-limited", "diagnostics": [],
+            "product": {"nextAttemptNotBeforeUtc": fmt(expected_next), "consecutiveRateLimited": 1}})
+        b.fetch(fmt(expected_next), reset, {"outcome": "updated" if index == 0 else "unchanged",
+                                           "product": {"consecutiveRateLimited": 0}})
     out.append(b.build())
 
     return out

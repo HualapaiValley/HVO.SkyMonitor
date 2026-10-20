@@ -121,7 +121,8 @@
       "scenarios/s19-early-resume-spacing.json",
       "scenarios/s20-record-level-drift.json",
       "scenarios/s21-pending-short-window-and-cap.json",
-      "scenarios/s22-gone-client-error-network.json"
+      "scenarios/s22-gone-client-error-network.json",
+      "scenarios/s23-retry-after-forms.json"
     ],
     "generator": "fixtures.py",
     "normalization": "CRLF to LF, trailing spaces/tabs trimmed per line, trailing blank lines removed, every line LF-terminated"
@@ -129,8 +130,8 @@
   "files": [
     {
       "path": "SOURCE.md",
-      "bytes": 8816,
-      "sha256": "2171007704A2EB33A798DC0E9C204A2D64755CA3094E8DF0D5EB4293E7DC9404"
+      "bytes": 8962,
+      "sha256": "E121CCB83259A076E7139CC7ABDFE35563551B772AB2330865DE84EB09082BE8"
     },
     {
       "path": "capture-20261019T1857Z/3-day-forecast.original.json",
@@ -159,8 +160,8 @@
     },
     {
       "path": "fixtures.py",
-      "bytes": 163031,
-      "sha256": "7F8DFA5AAF1300F9DAC0876DEE8448199952302A874FDC6432539DC43722FA20"
+      "bytes": 166197,
+      "sha256": "D4A37EF75BB3784CB918316FCE1A61EB228909D2513AF7D029565403D4036B93"
     },
     {
       "path": "ovation-aurora-site-sector.json",
@@ -276,6 +277,11 @@
       "path": "scenarios/s22-gone-client-error-network.json",
       "bytes": 8894,
       "sha256": "5D84B53758496ED0CB1D05B6ADC0C7366D99ECD3D2848166EE7C213078D526EA"
+    },
+    {
+      "path": "scenarios/s23-retry-after-forms.json",
+      "bytes": 17745,
+      "sha256": "0462FD9D61CBAE82DDC39FFD0423D9C7D2A580A475578447DAA344656C9B1B93"
     }
   ]
 }

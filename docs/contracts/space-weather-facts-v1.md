@@ -123,8 +123,8 @@ the content does not change (s01, s17). They may be sent as `If-None-Match` and
   unparseable where it is used.
 - `issue_datetime` is never read as a time. It is checked by its layout, and
   its minute and its place in version order are compared as text.
-  A `Retry-After` HTTP-date is not limited to those years, because its delay
-  is clamped (see "Fetch policy").
+  A `Retry-After` IMF-fixdate uses years 0001 to 9999 instead, because its
+  delay is clamped (see "Fetch policy").
 - The JSON product stamps are matched whole: scales `DateStamp` and
   `TimeStamp` joined by one space as `YYYY-MM-DD HH:MM:SS`, Kp `time_tag` as
   `YYYY-MM-DDTHH:MM:SS`, and the OVATION times as `YYYY-MM-DDTHH:MM:SSZ`.
@@ -432,7 +432,7 @@ merged. The first matching row applies:
 | --- | --- |
 | Timeout, network error, 5xx, any other status below 300 except 200, or 304 when no validators were sent | `transient-failure`. With n consecutive transient failures, including this one, the next attempt is after min(1,800 s, max(60 s, base × 2ⁿ)). Last-known-good is kept. The 429 and rejected counts are unchanged (s13, s22) |
 | 304, validators sent | `not-modified`. A success. The stored validators are kept |
-| 429 | `rate-limited`. The 429 count rises; the transient and rejected counts are unchanged. The next attempt is after `Retry-After`, otherwise after 1,800 s. `Retry-After` is read as delta-seconds (1 to 9 ASCII digits) or an ASCII HTTP-date; any other value is ignored. The delay is clamped to between 60 s and 21,600 s. The third consecutive 429 for a product halts the provider (`rate-limited`) instead. That 429's clamped time is kept as `retryNotBeforeUtc` and applied when the halt is resumed (s13, s19) |
+| 429 | `rate-limited`. The 429 count rises; the transient and rejected counts are unchanged. The next attempt is after `Retry-After`, otherwise after 1,800 s. `Retry-After` is read as delta-seconds (1 to 9 ASCII digits) or IMF-fixdate only (RFC 9110 §5.6.7); any other value is ignored and gives the 1,800 s fallback. The delay is clamped to between 60 s and 21,600 s. The third consecutive 429 for a product halts the provider (`rate-limited`) instead. That 429's clamped time is kept as `retryNotBeforeUtc` and applied when the halt is resumed (s13, s19) |
 | 403 | Provider halt (`forbidden`). The halt leaves the transient, 429 and rejected counts unchanged |
 | 3xx other than 304 | Product halt (`endpoint-moved`). Redirects are never followed. The halt leaves the transient, 429 and rejected counts unchanged |
 | 404, 410 or any other 4xx | Product halt (`not-found`, `gone` or `client-error`). The halt leaves the transient, 429 and rejected counts unchanged (s13, s22) |
@@ -440,6 +440,14 @@ merged. The first matching row applies:
 | 200, accepted, same snapshot hash | `unchanged`. A success. Alert records are not merged again. The validators are replaced |
 | 200, accepted, in-file stamp older than last-known-good's | `stale-snapshot`. Last-known-good, the validators and the last success time are not changed, so freshness does not improve. For the counters and the next attempt it acts as a success. Alert records with new identities are merged; new text for a stored identity is not (s11) |
 | 200, accepted, otherwise | `updated`. A success. Replaces last-known-good and the validators |
+
+An IMF-fixdate has exactly the layout `Tue, 03 Feb 2026 01:02:03 GMT`:
+case-sensitive English weekday and month names, two-digit day, four-digit year,
+and two-digit hour, minute and second, with exactly the shown spaces and `GMT`.
+The date and time must exist in the calendar, in years 0001 to 9999, and the
+weekday must agree with the date. Year 0000, impossible dates, lower-case names,
+one-digit fields, extra whitespace, obsolete rfc850 and asctime forms, and
+mismatched weekdays are ignored (s23). Valid dates keep the delay clamp above.
 
 A success (`not-modified`, `unchanged` or `updated`) records the retrieval time
 as the last success. It resets the transient, 429 and rejected counts, ends any
@@ -706,6 +714,7 @@ A fetch also reports:
 | s20 | Record drift raised once per episode, kept across a restart; equal-stamp bodies alternating neither close nor re-raise it; a stale-snapshot drifted body neither raises, closes nor advances it; closed by a clean body with a newer stamp and raised again |
 | s21 | Pending before `Valid From`; short-window alert inside and outside the new-notice grace; 96-hour cap |
 | s22 | 410 and 400 product halts; network error backoff; 304 without validators; product resume; an attempt ends the backoff before it |
+| s23 | Exact Retry-After grammar; invalid forms give 1,800 s; matching weekday; valid dates in years 0001 and 9999 keep the clamp |
 
 **Implementation conformance.** An implementation passes when it reproduces each
 scenario's expectations from the same committed bodies. Unit tests use those
