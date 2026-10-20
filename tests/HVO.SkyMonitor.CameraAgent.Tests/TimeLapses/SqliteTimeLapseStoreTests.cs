@@ -65,7 +65,9 @@ public sealed class SqliteTimeLapseStoreTests
             var settings = new TimeLapseOptions
             {
                 RigProfileSha256 = HVO.SkyMonitor.Astronomy.RigProjectionContextFactory.CreateProfileHashSha256(legacy.Rig),
-                Frames = legacy.Frames, Timing = legacy.Timing, MaximumDimension = legacy.MaximumDimension
+                Frames = legacy.Frames,
+                Timing = legacy.Timing,
+                MaximumDimension = legacy.MaximumDimension
             };
             var current = settings.Freeze(NightlyProductFixture.Configuration() with { Rig = legacy.Rig });
             Assert.AreEqual(TimeLapseFrameRenderer.Version, current.RendererVersion);

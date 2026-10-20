@@ -59,5 +59,6 @@ public sealed class TimeLapseOptions : IValidatableObject
     internal CameraAgentTimeLapsePreset Freeze(CameraModuleConfig configuration) =>
         new(Target[11..], configuration.AgentId ?? throw new InvalidOperationException("Capture identity is not configured."),
             configuration.DeploymentLocation is null && !configuration.DeploymentLocationRedacted ? configuration.Observatory : null,
-            configuration.Rig, Frames, Timing, MaximumDimension) { RendererVersion = TimeLapseFrameRenderer.Version };
+            configuration.Rig, Frames, Timing, MaximumDimension)
+        { RendererVersion = TimeLapseFrameRenderer.Version };
 }
