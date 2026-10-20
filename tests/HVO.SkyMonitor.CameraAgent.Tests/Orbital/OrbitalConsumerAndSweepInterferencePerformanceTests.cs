@@ -42,7 +42,10 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private readonly Dictionary<string, List<Sample>> _samples = new(StringComparer.Ordinal);
     private readonly List<object> _facts = [];
+    private readonly List<object> _boundaries = [];
+    private readonly List<WeakReference<OrbitalSnapshotReader>> _disposedReaders = [];
     private bool _recording;
+    private int _repeat;
 
     public TestContext TestContext { get; set; } = null!;
 
@@ -50,17 +53,27 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
     public async Task ConsumerActivationUnavailableReadsAndDueSweepInterferenceAreMeasured()
     {
         var workload = OrbitalPerformanceWorkload.Instance;
+        RecordBoundary("before-warmup", -1);
         for (var repeat = -Warmups; repeat < Repeats; repeat++)
         {
             _recording = repeat >= 0;
+            _repeat = repeat;
             await MeasureConsumerAsync(workload, repeat).ConfigureAwait(false);
             await MeasureUnavailableAsync(repeat).ConfigureAwait(false);
             foreach (var scenario in Enum.GetValues<SweepCase>())
             {
                 await MeasureSweepAsync(workload, scenario, repeat).ConfigureAwait(false);
             }
+            RecordBoundary("after-repeat", repeat);
             TestContext.WriteLine($"Completed repeat {repeat + 1}/{Repeats} (zero is warmup).");
         }
+        // All per-root async methods have returned and all their stores/workers have been disposed.
+        // This is diagnostic only, after every timed sample; never collect at repetition boundaries.
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+        RecordBoundary("final-forced-full-collection", Repeats);
+        var retainedDisposedReaders = _disposedReaders.Count(static reference => reference.TryGetTarget(out _));
         var root = Environment.GetEnvironmentVariable("HVO_ISSUE1425_EVIDENCE_ROOT")
             ?? Path.Combine("TestResults", "issue-1425");
         Directory.CreateDirectory(root);
@@ -91,6 +104,10 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
                 "Page cache is not evicted. Restart means new store/reader, not a new process or cold operating-system page cache.",
                 "M1 publish overlap includes a controlled AfterRaw barrier; it proves blocking behavior and is not natural publish duration.",
                 "M3 samples stop at entry to the second task registry, before its fake environmental dependency executes; full sweep has separate samples.",
+                "GC counts and total pause are process-wide deltas. Promoted bytes and GC index describe the last completed collection, not sums.",
+                "Boundary heap/generation/fragmentation/commit values describe the last completed GC; totalMemoryBytes is an unforced current estimate.",
+                "Boundary diagnostics and the final forced full collection are outside all timed windows; CPU frequency is sampled from readable Linux policies.",
+                "Phase intervals: provider fetch; fetch return to settled event (retrieval/normalize/publish); settled to retention event; reader 7722/7723 preparation.",
                 "Virtual timers are advanced only after timer registration (and request entry for timeout); real wall cost excludes simulated passage of time."
             },
             measurements = _samples.OrderBy(static pair => pair.Key, StringComparer.Ordinal).ToDictionary(
@@ -107,6 +124,9 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
                     syscw = Distribution.Optional(pair.Value.Select(static sample => sample.Io?.Syscw)),
                     samples = pair.Value
                 }),
+            boundaries = _boundaries,
+            disposedReaders = _disposedReaders.Count,
+            retainedDisposedReaders,
             facts = _facts
         };
         var path = Path.Combine(root, "orbital-consumer-and-sweep-performance.json");
@@ -120,7 +140,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
         var clock = new SignalingTimeProvider(OrbitalElementsStoreTestData.Start);
         var faults = new OrbitalElementsStoreTestData.Faults();
         string lastManifest;
-        using (var host = await Harness.CreateAsync(root, clock, faults: faults, preparationLogger: new PreparationLogger(this, "M1.job.handoff")).ConfigureAwait(false))
+        using (var host = await Harness.CreateAsync(root, clock, faults: faults, diagnostics: new PhaseObserver(this, "M1")).ConfigureAwait(false))
         {
             await MeasureActivationAsync(host, workload.Raw, "first").ConfigureAwait(false);
             var first = await ReadPairAsync(host.Reader, "M1.a.first").ConfigureAwait(false);
@@ -280,7 +300,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
     private async Task MeasureSweepAsync(OrbitalPerformanceWorkload workload, SweepCase scenario, int repeat)
     {
         var clock = new SignalingTimeProvider(OrbitalElementsStoreTestData.Start);
-        using var host = await Harness.CreateAsync(CreateRoot(), clock, enabled: scenario != SweepCase.Disabled).ConfigureAwait(false);
+        using var host = await Harness.CreateAsync(CreateRoot(), clock, enabled: scenario != SweepCase.Disabled, diagnostics: new PhaseObserver(this, "M3." + scenario)).ConfigureAwait(false);
         var saved = await host.SaveOrbitalAsync().ConfigureAwait(false);
         var orbitalDue = LocalAutomationSchedule.NextPeriodicDueUtc(saved.Definition.TriggerEpochUtc,
             saved.Definition.TriggerInterval, null);
@@ -423,8 +443,9 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
     {
         using var process = Process.GetCurrentProcess();
         process.Refresh();
+        var gc = CaptureGc();
         return new(process.PeakWorkingSet64, ReadIo(), Environment.CpuUsage.TotalTime,
-            GC.GetTotalAllocatedBytes(precise: true), Stopwatch.GetTimestamp());
+            GC.GetTotalAllocatedBytes(precise: true), Stopwatch.GetTimestamp(), gc);
     }
 
     private void Record(string name, Stamp start)
@@ -432,6 +453,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
         var wall = Stopwatch.GetElapsedTime(start.Timestamp).TotalMilliseconds;
         var allocated = GC.GetTotalAllocatedBytes(precise: true) - start.Allocated;
         var cpu = (Environment.CpuUsage.TotalTime - start.Cpu).TotalMilliseconds;
+        var gc = CaptureGc();
         var io = ReadIo();
         using var process = Process.GetCurrentProcess();
         process.Refresh();
@@ -445,7 +467,9 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
             _samples.Add(name, samples);
         }
         samples.Add(new(wall, allocated, cpu, process.PeakWorkingSet64, Math.Max(0, process.PeakWorkingSet64 - start.Peak),
-            io is not null && start.Io is not null ? io - start.Io : null));
+            io is not null && start.Io is not null ? io - start.Io : null, _repeat,
+            gc.Gen0 - start.Gc.Gen0, gc.Gen1 - start.Gc.Gen1, gc.Gen2 - start.Gc.Gen2,
+            gc.PauseMs - start.Gc.PauseMs, start.Gc.Index, gc.Index, gc.PromotedBytes));
     }
 
     private static Io? ReadIo()
@@ -470,8 +494,62 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
             end.Syscr - start.Syscr, end.Syscw - start.Syscw);
     }
 
-    private readonly record struct Stamp(long Peak, Io? Io, TimeSpan Cpu, long Allocated, long Timestamp);
-    private sealed record Sample(double WallMs, long AllocatedBytes, double CpuMs, long PeakWorkingSetBytes, long PeakWorkingSetIncreaseBytes, Io? Io);
+    private static GcStamp CaptureGc()
+    {
+        var info = GC.GetGCMemoryInfo(GCKind.Any);
+        return new(GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2),
+            GC.GetTotalPauseDuration().TotalMilliseconds, info.Index, info.PromotedBytes);
+    }
+
+    private void RecordBoundary(string name, int repeat)
+    {
+        var info = GC.GetGCMemoryInfo(GCKind.Any);
+        var generations = info.GenerationInfo.ToArray().Select(static (generation, index) => new
+        {
+            index,
+            name = index switch { 3 => "LOH", 4 => "POH", _ => "Gen" + index },
+            generation.SizeBeforeBytes,
+            generation.SizeAfterBytes,
+            generation.FragmentationBeforeBytes,
+            generation.FragmentationAfterBytes
+        }).ToArray();
+        _boundaries.Add(new
+        {
+            name,
+            repeat,
+            utc = DateTimeOffset.UtcNow,
+            info.Index,
+            info.HeapSizeBytes,
+            info.FragmentedBytes,
+            info.TotalCommittedBytes,
+            info.PromotedBytes,
+            totalMemoryBytes = GC.GetTotalMemory(forceFullCollection: false),
+            gc = CaptureGc(),
+            generations,
+            cpuFrequencyKhz = ReadCpuFrequency()
+        });
+    }
+
+    private static object? ReadCpuFrequency()
+    {
+        if (!OperatingSystem.IsLinux()) { return null; }
+        try
+        {
+            var values = Directory.EnumerateDirectories("/sys/devices/system/cpu", "cpu*")
+                .Select(static directory => Path.Combine(directory, "cpufreq", "scaling_cur_freq"))
+                .Where(File.Exists).Select(static path => long.Parse(File.ReadAllText(path).Trim(), CultureInfo.InvariantCulture))
+                .ToArray();
+            return values.Length == 0 ? null : new { count = values.Length, min = values.Min(), max = values.Max(), mean = values.Average() };
+        }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
+    }
+
+    private readonly record struct GcStamp(int Gen0, int Gen1, int Gen2, double PauseMs, long Index, long PromotedBytes);
+    private readonly record struct Stamp(long Peak, Io? Io, TimeSpan Cpu, long Allocated, long Timestamp, GcStamp Gc);
+    private sealed record Sample(double WallMs, long AllocatedBytes, double CpuMs, long PeakWorkingSetBytes, long PeakWorkingSetIncreaseBytes, Io? Io,
+        int Repeat, int Gen0Collections, int Gen1Collections, int Gen2Collections, double GcPauseMs,
+        long GcIndexBefore, long GcIndexAfter, long LastGcPromotedBytes);
     private sealed record Distribution(int Count, double P50, double P95, double Max)
     {
         public static Distribution Of(IEnumerable<double> values)
@@ -500,17 +578,55 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
         }
     }
 
-    private sealed class PreparationLogger(OrbitalConsumerAndSweepInterferencePerformanceTests owner, string series)
-        : ILogger<OrbitalSnapshotReader>
+    private sealed class PhaseObserver(OrbitalConsumerAndSweepInterferencePerformanceTests owner, string series)
     {
-        private Stamp _start;
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => true;
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
-            Func<TState, Exception?, string> formatter)
+        private Stamp _preparation;
+        private Stamp _normalization;
+        private Stamp _retention;
+
+        public void Fetched(Stamp start)
         {
-            if (eventId.Id == 7722) { _start = Capture(); }
-            if (eventId.Id == 7723) { owner.Record(series, _start); }
+            owner.Record(series + ".phase.fetch", start);
+            _normalization = Capture();
+        }
+
+        public void Log(int eventId)
+        {
+            switch (eventId)
+            {
+                case 7741:
+                    owner.Record(series + ".phase.normalize-publish", _normalization);
+                    _retention = Capture();
+                    break;
+                case 7749:
+                    owner.Record(series + ".phase.retention", _retention);
+                    break;
+                case 7722: _preparation = Capture(); break;
+                case 7723:
+                    owner.Record(series == "M1" ? "M1.job.handoff" : series + ".phase.preparation", _preparation);
+                    break;
+            }
+        }
+
+        public void Disposed(OrbitalSnapshotReader reader) => owner._disposedReaders.Add(new(reader));
+    }
+
+    private sealed class PhaseLogger<T>(PhaseObserver? observer) : ILogger<T>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => observer is not null;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) => observer?.Log(eventId.Id);
+    }
+
+    private sealed class MeasuredClient(IOrbitalElementsProviderClient inner, PhaseObserver? observer) : IOrbitalElementsProviderClient
+    {
+        public async ValueTask<OrbitalFetchResult> FetchAsync(CancellationToken cancellationToken)
+        {
+            var start = Capture();
+            var result = await inner.FetchAsync(cancellationToken).ConfigureAwait(false);
+            observer?.Fetched(start);
+            return result;
         }
     }
 
@@ -519,6 +635,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
     /// <summary>Real acquisition/automation components; only HTTP, time and the following environmental command are synthetic.</summary>
     private sealed class Harness : IDisposable
     {
+        private readonly PhaseObserver? _diagnostics;
         private readonly HttpClient _http;
         private readonly BackgroundService? _worker;
         private readonly OrbitalElementsTelemetry _telemetry;
@@ -527,9 +644,10 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
         private readonly EnvironmentalAcquisitionCoordinator _environmental;
         private readonly ServiceProvider _services;
 
-        private Harness(string root, SignalingTimeProvider clock, bool enabled, OrbitalElementsStoreTestData.Faults? faults, ILogger<OrbitalSnapshotReader>? preparationLogger)
+        private Harness(string root, SignalingTimeProvider clock, bool enabled, OrbitalElementsStoreTestData.Faults? faults, PhaseObserver? diagnostics)
         {
             _clock = clock;
+            _diagnostics = diagnostics;
             Handler = new ScriptedCelesTrakHandler();
             _http = new HttpClient(Handler) { Timeout = Timeout.InfiniteTimeSpan };
             var client = new CelesTrakGpClient(_http, clock,
@@ -556,8 +674,8 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
                 OrbitalElementsServiceCollectionExtensions.CreateStoreSettings(options.Value).RootDirectory,
                 clock, OrbitalElementsServiceCollectionExtensions.CreateStoreSettings(options.Value), faults);
             _telemetry = new OrbitalElementsTelemetry(clock);
-            Reader = new OrbitalSnapshotReader(Store, true, preparationLogger ?? NullLogger<OrbitalSnapshotReader>.Instance);
-            var jobArgs = new object?[] { Store, client, options, clock, _telemetry, NullLogger<OrbitalElementsRefreshJob>.Instance };
+            Reader = new OrbitalSnapshotReader(Store, true, new PhaseLogger<OrbitalSnapshotReader>(diagnostics));
+            var jobArgs = new object?[] { Store, new MeasuredClient(client, diagnostics), options, clock, _telemetry, new PhaseLogger<OrbitalElementsRefreshJob>(diagnostics) };
             var job = (OrbitalElementsRefreshJob)ConstructWithOptionalReader(typeof(OrbitalElementsRefreshJob), jobArgs, Reader);
             _adapter = new(new OrbitalElementsAvailability(Store, NullLogger<OrbitalElementsAvailability>.Instance), job);
             Probe = new ExecutionProbe();
@@ -586,9 +704,9 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
         public ExecutionProbe Probe { get; }
 
         public static async Task<Harness> CreateAsync(string root, SignalingTimeProvider clock, bool enabled = true,
-            OrbitalElementsStoreTestData.Faults? faults = null, ILogger<OrbitalSnapshotReader>? preparationLogger = null)
+            OrbitalElementsStoreTestData.Faults? faults = null, PhaseObserver? diagnostics = null)
         {
-            var host = new Harness(root, clock, enabled, faults, preparationLogger);
+            var host = new Harness(root, clock, enabled, faults, diagnostics);
             await host.Store.InitializeAsync(default).ConfigureAwait(false);
             await host.Automation.InitializeAsync(default).ConfigureAwait(false);
             return host;
@@ -636,6 +754,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
             _telemetry.Dispose();
             Store.Dispose();
             _http.Dispose();
+            _diagnostics?.Disposed(Reader);
         }
     }
 
