@@ -28,7 +28,7 @@ public static class OrbitalTrackPresentation
     public const int MaximumPrimitives = PresentationLayerCompositor.MaximumLayerPrimitives;
     public const long MaximumWork = PresentationLayerCompositor.MaximumGeometryWork / 8;
 
-    private const int EndpointRadius = 3;
+    private const int EndpointRadius = 2;
     private const int Thickness = 1;
     private static readonly PresentationColor Color = new(255, 166, 77);
     private static readonly PresentationStrokeV2 Stroke = new(6, 4, 1_000_000);

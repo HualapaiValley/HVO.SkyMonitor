@@ -12,11 +12,11 @@
             @foreach (var path in _fullPaths) { <polyline class="predicted-path" points="@path" /> }
             @foreach (var anchor in _anchors)
             {
-                @if (anchor.Point is { } point) { <circle class="arc-anchor" cx="@Number(point.X)" cy="@Number(point.Y)" r="5"><title>@anchor.Name: @Timestamp(anchor.Sample!.Utc)</title></circle> }
+                @if (anchor.Point is { } point) { <circle class="arc-anchor" cx="@Number(point.X)" cy="@Number(point.Y)" r="3"><title>@anchor.Name: @Timestamp(anchor.Sample!.Utc)</title></circle> }
             }
             @foreach (var prediction in _fullPoints)
             {
-                <circle class="prediction-point" cx="@Number(prediction.Point.X)" cy="@Number(prediction.Point.Y)" r="4"><title>Single prediction point: @Timestamp(prediction.Utc)</title></circle>
+                <circle class="prediction-point" cx="@Number(prediction.Point.X)" cy="@Number(prediction.Point.Y)" r="2"><title>Single prediction point: @Timestamp(prediction.Utc)</title></circle>
             }
         }
         @if (ShowLabels)
@@ -50,7 +50,7 @@
                     @foreach (var path in _rigPaths) { <polyline class="predicted-path" points="@path" /> }
                     @foreach (var prediction in _rigPoints)
                     {
-                        <circle class="prediction-point" cx="@Number(prediction.Point.X)" cy="@Number(prediction.Point.Y)" r="4"><title>Single prediction point: @Timestamp(prediction.Utc)</title></circle>
+                        <circle class="prediction-point" cx="@Number(prediction.Point.X)" cy="@Number(prediction.Point.Y)" r="2"><title>Single prediction point: @Timestamp(prediction.Utc)</title></circle>
                     }
                 }
             </svg>
