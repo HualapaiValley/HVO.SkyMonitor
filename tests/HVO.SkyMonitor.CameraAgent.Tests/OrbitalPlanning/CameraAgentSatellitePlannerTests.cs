@@ -205,6 +205,10 @@ public sealed class CameraAgentSatellitePlannerTests
         var detail = await input.Planner.GetArcAsync(result.Value.SearchIdentitySha256, result.Value.Passes[0].Pass.ProductSha256, TestContext.CancellationToken).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, detail.Outcome, detail.Message);
         Assert.AreEqual(OrbitalExecutionStatus.Unavailable, detail.Value!.Prediction.Status);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready,
+            (await input.Planner.GetArcAsync(result.Value.SearchIdentitySha256, result.Value.Passes[0].Pass.ProductSha256,
+                TestContext.CancellationToken).ConfigureAwait(false)).Outcome,
+            "Numerically unavailable products must not invalidate the retained scientific context.");
     }
 
     [TestMethod]
@@ -441,6 +445,206 @@ public sealed class CameraAgentSatellitePlannerTests
             Assert.AreEqual(expire ? CameraAgentSatellitePlanningOutcome.Expired : CameraAgentSatellitePlanningOutcome.ContextChanged, detail.Outcome);
             Assert.IsNull(detail.Value);
         }
+    }
+
+    [TestMethod]
+    [DataRow("rig", false)]
+    [DataRow("observer", false)]
+    [DataRow("geometry", false)]
+    [DataRow("snapshot", false)]
+    [DataRow("model", false)]
+    [DataRow("options", false)]
+    [DataRow("missing-snapshot", false)]
+    [DataRow("missing-time", false)]
+    [DataRow("expired", false)]
+    [DataRow("rig", true)]
+    [DataRow("observer", true)]
+    [DataRow("geometry", true)]
+    [DataRow("snapshot", true)]
+    [DataRow("model", true)]
+    [DataRow("options", true)]
+    [DataRow("missing-snapshot", true)]
+    [DataRow("missing-time", true)]
+    [DataRow("expired", true)]
+    public async Task ObservedDetailInvalidationCannotResurrectTheOriginalSessionAsync(string change, bool duringArc)
+    {
+        var input = new PlanningTestInputs();
+        var configuration = input.Configuration.Value;
+        var snapshot = input.Snapshots.Current;
+        var time = input.Times.Current;
+        var allowStaleDiagnostics = input.Options.CurrentValue.AllowStaleDiagnostics;
+        var now = input.Time.Now;
+        var search = await input.Planner.SearchAsync(await input.RequestAsync().ConfigureAwait(false), TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, search.Outcome, search.Message);
+        var view = search.Value!;
+        Action changeInputs = change switch
+        {
+            "rig" => () => input.Configuration.Value = configuration with { Rig = configuration.Rig with { ProfileVersion = "changed" } },
+            "observer" => () => input.Sky.Transform = scene => scene with { Observer = scene.Observer with { CanonicalSha256 = new('C', 64) } },
+            "geometry" => () => input.Sky.Transform = scene => scene with { Geometry = scene.Geometry with { FocalLengthXPixels = 999 } },
+            "snapshot" => () => input.Snapshots.Current = PlanningTestInputs.Snapshot("two-starlinks"),
+            "model" => () => input.Times.Current = OrbitalTimeData.FromFinals2000A(
+                [.. PlanningTestInputs.Bytes("time", "predicted-2026.finals2000A"), (byte)'\n'], PlanningTestInputs.Bytes("time", "leap-seconds.list")),
+            "options" => () => input.Options.CurrentValue.AllowStaleDiagnostics = true,
+            "missing-snapshot" => () => input.Snapshots.Current = null,
+            "missing-time" => () => input.Times.Current = null,
+            _ => () => input.Time.Now = view.ExpiresUtc
+        };
+        if (duringArc)
+        {
+            input.Engine.Arc = (query, _) =>
+            {
+                changeInputs();
+                return ValueTask.FromResult(new OrbitalPredictionResult<OrbitalPassArcV1>(query,
+                    OrbitalExecutionStatus.Unavailable, OrbitalPredictionReason.IncompleteInterval, 1, 0, 0, [], []));
+            };
+        }
+        else changeInputs();
+        var detail = await input.Planner.GetArcAsync(view.SearchIdentitySha256, view.Passes[0].Pass.ProductSha256,
+            TestContext.CancellationToken).ConfigureAwait(false);
+        var expected = change switch
+        {
+            "missing-snapshot" => CameraAgentSatellitePlanningOutcome.NoSnapshot,
+            "missing-time" => CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable,
+            "expired" => CameraAgentSatellitePlanningOutcome.Expired,
+            _ => CameraAgentSatellitePlanningOutcome.ContextChanged
+        };
+        Assert.AreEqual(expected, detail.Outcome, detail.Message);
+        Assert.IsNull(detail.Value);
+        if (!duringArc) Assert.IsNull(input.Engine.LastArc);
+
+        input.Configuration.Value = configuration;
+        input.Snapshots.Current = snapshot;
+        input.Times.Current = time;
+        input.Options.CurrentValue.AllowStaleDiagnostics = allowStaleDiagnostics;
+        input.Sky.Transform = null;
+        input.Time.Now = now;
+        input.Engine.Arc = null;
+        var previousArc = input.Engine.LastArc;
+        var restored = await input.Planner.GetArcAsync(view.SearchIdentitySha256, view.Passes[0].Pass.ProductSha256,
+            TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Expired, restored.Outcome, restored.Message);
+        Assert.IsNull(restored.Value);
+        Assert.AreSame(previousArc, input.Engine.LastArc, "A discarded handle must not reach the engine after A→B→A.");
+    }
+
+    [TestMethod]
+    public async Task InvalidDetailIdentitiesDoNotDiscardUnrelatedRetainedSessionsAsync()
+    {
+        var input = new PlanningTestInputs();
+        var request = await input.RequestAsync().ConfigureAwait(false);
+        var first = await input.Planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
+        var second = await input.Planner.SearchAsync(request with { MinimumElevationDegrees = 1 }, TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, first.Outcome, first.Message);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, second.Outcome, second.Message);
+        var firstView = first.Value!;
+        var secondView = second.Value!;
+        var snapshot = input.Snapshots.Current;
+        input.Snapshots.Current = PlanningTestInputs.Snapshot("two-starlinks");
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Invalid,
+            (await input.Planner.GetArcAsync(firstView.SearchIdentitySha256, secondView.Passes[0].Pass.ProductSha256,
+                TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Invalid,
+            (await input.Planner.GetArcAsync("invalid", firstView.Passes[0].Pass.ProductSha256,
+                TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Expired,
+            (await input.Planner.GetArcAsync(new('F', 64), firstView.Passes[0].Pass.ProductSha256,
+                TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+        Assert.IsNull(input.Engine.LastArc);
+        input.Snapshots.Current = snapshot;
+        foreach (var view in new[] { firstView, secondView })
+        {
+            var detail = await input.Planner.GetArcAsync(view.SearchIdentitySha256, view.Passes[0].Pass.ProductSha256,
+                TestContext.CancellationToken).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, detail.Outcome, detail.Message);
+        }
+    }
+
+    [TestMethod]
+    public async Task ObservedSnapshotChangeDiscardsOnlyTheRequestedSessionAsync()
+    {
+        var input = new PlanningTestInputs();
+        var request = await input.RequestAsync().ConfigureAwait(false);
+        var first = await input.Planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, first.Outcome, first.Message);
+        var firstView = first.Value!;
+        var original = input.Snapshots.Current!;
+        input.Snapshots.Current = OrbitalSnapshot.Create(original.Records,
+            original.Manifest.Sources.Select(source => source with { RetrievedUtc = source.RetrievedUtc.AddMinutes(1) }), original.Manifest.Coverage);
+        var second = await input.Planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, second.Outcome, second.Message);
+        var secondView = second.Value!;
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.ContextChanged,
+            (await input.Planner.GetArcAsync(firstView.SearchIdentitySha256, firstView.Passes[0].Pass.ProductSha256,
+                TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready,
+            (await input.Planner.GetArcAsync(secondView.SearchIdentitySha256, secondView.Passes[0].Pass.ProductSha256,
+                TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+        input.Snapshots.Current = original;
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Expired,
+            (await input.Planner.GetArcAsync(firstView.SearchIdentitySha256, firstView.Passes[0].Pass.ProductSha256,
+                TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+    }
+
+    [TestMethod]
+    public async Task CancelledDetailKeepsSessionAndBusyGateUntilWorkExitsAsync()
+    {
+        var input = new PlanningTestInputs();
+        var request = await input.RequestAsync().ConfigureAwait(false);
+        var search = await input.Planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, search.Outcome, search.Message);
+        var view = search.Value!;
+        var originalQuery = input.Engine.LastSearch;
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        input.Engine.Arc = async (query, _) =>
+        {
+            entered.SetResult();
+            await release.Task.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+            return new(query, OrbitalExecutionStatus.Unavailable, OrbitalPredictionReason.IncompleteInterval, 1, 0, 0, [], []);
+        };
+        using var cancellation = new CancellationTokenSource();
+        var running = input.Planner.GetArcAsync(view.SearchIdentitySha256, view.Passes[0].Pass.ProductSha256, cancellation.Token).AsTask();
+        await entered.Task.WaitAsync(TestContext.CancellationToken).ConfigureAwait(false);
+        try
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            Assert.IsFalse(running.IsCompleted, "Cancellation must await the admitted work rather than detach it.");
+            Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Busy,
+                (await input.Planner.SearchAsync(request, TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+            Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Busy,
+                (await input.Planner.GetArcAsync(view.SearchIdentitySha256, view.Passes[0].Pass.ProductSha256,
+                    TestContext.CancellationToken).ConfigureAwait(false)).Outcome);
+        }
+        finally { release.TrySetResult(); }
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await running.ConfigureAwait(false)).ConfigureAwait(false);
+        input.Engine.Arc = null;
+        var retried = await input.Planner.GetArcAsync(view.SearchIdentitySha256, view.Passes[0].Pass.ProductSha256,
+            TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, retried.Outcome, retried.Message);
+        Assert.AreSame(originalQuery, input.Engine.LastArc!.SearchQuery);
+    }
+
+    [TestMethod]
+    public async Task UnchangedLastKnownGoodIdentityRemainsUsableAcrossCurrentReadsAsync()
+    {
+        var input = new PlanningTestInputs();
+        var search = await input.Planner.SearchAsync(await input.RequestAsync().ConfigureAwait(false), TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, search.Outcome, search.Message);
+        var view = search.Value!;
+        var originalQuery = input.Engine.LastSearch;
+        // The reader contract keeps LKG available when refresh is halted/disabled; it exposes no operational revision.
+        // Re-materializing identical immutable bytes must preserve usability and the original retained query.
+        input.Snapshots.Current = PlanningTestInputs.Snapshot();
+        input.Times.Current = PlanningTestInputs.TimeData();
+        Assert.AreEqual(view.Prediction.SnapshotManifestSha256, input.Snapshots.Current.Manifest.ManifestSha256);
+        Assert.AreNotSame(originalQuery!.Request.Snapshot, input.Snapshots.Current);
+        var detail = await input.Planner.GetArcAsync(view.SearchIdentitySha256, view.Passes[0].Pass.ProductSha256,
+            TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, detail.Outcome, detail.Message);
+        Assert.AreSame(originalQuery, input.Engine.LastArc!.SearchQuery);
+        Assert.AreEqual(view.Passes[0].Pass.ProductSha256, input.Engine.LastArc.Pass.ProductSha256);
+        Assert.AreEqual(view.Passes[0].Pass.Lineage.RecordSha256, input.Engine.LastArc.Pass.Lineage.RecordSha256);
     }
 
     [TestMethod]

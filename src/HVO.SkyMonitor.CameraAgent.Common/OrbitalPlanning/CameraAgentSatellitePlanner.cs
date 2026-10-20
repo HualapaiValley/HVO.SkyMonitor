@@ -34,7 +34,7 @@ public sealed class CameraAgentSatellitePlanner(
     public static OrbitalPassArcBounds ArcBounds { get; } = new(100_000, OrbitalPassArcJson.MaximumMaterializedSamples, 1500, 1, .01);
 
     private const string Limitations = "Configured-rig diagnostics; height datum assumed ellipsoidal; physical orbit, clock and calibration uncertainty unqualified; illumination and brightness unknown. " +
-        "Limits: 24 hours, 32 objects, 128 passes; search/arc 1500 ms each, 200000/100000 evaluations respectively; arc 8064 samples, step 1 s and angular tolerance 0.01 degrees. Source population coverage is independent of numerical completion.";
+        "Limits: 24 hours, 32 objects, 128 passes; numerical search/arc 1500 ms each (excluding local data loading), 200000/100000 evaluations respectively; arc 8064 samples, step 1 s and angular tolerance 0.01 degrees. Source population coverage is independent of numerical completion.";
     private readonly List<Session> sessions = [];
     private int active;
 
@@ -168,20 +168,29 @@ public sealed class CameraAgentSatellitePlanner(
             ?? throw new PlanningUnavailable(CameraAgentSatellitePlanningOutcome.Expired, "The original search is unavailable or expired. Run a new search.");
         var parent = session.View.Passes.SingleOrDefault(row => row.Pass.ProductSha256 == parentIdentity)?.Pass
             ?? throw Invalid("That parent pass was not returned by the retained original search.");
-        await VerifyCurrentAsync(session.SettingsIdentity, session.Query.Request.Snapshot.Manifest.ManifestSha256,
-            session.Query.Request.Model, session.Query.Request.Interval, session.ContextIdentity, cancellationToken).ConfigureAwait(false);
-        // Only the original query and exact returned parent are admitted. The producer also validates their provenance.
-        var arcQuery = new OrbitalPassArcQuery(session.Query, parent, ArcBounds);
-        var prediction = await session.Engines.Arcs.PredictPassArcAsync(arcQuery, cancellationToken).ConfigureAwait(false);
-        await VerifyCurrentAsync(session.SettingsIdentity, session.Query.Request.Snapshot.Manifest.ManifestSha256,
-            session.Query.Request.Model, session.Query.Request.Interval, session.ContextIdentity, cancellationToken).ConfigureAwait(false);
-        if (timeProvider.GetUtcNow() >= session.View.ExpiresUtc)
+        try
         {
-            sessions.Remove(session);
-            throw new PlanningUnavailable(CameraAgentSatellitePlanningOutcome.Expired, "The original search expired during detail generation. Run a new search.");
+            await VerifyCurrentAsync(session.SettingsIdentity, session.Query.Request.Snapshot.Manifest.ManifestSha256,
+                session.Query.Request.Model, session.Query.Request.Interval, session.ContextIdentity, cancellationToken).ConfigureAwait(false);
+            // Only the original query and exact returned parent are admitted. The producer also validates their provenance.
+            var arcQuery = new OrbitalPassArcQuery(session.Query, parent, ArcBounds);
+            var prediction = await session.Engines.Arcs.PredictPassArcAsync(arcQuery, cancellationToken).ConfigureAwait(false);
+            await VerifyCurrentAsync(session.SettingsIdentity, session.Query.Request.Snapshot.Manifest.ManifestSha256,
+                session.Query.Request.Model, session.Query.Request.Interval, session.ContextIdentity, cancellationToken).ConfigureAwait(false);
+            if (timeProvider.GetUtcNow() >= session.View.ExpiresUtc)
+                throw new PlanningUnavailable(CameraAgentSatellitePlanningOutcome.Expired, "The original search expired during detail generation. Run a new search.");
+            return new(CameraAgentSatellitePlanningOutcome.Ready, Limitations,
+                new(searchIdentity, parentIdentity, session.View.Context, prediction));
         }
-        return new(CameraAgentSatellitePlanningOutcome.Ready, Limitations,
-            new(searchIdentity, parentIdentity, session.View.Context, prediction));
+        catch (PlanningUnavailable exception) when (exception.Outcome is CameraAgentSatellitePlanningOutcome.ContextChanged or
+            CameraAgentSatellitePlanningOutcome.NoSnapshot or CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable or
+            CameraAgentSatellitePlanningOutcome.Expired)
+        {
+            // Once incompatibility is observed, restoring old inputs must not resurrect this handle.
+            // Invalid caller identities, cancellation and numerical availability do not discard other sessions.
+            sessions.Remove(session);
+            throw;
+        }
     }
 
     private async Task VerifyCurrentAsync(string settingsIdentity, string snapshotIdentity, OrbitalPredictionModelFacts model,

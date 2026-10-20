@@ -186,6 +186,12 @@ public sealed partial class SatellitePassPlanner : ComponentBase, IAsyncDisposab
                 _arcMessage = result.Message ?? "The selected planning arc is unavailable.";
                 return;
             }
+            if (response.Outcome is CameraAgentSatellitePlanningOutcome.ContextChanged or CameraAgentSatellitePlanningOutcome.NoSnapshot or
+                CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable or CameraAgentSatellitePlanningOutcome.Expired)
+            {
+                await InvalidateAsync(response.Message + " Run a new search before selecting a pass.").ConfigureAwait(true);
+                return;
+            }
             _arcMessage = response.Message;
             if (response.Outcome == CameraAgentSatellitePlanningOutcome.Ready && response.Value is { } view)
             {

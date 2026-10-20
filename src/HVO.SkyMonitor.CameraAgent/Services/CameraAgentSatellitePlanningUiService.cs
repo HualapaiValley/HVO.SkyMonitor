@@ -72,13 +72,13 @@ internal sealed class CameraAgentSatellitePlanningUiService(
     internal static string Describe(CameraAgentSatellitePlanningOutcome outcome) => outcome switch
     {
         CameraAgentSatellitePlanningOutcome.Ready => "Planning result available.",
-        CameraAgentSatellitePlanningOutcome.NoSnapshot => "No local orbital snapshot is available.",
+        CameraAgentSatellitePlanningOutcome.NoSnapshot => "Validated local orbital data is unavailable or could not be read. Retry the search.",
         CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable => "Pinned Earth orientation or leap-second inputs are unavailable for this window.",
         CameraAgentSatellitePlanningOutcome.Invalid => "The planning request is outside the supported bounds.",
         CameraAgentSatellitePlanningOutcome.NoMatches => "No matching objects in this snapshot (matching 0; selected 0). This does not establish global absence.",
         CameraAgentSatellitePlanningOutcome.Busy => "Satellite planning is busy. Retry the search.",
         CameraAgentSatellitePlanningOutcome.Expired => "This planning session expired. Search again before selecting a pass.",
-        CameraAgentSatellitePlanningOutcome.ContextChanged => "The site or rig changed. Refresh the site and search again.",
+        CameraAgentSatellitePlanningOutcome.ContextChanged => "The observer, rig, time inputs or orbital data context changed. Refresh the scene and search again.",
         _ => "Satellite planning is unavailable. Retry the search."
     };
 }

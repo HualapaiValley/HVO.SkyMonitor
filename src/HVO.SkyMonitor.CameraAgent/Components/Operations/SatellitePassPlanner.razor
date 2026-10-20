@@ -30,7 +30,7 @@
     </form>
     <p class="satellite-note">At most 32 matching objects and 128 pass rows per search; eight rows per page. Rise and set crossings use the selected minimum elevation. Complete computation does not imply complete satellite population coverage.</p>
     <div role="status" aria-live="polite">
-        @if (_searching) { <p>Searching the bounded window…</p> }
+        @if (_searching) { <p>Searching the bounded window and loading local data… The first request after data changes may take longer. The 1,500 ms numerical search/arc limits exclude local data loading.</p> }
         else if (_message is not null) { <p>@_message</p> }
         else if (CanSearch) { <p>Choose a filter and explicitly search to load passes.</p> }
     </div>

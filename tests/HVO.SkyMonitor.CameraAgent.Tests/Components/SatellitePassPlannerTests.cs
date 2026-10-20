@@ -48,7 +48,7 @@ public sealed class SatellitePassPlannerTests
         Assert.IsTrue(request.ExpectedObserverSha256 == Fixture.Context.Observer.CanonicalSha256);
         Assert.IsTrue(request.ExpectedRigSha256 == Fixture.Context.Rig.RigProfileHashSha256);
         Assert.IsEmpty(service.ArcRequests);
-        Assert.Contains("No local orbital snapshot", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("Validated local orbital data is unavailable or could not be read", cut.Markup, StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -71,11 +71,11 @@ public sealed class SatellitePassPlannerTests
     }
 
     [TestMethod]
-    [DataRow(CameraAgentSatellitePlanningOutcome.NoSnapshot, "No local orbital snapshot")]
+    [DataRow(CameraAgentSatellitePlanningOutcome.NoSnapshot, "Validated local orbital data is unavailable or could not be read")]
     [DataRow(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, "Pinned Earth orientation")]
     [DataRow(CameraAgentSatellitePlanningOutcome.Busy, "busy")]
     [DataRow(CameraAgentSatellitePlanningOutcome.Expired, "expired")]
-    [DataRow(CameraAgentSatellitePlanningOutcome.ContextChanged, "site or rig changed")]
+    [DataRow(CameraAgentSatellitePlanningOutcome.ContextChanged, "observer, rig, time inputs or orbital data context changed")]
     public void Search_PresentsFacadeAvailability(CameraAgentSatellitePlanningOutcome outcome, string expected)
     {
         using var context = Context(new Adapter { Outcome = outcome });
@@ -206,6 +206,145 @@ public sealed class SatellitePassPlannerTests
     }
 
     [TestMethod]
+    [DataRow(CameraAgentSatellitePlanningOutcome.ContextChanged)]
+    [DataRow(CameraAgentSatellitePlanningOutcome.NoSnapshot)]
+    [DataRow(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable)]
+    [DataRow(CameraAgentSatellitePlanningOutcome.Expired)]
+    public void Selection_TypedContextFailuresClearSearchRowsAndSelectedArc(CameraAgentSatellitePlanningOutcome outcome)
+    {
+        var service = new Adapter { SearchView = Fixture.Search, ArcView = Fixture.Detail };
+        using var context = Context(service);
+        var cut = Render(context);
+        SearchFixture(cut);
+        cut.Find(".satellite-select").Click();
+        Assert.HasCount(1, cut.FindAll(".satellite-arc"));
+        service.ArcView = null;
+        service.ArcOutcome = outcome;
+        cut.Find(".satellite-select").Click();
+        Assert.IsEmpty(cut.FindAll(".satellite-table"));
+        Assert.IsEmpty(cut.FindAll(".satellite-summary"));
+        Assert.IsEmpty(cut.FindAll(".satellite-detail"));
+        Assert.IsEmpty(cut.FindAll(".satellite-arc"));
+        Assert.Contains(CameraAgentSatellitePlanningUiService.Describe(outcome), cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("Run a new search before selecting a pass", cut.Markup, StringComparison.Ordinal);
+        Assert.AreEqual("false", cut.Find("section").GetAttribute("aria-busy"));
+        Assert.IsFalse(cut.Find("button[type=submit]").HasAttribute("disabled"));
+        Assert.HasCount(1, service.Requests);
+        Assert.HasCount(2, service.ArcRequests);
+
+        service.ArcView = Fixture.Detail;
+        cut.Find("form").Submit();
+        cut.Find(".satellite-select").Click();
+        Assert.HasCount(1, cut.FindAll(".satellite-arc"));
+        Assert.AreEqual("false", cut.Find(".satellite-detail").GetAttribute("aria-busy"));
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public void Selection_TransientReadFailuresKeepRowsAndAllowRetry(bool transportUnavailable)
+    {
+        var service = new Adapter { SearchView = Fixture.Search, ArcView = Fixture.Detail };
+        using var context = Context(service);
+        var cut = Render(context);
+        SearchFixture(cut);
+        cut.Find(".satellite-select").Click();
+        service.ArcView = null;
+        service.ArcOutcome = CameraAgentSatellitePlanningOutcome.Busy;
+        service.Kind = transportUnavailable ? OperatorUiResultKind.Unavailable : OperatorUiResultKind.Success;
+        cut.Find(".satellite-select").Click();
+        Assert.HasCount(1, cut.FindAll("tbody tr"));
+        Assert.HasCount(1, cut.FindAll(".satellite-detail"));
+        Assert.AreEqual("true", cut.Find(".satellite-select").GetAttribute("aria-pressed"));
+        Assert.AreEqual("false", cut.Find(".satellite-detail").GetAttribute("aria-busy"));
+        Assert.Contains(transportUnavailable ? "Read unavailable" : "busy", cut.Markup, StringComparison.Ordinal);
+        Assert.DoesNotContain("context changed", cut.Markup, StringComparison.Ordinal);
+        Assert.DoesNotContain("Run a new search before selecting a pass", cut.Markup, StringComparison.Ordinal);
+        service.Kind = OperatorUiResultKind.Success;
+        service.ArcView = Fixture.Detail;
+        cut.Find(".satellite-select").Click();
+        Assert.HasCount(1, cut.FindAll(".satellite-arc"));
+        Assert.HasCount(1, service.Requests);
+    }
+
+    [TestMethod]
+    public void Selection_NumericallyUnavailableArcKeepsOriginalRowsAndSelectedPass()
+    {
+        var unavailable = new OrbitalPredictionResult<OrbitalPassArcV1>(Fixture.Query, OrbitalExecutionStatus.Unavailable,
+            OrbitalPredictionReason.IncompleteInterval, 1, 0, 0, [], []);
+        var service = new Adapter { SearchView = Fixture.Search, ArcView = Fixture.Detail with { Prediction = unavailable } };
+        using var context = Context(service);
+        var cut = Render(context);
+        SearchFixture(cut);
+        cut.Find(".satellite-select").Click();
+        Assert.HasCount(1, cut.FindAll("tbody tr"));
+        Assert.HasCount(1, cut.FindAll(".satellite-detail"));
+        Assert.AreEqual("true", cut.Find(".satellite-select").GetAttribute("aria-pressed"));
+        Assert.Contains("Unavailable / IncompleteInterval", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("No angular arc is available", cut.Markup, StringComparison.Ordinal);
+        Assert.DoesNotContain("Run a new search before selecting a pass", cut.Markup, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow(CameraAgentSatellitePlanningOutcome.ContextChanged)]
+    [DataRow(CameraAgentSatellitePlanningOutcome.NoSnapshot)]
+    [DataRow(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable)]
+    [DataRow(CameraAgentSatellitePlanningOutcome.Expired)]
+    public async Task TypedArcInvalidation_DiscardsAnOlderLateCompletionAsync(CameraAgentSatellitePlanningOutcome outcome)
+    {
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentSatellitePlanningResponse<CameraAgentSatellitePassArcView>>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new Adapter { SearchView = Fixture.Search, ArcPending = pending.Task };
+        using var context = Context(service);
+        var cut = Render(context);
+        SearchFixture(cut);
+        var first = cut.Find(".satellite-select").ClickAsync(new());
+        var firstToken = service.ArcToken;
+        service.ArcPending = null;
+        service.ArcOutcome = outcome;
+        await cut.Find(".satellite-select").ClickAsync(new()).ConfigureAwait(false);
+        Assert.IsTrue(firstToken.IsCancellationRequested);
+        Assert.IsTrue(service.ArcToken.IsCancellationRequested);
+        Assert.IsEmpty(cut.FindAll(".satellite-table"));
+        pending.SetResult(Success(Fixture.Detail));
+        await first.ConfigureAwait(false);
+        Assert.IsEmpty(cut.FindAll(".satellite-table"));
+        Assert.IsEmpty(cut.FindAll(".satellite-detail"));
+        Assert.Contains(CameraAgentSatellitePlanningUiService.Describe(outcome), cut.Markup, StringComparison.Ordinal);
+        Assert.AreEqual("false", cut.Find("section").GetAttribute("aria-busy"));
+        Assert.HasCount(1, service.Requests);
+    }
+
+    [TestMethod]
+    [DataRow(CameraAgentSatellitePlanningOutcome.ContextChanged)]
+    [DataRow(CameraAgentSatellitePlanningOutcome.NoSnapshot)]
+    [DataRow(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable)]
+    [DataRow(CameraAgentSatellitePlanningOutcome.Expired)]
+    public async Task LateTypedArcInvalidationCannotClearAReplacementSearchAsync(CameraAgentSatellitePlanningOutcome outcome)
+    {
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentSatellitePlanningResponse<CameraAgentSatellitePassArcView>>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new Adapter { SearchView = Fixture.Search, ArcPending = pending.Task };
+        using var context = Context(service);
+        var cut = Render(context);
+        SearchFixture(cut);
+        var first = cut.Find(".satellite-select").ClickAsync(new());
+        var firstToken = service.ArcToken;
+        service.SearchView = Fixture.Search with { SearchIdentitySha256 = new('E', 64) };
+        service.ArcPending = null;
+        service.ArcView = Fixture.Detail with { SearchIdentitySha256 = service.SearchView.SearchIdentitySha256 };
+        await cut.Find("form").SubmitAsync().ConfigureAwait(false);
+        await cut.Find(".satellite-select").ClickAsync(new()).ConfigureAwait(false);
+        Assert.IsTrue(firstToken.IsCancellationRequested);
+        pending.SetResult(OperatorUiResult<CameraAgentSatellitePlanningResponse<CameraAgentSatellitePassArcView>>.Success(
+            new(outcome, CameraAgentSatellitePlanningUiService.Describe(outcome), null)));
+        await first.ConfigureAwait(false);
+        Assert.HasCount(1, cut.FindAll("tbody tr"));
+        Assert.HasCount(1, cut.FindAll(".satellite-arc"));
+        Assert.AreEqual("true", cut.Find(".satellite-select").GetAttribute("aria-pressed"));
+        Assert.DoesNotContain(CameraAgentSatellitePlanningUiService.Describe(outcome), cut.Markup, StringComparison.Ordinal);
+        Assert.AreEqual("false", cut.Find(".satellite-detail").GetAttribute("aria-busy"));
+    }
+
+    [TestMethod]
     public async Task NewSelectionGeneration_KeepsItsArcWhenTheOldSelectionFinishesLateAsync()
     {
         var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentSatellitePlanningResponse<CameraAgentSatellitePassArcView>>>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -243,6 +382,9 @@ public sealed class SatellitePassPlannerTests
         await cut.Find("#satellite-elevation").InputAsync(new() { Value = "0" }).ConfigureAwait(false);
         var submit = cut.Find("form").SubmitAsync();
         cut.WaitForAssertion(() => Assert.Contains("Searching the bounded window", cut.Markup, StringComparison.Ordinal));
+        Assert.Contains("loading local data", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("first request after data changes may take longer", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("numerical search/arc limits exclude local data loading", cut.Markup, StringComparison.Ordinal);
         ChangeContext(cut, change);
         Assert.IsTrue(service.SearchToken.IsCancellationRequested);
         pending.SetResult(Success(Fixture.Search));
@@ -265,7 +407,7 @@ public sealed class SatellitePassPlannerTests
         await cut.Find("form").SubmitAsync().ConfigureAwait(false);
         pending.SetResult(Success(Fixture.Search));
         await first.ConfigureAwait(false);
-        Assert.Contains("No local orbital snapshot", cut.Markup, StringComparison.Ordinal);
+        Assert.Contains("Validated local orbital data is unavailable or could not be read", cut.Markup, StringComparison.Ordinal);
         Assert.IsEmpty(cut.FindAll(".satellite-table"));
     }
 
@@ -416,6 +558,7 @@ public sealed class SatellitePassPlannerTests
         internal List<CameraAgentSatellitePassSearchRequest> Requests { get; } = [];
         internal List<(string, string)> ArcRequests { get; } = [];
         internal CameraAgentSatellitePlanningOutcome Outcome { get; set; } = CameraAgentSatellitePlanningOutcome.NoSnapshot;
+        internal CameraAgentSatellitePlanningOutcome ArcOutcome { get; set; } = CameraAgentSatellitePlanningOutcome.NoSnapshot;
         internal OperatorUiResultKind Kind { get; set; } = OperatorUiResultKind.Success;
         internal CameraAgentSatellitePassSearchView? SearchView { get; set; }
         internal CameraAgentSatellitePassArcView? ArcView { get; set; }
@@ -441,7 +584,11 @@ public sealed class SatellitePassPlannerTests
         {
             ArcRequests.Add((searchIdentitySha256, parentPassSha256));
             ArcToken = cancellationToken;
-            return ArcPending is { } pending ? new(pending) : ValueTask.FromResult(Success(ArcView!));
+            if (ArcPending is { } pending) return new(pending);
+            if (Kind != OperatorUiResultKind.Success) return ValueTask.FromResult(OperatorUiResult<CameraAgentSatellitePlanningResponse<CameraAgentSatellitePassArcView>>.Failure(
+                Kind, Kind == OperatorUiResultKind.Unauthorized ? "Authorization required" : "Read unavailable"));
+            return ValueTask.FromResult(ArcView is { } view ? Success(view) :
+                OperatorUiResult<CameraAgentSatellitePlanningResponse<CameraAgentSatellitePassArcView>>.Success(new(ArcOutcome, CameraAgentSatellitePlanningUiService.Describe(ArcOutcome), null)));
         }
     }
 
