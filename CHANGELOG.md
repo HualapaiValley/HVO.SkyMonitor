@@ -15,7 +15,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Software & Catalog shows orbital snapshot coverage, element age, refresh status and storage repair guidance, with
   bounded Refresh and Resume commands. Automations edits the same orbital refresh schedule and links to its run
   history. Missing orbital data never implies an empty sky. The Automations UI service applies the 1–128-character
-  operator actor bound and logs failures without exception text. (#1392)
+  operator actor bound and logs failures without exception text. The Observatory pass area shows the same orbital
+  data notice. (#1392)
 - Local satellite pass planning from verified local snapshots and explicitly pinned time data for the selected observatory and rig, with separate full-pass diagrams and retained predicted capture layers, thin dashed paths and small point markers, explicit data availability and source age, and independent presentation controls. (#1393)
 - Offline tools evaluate causal streak detections across retained virtual-camera sequences and compare every measured candidate with explicitly supplied satellite predictions, while preserving missing context, competing alternatives and unavailable observer or geometry facts. (#530)
 - CameraAgent can acquire orbital elements locally: one bounded CelesTrak GP request for the `active` group, strictly

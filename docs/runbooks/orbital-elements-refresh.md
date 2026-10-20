@@ -349,6 +349,10 @@ and notice translate that reason and the `RepairStorage` recommendation into ope
 text, without inventing an HTTP status or a provider halt. The installed snapshot, if
 any, remains visible, and the failed attempt still holds the provider floor.
 
+The Observatory & location page shows the same notice, read-only, directly above the
+satellite pass planner. It describes the snapshot installed now; a completed pass search
+keeps the snapshot it was computed from.
+
 The page and the health check agree on every fact, but they summarize differently, by
 design:
 
