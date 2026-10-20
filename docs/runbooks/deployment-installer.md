@@ -24,6 +24,13 @@ rollback and reinstall hints name its path rather than `install.sh`'s temporary 
 the running release installer; a failed initial bootstrap can be repeated with `install.sh` and the same arguments.
 The installer finishes the current operation itself; it does not hand execution to the newly published binary.
 
+Before publishing, the installer requires each destination folder and ancestor to be owned by the runtime user or
+root, with no group or world write permission. This also checks destinations retained by an earlier install. Unsafe
+folders are refused before changes; fix their ownership/permissions and retry. Both the current command and
+`.previous` must match publication records before replacement. An unowned or externally changed recovery file is
+preserved and reported; move it aside deliberately before retrying. Publication retains an open verified stage and
+checks its device/inode after rename, with recorded old/new intent making interruption recovery repeatable.
+
 Release installs also publish the matching `hvo-sky` runtime client ([hvo-sky.md](hvo-sky.md)). Each instance retains
 verified command files by image ID in `state/deployment/programs/`, with its authoritative `path-programs.json` and
 image-bound program records. Rollback restores those files, retaining the replaced version as `.previous`.
@@ -40,7 +47,10 @@ An interrupted program cleanup resumes from the retained purge evidence with `--
 Shared paths stay while another instance needs them;
 files whose contents no longer match the recorded checksum are preserved with an actionable failure.
 Admitted test roots map every program destination below `<product-root>/programs/` and never publish to the host's
-real PATH folders.
+real PATH folders. Their admitted product root is the virtual filesystem root for destination trust checks; production
+checks continue through `/`. Each newly created program directory gets an explicit safe mode, independent of umask.
+A completed legacy install re-run publishes missing release programs before settling its records, without restarting
+an otherwise unchanged container.
 
 `hvo-sky-install --version` prints the installer's version and the commit it was built from, as
 `<version>+<40-character commit>`, and exits 0. Like `--help`, it needs no Docker and does not read the
@@ -443,16 +453,21 @@ production product root.
       "url": "http://127.0.0.1:5130/",
       "resources": { "cpus": 2, "memoryBytes": 4294967296, "pidsLimit": 256, "cpusSetByOperator": false, "memorySetByOperator": false },
       "updatedUtc": "2026-10-18T03:00:00+00:00",
-      "lastImageChange": null,
-      "programs": []
+      "lastImageChange": null
     }
   ]
 }
 ```
 
-- `programs` lists the installed commands' names, paths, release versions, SHA-256 and previous SHA-256. It is empty
-  in this image-only example. The instance's retained program sets and the shared publication registry own those
-  facts; the install record projects them.
+- PATH program metadata is in the separate `/etc/hvo-sky/install-programs.json` sidecar, with one instance ID and
+  `programs` list per release install: name, path, release version, SHA-256 and previous SHA-256. Admitted test roots keep
+  it beside their own `operations/install.json`. The instance's retained program sets and shared publication registry
+  own those facts; this sidecar projects them and uses the same atomic, fsynced file/directory writes and host-policy
+  trust checks as the machine record. Image-only instances have no program entry.
+- Schema-1 `install.json` retains exactly the released members shown above. Released installers use a strict reader,
+  so adding even an empty `programs` field there would break recovery with an older or `.previous` installer. Older
+  installers can still read and maintain `install.json`; they leave PATH programs and the sidecar untouched. Use the
+  current durable installer when commands must follow an upgrade, rollback or removal.
 - The instance's release records (`image-distribution.json` and
   `image-distribution.records.json` in its deployment state, see
   [Release Install](#release-install)) own its installed version. The install

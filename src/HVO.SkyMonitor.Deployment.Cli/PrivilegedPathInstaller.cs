@@ -86,13 +86,15 @@ internal static class PrivilegedPathInstaller
     {
         if (!remove)
         {
-            await PathPrograms.PublishAsync(PathPrograms.Cached(paths, sha256), target, sha256, cancellationToken).ConfigureAwait(false);
+            await PathPrograms.PublishAsync(PathPrograms.Cached(paths, sha256), target, sha256,
+                (await PathPrograms.ReadRegistryAsync(paths, cancellationToken).ConfigureAwait(false))
+                    .FirstOrDefault(record => record.Path == target), destinationRoot: null, cancellationToken).ConfigureAwait(false);
         }
         else
         {
-            await PathPrograms.RemoveMatchingAsync(target, sha256, cancellationToken).ConfigureAwait(false);
+            await PathPrograms.RemoveMatchingAsync(target, sha256, destinationRoot: null, cancellationToken).ConfigureAwait(false);
             if (previousSha256 is not null)
-                await PathPrograms.RemoveMatchingAsync(target + ".previous", previousSha256, cancellationToken).ConfigureAwait(false);
+                await PathPrograms.RemoveMatchingAsync(target + ".previous", previousSha256, destinationRoot: null, cancellationToken).ConfigureAwait(false);
         }
     }
 }

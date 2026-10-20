@@ -41,7 +41,7 @@ public sealed partial class LifecycleContractTests
             StringAssert.Contains(await File.ReadAllTextAsync(target + ".previous"), "1.2.0", StringComparison.Ordinal);
         }
         var location = InstallRecordLocation.For(fixture.Root, InstallRequest.DefaultProductRoot);
-        using (var json = JsonDocument.Parse(await File.ReadAllBytesAsync(location.Path)))
+        using (var json = JsonDocument.Parse(await File.ReadAllBytesAsync(InstallRecordStore.ProgramsPath(location))))
             Assert.AreEqual(3, json.RootElement.GetProperty("instances")[0].GetProperty("programs").GetArrayLength());
 
         await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Rollback), fixture.Runner,
@@ -247,6 +247,98 @@ public sealed partial class LifecycleContractTests
         foreach (var target in targets) Assert.IsFalse(File.Exists(target));
     }
 
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("current", false)]
+    [DataRow("previous", false)]
+    [DataRow("previous", true)]
+    public async Task Correction1_UnownedOrChangedPublicationSlot_IsPreserved(string slot, bool previouslyOwned)
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var targets = await SeedPathProgramsAsync(fixture);
+        await PathPrograms.SettleAsync(fixture.Paths, InstallRequest.DefaultProductRoot, null,
+            fixture.Manifest.Image.ImageId, CancellationToken.None);
+        if (previouslyOwned)
+        {
+            using var intermediate = ReleaseFixture.Create(fixture.Root, version: "1.3.0");
+            await PathPrograms.SettleAsync(fixture.Paths, InstallRequest.DefaultProductRoot, intermediate.Folder,
+                intermediate.ConfigDigest($"linux/{ReleaseAcquirer.HostImageArchitecture()}"), CancellationToken.None);
+        }
+        var target = targets[1];
+        await File.WriteAllTextAsync(target + (slot == "previous" ? ".previous" : ""), "external recovery program");
+        var current = await File.ReadAllTextAsync(target);
+        var previous = File.Exists(target + ".previous") ? await File.ReadAllTextAsync(target + ".previous") : null;
+        using var release = ReleaseFixture.Create(fixture.Root, version: "1.4.0");
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            PathPrograms.SettleAsync(fixture.Paths, InstallRequest.DefaultProductRoot, release.Folder,
+                release.ConfigDigest($"linux/{ReleaseAcquirer.HostImageArchitecture()}"), CancellationToken.None));
+        Assert.IsTrue(failure.IsRefusal);
+        StringAssert.Contains(failure.Message, "preserved", StringComparison.Ordinal);
+        Assert.AreEqual(current, await File.ReadAllTextAsync(target));
+        Assert.AreEqual(previous, File.Exists(target + ".previous") ? await File.ReadAllTextAsync(target + ".previous") : null);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task Correction1_RecordedUntrustedDestination_IsRefusedBeforePublication()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var targets = await SeedPathProgramsAsync(fixture);
+        var folder = Path.GetDirectoryName(targets[0])!;
+        var previous = await File.ReadAllTextAsync(targets[0]);
+        File.SetUnixFileMode(folder, (UnixFileMode)0x1ff);
+        using var release = ReleaseFixture.Create(fixture.Root, version: "1.3.0");
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+            PathPrograms.PlanAsync(fixture.Paths, InstallRequest.DefaultProductRoot, release.Folder,
+                release.ConfigDigest($"linux/{ReleaseAcquirer.HostImageArchitecture()}"), null, CancellationToken.None));
+        Assert.IsTrue(failure.IsRefusal);
+        StringAssert.Contains(failure.Message, "not writable by other users", StringComparison.Ordinal);
+        Assert.AreEqual(previous, await File.ReadAllTextAsync(targets[0]));
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task Correction1_InterruptedPublicationIntent_ResumesOnlyRecordedSlotStates(bool afterPrevious)
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var targets = await SeedPathProgramsAsync(fixture);
+        await PathPrograms.SettleAsync(fixture.Paths, InstallRequest.DefaultProductRoot, null,
+            fixture.Manifest.Image.ImageId, CancellationToken.None);
+        using var release = ReleaseFixture.Create(fixture.Root, version: "1.3.0");
+        var image = release.ConfigDigest($"linux/{ReleaseAcquirer.HostImageArchitecture()}");
+        var hook = NativeLinux.DirectoryFlushed;
+        var interrupted = false;
+        try
+        {
+            NativeLinux.DirectoryFlushed = folder =>
+            {
+                var registry = Path.Combine(fixture.Paths.OperationsRoot, PathPrograms.RecordName);
+                var reached = afterPrevious
+                    ? folder == Path.GetDirectoryName(targets[0]) && File.Exists(targets[0] + ".previous")
+                    : folder == fixture.Paths.OperationsRoot && File.Exists(registry) &&
+                        File.ReadAllText(registry).Contains("\"pendingSha256\": \"", StringComparison.Ordinal);
+                if (!interrupted && reached)
+                {
+                    interrupted = true;
+                    throw new InstallerException("Injected interruption during recorded publication.");
+                }
+            };
+            await Assert.ThrowsExactlyAsync<InstallerException>(() =>
+                PathPrograms.SettleAsync(fixture.Paths, InstallRequest.DefaultProductRoot, release.Folder, image, CancellationToken.None));
+        }
+        finally { NativeLinux.DirectoryFlushed = hook; }
+        Assert.IsTrue(interrupted);
+        await PathPrograms.SettleAsync(fixture.Paths, InstallRequest.DefaultProductRoot, release.Folder, image, CancellationToken.None);
+        foreach (var target in targets)
+        {
+            StringAssert.Contains(await File.ReadAllTextAsync(target), "1.3.0", StringComparison.Ordinal);
+            StringAssert.Contains(await File.ReadAllTextAsync(target + ".previous"), "1.2.0", StringComparison.Ordinal);
+        }
+    }
+
     private static async Task<string[]> SeedPathProgramsAsync(LifecycleFixture fixture)
     {
         var user = Path.Combine(fixture.Root, "programs", "home", ".local", "bin");
@@ -257,7 +349,7 @@ public sealed partial class LifecycleContractTests
         var programs = new List<object>();
         foreach (var target in targets)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            PathPrograms.CreateProgramDirectories(Path.GetDirectoryName(target)!, PathPrograms.ProgramMode);
             var name = Path.GetFileName(target);
             var bytes = System.Text.Encoding.UTF8.GetBytes($"{name} 1.2.0");
             var sha256 = Convert.ToHexStringLower(SHA256.HashData(bytes));

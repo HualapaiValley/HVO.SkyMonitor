@@ -14,7 +14,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Release installs and upgrades put verified `hvo-sky` and `hvo-sky-install` commands on PATH, keep replaced programs
   as `.previous`, restore matching commands on rollback, and report their paths in plans and install records. Resume
-  and reinstall hints use the durable installer; uninstall and purge honor shared ownership. (#1385)
+  and reinstall hints use the durable installer; uninstall and purge honor shared ownership. Publication refuses
+  unsafe folders and changed or unowned recovery copies, and program metadata uses a separate sidecar so released
+  installers can still read the install record. Completed legacy install re-runs also place missing commands. (#1385)
 
 - Bounded local satellite exposure tracks, future-pass predictions and complete sky arcs pinned to their original orbital record, with reproducible virtual-camera fixtures, explicit source/time/geometry provenance and unavailable or partial outcomes when inputs or work limits prevent completion. (#529)
 

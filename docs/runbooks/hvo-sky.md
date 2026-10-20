@@ -22,7 +22,12 @@ can write there without sudo. Include the chosen folder in your shell's PATH; `-
 Upgrade replaces a stale copy and keeps it as `hvo-sky.previous`; rollback restores the image's retained verified
 client without downloading it again. Uninstall removes the recorded client and its previous copy when no other
 installed instance uses that path. Purge also removes the installer's last-owner copies. A file changed outside the
-installer is preserved and reported rather than deleted.
+installer is preserved and reported rather than deleted. The same applies before replacing either the current file
+or `.previous`; an unowned recovery copy is never silently overwritten. Destination folders and ancestors must be
+owned by the runtime user or root and must not be group/world writable. Missing commands are repaired by re-running
+the matching release install, even when the instance is already completed. Program summaries live in the separate
+`install-programs.json` sidecar beside `install.json`, keeping older strict install-record readers compatible. Older
+installers do not manage those command files or that sidecar.
 
 For a client-only Linux machine that can reach the instance, install it by hand:
 

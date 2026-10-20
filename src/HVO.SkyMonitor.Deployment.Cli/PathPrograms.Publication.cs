@@ -15,8 +15,11 @@ internal static partial class PathPrograms
         return Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
     }
 
-    internal static async Task PublishAsync(string source, string target, string sha256, CancellationToken cancellationToken)
+    internal static async Task PublishAsync(string source, string target, string sha256, PathProgramRecord? publication, string? destinationRoot,
+        CancellationToken cancellationToken)
     {
+        EnsureTrustedDestination(target, destinationRoot);
+        await ValidatePublicationAsync(target, sha256, publication, cancellationToken).ConfigureAwait(false);
         var before = await HashAsync(target, cancellationToken).ConfigureAwait(false);
         if (before == sha256)
         {
@@ -31,9 +34,14 @@ internal static partial class PathPrograms
         try
         {
             await WriteVerifiedAsync(source, staged, sha256, executable: true, cancellationToken).ConfigureAwait(false);
+            await using var verified = SafeFileSystem.OpenRegularFileRead(staged);
+            var identity = NativeLinux.GetOpenNodeIdentity(verified.SafeFileHandle, staged);
+            if (Convert.ToHexStringLower(await SHA256.HashDataAsync(verified, cancellationToken).ConfigureAwait(false)) != sha256)
+                throw InstallerException.Refused("The staged program changed before publication.");
             if (before is not null)
                 await WriteVerifiedAsync(target, target + ".previous", before, executable: true, cancellationToken).ConfigureAwait(false);
             File.Move(staged, target, overwrite: true);
+            RequirePublishedIdentity(target, identity);
             NativeLinux.FlushDirectory(Path.GetDirectoryName(target)!);
         }
         finally
@@ -56,7 +64,7 @@ internal static partial class PathPrograms
         input.Position = 0;
         var folder = Path.GetDirectoryName(target)!;
         SafeFileSystem.EnsureSafeExistingAncestors(folder);
-        Directory.CreateDirectory(folder);
+        CreateProgramDirectories(folder, executable ? ProgramMode : SafeFileSystem.OwnerDirectoryMode);
         var temporary = target + $".{Guid.NewGuid():N}.tmp";
         try
         {
@@ -73,7 +81,10 @@ internal static partial class PathPrograms
             if (await HashAsync(temporary, cancellationToken).ConfigureAwait(false) != expectedSha256)
                 throw new InstallerException("The staged program does not match its SHA-256.");
             _ = await HashAsync(target, cancellationToken).ConfigureAwait(false);
+            await using var verified = SafeFileSystem.OpenRegularFileRead(temporary);
+            var identity = NativeLinux.GetOpenNodeIdentity(verified.SafeFileHandle, temporary);
             File.Move(temporary, target, overwrite: true);
+            RequirePublishedIdentity(target, identity);
             FlushProgramDirectories(folder);
         }
         finally
@@ -82,14 +93,24 @@ internal static partial class PathPrograms
         }
     }
 
+    internal static void CreateProgramDirectories(string folder, UnixFileMode mode)
+    {
+        var missing = new Stack<string>();
+        for (var current = folder; !Directory.Exists(current); current = Path.GetDirectoryName(current)!)
+            missing.Push(current);
+        while (missing.TryPop(out var current))
+            Directory.CreateDirectory(current, mode);
+    }
+
     internal static void FlushProgramDirectories(string folder)
     {
         for (string? current = Path.GetFullPath(folder); current is not null; current = Path.GetDirectoryName(current))
             NativeLinux.FlushDirectory(current);
     }
 
-    internal static async Task RemoveMatchingAsync(string target, string sha256, CancellationToken cancellationToken)
+    internal static async Task RemoveMatchingAsync(string target, string sha256, string? destinationRoot, CancellationToken cancellationToken)
     {
+        EnsureTrustedDestination(target, destinationRoot);
         var actual = await HashAsync(target, cancellationToken).ConfigureAwait(false);
         if (actual is null) return;
         if (actual != sha256)

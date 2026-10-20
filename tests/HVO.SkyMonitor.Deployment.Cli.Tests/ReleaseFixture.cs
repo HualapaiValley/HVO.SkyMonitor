@@ -104,6 +104,7 @@ internal sealed class ReleaseFixture : IDisposable
     {
         var ownsRoot = root is null;
         root ??= Path.Combine(Path.GetTempPath(), $"hvo-release-{Guid.NewGuid():N}");
+        if (!Directory.Exists(root)) Directory.CreateDirectory(root, SafeFileSystem.OwnerDirectoryMode);
         var folder = Path.Combine(root, $"release-v{version}");
         Directory.CreateDirectory(folder);
         platforms ??= ReleaseManifest.ImagePlatforms;

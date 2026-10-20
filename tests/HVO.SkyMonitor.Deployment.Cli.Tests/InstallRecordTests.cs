@@ -14,7 +14,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
-public sealed class InstallRecordTests
+public sealed partial class InstallRecordTests
 {
     private const UnixFileMode SharedDirectory =
         UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
@@ -30,7 +30,7 @@ public sealed class InstallRecordTests
     private static readonly string[] EntryMembers =
     [
         "component", "instanceId", "friendlyName", "condition", "version", "previousVersion", "rolledBackFrom",
-        "imageId", "previousImageId", "url", "resources", "updatedUtc", "lastImageChange", "programs"
+        "imageId", "previousImageId", "url", "resources", "updatedUtc", "lastImageChange"
     ];
 
     private static readonly JsonSerializerOptions Compact = new(InstallRecordJsonContext.Default.Options) { WriteIndented = false };

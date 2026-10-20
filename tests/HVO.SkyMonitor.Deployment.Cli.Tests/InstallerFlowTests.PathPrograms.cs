@@ -45,7 +45,7 @@ public sealed partial class InstallerFlowTests
             }
             else
             {
-                using var record = JsonDocument.Parse(await File.ReadAllBytesAsync(Path.Combine(root, "operations", "install.json")));
+                using var record = JsonDocument.Parse(await File.ReadAllBytesAsync(Path.Combine(root, "operations", "install-programs.json")));
                 Assert.AreEqual(3, record.RootElement.GetProperty("instances")[0].GetProperty("programs").GetArrayLength());
             }
         }
@@ -88,4 +88,40 @@ public sealed partial class InstallerFlowTests
             DeleteRoot(root);
         }
     }
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task Correction1_CompletedLegacyReleaseInstall_ReRunPublishesPrograms()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-path-legacy-rerun-{Guid.NewGuid():N}");
+        using var release = ReleaseFixture.Create(root);
+        var id = Guid.NewGuid();
+        var image = release.ConfigDigest($"linux/{ReleaseAcquirer.HostImageArchitecture()}");
+        var runner = new InstallerProcessRunner(image, root, id) { Labels = release.Labels() };
+        var request = ReleaseRequest(root, RequireCatalogBundle(), id, release.Folder);
+        try
+        {
+            await CameraAgentInstaller.InstallAsync(request, runner, _ => new InstallerOwnerClient(),
+                RuntimeUid, RuntimeGid, CancellationToken.None, portAvailabilityProbe: new RecordingPortProbe().Probe);
+            var paths = InstallationPaths.Create(root, id, ProductionCatalog.DefaultCatalogId);
+            SafeFileSystem.MakeTreeOwnerWritable(Path.Combine(root, "programs"));
+            Directory.Delete(Path.Combine(root, "programs"), recursive: true);
+            foreach (var file in Directory.GetFiles(paths.DeploymentStateRoot, "path-programs*.json"))
+                File.Delete(file);
+            File.Delete(Path.Combine(paths.OperationsRoot, PathPrograms.RecordName));
+            File.Delete(Path.Combine(paths.OperationsRoot, "install-programs.json"));
+            var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(paths.ManifestPath, CancellationToken.None);
+            await InstallRecordStore.SettleInstanceAsync(InstallRecordLocation.For(root, request.ProductionProductRoot),
+                paths, manifest, InstallRecordEvent.Install, CancellationToken.None);
+            var loads = runner.LoadCount;
+            await CameraAgentInstaller.InstallAsync(request, runner, _ => new InstallerOwnerClient(),
+                RuntimeUid, RuntimeGid, CancellationToken.None, portAvailabilityProbe: new RecordingPortProbe().Probe);
+            var target = Path.Combine(root, "programs", "home", ".local", "bin", "hvo-sky");
+            Assert.IsTrue(File.Exists(target), "completed legacy install must place hvo-sky");
+            Assert.AreEqual(loads, runner.LoadCount, "program repair must not reload the image");
+            StringAssert.Contains(await File.ReadAllTextAsync(target), release.Version, StringComparison.Ordinal);
+        }
+        finally { DeleteRoot(root); }
+    }
+
+
 }

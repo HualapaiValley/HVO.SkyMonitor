@@ -66,6 +66,9 @@ internal static partial class PathPrograms
             var retained = await ReadSetAsync(ImageRecord(paths, imageId), locations, cancellationToken).ConfigureAwait(false);
             if (retained is not null && retained.ImageId != imageId)
                 throw new InstallerException("The retained PATH program set belongs to another image.");
+            if (retained is not null)
+                foreach (var program in retained.Programs)
+                    EnsureTrustedDestination(program.Target, DestinationRoot(paths, productionRoot));
             return retained;
         }
         var release = await ReleaseAcquirer.ReadAsync(releaseFolder, cancellationToken).ConfigureAwait(false);
@@ -73,12 +76,15 @@ internal static partial class PathPrograms
         var current = await ReadSetAsync(CurrentRecord(paths), locations, cancellationToken).ConfigureAwait(false);
         var client = current?.Programs.FirstOrDefault(static program => program.Name == "hvo-sky")?.Target
                      ?? Path.Combine(SelectClientFolder(locations, Writable), "hvo-sky");
-        return new(imageId, release.Manifest.Version,
+        var desired = new PathProgramSet(imageId, release.Manifest.Version,
         [
             new("hvo-sky", client, Asset(release, "hvo-sky").Sha256),
             new("hvo-sky-install", Path.Combine(locations.UserBin, "hvo-sky-install"), Asset(release, "hvo-sky-install").Sha256),
             new("hvo-sky-install", locations.MachineInstaller, Asset(release, "hvo-sky-install").Sha256)
         ]);
+        foreach (var program in desired.Programs)
+            EnsureTrustedDestination(program.Target, DestinationRoot(paths, productionRoot));
+        return desired;
     }
 
     internal static async Task SettleAsync(
@@ -93,6 +99,11 @@ internal static partial class PathPrograms
             return;
         }
         using var programLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "path-programs.lock"), cancellationToken: cancellationToken);
+        var registry = await ReadRegistryAsync(paths, cancellationToken).ConfigureAwait(false);
+        await IncludeCurrentPublicationsAsync(paths, registry, cancellationToken).ConfigureAwait(false);
+        foreach (var program in desired.Programs)
+            await ValidatePublicationAsync(program.Target, program.Sha256,
+                registry.FirstOrDefault(record => record.Path == program.Target), cancellationToken).ConfigureAwait(false);
         SafeFileSystem.CreateOwnerDirectory(Path.Combine(paths.DeploymentStateRoot, "programs"));
         foreach (var program in desired.Programs.DistinctBy(static program => program.Sha256))
         {
@@ -107,20 +118,28 @@ internal static partial class PathPrograms
         }
         // Save the image-bound set before publishing the first file, so every partial publication is repeatable.
         await WriteSetAsync(ImageRecord(paths, imageId), desired, cancellationToken).ConfigureAwait(false);
-        var registry = await ReadRegistryAsync(paths, cancellationToken).ConfigureAwait(false);
         var published = new List<PathProgram>();
         foreach (var program in desired.Programs)
         {
+            var previousPublication = registry.FirstOrDefault(record => record.Path == program.Target);
+            var intent = (previousPublication ?? new(program.Name, program.Target, desired.Version, program.Sha256, null))
+                with
+            { PendingSha256 = program.Sha256 };
+            registry.RemoveAll(record => record.Path == program.Target);
+            registry.Add(intent);
+            // Keep both admitted pre-publication checksums and the desired checksum durable before touching either
+            // slot. A resume may see only those recorded old/new states, never an unowned recovery executable.
+            await WriteRegistryAsync(paths, registry, cancellationToken).ConfigureAwait(false);
             if (program.Target == SystemInstaller)
                 await PrivilegedPathInstaller.ApplyAsync(paths, program.Sha256, remove: false, null, cancellationToken).ConfigureAwait(false);
             else
-                await PublishAsync(Cached(paths, program.Sha256), program.Target, program.Sha256, cancellationToken).ConfigureAwait(false);
+                await PublishAsync(Cached(paths, program.Sha256), program.Target, program.Sha256, intent,
+                    DestinationRoot(paths, productionRoot), cancellationToken).ConfigureAwait(false);
             var installed = program with { PreviousSha256 = await HashAsync(program.Target + ".previous", cancellationToken).ConfigureAwait(false) };
             published.Add(installed);
             registry.RemoveAll(record => record.Path == installed.Target);
             registry.Add(new(installed.Name, installed.Target, desired.Version, installed.Sha256, installed.PreviousSha256));
-            await SafeFileSystem.WriteJsonAtomicAsync(RegistryPath(paths), new PathProgramRegistry(registry),
-                DeploymentJsonContext.Default.PathProgramRegistry, cancellationToken).ConfigureAwait(false);
+            await WriteRegistryAsync(paths, registry, cancellationToken).ConfigureAwait(false);
         }
         await WriteSetAsync(CurrentRecord(paths), desired with { Programs = published }, cancellationToken).ConfigureAwait(false);
     }
@@ -142,9 +161,14 @@ internal static partial class PathPrograms
         }
         if (desired is null) return [];
         var registry = await ReadRegistryAsync(paths, cancellationToken).ConfigureAwait(false);
+        await IncludeCurrentPublicationsAsync(paths, registry, cancellationToken).ConfigureAwait(false);
         var items = new List<DeploymentPlanItem>();
         foreach (var owned in desired.Programs)
         {
+            EnsureTrustedDestination(owned.Target, DestinationRoot(paths, productionRoot));
+            if (!removing)
+                await ValidatePublicationAsync(owned.Target, owned.Sha256,
+                    registry.FirstOrDefault(record => record.Path == owned.Target), cancellationToken).ConfigureAwait(false);
             var latest = removing ? registry.FirstOrDefault(record => record.Path == owned.Target) : null;
             var program = latest is null ? owned : owned with { Sha256 = latest.Sha256, PreviousSha256 = latest.PreviousSha256 };
             var retained = removing && (operation == LifecycleOperationKind.Uninstall && program.Name == "hvo-sky-install" ||
@@ -183,9 +207,9 @@ internal static partial class PathPrograms
                 await PrivilegedPathInstaller.ApplyAsync(paths, program.Sha256, remove: true, program.PreviousSha256, cancellationToken).ConfigureAwait(false);
             else
             {
-                await RemoveMatchingAsync(program.Target, program.Sha256, cancellationToken).ConfigureAwait(false);
+                await RemoveMatchingAsync(program.Target, program.Sha256, DestinationRoot(paths, productionRoot), cancellationToken).ConfigureAwait(false);
                 if (program.PreviousSha256 is { } previous)
-                    await RemoveMatchingAsync(program.Target + ".previous", previous, cancellationToken).ConfigureAwait(false);
+                    await RemoveMatchingAsync(program.Target + ".previous", previous, DestinationRoot(paths, productionRoot), cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -227,7 +251,7 @@ internal static partial class PathPrograms
             var installed = registry.FirstOrDefault(record => record.Path == program.Target)
                 ?? new(program.Name, program.Target, current.Version, program.Sha256, program.PreviousSha256);
             if (await HashAsync(program.Target, cancellationToken).ConfigureAwait(false) == installed.Sha256)
-                result.Add(installed);
+                result.Add(installed with { PendingSha256 = null });
         }
         return result;
     }
@@ -243,18 +267,38 @@ internal static partial class PathPrograms
 
     private static string RegistryPath(InstallationPaths paths) => Path.Combine(paths.OperationsRoot, RecordName);
 
-    private static async Task<List<PathProgramRecord>> ReadRegistryAsync(InstallationPaths paths, CancellationToken cancellationToken)
+    internal static async Task<List<PathProgramRecord>> ReadRegistryAsync(InstallationPaths paths, CancellationToken cancellationToken)
     {
         var path = RegistryPath(paths);
         if (!File.Exists(path)) return [];
-        await using var stream = SafeFileSystem.OpenOwnerFileRead(path);
+        await using var stream = NativeLinux.getuid() == 0
+            ? SafeFileSystem.OpenRegularFileRead(path) : SafeFileSystem.OpenOwnerFileRead(path);
+        var owner = NativeLinux.GetOpenFileIdentity(stream.SafeFileHandle, path);
+        if (owner.Uid != NativeLinux.GetDirectoryIdentity(paths.OperationsRoot).Uid || owner.LinkCount != 1 ||
+            owner.Mode != (UnixFileMode.UserRead | UnixFileMode.UserWrite))
+            throw new InstallerException("The PATH program registry must be private and owned by the operations owner.");
         var registry = await JsonSerializer.DeserializeAsync(stream, DeploymentJsonContext.Default.PathProgramRegistry,
             cancellationToken).ConfigureAwait(false) ?? throw new InstallerException("The PATH program registry is empty.");
         if (registry.SchemaVersion != 1 || registry.Programs is null || registry.Programs.Any(program =>
                 !ReleaseManifest.Sha256Pattern().IsMatch(program.Sha256) ||
-                program.PreviousSha256 is { } previous && !ReleaseManifest.Sha256Pattern().IsMatch(previous)))
+                program.PreviousSha256 is { } previous && !ReleaseManifest.Sha256Pattern().IsMatch(previous) ||
+                program.PendingSha256 is { } pending && !ReleaseManifest.Sha256Pattern().IsMatch(pending)))
             throw new InstallerException("The PATH program registry is invalid.");
         return [.. registry.Programs];
+    }
+
+    private static Task WriteRegistryAsync(InstallationPaths paths, List<PathProgramRecord> programs, CancellationToken cancellationToken)
+        => SafeFileSystem.WriteJsonAtomicAsync(RegistryPath(paths), new PathProgramRegistry(programs),
+            DeploymentJsonContext.Default.PathProgramRegistry, cancellationToken);
+
+    private static async Task IncludeCurrentPublicationsAsync(
+        InstallationPaths paths, List<PathProgramRecord> registry, CancellationToken cancellationToken)
+    {
+        var current = await ReadSetAsync(CurrentRecord(paths), locations: null, cancellationToken).ConfigureAwait(false);
+        if (current is null) return;
+        foreach (var program in current.Programs)
+            if (registry.All(record => record.Path != program.Target))
+                registry.Add(new(program.Name, program.Target, current.Version, program.Sha256, program.PreviousSha256));
     }
 
     internal static string Cached(InstallationPaths paths, string sha256) => Path.Combine(paths.DeploymentStateRoot, "programs", sha256);
@@ -292,6 +336,7 @@ internal static partial class PathPrograms
 
 internal sealed record PathProgram(string Name, string Target, string Sha256, string? PreviousSha256 = null);
 internal sealed record PathProgramSet(string ImageId, string Version, IReadOnlyList<PathProgram> Programs, int SchemaVersion = 1);
-internal sealed record PathProgramRecord(string Name, string Path, string Version, string Sha256, string? PreviousSha256);
+internal sealed record PathProgramRecord(
+    string Name, string Path, string Version, string Sha256, string? PreviousSha256, string? PendingSha256 = null);
 
 internal sealed record PathProgramRegistry(IReadOnlyList<PathProgramRecord> Programs, int SchemaVersion = 1);
