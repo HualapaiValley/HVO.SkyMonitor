@@ -117,6 +117,50 @@ not a performance benchmark or five-second live adoption claim. Duration varies
 by host and includes defensive materialization/hash validation in deadline
 checks. Both actual propagator initialization calls are included in call counts.
 
+### Selected-pass resource baseline
+
+The Manual `OrbitalPassArcResourceEvidenceTests` loads the same offline inputs,
+runs the real parent search, then observes two consecutive public arc calls per
+case. On 2026-10-20, Ubuntu 24.04.4 LTS, eight logical processors, x64 and
+.NET 10.0.13, all six returned Complete with identical repeated canonical hashes.
+The [machine-readable observations](../validation/orbital-prediction-v1/pass-arc-resources.json)
+retain CPU, global allocations, working set, GC counts, exact parent/product
+hashes and actual call/sample counts. The Astronomy binary is stamped
+`bc03d43192407cadba26b3202a0363e922185c89`; the only uncommitted compiled changes
+were this Manual harness and widening the numerical input helper to internal.
+No production source changed for the measurement.
+
+| Case | Public boundary first / repeat, ms | Allocations first / repeat, bytes | Serialized bytes, real-search parent |
+| --- | ---: | ---: | ---: |
+| ISS | 95.12 / 66.47 | 36,811,280 / 36,078,864 | 263,329 |
+| Vanguard1 | 138.48 / 114.66 | 68,431,344 / 67,900,072 | 508,920 |
+| Molniya08195 | 502.15 / 380.32 | 343,450,720 / 334,357,376 | 2,299,960 |
+
+The bounds are 100,000 actual core evaluations, 100,000 requested samples
+(the stricter 8,064 serialized-sample ceiling still applies), 1,500ms, a one-second
+maximum step and 0.001 degrees. This is an absolute baseline, not an improvement
+or statistically isolated cold/warm comparison. No forced GC was performed.
+Public boundary timing includes query validation and final result construction;
+the result's internal elapsed field starts after query validation and is captured
+before its final defensive construction, so it is not substituted for that
+boundary. Loading, parent search, wire serialization, artifact I/O and assertions
+are outside timing. Process peak includes fixtures/JIT/prior cases; CPU/global
+allocation counters can include instrumentation. Different real-search parent
+times/hashes explain the byte-size difference from the independent-parent table.
+No full-population or integrated five-second frame claim follows from this run.
+
+Reproduce after a warning-clean Release build with:
+
+```bash
+dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj \
+  --no-build --configuration Release \
+  --filter FullyQualifiedName~OrbitalPassArcResourceEvidenceTests \
+  --logger trx --results-directory /tmp/hvo-pass-arc-resources
+```
+
+The TRX attachments include six actual canonical arc files and the resource
+summary. Choose a new output directory to preserve previous observations.
+
 ## Semantic and resource evidence
 
 Focused tests cover strict canonical parse/hash/type/provenance checks, original

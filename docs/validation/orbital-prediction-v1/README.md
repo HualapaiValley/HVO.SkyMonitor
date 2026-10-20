@@ -48,6 +48,7 @@ frame-available-to-publication acceptance remain #1395.
 - [Resolved time and independent coordinate/pass references](coordinate-reference.md)
 - [Numerical exposure sampling](exposure-sampling.md) and [future-pass search](pass-search.md)
 - [Additional high-eccentricity/resonant pass qualification](additional-pass-qualification.md)
+- [Record-pinned complete sky pass arcs](../../astronomy/orbital-pass-arc-qualification-v1.md)
 - [Independent dense calibration/held-out checks](sampling-reference.md)
 - [Canonical camera reproduction, source context and labeled samples](virtual-camera.md)
 - [Bounded full-population component resource baseline](component-resources.md)

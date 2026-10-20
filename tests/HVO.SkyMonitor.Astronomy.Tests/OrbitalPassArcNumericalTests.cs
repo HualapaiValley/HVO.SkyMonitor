@@ -114,7 +114,7 @@ public sealed class OrbitalPassArcNumericalTests
 
     private static OrbitalPassArcBounds Bounds => new(1_000_000, 100000, 600000, 1, TargetDegrees);
 
-    private static (OrbitalPassQuery Search, OrbitalTimeData Time) Search(JsonElement item)
+    internal static (OrbitalPassQuery Search, OrbitalTimeData Time) Search(JsonElement item)
     {
         var eop = File.ReadAllBytes(Path.Combine(Root, item.GetProperty("eopFile").GetString()!));
         var leaps = File.ReadAllBytes(Path.Combine(Root, item.GetProperty("leapFile").GetString()!));
