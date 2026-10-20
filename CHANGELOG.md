@@ -65,6 +65,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Retained time-lapse jobs keep their released renderer and recipe identity across upgrades; new jobs restore white cardinal and corner text and the grey image circle under a distinct renderer version. (#1401)
+
 - CameraAgent and LogicHost images no longer warn about overriding the runtime image's HTTP port default during
   their intended startup binding; listening addresses and ports are unchanged. (#1436)
 

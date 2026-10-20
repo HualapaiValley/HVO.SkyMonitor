@@ -37,7 +37,7 @@ public sealed class TimeLapseOptions : IValidatableObject
 
     internal string Target => "time-lapse:" + Identity(RigProfileSha256, MaximumDimension, Timing, Frames);
 
-    private static string Identity(string? rig, int dimension, TimeLapseTimingOptions timing, TimeLapseFrameOptions frames)
+    private static string Identity(string? rig, int dimension, TimeLapseTimingOptions timing, TimeLapseFrameOptions frames, string rendererVersion = TimeLapseFrameRenderer.Version)
         => CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
             version = "hvo-cameraagent-timelapse-preset-v1",
@@ -45,18 +45,19 @@ public sealed class TimeLapseOptions : IValidatableObject
             MaximumDimension = dimension,
             Timing = timing,
             Frames = frames,
-            renderer = TimeLapseFrameRenderer.RecipeIdentity(frames),
+            renderer = TimeLapseFrameRenderer.RecipeIdentity(frames, rendererVersion),
             FFmpegTimeLapseEncoder.ProfileVersion
         });
 
     internal static bool Matches(CameraAgentTimeLapsePreset preset) => preset.Rig is not null &&
         !string.IsNullOrWhiteSpace(preset.AgentId) && preset.AgentId.Length <= 128 &&
         preset.MaximumDimension is >= 128 and <= 1280 && preset.Frames is not null && preset.Timing is not null &&
+        preset.RendererVersion is null or TimeLapseFrameRenderer.LegacyVersion or TimeLapseFrameRenderer.OriginalColoursVersion &&
         preset.IdentitySha256 == Identity(RigProjectionContextFactory.CreateProfileHashSha256(preset.Rig),
-            preset.MaximumDimension, preset.Timing, preset.Frames);
+            preset.MaximumDimension, preset.Timing, preset.Frames, preset.RendererVersion ?? TimeLapseFrameRenderer.LegacyVersion);
 
     internal CameraAgentTimeLapsePreset Freeze(CameraModuleConfig configuration) =>
         new(Target[11..], configuration.AgentId ?? throw new InvalidOperationException("Capture identity is not configured."),
             configuration.DeploymentLocation is null && !configuration.DeploymentLocationRedacted ? configuration.Observatory : null,
-            configuration.Rig, Frames, Timing, MaximumDimension);
+            configuration.Rig, Frames, Timing, MaximumDimension) { RendererVersion = TimeLapseFrameRenderer.Version };
 }

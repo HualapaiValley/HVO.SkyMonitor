@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.Processing;
@@ -15,7 +16,12 @@ public sealed record CameraAgentTimeLapsePreset(
     CameraRigConfig Rig,
     TimeLapseFrameOptions Frames,
     TimeLapseTimingOptions Timing,
-    int MaximumDimension);
+    int MaximumDimension)
+{
+    // 0.9.0 omitted the renderer. Keep that JSON shape and select its released implementation on read.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RendererVersion { get; init; }
+}
 
 /// <summary>One durable request for a retained hourly or daily source period.</summary>
 public sealed record CameraAgentTimeLapseJob(
