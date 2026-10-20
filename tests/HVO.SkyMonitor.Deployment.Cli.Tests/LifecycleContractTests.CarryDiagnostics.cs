@@ -103,10 +103,10 @@ public sealed partial class LifecycleContractTests
         var target = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, FleetStore);
         ExecuteSql(target,
             "CREATE TABLE padding(value BLOB);" +
-            "WITH RECURSIVE rows(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM rows WHERE n < 1024) INSERT INTO padding SELECT zeroblob(8192) FROM rows;" +
+            "WITH RECURSIVE rows(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM rows WHERE n < 40960) INSERT INTO padding SELECT zeroblob(8192) FROM rows;" +
             "CREATE TRIGGER rewrite_pages AFTER UPDATE ON fleet_status_metadata BEGIN UPDATE padding SET value = randomblob(8192); END;");
         var bytes = new FileInfo(target).Length;
-        Assert.IsTrue(bytes > 8 * 1024 * 1024);
+        Assert.IsTrue(bytes > 256L * 1024 * 1024);
         var floors = CameraAgentStateCounters.ReadReadable(fixture.Paths.StateRoot).Floors
             .Where(static floor => floor.Store == FleetStore).Select(static floor => floor with { Value = 20 }).ToArray();
         var trial = Path.Combine(fixture.Root, "large-trial");
@@ -119,18 +119,23 @@ public sealed partial class LifecycleContractTests
         {
             var carried = CameraAgentStateCounters.PlanCarry(floors, _ => target, trial);
             Assert.IsEmpty(carried.Uncarried);
+            Assert.IsTrue(journalBytes > 256L * 1024 * 1024, "The journal must exceed the fixed headroom allowance.");
             Assert.IsTrue(journalBytes >= bytes * 9 / 10, $"The real rollback journal was only {journalBytes} bytes for {bytes} bytes of database.");
-            CameraAgentStateCounters.TrialHost = new FakeHostEnvironment
+            foreach (var available in new[]
             {
-                Fallback = new(fixture.Root, "test", 2 * bytes + 256L * 1024 * 1024)
-            };
-            var started = false;
-            CameraAgentStateCounters.CarryStep = current => { if (current == $"trial:{FleetStore}") started = true; };
-            var refused = CameraAgentStateCounters.PlanCarry(floors, _ => target, trial);
-            Assert.IsEmpty(refused.Floors, "A trial consumed the space needed for its journal and the restore.");
-            Assert.IsFalse(started, "The trial started before checking its space.");
-            Assert.IsFalse(Directory.Exists(trial));
-            Assert.IsTrue(refused.Uncarried.All(static entry => entry.Reason.Contains("rollback journal", StringComparison.Ordinal)));
+                2 * bytes + 256L * 1024 * 1024,
+                3 * bytes + CameraAgentStateCounters.JournalRecordBytes(bytes) + 256L * 1024 * 1024 - 1
+            })
+            {
+                CameraAgentStateCounters.TrialHost = new FakeHostEnvironment { Fallback = new(fixture.Root, "test", available) };
+                var started = false;
+                CameraAgentStateCounters.CarryStep = current => { if (current == $"trial:{FleetStore}") started = true; };
+                var refused = CameraAgentStateCounters.PlanCarry(floors, _ => target, trial);
+                Assert.IsEmpty(refused.Floors, "A trial consumed the space needed for its journal and the restore.");
+                Assert.IsFalse(started, "The trial started before checking its space.");
+                Assert.IsFalse(Directory.Exists(trial));
+                Assert.IsTrue(refused.Uncarried.All(static entry => entry.Reason.Contains("rollback journal", StringComparison.Ordinal)));
+            }
         }
         finally
         {
