@@ -62,7 +62,7 @@ public sealed partial class LifecycleContractTests
         await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Uninstall), fixture.Runner,
             _ => new FakeLifecycleClient(), null, fixture.Uid, fixture.Gid, CancellationToken.None);
         await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Purge) with
-            { ConfirmationInstanceId = fixture.InstanceId }, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None);
+        { ConfirmationInstanceId = fixture.InstanceId }, fixture.Runner, null, null, fixture.Uid, fixture.Gid, CancellationToken.None);
         foreach (var target in targets)
         {
             Assert.IsFalse(File.Exists(target));
@@ -188,7 +188,7 @@ public sealed partial class LifecycleContractTests
         fixture.Runner.CandidateRawIngressSchema = "13";
         var owner = new FakeOwnerClient(fixture.ApplicationIdentity);
         await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Upgrade) with
-            { Release = release.Folder, MigrationBackwardCompatible = true }, fixture.Runner, _ => new FakeLifecycleClient(),
+        { Release = release.Folder, MigrationBackwardCompatible = true }, fixture.Runner, _ => new FakeLifecycleClient(),
             _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None);
         var sha256 = Convert.ToHexStringLower(SHA256.HashData("hvo-sky 1.2.0"u8));
         var retained = PathPrograms.Cached(fixture.Paths, sha256);
