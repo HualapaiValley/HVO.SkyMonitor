@@ -228,7 +228,8 @@ internal sealed class CentralTimeLapseStore(ApplicationDbContext db, TimeProvide
             request.IsDaily && (request.HourlyJobIds.Count == 0 || request.Sources.Count != 0 || request.StartUtc != request.Period.StartUtc || request.EndUtc != request.Period.EndUtc) ||
             !request.IsDaily && (request.HourlyJobIds.Count != 0 || request.EndUtc - request.StartUtc > TimeSpan.FromHours(2)))
             throw new InvalidDataException("Invalid bounded time-lapse request.");
-        _ = HVO.SkyMonitor.Processing.TimeLapseFrameRenderer.RecipeIdentity(request.Preset.Frames);
+        _ = HVO.SkyMonitor.Processing.TimeLapseFrameRenderer.RecipeIdentity(request.Preset.Frames,
+            request.Preset.RendererVersion ?? HVO.SkyMonitor.Processing.TimeLapseFrameRenderer.LegacyVersion);
         _ = HVO.SkyMonitor.Processing.TimeLapseTimelinePlanner.Create(request.StartUtc, request.EndUtc, [], request.Preset.Timing);
         if (request.Preset.MaximumDimension is < 128 or > 4096 || request.Preset.Generation < 1 || !Enum.IsDefined(request.Preset.EncoderProfile) ||
             request.DiscoveryIdentity is { } discovery && (discovery.Length != 64 || !discovery.All(char.IsAsciiHexDigit)) ||

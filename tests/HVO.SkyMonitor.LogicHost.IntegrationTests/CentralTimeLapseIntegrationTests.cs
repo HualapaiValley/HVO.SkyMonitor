@@ -177,6 +177,8 @@ public sealed class CentralTimeLapseIntegrationTests
         await scheduler.ScanAsync(target, CancellationToken.None);
         var rows = await db.CentralTimeLapseJobs.AsNoTracking().Where(job => job.DevicePublicId == target.DevicePublicId).ToArrayAsync();
         Assert.IsTrue(interceptor.Rejected);
+        Assert.IsTrue(rows.All(static row => CentralTimeLapseStore.ReadRequest(row).Preset.RendererVersion ==
+            HVO.SkyMonitor.Processing.TimeLapseFrameRenderer.Version));
         Assert.IsTrue(rows.Any(job => job.ReportDate == request.Period.ReportDate && job.StartUtc == request.Period.StartUtc),
             "The sub-second sunrise hour must be admitted.");
         Assert.IsFalse(rows.Any(job => job.ReportDate == request.Period.ReportDate && job.IsDaily),
