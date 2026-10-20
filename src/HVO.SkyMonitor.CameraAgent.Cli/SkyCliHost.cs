@@ -64,7 +64,7 @@ internal sealed class SkyCliHost
     /// The proxy a connection to CameraAgent goes through: <see cref="HttpClient.DefaultProxy"/>, from <c>http_proxy</c>,
     /// <c>no_proxy</c> and the like, which the connection's handler uses when it is given none. A request through a proxy
     /// leaves this machine, so plain HTTP to one of its own addresses is warned about unless the proxy bypasses it
-    /// (#1384). Tests give their own.
+    /// (#1384). A loopback address is reached directly, never through it (#1404). Tests give their own.
     /// </summary>
     public Func<IWebProxy?> Proxy { get; init; } = static () => HttpClient.DefaultProxy;
 
