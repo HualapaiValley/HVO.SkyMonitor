@@ -685,42 +685,64 @@ public sealed class SkyCliCredentialTests
 
         public IReadOnlyList<string> Requests => [.. _requests];
 
+        /// <summary>
+        /// Stops the server. Stopping is signalled before the listener stops, so the accept loop ends on its own, however
+        /// its shutdown reaches it, and only a fault of the server itself is thrown here.
+        /// </summary>
         public async ValueTask DisposeAsync()
         {
             await _stop.CancelAsync().ConfigureAwait(false);
+            _listener.Stop();
+            await _serving.ConfigureAwait(false);
             _listener.Dispose();
-            try
-            {
-                await _serving.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            catch (SocketException)
-            {
-            }
-            catch (ObjectDisposedException)
-            {
-            }
-
             _stop.Dispose();
         }
 
         private async Task ServeAsync(CancellationToken cancellationToken)
         {
-            while (true)
+            while (!cancellationToken.IsCancellationRequested)
             {
-                using var connection = await _listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
+                TcpClient connection;
                 try
                 {
-                    var stream = connection.GetStream();
-                    _requests.Enqueue(await ReadHeadAsync(stream, cancellationToken).ConfigureAwait(false));
-                    await stream.WriteAsync(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"u8.ToArray(),
-                        cancellationToken).ConfigureAwait(false);
+                    connection = await _listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
                 }
-                catch (IOException)
+                // Stopping reaches a pending accept as cancellation, and an accept begun after the listener stopped as
+                // "not listening" (InvalidOperationException), a disposed listener or a socket error.
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
+                    return;
+                }
+                catch (InvalidOperationException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (SocketException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                using (connection)
+                {
+                    try
+                    {
+                        var stream = connection.GetStream();
+                        _requests.Enqueue(await ReadHeadAsync(stream, cancellationToken).ConfigureAwait(false));
+                        await stream.WriteAsync(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"u8.ToArray(),
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (IOException)
+                    {
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        return;
+                    }
                 }
             }
         }
