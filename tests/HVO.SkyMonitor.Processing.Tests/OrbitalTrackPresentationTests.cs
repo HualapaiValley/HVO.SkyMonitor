@@ -341,6 +341,127 @@ public sealed class OrbitalTrackPresentationTests
     }
 
     [TestMethod]
+    [DataRow(OrbitalSourceValidity.Unknown, false)]
+    [DataRow(OrbitalSourceValidity.PartlyKnown, false)]
+    [DataRow(OrbitalSourceValidity.Known, false)]
+    [DataRow(OrbitalSourceValidity.Unknown, true)]
+    [DataRow(OrbitalSourceValidity.PartlyKnown, true)]
+    [DataRow(OrbitalSourceValidity.Known, true)]
+    public void MandatoryCaptionAtEdgeDisclosesOnlyApplicableCanonicalQualifications(OrbitalSourceValidity validity, bool stale)
+    {
+        (OrbitalGeometryBasis Basis, bool ZeroEop)[] geometries =
+        [
+            (OrbitalGeometryBasis.ConfiguredRig, true),
+            (OrbitalGeometryBasis.ConfiguredRig, false),
+            (OrbitalGeometryBasis.AcceptedMeasured, false)
+        ];
+        foreach (var (basis, zeroEop) in geometries)
+        {
+            foreach (var partial in new[] { false, true })
+            {
+                var track = WithQualifications(Track(pixels: [new(640, 0)], partial: partial), validity, stale, basis, zeroEop);
+                var payload = Payload(track);
+                var caption = payload.TextBlocks.Single();
+                Assert.AreEqual(PresentationTextAnchor.BottomLeft, caption.Anchor);
+                CollectionAssert.Contains(caption.Lines.ToArray(), OrbitalTrackPresentation.Legend);
+                CollectionAssert.Contains(caption.Lines.ToArray(), OrbitalTrackPresentation.UncertaintyLegend);
+                Assert.AreEqual(partial, caption.Lines.Contains(OrbitalTrackPresentation.PartialLegend));
+                Assert.AreEqual(stale, caption.Lines.Contains(OrbitalTrackPresentation.StaleLegend));
+                Assert.AreEqual(validity == OrbitalSourceValidity.Unknown, caption.Lines.Contains(OrbitalTrackPresentation.UnknownSourceValidityLegend));
+                Assert.AreEqual(validity == OrbitalSourceValidity.PartlyKnown, caption.Lines.Contains(OrbitalTrackPresentation.PartlyKnownSourceValidityLegend));
+                Assert.AreEqual(basis == OrbitalGeometryBasis.ConfiguredRig, caption.Lines.Contains(OrbitalTrackPresentation.ConfiguredGeometryLegend));
+                Assert.AreEqual(zeroEop, caption.Lines.Contains(OrbitalTrackPresentation.ZeroEarthOrientationLegend));
+                var bounds = TextBounds(caption, 640, 480);
+                Assert.IsTrue(bounds.Left >= 0 && bounds.Top >= 0 && bounds.Right <= 640 && bounds.Bottom <= 480);
+                Assert.AreEqual(new PixelPoint(640, 0), payload.Markers.Single().Center);
+            }
+        }
+    }
+
+    [TestMethod]
+    public void MandatoryCaptionIncludesWarningsFromCollisionOmittedObjects()
+    {
+        var fresh = WithQualifications(Track("1"), OrbitalSourceValidity.Known);
+        var stale = WithQualifications(Track("2"), OrbitalSourceValidity.Unknown, stale: true);
+        var payload = Payload(fresh, stale);
+
+        Assert.AreEqual(2, payload.TextBlocks.Count, "The second object's optional label collides with the first.");
+        StringAssert.StartsWith(payload.TextBlocks[1].Lines[0], "Predicted NORAD 1", StringComparison.Ordinal);
+        StringAssert.Contains(payload.TextBlocks[1].Lines[1], "FRESH | SOURCE KNOWN", StringComparison.Ordinal);
+        CollectionAssert.Contains(payload.TextBlocks[0].Lines.ToArray(), OrbitalTrackPresentation.StaleLegend);
+        CollectionAssert.Contains(payload.TextBlocks[0].Lines.ToArray(), OrbitalTrackPresentation.UnknownSourceValidityLegend);
+        Assert.AreEqual(2, payload.Segments.Count);
+        Assert.AreEqual(4, payload.Markers.Count, "Label collision cannot discard either object's canonical endpoints.");
+    }
+
+    [TestMethod]
+    public void MandatoryCaptionIncludesWarningsFromObjectsBeyondOptionalLabelCap()
+    {
+        var tracks = Enumerable.Range(1, 32).Select(index => WithQualifications(
+            Track(index.ToString(CultureInfo.InvariantCulture), [new(20 + (index - 1) % 4 * 800, 50 + (index - 1) / 4 * 300)],
+                width: 3200, height: 3200),
+            index == 9 ? OrbitalSourceValidity.Unknown : OrbitalSourceValidity.Known, stale: index == 9)).ToArray();
+        var lastOrdinal = tracks.Single(static t => t.Lineage.ObjectIdentity.CatalogNumber == "9");
+        var alone = OrbitalTrackPresentation.CreatePayload(3200, 3200, [lastOrdinal]);
+        Assert.AreEqual(2, alone.TextBlocks.Count, "The warned object's label fits when the count limit is not reached.");
+        var payload = OrbitalTrackPresentation.CreatePayload(3200, 3200, tracks);
+
+        Assert.AreEqual(OrbitalTrackPresentation.MaximumLabels + 1, payload.TextBlocks.Count);
+        Assert.IsFalse(payload.TextBlocks.Skip(1).Any(static b => b.Lines[0] == "Predicted NORAD 9"));
+        CollectionAssert.Contains(payload.TextBlocks[0].Lines.ToArray(), OrbitalTrackPresentation.StaleLegend);
+        CollectionAssert.Contains(payload.TextBlocks[0].Lines.ToArray(), OrbitalTrackPresentation.UnknownSourceValidityLegend);
+        Assert.AreEqual(32, payload.Markers.Count);
+    }
+
+    [TestMethod]
+    public void MandatoryWarningsRemainFixedAndBoundedWhileAllSourceIdentitiesAndNamesAreRetained()
+    {
+        var tracks = Enumerable.Range(1, OrbitalTrackPresentation.MaximumTracks).Select(index => WithQualifications(
+            Track(index.ToString(CultureInfo.InvariantCulture), [new(640, 0)], partial: true),
+            index % 2 == 0 ? OrbitalSourceValidity.PartlyKnown : OrbitalSourceValidity.Unknown, stale: index % 2 != 0)).ToArray();
+        var names = tracks.ToDictionary(static t => t.Lineage.ObjectIdentity,
+            static t => t.Lineage.ObjectIdentity.CatalogNumber.PadRight(OrbitalTrackPresentation.MaximumDisplayNameCharacters, 'X'));
+        var minimal = Payload(tracks[0], tracks[1]);
+        var converted = OrbitalTrackPresentation.CreatePayloadAndSourceFacts(640, 480, tracks, names);
+        var caption = converted.Payload.TextBlocks.Single();
+        string[] expected =
+        [
+            OrbitalTrackPresentation.Legend, OrbitalTrackPresentation.PartialLegend, OrbitalTrackPresentation.UncertaintyLegend,
+            OrbitalTrackPresentation.StaleLegend, OrbitalTrackPresentation.UnknownSourceValidityLegend,
+            OrbitalTrackPresentation.PartlyKnownSourceValidityLegend, OrbitalTrackPresentation.ConfiguredGeometryLegend,
+            OrbitalTrackPresentation.ZeroEarthOrientationLegend
+        ];
+
+        CollectionAssert.AreEqual(expected, caption.Lines.ToArray());
+        CollectionAssert.AreEqual(JsonSerializer.SerializeToUtf8Bytes(minimal.TextBlocks.Single()), JsonSerializer.SerializeToUtf8Bytes(caption));
+        Assert.IsTrue(caption.Lines.Count <= PresentationLayerPayloadV1.MaximumLinesPerBlock);
+        Assert.IsTrue(caption.Lines.All(static line => line.Length <= PresentationLayerPayloadV1.MaximumLineCharacters));
+        Assert.AreEqual(OrbitalTrackPresentation.MaximumTracks, converted.Payload.Markers.Count);
+        using var facts = JsonDocument.Parse(converted.SourceFactsJson);
+        var retained = facts.RootElement.GetProperty("Tracks").EnumerateArray().ToArray();
+        Assert.AreEqual(tracks.Length, retained.Length);
+        foreach (var track in tracks)
+        {
+            var source = retained.Single(f => f.GetProperty("ProductSha256").GetString() == track.ProductSha256);
+            Assert.AreEqual(names[track.Lineage.ObjectIdentity], source.GetProperty("DisplayName").GetString());
+        }
+    }
+
+    [TestMethod]
+    public void RejectsRasterThatFitsOrdinaryCaptionButCannotFitRequiredWarnings()
+    {
+        var qualified = WithQualifications(Track(pixels: [new(640, 0)], height: 32), OrbitalSourceValidity.Known,
+            basis: OrbitalGeometryBasis.AcceptedMeasured, zeroEop: false);
+        var payload = OrbitalTrackPresentation.CreatePayload(640, 32, [qualified]);
+        CollectionAssert.AreEqual(new[] { OrbitalTrackPresentation.Legend, OrbitalTrackPresentation.UncertaintyLegend },
+            payload.TextBlocks.Single().Lines.ToArray());
+        var diagnostic = WithQualifications(qualified, OrbitalSourceValidity.Unknown, stale: true);
+
+        var exception = Assert.ThrowsExactly<ArgumentException>(() => OrbitalTrackPresentation.CreatePayload(640, 32, [diagnostic]));
+        StringAssert.Contains(exception.Message, "mandatory predicted track legend and qualifications", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void CallerMutationsCannotChangeTheReturnedPayload()
     {
         var canonical = Track();
@@ -431,6 +552,38 @@ public sealed class OrbitalTrackPresentationTests
             EndEpochAgeHours = (t.RequestedInterval.EndUtc.AddSeconds(1) - t.Lineage.EpochUtc).TotalHours
         }
     };
+
+    // Synthetic canonical provenance exercises disclosure, not measured calibration acceptance or time adoption.
+    private static OrbitalExposureTrackV1 WithQualifications(OrbitalExposureTrackV1 track, OrbitalSourceValidity validity,
+        bool stale = false, OrbitalGeometryBasis basis = OrbitalGeometryBasis.ConfiguredRig, bool zeroEop = true)
+    {
+        var epoch = stale ? Epoch.AddHours(-50) : Epoch;
+        return OrbitalPredictionJson.CreateTrack(track with
+        {
+            Lineage = track.Lineage with
+            {
+                EpochUtc = epoch,
+                StartEpochAgeHours = (track.RequestedInterval.StartUtc - epoch).TotalHours,
+                EndEpochAgeHours = (track.RequestedInterval.EndUtc - epoch).TotalHours,
+                Freshness = stale ? OrbitalElementFreshness.Stale : OrbitalElementFreshness.Fresh,
+                SourceValidity = validity
+            },
+            Geometry = track.Geometry with
+            {
+                Basis = basis,
+                AssessmentIdentitySha256 = basis == OrbitalGeometryBasis.AcceptedMeasured ? Sha('A') : null
+            },
+            Model = track.Model with
+            {
+                NominalZeroEarthOrientation = zeroEop,
+                EarthOrientationSha256 = zeroEop ? null : Sha('C'),
+                EarthOrientationCoverage = zeroEop ? null : track.Model.LeapTableCoverage,
+                EarthOrientationStatus = zeroEop ? OrbitalEarthOrientationStatus.ApproximateZero : OrbitalEarthOrientationStatus.Final,
+                Ut1Convention = zeroEop ? "utc-assumed-ut1" : "utc-plus-pinned-dut1",
+                PolarMotionConvention = zeroEop ? "zero-assumed" : "pinned-eop"
+            }
+        });
+    }
 
     // These are explicit synthetic contract products, not numerical propagation/projection reference data.
     // Canonical factories establish valid content identities; no orbit engine, files or network are involved.

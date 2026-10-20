@@ -15,6 +15,11 @@ public static class OrbitalTrackPresentation
     public const string Legend = "PREDICTED SATELLITES - NOT DETECTIONS";
     public const string PartialLegend = "PARTIAL - GAPS / UNCOVERED TIME OMITTED";
     public const string UncertaintyLegend = "PHYSICAL UNCERTAINTY MAY BE UNKNOWN";
+    public const string StaleLegend = "STALE ELEMENTS";
+    public const string UnknownSourceValidityLegend = "SOURCE VALIDITY UNKNOWN";
+    public const string PartlyKnownSourceValidityLegend = "SOURCE VALIDITY PARTLY KNOWN";
+    public const string ConfiguredGeometryLegend = "CONFIGURED GEOMETRY";
+    public const string ZeroEarthOrientationLegend = "ZERO EOP - DIAGNOSTIC";
     public const int MaximumTracks = 32;
     public const int MaximumSamplesPerTrack = 1024;
     public const int MaximumTotalSamples = 8192;
@@ -40,7 +45,8 @@ public static class OrbitalTrackPresentation
     /// inside declared segments are joined. Single or stationary samples retain endpoint circles. Physical
     /// visibility and brightness are never inferred, including from unknown illumination. Optional object
     /// labels are omitted when crowded, off-frame or past their count limit; their supplied names still bind
-    /// source identity. The mandatory predicted/partial legend must fit, otherwise the raster is rejected.
+    /// source identity. The mandatory caption retains applicable partial, stale, source-validity and diagnostic
+    /// qualifications independently of object labels. It must fit in full, otherwise the raster is rejected.
     /// Empty query results and query-level incompleteness remain the caller's responsibility.
     /// </remarks>
     public static PresentationLayerPayloadV1 CreatePayload(
@@ -88,7 +94,7 @@ public static class OrbitalTrackPresentation
         var ordered = frozen.OrderBy(static t => t.Lineage.ObjectIdentity.CatalogNumber, StringComparer.Ordinal).ToArray();
         var names = FreezeNames(displayNames, objects);
         var scale = Math.Min(3, PresentationFont.StarFrameScale(sourceWidth, sourceHeight));
-        var caption = Caption(sourceWidth, sourceHeight, scale, ordered.Any(static t => t.Status == OrbitalExecutionStatus.Partial));
+        var caption = Caption(sourceWidth, sourceHeight, scale, ordered);
         var texts = new List<PresentationTextBlockV1> { caption };
         var markers = new List<PresentationMarkerV1>();
         var segments = new List<PresentationSegmentV1>();
@@ -202,16 +208,25 @@ public static class OrbitalTrackPresentation
         return names;
     }
 
-    private static PresentationTextBlockV1 Caption(int width, int height, int scale, bool partial)
+    private static PresentationTextBlockV1 Caption(int width, int height, int scale, IReadOnlyList<OrbitalExposureTrackV1> tracks)
     {
-        string[] lines = partial ? [Legend, PartialLegend, UncertaintyLegend] : [Legend, UncertaintyLegend];
+        // At most eight fixed lines, independent of object count, names and optional label placement.
+        // Do not infer additional physical or freshness facts from source validity or geometry provenance.
+        var lines = new List<string> { Legend };
+        if (tracks.Any(static t => t.Status == OrbitalExecutionStatus.Partial)) lines.Add(PartialLegend);
+        lines.Add(UncertaintyLegend);
+        if (tracks.Any(static t => t.Lineage.Freshness == OrbitalElementFreshness.Stale)) lines.Add(StaleLegend);
+        if (tracks.Any(static t => t.Lineage.SourceValidity == OrbitalSourceValidity.Unknown)) lines.Add(UnknownSourceValidityLegend);
+        if (tracks.Any(static t => t.Lineage.SourceValidity == OrbitalSourceValidity.PartlyKnown)) lines.Add(PartlyKnownSourceValidityLegend);
+        if (tracks.Any(static t => t.Geometry.Basis == OrbitalGeometryBasis.ConfiguredRig)) lines.Add(ConfiguredGeometryLegend);
+        if (tracks.Any(static t => t.Model.NominalZeroEarthOrientation)) lines.Add(ZeroEarthOrientationLegend);
         for (var size = 9_000 * scale; size >= 7_000; size -= 1_000)
         {
             var block = new PresentationTextBlockV1(PresentationTextAnchor.BottomLeft, default, lines,
                 scale, 4, 1, Color, Appearance: Appearance(size));
             if (Inside(Bounds(block, width, height), width, height)) return block;
         }
-        throw new ArgumentException("Raster cannot carry the mandatory predicted/partial legend.", nameof(width));
+        throw new ArgumentException("Raster cannot carry the mandatory predicted track legend and qualifications.", nameof(width));
     }
 
     private static string[] Label(OrbitalExposureTrackV1 track, string? name)
