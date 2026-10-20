@@ -47,7 +47,8 @@ public sealed class SwpcScenarioPolicyTests
     [DataRow("s27-original-record-outer-whitespace.json")]
     public async Task RunnerMatchesEveryPolicyExpectation(string file)
     {
-        var scenario = JsonNode.Parse(File.ReadAllText(Path.Combine(Pack, "scenarios", file)))!;
+        ArgumentNullException.ThrowIfNull(file);
+        var scenario = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(Pack, "scenarios", file)).ConfigureAwait(false))!;
         using var store = new SwpcPolicyTestStoreDouble();
         var clock = new ManualTimeProvider(SwpcTestData.Now);
         var client = new PolicyStubClient();

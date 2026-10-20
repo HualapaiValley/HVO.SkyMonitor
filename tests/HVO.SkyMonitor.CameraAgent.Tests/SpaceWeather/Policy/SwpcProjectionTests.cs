@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Fetch;
 using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Policy;
@@ -240,6 +241,8 @@ public sealed class SwpcProjectionTests
     }
 
     [TestMethod]
+    [SuppressMessage("Security", "CA5394:Do not use insecure randomness",
+        Justification = "The deterministic test compares cadence jitter, not security randomness.")]
     public void UniformJitterUsesInjectedRandomAndStaysInRange()
     {
         var expected = new Random(1398);

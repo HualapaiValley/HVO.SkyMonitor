@@ -62,7 +62,7 @@ public sealed class SwpcRunnerTests
         var resume = h.Runner.ResumeAsync(null, Guid.NewGuid()).AsTask();
         using var cancelled = new CancellationTokenSource();
         var waiting = h.Runner.RunAsync(SwpcProduct.KpForecast, SwpcAttemptTrigger.Manual, "cancelled", cancelled.Token).AsTask();
-        cancelled.Cancel();
+        await cancelled.CancelAsync().ConfigureAwait(false);
         await Assert.ThrowsAsync<OperationCanceledException>(() => waiting).ConfigureAwait(false);
         Assert.AreEqual(1, h.Store.Begins.Count);
         Assert.AreEqual(1, h.Client.Calls);
@@ -177,7 +177,7 @@ public sealed class SwpcRunnerTests
     {
         using var h = new Harness();
         using var cancelled = new CancellationTokenSource();
-        cancelled.Cancel();
+        await cancelled.CancelAsync().ConfigureAwait(false);
         await Assert.ThrowsAsync<OperationCanceledException>(() => h.Runner.RunAsync(SwpcProduct.Alerts, SwpcAttemptTrigger.Manual, "cancel", cancelled.Token).AsTask()).ConfigureAwait(false);
         Assert.AreEqual(0, h.Store.Begins.Count);
         Assert.AreEqual(0, h.Store.Completions.Count);
@@ -192,7 +192,11 @@ public sealed class SwpcRunnerTests
         using var h = new Harness();
         using var cancelled = new CancellationTokenSource();
         var original = new OperationCanceledException(cancelled.Token);
-        h.Client.Fetch = (_, _, _) => { cancelled.Cancel(); throw original; };
+        h.Client.Fetch = async (_, _, _) =>
+        {
+            await cancelled.CancelAsync().ConfigureAwait(false);
+            throw original;
+        };
         if (settlementFails) h.Store.CompletionFailure = _ => new SwpcStorageException();
         var thrown = await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => h.Runner.RunAsync(SwpcProduct.Alerts, SwpcAttemptTrigger.Manual, "cancel-after", cancelled.Token).AsTask()).ConfigureAwait(false);
         Assert.AreSame(original, thrown);
@@ -335,7 +339,9 @@ public sealed class SwpcRunnerTests
         };
         h.Client.Response = new(SwpcProduct.Alerts, SwpcTestData.Now, SwpcTestData.Now, SwpcTransportFailure.None, 200, mediaType: "application/json", body: "[]"u8.ToArray());
         var result = await h.Runner.RunAsync(SwpcProduct.Alerts, SwpcAttemptTrigger.Scheduled, "attention").ConfigureAwait(false);
-        CollectionAssert.AreEqual(new[] { "ALTZZZ/1", "provider/alerts/format-drift" }, result.Attention.Select(a => a.Group).ToArray());
+        Assert.AreEqual(2, result.Attention.Length);
+        Assert.AreEqual("ALTZZZ/1", result.Attention[0].Group);
+        Assert.AreEqual("provider/alerts/format-drift", result.Attention[1].Group);
         using var replay = new Harness();
         replay.Store.CompleteStatus = SwpcWriteStatus.Replayed;
         replay.Store.ReplayAttention = [new("provider/alerts/format-drift", "new", null)];
@@ -394,12 +400,15 @@ public sealed class SwpcRunnerTests
         using var h = new Harness();
         using var caller = new CancellationTokenSource();
         var original = new OperationCanceledException(caller.Token);
-        h.Store.BeforeCompleteAsync = (request, token) =>
+        h.Store.BeforeCompleteAsync = async (request, token) =>
         {
-            if (request.Outcome is not null) { caller.Cancel(); throw original; }
+            if (request.Outcome is not null)
+            {
+                await caller.CancelAsync().ConfigureAwait(false);
+                throw original;
+            }
             Assert.IsFalse(token.IsCancellationRequested);
             Assert.AreNotEqual(caller.Token, token);
-            return ValueTask.CompletedTask;
         };
         var thrown = await Assert.ThrowsExactlyAsync<OperationCanceledException>(() =>
             h.Runner.RunAsync(SwpcProduct.Alerts, SwpcAttemptTrigger.Manual, "cancel-completion", caller.Token).AsTask()).ConfigureAwait(false);
