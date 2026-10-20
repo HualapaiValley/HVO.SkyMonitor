@@ -35,6 +35,20 @@ internal static partial class Program
 
     public static async Task Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "satellite-overlay")
+        {
+            SatelliteOverlayPoc(args);
+            return;
+        }
+        if (args.Length > 0 && args[0] is "nominal-evaluate" or "nominal-compare")
+        {
+            if (args.Length == 3 && args[0] == "nominal-evaluate")
+                NominalCausalEvaluation.Publish(args[2], NominalCausalEvaluation.Evaluate(args[1]));
+            else if (args.Length == 4 && args[0] == "nominal-compare")
+                NominalCausalEvaluation.Publish(args[3], NominalPredictionComparison.Compare(args[1], args[2]));
+            else throw new ArgumentException("Usage: nominal-evaluate PUBLIC_RAW_ROOT NEW_REPORT.json; nominal-compare EVALUATION.json PUBLIC_PREDICTION_ROOT NEW_REPORT.json; see NOMINAL-EVALUATION.md.");
+            return;
+        }
         if (args.Length > 0 && args[0] == "satellite-resources")
         {
             OrbitalPopulationPoc(args);

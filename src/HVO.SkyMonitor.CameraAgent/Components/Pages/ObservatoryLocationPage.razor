@@ -334,6 +334,8 @@ else
         <p class="site-note site-provenance"><span class="status-icon @Provenance.Icon" aria-hidden="true"></span><span>@Provenance.Text</span></p>
     </section>
 
+    <SatellitePassPlanner Observer="_state.Observer" Rig="_state.Geometry" AtUtc="_state.AtUtc" ContextLoading="_loading" />
+
     <div class="ops-grid two">
         <section class="ops-panel" aria-labelledby="site-history-heading">
             <header class="ops-panel-heading"><div><h2 id="site-history-heading" tabindex="-1">Location changes</h2><p>Each local draft appends a version; earlier versions and their captures never change.</p></div><span>@(_manual?.History.Count ?? 0) recorded</span></header>
