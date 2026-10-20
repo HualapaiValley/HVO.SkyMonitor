@@ -63,6 +63,7 @@ public sealed partial class OrbitalElementsRefreshJob
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
         Justification = "No wait handle is ever materialized; the job lives for the host's lifetime.")]
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private long _activity;
 
     public OrbitalElementsRefreshJob(
         IOrbitalElementsStore store,
@@ -97,15 +98,27 @@ public sealed partial class OrbitalElementsRefreshJob
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runKey);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        Interlocked.Increment(ref _activity);
         try
         {
             return await ExecuteCoreAsync(runKey, trigger, scheduledForUtc, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
+            Interlocked.Increment(ref _activity);
             _gate.Release();
         }
     }
+
+    /// <summary>
+    /// An activity generation that is odd while an occurrence is executing and advances on every start and finish. A
+    /// durable in-flight attempt observed between two equal, even generations was left unsettled by a failed close,
+    /// because only this process can own the store root and no occurrence ran across the read.
+    /// </summary>
+    internal long ActivityGeneration => Interlocked.Read(ref _activity);
+
+    /// <summary>Whether an in-flight attempt read between <paramref name="before"/> and <paramref name="after"/> is unsettled.</summary>
+    internal static bool IsIdleAcross(long before, long after) => before == after && (before & 1) == 0;
 
     private async ValueTask<LocalAutomationExecution> ExecuteCoreAsync(
         string runKey,
