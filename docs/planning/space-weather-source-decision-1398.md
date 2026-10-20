@@ -288,6 +288,14 @@ are accepted for the core products, or 8,115,978,240 with OVATION.
 
 **Proposed retention:**
 
+- **Proposed:** Completed attempt journal rows are kept for 35 days from
+  `StartedUtc`, capped at 50,000 rows, pruning the oldest completed rows first
+  in the same retention step; incomplete rows are never pruned. Begin and
+  complete identities live and die with their attempt. Halt and acknowledgement
+  command identities are kept for 35 days, capped at 10,000. Purging rows
+  advances the store revision; an unknown or pruned completion returns
+  `NotFound` without reapplying. Health reports the journal row count and oldest
+  retained start.
 - Messages are kept until 35 days after their notice ends. That is longer than
   the observed 28-day upstream window.
 - For scales, Kp and the 3-day forecast, each snapshot whose content hash

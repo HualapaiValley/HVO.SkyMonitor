@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Shared space-weather storage contracts define snapshot comparison, atomic completion and bounded local history for the upcoming SWPC refresh service. (#1398)
+
 - Release installs and upgrades put verified `hvo-sky` and `hvo-sky-install` commands on PATH, keep replaced programs
   as `.previous`, restore matching commands on rollback, and report their paths in plans and install records. Resume
   and reinstall hints use the durable installer; uninstall and purge honor shared ownership. Publication refuses
