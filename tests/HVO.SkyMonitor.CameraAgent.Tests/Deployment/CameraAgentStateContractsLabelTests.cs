@@ -33,7 +33,8 @@ public sealed class CameraAgentStateContractsLabelTests
         ("executionEvidenceOutbox", "raw/evidence/execution-evidence-outbox.db", "SELECT version FROM execution_evidence_schema WHERE schema_key = 1;"),
         ("timeLapses", "raw/.time-lapses/time-lapses.db", "PRAGMA user_version;"),
         ("nightlyProducts", "raw/.nightly-products/nightly-products.db", "PRAGMA user_version;"),
-        ("localAutomations", "raw/.automation/local-automations.db", "PRAGMA user_version;")
+        ("localAutomations", "raw/.automation/local-automations.db", "PRAGMA user_version;"),
+        ("orbitalElements", "raw/.orbital-elements/orbital-elements.db", "PRAGMA user_version;")
     ];
 
     private static readonly string[] StorageRoots = ["/app/data/raw", "/app/data/archive", "/app/data/archive/products"];

@@ -44,6 +44,15 @@ public interface ILocalAutomationTaskRegistry
             : ValueTask.FromResult(new LocalAutomationExecution(LocalAutomationRunOutcome.Skipped,
                 "This registry has no registered source-window task adapter."));
     }
+
+    /// <summary>
+    /// The phase origin of a definition saved for the first time. A later save keeps the stored epoch,
+    /// so this is consulted once per definition identity and never on a replayed command.
+    /// </summary>
+    DateTimeOffset ResolveInitialTriggerEpoch(LocalAutomationDefinition proposed, DateTimeOffset nowUtc) => nowUtc;
+
+    /// <summary>Whether an explicit operator run-now may be queued for this definition's registered task.</summary>
+    bool SupportsRunNow(LocalAutomationDefinition definition) => false;
 }
 
 /// <summary>
