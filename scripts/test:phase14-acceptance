@@ -398,6 +398,7 @@ validate_evidence_contract() {
 # The Release build is a prerequisite; PEReader reads bytes without loading target code.
 enum_reader="$SOURCE_REPO_ROOT/scripts/enum-metadata/bin/Release/net10.0/HVO.SkyMonitor.EnumMetadata.dll"
 fault_assembly="$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.Common.dll"
+[[ -f "$enum_reader" && -f "$fault_assembly" ]] || fail "Build the solution in Release before auditing fault enums."
 enum_values_json() {
     dotnet "$enum_reader" "$1" "$2"
 }
@@ -423,7 +424,7 @@ validate_evidence_contract "$evidence_contract" "$campaign"
 # under the pin and would invalidate the recorded import. Development v1 unit coverage owns it instead:
 # AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture faults every enum value, and
 # the EvidenceRelease_*WaitingForLifecycleLock tests drive its write-off race. Any other unmapped value
-# still fails here (proved by the probe below) until it is mapped or given its own reasoned exclusion.
+# still fails here (proved by the omission control below) until it is mapped or given its own reasoned exclusion.
 raw_ingress_enum=HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawIngressFaultPoint
 raw_ingress_exclusions='["BeforeAcceptanceLifecycleLock"]'
 assert_enum_coverage "$fault_assembly" "$raw_ingress_enum" 'boundary:raw-ingress:' "$raw_ingress_exclusions"

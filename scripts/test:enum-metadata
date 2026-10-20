@@ -83,15 +83,32 @@ class EnumMetadata(unittest.TestCase):
         return subprocess.run(["dotnet", str(READER), str(assembly or self.assembly), name],
                               capture_output=True, text=True)
 
-    def test_each_legal_spelling_retains_unmapped_member(self):
-        for name in ("BlockComment", "Attributed", "LineComment", "StringBefore", "Explicit",
-                     "TrailingComma", "NoTrailingComma"):
-            with self.subTest(name=name):
-                result = self.read("Cases." + name)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                expected = ["Alias", "Mapped", "Probe"] if name == "Explicit" else ["Mapped", "Probe"]
-                self.assertEqual(json.loads(result.stdout), expected)
-                self.assertNotEqual(json.loads(result.stdout), ["Mapped"], "Unmapped Probe must fail coverage")
+    def check_members(self, name, expected=None):
+        result = self.read("Cases." + name)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), expected or ["Mapped", "Probe"])
+        self.assertNotEqual(json.loads(result.stdout), ["Mapped"], "Unmapped Probe must fail coverage")
+
+    def test_block_commented_member(self):
+        self.check_members("BlockComment")
+
+    def test_attributed_member(self):
+        self.check_members("Attributed")
+
+    def test_comment_delimiters_inside_line_comments(self):
+        self.check_members("LineComment")
+
+    def test_comment_delimiters_inside_strings_and_char_literals(self):
+        self.check_members("StringBefore")
+
+    def test_explicit_values_and_alias(self):
+        self.check_members("Explicit", ["Alias", "Mapped", "Probe"])
+
+    def test_trailing_comma(self):
+        self.check_members("TrailingComma")
+
+    def test_no_trailing_comma(self):
+        self.check_members("NoTrailingComma")
 
     def test_invalid_source_is_refused_by_compiler_and_metadata_reader(self):
         source = self.directory / "invalid.cs"
