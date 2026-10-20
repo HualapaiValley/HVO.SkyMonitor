@@ -54,20 +54,20 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         var expected = await service.GetBindingAsync(old.BindingId, old.OwnerId, old.ObservatoryId).ConfigureAwait(false);
         using var client = await BindingKeyClientAsync(old).ConfigureAwait(false);
         using var probe = new BindingReadProbe();
-        using var response = await client.GetAsync(BindingPath(old.ObservatoryId, camera, old.InstallationId)).ConfigureAwait(false);
+        using var response = await probe.GetAsync(client, BindingPath(old.ObservatoryId, camera, old.InstallationId)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
         var result = await response.Content.ReadFromJsonAsync<ExecutionEvidenceInstallationBindingsView>().ConfigureAwait(false);
         Assert.IsNotNull(result);
         Assert.IsFalse(result.Truncated);
         Assert.AreEqual(expected, result.Bindings.Single());
-        using var emptyResponse = await client.GetAsync(BindingPath(old.ObservatoryId, camera, replacement.InstallationId!.Value)).ConfigureAwait(false);
+        using var emptyResponse = await probe.GetAsync(client, BindingPath(old.ObservatoryId, camera, replacement.InstallationId!.Value)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, emptyResponse.StatusCode);
         var empty = await emptyResponse.Content.ReadFromJsonAsync<ExecutionEvidenceInstallationBindingsView>().ConfigureAwait(false);
         Assert.IsNotNull(empty);
         Assert.IsEmpty(empty.Bindings);
         Assert.IsFalse(empty.Truncated);
-        Assert.HasCount(4, probe.Commands);
-        Assert.IsTrue(probe.Commands.All(c => c.Sql.TrimStart().StartsWith("SELECT", StringComparison.Ordinal)));
+        Assert.HasCount(4, probe.Commands, probe.Describe());
+        Assert.IsTrue(probe.Commands.All(c => c.Sql.TrimStart().StartsWith("SELECT", StringComparison.Ordinal)), probe.Describe());
         db.ChangeTracker.Clear();
         Assert.AreEqual(expected, await service.GetBindingAsync(old.BindingId, old.OwnerId, old.ObservatoryId).ConfigureAwait(false));
         Assert.AreEqual(DeviceRegistrationStatus.Revoked, (await db.DeviceRegistrations.AsNoTracking().SingleAsync(r => r.Id == old.RegistrationId).ConfigureAwait(false)).Status);
@@ -95,7 +95,18 @@ public sealed partial class ExecutionEvidenceIntegrationTests
             using var allowed = await client.GetAsync(BindingPath(a.ObservatoryId, aCamera, a.InstallationId)).ConfigureAwait(false);
             Assert.AreEqual(HttpStatusCode.OK, allowed.StatusCode, role.ToString());
         }
-        using var probe = new BindingReadProbe();
+        var reconciliation = await PrepareReconciliationAsync().ConfigureAwait(false);
+        var workerBindingRead = new TaskCompletionSource<BindingCommand>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var probe = new BindingReadProbe
+        {
+            OnObservedBindingQuery = command =>
+            {
+                if (command.Parameters.Any(p => p.Value is Guid id && id == reconciliation.Device.BindingId)) workerBindingRead.TrySetResult(command);
+            }
+        };
+        // Force the ordinary hosted worker to read a binding while the denied-route probe is open.
+        await db.Set<ExecutionEvidenceArtifactCheck>().Where(c => c.ArtifactReferenceId == reconciliation.ReferenceId)
+            .ExecuteUpdateAsync(update => update.SetProperty(c => c.NextCheckAtUtc, DateTimeOffset.UnixEpoch)).ConfigureAwait(false);
         foreach (var path in new[]
         {
             BindingPath(b.ObservatoryId, bCamera, b.InstallationId),
@@ -107,11 +118,15 @@ public sealed partial class ExecutionEvidenceIntegrationTests
             BindingPath(a.ObservatoryId, aCamera, Guid.NewGuid())
         })
         {
-            using var denied = await client.GetAsync(path).ConfigureAwait(false);
+            using var denied = await probe.GetAsync(client, path).ConfigureAwait(false);
             Assert.AreEqual(HttpStatusCode.NotFound, denied.StatusCode);
             Assert.IsFalse((await denied.Content.ReadAsStringAsync().ConfigureAwait(false)).Contains(b.BindingId.ToString(), StringComparison.OrdinalIgnoreCase));
         }
-        Assert.IsFalse(probe.Commands.Any(c => c.Sql.Contains("FROM [ExecutionEvidenceBindings]", StringComparison.Ordinal)));
+        var workerCommand = await workerBindingRead.Task.WaitAsync(TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+        Assert.AreEqual("execution-evidence.reconcile", workerCommand.Operation);
+        TestContext.WriteLine($"Unrelated worker: {workerCommand.ContextId}; Activity: {workerCommand.ActivityId}; Operation: {workerCommand.Operation}\n{workerCommand.Sql}");
+        Assert.IsNotEmpty(probe.Commands, probe.Describe());
+        Assert.IsFalse(probe.Commands.Any(c => c.Sql.Contains("FROM [ExecutionEvidenceBindings]", StringComparison.Ordinal)), probe.Describe());
         db.ObservatoryMemberships.Remove(membership);
         await db.SaveChangesAsync().ConfigureAwait(false);
         using var removed = await client.GetAsync(BindingPath(a.ObservatoryId, aCamera, a.InstallationId)).ConfigureAwait(false);
@@ -166,9 +181,9 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         using var probe = new BindingReadProbe { OnBindingQuery = () => cancellation.Cancel() };
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
         {
-            using var response = await client.GetAsync(path, cancellation.Token).ConfigureAwait(false);
+            using var response = await probe.GetAsync(client, path, cancellation.Token).ConfigureAwait(false);
         }).ConfigureAwait(false);
-        Assert.IsTrue(probe.Commands.Any(c => c.Sql.Contains("FROM [ExecutionEvidenceBindings]", StringComparison.Ordinal)), "Cancel after real SQL authority resolution, at binding query execution.");
+        Assert.IsTrue(probe.Commands.Any(c => c.Sql.Contains("FROM [ExecutionEvidenceBindings]", StringComparison.Ordinal)), "Cancel after real SQL authority resolution, at binding query execution. " + probe.Describe());
         await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
         await Assert.ThrowsAsync<OperationCanceledException>(() => scope.ServiceProvider.GetRequiredService<ExecutionEvidenceService>()
             .ListInstallationBindingsAsync(device.ObservatoryId, camera, device.InstallationId, device.OwnerId, device.ObservatoryId, cancellation.Token)).ConfigureAwait(false);
@@ -195,16 +210,27 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         return client;
     }
 
-    private sealed record BindingCommand(string Sql, (string Name, object Value)[] Parameters);
+    private sealed record BindingCommand(string Sql, (string Name, object Value)[] Parameters, string? ContextId, string? ActivityId, string? Operation);
 
     // The evidence service owns its separate SQL context/pool. Observe actual EF diagnostics rather
     // than replacing that context or changing production registration to install a test interceptor.
+    // Explicit request trace IDs exclude the ordinary reconciliation worker, including from callbacks.
     private sealed class BindingReadProbe : IObserver<DiagnosticListener>, IObserver<KeyValuePair<string, object?>>, IDisposable
     {
         private readonly IDisposable _all;
+        private readonly ActivityTraceId _traceId = ActivityTraceId.CreateRandom();
         private readonly List<IDisposable> _listeners = [];
         public ConcurrentQueue<BindingCommand> Commands { get; } = new();
         public Action? OnBindingQuery { get; init; }
+        public Action<BindingCommand>? OnObservedBindingQuery { get; init; }
+        public async Task<HttpResponseMessage> GetAsync(HttpClient client, Uri path, CancellationToken cancellationToken = default)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, path);
+            request.Headers.Add("traceparent", $"00-{_traceId}-{ActivitySpanId.CreateRandom()}-01");
+            return await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        public string Describe() => $"Request trace: {_traceId}\n" + string.Join("\n", Commands.Select(c =>
+            $"Context: {c.ContextId}; Activity: {c.ActivityId}; Operation: {c.Operation}\n{c.Sql}"));
         public BindingReadProbe() => _all = DiagnosticListener.AllListeners.Subscribe(this);
         public void OnNext(DiagnosticListener value)
         {
@@ -214,7 +240,11 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         {
             if (value.Key != "Microsoft.EntityFrameworkCore.Database.Command.CommandExecuting" || value.Value is not CommandEventData data ||
                 data.Command.Connection is not SqlConnection connection || new SqlConnectionStringBuilder(connection.ConnectionString).ApplicationName != "HVO.ExecutionEvidence") return;
-            Commands.Enqueue(new(data.Command.CommandText, data.Command.Parameters.Cast<DbParameter>().Select(p => (p.ParameterName, p.Value!)).ToArray()));
+            var command = new BindingCommand(data.Command.CommandText, data.Command.Parameters.Cast<DbParameter>().Select(p => (p.ParameterName, p.Value!)).ToArray(),
+                data.Context?.ContextId.ToString(), Activity.Current?.Id, Activity.Current?.OperationName);
+            if (command.Sql.Contains("FROM [ExecutionEvidenceBindings]", StringComparison.Ordinal)) OnObservedBindingQuery?.Invoke(command);
+            if (Activity.Current?.TraceId != _traceId) return;
+            Commands.Enqueue(command);
             if (data.Command.CommandText.Contains("FROM [ExecutionEvidenceBindings]", StringComparison.Ordinal)) OnBindingQuery?.Invoke();
         }
         public void OnCompleted() { }
