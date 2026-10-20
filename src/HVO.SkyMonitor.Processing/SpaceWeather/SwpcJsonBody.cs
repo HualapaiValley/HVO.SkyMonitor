@@ -1,4 +1,5 @@
 using System.Text;
+using System.Globalization;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.Processing.SpaceWeather;
@@ -40,18 +41,39 @@ public static class SwpcJsonBody
         return null;
     }
 
-    internal static bool String(JsonElement obj, string key, out string value)
+    internal static bool String(JsonElement obj, string key, out string value, bool requireUtf8 = false)
     {
         value = "";
         if (obj.ValueKind != JsonValueKind.Object || !obj.TryGetProperty(key, out var field) || field.ValueKind != JsonValueKind.String) return false;
         try
         {
-            value = field.GetString()!;
-            SwpcText.Utf8.GetByteCount(value);
+            try { value = field.GetString()!; }
+            catch (InvalidOperationException) { value = DecodeEscapedString(field.GetRawText()); }
+            if (requireUtf8) SwpcText.Utf8.GetByteCount(value);
             return true;
         }
-        catch (InvalidOperationException) { return false; }
         catch (EncoderFallbackException) { return false; }
+    }
+
+    // The reference model permits unpaired escapes in non-alert string values.
+    // JsonElement.GetString rejects those UTF-16 values; syntax was already validated,
+    // so preserve each escaped code unit without applying an extra schema restriction.
+    private static string DecodeEscapedString(string raw)
+    {
+        var result = new StringBuilder(raw.Length - 2);
+        for (var i = 1; i < raw.Length - 1; i++)
+        {
+            var c = raw[i];
+            if (c != '\\') { result.Append(c); continue; }
+            c = raw[++i];
+            if (c == 'u')
+            {
+                result.Append((char)ushort.Parse(raw.AsSpan(i + 1, 4), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture));
+                i += 4;
+            }
+            else result.Append(c switch { 'b' => '\b', 'f' => '\f', 'n' => '\n', 'r' => '\r', 't' => '\t', _ => c });
+        }
+        return result.ToString();
     }
 
     internal static bool NullableString(JsonElement obj, string key, out string? value)

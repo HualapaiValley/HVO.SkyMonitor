@@ -52,9 +52,9 @@ public static class SwpcAlertsParser
     private static SwpcMessageRecord? ParseRecord(JsonElement element, out string? reason)
     {
         reason = "record-schema";
-        if (!SwpcJsonBody.String(element, "product_id", out var product)
-            || !SwpcJsonBody.String(element, "issue_datetime", out var issueText)
-            || !SwpcJsonBody.String(element, "message", out var message)
+        if (!SwpcJsonBody.String(element, "product_id", out var product, requireUtf8: true)
+            || !SwpcJsonBody.String(element, "issue_datetime", out var issueText, requireUtf8: true)
+            || !SwpcJsonBody.String(element, "message", out var message, requireUtf8: true)
             || !SwpcText.Whole(product, "[A-Z0-9]{2,8}")) return null;
         reason = "issue-datetime";
         if (!SwpcText.Whole(issueText, @"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}")) return null;

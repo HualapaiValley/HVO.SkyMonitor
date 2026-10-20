@@ -123,6 +123,40 @@ public sealed class SwpcFactBoundaryTests
     }
 
     [TestMethod]
+    [DataRow("scales")]
+    [DataRow("kp-forecast")]
+    public void NonAlertValueStringsPreserveUnpairedEscapedCodeUnits(string product)
+    {
+        var scenario = JsonNode.Parse(File.ReadAllText(Path.Combine(SwpcScenarioFactsTests.Pack, "scenarios/s24-json-nonfinite.json")))!;
+        var baseline = scenario["steps"]!.AsArray().First(s => s?["product"]?.GetValue<string>() == product)!["response"]!["body"]!.GetValue<string>();
+        if (product == "scales")
+        {
+            var body = baseline.Replace("\"Scale\": \"0\"", "\"Scale\": \"\\ud800\"", StringComparison.Ordinal);
+            Assert.AreNotEqual(baseline, body);
+            var parsed = SwpcScalesParser.Parse(Encoding.UTF8.GetBytes(body), "application/json");
+            Assert.IsTrue(parsed.Accepted);
+            Assert.AreEqual('\ud800', parsed.Records[0].RScale![0]);
+        }
+        else
+        {
+            var body = baseline.Replace("\"observed\":\"observed\"", "\"observed\":\"\\ud800\"", StringComparison.Ordinal);
+            Assert.AreNotEqual(baseline, body);
+            var parsed = SwpcKpForecastParser.Parse(Encoding.UTF8.GetBytes(body), "application/json");
+            Assert.IsTrue(parsed.Accepted);
+            Assert.AreEqual('\ud800', parsed.Records[0].ObservedKind[0]);
+        }
+    }
+
+    [TestMethod]
+    public void UnreadAlertStringIsNotAnAdditionalRecordSchemaConstraint()
+    {
+        var scenario = JsonNode.Parse(File.ReadAllText(Path.Combine(SwpcScenarioFactsTests.Pack, "scenarios/s01-duplicate-refetch.json")))!;
+        var body = scenario["steps"]![0]!["response"]!["body"]!.GetValue<string>();
+        body = body.Insert(body.IndexOf('{', StringComparison.Ordinal) + 1, "\"ignored\":\"\\ud800\",");
+        Assert.IsTrue(SwpcAlertsParser.Parse(Encoding.UTF8.GetBytes(body), "application/json").Accepted);
+    }
+
+    [TestMethod]
     public void VersionOrderUsesSourceTextBeforeIngestOrderAndGroupsStayCodeLocal()
     {
         var scenario = JsonNode.Parse(File.ReadAllText(Path.Combine(SwpcScenarioFactsTests.Pack, "scenarios/s27-original-record-outer-whitespace.json")))!;
@@ -134,6 +168,26 @@ public sealed class SwpcFactBoundaryTests
         Assert.AreEqual(records[0].ContentSha256, SwpcGroupBuilder.Build([new(earlierText, 3), new(records[0], 1)]).Single().Latest.ContentSha256);
         var anotherCode = records[1] with { Code = "OTHER", Header = records[1].Header with { Link = new("extension", records[0].Serial) } };
         Assert.HasCount(2, SwpcGroupBuilder.Build([new(anotherCode, 2), new(records[0], 1)]));
+    }
+
+    [TestMethod]
+    public void ModelEdgeCasesRemainExplicit()
+    {
+        Assert.AreEqual(LocalRelevanceCategory.Unlikely, SpaceWeatherRelevance.Categorize(SpaceWeatherFamily.Watch, "WATA50", "G3", 0, 42.2).Category);
+        var scenario = JsonNode.Parse(File.ReadAllText(Path.Combine(SwpcScenarioFactsTests.Pack, "scenarios/s10-restart-ack-rolling-window.json")))!;
+        var body = scenario["steps"]!.AsArray().First(s => s?["response"]?["body"]?.GetValue<string>().Contains("SUM10R", StringComparison.Ordinal) == true)!["response"]!;
+        var summary = SwpcAlertsParser.Parse(SwpcScenarioFactsTests.Bytes(body), "application/json").Records.Single();
+        var summaries = SwpcGroupBuilder.Build([new(summary, 1)]);
+        Assert.AreEqual(SwpcNoticeState.Recent, SwpcNoticeLifecycle.Evaluate(summaries[0], summaries, summary.IssueMinuteUtc.AddHours(-1)).State);
+        scenario = JsonNode.Parse(File.ReadAllText(Path.Combine(SwpcScenarioFactsTests.Pack, "scenarios/s09-synthetic-cancel-warning.json")))!;
+        body = scenario["steps"]![1]!["response"]!;
+        var cancel = SwpcAlertsParser.Parse(SwpcScenarioFactsTests.Bytes(body), "application/json").Records.First(r => r.Header.Modifier == "CANCEL");
+        var laterCancel = cancel with { IssueMinuteUtc = cancel.IssueMinuteUtc.AddHours(1), Header = cancel.Header with { Family = SpaceWeatherFamily.Unclassified } };
+        var cancelOnly = SwpcGroupBuilder.Build([new(cancel, 1), new(laterCancel, 2)]);
+        Assert.AreEqual(SpaceWeatherFamily.Warning, cancelOnly[0].Family);
+        Assert.AreEqual(laterCancel.IssueMinuteUtc, SwpcNoticeLifecycle.Evaluate(cancelOnly[0], cancelOnly, laterCancel.IssueMinuteUtc).UntilUtc);
+        var wataCancel = cancel with { Code = "WATA30", Header = cancel.Header with { Family = SpaceWeatherFamily.Unclassified } };
+        Assert.AreEqual(SpaceWeatherFamily.Watch, SwpcGroupBuilder.Build([new(wataCancel, 1)])[0].Family);
     }
 
     [TestMethod]

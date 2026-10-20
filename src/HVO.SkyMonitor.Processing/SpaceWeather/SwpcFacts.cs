@@ -163,7 +163,7 @@ public sealed record SwpcNoticeGroup(string Identity, ImmutableHashSet<SwpcMessa
     /// <summary>The last version in contract order, including cancellation.</summary>
     public SwpcMessageRecord Latest => Versions[^1].Message;
     /// <summary>The source family of the first non-cancel version, or of the cancel.</summary>
-    public SpaceWeatherFamily Family => Root?.Header.Family ?? (Latest.Code.StartsWith("WATA", StringComparison.Ordinal) ? SpaceWeatherFamily.Watch : Latest.Header.Family);
+    public SpaceWeatherFamily Family => Root?.Header.Family ?? (Versions[0].Message.Code.StartsWith("WATA", StringComparison.Ordinal) ? SpaceWeatherFamily.Watch : Versions[0].Message.Header.Family);
     /// <summary>The latest non-cancel source level.</summary>
     public string? Level => LatestNonCancel?.Header.Level;
     /// <summary>The lowest serial node, including absent link targets.</summary>
@@ -266,4 +266,3 @@ public sealed record DarknessQualifier(ImmutableArray<HVO.SkyMonitor.Astronomy.S
 /// <param name="UntilUtc">The exclusive UTC end.</param>
 /// <param name="Reason">The contract reason token.</param>
 public sealed record SwpcSolarRestriction(DateTimeOffset FromUtc, DateTimeOffset UntilUtc, string Reason);
-
