@@ -191,6 +191,9 @@ internal sealed class InterceptingOrbitalStore(IOrbitalElementsStore inner) : IO
 
     public Func<int, Exception?>? RetentionFault { get; set; }
 
+    /// <summary>When set, every state read and resume command throws it, as a failing store would.</summary>
+    public Exception? ReadFault { get; set; }
+
     public int Halts => Volatile.Read(ref _halts);
 
     public int Transports => Volatile.Read(ref _transports);
@@ -205,7 +208,8 @@ internal sealed class InterceptingOrbitalStore(IOrbitalElementsStore inner) : IO
 
     public ValueTask InitializeAsync(CancellationToken cancellationToken) => inner.InitializeAsync(cancellationToken);
 
-    public ValueTask<OrbitalProviderState> GetStateAsync(CancellationToken cancellationToken) => inner.GetStateAsync(cancellationToken);
+    public ValueTask<OrbitalProviderState> GetStateAsync(CancellationToken cancellationToken)
+        => ReadFault is { } fault ? ValueTask.FromException<OrbitalProviderState>(fault) : inner.GetStateAsync(cancellationToken);
 
     public ValueTask<OrbitalAttemptAdmission> TryBeginAttemptAsync(
         string runKey, OrbitalAttemptTrigger trigger, CancellationToken cancellationToken)
@@ -239,7 +243,9 @@ internal sealed class InterceptingOrbitalStore(IOrbitalElementsStore inner) : IO
     }
 
     public ValueTask<OrbitalCommandResult> ResumeProviderAsync(OrbitalResumeRequest request, CancellationToken cancellationToken)
-        => inner.ResumeProviderAsync(request, cancellationToken);
+        => ReadFault is { } fault
+            ? ValueTask.FromException<OrbitalCommandResult>(fault)
+            : inner.ResumeProviderAsync(request, cancellationToken);
 
     public ValueTask<OrbitalRetentionResult> ApplyRetentionAsync(CancellationToken cancellationToken)
     {
