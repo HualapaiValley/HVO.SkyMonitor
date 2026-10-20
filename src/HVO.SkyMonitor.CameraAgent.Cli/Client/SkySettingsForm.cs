@@ -39,6 +39,9 @@ internal sealed record SkySettingField(SkySettingDescriptor Setting, SkySettingS
     public string DisplayValue => Setting.Secret
         ? (State?.IsSet == true ? "(set)" : "(not set)")
         : SkySettingText.Describe(State?.Value);
+
+    /// <summary>A pending saved choice is the basis for the next edit, including cancelling a restart change.</summary>
+    public JsonElement? ValueToEdit => State?.PendingValue ?? State?.Value;
 }
 
 /// <summary>One settings group: its catalogue entry, its state (with the version a change sends back) and its fields.</summary>
