@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Settings;
 using HVO.SkyMonitor.CameraAgent.Tests.Components;
 using HVO.SkyMonitor.CameraAgent.Tests.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Tests.Settings;
+using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
 using Moq;
@@ -81,6 +82,7 @@ public sealed class CameraAgentSatelliteSetupUiServiceTests
         var service = new CameraAgentSatelliteSetupUiService(new Authentication(), Authorization(true, true),
             harness.Service, new TestOrbitalUiService(), new PlanningTestInputs.ResolvedTime(), new PlanningTestInputs.Settings());
         var result = await service.SetAsync("orbitalElements", "absent", "true", CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(result.IsSuccess, result.Message);
         Assert.AreEqual(CameraAgentSettingsWriteOutcome.PendingRestart, result.Value!.Outcome);
         var invalid = await service.SetAsync("orbitalElements", result.Value.Group!.Version, "sometimes", CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentSettingsWriteOutcome.Invalid, invalid.Value!.Outcome);
@@ -108,6 +110,7 @@ public sealed class CameraAgentSatelliteSetupUiServiceTests
     private sealed class Authentication : AuthenticationStateProvider
     {
         public override Task<AuthenticationState> GetAuthenticationStateAsync() => Task.FromResult(new AuthenticationState(
-            new ClaimsPrincipal(new ClaimsIdentity([new(ClaimTypes.NameIdentifier, "owner")], "test"))));
+            new ClaimsPrincipal(new ClaimsIdentity([new(ClaimTypes.NameIdentifier, "owner"),
+                new(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)], "test"))));
     }
 }
