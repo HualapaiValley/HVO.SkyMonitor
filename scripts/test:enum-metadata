@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Compile legal C# fixtures, then read their metadata without executing target code."""
+import json
+import pathlib
+import re
+import subprocess
+import tempfile
+import unittest
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+READER = ROOT / "scripts/enum-metadata/bin/Release/net10.0/HVO.SkyMonitor.EnumMetadata.dll"
+SOURCE = r'''
+using System;
+using System.Runtime.CompilerServices;
+namespace Cases {
+    internal static class Initialization {
+        [ModuleInitializer] internal static void Initialize() => throw new Exception("Target code executed");
+        internal const string Comment = "/*";
+        internal const string Verbatim = @"/*";
+        internal const string Raw = """/*""";
+        internal const char Character = '/';
+    }
+    internal sealed class ProbeAttribute : Attribute {
+        public ProbeAttribute() => throw new Exception("Attribute executed");
+    }
+    internal enum StringBefore {
+        Mapped,
+        Probe,
+    }
+    internal enum BlockComment {
+        Mapped,
+        Probe /* comment */,
+    }
+    internal enum Attributed {
+        Mapped,
+        [Probe] Probe,
+    }
+    internal enum LineComment {
+        Mapped,
+        // /*
+        Probe,
+        // */
+    }
+    internal enum Explicit {
+        Mapped = -1,
+        Probe = 1 << 4,
+        Alias = Probe,
+    }
+    internal enum TrailingComma {
+        Mapped, Probe,
+    }
+    internal enum NoTrailingComma {
+        Mapped, Probe
+    }
+}
+'''
+
+
+class EnumMetadata(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.temp.cleanup)
+        cls.directory = pathlib.Path(cls.temp.name)
+        cls.assembly = cls.directory / "fixture.dll"
+        version = json.loads((ROOT / "global.json").read_text())["sdk"]["version"]
+        sdks = subprocess.check_output(["dotnet", "--list-sdks"], text=True)
+        sdk = re.search(rf"^{re.escape(version)} \[(.+)\]$", sdks, re.M)
+        if sdk is None:
+            raise RuntimeError("Pinned SDK is required")
+        runtimes = subprocess.check_output(["dotnet", "--list-runtimes"], text=True)
+        runtime = re.findall(r"^Microsoft.NETCore.App (10\.0\.\d+) \[(.+)\]$", runtimes, re.M)[-1]
+        runtime_path = pathlib.Path(runtime[1]) / runtime[0]
+        cls.compiler = ["dotnet", str(pathlib.Path(sdk[1]) / version / "Roslyn/bincore/csc.dll"),
+                        "-nologo", "-noconfig", "-nostdlib+", "-target:library",
+                        f"-r:{runtime_path / 'System.Private.CoreLib.dll'}",
+                        f"-r:{runtime_path / 'System.Runtime.dll'}"]
+        source = cls.directory / "fixture.cs"
+        source.write_text(SOURCE)
+        subprocess.run(cls.compiler + [f"-out:{cls.assembly}", str(source)], check=True, capture_output=True)
+
+    def read(self, name, assembly=None):
+        return subprocess.run(["dotnet", str(READER), str(assembly or self.assembly), name],
+                              capture_output=True, text=True)
+
+    def test_each_legal_spelling_retains_unmapped_member(self):
+        for name in ("BlockComment", "Attributed", "LineComment", "StringBefore", "Explicit",
+                     "TrailingComma", "NoTrailingComma"):
+            with self.subTest(name=name):
+                result = self.read("Cases." + name)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                expected = ["Alias", "Mapped", "Probe"] if name == "Explicit" else ["Mapped", "Probe"]
+                self.assertEqual(json.loads(result.stdout), expected)
+                self.assertNotEqual(json.loads(result.stdout), ["Mapped"], "Unmapped Probe must fail coverage")
+
+    def test_invalid_source_is_refused_by_compiler_and_metadata_reader(self):
+        source = self.directory / "invalid.cs"
+        source.write_text("namespace Cases { enum Invalid { Mapped, ???, Probe } }")
+        output = self.directory / "invalid.dll"
+        compiled = subprocess.run(self.compiler + [f"-out:{output}", str(source)], capture_output=True)
+        self.assertNotEqual(compiled.returncode, 0)
+        self.assertFalse(output.exists())
+        output.write_bytes(source.read_bytes())
+        self.assert_refused("Cases.Invalid", output)
+
+    def assert_refused(self, name, assembly=None):
+        result = self.read(name, assembly)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "", "Refusal must not emit a partial member list")
+
+    def test_missing_type_non_enum_missing_or_truncated_assembly_are_refused(self):
+        self.assert_refused("Cases.Missing")
+        self.assert_refused("Cases.Initialization")
+        self.assert_refused("BlockComment")  # Exact qualified names, not a same-name search.
+        self.assert_refused("Cases.BlockComment", self.directory / "missing.dll")
+        truncated = self.directory / "truncated.dll"
+        truncated.write_bytes(self.assembly.read_bytes()[:128])
+        self.assert_refused("Cases.BlockComment", truncated)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

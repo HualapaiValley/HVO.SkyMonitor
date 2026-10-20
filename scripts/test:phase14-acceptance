@@ -395,25 +395,17 @@ validate_evidence_contract() {
     ' "$contract" >/dev/null
 }
 
-# Known limits: block comments (/* */) and attribute-prefixed members ([Attr] Name) are not parsed,
-# and such members are silently skipped; fault-point enums must stay plain "Name," or "Name = n,".
+# The Release build is a prerequisite; PEReader reads bytes without loading target code.
+enum_reader="$SOURCE_REPO_ROOT/scripts/enum-metadata/bin/Release/net10.0/HVO.SkyMonitor.EnumMetadata.dll"
+fault_assembly="$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/bin/Release/net10.0/HVO.SkyMonitor.CameraAgent.Common.dll"
 enum_values_json() {
-    local file="$1" enum="$2"
-    perl -0777 -e '
-      my ($enum, $path) = @ARGV;
-      open my $file, "<", $path or exit 2;
-      local $/; my $source = <$file>;
-      $source =~ /enum\s+\Q$enum\E\s*\{([^}]*)\}/s or exit 1;
-      for my $value (split /,/, $1) {
-        $value =~ s{//.*$}{}mg; $value =~ s/=.*//s; $value =~ s/^\s+|\s+$//g;
-        print "$value\n" if $value =~ /^[A-Za-z_][A-Za-z0-9_]*$/;
-      }
-    ' "$enum" "$file" | jq -Rsc 'split("\n") | map(select(length > 0)) | sort'
+    dotnet "$enum_reader" "$1" "$2"
 }
+"$SOURCE_REPO_ROOT/scripts/test:enum-metadata"
 
 assert_enum_coverage() {
     local file="$1" enum="$2" source_prefix="$3" exclusions="$4" actual expected
-    actual="$(enum_values_json "$file" "$enum")" || fail "Could not parse fault enum $enum."
+    actual="$(enum_values_json "$file" "$enum")" || fail "Could not read fault enum $enum."
     actual="$(jq -c --argjson exclusions "$exclusions" '[.[] | select(. as $value | $exclusions | index($value) | not)]' <<< "$actual")"
     expected="$(jq -c --arg prefix "$source_prefix" '[.scenarios[].source | select(startswith($prefix)) | ltrimstr($prefix)] | sort' "$campaign")"
     [[ "$actual" == "$expected" ]] || fail "Manifest boundary coverage differs from $enum: enum=$actual manifest=$expected"
@@ -432,20 +424,19 @@ validate_evidence_contract "$evidence_contract" "$campaign"
 # AcceptAsync_FaultAtEveryPublicationAndCommitBoundary_ConvergesToOneCapture faults every enum value, and
 # the EvidenceRelease_*WaitingForLifecycleLock tests drive its write-off race. Any other unmapped value
 # still fails here (proved by the probe below) until it is mapped or given its own reasoned exclusion.
-raw_ingress_faults="$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/RawIngress/RawIngressFaults.cs"
+raw_ingress_enum=HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawIngressFaultPoint
 raw_ingress_exclusions='["BeforeAcceptanceLifecycleLock"]'
-assert_enum_coverage "$raw_ingress_faults" RawIngressFaultPoint 'boundary:raw-ingress:' "$raw_ingress_exclusions"
-assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Transients/TransientCandidateFaults.cs" \
-  TransientCandidateFaultPoint 'boundary:transient-candidate:' '[]'
-assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Transients/TransientCandidateFaults.cs" \
-  TransientRuntimeFaultPoint 'boundary:transient-runtime:' '[]'
-assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Capture/Calibration/CalibrationArtifactPublisher.cs" \
-  CalibrationPublicationFaultPoint 'boundary:calibration:' '[]'
-assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Capture/Distribution/CaptureLaneFaults.cs" \
-  CaptureLaneFaultPoint 'boundary:capture-lane:' '["BeforeHandler","AfterHandler"]'
-assert_enum_coverage "$SOURCE_REPO_ROOT/src/HVO.SkyMonitor.CameraAgent.Common/Capture/Processing/CaptureProcessingFaults.cs" \
-  CaptureProcessingFaultPoint 'boundary:capture-processing:' \
-  '["AfterSchemaTransactionBegan","BeforeNodeExecution","BeforeSchemaCommit"]'
+assert_enum_coverage "$fault_assembly" "$raw_ingress_enum" 'boundary:raw-ingress:' "$raw_ingress_exclusions"
+assert_enum_coverage "$fault_assembly" HVO.SkyMonitor.CameraAgent.Common.Transients.TransientCandidateFaultPoint \
+  'boundary:transient-candidate:' '[]'
+assert_enum_coverage "$fault_assembly" HVO.SkyMonitor.CameraAgent.Common.Transients.TransientRuntimeFaultPoint \
+  'boundary:transient-runtime:' '[]'
+assert_enum_coverage "$fault_assembly" HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration.CalibrationPublicationFaultPoint \
+  'boundary:calibration:' '[]'
+assert_enum_coverage "$fault_assembly" HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.CaptureLaneFaultPoint \
+  'boundary:capture-lane:' '["BeforeHandler","AfterHandler"]'
+assert_enum_coverage "$fault_assembly" HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingFaultPoint \
+  'boundary:capture-processing:' '["AfterSchemaTransactionBegan","BeforeNodeExecution","BeforeSchemaCommit"]'
 jq -e --argjson required "$required_ids" '
   .schemaVersion == 2 and ([.scenarios[].id] | sort) == ($required | sort) and
   ([.scenarios[] | select(.source | startswith("project-plan:phase-14-fault-row-"))] | length) == 12 and
@@ -463,12 +454,17 @@ jq '(.scenarios[] | select(.evidenceSource | startswith("test:")) | .evidenceSou
 if (audit_test_references "$TEMP_DIR/missing-test-reference.json") > /dev/null 2>&1; then
     fail 'A nonexistent public MSTest evidence FQN was accepted.'
 fi
-perl -0pe 's/(enum\s+RawIngressFaultPoint\s*\{)/$1\n    UnreviewedFaultPointProbe,/' "$raw_ingress_faults" \
-  > "$TEMP_DIR/unreviewed-raw-ingress-faults.cs"
-if (assert_enum_coverage "$TEMP_DIR/unreviewed-raw-ingress-faults.cs" RawIngressFaultPoint 'boundary:raw-ingress:' \
+# A manifest that omits a compiled member must fail, independently of the reasoned exclusion.
+original_campaign="$campaign"
+# Select an actual boundary rather than assuming a particular member remains in the inventory.
+jq '(.scenarios | map(select(.source | startswith("boundary:raw-ingress:"))) | first | .id) as $id |
+    .scenarios |= map(select(.id != $id))' "$campaign" > "$TEMP_DIR/unmapped-raw-ingress.json"
+campaign="$TEMP_DIR/unmapped-raw-ingress.json"
+if (assert_enum_coverage "$fault_assembly" "$raw_ingress_enum" 'boundary:raw-ingress:' \
   "$raw_ingress_exclusions") > /dev/null 2>&1; then
-    fail 'Raw-ingress coverage accepted an unmapped fault point beyond its reasoned exclusion.'
+    fail 'Raw-ingress coverage accepted an unmapped compiled fault point.'
 fi
+campaign="$original_campaign"
 jq '.inventory.scenarioCount=110' "$evidence_contract" > "$TEMP_DIR/stale-contract-count.json"
 expect_rejected 'A stale 110-scenario evidence contract was accepted.' \
   validate_evidence_contract "$TEMP_DIR/stale-contract-count.json" "$campaign"
