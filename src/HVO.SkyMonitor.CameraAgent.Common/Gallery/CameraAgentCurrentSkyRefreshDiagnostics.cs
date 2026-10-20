@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
 /// <summary>Request-local timings for the Current Sky page and its nested presentation reads.</summary>
-public sealed class CameraAgentCurrentSkyRefreshDiagnostics : IDisposable
+public sealed partial class CameraAgentCurrentSkyRefreshDiagnostics : IDisposable
 {
     private const string TimingKey = "CameraAgent.CurrentSky.RefreshTiming";
     private readonly Lock _gate = new();
@@ -18,6 +18,8 @@ public sealed class CameraAgentCurrentSkyRefreshDiagnostics : IDisposable
 
     public CameraAgentCurrentSkyRefreshDiagnostics(TimeProvider clock, ILogger logger)
     {
+        ArgumentNullException.ThrowIfNull(clock);
+        ArgumentNullException.ThrowIfNull(logger);
         _clock = clock;
         _logger = logger;
         _started = clock.GetTimestamp();
@@ -27,8 +29,12 @@ public sealed class CameraAgentCurrentSkyRefreshDiagnostics : IDisposable
 
     /// <summary>Measures a phase only when the calling flow belongs to a page refresh.</summary>
     public static IDisposable? Measure(TimeProvider clock, string phase)
-        => Activity.Current?.GetCustomProperty(TimingKey) is CameraAgentCurrentSkyRefreshDiagnostics timing
+    {
+        ArgumentNullException.ThrowIfNull(clock);
+        ArgumentException.ThrowIfNullOrEmpty(phase);
+        return Activity.Current?.GetCustomProperty(TimingKey) is CameraAgentCurrentSkyRefreshDiagnostics timing
             ? new Phase(timing, clock, phase) : null;
+    }
 
     public void LogDeadline(TimeSpan bound, bool firstRefresh)
     {
@@ -48,8 +54,8 @@ public sealed class CameraAgentCurrentSkyRefreshDiagnostics : IDisposable
         durations["dispatcher"] = Math.Max(0, _clock.GetElapsedTime(_started).TotalMilliseconds -
             measuredView - measuredLayers);
         var slowest = durations.MaxBy(static pair => pair.Value).Key;
-        _logger.LogInformation("Current Sky page refresh missed {BoundSeconds} s bound. FirstRefresh={FirstRefresh}; ElapsedMs={ElapsedMs}; SlowestPhase={SlowestPhase}.",
-            bound.TotalSeconds, firstRefresh, _clock.GetElapsedTime(_started).TotalMilliseconds, slowest);
+        var elapsedMs = _clock.GetElapsedTime(_started).TotalMilliseconds;
+        DeadlineMissed(_logger, bound.TotalSeconds, firstRefresh, elapsedMs, slowest);
     }
 
     public void Dispose()
@@ -57,6 +63,14 @@ public sealed class CameraAgentCurrentSkyRefreshDiagnostics : IDisposable
         lock (_gate) _disposed = true;
         _activity.Dispose();
     }
+
+    [LoggerMessage(EventId = 14720, Level = LogLevel.Debug,
+        Message = "Current Sky page refresh phase {Phase} took {ElapsedMs} ms.")]
+    private static partial void PhaseCompleted(ILogger logger, string phase, double elapsedMs);
+
+    [LoggerMessage(EventId = 14721, Level = LogLevel.Information,
+        Message = "Current Sky page refresh missed {BoundSeconds} s bound. FirstRefresh={FirstRefresh}; ElapsedMs={ElapsedMs}; SlowestPhase={SlowestPhase}.")]
+    private static partial void DeadlineMissed(ILogger logger, double boundSeconds, bool firstRefresh, double elapsedMs, string slowestPhase);
 
     private sealed class Phase(CameraAgentCurrentSkyRefreshDiagnostics owner, TimeProvider clock, string phase) : IDisposable
     {
@@ -70,7 +84,7 @@ public sealed class CameraAgentCurrentSkyRefreshDiagnostics : IDisposable
                 if (owner._disposed) return;
                 owner._durations[phase] = owner._durations.GetValueOrDefault(phase) + elapsed;
             }
-            owner._logger.LogDebug("Current Sky page refresh phase {Phase} took {ElapsedMs} ms.", phase, elapsed);
+            PhaseCompleted(owner._logger, phase, elapsed);
         }
     }
 }

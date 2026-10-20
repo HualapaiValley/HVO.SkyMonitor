@@ -659,11 +659,11 @@ normal completed-image visuals are unaffected.
 
 Runtime signal manifest:
 
-- Debug: `Current Sky page refresh phase {Phase} took {ElapsedMs} ms.` The bounded
+- Debug event 14720: `Current Sky page refresh phase {Phase} took {ElapsedMs} ms.` The bounded
   phase names are `view-read`, `preview-validation`, `layer-availability` and
   `layer-read`; phases that do not run emit no sample. Cancellation records the
   elapsed phase in its `Dispose` path.
-- Information: one `Current Sky page refresh missed {BoundSeconds} s bound` line
+- Information event 14721: one `Current Sky page refresh missed {BoundSeconds} s bound` line
   per missed refresh, with `FirstRefresh`, `ElapsedMs` and `SlowestPhase`. The
   slowest phase compares exclusive view time against its nested preview and
   availability timings, layer-read time and dispatcher wait, avoiding an outer
