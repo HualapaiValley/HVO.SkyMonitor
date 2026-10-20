@@ -256,13 +256,17 @@ public sealed class VirtualSkyPipelineTests
     {
         using var scope = Fixture.CreateCameraAgentScope();
         var services = scope.ServiceProvider;
-        var diagnostics = new VirtualSkyOutageDiagnostics(services, Fixture.StorageRoot);
         object state = section switch
         {
             "fleet capture" => services.GetRequiredService<FleetRuntimeState>(),
             "capture telemetry" => services.GetRequiredService<ICaptureTelemetryProvider>(),
             _ => services.GetRequiredService<CaptureProcessingState>()
         };
+        using var snapshotReturned = new ManualResetEventSlim();
+        var diagnostics = new VirtualSkyOutageDiagnostics(services, Fixture.StorageRoot, target =>
+        {
+            if (ReferenceEquals(target, state)) snapshotReturned.Set();
+        });
         var gate = state.GetType().GetField("_gate", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(state);
         Assert.IsNotNull(gate, "The regression must hold the real product snapshot gate.");
         using var held = new ManualResetEventSlim();
@@ -288,14 +292,16 @@ public sealed class VirtualSkyPipelineTests
                 () => assertion.WaitAsync(TimeSpan.FromSeconds(2.75))).ConfigureAwait(false);
             Assert.IsFalse(release.IsSet, "The assertion must surface while the gate is still held.");
             Assert.IsTrue(holder.IsAlive);
+            Console.WriteLine($"held snapshot={section}; getterReturned={snapshotReturned.IsSet}; assertionElapsedMs={elapsed.Elapsed.TotalMilliseconds:F0}\n{error.Message}");
+            Assert.IsTrue(snapshotReturned.IsSet, "The snapshot getter must return before collection completes; no worker may remain blocked on the held gate.");
             StringAssert.Contains(error.Message, "Timed out waiting for the configured VirtualSky pipeline", StringComparison.Ordinal);
             StringAssert.Contains(error.Message, section + ": unavailable(timeout)", StringComparison.Ordinal);
-            Console.WriteLine($"held snapshot={section}; assertionElapsedMs={elapsed.Elapsed.TotalMilliseconds:F0}\n{error.Message}");
         }
         finally
         {
             release.Set();
             Assert.IsTrue(holder.Join(TimeSpan.FromSeconds(5)), "The product gate holder did not stop.");
+            Assert.IsTrue(snapshotReturned.Wait(TimeSpan.FromSeconds(5)), "Drain the snapshot getter even on the red path before disposing its completion signal.");
             if (assertion is not null)
             {
                 // Drain the real helper after release, including on the red path, before disposing the fixture scope.

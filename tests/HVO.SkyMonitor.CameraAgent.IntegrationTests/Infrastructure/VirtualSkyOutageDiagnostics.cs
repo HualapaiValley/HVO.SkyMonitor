@@ -17,7 +17,8 @@ using Microsoft.Extensions.Hosting;
 
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 
-internal sealed class VirtualSkyOutageDiagnostics(IServiceProvider services, string storageRoot)
+internal sealed class VirtualSkyOutageDiagnostics(IServiceProvider services, string storageRoot,
+    Action<object>? snapshotReadCompleted = null)
 {
     internal const int SampleLimit = 16;
     internal const int ManifestByteLimit = 256 * 1024;
@@ -63,15 +64,16 @@ internal sealed class VirtualSkyOutageDiagnostics(IServiceProvider services, str
                 });
             }),
             Section("capture telemetry", () => ReadSnapshot(budget,
-                services.GetRequiredService<ICaptureTelemetryProvider>(), static telemetry =>
+                services.GetRequiredService<CaptureTelemetrySink>(), static (telemetry, remaining) =>
                 {
-                    var sample = telemetry.Latest;
+                    if (!telemetry.TryGetLatest(remaining, out var sample)) return "unavailable(timeout)";
                     return Json(sample is null ? null : new { sample.StartedUtc, sample.FrameStored, sample.Exposure, sample.ProcessingLatency, sample.LoopDuration });
                 })),
             Section("fleet capture", () => ReadSnapshot(budget,
-                services.GetRequiredService<FleetRuntimeState>(), static state =>
+                services.GetRequiredService<FleetRuntimeState>(), static (state, remaining) =>
                 {
-                    var fleet = state.Snapshot.Capture;
+                    if (!state.TrySnapshot(remaining, out var snapshot)) return "unavailable(timeout)";
+                    var fleet = snapshot.Capture;
                     return Json(new { fleet.Availability, fleet.LastSucceededUtc, fleet.LastFailedUtc, fleet.LastRecoveredUtc });
                 })),
             Section("ingress queues/bytes/oldest age", () =>
@@ -92,9 +94,9 @@ internal sealed class VirtualSkyOutageDiagnostics(IServiceProvider services, str
                 });
             }),
             Section("durable processing/publication", () => ReadSnapshot(budget,
-                services.GetRequiredService<CaptureProcessingState>(), static state =>
+                services.GetRequiredService<CaptureProcessingState>(), static (state, remaining) =>
                 {
-                    var p = state.Snapshot;
+                    if (!state.TrySnapshot(remaining, out var p)) return "unavailable(timeout)";
                     return Json(new
                     {
                         p.Availability, p.PendingCount, p.LeasedCount, p.RetryCount, p.TerminalCount,
@@ -123,15 +125,16 @@ internal sealed class VirtualSkyOutageDiagnostics(IServiceProvider services, str
         return result.Length <= OutputLimit ? result : result[..(OutputLimit - 24)] + "\n<snapshot truncated>";
     }
 
-    private static string ReadSnapshot<T>(Stopwatch budget, T state, Func<T, string> read)
+    private string ReadSnapshot<T>(Stopwatch budget, T state, Func<T, TimeSpan, string> read)
     {
         var remaining = CollectionBudget - budget.Elapsed;
         if (remaining <= TimeSpan.Zero) return "unavailable(timeout)";
-        // Only non-disposable singleton state and a static projection cross this boundary. A stuck getter
-        // may outlive collection, but it owns no fixture scope, file stream or database connection.
-        var snapshot = Task.Run(() => Read(() => read(state)));
-        try { return snapshot.WaitAsync(remaining).GetAwaiter().GetResult(); }
-        catch (TimeoutException) { return "unavailable(timeout)"; }
+        // The source bounds acquisition of its real gate. Collection creates no background waiter.
+        return Read(() =>
+        {
+            try { return read(state, remaining); }
+            finally { snapshotReadCompleted?.Invoke(state!); }
+        });
     }
 
     internal static string Section(string label, Func<string> read) => label + ": " + Read(read);
