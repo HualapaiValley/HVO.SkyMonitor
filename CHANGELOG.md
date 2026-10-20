@@ -54,6 +54,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- Orbital refresh prepares the shared snapshot reader at startup and after activation, backs off failed store
+  initialization, and runs on one bounded worker so provider waits and normalization let other automations proceed.
+  Its journal records the real completion; provider floor, halt and single-flight rules remain in force. (#1425)
+
 - Star markers are the original plain grey (`#909090`) circle outline again, without the crosshair inside them; so is
   the marker of a Sun or Moon too small to outline. Captures already retained keep the markers they were drawn with,
   and time-lapse frames, which draw no star markers, are unchanged. (#1415)

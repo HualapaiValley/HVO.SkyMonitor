@@ -111,6 +111,11 @@ public sealed class OrbitalElementsCompositionTests : OrbitalStoreTestBase
         Assert.IsGreaterThanOrEqualTo(0, initializer);
         Assert.IsGreaterThan(initializer, runner, "The store must be initialized before the runner's first sweep.");
         Assert.AreEqual(1, hosted.Count(static type => type == typeof(OrbitalElementsInitializationService)));
+        var registrations = services.Where(static item => item.ServiceType == typeof(IHostedService)).ToArray();
+        var worker = registrations[runner - 1].ImplementationFactory;
+        Assert.IsNotNull(worker, "The shared worker lifetime is registered immediately before the runner.");
+        Assert.AreSame(provider.GetRequiredService<LocalAutomationOffSweepWorker>(), worker(provider));
+        Assert.AreSame(provider.GetRequiredService<OrbitalSnapshotReader>(), provider.GetRequiredService<IOrbitalSnapshotReader>());
     }
 
     [TestMethod]
