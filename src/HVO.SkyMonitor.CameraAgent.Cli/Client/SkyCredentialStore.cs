@@ -349,7 +349,8 @@ internal static class SkyAddress
 
     /// <summary>
     /// True when requests to <paramref name="address"/> carry the key across a network unencrypted: plain HTTP to a host
-    /// other than this machine. This machine is its loopback and every address bound to one of its interfaces
+    /// other than this machine. This machine is its loopback, which the connection reaches directly whatever the proxy
+    /// (<see cref="SkyApiClient.CreateHandler"/>, #1404), and every address bound to one of its interfaces
     /// (<paramref name="localAddresses"/>): a request to the CameraAgent host's own LAN address, made on that host, never
     /// leaves it (#1384), unless it goes through a proxy. Such an address is this machine only when
     /// <paramref name="proxy"/>, the proxy the request is sent through, bypasses it. A name is not resolved, so it is never
