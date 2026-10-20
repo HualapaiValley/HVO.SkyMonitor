@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Numerics;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -107,6 +109,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
                 "M3 samples stop at entry to the second task registry, before its fake environmental dependency executes; full sweep has separate samples.",
                 "GC counts and total pause are process-wide deltas. Promoted bytes and GC index describe the last completed collection, not sums.",
                 "Boundary heap/generation/fragmentation/commit values describe the last completed GC; totalMemoryBytes is an unforced current estimate.",
+                "The diagnostic follow-up also samples allocation-free integer and SHA-256 CPU controls at repetition boundaries; these are outside all timed workload windows.",
                 "Boundary diagnostics and the final forced full collection are outside all timed windows; CPU frequency is sampled from readable Linux policies.",
                 "Phase intervals: provider fetch; fetch return to settled event (retrieval/normalize/publish); settled to retention event; reader 7722/7723 preparation.",
                 "Virtual timers are advanced only after timer registration (and request entry for timeout); real wall cost excludes simulated passage of time."
@@ -507,6 +510,7 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
 
     private void RecordBoundary(string name, int repeat)
     {
+        var cpuProbe = name == "after-repeat" ? MeasureCpuProbe() : null;
         var info = GC.GetGCMemoryInfo(GCKind.Any);
         var generations = info.GenerationInfo.ToArray().Select(static (generation, index) => new
         {
@@ -530,8 +534,60 @@ public sealed class OrbitalConsumerAndSweepInterferencePerformanceTests : Orbita
             totalMemoryBytes = GC.GetTotalMemory(forceFullCollection: false),
             gc = CaptureGc(),
             generations,
-            cpuFrequencyKhz = ReadCpuFrequency()
+            cpuFrequencyKhz = ReadCpuFrequency(),
+            cpuProbe
         });
+    }
+
+    private static object MeasureCpuProbe()
+    {
+        var raw = OrbitalPerformanceWorkload.Instance.Raw;
+        var processor = Thread.GetCurrentProcessorId();
+        var gc = CaptureGc();
+        var allocated = GC.GetTotalAllocatedBytes(precise: true);
+        var cpu = Environment.CpuUsage.TotalTime;
+        var start = Stopwatch.GetTimestamp();
+        var result = ComputeIntegerProbe((uint)raw.Length);
+        var integerMs = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        var integerCpuMs = (Environment.CpuUsage.TotalTime - cpu).TotalMilliseconds;
+        Span<byte> hash = stackalloc byte[32];
+        cpu = Environment.CpuUsage.TotalTime;
+        start = Stopwatch.GetTimestamp();
+        for (var index = 0; index < 16; index++)
+        {
+            SHA256.HashData(raw, hash);
+        }
+        var sha256Ms = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        var sha256CpuMs = (Environment.CpuUsage.TotalTime - cpu).TotalMilliseconds;
+        var allocatedBytes = GC.GetTotalAllocatedBytes(precise: true) - allocated;
+        return new
+        {
+            integerIterations = 64_000_000,
+            integerResult = result,
+            integerMs,
+            integerCpuMs,
+            allocatedBytes,
+            sha256Bytes = 16L * raw.Length,
+            sha256 = Convert.ToHexString(hash),
+            sha256Ms,
+            sha256CpuMs,
+            processorBefore = processor,
+            processorAfter = Thread.GetCurrentProcessorId(),
+            gcPauseMs = GC.GetTotalPauseDuration().TotalMilliseconds - gc.PauseMs,
+            gen0Collections = GC.CollectionCount(0) - gc.Gen0,
+            gen1Collections = GC.CollectionCount(1) - gc.Gen1,
+            gen2Collections = GC.CollectionCount(2) - gc.Gen2
+        };
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static uint ComputeIntegerProbe(uint state)
+    {
+        for (uint index = 0; index < 64_000_000; index++)
+        {
+            state = BitOperations.RotateLeft(unchecked(state + index), 13) ^ 0x9E3779B9;
+        }
+        return state;
     }
 
     private static object? ReadCpuFrequency()
