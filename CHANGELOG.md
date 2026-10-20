@@ -42,6 +42,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- While the newest capture is still processing, Current Sky no longer skips a finished capture it could show when the
+  retained history spans two agent identities whose capture sequence numbers overlap, which could leave it showing the
+  capture still being processed. (#1409)
 - `cameraagent install --plan` and `cameraagent upgrade --plan` name the release's image by the ID the install or
   upgrade then reports: under Docker's containerd image store, the release's image digest rather than its
   configuration digest. (#1384)

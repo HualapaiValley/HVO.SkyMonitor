@@ -727,7 +727,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT raw.capture_sequence
+            SELECT raw.capture_sequence, raw.raw_capture_row_id
             FROM capture_lane_work work
             JOIN raw_captures raw ON raw.raw_capture_row_id = work.raw_capture_row_id
             WHERE raw.capture_id = $capture_id AND work.lane_name = 'standard'
@@ -735,11 +735,11 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             LIMIT 1;
             """;
         command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
-        if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not long sequence)
+        if (await ReadPositionAsync(command, cancellationToken).ConfigureAwait(false) is not { } position)
         {
             return new(false, []);
         }
-        return new(true, await ReadFinishedStandardBeforeAsync(connection, sequence, maximumFinished, cancellationToken)
+        return new(true, await ReadFinishedStandardBeforeAsync(connection, position, maximumFinished, cancellationToken)
             .ConfigureAwait(false));
     }
 
@@ -758,32 +758,49 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT capture_sequence FROM raw_captures WHERE capture_id = $capture_id;";
+        command.CommandText = "SELECT capture_sequence, raw_capture_row_id FROM raw_captures WHERE capture_id = $capture_id;";
         command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
-        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long sequence
-            ? await ReadFinishedStandardBeforeAsync(connection, sequence, maximum, cancellationToken).ConfigureAwait(false)
+        return await ReadPositionAsync(command, cancellationToken).ConfigureAwait(false) is { } position
+            ? await ReadFinishedStandardBeforeAsync(connection, position, maximum, cancellationToken).ConfigureAwait(false)
             : [];
+    }
+
+    /// <summary>
+    /// A capture's place in the newest-first order: its sequence, then its row. Sequences are unique only per agent, so
+    /// after an agent identity change two captures can share one, and the row tells them apart (#1409).
+    /// </summary>
+    private static async ValueTask<(long Sequence, long RowId)?> ReadPositionAsync(
+        SqliteCommand command,
+        CancellationToken cancellationToken)
+    {
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? (reader.GetInt64(0), reader.GetInt64(1))
+            : null;
     }
 
     private static async ValueTask<IReadOnlyList<Guid>> ReadFinishedStandardBeforeAsync(
         SqliteConnection connection,
-        long sequence,
+        (long Sequence, long RowId) position,
         int maximum,
         CancellationToken cancellationToken)
     {
         using var command = connection.CreateCommand();
         // CROSS JOIN keeps raw_captures outermost, so the newest-first sequence index stops at the first ended work.
-        // Without table statistics the planner otherwise sorts every ended standard row.
+        // Without table statistics the planner otherwise sorts every ended standard row. The row value compares as the
+        // ORDER BY does, so a capture that ties the position's sequence with an earlier row is not skipped (#1409).
         command.CommandText = """
             SELECT raw.capture_id
             FROM raw_captures raw
             CROSS JOIN capture_lane_work work
             WHERE work.raw_capture_row_id = raw.raw_capture_row_id AND work.lane_name = 'standard'
-              AND raw.capture_sequence < $sequence AND work.state IN ('completed', 'quarantined', 'abandoned')
+              AND (raw.capture_sequence, raw.raw_capture_row_id) < ($sequence, $row_id)
+              AND work.state IN ('completed', 'quarantined', 'abandoned')
             ORDER BY raw.capture_sequence DESC, raw.raw_capture_row_id DESC
             LIMIT $maximum;
             """;
-        command.Parameters.AddWithValue("$sequence", sequence);
+        command.Parameters.AddWithValue("$sequence", position.Sequence);
+        command.Parameters.AddWithValue("$row_id", position.RowId);
         command.Parameters.AddWithValue("$maximum", maximum);
         var finished = new List<Guid>(maximum);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
