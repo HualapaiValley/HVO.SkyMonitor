@@ -33,8 +33,12 @@ without treating the request as invalid or claiming global absence.
 
 `AddCameraAgentSatellitePlanning(configuration)` provides the consumer seam in
 `CameraAgent.Common.OrbitalPlanning`. Host UI registration is separate. The
-snapshot adapter must supply `IOrbitalSnapshotReader`; it supplies neither EOP
-nor leap-second data.
+CameraAgent host composes the planner and authenticated UI adapter after
+`AddCameraAgentInfrastructure`. That infrastructure supplies the singleton
+`IOrbitalSnapshotReader` from the local verified orbital store; it supplies
+neither EOP nor leap-second data. Refresh and planning have independent enabled
+options: disabled or halted refresh still leaves the same validated
+last-known-good snapshot usable for explicitly enabled planning.
 
 The `CameraAgent:SatellitePlanning` options are deliberately unconfigured by
 default:
@@ -67,6 +71,13 @@ Searches run outside the UI circuit through a single active-work gate. A busy
 planner returns promptly instead of building a queue. The policy caps a search
 at 24 hours, 32 selected objects and 128 pass results. Search and selected-arc
 producer work each have a 1,500 ms bound. Caller cancellation propagates.
+These bounds cover numerical work, not loading local data. The first request
+after activation, cache eviction or relevant retention changes can load and
+validate a snapshot on the background work path. The #528 synthetic workload
+measured a cold read near 0.97 seconds with 2.1 GB allocated; #1425 and #1422 own
+reader and canonical-serialization improvements. This is not a 1.5-second
+end-to-end or five-second capture guarantee. The two-snapshot cache avoids I/O
+only while its identity and retention-generation checks remain valid.
 
 At most four original-query sessions are retained for ten minutes, with a
 128 MiB aggregate source-byte/product allowance. That allowance counts retained
