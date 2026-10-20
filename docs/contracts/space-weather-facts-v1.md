@@ -307,21 +307,24 @@ lines are unparseable when a listed day with a recognized month is not a real
 date, such as `Oct 32`. The watch then takes the fallback window and its watch
 days are `null` (s12).
 
-**Adjustments.** The following are applied in this order. Each applies only if
-it is earlier than the current `until`, and each sets the end reason:
+**Adjustments.** A summary with a non-cancel version bypasses all adjustments:
+both window bounds are its root issue time and its end reason is `null`.
+For other groups, the following are applied in this order. Each applies only
+if it is earlier than the current `until`, and each sets the end reason:
 
 1. **Watch supersession** (`superseded`). Every watch states that it supersedes
    all prior watches. A later watch of any level ends an earlier watch at the
    later watch's root issue time (s07, s08).
-2. **Cancel** (`cancelled`). A group with a non-cancel version ends at its
-   earliest cancel's issue time (s07, s09). A group containing only cancels
-   bypasses all adjustments: both window bounds are its latest version's issue
-   time and its end reason is `cancelled`. It is recent from then and never
-   raises attention. A single cancel of an absent target is this case (s09).
+2. **Cancel** (`cancelled`). Except for summaries, a group with a non-cancel
+   version ends at its earliest cancel's issue time (s07, s09). A group
+   containing only cancels bypasses all adjustments: both window bounds are its
+   latest version's issue time and its end reason is `cancelled`. It is recent
+   from then and never raises attention. A single cancel of an absent target is
+   this case (s09).
 3. **Cap** (`capped`). No group stays active later than 96 hours after its
    latest non-cancel issue time (s21).
 
-Otherwise the end reason is `expired`.
+For groups subject to adjustments, the end reason is `expired` if none applies.
 
 **States** at time `t`. A summary with a non-cancel version is `recent` whenever
 `t < root issue time + 24 h`, including before its issue time, and `history`
@@ -335,11 +338,14 @@ otherwise. For every other group, the first matching row applies:
 | `active` | `from ≤ t < until` |
 
 **Retention.** A group and its versions, raised levels and acknowledgements are
-purged once `t ≥ until + 35 days`. A summary's `until` is its root issue time,
-so a summary is purged 35 days after it was issued. Its `endReason` is `null`
-(s10). Upstream `alerts.json` is a rolling window of about 28 days. A record
-that leaves that window was not cancelled. It stays until its own retention
-ends (s10).
+purged once `t ≥ until + 35 days`. A summary with a non-cancel version has
+`until` at its root issue time and `endReason` of `null`, so it is purged
+35 days after its root was issued (s10). A cancel-only group, including one
+whose family is `summary`, keeps both window bounds at its latest version's
+issue time and its end reason is `cancelled`; it is purged 35 days after that
+time. Upstream `alerts.json` is a rolling window of about 28 days. A record that
+leaves that window was not cancelled. It stays until its own retention ends
+(s10).
 
 **Projection.** Windows are stored in UTC. The operator surface also shows them
 in the site's IANA time zone (s14).
@@ -807,9 +813,10 @@ rounding vectors. The model, new scenarios and document change together;
 s01–s22 and captured bytes retain their original expectations and contents.
 
 The v1 errata in Refs #1398 (2026-10-20) clarify empty/all-blank normalization,
-zero stated latitudes, summaries before issue, multiple cancel-only versions,
-cancel-only families, competing link fields, unrecognized watch months,
-synoptic end components, field/headline/media whitespace, missing-level rank,
+zero stated latitudes, summaries before issue, summary adjustments and
+retention, multiple cancel-only versions, cancel-only families, competing link
+fields, unrecognized watch months, synoptic end components,
+field/headline/media whitespace, missing-level rank,
 the 3-day product marker and escalation after an earlier raise, to state the
 reference model's existing behaviour. The model, scenarios, captured bytes and
 every expectation are unchanged.
