@@ -376,21 +376,32 @@ public sealed class OrbitalSnapshotPanelTests
     }
 
     [TestMethod]
-    public void HaltWithoutAValidStatus_SaysSoInsteadOfANumber()
+    [DataRow(OrbitalOperatorText.ProviderOutcomeUnknownReasonCode)]
+    [DataRow(OrbitalOperatorText.InvalidHttpStatusReasonCode)]
+    public void HaltWithoutAValidStatus_SaysSoInsteadOfANumber(string haltReasonCode)
     {
         using var context = new BunitContext();
         var service = Configure(context);
-        // HttpStatusCode is still an int on this branch, so an out-of-range 0 stands in for "no valid status recorded".
-        service.GetHandler = _ => Success(TestOrbitalUiService.View(Halted(0), health: OrbitalElementsHealthState.Degraded));
+        service.GetHandler = _ => Success(TestOrbitalUiService.View(Halted(null, haltReasonCode + ": no valid HTTP status recorded"),
+            health: OrbitalElementsHealthState.Degraded));
         var cut = context.Render<OrbitalSnapshotPanel>();
 
         cut.WaitForAssertion(() =>
         {
+            Assert.AreEqual("Halted", cut.Find("#orbital-state").TextContent);
             Assert.AreEqual(OrbitalOperatorText.NoHttpStatusText, cut.Find("#orbital-halt-status").TextContent);
-            Assert.AreEqual(OrbitalOperatorText.Describe(OrbitalOperatorText.ProviderOutcomeUnknownReasonCode), cut.Find("#orbital-halt-reason").TextContent);
+            Assert.AreEqual(OrbitalOperatorText.Describe(haltReasonCode), cut.Find("#orbital-halt-reason").TextContent);
+            StringAssert.Contains(cut.Find("#orbital-data-notice").TextContent,
+                "Provider halted: No valid HTTP status recorded.", StringComparison.Ordinal);
+            AssertNoInventedHttpStatus(cut.Markup);
         });
         cut.Find("#orbital-resume").Click();
-        cut.WaitForAssertion(() => Assert.AreEqual("No valid HTTP status recorded", cut.Find("#orbital-resume-status").TextContent));
+        cut.WaitForAssertion(() =>
+        {
+            Assert.AreEqual("No valid HTTP status recorded", cut.Find("#orbital-resume-status").TextContent);
+            Assert.AreEqual(OrbitalOperatorText.Describe(haltReasonCode), cut.Find("#orbital-resume-halt-reason").TextContent);
+            AssertNoInventedHttpStatus(cut.Markup);
+        });
     }
 
     [TestMethod]
@@ -589,13 +600,18 @@ public sealed class OrbitalSnapshotPanelTests
     public void RecordedText_NeverEchoesTheValue(string? value, string expected)
         => Assert.AreEqual(expected, OrbitalSnapshotPanel.RecordedText(value));
 
-    private static OrbitalRefreshStatus Halted(int httpStatus) => TestOrbitalUiService.Status() with
+    /// <summary>A halt as the store records it: a recorded status names it, and a null status carries its own reason.</summary>
+    private static OrbitalRefreshStatus Halted(int? httpStatus, string? haltReason = null) => TestOrbitalUiService.Status() with
     {
         ProviderHalt = new OrbitalProviderHalt(Now.AddHours(-5), httpStatus,
-            httpStatus is >= 100 and <= 599 ? "orbital.provider-http-" + httpStatus : OrbitalOperatorText.ProviderOutcomeUnknownReasonCode),
+            haltReason ?? (httpStatus is { } status ? "orbital.provider-http-" + status : OrbitalOperatorText.ProviderOutcomeUnknownReasonCode)),
         Reason = OrbitalElementsOperations.ProviderHaltedReasonCode,
         RecoveryAction = OrbitalRefreshRecoveryAction.ResumeProvider,
     };
+
+    /// <summary>No HTTP number of any kind (0, 200, 403, 429 or otherwise) appears where no valid status was recorded.</summary>
+    private static void AssertNoInventedHttpStatus(string markup)
+        => Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(markup, @"HTTP\s*\d"), markup);
 
     private static ValueTask<OperatorUiResult<OrbitalDataStatusView>> Success(OrbitalDataStatusView view)
         => ValueTask.FromResult(OperatorUiResult<OrbitalDataStatusView>.Success(view));

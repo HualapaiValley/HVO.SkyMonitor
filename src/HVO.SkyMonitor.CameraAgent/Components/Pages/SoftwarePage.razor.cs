@@ -85,6 +85,7 @@ public sealed partial class SoftwarePage : SiteTimeComponent, IDisposable
             OrbitalDataState.Disabled => elementAge is null
                 ? "Refresh off; no data installed"
                 : string.Concat("Refresh off; newest elements ", elementAge),
+            OrbitalDataState.Stale when elementAge is null => "Element age unknown; treated as stale",
             OrbitalDataState.RefreshOverdue => view.RetrievalAge is { } retrieval
                 ? string.Concat("Last retrieval ", HealthPage.FormatDuration(retrieval), " ago")
                 : "No successful retrieval recorded",

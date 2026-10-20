@@ -16,6 +16,9 @@ public sealed class OrbitalDataStatusNoticeTests
 {
     private static readonly DateTimeOffset Now = TestOrbitalUiService.Now;
 
+    private const string HaltedNoStatusLine =
+        "Provider halted: No valid HTTP status recorded. Refresh waits until an operator resumes the provider.";
+
     private static readonly string[] FreshLines =
     [
         "Requested population: Synthetic active group. Complete for the requested population.",
@@ -72,15 +75,25 @@ public sealed class OrbitalDataStatusNoticeTests
     }
 
     [TestMethod]
-    public void UnreadableManifest_SaysCoverageCannotBeShown()
+    public void UnreadableManifest_SaysCoverageCannotBeShownAndElementAgeIsUnknown()
     {
-        var content = OrbitalDataStatusNotice.Compose(TestOrbitalUiService.View(withManifest: false,
-            manifestUnavailableReason: OrbitalOperatorText.ManifestRetiredReasonCode));
+        var view = TestOrbitalUiService.View(withManifest: false,
+            manifestUnavailableReason: OrbitalOperatorText.ManifestRetiredReasonCode);
 
+        var content = OrbitalDataStatusNotice.Compose(view);
+
+        Assert.IsTrue(view.ElementAgeUnknown);
+        Assert.IsTrue(view.ElementsStale, "With no readable epoch the shared rule treats the elements as stale.");
+        Assert.AreEqual(OrbitalElementsHealthEvaluator.IsElementStale(view.ObservedUtc, null), view.ElementsStale);
+        Assert.AreEqual(OrbitalDataState.Stale, view.State);
+        Assert.AreEqual("Orbital elements are stale.", content.Headline);
         Assert.AreEqual("warning", content.Tone);
+        Assert.HasCount(2, content.Lines);
         Assert.AreEqual(
             "Orbital elements are installed, but their coverage cannot be shown. That snapshot was retired by retention. Reload to see the current snapshot.",
-            content.Lines.Single());
+            content.Lines[0]);
+        Assert.AreEqual(OrbitalDataStatusNotice.ElementAgeUnknownText, content.Lines[1]);
+        Assert.DoesNotContain("48 h", content.Lines[1], "An unknown age is never claimed to be past the limit.");
     }
 
     [TestMethod]
@@ -164,6 +177,125 @@ public sealed class OrbitalDataStatusNoticeTests
     }
 
     [TestMethod]
+    public void SnapshotWithNoRecordedRetrieval_IsOverdueWithoutFallingBackToTheActivationTime()
+    {
+        var status = TestOrbitalUiService.Status() with
+        {
+            LastRetrievalSuccessUtc = null,
+            LastActivationUtc = Now.AddMinutes(-5),
+        };
+        var view = TestOrbitalUiService.View(status);
+
+        var content = OrbitalDataStatusNotice.Compose(view);
+
+        Assert.IsNull(view.RetrievalAge);
+        Assert.IsTrue(view.RefreshOverdue, "Since round 1 every activation records its retrieval; none recorded is overdue.");
+        Assert.AreEqual(OrbitalDataState.RefreshOverdue, view.State);
+        Assert.AreEqual("Orbital refresh is overdue.", content.Headline);
+        Assert.AreEqual("Refresh is overdue: no successful retrieval in the last 12 h. The installed elements stay in use.", content.Lines[^1]);
+    }
+
+    [TestMethod]
+    public void NoSnapshot_IsNeverOverdueBecauseHealthJudgesOverdueOnlyWithASnapshot()
+    {
+        var status = TestOrbitalUiService.Status() with
+        {
+            CurrentManifestSha256 = null,
+            CurrentPayloadSha256 = null,
+            LastRetrievalSuccessUtc = null,
+            LastActivationUtc = null,
+            Reason = OrbitalElementsOperations.NoActiveSnapshotReasonCode,
+        };
+
+        var view = TestOrbitalUiService.View(status);
+
+        Assert.IsFalse(view.RefreshOverdue);
+        Assert.IsFalse(view.ElementsStale);
+        Assert.AreEqual(OrbitalDataState.NoData, view.State);
+    }
+
+    [TestMethod]
+    public void RefreshOff_StillReportsStaleElementsButNeverOverdue()
+    {
+        var status = TestOrbitalUiService.Status() with
+        {
+            Enabled = false,
+            LastRetrievalSuccessUtc = Now.AddDays(-5),
+            Reason = OrbitalElementsOperations.DisabledReasonCode,
+            RecoveryAction = OrbitalRefreshRecoveryAction.Configure,
+        };
+        var view = TestOrbitalUiService.View(status, TestOrbitalUiService.Manifest(TimeSpan.FromDays(4), TimeSpan.FromDays(5)));
+
+        var content = OrbitalDataStatusNotice.Compose(view);
+
+        Assert.IsTrue(view.ElementsStale, "The installed data's age matters to consumers even with refresh off.");
+        Assert.IsFalse(view.RefreshOverdue, "Health returns early with refresh off, so nothing is overdue.");
+        Assert.AreEqual(OrbitalDataState.Stale, view.State);
+        Assert.AreEqual("Orbital elements are stale.", content.Headline);
+        Assert.IsFalse(content.Lines.Any(static line => line.StartsWith("Refresh is overdue", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    [DataRow(0d, 1d)]
+    [DataRow(47.99d, 11.99d)]
+    [DataRow(48d, 12d)]
+    [DataRow(48.01d, 12.01d)]
+    [DataRow(500d, 500d)]
+    [DataRow(-2d, -1d)]
+    public void Freshness_IsExactlyTheHealthRule(double newestEpochHours, double retrievalHours)
+    {
+        var retrieved = Now - TimeSpan.FromHours(retrievalHours);
+        var view = TestOrbitalUiService.View(
+            TestOrbitalUiService.Status() with { LastRetrievalSuccessUtc = retrieved },
+            TestOrbitalUiService.Manifest(TimeSpan.FromHours(newestEpochHours), TimeSpan.FromHours(Math.Max(newestEpochHours, 0) + 1)));
+        var newest = view.Manifest!.MaximumEpochUtc;
+
+        Assert.AreEqual(Now, view.ObservedUtc);
+        Assert.AreEqual(OrbitalElementsHealthEvaluator.IsElementStale(view.ObservedUtc, newest), view.ElementsStale);
+        Assert.AreEqual(
+            OrbitalElementsHealthEvaluator.IsRefreshOverdue(view.ObservedUtc, retrieved, TestOrbitalUiService.RefreshOptions),
+            view.RefreshOverdue);
+        Assert.AreEqual(newestEpochHours > 48, view.ElementsStale);
+        Assert.AreEqual(retrievalHours > 12, view.RefreshOverdue);
+    }
+
+    [TestMethod]
+    [DataRow(OrbitalOperatorText.ProviderOutcomeUnknownReasonCode)]
+    [DataRow(OrbitalOperatorText.InvalidHttpStatusReasonCode)]
+    public void HaltWithoutAValidStatus_SaysNoValidHttpStatusWasRecorded(string haltReasonCode)
+    {
+        var halt = new OrbitalProviderHalt(Now.AddHours(-1), null, haltReasonCode + ": no valid HTTP status recorded");
+        var withData = TestOrbitalUiService.View(HaltedStatus(halt));
+        var withoutData = TestOrbitalUiService.View(HaltedStatus(halt) with
+        {
+            CurrentManifestSha256 = null,
+            CurrentPayloadSha256 = null,
+        });
+
+        foreach (var content in new[] { OrbitalDataStatusNotice.Compose(withData), OrbitalDataStatusNotice.Compose(withoutData) })
+        {
+            Assert.AreEqual("warning", content.Tone);
+            Assert.AreEqual(HaltedNoStatusLine, content.Lines[^1]);
+            foreach (var line in content.Lines)
+            {
+                Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(line, @"HTTP\s*\d"), line);
+            }
+        }
+        Assert.AreEqual(OrbitalOperatorText.NoDataText, OrbitalDataStatusNotice.Compose(withoutData).Lines[0]);
+    }
+
+    [TestMethod]
+    public void HaltWithARecordedStatus_NamesIt()
+    {
+        var halt = new OrbitalProviderHalt(Now.AddHours(-1), 403, "orbital.provider-http-403");
+
+        var content = OrbitalDataStatusNotice.Compose(TestOrbitalUiService.View(HaltedStatus(halt)));
+
+        Assert.AreEqual("Provider halted: HTTP 403. Refresh waits until an operator resumes the provider.", content.Lines[^1]);
+        Assert.AreEqual("warning", content.Tone);
+    }
+
+    [TestMethod]
     public void RenderedNotice_UsesTheSuppliedIdAndStatusRole()
     {
         using var context = new BunitContext();
@@ -178,4 +310,11 @@ public sealed class OrbitalDataStatusNoticeTests
         Assert.HasCount(3, notice.QuerySelectorAll(".orbital-notice-line"));
         Assert.IsNotNull(notice.QuerySelector(".status-icon.success"));
     }
+
+    private static OrbitalRefreshStatus HaltedStatus(OrbitalProviderHalt halt) => TestOrbitalUiService.Status() with
+    {
+        ProviderHalt = halt,
+        Reason = OrbitalElementsOperations.ProviderHaltedReasonCode,
+        RecoveryAction = OrbitalRefreshRecoveryAction.ResumeProvider,
+    };
 }

@@ -162,14 +162,37 @@ public sealed class SoftwarePageTests
             status with { CurrentManifestSha256 = null, CurrentPayloadSha256 = null }), read: true));
         Assert.AreEqual(("Disabled", "Refresh off; newest elements 6h 0m old"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
             status with { Enabled = false, RecoveryAction = OrbitalRefreshRecoveryAction.Configure }), read: true));
-        Assert.AreEqual(("Halted", "Provider halted: No valid HTTP status recorded"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
-            status with { ProviderHalt = new OrbitalProviderHalt(now.AddHours(-1), 0, "orbital.provider-outcome-unknown") }), read: true));
+        Assert.AreEqual(("Stale", "Element age unknown; treated as stale"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
+            withManifest: false, manifestUnavailableReason: OrbitalElementsAvailability.IntegrityFailureReasonCode), read: true));
+        Assert.AreEqual(("Refresh overdue", "No successful retrieval recorded"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
+            status with { LastRetrievalSuccessUtc = null, LastActivationUtc = now.AddMinutes(-5) }), read: true));
+        Assert.AreEqual(("Halted", "Provider halted: HTTP 403"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
+            status with { ProviderHalt = new OrbitalProviderHalt(now.AddHours(-1), 403, "orbital.provider-http-403") }), read: true));
         Assert.AreEqual(("Quarantined", "Last download quarantined"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
             status with { RecoveryAction = OrbitalRefreshRecoveryAction.InspectQuarantine }), read: true));
         Assert.AreEqual(("Needs repair", "Orbital storage needs attention"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
             status with { RecoveryAction = OrbitalRefreshRecoveryAction.RepairStorage }), read: true));
         Assert.AreEqual(("Unavailable", "Orbital store unavailable"), SoftwarePage.OrbitalRail(TestOrbitalUiService.View(
             health: OrbitalElementsHealthState.Unhealthy, healthReason: "orbital.store-unavailable"), read: true));
+    }
+
+    [TestMethod]
+    [DataRow(OrbitalOperatorText.ProviderOutcomeUnknownReasonCode)]
+    [DataRow(OrbitalOperatorText.InvalidHttpStatusReasonCode)]
+    public void OrbitalRail_HaltWithoutAValidStatus_SaysSoInsteadOfANumber(string haltReasonCode)
+    {
+        var status = TestOrbitalUiService.Status() with
+        {
+            ProviderHalt = new OrbitalProviderHalt(TestOrbitalUiService.Now.AddHours(-1), null, haltReasonCode + ": no valid HTTP status recorded"),
+            Reason = OrbitalElementsOperations.ProviderHaltedReasonCode,
+            RecoveryAction = OrbitalRefreshRecoveryAction.ResumeProvider,
+        };
+
+        var (state, detail) = SoftwarePage.OrbitalRail(TestOrbitalUiService.View(status), read: true);
+
+        Assert.AreEqual("Halted", state);
+        Assert.AreEqual("Provider halted: No valid HTTP status recorded", detail);
+        Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(detail, @"HTTP\s*\d"), detail);
     }
 
     [TestMethod]

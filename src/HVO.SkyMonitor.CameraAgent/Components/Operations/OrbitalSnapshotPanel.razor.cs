@@ -374,7 +374,7 @@ public sealed partial class OrbitalSnapshotPanel : SiteTimeComponent, IAsyncDisp
 
     private static string FreshnessDetail(OrbitalDataStatusView view)
     {
-        var limit = string.Create(CultureInfo.InvariantCulture, $"{OrbitalDataStatusView.ElementStaleAfter.TotalHours:0} h");
+        var limit = string.Create(CultureInfo.InvariantCulture, $"{OrbitalElementsHealthEvaluator.ElementStaleAge.TotalHours:0} h");
         return view.OldestElementAge is { } oldest
             ? string.Concat("Newest element epoch; the oldest is ", HealthPage.FormatDuration(oldest),
                 " old. Elements read as stale after ", limit, ", however recently they were fetched.")
@@ -384,7 +384,7 @@ public sealed partial class OrbitalSnapshotPanel : SiteTimeComponent, IAsyncDisp
     /// <summary>The marker's position on a track that spans one and a half stale limits; the stale limit sits at two thirds.</summary>
     internal static string MarkerPercent(TimeSpan newestAge)
     {
-        var span = OrbitalDataStatusView.ElementStaleAfter.TotalSeconds * 1.5;
+        var span = OrbitalElementsHealthEvaluator.ElementStaleAge.TotalSeconds * 1.5;
         var percent = Math.Clamp(newestAge.TotalSeconds / span * 100, 0, 100);
         return percent.ToString("0.#", CultureInfo.InvariantCulture);
     }

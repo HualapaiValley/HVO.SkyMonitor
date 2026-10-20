@@ -108,7 +108,7 @@
             {
                 <div><dt>Schedule</dt><dd id="orbital-schedule">@ScheduleText(view.Schedule)<small>@ScheduleDetail(view.Schedule) <a href="@AutomationsDefinitionLink">Open in Automations</a></small></dd></div>
                 <div><dt>Last attempt</dt><dd id="orbital-last-attempt">@SiteTime.Format(status.LastAttemptUtc, unavailable: "None recorded")</dd></div>
-                <div><dt>Last successful retrieval</dt><dd id="orbital-last-retrieval">@TimeWithAge(status.LastRetrievalSuccessUtc, status.LastRetrievalSuccessUtc is null ? null : view.RetrievalAge, "None recorded")</dd></div>
+                <div><dt>Last successful retrieval</dt><dd id="orbital-last-retrieval">@TimeWithAge(status.LastRetrievalSuccessUtc, view.RetrievalAge, "None recorded")</dd></div>
                 <div><dt>Next permitted attempt</dt><dd id="orbital-next-permitted">@NextPermittedText(view)</dd></div>
                 <div><dt>Next due</dt><dd id="orbital-next-due">@SiteTime.Format(status.NextDueUtc, unavailable: "Not scheduled")</dd></div>
                 @if (status.ProviderHalt is { } halt)

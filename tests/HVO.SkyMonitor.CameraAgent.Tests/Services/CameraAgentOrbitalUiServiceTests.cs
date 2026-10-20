@@ -2,6 +2,8 @@ using System.Security.Claims;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
+using HVO.SkyMonitor.CameraAgent.Components.Operations;
+using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Orbital;
 using HVO.SkyMonitor.Common.Security;
@@ -150,6 +152,9 @@ public sealed class CameraAgentOrbitalUiServiceTests : OrbitalStoreTestBase
         Assert.IsTrue(view.ElementsStale, "Element age is judged by the epochs, not by the download time.");
         Assert.IsFalse(view.RefreshOverdue, "Retrieval itself is current.");
         Assert.AreEqual(OrbitalDataState.Stale, view.State);
+        Assert.AreEqual(OrbitalElementsHealthEvaluator.SnapshotStaleReasonCode, view.HealthReason,
+            "Health applies the same element-epoch rule and reaches the same verdict.");
+        Assert.AreEqual(OrbitalElementsHealthState.Degraded, view.HealthState);
     }
 
     [TestMethod]
@@ -170,6 +175,8 @@ public sealed class CameraAgentOrbitalUiServiceTests : OrbitalStoreTestBase
         Assert.IsFalse(aged.ElementsStale, "The newest epoch is eighteen hours old, inside the element limit.");
         Assert.IsTrue(aged.RefreshOverdue);
         Assert.AreEqual(OrbitalDataState.RefreshOverdue, aged.State);
+        Assert.AreEqual(OrbitalElementsHealthEvaluator.RefreshOverdueReasonCode, aged.HealthReason,
+            "Health applies the same retrieval rule and reaches the same verdict.");
         Assert.IsTrue(aged.CanRefresh, "Once the floor has elapsed an overdue snapshot can be refreshed.");
         Assert.AreEqual(OrbitalElementsOperations.ProviderHaltedReasonCode, halted.HealthReason,
             "Health reports only its first degrading reason.");
@@ -195,6 +202,58 @@ public sealed class CameraAgentOrbitalUiServiceTests : OrbitalStoreTestBase
         Assert.IsFalse(view.CanRefresh);
         Assert.AreEqual(OrbitalElementsOperations.ProviderHaltedReasonCode, view.RefreshBlockedReasonCode);
         Assert.AreEqual(OrbitalRefreshRecoveryAction.ResumeProvider, view.Status.RecoveryAction);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task GetAsync_WhenAHaltHasNoValidHttpStatus_SaysSoEverywhereAndNeverInventsOneAsync(bool outcomeUnknown)
+    {
+        using var fixture = await OrbitalAutomationFixture.CreateAsync(CreateRoot()).ConfigureAwait(false);
+        await fixture.SaveDefinitionAsync().ConfigureAwait(false);
+        string expectedCode;
+        if (outcomeUnknown)
+        {
+            // A request that may have reached the provider is cancelled before its outcome is recorded.
+            using var cancellation = new CancellationTokenSource();
+            fixture.Orbital.Client.EnqueueHang();
+            var running = fixture.Orbital.RunAsync(cancellationToken: cancellation.Token).AsTask();
+            await fixture.Orbital.Client.RequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            await Assert.ThrowsAsync<OperationCanceledException>(() => running).ConfigureAwait(false);
+            expectedCode = OrbitalOperatorText.ProviderOutcomeUnknownReasonCode;
+        }
+        else
+        {
+            // The provider status line is outside 100-599.
+            fixture.Orbital.Client.Enqueue(fixture.Orbital.Result(OrbitalFetchDisposition.HttpStatusHalt, null,
+                OrbitalOperatorText.InvalidHttpStatusReasonCode, "synthetic"));
+            await fixture.Orbital.RunAsync().ConfigureAwait(false);
+            expectedCode = OrbitalOperatorText.InvalidHttpStatusReasonCode;
+        }
+        var service = CreateService(fixture, read: true, mutate: true, out _);
+
+        var view = (await service.GetAsync(CancellationToken.None).ConfigureAwait(false)).Value!;
+
+        var halt = view.Status.ProviderHalt;
+        Assert.IsNotNull(halt);
+        Assert.IsNull(halt.HttpStatusCode, "No valid HTTP status was durably recorded.");
+        Assert.StartsWith(expectedCode + ": ", halt.Reason);
+        Assert.AreEqual(OrbitalDataState.Halted, view.State);
+        Assert.AreEqual(OrbitalElementsOperations.ProviderHaltedReasonCode, view.HealthReason);
+        Assert.IsTrue(view.CanResume);
+        Assert.AreEqual(OrbitalOperatorText.NoHttpStatusText, OrbitalOperatorText.HaltStatus(halt.HttpStatusCode));
+        Assert.AreEqual(OrbitalOperatorText.Describe(expectedCode), OrbitalOperatorText.ReasonText(halt.Reason));
+        Assert.Contains("no valid HTTP status was recorded", OrbitalOperatorText.ReasonText(halt.Reason));
+        var rail = SoftwarePage.OrbitalRail(view, read: true);
+        Assert.AreEqual(("Halted", "Provider halted: " + OrbitalOperatorText.NoHttpStatusText), rail);
+        var notice = OrbitalDataStatusNotice.Compose(view);
+        Assert.Contains("Provider halted: " + OrbitalOperatorText.NoHttpStatusText +
+            ". Refresh waits until an operator resumes the provider.", notice.Lines);
+        foreach (var text in notice.Lines.Append(rail.Detail).Append(OrbitalOperatorText.ReasonText(halt.Reason)))
+        {
+            Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(text, @"HTTP\s*\d"), text);
+        }
     }
 
     [TestMethod]
@@ -572,9 +631,62 @@ public sealed class OrbitalOperatorTextTests
     [DataRow(429, "HTTP 429")]
     [DataRow(null, OrbitalOperatorText.NoHttpStatusText)]
     [DataRow(0, OrbitalOperatorText.NoHttpStatusText)]
+    [DataRow(99, OrbitalOperatorText.NoHttpStatusText)]
+    [DataRow(200, OrbitalOperatorText.NoHttpStatusText)]
     [DataRow(600, OrbitalOperatorText.NoHttpStatusText)]
     public void HaltStatus_NeverInventsAnHttpLabel(int? status, string expected)
         => Assert.AreEqual(expected, OrbitalOperatorText.HaltStatus(status));
+
+    [TestMethod]
+    [DataRow(OrbitalOperatorText.ProviderOutcomeUnknownReasonCode, SqliteOrbitalElementsStore.ProviderOutcomeUnknownReasonCode,
+        OrbitalElementsRefreshJob.ProviderOutcomeUnknownReasonCode, "orbital.provider-outcome-unknown")]
+    [DataRow(OrbitalOperatorText.InvalidHttpStatusReasonCode, SqliteOrbitalElementsStore.InvalidHttpStatusReasonCode,
+        OrbitalElementsRefreshJob.InvalidHttpStatusReasonCode, "orbital.invalid-http-status")]
+    [DataRow(OrbitalOperatorText.AttemptCancelledReasonCode, SqliteOrbitalElementsStore.AttemptCancelledReasonCode,
+        OrbitalElementsRefreshJob.AttemptCancelledReasonCode, "orbital.attempt-cancelled")]
+    public void InternalProducerCodes_ArePinnedToTheProducerConstants(string local, string store, string job, string literal)
+    {
+        // #528 keeps these codes internal, so the UI keeps local copies; a rename on either side fails here.
+        Assert.AreEqual(literal, local);
+        Assert.AreEqual(store, local);
+        Assert.AreEqual(job, local);
+        Assert.IsTrue(OrbitalOperatorText.IsKnown(local), local);
+    }
+
+    [TestMethod]
+    public void RoundOneCodes_HavePlainOperatorText()
+    {
+        var outcomeUnknown = OrbitalOperatorText.Describe(OrbitalOperatorText.ProviderOutcomeUnknownReasonCode);
+        Assert.Contains("no valid HTTP status was recorded", outcomeUnknown);
+        Assert.Contains("halted", outcomeUnknown);
+        var invalidStatus = OrbitalOperatorText.Describe(OrbitalOperatorText.InvalidHttpStatusReasonCode);
+        Assert.Contains("no valid HTTP status was recorded", invalidStatus);
+        Assert.Contains("halted", invalidStatus, "An invalid status is a halt since #528 round 1, not a quarantine.");
+        Assert.DoesNotContain("quarantin", invalidStatus);
+        Assert.Contains("not halted", OrbitalOperatorText.Describe(OrbitalOperatorText.AttemptCancelledReasonCode));
+        var overdue = OrbitalOperatorText.Describe(OrbitalElementsHealthEvaluator.RefreshOverdueReasonCode);
+        Assert.Contains("Refresh is overdue", overdue);
+        Assert.Contains("retrieval", overdue);
+        var stale = OrbitalOperatorText.Describe(OrbitalElementsHealthEvaluator.SnapshotStaleReasonCode);
+        Assert.Contains("newest element epoch", stale);
+        Assert.Contains(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"{OrbitalElementsHealthEvaluator.ElementStaleAge.TotalHours:0} hours"), stale);
+        Assert.DoesNotContain("activat", stale, "Staleness is judged by element epochs, not by activation time.");
+        foreach (var text in new[] { outcomeUnknown, invalidStatus })
+        {
+            Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(text, @"HTTP\s*\d"), text);
+        }
+    }
+
+    [TestMethod]
+    public void ReasonText_OfANullStatusHaltNamesNoStatus()
+    {
+        Assert.AreEqual(OrbitalOperatorText.Describe(OrbitalOperatorText.ProviderOutcomeUnknownReasonCode),
+            OrbitalOperatorText.ReasonText(SqliteOrbitalElementsStore.ProviderOutcomeUnknownHaltReason));
+        Assert.AreEqual(OrbitalOperatorText.Describe(OrbitalOperatorText.InvalidHttpStatusReasonCode),
+            OrbitalOperatorText.ReasonText(
+                "orbital.invalid-http-status: no valid HTTP status recorded; the provider status line was outside 100-599"));
+    }
 
     [TestMethod]
     public void ReasonText_DescribesCodesAndNeverRendersFreeText()

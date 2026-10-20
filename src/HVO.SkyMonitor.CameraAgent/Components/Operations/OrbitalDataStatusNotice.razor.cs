@@ -1,4 +1,5 @@
 using System.Globalization;
+using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.AspNetCore.Components;
@@ -7,8 +8,10 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Operations;
 
 /// <summary>
 /// The compact orbital data notice: requested-population coverage, element age and the stale and overdue states, or
-/// the explicit "no orbital data installed" wording. Freshness comes from <see cref="OrbitalDataStatusView"/>, so there
-/// is one freshness rule for every page that embeds this notice.
+/// the explicit "no orbital data installed" wording. Freshness comes from <see cref="OrbitalDataStatusView"/>, which
+/// applies the health evaluator's own pure rules, so there is one freshness rule for every page that embeds this notice
+/// and for health. The stale and overdue lines are independent facts: both can show, and they show even while refresh
+/// is halted, quarantined or needs repair, where health reports only its first degrading reason.
 /// </summary>
 public sealed partial class OrbitalDataStatusNotice : ComponentBase
 {
@@ -16,6 +19,8 @@ public sealed partial class OrbitalDataStatusNotice : ComponentBase
         "The orbital data status could not be read, so nothing is known about the installed orbital data. Satellite predictions are unavailable; this does not mean no satellites are overhead.";
     internal const string StoreUnavailableText =
         "The orbital store is unavailable, so the installed orbital data cannot be described. Satellite predictions are unavailable; this does not mean no satellites are overhead.";
+    internal const string ElementAgeUnknownText =
+        "The element age is unknown because the snapshot manifest cannot be read, so the elements are treated as stale. They stay in use until a refresh replaces them.";
     private NoticeContent _content = Compose(null);
 
     /// <summary>The composed status, or null when it could not be read.</summary>
@@ -41,7 +46,9 @@ public sealed partial class OrbitalDataStatusNotice : ComponentBase
         }
         if (!view.HasData)
         {
-            return new NoticeContent(null, [OrbitalOperatorText.NoDataText], "pending");
+            return HaltLine(view) is { } noDataHalt
+                ? new NoticeContent(null, [OrbitalOperatorText.NoDataText, noDataHalt], "warning")
+                : new NoticeContent(null, [OrbitalOperatorText.NoDataText], "pending");
         }
         var lines = new List<string>(4);
         if (view.Manifest is not { } manifest)
@@ -64,22 +71,40 @@ public sealed partial class OrbitalDataStatusNotice : ComponentBase
         }
         if (view.ElementsStale)
         {
-            lines.Add(string.Create(CultureInfo.InvariantCulture,
-                $"The elements are stale: even the newest epoch is older than {OrbitalDataStatusView.ElementStaleAfter.TotalHours:0} h, so predictions from them are less accurate. They stay in use until a refresh replaces them."));
+            lines.Add(view.ElementAgeUnknown
+                ? ElementAgeUnknownText
+                : string.Create(CultureInfo.InvariantCulture,
+                    $"The elements are stale: even the newest epoch is older than {OrbitalElementsHealthEvaluator.ElementStaleAge.TotalHours:0} h, so predictions from them are less accurate. They stay in use until a refresh replaces them."));
         }
         if (view.RefreshOverdue)
         {
             lines.Add(string.Create(CultureInfo.InvariantCulture,
-                $"Refresh is overdue: no successful retrieval in the last {view.StaleAfterHours} h. The installed elements stay in use."));
+                $"Refresh is overdue: no successful retrieval in the last {view.RefreshOptions.StaleAfterHours} h. The installed elements stay in use."));
+        }
+        var halt = HaltLine(view);
+        if (halt is not null)
+        {
+            lines.Add(halt);
         }
         var headline = view.ElementsStale
             ? "Orbital elements are stale."
             : view.RefreshOverdue
                 ? "Orbital refresh is overdue."
                 : "Orbital elements installed.";
-        var tone = view.ElementsStale || view.RefreshOverdue || view.Manifest is null ? "warning" : "success";
+        var tone = view.ElementsStale || view.RefreshOverdue || view.Manifest is null || halt is not null ? "warning" : "success";
         return new NoticeContent(headline, lines, tone);
     }
+
+    /// <summary>
+    /// The provider halt, if any. Its status renders through <see cref="OrbitalOperatorText.HaltStatus"/>, so a halt
+    /// with no valid HTTP status (<c>orbital.provider-outcome-unknown</c> or <c>orbital.invalid-http-status</c>) says so
+    /// explicitly instead of showing a number.
+    /// </summary>
+    private static string? HaltLine(OrbitalDataStatusView view)
+        => view.Status.ProviderHalt is { } halt
+            ? string.Concat("Provider halted: ", OrbitalOperatorText.HaltStatus(halt.HttpStatusCode),
+                ". Refresh waits until an operator resumes the provider.")
+            : null;
 
     internal sealed record NoticeContent(string? Headline, IReadOnlyList<string> Lines, string Tone);
 }

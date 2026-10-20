@@ -88,7 +88,7 @@ internal sealed class CameraAgentOrbitalUiService(
             healthState,
             healthReason ?? status.Reason,
             schedule,
-            options.Value.OrbitalElements.StaleAfterHours,
+            options.Value.OrbitalElements,
             canMutate));
     }
 
@@ -343,9 +343,11 @@ public sealed record OrbitalScheduleSummary(
 /// <summary>
 /// The composed operator view of the installed orbital data. Command availability is derived from the status and its
 /// recovery action, never from a separate rule set, and the service and the store re-check every command. Freshness is
-/// derived from facts (element epochs and retrieval times), not from the health reason code, so it does not depend on
-/// which single degrading reason health chose to report. The record is public only because Blazor component parameters
-/// must be; its derived members stay internal to the host.
+/// derived from facts (element epochs and retrieval times) through the same pure rules health applies
+/// (<see cref="OrbitalElementsHealthEvaluator.IsElementStale"/> and <see cref="OrbitalElementsHealthEvaluator.IsRefreshOverdue"/>),
+/// not from the health reason code, so it does not depend on which single degrading reason health chose to report.
+/// <paramref name="RefreshOptions"/> is the configured <see cref="OrbitalElementsOptions"/> those rules read. The record
+/// is public only because Blazor component parameters must be; its derived members stay internal to the host.
 /// </summary>
 public sealed record OrbitalDataStatusView(
     OrbitalRefreshStatus Status,
@@ -354,7 +356,7 @@ public sealed record OrbitalDataStatusView(
     OrbitalElementsHealthState HealthState,
     string HealthReason,
     OrbitalScheduleSummary? Schedule,
-    int StaleAfterHours,
+    OrbitalElementsOptions RefreshOptions,
     bool CanMutate)
 {
     internal DateTimeOffset ObservedUtc => Status.ObservedUtc;
@@ -406,35 +408,61 @@ public sealed record OrbitalDataStatusView(
     }
 
     /// <summary>
-    /// How old the newest element epoch may be before the elements read as stale. This mirrors the element-age rule the
-    /// orbital health evaluation adopts for <c>orbital.snapshot-stale</c>; it is a display rule only.
+    /// The age of the newest element epoch: the scientific age, independent of when it was downloaded. It is read from
+    /// the verified manifest of <see cref="OrbitalRefreshStatus.CurrentManifestSha256"/>, whose
+    /// <see cref="OrbitalSnapshotManifestV1.MaximumEpochUtc"/> is the value the store recorded as the active snapshot's
+    /// maximum epoch when it published that content-addressed manifest. Null when no manifest could be read.
     /// </summary>
-    internal static readonly TimeSpan ElementStaleAfter = TimeSpan.FromHours(48);
-
-    /// <summary>The configured <c>StaleAfterHours</c>: how long since the last successful retrieval before refresh is overdue.</summary>
-    internal TimeSpan RefreshOverdueAfter => TimeSpan.FromHours(StaleAfterHours);
-
-    /// <summary>The age of the newest element epoch: the scientific age, independent of when it was downloaded.</summary>
     internal TimeSpan? NewestElementAge => Manifest?.MaximumEpochUtc is { } newest ? Positive(ObservedUtc - newest) : null;
 
     internal TimeSpan? OldestElementAge => Manifest?.MinimumEpochUtc is { } oldest ? Positive(ObservedUtc - oldest) : null;
 
     internal TimeSpan? ActivationAge => Status.LastActivationUtc is { } activated ? Positive(ObservedUtc - activated) : null;
 
-    /// <summary>The time since the last successful retrieval (an activation counts when no retrieval is recorded).</summary>
-    internal TimeSpan? RetrievalAge => (Status.LastRetrievalSuccessUtc ?? Status.LastActivationUtc) is { } retrieved
+    /// <summary>The time since the last valid provider retrieval (HTTP 200), or null when none is recorded.</summary>
+    internal TimeSpan? RetrievalAge => Status.LastRetrievalSuccessUtc is { } retrieved
         ? Positive(ObservedUtc - retrieved)
         : null;
 
-    /// <summary>Element age: even the newest epoch is older than <see cref="ElementStaleAfter"/>, however recent the download.</summary>
-    internal bool ElementsStale => HasData && NewestElementAge > ElementStaleAfter;
+    /// <summary>
+    /// Element age, by the health rule <see cref="OrbitalElementsHealthEvaluator.IsElementStale"/>: even the newest epoch
+    /// is older than <see cref="OrbitalElementsHealthEvaluator.ElementStaleAge"/>, however recent the download. When the
+    /// manifest cannot be read the element age is unknown, and the rule treats the elements as stale (fail safe).
+    /// </summary>
+    internal bool ElementsStale => HasData && OrbitalElementsHealthEvaluator.IsElementStale(ObservedUtc, Manifest?.MaximumEpochUtc);
+
+    /// <summary>A snapshot is installed but its manifest could not be read, so the element age is unknown.</summary>
+    internal bool ElementAgeUnknown => HasData && NewestElementAge is null;
 
     /// <summary>
-    /// Retrieval time: refresh is on and no successful retrieval happened within <see cref="RefreshOverdueAfter"/>. This
-    /// is computed here because health reports only its first degrading reason, so a halt would otherwise hide it.
+    /// Retrieval time, by the health rule <see cref="OrbitalElementsHealthEvaluator.IsRefreshOverdue"/>: refresh is on, a
+    /// snapshot is installed, and no valid provider retrieval succeeded within <see cref="OrbitalElementsOptions.StaleAfterHours"/>.
+    /// Like health, it is judged only while a snapshot is installed (without one, health reports the first-snapshot or
+    /// configuration reason instead). It is computed here because health reports only its first degrading reason, so a
+    /// halt would otherwise hide it.
     /// </summary>
-    internal bool RefreshOverdue => Status.Enabled && RetrievalAge > RefreshOverdueAfter;
+    internal bool RefreshOverdue => HasData && Status.Enabled &&
+        OrbitalElementsHealthEvaluator.IsRefreshOverdue(ObservedUtc, Status.LastRetrievalSuccessUtc, RefreshOptions);
 
+    /// <summary>
+    /// The single state word. Its precedence follows <c>OrbitalElementsHealthEvaluator.DegradedReason</c> (halt, then
+    /// quarantine, then storage repair, then element staleness, then refresh overdue), with these deliberate differences:
+    /// <list type="bullet">
+    /// <item>An unavailable store is <see cref="OrbitalDataState.Unavailable"/> first (health is unhealthy).</item>
+    /// <item>Quarantined and NeedsRepair come from the status recovery action, which puts configuration first. With a
+    /// missing or disabled schedule, or a quarantine retained after a later attempt that did not quarantine (it is cleared
+    /// only by the next activation), health still degrades on it, but the word follows freshness; the quarantine row
+    /// and the health diagnostics show it.</item>
+    /// <item>With refresh off, health reports healthy without evaluating anything, but the word still reports
+    /// <see cref="OrbitalDataState.Stale"/> elements, because the installed data's age matters to its consumers. Refresh
+    /// overdue is gated on refresh being on, as in health.</item>
+    /// <item>Without a snapshot the word is <see cref="OrbitalDataState.NoData"/> or <see cref="OrbitalDataState.Disabled"/>;
+    /// health's first-snapshot-overdue or schedule reason appears in the health diagnostics.</item>
+    /// <item>When the manifest cannot be read the word is <see cref="OrbitalDataState.Stale"/> (element age unknown,
+    /// fail safe), while health reads the store's recorded epoch.</item>
+    /// </list>
+    /// The stale and overdue facts are shown by the notice independently of this word, even while halted.
+    /// </summary>
     internal OrbitalDataState State
     {
         get
@@ -487,14 +515,17 @@ internal static class OrbitalOperatorText
     internal const string ValidityText = "Unknown: the source supplies no validity window";
     internal const string NoHttpStatusText = "No valid HTTP status recorded";
 
-    /// <summary>A halt whose provider outcome was never durably recorded; it carries no HTTP status.</summary>
+    // The store's own constants for these three codes are internal to CameraAgent.Common, so they are restated here;
+    // OrbitalOperatorTextTests pins each one against the store constant, so drift fails a test.
+
+    /// <summary>A halt (or interrupted run) whose provider outcome was never durably recorded; it carries no HTTP status.</summary>
     internal const string ProviderOutcomeUnknownReasonCode = "orbital.provider-outcome-unknown";
 
-    /// <summary>
-    /// The planned health code for "no successful retrieval within <c>StaleAfterHours</c>". Until health emits it, it
-    /// is simply never seen; if it ships under another name, that name falls back to showing the code itself.
-    /// </summary>
-    internal const string RefreshOverdueReasonCode = "orbital.refresh-overdue";
+    /// <summary>A halt for a provider status line outside 100 to 599; it carries no HTTP status.</summary>
+    internal const string InvalidHttpStatusReasonCode = "orbital.invalid-http-status";
+
+    /// <summary>A run cancelled after its valid HTTP 200 retrieval was recorded; no halt is implied.</summary>
+    internal const string AttemptCancelledReasonCode = "orbital.attempt-cancelled";
 
     /// <summary>The fixed fallback for recorded free text, which is never rendered.</summary>
     internal const string UnrecordedReasonText = "The recorded reason is not a reason code, so it is not shown.";
@@ -510,7 +541,7 @@ internal static class OrbitalOperatorText
         [OrbitalElementsOperations.DefinitionDisabledReasonCode] =
             "The refresh schedule is disabled. Enable the orbital-elements-refresh automation to refresh.",
         [OrbitalElementsOperations.ProviderHaltedReasonCode] =
-            "The provider refused a request, so every refresh is halted until an operator resumes the provider.",
+            "The provider refused a request, or an attempt's outcome could not be confirmed, so every refresh is halted until an operator resumes the provider.",
         [OrbitalElementsOperations.RefreshQueuedReasonCode] =
             "Refresh queued. The automation runner makes the request on its next poll, and the provider floor and halt still apply.",
         [OrbitalElementsOperations.RefreshReplayedReasonCode] =
@@ -531,9 +562,10 @@ internal static class OrbitalOperatorText
 
         // Health.
         [OrbitalElementsHealthEvaluator.SnapshotStaleReasonCode] =
-            "The orbital elements are older than the freshness limit. They stay in use, but predictions from them are less accurate.",
-        [RefreshOverdueReasonCode] =
-            "No successful retrieval happened within the configured stale period. The installed elements stay in use.",
+            string.Create(CultureInfo.InvariantCulture,
+                $"The orbital elements are stale: even the newest element epoch is more than {OrbitalElementsHealthEvaluator.ElementStaleAge.TotalHours:0} hours old, however recently it was downloaded. They stay in use, but predictions from them are less accurate."),
+        [OrbitalElementsHealthEvaluator.RefreshOverdueReasonCode] =
+            "Refresh is overdue: no valid provider retrieval succeeded within the configured stale period. The installed elements stay in use.",
         [OrbitalElementsHealthEvaluator.FirstSnapshotOverdueReasonCode] =
             "The first snapshot is overdue, so no orbital data is installed yet.",
 
@@ -542,7 +574,8 @@ internal static class OrbitalOperatorText
         ["orbital.unchanged-payload"] =
             "The provider returned the same elements as the active snapshot; a new snapshot record was activated without new data.",
         ["orbital.retrieved"] = "The provider response was retrieved.",
-        ["orbital.attempt-cancelled"] = "The attempt was cancelled before it completed.",
+        [AttemptCancelledReasonCode] =
+            "The attempt was cancelled after a valid provider response was recorded, before it could be activated. The provider is not halted, and the last-known-good snapshot remains active.",
         ["orbital.attempt-in-flight"] = "Another attempt was already running, so this occurrence was skipped.",
         ["orbital.attempt-interrupted"] = "CameraAgent stopped before the attempt completed; startup recorded it as interrupted.",
         ["orbital.floor-not-elapsed"] = "Skipped because the provider's two-hour floor had not elapsed.",
@@ -551,10 +584,10 @@ internal static class OrbitalOperatorText
         ["orbital.candidate-rejected"] = "The provider response failed validation and was rejected.",
         ["orbital.internal-error"] = "The attempt failed unexpectedly and was closed.",
         ["orbital.non-200-response"] = "The provider returned a status other than 200 OK.",
-        ["orbital.invalid-http-status"] =
-            "The provider's response status was outside the valid HTTP range of 100 to 599.",
+        [InvalidHttpStatusReasonCode] =
+            "The provider answered with a status outside the valid HTTP range of 100 to 599, so no valid HTTP status was recorded. Every refresh is halted until an operator resumes the provider.",
         [ProviderOutcomeUnknownReasonCode] =
-            "An attempt may have reached the provider, but its outcome was not recorded (for example after a crash, a storage failure or a shutdown during the request). Refresh stays halted until an operator resumes the provider.",
+            "An attempt may have reached the provider, but its outcome was not recorded (for example after a crash, a storage failure or a shutdown during the request), so no valid HTTP status was recorded. Every refresh is halted until an operator confirms provider access and resumes the provider.",
 
         // Response checks.
         ["orbital.media-type"] = "The provider response was not JSON.",
@@ -671,10 +704,12 @@ internal static class OrbitalOperatorText
 
     /// <summary>
     /// The HTTP status of a provider halt: <c>HTTP 403</c> for a recorded status, and an explicit statement when no
-    /// valid status was recorded. Every halt status renders through here so a missing status is never shown as a number.
+    /// valid status was recorded (a null status, from <c>orbital.provider-outcome-unknown</c> or
+    /// <c>orbital.invalid-http-status</c>). Every halt status renders through here so a missing status is never shown
+    /// as a number. 200 is never a halt status (the read model rejects it), so it is not shown as one either.
     /// </summary>
     internal static string HaltStatus(int? httpStatusCode)
-        => httpStatusCode is { } status and >= 100 and <= 599
+        => httpStatusCode is { } status and >= 100 and <= 599 and not 200
             ? string.Create(CultureInfo.InvariantCulture, $"HTTP {status}")
             : NoHttpStatusText;
 
@@ -697,7 +732,7 @@ internal static class OrbitalOperatorText
         OrbitalRefreshRecoveryAction.WaitForPermittedAttempt =>
             "Wait for the next permitted attempt; the provider allows one every two hours.",
         OrbitalRefreshRecoveryAction.ResumeProvider =>
-            "Check why the provider refused the request, then resume the provider from this page.",
+            "Check why the provider halted refresh and confirm access to it, then resume the provider from this page.",
         OrbitalRefreshRecoveryAction.InspectQuarantine =>
             "Inspect the quarantined response as the orbital refresh runbook describes. The next successful refresh clears it.",
         OrbitalRefreshRecoveryAction.RepairStorage =>

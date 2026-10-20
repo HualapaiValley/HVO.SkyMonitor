@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 using HVO.SkyMonitor.CameraAgent.Services;
 
@@ -20,6 +21,9 @@ internal sealed class TestOrbitalUiService : ICameraAgentOrbitalUiService
     internal const string SyntheticEntityTag = "synthetic-etag-1";
     internal const string SyntheticLastModified = "Mon, 19 Oct 2026 17:00:00 GMT";
     internal const string SyntheticStoreRoot = "/var/lib/hvo-synthetic/orbital-root";
+
+    /// <summary>The configured refresh options every view carries: refresh is overdue after 12 hours without a retrieval.</summary>
+    internal static readonly OrbitalElementsOptions RefreshOptions = new() { StaleAfterHours = 12 };
 
     internal Func<CancellationToken, ValueTask<OperatorUiResult<OrbitalDataStatusView>>> GetHandler { get; set; } =
         _ => ValueTask.FromResult(OperatorUiResult<OrbitalDataStatusView>.Success(View()));
@@ -161,7 +165,7 @@ internal sealed class TestOrbitalUiService : ICameraAgentOrbitalUiService
             health,
             healthReason ?? resolved.Reason,
             schedule ?? Schedule(),
-            12,
+            RefreshOptions,
             canMutate);
     }
 }
