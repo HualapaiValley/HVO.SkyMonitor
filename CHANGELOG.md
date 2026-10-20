@@ -18,6 +18,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   unsafe folders and changed or unowned recovery copies, and program metadata uses a separate sidecar so released
   installers can still read the install record. Completed legacy install re-runs also place missing commands. (#1385)
 
+- Space-weather fact model (#1398 S1).
 - Software & Catalog shows orbital snapshot coverage, element age, refresh status and storage repair guidance, with
   bounded Refresh and Resume commands. Automations edits the same orbital refresh schedule and links to its run
   history. Missing orbital data never implies an empty sky. The Automations UI service applies the 1–128-character
@@ -70,6 +71,12 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   Refresh image skips the wait. (#1382)
 
 ### Fixed
+
+- CameraAgent no longer warns about unordered database queries during API-key authentication or local owner recovery;
+  ambiguous matches continue to be rejected. (#1437)
+
+- CameraAgent and LogicHost images no longer warn about overriding the runtime image's HTTP port default during
+  their intended startup binding; listening addresses and ports are unchanged. (#1436)
 
 - While the newest capture is still processing, Current Sky no longer skips a finished capture it could show when the
   retained history spans two agent identities whose capture sequence numbers overlap, which could leave it showing the
