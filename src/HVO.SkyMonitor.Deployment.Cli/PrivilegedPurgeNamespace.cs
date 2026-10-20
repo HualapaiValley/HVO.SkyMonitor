@@ -156,7 +156,7 @@ internal static class PrivilegedPurgeNamespace
         catch (InstallerException exception)
         {
             Console.Error.WriteLine(exception.Message);
-            return 1;
+            return PrivilegedHelperErrors.ExitCode(exception);
         }
         if (!TryParse(args, production.Path, out var command) || command.Uid != sudoUid || command.Gid != sudoGid)
         {
@@ -171,7 +171,7 @@ internal static class PrivilegedPurgeNamespace
         catch (Exception exception) when (exception is InstallerException or IOException or UnauthorizedAccessException)
         {
             Console.Error.WriteLine(exception.Message);
-            return 1;
+            return PrivilegedHelperErrors.ExitCode(exception);
         }
     }
 
@@ -246,12 +246,8 @@ internal static class PrivilegedPurgeNamespace
         var result = await processRunner.RunAsync(
                 "sudo", HelperArguments(action, productRoot, instanceId, operationId, expected), cancellationToken)
             .ConfigureAwait(false);
-        if (result.ExitCode != 0)
-        {
-            throw new InstallerException(
-                $"Privileged purge {(action == Action.Quarantine ? "quarantine" : "removal")} failed: " +
-                Redaction.SafeDiagnostic(result.StandardError));
-        }
+        PrivilegedHelperErrors.ThrowIfFailed(
+            result, $"Privileged purge {(action == Action.Quarantine ? "quarantine" : "removal")} failed");
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Each superseded component handle is disposed as the walk advances, and the current handle is disposed on failure or returned to the caller.")]
