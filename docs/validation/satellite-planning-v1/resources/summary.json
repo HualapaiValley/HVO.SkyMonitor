@@ -1,0 +1,159 @@
+{
+  "schema": "hvo-local-planning-warm-resource-summary-v1",
+  "sourceHead": "0c48a01974df2a8d2bb1e73f9af56e7c6e4e5485",
+  "sdk": "10.0.402",
+  "runtime": "10.0.13",
+  "results": [
+    {
+      "case": "iss",
+      "mode": "core",
+      "samples": 10,
+      "elapsedMilliseconds": {
+        "minimum": 33.4967,
+        "median": 39.36395,
+        "maximum": 42.264
+      },
+      "cpuMilliseconds": {
+        "minimum": 42.737,
+        "median": 47.5545,
+        "maximum": 49.518
+      },
+      "allocatedBytes": {
+        "minimum": 31682144,
+        "median": 31686760.0,
+        "maximum": 31688896
+      },
+      "workingAfterBytes": {
+        "minimum": 84439040,
+        "median": 84602880.0,
+        "maximum": 85839872
+      },
+      "processPeakWorkingSetBytes": {
+        "minimum": 85102592,
+        "median": 85618688.0,
+        "maximum": 85839872
+      },
+      "snapshotReadCalls": [
+        0
+      ]
+    },
+    {
+      "case": "iss",
+      "mode": "facade",
+      "samples": 10,
+      "elapsedMilliseconds": {
+        "minimum": 30.4394,
+        "median": 37.3762,
+        "maximum": 47.5653
+      },
+      "cpuMilliseconds": {
+        "minimum": 35.476,
+        "median": 44.197,
+        "maximum": 50.524
+      },
+      "allocatedBytes": {
+        "minimum": 33474448,
+        "median": 33481324.0,
+        "maximum": 33484328
+      },
+      "workingAfterBytes": {
+        "minimum": 85872640,
+        "median": 88205312.0,
+        "maximum": 91152384
+      },
+      "processPeakWorkingSetBytes": {
+        "minimum": 88809472,
+        "median": 89772032.0,
+        "maximum": 91152384
+      },
+      "snapshotReadCalls": [
+        4
+      ]
+    },
+    {
+      "case": "starlinks",
+      "mode": "core",
+      "samples": 10,
+      "elapsedMilliseconds": {
+        "minimum": 48.5115,
+        "median": 55.50075,
+        "maximum": 65.3702
+      },
+      "cpuMilliseconds": {
+        "minimum": 54.634,
+        "median": 64.7955,
+        "maximum": 77.594
+      },
+      "allocatedBytes": {
+        "minimum": 61217640,
+        "median": 61227796.0,
+        "maximum": 61234496
+      },
+      "workingAfterBytes": {
+        "minimum": 84189184,
+        "median": 85348352.0,
+        "maximum": 86368256
+      },
+      "processPeakWorkingSetBytes": {
+        "minimum": 85618688,
+        "median": 85803008.0,
+        "maximum": 86368256
+      },
+      "snapshotReadCalls": [
+        0
+      ]
+    },
+    {
+      "case": "starlinks",
+      "mode": "facade",
+      "samples": 10,
+      "elapsedMilliseconds": {
+        "minimum": 50.1793,
+        "median": 73.148,
+        "maximum": 129.9256
+      },
+      "cpuMilliseconds": {
+        "minimum": 58.712,
+        "median": 82.674,
+        "maximum": 148.546
+      },
+      "allocatedBytes": {
+        "minimum": 63801656,
+        "median": 63807396.0,
+        "maximum": 63810744
+      },
+      "workingAfterBytes": {
+        "minimum": 85581824,
+        "median": 88698880.0,
+        "maximum": 89960448
+      },
+      "processPeakWorkingSetBytes": {
+        "minimum": 88809472,
+        "median": 90249216.0,
+        "maximum": 90537984
+      },
+      "snapshotReadCalls": [
+        6
+      ]
+    }
+  ],
+  "identityChecks": [
+    {
+      "case": "iss",
+      "completeEveryCall": true,
+      "canonicalCombinedSha256": "3CA2C21A7F5F8D75DE4DAFAE45B2BC220F87509A0714E2CF0ECC23595684B73A",
+      "passes": 1,
+      "arcSamples": 663,
+      "actualPropagationEvaluations": 6310
+    },
+    {
+      "case": "starlinks",
+      "completeEveryCall": true,
+      "canonicalCombinedSha256": "70BAC78194BB1AD353A83BEEF4EDA712D61400DBFA9E4DD5DFAF9CD278FE7C0D",
+      "passes": 2,
+      "arcSamples": 1288,
+      "actualPropagationEvaluations": 12102
+    }
+  ],
+  "interpretation": "Core excludes facade safeguards. Difference includes repeated authoritative sky/rig/source/context checks, canonical hashing and session retention, plus runtime noise; no stage-cost attribution, no statistical equivalence and no live-cadence result."
+}

@@ -25,6 +25,10 @@ and UTC reference. Retrieval age describes the snapshot source; signed element
 age describes the selected orbital record at the original search endpoints.
 Neither establishes physical orbit accuracy, sunlight, brightness or visibility.
 
+A valid filter with zero matching records has the explicit `NoMatches` outcome.
+Its fixed UI description states matching zero and selected zero in this snapshot,
+without treating the request as invalid or claiming global absence.
+
 ## Local time inputs
 
 `AddCameraAgentSatellitePlanning(configuration)` provides the consumer seam in
@@ -50,6 +54,8 @@ resolved immutable `OrbitalTimeData`. Neither route downloads or refreshes time
 data. Repository fixtures are never default installed runtime inputs.
 
 Absent, malformed, mismatched, expired or uncovered inputs remain unavailable.
+The original query interval is checked before loading the orbital snapshot or
+projecting the sky; selected element epochs are checked after record selection.
 The existing time model rejects unsupported leap crossings and missing daily
 EOP brackets. Geometry-free pass arcs require actual retained EOP; nominal-zero
 diagnostics are not a fallback. Final/predicted EOP quality, coverage and hashes
@@ -80,6 +86,8 @@ The planning diagram shows the full angular pass, including portions outside
 the rig. A separate configured-rig preview uses the existing projection. Both
 respect declared segments and exact available anchors. Missing or clipped
 boundaries are labeled accordingly; no gap is joined or extrapolated.
+An isolated accepted sample remains a distinct prediction point with a UTC title,
+including when a narrow rig admits only one non-anchor sample.
 
 `OrbitalTrackPresentation` converts already-resolved exposure tracks into the
 existing typed presentation payload. Its `PredictedSatelliteTracks` layer is
@@ -87,6 +95,10 @@ independent from measured transient trails. Orange dashed paths, endpoint
 circles and bounded optional labels identify predictions without implying a
 detection. No uncertainty band is invented. Optional label omission does not
 remove the canonical source facts.
+Mandatory caption text also retains applicable stale-element, source-validity,
+configured-geometry and nominal-zero-EOP diagnostic warnings. These qualifications
+remain visible when every optional object label is omitted; a raster unable to
+carry the complete required caption is rejected explicitly.
 
 `CreatePayloadAndSourceFacts` also returns the exact producer-versioned source
 envelope bytes. Their SHA-256 equals the payload's source identity. An artifact

@@ -110,3 +110,27 @@ measured association, full-resolution camera cadence, capture prediction
 persistence, automatic input refresh, live snapshot adoption or production DI.
 See [local planning boundaries](../../astronomy/satellite-planning-v1.md) and the
 existing [virtual-camera evidence](../orbital-prediction-v1/virtual-camera.md).
+
+## Consumer resource and validation evidence
+
+The [warm resource pack](resources/README.md) retains every sample, a predeclared
+protocol, exact product/work checks and reproducible source. It compares direct
+engine calls with the real planning facade on the same ISS/Starlink queries;
+it excludes cold source loading, HTTP/authentication, UI and capture costs.
+It establishes neither statistical equivalence nor five-second cadence.
+
+The [runtime signal boundary](runtime-signals.md) identifies protected reads,
+typed outcomes, safe failure logs, cancellation/session behavior and the absence
+of a new autonomous worker. The [initial candidate coverage manifest](candidate-coverage.json)
+binds the exact 23-report selection at source `0c48a019`, before review
+corrections. It retains the original Integration failure, the complete passing
+affected replay and the unchanged Catalog/LogicHost qualification gaps. It is
+not a final-source coverage pass or a production qualification claim.
+
+Review corrections add explicit snapshot-limited `NoMatches`, reject unsupported
+query time before loading orbital data, preserve singleton projected samples,
+and keep stale/source/geometry/zero-EOP warnings in mandatory presentation text.
+The integrated correction at `d7814be3` passed 83 focused CameraAgent and 45
+presentation cases plus the real-engine UI Manual export. Broader affected
+validation and independent correction review remain separately recorded in the
+issue/PR ledger.
