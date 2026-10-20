@@ -65,6 +65,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Capture pauses interrupt retention and reconciliation between complete deletions, so a large expired backlog no longer holds an upgrade drain for an entire sweep. Interrupted passes continue after capture resumes. (#1342)
+
 - CameraAgent and LogicHost images no longer warn about overriding the runtime image's HTTP port default during
   their intended startup binding; listening addresses and ports are unchanged. (#1436)
 
