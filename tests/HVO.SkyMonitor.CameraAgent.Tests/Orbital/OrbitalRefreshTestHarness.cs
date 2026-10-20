@@ -120,6 +120,17 @@ internal sealed class SignalingTimeProvider(DateTimeOffset start) : TimeProvider
 
     public void Advance(TimeSpan delta) => _inner.Advance(delta);
 
+    /// <summary>Discards the record of every timer created so far, so the next wait observes only a new one.</summary>
+    public int DrainCreatedTimers()
+    {
+        var drained = 0;
+        while (_created.Reader.TryRead(out _))
+        {
+            drained++;
+        }
+        return drained;
+    }
+
     /// <summary>Waits for the next timer created on this clock and returns its due time.</summary>
     public async Task<TimeSpan> WaitForTimerAsync()
     {
