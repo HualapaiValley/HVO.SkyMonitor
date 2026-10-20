@@ -57,7 +57,7 @@ other than its probabilities, and none is invented.
 | Fact | Kind | Content |
 | --- | --- | --- |
 | `SourceSnapshot` | provenance | Product key; canonical URL path; fetch start (UTC); HTTP status; media type; decoded byte count; snapshot SHA-256; validators; in-file stamp; outcome |
-| `SwpcMessage` | issued notice version | Identity (message code, serial, issue minute); `product_id` and `issue_datetime` as attributes; headline kind and modifier; corrected flag; link (extension, continuation or cancel target serial); scale token and raw descriptor; impact latitude when stated; parsed time fields; watch day lines; the normalized text and its SHA-256; the original record |
+| `SwpcMessage` | issued notice version | Identity (message code, serial, issue minute); `product_id` and `issue_datetime` as attributes; headline kind and modifier; corrected flag; link (extension, continuation or cancel target serial); scale token and raw descriptor; impact latitude when stated; parsed time fields; watch day lines; the normalized text and its SHA-256; the original record's verbatim source JSON text |
 | `ScaleReading` | observation or forecast | Window (`observed24hMax`, `current`, `predictedDay1..3`), stamp, and the R, S and G scale values and probabilities as SWPC wrote them (JSON strings), including `null` |
 | `KpBin` | observation or forecast | Bin start (UTC); bin end (start plus 3 hours); Kp as the source text of the JSON number (`4.67` is kept as `"4.67"`, never rounded to `4+`); the source label verbatim (`observed`, `estimated` or `predicted`); NOAA scale or `null`. The relation to now (`past`, `current` or `future`) is computed when the bin is read and is not stored |
 | `IssuedForecast` | forecast | `:Issued:` time (UTC); 24 Kp breakdown bins with G marks; the solar radiation (S) and radio blackout (R) probabilities, keyed by the row label as printed and the UTC date; normalized-text SHA-256 |
@@ -168,6 +168,16 @@ Fields not listed are not read, and their types are not checked.
 | OVATION | `coordinates` | array of cells, each an array of exactly three integers (longitude, latitude, value). One cell outside every site band with the value `0.5` still rejects the body (s18) | `schema` |
 
 ## Alert records
+
+**Original record.** Every accepted message version stores its verbatim source
+JSON text: the exact UTF-8 byte span of that record in the decoded source body,
+from its opening `{` through its matching `}`, inclusive. This preserves all
+fields (including unread fields), JSON value types and number spellings,
+property order, escape spellings, and internal whitespace, without re-encoding.
+The outer array delimiters and whitespace outside the record are excluded.
+Message normalization and hashing do not change this original record. Restart
+and refetch preserve it unchanged (s26); an unread `"x": 1.5` remains a JSON
+number, byte for byte, rather than becoming the JSON string `"1.5"`.
 
 **Per-record checks.** An `alerts.json` body is a JSON array. Each record is
 validated on its own. A failure rejects only that record. The checks run in
@@ -664,7 +674,7 @@ has:
 - **`evaluate`.** Has `atUtc` and observes state without acting.
 
 **Durable state** is the provider halt; the stored message versions and their
-ingest order; the raised ranks; the acknowledgements; the orphan set; and, per
+verbatim original-record text and ingest order; the raised ranks; the acknowledgements; the orphan set; and, per
 product:
 
 - last-known-good;
@@ -677,7 +687,8 @@ product:
 - the last outcome;
 - the record-drift stamp, which is `null` when no episode is open.
 
-**Observed output.** Every step that has `atUtc` first purges by retention.
+**Observed output.** Every step reports `originalRecords`: identity to the
+ordered verbatim source texts of its stored versions (s26). Every step that has `atUtc` first purges by retention.
 It then reports `notices` and, for every product:
 
 - `lastOutcome`, `freshness`, `lkgSha256` and `lastSuccessUtc`;
@@ -730,6 +741,7 @@ A fetch also reports:
 | s23 | Exact Retry-After grammar; invalid forms give 1,800 s; matching weekday; valid dates in years 0001 and 9999 keep the clamp |
 | s24 | NaN, Infinity and -Infinity are malformed-json for alerts, scales, Kp and OVATION; last-known-good is kept |
 | s25 | Inclusive source-year bounds: 1899 and 9999 reject; 1900 and 9998 update, for alerts and scales |
+| s26 | Verbatim original alert JSON (including numeric x: 1.5, escapes and whitespace) survives two restarts and an unchanged refetch |
 
 **Implementation conformance.** An implementation passes when it reproduces each
 scenario's expectations from the same committed bodies. Unit tests use those

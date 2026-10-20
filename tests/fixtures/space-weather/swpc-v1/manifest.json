@@ -124,7 +124,8 @@
       "scenarios/s22-gone-client-error-network.json",
       "scenarios/s23-retry-after-forms.json",
       "scenarios/s24-json-nonfinite.json",
-      "scenarios/s25-year-bounds.json"
+      "scenarios/s25-year-bounds.json",
+      "scenarios/s26-original-record-verbatim.json"
     ],
     "generator": "fixtures.py",
     "normalization": "CRLF to LF, trailing spaces/tabs trimmed per line, trailing blank lines removed, every line LF-terminated"
@@ -132,8 +133,8 @@
   "files": [
     {
       "path": "SOURCE.md",
-      "bytes": 9351,
-      "sha256": "C4E1B4C7BCB7D8B550929BCB831BE88E0C32E1FAE45B67AC85777676355C4109"
+      "bytes": 9491,
+      "sha256": "22D2F9A935C0485423E494DEEB11E7A9C423BCEB034285DAF93EAE3D78F433AA"
     },
     {
       "path": "capture-20261019T1857Z/3-day-forecast.original.json",
@@ -162,8 +163,8 @@
     },
     {
       "path": "fixtures.py",
-      "bytes": 173218,
-      "sha256": "2FCA90950305C79CE344C8D64C958AC3B3D13E7719AA119F18D93A50693DC12D"
+      "bytes": 176440,
+      "sha256": "9BCC8B209A747CB8799DE9966126C4B4B11EDACFE16BF44A1302E5DA9EE129E5"
     },
     {
       "path": "ovation-aurora-site-sector.json",
@@ -294,6 +295,11 @@
       "path": "scenarios/s25-year-bounds.json",
       "bytes": 10844,
       "sha256": "BF61C0839A2AC9878226053928A553B44659AA80E7CE732D5BC07634912A6BBF"
+    },
+    {
+      "path": "scenarios/s26-original-record-verbatim.json",
+      "bytes": 4727,
+      "sha256": "05A916D2EEE0A42317E602F181AD96DC9D04061F3D24CC03D9FDA10FD7C72C28"
     }
   ]
 }

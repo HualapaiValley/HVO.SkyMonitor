@@ -185,6 +185,24 @@ def reject_json_constant(value):
     raise ValueError(f"non-JSON constant: {value}")
 
 
+def alert_record_texts(text):
+    """Exact JSON spans from an already validated top-level array; exclude only array delimiters/whitespace."""
+    decoder = json.JSONDecoder(parse_float=JsonNumberText, parse_constant=reject_json_constant)
+    spans = []
+    pos = 1
+    while True:
+        pos = re.compile(r"[ \t\r\n]*").match(text, pos).end()
+        if text[pos] == "]":
+            return spans
+        start = pos
+        _, pos = decoder.raw_decode(text, pos)
+        spans.append(text[start:pos])
+        pos = re.compile(r"[ \t\r\n]*").match(text, pos).end()
+        if text[pos] == "]":
+            return spans
+        pos += 1  # The complete body already passed JSON validation: this is the array's comma.
+
+
 def dump_json(obj) -> bytes:
     return (json.dumps(obj, indent=2, ensure_ascii=True) + "\n").encode("ascii")
 
@@ -235,7 +253,8 @@ WATCH_DAY_RE = re.compile(r"([A-Z][a-z]{2}) ([0-9]{2})\s*:\s+(G[1-5]|None)\b", r
 
 
 class Message:
-    def __init__(self, record, text):
+    def __init__(self, record, text, original_record=None):
+        self.original_record = original_record
         self.record = record
         self.product_id = record["product_id"]
         self.issue_datetime = record["issue_datetime"]
@@ -338,7 +357,7 @@ def watch_days(msg):
     return result
 
 
-def parse_record(record, index):
+def parse_record(record, index, original_record=None):
     """Return (Message, None) or (None, rejection reason)."""
     if not isinstance(record, dict):
         return None, "record-schema"
@@ -365,7 +384,7 @@ def parse_record(record, index):
             or not re.fullmatch(r"Issue Time: [0-9]{4} [A-Z][a-z]{2} [0-9]{2} [0-9]{4} UTC", lines[2])
             or parse_swpc_time(lines[2][len("Issue Time: "):]) is None):
         return None, "message-header"
-    return Message(record, text), None
+    return Message(record, text, original_record), None
 
 
 # ---------------------------------------------------------------------------
@@ -781,8 +800,8 @@ class Model:
         touched = set()
         added = []
         seen_in_body = {}
-        for index, record in enumerate(records):
-            msg, reason = parse_record(record, index)
+        for index, (record, original_record) in enumerate(records):
+            msg, reason = parse_record(record, index, original_record)
             if msg is None:
                 diagnostics.append(f"record-rejected:{reason}:{index}")
                 continue
@@ -956,7 +975,8 @@ class Model:
                 return "rejected", "no-valid-records", None
             stamp = fmt(max(m.issue for m in accepted))
             return "ok", {"sha256": digest, "stamp": stamp, "facts": {"records": len(obj),
-                                                                         "acceptedRecords": len(accepted)}}, obj
+                                                                         "acceptedRecords": len(accepted)}}, \
+                list(zip(obj, alert_record_texts(text)))
         if name == "scales":
             facts, reason = parse_scales(obj)
             stamp = facts["current"]["stampUtc"] if facts else None
@@ -1143,6 +1163,8 @@ class Model:
         if t is not None:
             observed["notices"] = self.notice_view(t)
             observed["products"] = {p: self.product_view(p, t) for p in self.products}
+        observed["originalRecords"] = {identity: [m.original_record for m, _ in versions]
+                                       for identity, versions in self.store.items()}
         return observed
 
     # -- durability -------------------------------------------------------
@@ -1157,7 +1179,7 @@ class Model:
         return {
             "providerHalt": self.provider_halt,
             "seq": self.seq,
-            "store": {identity: [{"record": m.record, "seq": seq} for m, seq in versions]
+            "store": {identity: [{"originalRecord": m.original_record, "seq": seq} for m, seq in versions]
                       for identity, versions in self.store.items()},
             "raised": {node(n): rank for n, rank in self.raised.items()},
             "acks": {node(n): ack for n, ack in self.acks.items()},
@@ -1173,8 +1195,12 @@ class Model:
             return code, int(serial)
         self.provider_halt = state["providerHalt"]
         self.seq = state["seq"]
-        self.store = {identity: [(parse_record(v["record"], 0)[0], v["seq"]) for v in versions]
-                      for identity, versions in state["store"].items()}
+        self.store = {
+            identity: [(parse_record(json.loads(v["originalRecord"], parse_float=JsonNumberText,
+                                               parse_constant=reject_json_constant), 0,
+                                     v["originalRecord"])[0], v["seq"]) for v in versions]
+            for identity, versions in state["store"].items()}
+
         self.raised = {node(n): rank for n, rank in state["raised"].items()}
         self.acks = {node(n): ack for n, ack in state["acks"].items()}
         self.orphans = set(state["orphans"])
@@ -2747,6 +2773,32 @@ def scenarios(cap: Capture):
             "outcome": "updated" if accepted else "rejected",
             "diagnostics": [] if accepted else ["body-rejected:schema"],
             "product": {"lkgSha256": lkg, "lastSuccessUtc": last_success}}, product="scales")
+    out.append(b.build())
+
+    # s26 ------------------------------------------------------------------
+    record = synthetic("SYNTH", "2026-10-20 12:00:00.000", "ALTZZZ", 1426,
+                       ["ALERT: Synthetic verbatim record", "Synthetic fixture; not an SWPC product."])
+    # The number, field layout, escape spellings and internal whitespace must all survive unchanged.
+    original = '{ "x": 1.5, "escape": "\\u0061\\/", "nested": {"x": [1, {"y": 2}]},\n  ' + \
+        json.dumps(record, ensure_ascii=True)[1:]
+    body = "[ \n" + original + "\n ]"
+    identity = "ALTZZZ/1426/2026-10-20T12:00:00Z"
+    expected_original = {identity: [original]}
+    response = {"status": 200, "contentType": "application/json", "etag": '"fixture-s26"',
+                "lastModified": None, "body": body}
+    b = Builder("s26-original-record-verbatim", "An alert's exact source JSON span survives restart and refetch",
+                ["original-record", "verbatim-json", "restart", "duplicate"], synthetic_records=True,
+                notes=["The alert and its extra fields are synthetic. The originalRecord span excludes only "
+                       "the array delimiters and surrounding whitespace, and includes the JSON number x: 1.5, "
+                       "escape spellings, nested values, field order and internal whitespace.",
+                       "Exact text equality pins the UTF-8 bytes, including that 1.5 remains a JSON number."])
+    b.fetch("2026-10-20T12:01:00Z", response, {
+        "outcome": "updated", "diagnostics": [], "originalRecords": expected_original})
+    b.step("restart", {"originalRecords": expected_original})
+    b.fetch("2026-10-20T12:03:00Z", response, {
+        "outcome": "unchanged", "diagnostics": [], "attention": [], "originalRecords": expected_original,
+        "notices": {"ALTZZZ/1426": {"versions": 1}}})
+    b.step("restart", {"originalRecords": expected_original})
     out.append(b.build())
 
     return out

@@ -134,7 +134,9 @@ The errata scenarios use entirely synthetic records and bodies:
 
 - s23 supplies synthetic Retry-After headers and a fresh synthetic reset alert;
 - s24 supplies synthetic baselines and nonfinite JSON constants for every JSON product;
-- s25 supplies synthetic alerts and scales at the source-year boundaries.
+- s25 supplies synthetic alerts and scales at the source-year boundaries;
+- s26 supplies a synthetic alert with an unread fraction-valued field, nested
+  values and deliberate JSON escape spellings and whitespace.
 
 No third-party copy of any SWPC message is included.
 
