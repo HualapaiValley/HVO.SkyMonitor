@@ -112,7 +112,7 @@ public sealed class CameraAgentOrbitalUiServiceTests : OrbitalStoreTestBase
         // Operations and health retain the real store; only the final, optional summary read fails.
         var scheduleStore = new Mock<ILocalAutomationStore>(MockBehavior.Strict);
         scheduleStore.Setup(store => store.GetStateAsync(CancellationToken.None))
-            .Returns(ValueTask.FromException<LocalAutomationOperatorState>(
+            .Returns(static () => ValueTask.FromException<LocalAutomationOperatorState>(
                 new IOException("Synthetic schedule-summary read failure.")));
         var service = CreateService(fixture, read: true, mutate: true, out _, scheduleStore: scheduleStore.Object);
 
