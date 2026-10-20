@@ -103,6 +103,51 @@ public sealed class OrbitalElementsOperationsTests : OrbitalStoreTestBase
     }
 
     [TestMethod]
+    [DataRow("activated", OrbitalElementsOperations.NotYetPermittedReasonCode)]
+    [DataRow("halted", OrbitalElementsOperations.ProviderHaltedReasonCode)]
+    [DataRow("disabled", OrbitalElementsOperations.DisabledReasonCode)]
+    public async Task ARetryOfAnExecutedRefreshReplaysOrConflictsBeforeAnyPolicyCheck(string scenario, string policyReasonCode)
+    {
+        var root = CreateRoot();
+        using (var first = await OrbitalAutomationFixture.CreateAsync(root).ConfigureAwait(false))
+        {
+            await first.SaveDefinitionAsync().ConfigureAwait(false);
+            Assert.AreEqual(OrbitalElementsCommandStatus.Accepted,
+                (await first.Operations.RefreshAsync(Refresh("refresh-1"), CancellationToken.None).ConfigureAwait(false)).Status);
+            first.Orbital.Client.Enqueue(scenario == "halted"
+                ? first.Orbital.Halt(429)
+                : first.Orbital.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
+            using var runner = first.CreateRunner();
+            await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+            await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(1, first.Orbital.Client.Calls, "The queued refresh executed once.");
+        }
+        // The retry arrives after a restart, inside the floor the executed run created (and, for "halted", under the
+        // halt it recorded, and for "disabled", with refresh since disabled).
+        using var fixture = await OrbitalAutomationFixture.CreateAsync(root, enabled: scenario != "disabled").ConfigureAwait(false);
+
+        var replay = await fixture.Operations.RefreshAsync(Refresh("refresh-1"), CancellationToken.None).ConfigureAwait(false);
+        var reused = await fixture.Operations.RefreshAsync(Refresh("refresh-1") with { Reason = "a different refresh" },
+            CancellationToken.None).ConfigureAwait(false);
+        var fresh = await fixture.Operations.RefreshAsync(Refresh("refresh-2"), CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(OrbitalElementsCommandStatus.Replayed, replay.Status);
+        Assert.AreEqual(OrbitalElementsOperations.RefreshReplayedReasonCode, replay.ReasonCode);
+        Assert.IsNull(replay.NextPermittedAttemptUtc);
+        Assert.IsNotNull(replay.Refresh);
+        Assert.AreEqual(OrbitalElementsCommandStatus.Conflict, reused.Status);
+        Assert.AreEqual(LocalAutomationContract.IdempotencyKeyConflictReasonCode, reused.ReasonCode,
+            "A reused key with a different payload is an idempotency conflict, not a policy refusal.");
+        Assert.IsNull(reused.NextPermittedAttemptUtc);
+        Assert.AreEqual(OrbitalElementsCommandStatus.Conflict, fresh.Status);
+        Assert.AreEqual(policyReasonCode, fresh.ReasonCode, "A new key still meets every policy check.");
+        Assert.IsFalse((await fixture.AutomationStateAsync().ConfigureAwait(false)).Runs
+            .Any(static run => run.Outcome == LocalAutomationRunOutcome.Queued), "Neither a replay nor a conflict queues.");
+        Assert.AreEqual(0, fixture.Orbital.Client.Calls);
+        Assert.AreEqual(1L, fixture.Orbital.AttemptCount());
+    }
+
+    [TestMethod]
     public async Task ARefreshInsideTheFloorIsRefusedWithTheNextPermittedAttemptAndQueuesNothing()
     {
         using var fixture = await OrbitalAutomationFixture.CreateAsync(CreateRoot()).ConfigureAwait(false);

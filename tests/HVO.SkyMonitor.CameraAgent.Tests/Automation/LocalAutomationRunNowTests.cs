@@ -309,6 +309,42 @@ public sealed class LocalAutomationRunNowTests : IDisposable
     }
 
     [TestMethod]
+    public async Task FindRunNowReplay_AnswersARecordedKeyExactlyAsRunNowWouldWithoutWritingAnything()
+    {
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, (await SaveAsync().ConfigureAwait(false)).Status);
+        var request = RunNow("lookup");
+        Assert.IsNull(await _store.FindRunNowReplayAsync(request, CancellationToken.None).ConfigureAwait(false),
+            "An unknown key has no recorded answer.");
+        Assert.IsNull(await _store.FindRunNowReplayAsync(request with { IdempotencyKey = " " }, CancellationToken.None)
+            .ConfigureAwait(false), "An invalid command is left for RunNowAsync to reject.");
+        Assert.AreEqual(0, (await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).QueuedRunCount);
+
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied,
+            (await _store.RunNowAsync(request, CancellationToken.None).ConfigureAwait(false)).Status);
+        using (var runner = CreateRunner())
+        {
+            await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        var before = await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+
+        var replayed = await _store.FindRunNowReplayAsync(request, CancellationToken.None).ConfigureAwait(false);
+        var changed = await _store.FindRunNowReplayAsync(request with { Reason = "a different reason" },
+            CancellationToken.None).ConfigureAwait(false);
+        var otherVersion = await _store.FindRunNowReplayAsync(request with { ExpectedVersion = 2 },
+            CancellationToken.None).ConfigureAwait(false);
+
+        Assert.AreEqual(LocalAutomationCommandStatus.Replayed, replayed?.Status);
+        Assert.IsNull(replayed?.ReasonCode);
+        Assert.AreEqual(LocalAutomationCommandStatus.Conflict, changed?.Status);
+        Assert.AreEqual(LocalAutomationContract.IdempotencyKeyConflictReasonCode, changed?.ReasonCode);
+        Assert.AreEqual(LocalAutomationCommandStatus.Conflict, otherVersion?.Status);
+        var after = await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(before.Runs.Count, after.Runs.Count, "A lookup never queues.");
+        Assert.AreEqual(0, after.QueuedRunCount);
+        Assert.AreEqual(1, _adapter.Executed.Count);
+    }
+
+    [TestMethod]
     public async Task RunNow_InterruptedByRestartIsSettledAndOnlyOneRunNowIsPendingAcrossItsRetry()
     {
         Assert.AreEqual(LocalAutomationCommandStatus.Applied, (await SaveAsync().ConfigureAwait(false)).Status);

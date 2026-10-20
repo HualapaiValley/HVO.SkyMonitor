@@ -54,4 +54,17 @@ public interface ILocalAutomationOccurrenceStore
     ValueTask<LocalAutomationCommandResult> RunNowAsync(
         LocalAutomationRunNowRequest request, CancellationToken cancellationToken)
         => throw new NotSupportedException("This automation store does not support an explicit run-now.");
+
+    /// <summary>
+    /// Looks up a recorded run-now idempotency key without writing anything. It returns
+    /// <see cref="LocalAutomationCommandStatus.Replayed"/> when the key was recorded for this exact request,
+    /// <see cref="LocalAutomationCommandStatus.Conflict"/> with
+    /// <see cref="LocalAutomationContract.IdempotencyKeyConflictReasonCode"/> when it was recorded for a different
+    /// command, and null when the key is unknown or the request is not a valid run-now command. The answer is exactly
+    /// the one <see cref="RunNowAsync"/> would give first, so a caller that applies its own policy before queuing can
+    /// answer a retry of an already executed request as a replay instead of meeting that policy again.
+    /// </summary>
+    ValueTask<LocalAutomationCommandResult?> FindRunNowReplayAsync(
+        LocalAutomationRunNowRequest request, CancellationToken cancellationToken)
+        => ValueTask.FromResult<LocalAutomationCommandResult?>(null);
 }

@@ -339,6 +339,40 @@ public sealed partial class SqliteLocalAutomationStore
         }
     }
 
+    public async ValueTask<LocalAutomationCommandResult?> FindRunNowReplayAsync(
+        LocalAutomationRunNowRequest request, CancellationToken cancellationToken)
+    {
+        using var operation = RetainOperationAuthority();
+        ArgumentNullException.ThrowIfNull(request);
+        if (!ValidOccurrenceCommand(request.DefinitionId, request.ExpectedVersion, request.IdempotencyKey,
+                request.Actor, request.Reason))
+        {
+            return null;
+        }
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureSchemaAsync(connection, false, cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginRead(connection);
+            return await ReplayAsync(connection, transaction, request.IdempotencyKey, RunNowPayloadSha256(request), null,
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>The recorded identity of a run-now command: every field except the idempotency key itself.</summary>
+    private static string RunNowPayloadSha256(LocalAutomationRunNowRequest request)
+        => CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            Schema = LocalAutomationContract.SchemaLabel,
+            Operation = "run-now",
+            Request = request with { IdempotencyKey = string.Empty }
+        });
+
     /// <summary>
     /// Queues one explicit run-now occurrence through the same journal, claim, retry, and restart path as
     /// every other prepared occurrence. It writes no progress row, so the periodic cadence, the next
@@ -353,12 +387,7 @@ public sealed partial class SqliteLocalAutomationStore
             return await OccurrenceResultAsync(connection, transaction, LocalAutomationCommandStatus.Invalid,
                 LocalAutomationContract.InvalidCommandReasonCode, token).ConfigureAwait(false);
         }
-        var payload = CaptureContractJson.ComputeCanonicalJsonSha256(new
-        {
-            Schema = LocalAutomationContract.SchemaLabel,
-            Operation = "run-now",
-            Request = request with { IdempotencyKey = string.Empty }
-        });
+        var payload = RunNowPayloadSha256(request);
         if (await ReplayAsync(connection, transaction, request.IdempotencyKey, payload, null, token)
                 .ConfigureAwait(false) is { } replay)
         {
