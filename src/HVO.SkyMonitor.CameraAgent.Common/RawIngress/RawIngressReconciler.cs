@@ -99,8 +99,9 @@ internal sealed class RawIngressReconciler(
             indexedArtifacts = [];
             indexProjectionFailures++;
         }
-        var claimedPayloads = new HashSet<string>(StringComparer.Ordinal);
-        var claimedSidecars = new HashSet<string>(StringComparer.Ordinal);
+        // A durable plan still owns its paths, even if a newer companion could otherwise be recovered.
+        var claimedPayloads = new HashSet<string>(plannedPaths, StringComparer.Ordinal);
+        var claimedSidecars = new HashSet<string>(plannedPaths, StringComparer.Ordinal);
         await foreach (var entry in _journal.EnumerateAsync(inspectionToken).ConfigureAwait(false))
         {
             claimedPayloads.Add(entry.PayloadRelativePath);
@@ -152,7 +153,7 @@ internal sealed class RawIngressReconciler(
         {
             inspectionToken.ThrowIfCancellationRequested();
             var sidecarRelative = Relative(sidecarPath);
-            if (claimedSidecars.Contains(sidecarRelative) || plannedPaths.Contains(sidecarRelative))
+            if (claimedSidecars.Contains(sidecarRelative))
             {
                 continue;
             }
@@ -229,9 +230,10 @@ internal sealed class RawIngressReconciler(
         foreach (var payloadPath in EnumerateRawFiles("*.bin"))
         {
             inspectionToken.ThrowIfCancellationRequested();
-            // A sidecar already due for quarantine no longer pairs with the payload beside it, as when it had been moved.
+            // A sidecar due for quarantine does not protect a newer sibling: defer that sibling as its own unit.
             var sibling = Path.ChangeExtension(payloadPath, ".json");
-            if (plannedPaths.Contains(Relative(payloadPath)) || claimedPayloads.Contains(Relative(payloadPath)) || File.Exists(sibling) && !pendingSidecars.Contains(sibling))
+            if (claimedPayloads.Contains(Relative(payloadPath)) ||
+                File.Exists(sibling) && !pendingSidecars.Contains(sibling) && !plannedPaths.Contains(Relative(sibling)))
             {
                 continue;
             }

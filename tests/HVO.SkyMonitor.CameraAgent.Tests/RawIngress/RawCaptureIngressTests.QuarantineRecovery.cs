@@ -1,9 +1,91 @@
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.AgentCore;
+using System.Diagnostics.Metrics;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 
 public sealed partial class RawCaptureIngressTests
 {
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task InitializeAsync_PlannedQuarantineKeepsLateCompanionsForResume(bool plannedSidecar)
+    {
+        using var hold = new Capture.MaintenanceHoldRoot();
+        using var admission = await hold.AdmissionAsync(paused: true).ConfigureAwait(false);
+        using var ingress = CreateIngress(hold.Path, new RawIngressState(TimeProvider.System), maintenanceGate: hold.Gate);
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        var configuration = CreateConfiguration();
+        var payload = new byte[] { 6, 6, 6, 6 };
+        var submission = CreateSubmission(Timestamp(6), payload);
+        var ids = RawCaptureDescriptorFactory.CreateStableIds(configuration, submission);
+        var descriptor = RawCaptureDescriptorFactory.Create(configuration, submission,
+            new RawCaptureIdentity(configuration.AgentId!, 1, ids.CaptureId, ids.ArtifactId),
+            PayloadChecksum.ComputeSha256(payload), DateTimeOffset.UtcNow);
+        var files = new RawIngressFileStore(hold.Path, new NullRawIngressFaultInjector());
+        var paths = files.GetPaths(descriptor.Timing.ExposureStartedUtc, ids.ArtifactId);
+        byte[] sidecar = plannedSidecar ? [1, 2] : CaptureContractJson.Serialize(
+            new ArtifactManifestV2(ArtifactManifestV2.CurrentSchemaVersion, descriptor, paths.PayloadRelativePath, null));
+        if (plannedSidecar)
+            await files.PublishSidecarAsync(paths, sidecar, CancellationToken.None).ConfigureAwait(false);
+        else
+            await files.PublishPayloadAsync(paths, payload, CancellationToken.None).ConfigureAwait(false);
+        var journal = new SqliteRawCaptureJournal(Path.Combine(hold.Path, "journal", "raw-ingress.db"), 1);
+        await journal.PlanQuarantineAsync(new RawIngressPlannedQuarantine("existing-plan",
+            plannedSidecar ? paths.SidecarRelativePath : paths.PayloadRelativePath, null,
+            "quarantine/existing-plan", "existing-quarantine", plannedSidecar ? sidecar.Length : payload.Length),
+            CancellationToken.None).ConfigureAwait(false);
+        // Bulk evidence can be newer than a restored journal: the companion appears after the durable plan.
+        if (plannedSidecar)
+            await files.PublishPayloadAsync(paths, payload, CancellationToken.None).ConfigureAwait(false);
+        else
+            await files.PublishSidecarAsync(paths, sidecar, CancellationToken.None).ConfigureAwait(false);
+        ingress.InvalidateEvidence();
+        await admission.ResumeAsync("late-companion-first-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        Task? pause = null;
+        var completed = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, owner) =>
+        {
+            if (instrument.Meter.Name == RawIngressTelemetry.MeterName &&
+                instrument.Name == "camera_agent.ingress.sqlite.transactions") owner.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, tags, listenerState) =>
+        {
+            foreach (var tag in tags)
+            {
+                if (tag.Key != "operation" || !Equals(tag.Value, "reconciliation-complete")) continue;
+                completed++;
+                pause ??= admission.PauseAsync("late-companion-pause", null, "test", null, CancellationToken.None);
+            }
+        });
+        listener.Start();
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(pause);
+        await pause.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.AreEqual(1, completed);
+        Assert.HasCount(1, Directory.GetFiles(Path.GetDirectoryName(paths.PayloadAbsolutePath)!));
+        using (var connection = await OpenJournalAsync(hold.Path).ConfigureAwait(false))
+        {
+            Assert.AreEqual(0L, await ScalarLongAsync(connection,
+                "SELECT COUNT(*) FROM raw_captures WHERE state = 'committed';").ConfigureAwait(false),
+                "Discovery must not commit evidence already owned by a quarantine plan.");
+        }
+        await admission.ResumeAsync("late-companion-second-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsEmpty(Directory.GetFiles(Path.GetDirectoryName(paths.PayloadAbsolutePath)!),
+            "A resumed initialization must not strand a companion omitted from deferred work.");
+        Assert.AreEqual(2, completed);
+        var quarantined = Directory.GetFiles(Path.Combine(hold.Path, "quarantine"), "*", SearchOption.AllDirectories);
+        Assert.HasCount(2, quarantined);
+        CollectionAssert.AreEqual(payload, await File.ReadAllBytesAsync(
+            quarantined.Single(path => Path.GetFileName(path) == Path.GetFileName(paths.PayloadAbsolutePath))).ConfigureAwait(false));
+        CollectionAssert.AreEqual(sidecar, await File.ReadAllBytesAsync(
+            quarantined.Single(path => Path.GetFileName(path) == Path.GetFileName(paths.SidecarAbsolutePath))).ConfigureAwait(false));
+        await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(2, completed, "Completed plans must not be repeated.");
+    }
+
     [TestMethod]
     [DataRow(0)]
     [DataRow(1)]
