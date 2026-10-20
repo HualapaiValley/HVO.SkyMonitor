@@ -235,12 +235,20 @@ STAMP_FORMATS = {SCALES_STAMP: "%Y-%m-%d %H:%M:%S", KP_STAMP: "%Y-%m-%dT%H:%M:%S
                  OVATION_STAMP: "%Y-%m-%dT%H:%M:%SZ"}
 
 
-def geomagnetic_latitude(lat, lon):
+def geomagnetic_latitude_unrounded(lat, lon):
     pole = POLICY["dipolePole"]
     pl, pn = math.radians(pole["latitudeDeg"]), math.radians(pole["longitudeDeg"])
     f, l = math.radians(lat), math.radians(lon)
     value = math.sin(f) * math.sin(pl) + math.cos(f) * math.cos(pl) * math.cos(l - pn)
-    return round(math.degrees(math.asin(value)), 1)
+    return math.degrees(math.asin(value))
+
+
+def geomagnetic_latitude(lat, lon):
+    return round(geomagnetic_latitude_unrounded(lat, lon), 1)
+
+
+def relevance_difference(required, phi):
+    return round(required - phi, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +550,7 @@ def relevance(group, site):
     if required is None:
         return "Unknown"
     phi = abs(geomagnetic_latitude(site["location"]["latitudeDeg"], site["location"]["longitudeDeg"]))
-    diff = round(required - phi, 1)
+    diff = relevance_difference(required, phi)
     if diff <= 0:
         return "InImpactArea"
     if diff <= 5:
@@ -2893,6 +2901,7 @@ def manifest(cap, files):
             "scenarioSchema": SCENARIO_SCHEMA,
             "scenarios": sorted(f for f in files if f.startswith("scenarios/")),
             "generator": "fixtures.py",
+            "roundingVectors": "rounding-vectors.json",
             "normalization": "CRLF to LF, trailing spaces/tabs trimmed per line, trailing blank lines "
                              "removed, every line LF-terminated",
         },
@@ -2909,6 +2918,7 @@ def collect_files(cap, ovation_bytes):
     files[THREE_DAY_NORMALIZED] = normalize_text(original["text"]).encode("utf-8")
     files[OVATION_SUBSET] = ovation_bytes
     files.update(scenario_files(cap))
+    files["rounding-vectors.json"] = (PACK / "rounding-vectors.json").read_bytes()
     return files
 
 
@@ -2933,6 +2943,31 @@ def check_captures(files):
     alerts = files[CAPTURE + "/alerts.json"]
     if encode_alerts(json.loads(alerts, parse_constant=reject_json_constant)).encode("ascii") != alerts:
         problems.append("alerts encoder does not reproduce the captured bytes")
+    return problems
+
+
+def check_rounding_vectors(data):
+    vectors = json.loads(data, parse_constant=reject_json_constant)
+    problems = []
+    for kind in ("geomagneticLatitude", "relevanceDifference"):
+        for index, vector in enumerate(vectors[kind], 1):
+            inputs = vector["input"]
+            if kind == "geomagneticLatitude":
+                lat, lon = inputs["latitudeDeg"], inputs["longitudeDeg"]
+                raw = geomagnetic_latitude_unrounded(lat, lon)
+                rounded = geomagnetic_latitude(lat, lon)
+            else:
+                required, phi = inputs["requiredLatitudeDeg"], inputs["geomagneticLatitudeDeg"]
+                raw = required - phi
+                rounded = relevance_difference(required, phi)
+            expected = vector["expectedRounded"]
+            # Also round the recorded binary double directly, independently of the input computation.
+            direct = round(float(vector["unroundedDouble"]), 1)
+            if repr(raw) != vector["unroundedDouble"] or any(
+                    value != expected or math.copysign(1, value) != math.copysign(1, expected)
+                    for value in (rounded, direct)):
+                problems.append(f"rounding {kind} vector {index}: raw={raw!r}, rounded={rounded!r}, "
+                                f"direct={direct!r}; expected {vector}")
     return problems
 
 
@@ -2992,6 +3027,7 @@ def command_check():
         problems.append("manifest.json differs from its regenerated form")
     problems.extend(check_captures(files))
     problems.extend(check_adversarial_json())
+    problems.extend(check_rounding_vectors(files["rounding-vectors.json"]))
     for rel, data in sorted(files.items()):
         if rel.startswith("scenarios/"):
             problems.extend(replay(json.loads(data, parse_constant=reject_json_constant)))
@@ -3012,6 +3048,7 @@ def command_write(ovation_original):
         ovation_bytes = (PACK / OVATION_SUBSET).read_bytes()
     files = collect_files(cap, ovation_bytes)
     problems = check_captures(files)
+    problems.extend(check_rounding_vectors(files["rounding-vectors.json"]))
     for rel, data in sorted(files.items()):
         if rel.startswith("scenarios/"):
             problems.extend(replay(json.loads(data, parse_constant=reject_json_constant)))

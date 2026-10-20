@@ -598,7 +598,20 @@ request identifier, a secret-bearing URI, or message text.
   NOAA scale descriptions.
 - **Site geomagnetic latitude.** A centred dipole with its pole at 80.8 N,
   72.6 W, rounded to 0.1° (U10).
-- **The difference** d = required − |site geomagnetic latitude|.
+- **The difference** d = required − |site geomagnetic latitude|, rounded to
+  0.1° before comparison.
+
+Both one-decimal operations reproduce Python `round(value, 1)` on the actual
+binary64 double: nearest decimal tenth, with ties to even. Rounding an exact
+decimal interpretation of its shortest `repr` text, or using .NET's default
+`Math.Round(value, 1)`, can disagree near half-way boundaries. For example,
+`2.25` rounds to `2.2`, `2.45` to `2.5` and `2.55` to `2.5`. The pack's
+`rounding-vectors.json` pins the inputs, exact unrounded doubles as `repr`
+text, expected rounded outputs and signed zero. It checks both latitude and
+relevance-difference operations. Directly parsing `unroundedDouble` allows the
+C# implementation to verify rounding separately from trigonometric-library
+last-bit differences. Synthetic intermediate relevance latitudes exercise
+half-way boundaries that normal one-decimal latitude outputs do not reach.
 
 | d | Category |
 | --- | --- |
@@ -763,3 +776,9 @@ regenerates the fixture pack:
 Proposed defaults may be tuned before the first implementation without a
 version change, provided the reference model, the scenarios and this document
 change together.
+
+The v1 errata in Refs #1412 (2026-10-20), before the first implementation,
+make Retry-After grammar, JSON constants and bounds, diagnostic scope and
+verbatim original records explicit, bound model scanning work, and add binary64
+rounding vectors. The model, new scenarios and document change together;
+s01–s22 and captured bytes retain their original expectations and contents.

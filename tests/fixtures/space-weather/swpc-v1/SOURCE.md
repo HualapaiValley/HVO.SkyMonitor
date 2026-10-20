@@ -138,6 +138,16 @@ The errata scenarios use entirely synthetic records and bodies:
 - s26 supplies a synthetic alert with an unread fraction-valued field, nested
   values and deliberate JSON escape spellings and whitespace.
 
+`rounding-vectors.json` is a separate manifest-listed golden vectors file,
+checked by both `check` and `write`. These are pure numerical probes, so a
+vectors file keeps them independent of fetch timing and notice lifecycle.
+It records synthetic inputs, the exact unrounded binary64 double as Python
+`repr` text, and the expected rounded output for both one-decimal operations.
+Some inputs are exact binary ties; others lie immediately beside decimal
+half-way boundaries. Relevance probes also use deliberately higher-precision
+intermediate latitudes. Expectations are fixed, never regenerated from the
+rounding implementation. See the contract's local-relevance rounding rule.
+
 No third-party copy of any SWPC message is included.
 
 ## Verify and regenerate
@@ -157,6 +167,7 @@ python3 -I tests/fixtures/space-weather/swpc-v1/fixtures.py check
 - It generates an unterminated string of one quote and 524,287 escaped-quote
   pairs in memory, and requires `malformed-json` within 5 seconds (including
   subprocess startup). The adversarial body is never committed.
+- It checks all golden rounding vectors, including the sign of zero.
 - It replays every scenario through the reference model in `fixtures.py` and
   compares the results with the expectations.
 
