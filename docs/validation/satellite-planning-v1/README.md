@@ -153,3 +153,14 @@ existing aggregate floor tracked in #1420. No baseline changed. The manifest use
 native enforcer aggregates with their configured exclusions. These results
 precede the separately checked one-pixel/smaller-marker revision and pending
 runtime composition; they are not a final-source coverage or cadence claim.
+
+## Runtime adoption after the #528 handoff
+
+[runtime-adoption.json](runtime-adoption.json) binds source `2e0f67e2` to actual
+CameraAgent startup, the installed singleton reader, pinned time files, real
+store activation and stale-session/UI checks. The complete affected CameraAgent
+Unit selection is 5,297 passed plus one existing platform skip; all 29 standalone
+Integration cases pass. Actual discovery IDs equal execution IDs. The fresh
+Manual export passes one actual case, verifies 57 outputs and preserves the three
+canonical angular arcs byte-for-byte. These results do not replace the historical
+full-suite, replay or coverage evidence above, or qualify production/cadence.
