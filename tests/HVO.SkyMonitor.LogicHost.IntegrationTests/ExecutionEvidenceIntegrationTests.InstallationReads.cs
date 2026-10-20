@@ -214,7 +214,7 @@ public sealed partial class ExecutionEvidenceIntegrationTests
 
     // The evidence service owns its separate SQL context/pool. Observe actual EF diagnostics rather
     // than replacing that context or changing production registration to install a test interceptor.
-    // Explicit request trace IDs exclude the ordinary reconciliation worker, including from callbacks.
+    // Explicit request trace IDs exclude the ordinary reconciliation worker, including its cancellation callback.
     private sealed class BindingReadProbe : IObserver<DiagnosticListener>, IObserver<KeyValuePair<string, object?>>, IDisposable
     {
         private readonly IDisposable _all;
@@ -238,11 +238,16 @@ public sealed partial class ExecutionEvidenceIntegrationTests
         }
         public void OnNext(KeyValuePair<string, object?> value)
         {
-            if (value.Key != "Microsoft.EntityFrameworkCore.Database.Command.CommandExecuting" || value.Value is not CommandEventData data ||
+            if (value.Key is not ("Microsoft.EntityFrameworkCore.Database.Command.CommandExecuting" or "Microsoft.EntityFrameworkCore.Database.Command.CommandExecuted") ||
+                value.Value is not CommandEventData data ||
                 data.Command.Connection is not SqlConnection connection || new SqlConnectionStringBuilder(connection.ConnectionString).ApplicationName != "HVO.ExecutionEvidence") return;
             var command = new BindingCommand(data.Command.CommandText, data.Command.Parameters.Cast<DbParameter>().Select(p => (p.ParameterName, p.Value!)).ToArray(),
                 data.Context?.ContextId.ToString(), Activity.Current?.Id, Activity.Current?.OperationName);
-            if (command.Sql.Contains("FROM [ExecutionEvidenceBindings]", StringComparison.Ordinal)) OnObservedBindingQuery?.Invoke(command);
+            if (value.Key == "Microsoft.EntityFrameworkCore.Database.Command.CommandExecuted")
+            {
+                if (command.Sql.Contains("FROM [ExecutionEvidenceBindings]", StringComparison.Ordinal)) OnObservedBindingQuery?.Invoke(command);
+                return;
+            }
             if (Activity.Current?.TraceId != _traceId) return;
             Commands.Enqueue(command);
             if (data.Command.CommandText.Contains("FROM [ExecutionEvidenceBindings]", StringComparison.Ordinal)) OnBindingQuery?.Invoke();
