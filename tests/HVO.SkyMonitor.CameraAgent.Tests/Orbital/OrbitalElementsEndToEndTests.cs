@@ -145,6 +145,16 @@ public sealed class OrbitalElementsEndToEndTests : OrbitalStoreTestBase
         Assert.AreEqual(OrbitalAttemptOutcome.UnchangedPayload, second.LastAttemptOutcome);
         Assert.AreNotEqual(first.CurrentManifestSha256, second.CurrentManifestSha256, "Each retrieval has its own manifest.");
         Assert.AreEqual(first.CurrentPayloadSha256, second.CurrentPayloadSha256);
+        Assert.AreEqual(first.LastActivationUtc, second.LastActivationUtc, "An unchanged payload is not a new activation.");
+        Assert.IsGreaterThan(first.LastRetrievalSuccessUtc!.Value, second.LastRetrievalSuccessUtc!.Value);
+        Assert.AreEqual(first.CurrentMaximumEpochUtc, second.CurrentMaximumEpochUtc);
+        var health = await host.Health.EvaluateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual((long)Floor.TotalSeconds, health.Data["ActivationAgeSeconds"], "Re-downloading never resets the age.");
+        // The fixture's newest epoch is ahead of the clock, which reads as age 0; its oldest is decades old.
+        Assert.AreEqual(Math.Max(0L, (long)(host.Clock.GetUtcNow() - second.CurrentMaximumEpochUtc!.Value).TotalSeconds),
+            health.Data["NewestElementAgeSeconds"]);
+        Assert.AreEqual((long)(host.Clock.GetUtcNow() - second.CurrentMinimumEpochUtc!.Value).TotalSeconds,
+            health.Data["OldestElementAgeSeconds"]);
         Assert.AreEqual("activated,unchanged-payload", host.Text(
             "SELECT group_concat(kind, ',') FROM (SELECT kind FROM orbital_activation_history ORDER BY history_sequence);"));
         Assert.AreEqual(second.CurrentManifestSha256, host.Text(

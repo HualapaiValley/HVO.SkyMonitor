@@ -46,12 +46,17 @@ public sealed class OrbitalElementsTelemetryTests : OrbitalStoreTestBase
         recorder.Collect();
         Assert.AreEqual(0, recorder.Snapshot().Length);
 
-        telemetry.Observe(State(records: 16_754, activated: clock.Now.AddMinutes(-2), halted: true));
+        telemetry.Observe(State(records: 16_754, activated: clock.Now.AddMinutes(-2), halted: true, objects: 16_750,
+            newest: clock.Now.AddHours(-6), oldest: clock.Now.AddHours(-30)));
         recorder.Collect();
         var observed = recorder.Snapshot();
 
         CollectionAssert.AreEquivalent(
-            new[] { ("active_records", 16_754d, ""), ("active_age", 120d, ""), ("halted", 1d, "") },
+            new[]
+            {
+                ("active_records", 16_754d, ""), ("active_objects", 16_750d, ""), ("newest_element_age", 21_600d, ""),
+                ("oldest_element_age", 108_000d, ""), ("activation_age", 120d, ""), ("halted", 1d, "")
+            },
             observed.Select(static m => (m.Name, m.Value, m.TagText)).ToArray());
 
         recorder.Clear();
@@ -91,8 +96,9 @@ public sealed class OrbitalElementsTelemetryTests : OrbitalStoreTestBase
     private static (string, double, string)[] Select(IEnumerable<Measurement> measurements, string name)
         => measurements.Where(m => m.Name == name).Select(static m => (m.Name, m.Value, m.TagText)).ToArray();
 
-    private static OrbitalProviderState State(int? records, DateTimeOffset? activated, bool halted)
-        => new(1, null, null, records, records, null, null, null, null, null, null, null, activated, null,
+    private static OrbitalProviderState State(int? records, DateTimeOffset? activated, bool halted, int? objects = null,
+        DateTimeOffset? newest = null, DateTimeOffset? oldest = null)
+        => new(1, null, null, records, objects, oldest, newest, null, null, null, null, null, activated, null,
             halted ? new OrbitalProviderHalt(OrbitalElementsStoreTestData.Start, 429, "synthetic") : null, null);
 
     private sealed record Measurement(string Name, double Value, IReadOnlyDictionary<string, string?> Tags)

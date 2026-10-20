@@ -15,7 +15,8 @@ public sealed class OrbitalElementsHealthTests : OrbitalStoreTestBase
     /// <summary>The keys the shared health response allowlists for <c>orbital-elements</c>.</summary>
     private static readonly HashSet<string> AllowedKeys = new(StringComparer.Ordinal)
     {
-        "Availability", "Reason", "RecoveryAction", "Halted", "HaltHttpStatus", "ActiveRecordCount", "ActiveAgeSeconds",
+        "Availability", "Reason", "RecoveryAction", "Halted", "HaltHttpStatus", "ActiveRecordCount", "ActiveObjectCount",
+        "NewestElementAgeSeconds", "OldestElementAgeSeconds", "ActivationAgeSeconds", "RetrievalAgeSeconds",
         "LastAttemptOutcome"
     };
 
@@ -84,20 +85,24 @@ public sealed class OrbitalElementsHealthTests : OrbitalStoreTestBase
     }
 
     [TestMethod]
-    public async Task AnActivatedSnapshotIsHealthyUntilItIsOlderThanTheStaleBound()
+    public async Task AnActivatedSnapshotIsHealthyUntilNoRetrievalSucceedsWithinTheRefreshBound()
     {
         using var fixture = await OrbitalAutomationFixture.CreateAsync(CreateRoot()).ConfigureAwait(false);
         await fixture.SaveDefinitionAsync().ConfigureAwait(false);
-        fixture.Orbital.Client.Enqueue(fixture.Orbital.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
+        // Element epochs 6 h and 30 h before the retrieval; freshness follows the newest one.
+        fixture.Orbital.Client.Enqueue(fixture.Orbital.Retrieved(CelesTrakGpTestData.Payload(
+            CelesTrakGpTestData.RecordFor(60001), CelesTrakGpTestData.RecordFor(60002, ("EPOCH", "\"2026-10-18T06:00:00.000000\"")))));
         await fixture.Orbital.RunAsync().ConfigureAwait(false);
         var evaluator = Evaluator(fixture);
-        var stale = TimeSpan.FromHours(fixture.Orbital.Options.Value.OrbitalElements.StaleAfterHours);
+        var overdueAfter = TimeSpan.FromHours(fixture.Orbital.Options.Value.OrbitalElements.StaleAfterHours);
 
         var fresh = await evaluator.EvaluateAsync(CancellationToken.None).ConfigureAwait(false);
-        fixture.Clock.Advance(stale);
+        fixture.Clock.Advance(overdueAfter);
         var boundary = await evaluator.EvaluateAsync(CancellationToken.None).ConfigureAwait(false);
         fixture.Clock.Advance(TimeSpan.FromMilliseconds(1));
-        var aged = await evaluator.EvaluateAsync(CancellationToken.None).ConfigureAwait(false);
+        var overdue = await evaluator.EvaluateAsync(CancellationToken.None).ConfigureAwait(false);
+        fixture.Clock.Advance(OrbitalElementsHealthEvaluator.ElementStaleAge);
+        var staleAndOverdue = await evaluator.EvaluateAsync(CancellationToken.None).ConfigureAwait(false);
 
         Assert.AreEqual(OrbitalElementsHealthState.Healthy, fresh.State);
         Assert.AreEqual("Available", fresh.Data["Availability"]);
@@ -105,14 +110,59 @@ public sealed class OrbitalElementsHealthTests : OrbitalStoreTestBase
         Assert.AreEqual(nameof(OrbitalRefreshRecoveryAction.None), fresh.Data["RecoveryAction"]);
         Assert.AreEqual(false, fresh.Data["Halted"]);
         Assert.AreEqual(2, fresh.Data["ActiveRecordCount"]);
-        Assert.AreEqual(0L, fresh.Data["ActiveAgeSeconds"]);
+        Assert.AreEqual(2, fresh.Data["ActiveObjectCount"]);
+        Assert.AreEqual((long)TimeSpan.FromHours(6).TotalSeconds, fresh.Data["NewestElementAgeSeconds"]);
+        Assert.AreEqual((long)TimeSpan.FromHours(30).TotalSeconds, fresh.Data["OldestElementAgeSeconds"]);
+        Assert.AreEqual(0L, fresh.Data["ActivationAgeSeconds"]);
+        Assert.AreEqual(0L, fresh.Data["RetrievalAgeSeconds"]);
         Assert.AreEqual(nameof(OrbitalAttemptOutcome.Activated), fresh.Data["LastAttemptOutcome"]);
         Assert.IsFalse(fresh.Data.ContainsKey("HaltHttpStatus"));
         Assert.AreEqual(OrbitalElementsHealthState.Healthy, boundary.State);
-        Assert.AreEqual(OrbitalElementsHealthState.Degraded, aged.State);
-        Assert.AreEqual(OrbitalElementsHealthEvaluator.SnapshotStaleReasonCode, aged.Data["Reason"]);
-        Assert.AreEqual((long)stale.TotalSeconds, aged.Data["ActiveAgeSeconds"]);
-        AssertBounded(aged);
+        Assert.AreEqual(OrbitalElementsHealthState.Degraded, overdue.State);
+        Assert.AreEqual(OrbitalElementsHealthEvaluator.RefreshOverdueReasonCode, overdue.Data["Reason"]);
+        Assert.AreEqual((long)overdueAfter.TotalSeconds, overdue.Data["RetrievalAgeSeconds"]);
+        Assert.AreEqual(OrbitalElementsHealthEvaluator.SnapshotStaleReasonCode, staleAndOverdue.Data["Reason"],
+            "Stale elements take precedence over an overdue refresh.");
+        AssertBounded(overdue);
+        AssertBounded(staleAndOverdue);
+    }
+
+    [TestMethod]
+    public async Task AnUnchangedOldPayloadNeverLooksFreshBecauseFreshnessFollowsTheNewestElementEpoch()
+    {
+        using var fixture = await OrbitalAutomationFixture.CreateAsync(CreateRoot()).ConfigureAwait(false);
+        await fixture.SaveDefinitionAsync().ConfigureAwait(false);
+        var activatedAt = fixture.Clock.GetUtcNow();
+        fixture.Orbital.Client.Enqueue(fixture.Orbital.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
+        await fixture.Orbital.RunAsync().ConfigureAwait(false);
+        var newest = (await fixture.Orbital.StateAsync().ConfigureAwait(false)).CurrentMaximumEpochUtc!.Value;
+        var evaluator = Evaluator(fixture);
+
+        // The same bytes are re-downloaded just before, and then after, the newest element turns 48 hours old.
+        fixture.Clock.Advance(newest + OrbitalElementsHealthEvaluator.ElementStaleAge - fixture.Clock.GetUtcNow());
+        fixture.Orbital.Client.Enqueue(fixture.Orbital.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
+        await fixture.Orbital.RunAsync().ConfigureAwait(false);
+        var boundary = await evaluator.EvaluateAsync(CancellationToken.None).ConfigureAwait(false);
+        var atBoundary = await fixture.Orbital.StateAsync().ConfigureAwait(false);
+        fixture.Clock.Advance(Floor);
+        fixture.Orbital.Client.Enqueue(fixture.Orbital.Retrieved(OrbitalRefreshTestHarness.ValidPayload()));
+        await fixture.Orbital.RunAsync().ConfigureAwait(false);
+        var stale = await evaluator.EvaluateAsync(CancellationToken.None).ConfigureAwait(false);
+        var state = await fixture.Orbital.StateAsync().ConfigureAwait(false);
+
+        Assert.AreEqual(OrbitalAttemptOutcome.UnchangedPayload, atBoundary.LastAttemptOutcome);
+        Assert.AreEqual(activatedAt, atBoundary.LastActivationUtc, "An unchanged payload is not a new activation.");
+        Assert.AreEqual(fixture.Clock.GetUtcNow() - Floor, atBoundary.LastRetrievalSuccessUtc);
+        Assert.AreEqual(OrbitalElementsHealthState.Healthy, boundary.State);
+        Assert.AreEqual(OrbitalAttemptOutcome.UnchangedPayload, state.LastAttemptOutcome);
+        Assert.AreEqual(activatedAt, state.LastActivationUtc);
+        Assert.AreEqual(fixture.Clock.GetUtcNow(), state.LastRetrievalSuccessUtc);
+        Assert.AreEqual(OrbitalElementsHealthState.Degraded, stale.State, "A fresh download of old elements stays stale.");
+        Assert.AreEqual(OrbitalElementsHealthEvaluator.SnapshotStaleReasonCode, stale.Data["Reason"]);
+        Assert.AreEqual(0L, stale.Data["RetrievalAgeSeconds"]);
+        Assert.AreEqual((long)(fixture.Clock.GetUtcNow() - newest).TotalSeconds, stale.Data["NewestElementAgeSeconds"]);
+        Assert.AreEqual((long)(fixture.Clock.GetUtcNow() - activatedAt).TotalSeconds, stale.Data["ActivationAgeSeconds"]);
+        AssertBounded(stale);
     }
 
     [TestMethod]
@@ -194,7 +244,8 @@ public sealed class OrbitalElementsHealthTests : OrbitalStoreTestBase
         Assert.AreEqual(OrbitalElementsHealthState.Healthy, waiting.State);
         Assert.AreEqual(OrbitalElementsOperations.NoActiveSnapshotReasonCode, waiting.Data["Reason"]);
         Assert.IsFalse(waiting.Data.ContainsKey("ActiveRecordCount"));
-        Assert.IsFalse(waiting.Data.ContainsKey("ActiveAgeSeconds"));
+        Assert.IsFalse(waiting.Data.ContainsKey("ActivationAgeSeconds"));
+        Assert.IsFalse(waiting.Data.ContainsKey("NewestElementAgeSeconds"));
         Assert.IsFalse(waiting.Data.ContainsKey("LastAttemptOutcome"));
         Assert.AreEqual(OrbitalElementsHealthState.Healthy, withinGrace.State);
         Assert.AreEqual(OrbitalElementsHealthState.Degraded, overdue.State);
