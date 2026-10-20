@@ -151,6 +151,57 @@ public sealed class ArchitectureBoundaryTests
     }
 
     [TestMethod]
+    [TestCategory("Unit")]
+    public void SpaceWeatherFactsReferenceNoHostHttpOrPersistenceNamespace()
+    {
+        var repository = Repository.Value;
+        var project = repository.Projects[Processing];
+        Assert.IsTrue(project.References.All(reference => reference is AgentCore or Astronomy or Imaging));
+        Assert.IsEmpty(project.FrameworkReferences);
+        Assert.IsEmpty(project.PackageReferences);
+        var folder = Path.Combine(repository.Root, "src", Processing, "SpaceWeather");
+        var forbidden = new System.Text.RegularExpressions.Regex(
+            @"\b(?:HVO\s*\.\s*SkyMonitor\s*\.\s*(?:CameraAgent|LogicHost|Common|Catalog|Storage)|Microsoft\s*\.\s*(?:AspNetCore|EntityFrameworkCore|Data\s*\.\s*Sqlite)|System\s*\.\s*(?:Net|IO)|SQLite|Sqlite|HttpClient|DbContext)\b",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        var files = Directory.GetFiles(folder, "*.cs");
+        Assert.IsNotEmpty(files);
+        foreach (var file in files)
+        {
+            var source = MaskCSharpCommentsAndLiterals(File.ReadAllText(file));
+            Assert.IsFalse(forbidden.IsMatch(source), Path.GetRelativePath(repository.Root, file));
+            Assert.IsTrue(source.Contains("namespace HVO.SkyMonitor.Processing.SpaceWeather;", StringComparison.Ordinal));
+        }
+        Assert.IsTrue(forbidden.IsMatch("global::System.Net.Http.HttpClient"));
+        Assert.IsTrue(forbidden.IsMatch("using S = Microsoft.Data.Sqlite;"));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CaptureRawIngressAndRecipesReferenceNoSpaceWeatherFacts()
+    {
+        var root = Repository.Value.Root;
+        var files = Directory.EnumerateFiles(Path.Combine(root, "src"), "*.cs", SearchOption.AllDirectories)
+            .Where(path => !RepositoryGraph.HasPathSegment(path, "bin") && !RepositoryGraph.HasPathSegment(path, "obj"));
+        var checkedCount = 0;
+        foreach (var file in files)
+        {
+            var relative = Path.GetRelativePath(root, file);
+            var source = MaskCSharpCommentsAndLiterals(File.ReadAllText(file));
+            // Processing's pre-existing flat files own recipes and frame execution. Only its
+            // new source-neutral facts namespace is excluded from that recipe rule.
+            if (!(relative.Contains("Capture", StringComparison.OrdinalIgnoreCase)
+                || relative.Contains("RawIngress", StringComparison.OrdinalIgnoreCase)
+                || relative.Contains("Recipe", StringComparison.OrdinalIgnoreCase)
+                || relative.StartsWith(Path.Combine("src", Processing), StringComparison.Ordinal)
+                    && !relative.StartsWith(Path.Combine("src", Processing, "SpaceWeather") + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                || System.Text.RegularExpressions.Regex.IsMatch(source, @"namespace\s+[^;{]*(?:Capture|RawIngress|Recipes)"))) continue;
+            checkedCount++;
+            Assert.IsFalse(System.Text.RegularExpressions.Regex.IsMatch(source, @"\b\w*SpaceWeather\w*\b"), relative);
+        }
+        Assert.IsGreaterThan(0, checkedCount);
+    }
+
+    [TestMethod]
     [TestCategory("Integration")]
     public void ProductionProjectReferencesFollowDocumentedGraph()
     {

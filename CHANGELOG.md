@@ -12,6 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Space-weather fact model (#1398 S1).
 - CameraAgent can acquire orbital elements locally: one bounded CelesTrak GP request for the `active` group, strictly
   parsed into the `orbital-elements-v1` contract, published as an immutable verified snapshot and activated atomically,
   with the last-known-good snapshot kept readable through every failure. Refresh is off by default. Turn it on with

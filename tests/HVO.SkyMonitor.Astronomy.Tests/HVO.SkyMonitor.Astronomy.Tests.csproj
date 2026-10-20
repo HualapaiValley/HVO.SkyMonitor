@@ -30,4 +30,8 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Astronomy\HVO.SkyMonitor.Astronomy.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.TestSupport\HVO.SkyMonitor.TestSupport.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="../fixtures/space-weather/swpc-v1/**/*" Link="Fixtures/space-weather/swpc-v1/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../docs/contracts/space-weather-facts-v1.md" Link="Fixtures/space-weather/space-weather-facts-v1.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
