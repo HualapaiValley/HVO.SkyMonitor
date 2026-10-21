@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -12,7 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Services;
 /// The one shared read of the space-weather state for every operator surface. A projection, or a failure, is reused
 /// for <see cref="SpaceWeatherUiBounds.ProjectionTtl"/>; concurrent callers share one in-flight read, which runs under
 /// its own bounded timeout rather than any caller's token, so a caller that stops waiting never cancels it for the
-/// others. It never writes to the store and never changes the store's availability.
+/// others. It issues no command and never fetches; a read may run the store's retention purge and availability probe.
 /// </summary>
 internal sealed class SpaceWeatherUiProjectionSource(
     SpaceWeatherAvailability availability,
@@ -65,7 +66,7 @@ internal sealed class SpaceWeatherUiProjectionSource(
         }
         if (started is not null)
         {
-            _ = CompleteAsync(started, readGeneration);
+            _ = Task.Run(() => CompleteAsync(started, readGeneration), CancellationToken.None);
         }
         return shared.WaitAsync(cancellationToken);
     }
@@ -81,33 +82,64 @@ internal sealed class SpaceWeatherUiProjectionSource(
         }
     }
 
+    /// <summary>
+    /// Runs the shared read on the thread pool and always completes its waiters. A failure that escapes the read is
+    /// passed to them uncached, without building a projection, and the service maps it to unavailable.
+    /// </summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The shared read must complete for every waiter; the service logs only the exception type.")]
     private async Task CompleteAsync(TaskCompletionSource<SpaceWeatherUiProjection> completion, long readGeneration)
     {
-        var projection = await ReadAsync().ConfigureAwait(false);
-        lock (gate)
+        SpaceWeatherUiProjection? projection = null;
+        Exception? failure = null;
+        try
         {
-            if (readGeneration == generation)
+            projection = await ReadAsync().ConfigureAwait(false);
+            lock (gate)
             {
-                cached = projection;
-                cachedAt = clock.GetUtcNow();
-            }
-            if (ReferenceEquals(inflight, completion))
-            {
-                inflight = null;
+                if (readGeneration == generation)
+                {
+                    cached = projection;
+                    cachedAt = clock.GetUtcNow();
+                }
             }
         }
-        completion.TrySetResult(projection);
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
+        finally
+        {
+            lock (gate)
+            {
+                if (ReferenceEquals(inflight, completion))
+                {
+                    inflight = null;
+                }
+            }
+            if (failure is null && projection is not null)
+            {
+                completion.TrySetResult(projection);
+            }
+            else
+            {
+                completion.TrySetException(failure ?? new InvalidOperationException("The space-weather read ended without a projection."));
+            }
+        }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "A read failure becomes a cached projection state; only the exception type is logged.")]
     private async Task<SpaceWeatherUiProjection> ReadAsync()
     {
-        var location = locations.Active;
-        var enabled = options.Value.SpaceWeather.Enabled;
-        var observed = clock.GetUtcNow();
+        var observed = default(DateTimeOffset);
+        var enabled = false;
+        DeploymentLocationSnapshot? location = null;
         try
         {
+            observed = clock.GetUtcNow();
+            enabled = options.Value.SpaceWeather.Enabled;
+            location = locations.Active;
             using var timeout = new CancellationTokenSource(SpaceWeatherUiBounds.ReadTimeout, clock);
             if (!await availability.EnsureAvailableAsync(timeout.Token).ConfigureAwait(false))
             {

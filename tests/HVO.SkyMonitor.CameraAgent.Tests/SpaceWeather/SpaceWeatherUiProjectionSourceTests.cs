@@ -2,6 +2,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Storage;
 using HVO.SkyMonitor.CameraAgent.Services;
+using Microsoft.Extensions.Logging;
 using static HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather.SpaceWeatherUiTestData;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather;
@@ -14,6 +15,9 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.SpaceWeather;
 [TestCategory("Unit")]
 public sealed class SpaceWeatherUiProjectionSourceTests
 {
+    /// <summary>A hang detector only: no assertion depends on how long a read takes.</summary>
+    private static readonly TimeSpan HangLimit = TimeSpan.FromSeconds(30);
+
     [TestMethod]
     public async Task AReadWithinTheTimeToLiveReusesTheProjectionAndALaterReadRereads()
     {
@@ -90,18 +94,89 @@ public sealed class SpaceWeatherUiProjectionSourceTests
         using var host = new SpaceWeatherTestHost();
         await host.InitializeAsync().ConfigureAwait(false);
         var never = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         host.Store.ReadOverride = async (at, ct) =>
         {
+            entered.TrySetResult();
             await never.Task.WaitAsync(ct).ConfigureAwait(false);
             return await host.Sqlite.ReadAsync(at, ct).ConfigureAwait(false);
         };
         var source = Source(host);
 
         var pending = source.GetAsync(default);
+        await entered.Task.WaitAsync(HangLimit).ConfigureAwait(false);
         host.Clock.Advance(SpaceWeatherUiBounds.ReadTimeout);
 
         Assert.AreEqual(SpaceWeatherUiState.ReadFailed, (await pending.ConfigureAwait(false)).State);
         Assert.AreEqual(1, LogsOf(host, 7835).Length);
+    }
+
+    [TestMethod]
+    public async Task AReadThatBlocksSynchronouslyDoesNotBlockTheCaller()
+    {
+        using var host = new SpaceWeatherTestHost();
+        await host.InitializeAsync().ConfigureAwait(false);
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        host.Store.ReadOverride = (at, ct) =>
+        {
+            entered.Set();
+            if (!release.Wait(HangLimit, ct))
+            {
+                throw new TimeoutException("The read was never released.");
+            }
+            return host.Sqlite.ReadAsync(at, ct);
+        };
+        var source = Source(host);
+
+        var pending = source.GetAsync(default);
+
+        Assert.IsFalse(pending.IsCompleted, "The caller gets an incomplete task while the read is still blocked.");
+        Assert.IsTrue(entered.Wait(HangLimit));
+        Assert.IsFalse(pending.IsCompleted);
+        release.Set();
+        Assert.AreEqual(SpaceWeatherUiState.Ready, (await pending.WaitAsync(HangLimit).ConfigureAwait(false)).State);
+        Assert.AreEqual(2, Reads(host));
+    }
+
+    [TestMethod]
+    public async Task ALocationThatThrowsIsAReadFailureAndTheNextReadStartsAfresh()
+    {
+        using var host = new SpaceWeatherTestHost();
+        await host.InitializeAsync().ConfigureAwait(false);
+        var locations = new FixedLocations(Site()) { Failure = new InvalidOperationException("location detail") };
+        var source = Source(host, locations);
+
+        var failed = await source.GetAsync(default).WaitAsync(HangLimit).ConfigureAwait(false);
+        Assert.AreEqual(SpaceWeatherUiState.ReadFailed, failed.State);
+        Assert.AreEqual(0, Reads(host));
+        Assert.AreEqual("Space-weather UI read failed (InvalidOperationException).", LogsOf(host, 7835).Single());
+
+        locations.Failure = null;
+        source.Invalidate();
+        Assert.AreEqual(SpaceWeatherUiState.Ready, (await source.GetAsync(default).WaitAsync(HangLimit).ConfigureAwait(false)).State);
+        Assert.AreEqual(2, Reads(host));
+    }
+
+    [TestMethod]
+    public async Task AFailureThatEscapesTheReadCompletesItsWaitersAndIsNotCached()
+    {
+        using var host = new SpaceWeatherTestHost();
+        await host.InitializeAsync().ConfigureAwait(false);
+        host.Store.ReadFailure = new InvalidOperationException("read detail");
+        var sinkFailure = new InvalidOperationException("log sink failed");
+        var logger = new FailingLogger { Failure = sinkFailure };
+        var source = new SpaceWeatherUiProjectionSource(host.Availability, host.Store, host.Operations,
+            new FixedLocations(Site()), host.Options, host.Clock, logger, new TestSun());
+
+        var thrown = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => source.GetAsync(default).WaitAsync(HangLimit)).ConfigureAwait(false);
+        Assert.AreSame(sinkFailure, thrown);
+
+        host.Store.ReadFailure = null;
+        logger.Failure = null;
+        Assert.AreEqual(SpaceWeatherUiState.Ready, (await source.GetAsync(default).WaitAsync(HangLimit).ConfigureAwait(false)).State);
+        Assert.AreEqual(3, Reads(host), "The escaped failure is not cached, so the next caller starts a new read.");
     }
 
     [TestMethod]
@@ -258,9 +333,9 @@ public sealed class SpaceWeatherUiProjectionSourceTests
         Assert.AreEqual(42.2, projection.Site.GeomagneticLatitude!.Value, 0.05);
     }
 
-    private static SpaceWeatherUiProjectionSource Source(SpaceWeatherTestHost host)
-        => new(host.Availability, host.Store, host.Operations, new FixedLocations(Site()), host.Options, host.Clock,
-            host.Logger<SpaceWeatherUiProjectionSource>(), new TestSun());
+    private static SpaceWeatherUiProjectionSource Source(SpaceWeatherTestHost host, FixedLocations? locations = null)
+        => new(host.Availability, host.Store, host.Operations, locations ?? new FixedLocations(Site()), host.Options,
+            host.Clock, host.Logger<SpaceWeatherUiProjectionSource>(), new TestSun());
 
     private static int Reads(SpaceWeatherTestHost host)
         => host.Store.Calls.Count(static call => call == "read");
@@ -275,7 +350,9 @@ public sealed class SpaceWeatherUiProjectionSourceTests
 
     private sealed class FixedLocations(DeploymentLocationSnapshot active) : IDeploymentLocationStore
     {
-        public DeploymentLocationSnapshot? Active => active;
+        internal Exception? Failure { get; set; }
+
+        public DeploymentLocationSnapshot? Active => Failure is { } failure ? throw failure : active;
 
         public ValueTask<DeploymentLocationSnapshot> InitializeAsync(
             DeploymentLocationSeed seed,
@@ -283,5 +360,23 @@ public sealed class SpaceWeatherUiProjectionSourceTests
 
         public DeploymentLocationSnapshot Resolve(CaptureLocationProvenance provenance, DateTimeOffset? effectiveUtc = null)
             => active;
+    }
+
+    private sealed class FailingLogger : ILogger<SpaceWeatherUiProjectionSource>
+    {
+        internal Exception? Failure { get; set; }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (Failure is { } failure)
+            {
+                throw failure;
+            }
+        }
     }
 }
