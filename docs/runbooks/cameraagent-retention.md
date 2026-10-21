@@ -418,6 +418,11 @@ last-write and creation timestamps, and committed database identity/state under 
 lock. A changed or removed product is deferred to a subsequent pass; stale validation
 never authorizes a quarantine, availability update or deletion. Publication, quarantine
 moves, retention checks and artifact handle pinning still use the same per-root lock.
+Frozen-output pin admission rejects outputs with a delete operation in `planned` or
+`moved` phase inside its existing SQLite transaction. Recovery can therefore release
+the lock for duplicate-copy comparison without accepting a replay input it will delete.
+`database-completed` and `files-deleted` only clean up tombstones and do not block
+a valid output recreated with the same identity.
 The existing outcome counters count inspected evidence and completed decisions;
 a deferred observation contributes no available, missing or quarantine decision.
 

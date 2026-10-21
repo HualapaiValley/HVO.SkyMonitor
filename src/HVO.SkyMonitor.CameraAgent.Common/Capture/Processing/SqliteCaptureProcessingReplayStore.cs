@@ -645,7 +645,11 @@ internal sealed partial class SqliteCaptureProcessingStore
                     output_identity_sha256, released_flag)
                 SELECT $execution, $node, $ordinal, $position, output_identity_sha256, 0
                 FROM processing_outputs
-                WHERE output_identity_sha256 = $output AND availability_state = 'Available';
+                WHERE output_identity_sha256 = $output AND availability_state = 'Available'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM processing_lifecycle_operations
+                      WHERE kind = 'delete' AND output_identity_sha256 = $output
+                        AND phase IN ('planned', 'moved'));
                 """;
             command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
             command.Parameters.AddWithValue("$node", nodeId);

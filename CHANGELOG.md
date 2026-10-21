@@ -82,7 +82,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- Derived-product reconciliation releases the storage lock between products and hashes outside it, keeping capture storage and Current Sky reads moving during retained-product checks; caller wait metrics identify contention. (#1471)
+- Derived-product reconciliation releases the storage lock between products and hashes outside it, keeping capture storage and Current Sky reads moving during retained-product checks; caller wait metrics identify contention. Replay admission rejects outputs awaiting deletion so recovery cannot remove a newly accepted frozen input. (#1471)
 
 - Host policy mount metadata can be repaired under the shared policy lock with `host set-product-root <same-root> --repair`, preserving the existing root and its instances. Privileged helper refusals keep exit 3 and the public refusal diagnostics. (#1292)
 
