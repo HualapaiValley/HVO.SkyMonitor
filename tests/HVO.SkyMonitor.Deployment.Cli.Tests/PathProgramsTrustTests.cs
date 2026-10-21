@@ -53,7 +53,7 @@ public sealed class PathProgramsTrustTests
     public void DirectoryTrust_OwnerAndOtherWriteChecksRemainRequired(int owner, int group, int mode, bool expected)
     {
         var database = new UnixAccountDatabase(() => ["installer:x:456:"], () => ["installer:x:123:456::/:/bin/sh"]);
-        Assert.AreEqual(expected, PathPrograms.IsTrustedDirectory(new((uint)owner, (uint)group, (UnixFileMode)mode), 123, 456, database));
+        Assert.AreEqual(expected, PathPrograms.IsTrustedDirectoryIdentity(new((uint)owner, (uint)group, (UnixFileMode)mode), 123, 456, database));
     }
 
     [TestMethod]

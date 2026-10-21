@@ -20,7 +20,8 @@ internal static partial class PathPrograms
             if (Directory.Exists(folder))
             {
                 var owner = NativeLinux.GetDirectoryIdentity(folder);
-                if (!IsTrustedDirectory(owner, NativeLinux.getuid(), NativeLinux.getgid(), Accounts))
+                if (!IsTrustedDirectoryIdentity(owner, NativeLinux.getuid(), NativeLinux.getgid(), Accounts) ||
+                    (owner.Mode & UnixFileMode.GroupWrite) != 0 && !NativeLinux.HasNoExtendedAccessAcl(folder))
                     throw InstallerException.Refused($"PATH program folder '{folder}' must be owned by the installing user or root and not writable by other users; it was preserved.");
             }
             else if (NativeLinux.TryGetNodeIdentity(folder) is not null)
@@ -29,7 +30,7 @@ internal static partial class PathPrograms
         }
     }
 
-    internal static bool IsTrustedDirectory(UnixPathIdentity owner, uint uid, uint gid, UnixAccountDatabase accounts)
+    internal static bool IsTrustedDirectoryIdentity(UnixPathIdentity owner, uint uid, uint gid, UnixAccountDatabase accounts)
         => (owner.Uid == 0 || owner.Uid == uid) && (owner.Mode & UnixFileMode.OtherWrite) == 0 &&
            ((owner.Mode & UnixFileMode.GroupWrite) == 0 || accounts.IsPrivateGroup(uid, gid, owner.Gid));
 

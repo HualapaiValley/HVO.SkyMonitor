@@ -29,8 +29,10 @@ root, with no world write permission. Group write is allowed only for the instal
 gid must equal the user's primary gid, its group name must equal the account name, no other supplementary member may
 belong to it, and no other account may use that primary gid. The installer enumerates the group and passwd databases
 through `/usr/bin/getent` (including the host's NSS sources); unavailable, failed, malformed or ambiguous results
-refuse group-writable destinations. Shared groups remain refused. Newly created program folders, including
-`~/.local/bin`, receive explicit mode `0755` regardless of umask; existing safe private-group folders keep their modes.
+refuse group-writable destinations. Each group-writable destination folder and ancestor must also have no extended
+access ACL: present ACL metadata or an inability to confirm its absence is a refusal. Shared groups remain refused.
+Newly created program folders, including `~/.local/bin`, receive explicit mode `0755` regardless of umask; existing safe
+private-group folders keep their modes.
 This also checks destinations retained by an earlier install. Unsafe
 folders are refused before changes; fix their ownership/permissions and retry. Both the current command and
 `.previous` must match publication records before replacement. An unowned or externally changed recovery file is
