@@ -26,7 +26,7 @@ public sealed class PathProgramsTrustTests
     [DataRow("installer:x:456:installer,", "installer:x:123:456::/home/installer:/bin/sh", false)]
     public void PrivateGroup_RequiresUnambiguousExclusiveMembership(string groups, string passwd, bool expected)
     {
-        var database = new UnixAccountDatabase(() => groups.Split('\n'), () => passwd.Split('\n'));
+        var database = new UnixAccountDatabase(() => groups.Split('\n'), () => passwd.Split('\n'), () => true);
         Assert.AreEqual(expected, database.IsPrivateGroup(123, 456, 456));
         Assert.IsFalse(database.IsPrivateGroup(123, 456, 789), "another directory group is never private");
     }
@@ -38,7 +38,7 @@ public sealed class PathProgramsTrustTests
     {
         var database = new UnixAccountDatabase(
             () => groupFailure ? throw new UnauthorizedAccessException() : ["installer:x:456:"],
-            () => groupFailure ? ["installer:x:123:456::/:/bin/sh"] : throw new IOException());
+            () => groupFailure ? ["installer:x:123:456::/:/bin/sh"] : throw new IOException(), () => true);
         Assert.IsFalse(database.IsPrivateGroup(123, 456, 456));
     }
 
@@ -52,7 +52,7 @@ public sealed class PathProgramsTrustTests
     [DataRow(0, 0, 0x1ed, true)]
     public void DirectoryTrust_OwnerAndOtherWriteChecksRemainRequired(int owner, int group, int mode, bool expected)
     {
-        var database = new UnixAccountDatabase(() => ["installer:x:456:"], () => ["installer:x:123:456::/:/bin/sh"]);
+        var database = new UnixAccountDatabase(() => ["installer:x:456:"], () => ["installer:x:123:456::/:/bin/sh"], () => true);
         Assert.AreEqual(expected, PathPrograms.IsTrustedDirectoryIdentity(new((uint)owner, (uint)group, (UnixFileMode)mode), 123, 456, database));
     }
 
@@ -111,7 +111,7 @@ internal sealed class PathProgramAccountScope : IDisposable
         var uid = NativeLinux.getuid();
         var gid = NativeLinux.getgid();
         PathPrograms.Accounts = new(() => [$"installer:x:{gid}:{(privateGroup ? "" : "another")}"],
-            () => [$"installer:x:{uid}:{gid}::/:/bin/sh"]);
+            () => [$"installer:x:{uid}:{gid}::/:/bin/sh"], () => true);
     }
 
     public void Dispose() => PathPrograms.Accounts = previous;

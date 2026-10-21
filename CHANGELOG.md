@@ -82,7 +82,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- Install and upgrade accept group-writable PATH folders only after verifying the installing user's private group and confirming no extended access ACL, so stock Debian/Pi accounts with umask `0002` work; newly created program folders have explicit mode `0755`. (#1469)
+- Install and upgrade accept group-writable PATH folders only after verifying complete local-file account sources, the installing user's private group and no extended access ACL; configurations with unverified NSS providers remain refused; newly created program folders have explicit mode `0755`. (#1469)
 
 - Host policy mount metadata can be repaired under the shared policy lock with `host set-product-root <same-root> --repair`, preserving the existing root and its instances. Privileged helper refusals keep exit 3 and the public refusal diagnostics. (#1292)
 

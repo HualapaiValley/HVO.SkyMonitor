@@ -1,20 +1,28 @@
 using System.Globalization;
+using System.Text;
 
 namespace HVO.SkyMonitor.Deployment;
 
 /// <summary>Proves private-group membership from complete, injectable group and passwd enumerations.</summary>
-internal sealed class UnixAccountDatabase(Func<IEnumerable<string>> groups, Func<IEnumerable<string>> accounts)
+internal sealed class UnixAccountDatabase(Func<IEnumerable<string>> groups, Func<IEnumerable<string>> accounts,
+    Func<bool> hasCompleteSources)
 {
-    // Enumerate through NSS, rather than assuming /etc contains every account on the host. Fixed commands and
-    // arguments never pass through a shell; missing tools, unsupported enumeration and lookup failures refuse.
-    internal static UnixAccountDatabase System { get; } = new(
-        () => ReadDatabase("group"), () => ReadDatabase("passwd"));
+    // getent success does not prove complete NSS enumeration (for example, SSSD disables enumeration by default).
+    // Only verified files-only configurations are supported. Read the complete files directly so a read failure
+    // cannot be mistaken for end-of-enumeration; reject invalid encoding rather than replacing account characters.
+    internal static UnixAccountDatabase System { get; } = FromFileSources(
+        () => ReadFile("/etc/nsswitch.conf"), () => ReadFile("/etc/group"), () => ReadFile("/etc/passwd"));
+
+    internal static UnixAccountDatabase FromFileSources(Func<IEnumerable<string>> configuration,
+        Func<IEnumerable<string>> groups, Func<IEnumerable<string>> accounts)
+        => new(groups, accounts, () => NssFileEnumeration.IsComplete(configuration()));
 
     internal bool IsPrivateGroup(uint uid, uint primaryGid, uint directoryGid)
     {
         if (directoryGid != primaryGid) return false;
         try
         {
+            if (!hasCompleteSources()) return false;
             var groupEntries = groups().Select(line => Fields(line, 4)).ToArray();
             var accountEntries = accounts().Select(line => Fields(line, 7)).ToArray();
             if (groupEntries.Length == 0 || accountEntries.Length == 0) return false;
@@ -41,7 +49,7 @@ internal sealed class UnixAccountDatabase(Func<IEnumerable<string>> groups, Func
                    accountEntries.All(account => Id(account[3]) != directoryGid || Id(account[2]) == uid);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or FormatException or
-                                          OverflowException or InstallerException or OperationCanceledException)
+                                          OverflowException or InstallerException or OperationCanceledException or DecoderFallbackException)
         {
             return false;
         }
@@ -59,12 +67,9 @@ internal sealed class UnixAccountDatabase(Func<IEnumerable<string>> groups, Func
 
     private static uint Id(string value) => uint.Parse(value, NumberStyles.None, CultureInfo.InvariantCulture);
 
-    private static string[] ReadDatabase(string database)
+    internal static IEnumerable<string> ReadFile(string path)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        var result = new ProcessRunner().RunAsync("/usr/bin/getent", [database], timeout.Token).GetAwaiter().GetResult();
-        if (result.ExitCode != 0 || !string.IsNullOrWhiteSpace(result.StandardError))
-            throw InstallerException.Refused("The account database could not be read.");
-        return result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        using var reader = new StreamReader(path, new UTF8Encoding(false, true), detectEncodingFromByteOrderMarks: false);
+        while (reader.ReadLine() is { } line) yield return line;
     }
 }

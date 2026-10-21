@@ -27,9 +27,22 @@ The installer finishes the current operation itself; it does not hand execution 
 Before publishing, the installer requires each destination folder and ancestor to be owned by the installing user or
 root, with no world write permission. Group write is allowed only for the installing user's private group: the folder's
 gid must equal the user's primary gid, its group name must equal the account name, no other supplementary member may
-belong to it, and no other account may use that primary gid. The installer enumerates the group and passwd databases
-through `/usr/bin/getent` (including the host's NSS sources); unavailable, failed, malformed or ambiguous results
-refuse group-writable destinations. Each group-writable destination folder and ancestor must also have no extended
+belong to it, and no other account may use that primary gid. This requires a verified complete source: `/etc/nsswitch.conf`
+must contain exactly one `passwd: files` and one `group: files` entry, with `initgroups` absent or exactly `initgroups: files`.
+Comments and whitespace are allowed. The installer reads the complete `/etc/group` and `/etc/passwd` files directly;
+unreadable, malformed or ambiguous configuration or account data refuses group-writable destinations. Additional or
+unknown providers (including `sss`, `systemd` and `compat`), action clauses and duplicate entries are conservatively
+refused: successful `getent` output does not prove that another account was not omitted. In particular,
+[SSSD disables enumeration by default](https://github.com/SSSD/sssd/blob/master/src/man/sssd.conf.5.xml), and
+[systemd can supply additional accounts and memberships](https://www.freedesktop.org/software/systemd/man/257/nss-systemd.html).
+The glibc configuration templates in [Debian 13](https://deb.debian.org/debian/pool/main/g/glibc/glibc_2.41-12+deb13u4.debian.tar.xz)
+and [Raspbian trixie](https://archive.raspbian.org/raspbian/pool/main/g/glibc/glibc_2.41-12%2Brpi1%2Bdeb13u2.debian.tar.xz)
+use files-only account sources, but [installing `libnss-systemd` adds a provider](https://packages.debian.org/trixie/libnss-systemd).
+Every group-writable folder or ancestor under such a mixed-provider configuration remains refused; this does not
+claim all Debian/Pi images are supported. The owner can deliberately remove group write (`chmod g-w <folder>`) from
+each reported folder/ancestor, or use an already trusted destination without group write. Do not disable account
+providers to satisfy this check. Folders without group write do not require account enumeration.
+Each group-writable destination folder and ancestor must also have no extended
 access ACL: present ACL metadata or an inability to confirm its absence is a refusal. Shared groups remain refused.
 Newly created program folders, including `~/.local/bin`, receive explicit mode `0755` regardless of umask; existing safe
 private-group folders keep their modes.
