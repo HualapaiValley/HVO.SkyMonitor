@@ -89,6 +89,34 @@ Request facts:
 
 ## Enable And Configure
 
+On **Observatory & location → Orbital refresh & satellite setup**, set **Orbital
+refresh** to **On**, then restart CameraAgent. The catalogue key is
+`orbitalElements.enabled`; the equivalent CLI commands are:
+
+```bash
+hvo-sky config get orbitalElements.enabled
+hvo-sky config set orbitalElements.enabled=true
+hvo-sky restart
+```
+
+Both interfaces persist a Boolean `CameraAgent:OrbitalElements:Enabled` in
+`state/identity/appsettings.local.json`. The running value and a saved value
+pending restart are shown separately. Environment variables and `config/secrets`
+take precedence; an overridden switch is read-only and names its source. Turning
+it off uses `orbitalElements.enabled=false` and also requires a restart. Retained
+snapshots are still readable with refresh off.
+
+After restarting, open **Software & Catalog**. When refresh is on and the reserved
+definition is missing, **Create the refresh automation** opens the normal
+Automations editor with the reserved ID, fixed target, Periodic trigger and
+21,600-second (six-hour) interval prefilled. Review and save there. The existing
+save operation enforces the 7,200-second floor and 86,400-second maximum; the guide
+does not replace an existing definition. Creating it does not contact CelesTrak.
+Optionally follow the guide back to **Software & Catalog → Refresh now** for the
+first snapshot. That uses the same validated refresh operation as every manual
+request. Read the [provider policy](#provider-policy), especially the shared-egress
+budget, before enabling additional CameraAgents.
+
 Configuration lives in the `CameraAgent:OrbitalElements` section. Every value is
 validated at startup.
 

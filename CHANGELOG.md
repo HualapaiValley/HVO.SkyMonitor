@@ -9,12 +9,20 @@ to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 
 with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
 
 ## [Unreleased]
+- Install and upgrade accept group-writable PATH folders only after verifying complete local-file account sources, the installing user's private group and no extended access ACL; configurations with unverified NSS providers remain refused; newly created program folders have explicit mode `0755`. (#1469)
+
+- Current Sky streams neutral loading progress during its first HTTP page load, gives that read up to 30 seconds, identifies later five-second page refresh misses beside the image, retries automatically and logs the slow refresh phase without implying a capture fault. (#1472)
+
+- Regression tests verify bounded CameraAgent snapshot reads reject invalid timeouts and release their gates after projection failures. (#1477)
+
 - Space-weather storage rejects disguised application schema objects and resolves orphan notices correctly when linked groups join. (#1398)
 
 - A dedicated STRICT SQLite store keeps space-weather snapshots, alert revisions and interrupted-attempt state durable, with bounded history and local diagnostics. (#1398)
 
 
 ### Fixed
+
+- Derived-product reconciliation releases the storage lock between products and hashes outside it, keeping capture storage and Current Sky reads moving during retained-product checks; caller wait metrics identify contention. Replay admission rejects outputs awaiting deletion so recovery cannot remove a newly accepted frozen input. (#1471)
 
 - CameraAgent restore warnings identify every omitted counter and its escaped key; carry trials budget for rollback journals while keeping space for the restore. Pure image swaps keep their archive/headroom admission without a snapshot reservation, and carry failure reasons redact and escape all diagnostic text, including keys echoed by SQLite. (#1347)
 - `hvo-sky ui` rechecks stale controls before sending reviewed changes, scrolls long reviews and setting descriptions, and marks incomplete save receipts unverified; CLI status uses the production queue vocabulary and the published-terminal check enforces its deadline. (#1376)
@@ -25,6 +33,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Added
+
+- Observatory settings and `hvo-sky config` now offer orbital-refresh and satellite-planning switches. Software & Catalog guides refresh-automation setup, and the planner setup explains missing snapshots, pinned time-data/hash problems and expired coverage with links to their fixes; managed time-data downloads remain pending. (#1474)
 
 - Shared space-weather storage contracts define snapshot comparison, atomic completion and bounded local history for the upcoming SWPC refresh service. (#1398)
 
@@ -62,6 +72,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- Release CameraAgent images trial per-architecture, framework-dependent non-composite ReadyToRun; native release jobs verify application headers, layout and identical hashes from two clean publishes. Developer and advisory image builds retain IL defaults. (#1473)
+
 - Orbital refresh prepares the shared snapshot reader at startup and after activation, backs off failed store
   initialization, and runs on one bounded worker so provider waits and normalization let other automations proceed.
   Its journal records the real completion; provider floor, halt and single-flight rules remain in force. (#1425)
@@ -92,6 +104,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Phase 14 fault coverage reads compiled enum metadata, preserving commented and attributed fault points; release-image tests use the installed image inspector. (#1291)
+
 - Host policy mount metadata can be repaired under the shared policy lock with `host set-product-root <same-root> --repair`, preserving the existing root and its instances. Privileged helper refusals keep exit 3 and the public refusal diagnostics. (#1292)
 
 - Retained time-lapse jobs keep their released renderer and recipe identity across upgrades; new jobs restore white cardinal and corner text and the grey image circle under a distinct renderer version. (#1401)
@@ -119,6 +133,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   defaults clears the remembered choice of the view it is used in. (#1382)
 
 ### Security
+
+- Deployment CLI backup, restore, snapshot and archive diagnostics redact quoted credentials, plain or ANSI-decorated, including escaped and doubled quotes and unterminated values, before escaping hostile names and terminal controls in human and JSON output; restore warnings redact a revoked claim's type and value as one assignment and preserve explanatory wording, and backup and restore failures format a forwarded installer message once, preserving already escaped identities. (#1476)
 
 - `hvo-sky` reaches a loopback address (`127.0.0.1`, `localhost`, `[::1]`) directly, never through an HTTP proxy.
   With `http_proxy` set and no `no_proxy` entry for it, the owner API key went to the proxy unencrypted, without the

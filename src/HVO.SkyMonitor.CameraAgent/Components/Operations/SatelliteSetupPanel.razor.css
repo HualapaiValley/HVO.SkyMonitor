@@ -1,0 +1,5 @@
+.satellite-setup { display: grid; gap: .7rem; }
+.feature-switch { border-top: 1px solid var(--border); padding-top: .6rem; }
+.feature-switch select { max-width: 12rem; }
+.satellite-setup p { margin: .3rem 0; }
+.satellite-setup dd { overflow-wrap: anywhere; }

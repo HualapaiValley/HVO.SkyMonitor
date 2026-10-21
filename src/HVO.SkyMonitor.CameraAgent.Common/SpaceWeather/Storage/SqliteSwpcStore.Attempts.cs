@@ -2,7 +2,6 @@ using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.Processing.SpaceWeather;
 using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Storage;
 
@@ -237,6 +236,4 @@ public sealed partial class SqliteSwpcStore
     {
         public Exception Original { get; } = original;
     }
-    [LoggerMessage(EventId = 7812, Level = LogLevel.Warning, Message = "Space-weather completion projection failed with type {ExceptionType}.")]
-    private static partial void ProjectionFailed(ILogger logger, string exceptionType);
 }

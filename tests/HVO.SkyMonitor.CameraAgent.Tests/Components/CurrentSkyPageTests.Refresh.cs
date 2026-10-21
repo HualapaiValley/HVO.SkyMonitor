@@ -3,6 +3,9 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -13,6 +16,149 @@ public sealed partial class CurrentSkyPageTests
     private const string LayerVisibilityKey = "hvo.currentSky.layerVisibility.v1:/";
     private static readonly Guid SecondCaptureId = Guid.Parse("00000000-0000-0000-0000-000000000021");
     private static readonly Guid ThirdCaptureId = Guid.Parse("00000000-0000-0000-0000-000000000031");
+
+    [TestMethod]
+    public void RefreshDiagnosticsDoNothingOutsideTheRefreshScope()
+    {
+        using var unrelatedActivity = new Activity("ExactCapture.Read").Start();
+        foreach (var phase in new[] { "view-read", "preview-validation", "layer-availability", "layer-read" })
+            Assert.IsNull(CameraAgentCurrentSkyRefreshDiagnostics.Measure(phase));
+        Assert.AreSame(unrelatedActivity, Activity.Current);
+    }
+
+    [TestMethod]
+    [DataRow("view-read")]
+    [DataRow("preview-validation")]
+    [DataRow("layer-availability")]
+    [DataRow("layer-read")]
+    [DataRow("dispatcher")]
+    public void RefreshDiagnosticsNameTheSlowestPhaseWithoutDoubleCountingNestedReads(string slowPhase)
+    {
+        var clock = new ManualTimeProvider(OperatorUiTestData.Now);
+        var logger = new RefreshLogger();
+        using var timing = new CameraAgentCurrentSkyRefreshDiagnostics(clock, logger);
+        using (CameraAgentCurrentSkyRefreshDiagnostics.Measure("view-read"))
+        {
+            if (slowPhase is "preview-validation" or "layer-availability")
+            {
+                using var nested = CameraAgentCurrentSkyRefreshDiagnostics.Measure(slowPhase);
+                clock.Advance(TimeSpan.FromSeconds(6));
+            }
+            else if (slowPhase == "view-read") clock.Advance(TimeSpan.FromSeconds(6));
+        }
+        using (CameraAgentCurrentSkyRefreshDiagnostics.Measure("layer-read"))
+        {
+            if (slowPhase == "layer-read") clock.Advance(TimeSpan.FromSeconds(6));
+        }
+        if (slowPhase == "dispatcher") clock.Advance(TimeSpan.FromSeconds(6));
+        Assert.IsTrue(logger.Entries.All(static entry => entry.Level == LogLevel.Debug));
+        timing.LogDeadline(TimeSpan.FromSeconds(5), false);
+        timing.LogDeadline(TimeSpan.FromSeconds(5), false);
+        var deadline = logger.Entries.Single(static entry => entry.Level == LogLevel.Information);
+        StringAssert.Contains(deadline.Message, $"SlowestPhase={slowPhase}", StringComparison.Ordinal);
+        StringAssert.Contains(deadline.Message, "FirstRefresh=False", StringComparison.Ordinal);
+        Assert.IsTrue(logger.Entries.Any(static entry => entry.Level == LogLevel.Debug && entry.Message.Contains("6000 ms", StringComparison.Ordinal)) || slowPhase == "dispatcher");
+        Assert.IsFalse(logger.Entries.Any(static entry => entry.Level >= LogLevel.Warning));
+    }
+
+    private sealed class RefreshLogger : ILogger<CurrentSkyPage>
+    {
+        internal ConcurrentQueue<(LogLevel Level, string Message)> Entries { get; } = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => Entries.Enqueue((logLevel, formatter(state, exception)));
+    }
+
+    [TestMethod]
+    public void FirstLoadCanFinishAfterFiveSecondsWithinItsThirtySecondGrace()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var first = View(WithStructuredBase());
+        service.CurrentSkyHandler = async token =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(20), clock, token).ConfigureAwait(false);
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(first);
+        };
+        var cut = context.Render<CurrentSkyPage>();
+        clock.Advance(TimeSpan.FromSeconds(5));
+        StringAssert.Contains(cut.Find(".sky-refresh-notice").TextContent,
+            "The current image is still loading. Retrying automatically.", StringComparison.Ordinal);
+        Assert.IsEmpty(cut.FindAll(".state-notice--error"));
+        Assert.IsFalse(cut.Markup.Contains("after restart", StringComparison.OrdinalIgnoreCase));
+        clock.Advance(TimeSpan.FromSeconds(15));
+        WaitForFirst(cut, clock, first);
+        Assert.IsEmpty(cut.FindAll(".sky-refresh-notice"));
+    }
+
+    [TestMethod]
+    public void FirstLoadStopsAtThirtySecondsAndTheNextPollRecoversAutomatically()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var logger = new RefreshLogger();
+        context.Services.AddSingleton<ILogger<CurrentSkyPage>>(logger);
+        var first = View(WithStructuredBase());
+        var reads = 0;
+        var cancelled = false;
+        service.CurrentSkyHandler = async token =>
+        {
+            if (Interlocked.Increment(ref reads) == 1)
+            {
+                try { await Task.Delay(Timeout.InfiniteTimeSpan, clock, token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { cancelled = true; throw; }
+            }
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(first);
+        };
+        var cut = context.Render<CurrentSkyPage>();
+        clock.Advance(TimeSpan.FromSeconds(29));
+        Assert.IsFalse(Volatile.Read(ref cancelled));
+        clock.Advance(TimeSpan.FromSeconds(1));
+        cut.WaitForAssertion(() => Assert.IsTrue(Volatile.Read(ref cancelled)));
+        cut.WaitForAssertion(() => Assert.IsTrue(clock.HasTimer(TimeSpan.FromSeconds(15))));
+        var missed = logger.Entries.Single(static entry => entry.Level == LogLevel.Information);
+        StringAssert.Contains(missed.Message, "missed 30 s bound. FirstRefresh=True", StringComparison.Ordinal);
+        StringAssert.Contains(missed.Message, "SlowestPhase=view-read", StringComparison.Ordinal);
+        Assert.IsTrue(logger.Entries.Any(static entry => entry.Level == LogLevel.Debug && entry.Message.Contains("view-read took 30000 ms", StringComparison.Ordinal)));
+        Assert.IsEmpty(cut.FindAll(".state-notice--error"));
+        StringAssert.Contains(cut.Find(".sky-refresh-notice").TextContent,
+            "The current image is still loading. Retrying automatically.", StringComparison.Ordinal);
+        clock.Advance(TimeSpan.FromSeconds(15));
+        WaitForFirst(cut, clock, first);
+        Assert.AreEqual(2, Volatile.Read(ref reads));
+        Assert.IsEmpty(cut.FindAll(".sky-refresh-notice"));
+    }
+
+    [TestMethod]
+    public void SteadyStateDeadlineKeepsCaptureStatusAndPollingThenClearsOnRecovery()
+    {
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var first = View(WithStructuredBase());
+        var reads = 0;
+        service.CurrentSkyHandler = async token =>
+        {
+            if (Interlocked.Increment(ref reads) == 2)
+                await Task.Delay(Timeout.InfiniteTimeSpan, clock, token).ConfigureAwait(false);
+            return OperatorUiResult<CameraAgentCurrentSkyView>.Success(first);
+        };
+        var cut = context.Render<CurrentSkyPage>();
+        WaitForFirst(cut, clock, first);
+        var status = cut.Find(".dashboard-status").TextContent;
+        clock.Advance(TimeSpan.FromSeconds(15));
+        cut.WaitForAssertion(() => Assert.AreEqual(2, Volatile.Read(ref reads)));
+        clock.Advance(TimeSpan.FromSeconds(5));
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".sky-refresh-notice").TextContent,
+            "Current Sky couldn’t refresh within 5 s; showing the last image; retrying automatically.", StringComparison.Ordinal));
+        Assert.AreEqual(status, cut.Find(".dashboard-status").TextContent);
+        Assert.IsEmpty(service.CaptureReasons);
+        Assert.IsNotNull(cut.Find(".current-sky-visual .sky-refresh-notice"));
+        Assert.AreEqual(CaptureLink(first), cut.Find(".layers-link").GetAttribute("href"));
+        clock.Advance(TimeSpan.FromSeconds(10));
+        cut.WaitForAssertion(() => Assert.AreEqual(3, Volatile.Read(ref reads)));
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll(".sky-refresh-notice")));
+    }
 
     [TestMethod]
     public async Task ANewerCaptureIsNotShownUntilItsOverlaysAreComplete()
@@ -164,8 +310,8 @@ public sealed partial class CurrentSkyPageTests
         cut.WaitForAssertion(() => Assert.IsTrue(clock.HasTimerDue(start.AddSeconds(21))));
         clock.Advance(TimeSpan.FromSeconds(3));
 
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".state-notice--error").TextContent,
-            "exceeded its five-second deadline", StringComparison.Ordinal));
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".sky-refresh-notice").TextContent,
+            "Current Sky couldn’t refresh within 5 s; showing the last image; retrying automatically.", StringComparison.Ordinal));
         Assert.IsTrue(Volatile.Read(ref layersCancelled));
         Assert.AreEqual(CaptureLink(first), cut.Find(".layers-link").GetAttribute("href"));
         cut.WaitForElement(".sky-layer-workspace");
@@ -203,8 +349,8 @@ public sealed partial class CurrentSkyPageTests
             clock.Advance(TimeSpan.FromSeconds(5));
         }).ConfigureAwait(false);
 
-        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".state-notice--error").TextContent,
-            "exceeded its five-second deadline", StringComparison.Ordinal));
+        cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".sky-refresh-notice").TextContent,
+            "Current Sky couldn’t refresh within 5 s; showing the last image; retrying automatically.", StringComparison.Ordinal));
         Assert.AreEqual(CaptureLink(first), cut.Find(".layers-link").GetAttribute("href"));
         cut.WaitForElement(".sky-layer-workspace");
     }
