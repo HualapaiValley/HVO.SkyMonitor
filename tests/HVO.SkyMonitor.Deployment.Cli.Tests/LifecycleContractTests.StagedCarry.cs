@@ -63,7 +63,7 @@ public sealed partial class LifecycleContractTests
         var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
         Assert.IsNotNull(journal.StateSnapshotRestoredUtc);
         await AssertLiveFleetStoreIsTheSnapshotsAsync(fixture, journal.StateSnapshot!);
-        StringAssert.Contains(error.ToString(), $"could not carry the counters of '{FleetStore}'", StringComparison.Ordinal);
+        StringAssert.Contains(error.ToString(), $"could not carry the fleet-report-sequence counter of '{FleetStore}' with key \"1\"", StringComparison.Ordinal);
         // Another store's carry is untouched by the fault.
         Assert.AreEqual(9, ReadCounter(fixture.Paths, "raw/journal/raw-ingress.db", $"SELECT last_sequence FROM raw_capture_sequences WHERE agent_id = '{AgentId}';"));
     }

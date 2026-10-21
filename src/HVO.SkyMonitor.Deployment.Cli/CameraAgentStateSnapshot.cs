@@ -98,7 +98,7 @@ internal static class CameraAgentStateSnapshot
             catch (Exception exception) when (exception is SqliteException or IOException)
             {
                 throw new InstallerException(
-                    $"The CameraAgent store '{relative}' could not be snapshotted: {Redaction.SafeDiagnostic(exception.Message)}", exception);
+                    $"The CameraAgent store '{relative}' could not be snapshotted: {CameraAgentStateDiagnostics.Reason(exception.Message)}", exception);
             }
             StepCompleted($"snapshot:{relative}");
         }
@@ -363,7 +363,8 @@ internal static class CameraAgentStateSnapshot
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            uncarried.Add(($"the counters of '{database.RelativePath}'", exception.Message));
+            uncarried.AddRange(carry.Where(floor => floor.Store == database.RelativePath)
+                .Select(floor => (CameraAgentStateCounters.Describe(floor), exception.Message)));
         }
         DiscardStaged(temporary);
         StepCompleted($"restore-recopy:{database.RelativePath}");
@@ -506,7 +507,7 @@ internal static class CameraAgentStateSnapshot
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(uncarried);
         ArgumentNullException.ThrowIfNull(error);
-        var list = string.Join("; ", uncarried.Select(static entry => $"{entry.What} ({Redaction.SafeDiagnostic(entry.Reason)})"));
+        var list = CameraAgentStateDiagnostics.CarryFailures(uncarried);
         var warning = string.Create(
             CultureInfo.InvariantCulture,
             $"Warning: the restore of the CameraAgent databases from snapshot {snapshot.SnapshotId:D} could not carry {list}. Each is restored as the snapshot recorded it, so a sequence or version handed out since the snapshot may be handed out again; the restore itself completes.");

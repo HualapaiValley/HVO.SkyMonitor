@@ -43,6 +43,22 @@ public sealed class CaptureTelemetrySink : ICaptureTelemetrySink, ICaptureTeleme
         }
     }
 
+    /// <summary>Attempts to read the latest sample; a successful read may return null before the first report.</summary>
+    public bool TryGetLatest(TimeSpan timeout, out CaptureTelemetrySample? sample)
+    {
+        if (!Monitor.TryEnter(_gate, timeout))
+        {
+            sample = null;
+            return false;
+        }
+        try
+        {
+            sample = _latest;
+            return true;
+        }
+        finally { Monitor.Exit(_gate); }
+    }
+
     public void Report(CaptureTelemetrySample sample)
     {
         lock (_gate)

@@ -224,11 +224,12 @@ internal sealed partial class CameraAgentLifecycleManager
         var plan = CameraAgentStateCounters.PlanCarry(
             floors,
             relative => CameraAgentStateSnapshot.StoreFile(paths, snapshot, target, relative),
-            Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"), "carry-check"));
+            Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"), "carry-check"),
+            target.Databases.Sum(static database => database.Length));
         if (plan.Uncarried.Count > 0)
         {
             throw new InstallerException(
-                $"The restore would hand out again counters the live instance issued after the backup: {string.Join("; ", plan.Uncarried.Select(static entry => $"{entry.What} ({Redaction.SafeDiagnostic(entry.Reason)})"))}. Nothing was replaced.");
+                $"The restore would hand out again counters the live instance issued after the backup: {CameraAgentStateDiagnostics.CarryFailures(plan.Uncarried)}. Nothing was replaced.");
         }
     }
 
@@ -262,7 +263,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (uncarried.Count > 0)
         {
             throw new InstallerException(
-                $"The restore could not carry {string.Join("; ", uncarried.Select(static entry => $"{entry.What} ({Redaction.SafeDiagnostic(entry.Reason)})"))}, so it is not done.");
+                $"The restore could not carry {CameraAgentStateDiagnostics.CarryFailures(uncarried)}, so it is not done.");
         }
         EnsureFloorsHold(paths, operation.StateCounterFloors ?? []);
         return await RecordAsync(paths, operation with { StateSnapshotRestoredUtc = DateTimeOffset.UtcNow }, cancellationToken)
@@ -333,9 +334,9 @@ internal sealed partial class CameraAgentLifecycleManager
             var value = observed.FirstOrDefault(entry => entry.Store == floor.Store && entry.Counter == floor.Counter && entry.Key == floor.Key);
             if (value is not null ? value.Value >= floor.Value : counter is not null && floor.Value <= counter.MissingRowAllowance) continue;
             lowered.Add(string.Create(CultureInfo.InvariantCulture,
-                $"the {floor.Counter} counter of '{floor.Store}' ({floor.Key}) is {value?.Value.ToString(CultureInfo.InvariantCulture) ?? "missing"}, below {floor.Value}"));
+                $"{CameraAgentStateCounters.Describe(floor)} is {value?.Value.ToString(CultureInfo.InvariantCulture) ?? "missing"}, below {floor.Value}"));
         }
-        lowered.AddRange(unreadable.Where(entry => floors.Any(floor => floor.Store == entry.Store)).Select(static entry => $"'{entry.Store}' cannot be read"));
+        lowered.AddRange(unreadable.Where(entry => floors.Any(floor => floor.Store == entry.Store)).Select(static entry => $"'{System.Text.Json.JsonEncodedText.Encode(entry.Store)}' cannot be read"));
         if (lowered.Count > 0)
         {
             throw new InstallerException($"The restore would hand out again counters the live instance issued: {string.Join("; ", lowered)}.");
@@ -492,7 +493,8 @@ internal sealed partial class CameraAgentLifecycleManager
     /// <summary>
     /// Requires room for the phases not yet complete, with headroom: staging every file of the archive beside the instance,
     /// until the journal records it staged (#1353 PR-1369-R1 F8), and the copy the database restore writes beside each
-    /// store it replaces, until the journal records the databases restored (PR-1369-R2 F17). A restore resumed before its
+    /// store it replaces, plus current-size trial and rollback-journal allowances, until the journal records the
+    /// databases restored (PR-1369-R2 F17, #1347). A restore resumed before its
     /// staging finished removes what it had staged first, so those bytes count as free.
     /// </summary>
     private static void EnsureRestoreCapacity(InstallationPaths paths, BackupArchiveManifest archive, LifecycleOperationState? resumed)
@@ -505,7 +507,7 @@ internal sealed partial class CameraAgentLifecycleManager
                                  resumed.Phase is LifecycleOperationPhase.CandidateVerified or LifecycleOperationPhase.Committed or LifecycleOperationPhase.Completed);
         var required = checked(
             (staged ? 0 : archive.TotalBytes + (long)archive.Entries.Count * 4096) +
-            (databasesRestored ? 0 : snapshotBytes) +
+            (databasesRestored ? 0 : 3 * snapshotBytes + CameraAgentStateCounters.JournalRecordBytes(snapshotBytes)) +
             BackupHeadroomBytes);
         var reclaimed = resumed is { Phase: LifecycleOperationPhase.Prepared }
             ? DirectoryBytes(Path.Combine(paths.InstanceRoot, BackupInventory.RestoreFolderName, resumed.OperationId.ToString("D")))

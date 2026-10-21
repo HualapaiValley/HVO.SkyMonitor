@@ -125,6 +125,98 @@ expect_fail 'Unit job env may set only DOCKER_HOST and UNIT_FILTER as plain sing
 mutate quotedenv '/^  unit:/,/^  integration:/ { /^      UNIT_FILTER:/ a\      "BASH_ENV": /tmp/narrow.sh
 }'
 expect_fail 'Unit job env may set only DOCKER_HOST and UNIT_FILTER as plain single-line' --workflow "$scratch/quotedenv.yml"
+# A word at the end of a run line and a colon on the next line are not a key.
+for word in defaults shell; do
+  mutate "log-$word" "/^  unit:/,/^  integration:/ { /- name: Setup .NET from global.json/ i\      - name: Log selection mode\n        run: |\n          echo $word\n          :
+}"
+  expect_pass --workflow "$scratch/log-$word.yml"
+done
+# Removing the sole supported export is a clean no-match, an accepted catalog gap.
+mutate noexport '/printf .*HVO_PRODUCTION_CATALOG_BUNDLE=.*GITHUB_ENV/d'
+expect_pass --workflow "$scratch/noexport.yml"
+
+# #1265: a failed input inspection is not clean absence of defaults/shell.
+# Inject independent read failures into the two existing comment-filter reads;
+# the otherwise valid workflow must fail with an explicit inspection diagnostic.
+mkdir "$scratch/inspection-bin"
+real_grep="$(command -v grep)"
+cat > "$scratch/inspection-bin/grep" <<'GREP'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1-}" == -vE && "${2-}" == '^[[:space:]]*#' ]]; then
+  case "${HVO_UNIT_INSPECTION_SCOPE-}:$#" in
+    workflow:3|unit:2) printf 'Simulated input read failure.\n' >&2; exit 2 ;;
+  esac
+fi
+case "${HVO_UNIT_INSPECTION_SCOPE-}:${1-}:${2-}" in
+  exports:-E:'GITHUB_(ENV|PATH)'| \
+  bind:-nxF:'      - name: Bind Unit evidence'| \
+  upload:-nxF:'      - name: Upload Unit evidence'| \
+  commands:-E:'^[[:space:]]+dotnet test tests/'| \
+  coverage:-oE:'TestResults/unit/[a-z0-9-]+/\*/coverage\.cobertura\.xml'| \
+  unsupported:'^BAD ':*| \
+  component-count:-cxF:*| \
+  component-build:-nxF:'        run: ./scripts/ci:component-build '*| \
+  component-upload:-nE:'^      - name: Upload .* component evidence$'| \
+  writers:-Ec:*)
+    printf 'Simulated scan read failure.\n' >&2; exit "${HVO_UNIT_INSPECTION_STATUS:-2}" ;;
+esac
+exec "$HVO_UNIT_REAL_GREP" "$@"
+GREP
+chmod +x "$scratch/inspection-bin/grep"
+inspection_failures=0
+for scope in workflow unit; do
+  needle='could not inspect workflow settings'
+  [[ "$scope" != unit ]] || needle='could not inspect Unit job settings'
+  if ! (PATH="$scratch/inspection-bin:$PATH" HVO_UNIT_INSPECTION_SCOPE="$scope" \
+      HVO_UNIT_REAL_GREP="$real_grep" expect_fail "$needle" --workflow "$workflow"); then
+    inspection_failures=$((inspection_failures + 1))
+  fi
+done
+((inspection_failures == 0)) || exit 1
+
+# Exercise each formerly suppressed scan independently. A status other than 0/1
+# must not become absence, even when it would hide a narrowed filter export.
+for scope in exports bind upload commands coverage unsupported component-count component-build component-upload writers; do
+  PATH="$scratch/inspection-bin:$PATH" HVO_UNIT_INSPECTION_SCOPE="$scope" \
+    HVO_UNIT_REAL_GREP="$real_grep" expect_fail 'could not inspect input' --workflow "$workflow"
+done
+for status in 2 7; do
+  PATH="$scratch/inspection-bin:$PATH" HVO_UNIT_INSPECTION_SCOPE=exports \
+    HVO_UNIT_INSPECTION_STATUS="$status" HVO_UNIT_REAL_GREP="$real_grep" \
+    expect_fail 'could not inspect input' --workflow "$scratch/githubenv.yml"
+done
+
+# Failure to deliver input must also fail when grep itself returns clean absence.
+cat > "$scratch/fail-delivery.bash" <<'DELIVERY'
+printf() {
+  if [[ "${1-}" == '%s\n' && "${2-}" == *'DOCKER_HOST: unix:///tmp/hvo-unit-docker-must-not-exist.sock'* ]]; then
+    return 9
+  fi
+  builtin printf "$@"
+}
+DELIVERY
+BASH_ENV="$scratch/fail-delivery.bash" expect_fail 'could not inspect input (delivery=9, grep=1)' --workflow "$workflow"
+
+# Discovery may emit a complete-looking list before failing; capture its status
+# before consuming either the inventory list or a project's adjacent csproj list.
+real_find="$(command -v find)"
+cat > "$scratch/inspection-bin/find" <<'FIND'
+#!/usr/bin/env bash
+set -euo pipefail
+"$HVO_UNIT_REAL_FIND" "$@"
+case "${HVO_UNIT_INSPECTION_SCOPE-}:$*" in
+  inventories:*'-maxdepth 2 '*|projects:*'-maxdepth 1 '*)
+    printf 'Simulated partial discovery failure.\n' >&2; exit 2 ;;
+esac
+FIND
+chmod +x "$scratch/inspection-bin/find"
+for scope in inventories projects; do
+  PATH="$scratch/inspection-bin:$PATH" HVO_UNIT_INSPECTION_SCOPE="$scope" \
+    HVO_UNIT_REAL_FIND="$real_find" HVO_UNIT_REAL_GREP="$real_grep" \
+    expect_fail 'could not inspect' --workflow "$workflow"
+done
+
 mutate noupload '/^  unit:/,/^  integration:/ s#^          path: TestResults/unit/$#          path: TestResults/unit/astronomy/#'
 expect_fail 'must upload TestResults/unit/' --workflow "$scratch/noupload.yml"
 # The supplemental step moved after the upload keeps a complete list but loses its evidence.
@@ -237,4 +329,4 @@ for component in shared cameraagent logichost combined delivery; do
   cmp "$scratch/expected" "$scratch/actual"
 done
 
-printf 'CI Unit selection contract passed (full job and four supplemental component selections/build roots).\n'
+printf 'CI Unit selection contract passed (full job, four supplemental component selections/build roots, 2 multiline key controls, clean export absence, and 17 input-inspection failure controls).\n'
