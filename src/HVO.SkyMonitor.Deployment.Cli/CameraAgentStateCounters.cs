@@ -1,6 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
-using System.Text.Json;
 using HVO.SkyMonitor.Deployment.Contracts;
 using Microsoft.Data.Sqlite;
 
@@ -418,9 +417,9 @@ internal static class CameraAgentStateCounters
         return (safe, refused);
     }
 
-    /// <summary>Names a floor on one terminal-safe line, retaining every character of its key.</summary>
+    /// <summary>Names a floor on one terminal-safe line, retaining every character of its key unless it reads as a credential.</summary>
     internal static string Describe(StateCounterFloor floor)
-        => $"the {JsonEncodedText.Encode(floor.Counter)} counter of '{JsonEncodedText.Encode(floor.Store)}' with key \"{JsonEncodedText.Encode(floor.Key)}\"";
+        => $"the {CameraAgentStateDiagnostics.Identity(floor.Counter)} counter of '{CameraAgentStateDiagnostics.Identity(floor.Store)}' with key \"{CameraAgentStateDiagnostics.Identity(floor.Key)}\"";
 
     /// <summary>
     /// The highest floor a counter's carry can write and the reader then accept: a state token writes one above its

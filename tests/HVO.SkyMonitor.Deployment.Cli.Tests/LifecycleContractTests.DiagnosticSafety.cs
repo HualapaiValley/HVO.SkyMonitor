@@ -76,7 +76,7 @@ public sealed partial class LifecycleContractTests
         archive.Position = 0;
         var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => BackupArchive.ReadAsync(
             archive, null, null, CancellationToken.None));
-        var message = await RenderDiagnostic1476ErrorAsync(failure.Message, json);
+        var message = await RenderDiagnostic1476ErrorAsync(failure.Message, json, failure.IsFormattedDiagnostic);
         Console.WriteLine(JsonSerializer.Serialize(message));
         AssertDiagnostic1476Safe(message);
         Assert.IsFalse(message.Contains('\u001b', StringComparison.Ordinal), "The archive refusal echoed a literal ESC from an untrusted entry name.");
@@ -108,7 +108,7 @@ public sealed partial class LifecycleContractTests
         await File.WriteAllTextAsync(target, "not a SQLite database");
         var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentStateSnapshot.CreateAsync(
             fixture.Paths, fixture.InstanceId, Guid.NewGuid(), fixture.Manifest.Image, stores, CancellationToken.None));
-        var message = await RenderDiagnostic1476ErrorAsync(failure.Message, json);
+        var message = await RenderDiagnostic1476ErrorAsync(failure.Message, json, failure.IsFormattedDiagnostic);
         Console.WriteLine(JsonSerializer.Serialize(message));
         AssertDiagnostic1476Safe(message);
         Assert.IsFalse(message.Contains(relative, StringComparison.Ordinal), "The snapshot diagnostic echoed the unescaped configured store path.");
@@ -203,7 +203,8 @@ public sealed partial class LifecycleContractTests
         Assert.IsFalse(message.Contains("diagnostic-1476-sentinel", StringComparison.Ordinal), message);
     }
 
-    private static async Task<string> RenderDiagnostic1476ErrorAsync(string message, bool json)
+    /// <summary>Renders through the top-level error writer, which carries a message the formatter composed as it is.</summary>
+    private static async Task<string> RenderDiagnostic1476ErrorAsync(string message, bool json, bool formatted = false)
     {
         using var error = new StringWriter();
         var previous = Console.Error;
@@ -211,7 +212,7 @@ public sealed partial class LifecycleContractTests
         {
             Console.SetError(error);
             var renderer = typeof(HVO.SkyMonitor.Deployment.Program).GetMethod("WriteErrorAsync", BindingFlags.Static | BindingFlags.NonPublic)!;
-            await (Task)renderer.Invoke(null, [json, "installation-failed", message, false])!;
+            await (Task)renderer.Invoke(null, [json, "installation-failed", message, false, formatted])!;
         }
         finally
         {
