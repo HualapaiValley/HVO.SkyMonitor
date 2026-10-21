@@ -679,3 +679,34 @@ capture. Confirm the neutral image-card loading text and capture status remain
 separate, retain Debug phase logs and any Information deadline line, then verify
 automatic recovery. Measure initial latency on the Pi before treating the
 30-second candidate as hardware qualification. Storage-lock work is #1471.
+
+### Initial HTTP delivery correction (PR #1481 F1)
+
+Component rendering tests establish page state, but do not establish when a
+direct HTTP navigation receives that state. The normal prerender-enabled
+InteractiveServer path previously awaited the initial read to quiescence and
+withheld the loading notice. Current Sky now opts into streaming rendering on
+this page. Authorization, the render mode and initialization remain in place;
+no global layout or other route is opted in. The framework attribute affects
+supported HTTP renderers, not the interactive renderer. See the
+[ASP.NET Core 10 streaming contract](https://learn.microsoft.com/en-us/aspnet/core/blazor/components/rendering?view=aspnetcore-10.0#streaming-rendering)
+and [attribute source](https://github.com/dotnet/aspnetcore/blob/v10.0.0/src/Components/Components/src/StreamRenderingAttribute.cs).
+
+`CurrentSkyPrerenderAcceptanceTests` uses the existing real Kestrel fixture,
+owner cookie sign-in and a signal-gated initial presentation read. It requires
+the response headers and loading-notice body bytes while that read remains
+pending, then releases the gate and checks the streamed completion update and
+the next request. Anonymous and authenticated non-owner requests must reach
+their authorization destination without reading or streaming the presentation.
+The gate and five-second I/O watchdog avoid a 20/30-second sleep. Against
+unchanged product `f66689be`, the probe failed with the read entered, gate closed,
+read not returned and response headers undelivered; the same probe passed with
+the page-local streaming attribute. Raw red/green evidence is retained privately.
+
+Existing component tests remain responsible for injected-clock deadlines,
+interactive polling/recovery/cancellation, archived rendering and exact-capture
+behavior. Old complete matrices remain evidence for their recorded old head;
+the correction ledger identifies the immutable new head and affected reruns.
+The smoke checkpoint above must use a fresh direct navigation as well as an
+already-interactive page. No text or completed-image geometry changed in F1,
+so no retained screenshot or SVG requires replacement.

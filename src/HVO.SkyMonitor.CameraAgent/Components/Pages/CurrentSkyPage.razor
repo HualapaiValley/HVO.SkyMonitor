@@ -5,6 +5,7 @@
 @using HVO.SkyMonitor.CameraAgent.Services
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
+@attribute [StreamRendering]
 @rendermode InteractiveServer
 
 <PageTitle>@(IsArchived ? $"Capture #{ArchivedView!.Capture.CaptureSequence}" : "Current sky")</PageTitle>
