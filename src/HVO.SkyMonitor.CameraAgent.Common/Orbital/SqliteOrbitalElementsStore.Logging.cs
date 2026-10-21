@@ -69,4 +69,8 @@ public sealed partial class SqliteOrbitalElementsStore
     [LoggerMessage(7716, LogLevel.Warning,
         "Orbital provider halted on attempt {AttemptId} with no valid HTTP status recorded because the status line was outside 100-599; no further attempts until an operator resumes it")]
     private static partial void ProviderHaltedInvalidStatus(ILogger logger, string attemptId);
+
+    // Event IDs 7760-7769 belong to the operator-facing manifest reader. Messages carry identities and codes only.
+    [LoggerMessage(7760, LogLevel.Warning, "Orbital manifest {ManifestSha256} could not be read ({ReasonCode})")]
+    private static partial void ManifestReadFailed(ILogger logger, string manifestSha256, string reasonCode);
 }
