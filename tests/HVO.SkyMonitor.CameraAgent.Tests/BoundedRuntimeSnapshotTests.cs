@@ -3,6 +3,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.Telemetry;
+using HVO.SkyMonitor.Fleet.Contracts;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
@@ -112,6 +113,43 @@ public sealed class BoundedRuntimeSnapshotTests
         AssertGateReleased(state);
     }
 
+    [TestMethod]
+    [DataRow("fleet", -2L)]
+    [DataRow("fleet", 2147483648L)]
+    [DataRow("telemetry", -2L)]
+    [DataRow("telemetry", 2147483648L)]
+    [DataRow("processing", -2L)]
+    [DataRow("processing", 2147483648L)]
+    public void BoundedReadRejectsInvalidTimeoutAndLeavesGateAvailable(string source, long timeoutMilliseconds)
+    {
+        object state = source switch
+        {
+            "fleet" => new FleetRuntimeState(TimeProvider.System),
+            "telemetry" => new CaptureTelemetrySink(),
+            _ => new CaptureProcessingState()
+        };
+        var timeout = TimeSpan.FromMilliseconds(timeoutMilliseconds);
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => TryRead(state, timeout));
+
+        AssertGateReleased(state);
+    }
+
+    [TestMethod]
+    public void FleetTrySnapshotPropagatesProjectionExceptionAndReleasesGate()
+    {
+        var state = new FleetRuntimeState(TimeProvider.System);
+        var timings = (Dictionary<FleetTimingSegment, Queue<double>>)typeof(FleetRuntimeState)
+            .GetField("_timings", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(state)!;
+        // An empty timing queue makes the percentile projection throw inside TrySnapshot's critical section.
+        timings.Add(FleetTimingSegment.Processing, new Queue<double>());
+
+        Assert.ThrowsExactly<IndexOutOfRangeException>(() => state.TrySnapshot(TimeSpan.Zero, out _));
+
+        Assert.IsFalse(Monitor.IsEntered(Gate(state)), "The throwing projection must release the caller's gate ownership.");
+        AssertGateReleased(state);
+    }
+
     private static bool TryRead(object state, TimeSpan timeout) => state switch
     {
         FleetRuntimeState fleet => fleet.TrySnapshot(timeout, out _),
@@ -129,7 +167,7 @@ public sealed class BoundedRuntimeSnapshotTests
         var probe = new Thread(() =>
         {
             var gate = Gate(state);
-            if (!Monitor.TryEnter(gate)) return;
+            if (!Monitor.TryEnter(gate, TimeSpan.FromMilliseconds(50))) return;
             acquired = true;
             Monitor.Exit(gate);
         })
