@@ -7,12 +7,13 @@ using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 
-/// <summary>One verified master of a per-input family selection: its kind, library artifact and payload hash.</summary>
+/// <summary>One checked master of a per-input family selection: its kind, library artifact and payload hash.</summary>
 internal sealed record CalibrationFamilySelectedMaster(string Kind, Guid ArtifactId, string PayloadSha256);
 
 /// <summary>
 /// The per-input calibration-family selection (#1475): the family identity, the member chosen for the input, and the
-/// bias, dark, flat and defect masters it names, in that order, after each was verified against the library.
+/// bias, dark, flat and defect masters it names, in that order, after the checks
+/// <see cref="SqliteCalibrationLibraryStore.SelectFamilyMastersAsync"/> lists.
 /// </summary>
 internal sealed record CalibrationFamilyMasterSelection(
     string FamilyIdentitySha256,
@@ -32,18 +33,22 @@ public sealed partial class SqliteCalibrationLibraryStore
     private const int FamilyMasterHashBufferBytes = 64 * 1024;
 
     /// <summary>
-    /// Selects the family member for one light and verifies every master it names against the library before use.
+    /// Selects the family member for one light and checks each master it names against the library before use.
     /// Each master must be a master of a published bundle whose stored kind, payload hash, agent, rig, sensor,
     /// acquisition model and input layout equal the member's, whose temperature and light-exposure applicability
     /// cover the member's ranges, and which is in effect when the light was observed. A bias, dark or flat must also
     /// have the member's gain and offset; a defect master may serve every gain, as the family contract allows. The
-    /// payload must then hash to that SHA-256. Any failure excludes the light with a stable reason and no other
-    /// master is substituted. The library is read in one short read transaction; payloads are hashed afterwards,
-    /// outside the store gate and any transaction, reading exactly each master's published length.
+    /// payload must then hash to that SHA-256. Finally the committed evidence of each master's bundle must pass the
+    /// check <see cref="SelectAsync"/> applies to the active bundle: the profile marker hashes to its recorded
+    /// identity, each manifest matches its library record (artifact ID, role, variant equal to the kind, checksum,
+    /// payload path, layout and conditions), each payload hashes to its record, and a virtual acquisition's sources
+    /// reproduce from its durable plan. A failure there is <c>master-corrupt</c>. Any failure excludes the light with
+    /// a stable reason and no other master is substituted. The library is read in one short read transaction; files
+    /// are hashed afterwards, outside the store gate and any transaction.
     /// </summary>
     /// <remarks>
-    /// The result is not pinned. Freezing it with the input, re-confirming it and pinning its masters is the
-    /// normalization plan's claim-time step.
+    /// The result is not pinned. The normalization plan freezes it with the input, and a later claim re-confirms it
+    /// with <see cref="ConfirmFamilyMastersAsync"/>.
     /// </remarks>
     internal async Task<CalibrationFamilySelectionResult> SelectFamilyMastersAsync(
         CalibrationFamilyV1 family,
@@ -132,10 +137,95 @@ public sealed partial class SqliteCalibrationLibraryStore
             selected[index] = new CalibrationFamilySelectedMaster(
                 master.Artifact.Kind, master.Artifact.ArtifactId, master.Artifact.PayloadSha256);
         }
+        if (await VerifyFamilyBundleEvidenceAsync(
+            Array.ConvertAll(stored, static master => master!), cancellationToken).ConfigureAwait(false) is { } evidenceReason)
+        {
+            return FamilyExcluded(evidenceReason);
+        }
         return new CalibrationFamilySelectionResult(
             new CalibrationFamilyMasterSelection(
                 CalibrationFamilyContractJson.ComputeIdentitySha256(family), member.MemberId, Array.AsReadOnly(selected)),
             CalibrationFamilyReasonCodes.Selected);
+    }
+
+    /// <summary>
+    /// Re-confirms the masters of a frozen selection when work that uses them is claimed: each is still a master of a
+    /// published bundle with the frozen kind and payload hash, its payload hashes to it, and its bundle's committed
+    /// evidence passes the check <see cref="SelectFamilyMastersAsync"/> applies. Returns null, or the stable reason
+    /// the first master fails. Conditions and effective windows were settled when the selection was frozen and are
+    /// not evaluated again.
+    /// </summary>
+    internal async Task<string?> ConfirmFamilyMastersAsync(
+        IReadOnlyList<CalibrationFamilyMasterV1> masters,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(masters);
+        await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var stored = new StoredFamilyMaster?[masters.Count];
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginRead(connection);
+            var bundles = new Dictionary<string, PersistedBundle>(StringComparer.Ordinal);
+            for (var index = 0; index < masters.Count; index++)
+            {
+                stored[index] = await ReadFamilyMasterAsync(
+                    connection, transaction, masters[index].ArtifactId, bundles, cancellationToken).ConfigureAwait(false);
+            }
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidDataException)
+        {
+            return CalibrationFamilyReasonCodes.MasterCorrupt;
+        }
+        for (var index = 0; index < masters.Count; index++)
+        {
+            var reason = stored[index] is not { } master
+                ? CalibrationFamilyReasonCodes.MasterMissing
+                : !string.Equals(master.Bundle.PublicationState, "published", StringComparison.Ordinal)
+                    ? CalibrationFamilyReasonCodes.MasterUnpublished
+                    : !string.Equals(master.Artifact.Kind, masters[index].Kind, StringComparison.Ordinal) ||
+                      !string.Equals(
+                          master.Artifact.PayloadSha256, masters[index].PayloadSha256, StringComparison.OrdinalIgnoreCase)
+                        ? CalibrationFamilyReasonCodes.MasterMismatch
+                        : null;
+            if (reason is not null)
+            {
+                return reason;
+            }
+        }
+        foreach (var master in stored)
+        {
+            if (await VerifyFamilyMasterPayloadAsync(master!, cancellationToken).ConfigureAwait(false) is { } reason)
+            {
+                return reason;
+            }
+        }
+        return await VerifyFamilyBundleEvidenceAsync(
+            Array.ConvertAll(stored, static master => master!), cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Validates the committed evidence of each distinct bundle the masters come from, as <see cref="SelectAsync"/>
+    /// validates the active bundle, using the same cache while the bundle's files are unchanged. Any failure is
+    /// <c>master-corrupt</c>.
+    /// </summary>
+    private async Task<string?> VerifyFamilyBundleEvidenceAsync(
+        IReadOnlyList<StoredFamilyMaster> masters,
+        CancellationToken cancellationToken)
+    {
+        foreach (var bundle in masters.Select(static master => master.Bundle).DistinctBy(static bundle => bundle.BundleIdentitySha256))
+        {
+            try
+            {
+                await ValidateEvidenceCachedAsync(bundle, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                return CalibrationFamilyReasonCodes.MasterCorrupt;
+            }
+        }
+        return null;
     }
 
     /// <summary>Reads a library master and its validated bundle, or null when no master has that artifact ID.</summary>
