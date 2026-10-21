@@ -15,6 +15,52 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class AutomationsPageTests
 {
     [TestMethod]
+    public void GuidedOrbitalSetup_PrefillsTheExistingEditorAndSavesThroughItsNormalCommand()
+    {
+        using var context = CreateContext();
+        var service = Register(context, WithOrbital(Automation(definitions: [], calendar: [], runs: [])));
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/automations?setup=orbital");
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-name");
+        Assert.AreEqual("Orbital elements refresh", cut.Find("#automation-name").GetAttribute("value"));
+        Assert.AreEqual("21600", cut.Find("#automation-interval").GetAttribute("value"));
+        Assert.IsEmpty(service.SaveRequests);
+        cut.Find("#automation-interval").Change("7199");
+        service.Kind = OperatorUiResultKind.Invalid;
+        service.Message = OrbitalOperatorText.Describe(OrbitalElementsAutomationAdapter.IntervalBelowFloorReasonCode);
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find($"#{AutomationsPage.ConfirmId}").Click();
+        Assert.AreEqual(7199, service.SaveRequests.Single().TriggerInterval);
+        Assert.Contains(service.Message, cut.Markup, StringComparison.Ordinal);
+        service.Kind = OperatorUiResultKind.Success;
+        cut.Find("#automation-interval").Change("21600");
+        cut.Find($"#{AutomationsPage.SaveTriggerId}").Click();
+        cut.Find($"#{AutomationsPage.ConfirmId}").Click();
+        var request = service.SaveRequests.Last();
+        Assert.AreEqual(OrbitalElementsAutomationAdapter.DefinitionId, request.DefinitionId);
+        Assert.AreEqual(CelesTrakGpSource.DatasetKey, request.TaskTarget);
+        Assert.AreEqual(21600, request.TriggerInterval);
+        Assert.AreEqual(0, request.ExpectedVersion);
+        Assert.AreEqual(LocalAutomationTriggerKind.Periodic, request.TriggerKind);
+        Assert.IsTrue(request.Enabled);
+        Assert.IsNotEmpty(request.IdempotencyKey);
+        Assert.Contains("first Refresh now", cut.Find("#orbital-setup-guide").TextContent, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public void GuidedOrbitalSetup_ExistingDefinitionIsPreservedWithoutOpeningACreateDialog()
+    {
+        using var context = CreateContext();
+        var service = Register(context, WithOrbital(Automation(), defined: true));
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/automations?setup=orbital");
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#orbital-setup-guide");
+        Assert.IsEmpty(cut.FindAll("#automation-name"));
+        Assert.IsEmpty(service.SaveRequests);
+        Assert.IsNotNull(cut.Find("#automation-definition-orbital-elements-refresh"));
+    }
+
+    [TestMethod]
     public void SourceWindowDefinition_IsTruthfullyReadOnlyHereAndTogglePreservesItsPolicy()
     {
         using var context = CreateContext();

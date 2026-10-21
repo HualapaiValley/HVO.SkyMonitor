@@ -123,6 +123,12 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     [SupplyParameterFromQuery(Name = "definition")]
     public string? Definition { get; set; }
 
+    [SupplyParameterFromQuery(Name = "setup")]
+    public string? Setup { get; set; }
+
+    private bool _guidedSetupOpened;
+    private bool GuidedOrbitalSetup => string.Equals(Setup, "orbital", StringComparison.Ordinal);
+
     private bool Editing => _editingVersion != 0;
 
     /// <summary>The orbital refresh task accepts one reserved identifier, its one target and a periodic trigger only.</summary>
@@ -188,6 +194,22 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (GuidedOrbitalSetup && !_guidedSetupOpened && !_loading && _automation is not null)
+        {
+            _guidedSetupOpened = true;
+            if (!_automation.Definitions.Any(item => item.Definition.DefinitionId == OrbitalElementsAutomationAdapter.DefinitionId) &&
+                EditorTasks.Any(item => item.TaskKind == LocalAutomationTaskKind.OrbitalElementsRefresh && item.Available) &&
+                CreateUnavailableReason is null)
+            {
+                ResetForm();
+                _taskKindInput = LocalAutomationTaskKind.OrbitalElementsRefresh;
+                _nameInput = "Orbital elements refresh";
+                TaskChanged();
+                OpenDialog(DialogMode.Editor, "automation-name");
+                StateHasChanged();
+                return; // Render the dialog before the next callback invokes showModal with its element reference.
+            }
+        }
         if (_showDialog)
         {
             _showDialog = false;
