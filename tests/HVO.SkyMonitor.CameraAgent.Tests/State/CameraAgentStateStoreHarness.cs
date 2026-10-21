@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Evidence;
 using HVO.SkyMonitor.CameraAgent.Common.Fleet;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
+using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Storage;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
@@ -101,6 +102,7 @@ internal sealed class CameraAgentStateStoreHarness : IDisposable
         // The host initializes the orbital store through OrbitalElementsAvailability, which calls this; disposing the
         // provider disposes the singleton store and releases its exclusive lock.
         await provider.GetRequiredService<SqliteOrbitalElementsStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        await provider.GetRequiredService<SqliteSwpcStore>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         var identity = Path.Combine(StateRoot, "identity", "cameraagent_identity.db");
         var context = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseSqlite($"Data Source={identity};Pooling=False").Options);

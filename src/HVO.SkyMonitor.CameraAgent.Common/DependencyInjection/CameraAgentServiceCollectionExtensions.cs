@@ -56,6 +56,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.AddOptions<CameraAgentHostOptions>()
             .Bind(configuration.GetSection("CameraAgent"))
+            .Configure(options => options.SpaceWeather.BindProducts(configuration))
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
@@ -432,6 +433,7 @@ public static class CameraAgentServiceCollectionExtensions
             typeof(PresentationMaterializerProcessingStepOptions), 81, AutoInclude: false));
         // Registers the orbital store initializer, so it runs before the automation runner's first sweep.
         services.AddCameraAgentOrbitalElements();
+        services.AddCameraAgentSpaceWeather();
         services.AddSingleton<LocalAutomationOffSweepWorker>();
         services.AddHostedService(static provider => provider.GetRequiredService<LocalAutomationOffSweepWorker>());
         services.AddHostedService<LocalAutomationRunnerService>();

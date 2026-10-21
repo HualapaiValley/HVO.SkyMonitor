@@ -165,7 +165,7 @@ public static class SwpcAlertsParser
     {
         var days = ImmutableArray.CreateBuilder<SwpcWatchDay>();
         foreach (var line in text.Split('\n'))
-            foreach (Match m in Regex.Matches(line, @"([A-Z][a-z]{2}) ([0-9]{2})[ \t\r\n\f\v]*:[ \t\r\n\f\v]+(G[1-5]|None)(?:[^A-Za-z0-9_]|\z)", RegexOptions.CultureInvariant | RegexOptions.NonBacktracking, Regex.InfiniteMatchTimeout))
+            foreach (Match m in SwpcText.Pattern(@"([A-Z][a-z]{2}) ([0-9]{2})[ \t\r\n\f\v]*:[ \t\r\n\f\v]+(G[1-5]|None)(?:[^A-Za-z0-9_]|\z)").Matches(line))
             {
                 if (SwpcText.Month(m.Groups[1].Value) == 0) continue;
                 var day = SwpcText.Yearless(m.Groups[1].Value, m.Groups[2].Value, issue);

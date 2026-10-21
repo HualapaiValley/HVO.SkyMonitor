@@ -42,7 +42,7 @@ public sealed class PreviousReleaseStoreReadabilityTests
     /// previous release never opens. The release pull request that cuts a version regenerates the fixture with them and
     /// empties this list.
     /// </summary>
-    private static readonly string[] StoresAddedByThisRelease = ["raw/.orbital-elements/orbital-elements.db"];
+    private static readonly string[] StoresAddedByThisRelease = ["raw/.orbital-elements/orbital-elements.db", "raw/.space-weather/space-weather.db"];
 
     [TestMethod]
     public async Task CurrentStores_AreThePreviousReleaseStoresPlusTheStoresThisReleaseAdds()

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -7,6 +8,8 @@ namespace HVO.SkyMonitor.Processing.SpaceWeather;
 /// <summary>Bounded SWPC text normalization and ASCII source parsing.</summary>
 public static class SwpcText
 {
+    private static readonly ConcurrentDictionary<string, Regex> Patterns = new(StringComparer.Ordinal);
+
     /// <summary>Normalizes line endings and trailing whitespace; empty text stays empty as in the reference model.</summary>
     public static string Normalize(string text)
     {
@@ -33,8 +36,16 @@ public static class SwpcText
     }
     internal static bool IsBlank(string text) => TrimWhitespace(text.AsSpan()).IsEmpty;
 
-    internal static Match Match(string text, string pattern) => Regex.Match(text, pattern,
-        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking, Regex.InfiniteMatchTimeout);
+    /// <summary>
+    /// Reuses the nonbacktracking engine for the finite set of source-literal patterns.
+    /// Callers pass only literals, Whole wrappers of literals, or Field patterns whose
+    /// labels come from literal lists; provider input never supplies a pattern or label.
+    /// This invariant bounds the cache independently of the number of parsed bodies.
+    /// </summary>
+    internal static Regex Pattern(string pattern) => Patterns.GetOrAdd(pattern, static value => new Regex(value,
+        RegexOptions.CultureInvariant | RegexOptions.NonBacktracking, Regex.InfiniteMatchTimeout));
+
+    internal static Match Match(string text, string pattern) => Pattern(pattern).Match(text);
     internal static bool Whole(string text, string pattern) => Match(text, "\\A(?:" + pattern + ")\\z").Success;
     internal static string? Field(string text, string label)
     {
@@ -90,5 +101,5 @@ public static class SwpcText
         catch (ArgumentOutOfRangeException) { return null; }
     }
     internal static string Utc(DateTimeOffset time) => time.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
-    internal static UTF8Encoding Utf8 => new(false, true);
+    internal static readonly UTF8Encoding Utf8 = new(false, true);
 }

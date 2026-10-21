@@ -70,6 +70,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     public OrbitalElementsOptions OrbitalElements { get; init; } = new();
 
     [Required]
+    public SpaceWeatherOptions SpaceWeather { get; init; } = new();
+
+    [Required]
     public NightlyProductOptions NightlyProducts { get; init; } = new();
 
     public TimeLapseOptions TimeLapses { get; init; } = new();
@@ -363,6 +366,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
         {
             yield return result;
         }
+        var spaceWeatherResults = new List<ValidationResult>();
+        Validator.TryValidateObject(SpaceWeather, new ValidationContext(SpaceWeather), spaceWeatherResults, validateAllProperties: true);
+        foreach (var result in spaceWeatherResults) yield return result;
     }
 }
 

@@ -168,7 +168,13 @@ public enum LocalAutomationTaskKind
     /// Refreshes the local orbital-element snapshot through an explicitly registered periodic task
     /// adapter. Appended only: the stored text spelling of every earlier value is unchanged.
     /// </summary>
-    OrbitalElementsRefresh
+    OrbitalElementsRefresh,
+
+    /// <summary>
+    /// Refreshes local SWPC facts through an explicitly registered periodic task adapter.
+    /// Appended only: the stored text spelling of every earlier value is unchanged.
+    /// </summary>
+    SpaceWeatherRefresh
 }
 
 /// <summary>
