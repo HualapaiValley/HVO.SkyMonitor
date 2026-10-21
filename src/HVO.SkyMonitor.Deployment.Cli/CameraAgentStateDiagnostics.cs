@@ -9,6 +9,23 @@ internal static class CameraAgentStateDiagnostics
     public static string Reason(string value)
         => JsonEncodedText.Encode(Redaction.SafeDiagnostic(value)).ToString();
 
+    /// <summary>
+    /// A raw diagnostic from any CLI source is redacted before its remaining controls are escaped. Keep printable punctuation
+    /// as the existing top-level writer does; source-composed messages use Reason on their fields and carry the formatted marker.
+    /// </summary>
+    public static string Message(string value)
+    {
+        var redacted = Redaction.SafeDiagnostic(value);
+        if (!redacted.Any(char.IsControl)) return redacted;
+        var result = new System.Text.StringBuilder(redacted.Length);
+        foreach (var character in redacted)
+        {
+            if (char.IsControl(character)) result.Append(JsonEncodedText.Encode(character.ToString()).ToString());
+            else result.Append(character);
+        }
+        return result.ToString();
+    }
+
     /// <summary>Database fields are formatted separately from the fixed explanatory prose around them.</summary>
     public static string Field(string? value) => string.IsNullOrEmpty(value) ? string.Empty : Reason(value);
 

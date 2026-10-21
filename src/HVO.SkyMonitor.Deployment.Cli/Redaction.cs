@@ -6,9 +6,12 @@ internal static class Redaction
 
     // A credential key is any key that ends with one of these words, so the key patterns put no word boundary before it:
     // db_password, client_secret, accessToken and x-api-key all match (#1491). The boundary after it keeps tokenid ordinary.
-    private const string CredentialWord = "(?:password|token|secret|api[-_]?key)\\b";
+    private const string CredentialWord = "(?:passwords?|token|secret(?:[-_]key|_access_key)?|private[-_]?key|api[-_]?key)\\b";
 
-    private const string KeyWords = "password|token|secret|api[-_]?key|authorization|bearer";
+    private const string KeyWords = CredentialWord + "|authorization|bearer";
+
+    // Space-only assignments accept explicit snake/kebab compounds, but not arbitrary words ending in a credential word.
+    private const string SpacedKey = "(?:\\b[\\w-]+[_-]" + CredentialWord + "|\\b" + CredentialWord + ")";
 
     // Without a word boundary before the key, a compound key followed by a long run of spaces made the backtracking engine
     // try every way of splitting that run around its separator. Every pattern but the URL lookbehind is linear instead (#1491).
@@ -48,9 +51,14 @@ internal static class Redaction
     private static readonly System.Text.RegularExpressions.Regex UnquotedValue = LinearPattern(
         "(?i)((?:authorization|" + CredentialWord + ")[\\\"']?\\s*[=:]\\s*[\\\"']?)[^\\\"',;\\s}]+");
 
-    // A key separated from its value by a space alone must be the credential word itself; a longer word stays prose.
+    // A key separated by space alone is a bare credential word or an explicitly delimited compound; ordinary prose stays text.
     private static readonly System.Text.RegularExpressions.Regex SpacedValue = LinearPattern(
-        "(?i)(\\b" + CredentialWord + "\\s+)[^ ,;]+");
+        "(?i)(" + SpacedKey + "\\s+)[^ ,;]+");
+
+    // An outer assignment can consume an inner key before its value is seen. Match the complete chain first, leaving its
+    // final value hidden before the ordinary passes replace any keys. The repeated prefix and value match are nonbacktracking.
+    private static readonly System.Text.RegularExpressions.Regex NestedValue = LinearPattern(
+        $"""(?i)((?:{CredentialWord}["']?\s*[=:]\s*|\bauthorization\b["']?\s*[=:]\s*|\bbearer\s+)(?:[\w-]*{CredentialWord}["']?\s*[=:]\s*|{CredentialWord}\s+)+)[^"',;\s\x7D]+""");
 
     // ESC and the C1 controls, each of which may start a control sequence.
     private static readonly System.Buffers.SearchValues<char> Introducers = System.Buffers.SearchValues.Create(
@@ -61,7 +69,7 @@ internal static class Redaction
     /// Every nonbacktracking pattern. Each must return exactly the matches its backtracking form would, which a test checks.
     /// </summary>
     internal static IReadOnlyList<System.Text.RegularExpressions.Regex> LinearPatterns { get; } =
-        [QuotedCredential, KeyWord, AuthorizationValue, BearerValue, DoubleQuotedValue, SingleQuotedValue, UnquotedValue, SpacedValue];
+        [QuotedCredential, KeyWord, AuthorizationValue, BearerValue, DoubleQuotedValue, SingleQuotedValue, UnquotedValue, SpacedValue, NestedValue];
 
     public static string SafeDiagnostic(string value)
     {
@@ -84,9 +92,11 @@ internal static class Redaction
         // Without a control character the two texts are the same, and without :// neither holds a URL.
         if (text.AsSpan().ContainsAny(Introducers)) text = WithoutUserInformation(text);
         text = WithoutUserInformation(WithoutDecoration(text));
+        // Preserve inner keys until their quoted/nested values are hidden, including after a decoration boundary (#1499).
+        text = RedactQuotedCredentials(text);
+        text = NestedValue.Replace(text, "$1<redacted>");
         text = AuthorizationValue.Replace(text, "$1<redacted>");
         text = BearerValue.Replace(text, "$1<redacted>");
-        text = RedactQuotedCredentials(text);
         text = DoubleQuotedValue.Replace(text, "$1<redacted>$2");
         text = SingleQuotedValue.Replace(text, "$1<redacted>$2");
         text = UnquotedValue.Replace(text, "$1<redacted>");

@@ -155,7 +155,7 @@ internal static class PrivilegedPurgeNamespace
         }
         catch (InstallerException exception)
         {
-            Console.Error.WriteLine(exception.Message);
+            Console.Error.WriteLine(CameraAgentStateDiagnostics.Message(exception.Message));
             return PrivilegedHelperErrors.ExitCode(exception);
         }
         if (!TryParse(args, production.Path, out var command) || command.Uid != sudoUid || command.Gid != sudoGid)
@@ -170,7 +170,7 @@ internal static class PrivilegedPurgeNamespace
         }
         catch (Exception exception) when (exception is InstallerException or IOException or UnauthorizedAccessException)
         {
-            Console.Error.WriteLine(exception.Message);
+            Console.Error.WriteLine(CameraAgentStateDiagnostics.Message(exception.Message));
             return PrivilegedHelperErrors.ExitCode(exception);
         }
     }

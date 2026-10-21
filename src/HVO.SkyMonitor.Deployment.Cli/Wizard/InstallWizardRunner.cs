@@ -53,7 +53,7 @@ internal static class InstallWizardRunner
         {
             // A terminal Terminal.Gui cannot draw on is as good as none: nothing is asked, and the command line says what
             // it lacks.
-            await interactive.Error.WriteLineAsync($"The wizard could not start on this terminal: {Redaction.SafeDiagnostic(exception.Message)}").ConfigureAwait(false);
+            await interactive.Error.WriteLineAsync($"The wizard could not start on this terminal: {CameraAgentStateDiagnostics.Message(exception.Message)}").ConfigureAwait(false);
             return await Program.RunAsync(InstallWizardGate.InstallArguments(args), services with { Wizard = null }, cancellationToken).ConfigureAwait(false);
         }
 

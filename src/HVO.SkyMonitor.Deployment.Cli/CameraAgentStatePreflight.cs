@@ -220,10 +220,30 @@ internal static class CameraAgentStatePreflight
             $"CameraAgent state preflight rejected this deployment before startup ({codes}). Minimum compatible revision {report.MinimumCompatibleRevision ?? "unknown"}; complete the CameraAgent-only reset or state-disposition procedure{(persist ? $" and see {reportPath}" : string.Empty)}.");
     }
 
+    /// <summary>A diagnostic-only view; persisted preflight evidence keeps its measured values.</summary>
+    internal static CameraAgentStatePreflightReport ForOutput(CameraAgentStatePreflightReport report)
+        => report with
+        {
+            InstanceRoot = CameraAgentStateDiagnostics.Message(report.InstanceRoot),
+            CandidateImageId = report.CandidateImageId is null ? null : CameraAgentStateDiagnostics.Message(report.CandidateImageId),
+            CandidateRelease = report.CandidateRelease is null ? null : CameraAgentStateDiagnostics.Message(report.CandidateRelease),
+            CandidateStateContract = CameraAgentStateDiagnostics.Message(report.CandidateStateContract),
+            MinimumCompatibleRevision = report.MinimumCompatibleRevision is null ? null : CameraAgentStateDiagnostics.Message(report.MinimumCompatibleRevision),
+            InstalledStateContract = CameraAgentStateDiagnostics.Message(report.InstalledStateContract),
+            Findings = report.Findings.Select(static finding => finding with
+            {
+                Path = CameraAgentStateDiagnostics.Message(finding.Path),
+                Observed = finding.Observed is null ? null : CameraAgentStateDiagnostics.Message(finding.Observed),
+                Expected = finding.Expected is null ? null : CameraAgentStateDiagnostics.Message(finding.Expected),
+                Remediation = CameraAgentStateDiagnostics.Message(finding.Remediation)
+            }).ToArray()
+        };
+
     /// <summary>Renders every finding at once so an operator resolves the complete boundary set in one pass.</summary>
     public static string Render(CameraAgentStatePreflightReport report)
     {
         ArgumentNullException.ThrowIfNull(report);
+        report = ForOutput(report);
         var builder = new StringBuilder();
         builder.Append(CultureInfo.InvariantCulture, $"CameraAgent state preflight for instance {report.InstanceId:D}: ");
         builder.AppendLine(report.Compatible ? "compatible." : "incompatible.");
