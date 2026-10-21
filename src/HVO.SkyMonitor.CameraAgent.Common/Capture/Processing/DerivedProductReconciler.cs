@@ -12,13 +12,18 @@ internal sealed record DerivedProductReconciliationSummary(
     int Inspected, int Available, int Recoverable, int Cleaned,
     int Missing, int Quarantined, long QuarantineBytes);
 
-internal sealed class DerivedProductReconciler(
+internal sealed partial class DerivedProductReconciler(
     string storageRoot,
     SqliteCaptureProcessingStore store,
     DerivedProductLifecycleOptions? options = null,
     TimeProvider? timeProvider = null,
-    Action? laneWakeup = null)
+    Action? laneWakeup = null,
+    Microsoft.Extensions.Logging.ILogger? logger = null,
+    Func<CancellationToken, ValueTask>? observationCompleted = null)
 {
+    private readonly Microsoft.Extensions.Logging.ILogger? _logger = logger;
+    private readonly Func<CancellationToken, ValueTask>? _observationCompleted = observationCompleted;
+    private readonly SqliteCaptureProcessingStore _store = store;
     private readonly string _root = Path.GetFullPath(storageRoot);
     private readonly string _derivedRoot = Path.Combine(Path.GetFullPath(storageRoot), "derived");
     private readonly DerivedProductLifecycleOptions _options = options ?? new();
@@ -28,215 +33,251 @@ internal sealed class DerivedProductReconciler(
     {
         using var interruption = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, interruptionToken);
         var passToken = interruption.Token;
-        var gate = StorageLifecycleLock.ForRoot(_root);
-        await gate.WaitAsync(passToken).ConfigureAwait(false);
-        try
+        await _store.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var inspected = 0;
+        var available = 0;
+        var recoverable = 0;
+        var cleaned = 0;
+        var missing = 0;
+        var quarantined = 0;
+        long quarantineBytes = 0;
+
+        string? reclaimedCursor = null;
+        do
         {
-            await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            var inspected = 0;
-            var available = 0;
-            var recoverable = 0;
-            var cleaned = 0;
-            var missing = 0;
-            var quarantined = 0;
-            long quarantineBytes = 0;
+            passToken.ThrowIfCancellationRequested();
+            using var unit = await EnterUnitAsync(passToken).ConfigureAwait(false);
+            var orphanPage = await _store.ReadOrphanLifecyclePageAsync(
+                reclaimedCursor, 16, cancellationToken).ConfigureAwait(false);
+            _ = await _store.DeleteReclaimedOrphanPageAsync(
+                reclaimedCursor, 16, cancellationToken).ConfigureAwait(false);
+            reclaimedCursor = orphanPage.NextOperationId;
+        }
+        while (reclaimedCursor is not null);
 
-            string? reclaimedCursor = null;
-            do
+        string? actionableCursor = null;
+        do
+        {
+            passToken.ThrowIfCancellationRequested();
+            using var unit = await EnterUnitAsync(passToken).ConfigureAwait(false);
+            var actionable = await _store.ReadActionableLifecyclePageAsync(
+                actionableCursor, 1, cancellationToken).ConfigureAwait(false);
+            foreach (var operation in actionable.Items)
             {
                 passToken.ThrowIfCancellationRequested();
-                var orphanPage = await store.ReadOrphanLifecyclePageAsync(
-                    reclaimedCursor, _options.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false);
-                _ = await store.DeleteReclaimedOrphanPageAsync(
-                    reclaimedCursor, _options.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false);
-                reclaimedCursor = orphanPage.NextOperationId;
+                var copies = await ObserveOperationCopiesAsync(operation, unit, cancellationToken).ConfigureAwait(false);
+                if (copies.Current)
+                    await ResumeOperationCoreAsync(operation, cancellationToken, copies.Value).ConfigureAwait(false);
             }
-            while (reclaimedCursor is not null);
+            actionableCursor = actionable.NextOperationId;
+        }
+        while (actionableCursor is not null);
 
-            string? actionableCursor = null;
-            do
-            {
-                passToken.ThrowIfCancellationRequested();
-                var actionable = await store.ReadActionableLifecyclePageAsync(
-                    actionableCursor, _options.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false);
-                foreach (var operation in actionable.Items)
-                {
-                    passToken.ThrowIfCancellationRequested();
-                    await ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
-                }
-                actionableCursor = actionable.NextOperationId;
-            }
-            while (actionableCursor is not null);
-
+        using (await EnterUnitAsync(passToken).ConfigureAwait(false))
+        {
             Directory.CreateDirectory(_derivedRoot);
             RawIngressFileStore.EnsureNoSymbolicLinks(_root, _derivedRoot);
-            foreach (var temporary in EnumeratePage("*.tmp"))
-            {
-                passToken.ThrowIfCancellationRequested();
-                File.Delete(temporary);
-                RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(temporary)!);
-                cleaned++;
-            }
+        }
+        foreach (var temporary in EnumeratePage("*.tmp"))
+        {
+            passToken.ThrowIfCancellationRequested();
+            using var unit = await EnterUnitAsync(passToken).ConfigureAwait(false);
+            if (!File.Exists(temporary)) continue;
+            RawIngressFileStore.EnsureNoSymbolicLinks(_root, temporary);
+            File.Delete(temporary);
+            RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(temporary)!);
+            cleaned++;
+        }
 
-            var cursor = await store.ReadReconciliationCursorAsync(cancellationToken).ConfigureAwait(false);
-            var page = await store.ReadProcessingEvidencePageAsync(
-                cursor, _options.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false);
-            foreach (var row in page.Items)
+        var cursor = await _store.ReadReconciliationCursorAsync(cancellationToken).ConfigureAwait(false);
+        var page = await _store.ReadProcessingEvidencePageAsync(
+            cursor, _options.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false);
+        foreach (var row in page.Items)
+        {
+            passToken.ThrowIfCancellationRequested();
+            using var unit = await EnterUnitAsync(passToken).ConfigureAwait(false);
+            // The page is an inventory hint; retention/publication may have changed it between units.
+            if (!await IsCurrentRowAsync(row, cancellationToken).ConfigureAwait(false)) continue;
+            inspected++;
+            if (row.AvailabilityState == "Quarantined")
             {
-                passToken.ThrowIfCancellationRequested();
-                inspected++;
-                if (row.AvailabilityState == "Quarantined")
-                {
-                    quarantined++;
-                    continue;
-                }
-                string payload;
-                string sidecar;
-                try
-                {
-                    payload = ResolveCommitted(row, row.PayloadRelativePath);
-                    sidecar = ResolveCommitted(row, row.SidecarRelativePath);
-                }
-                catch (InvalidDataException)
-                {
-                    var transition = await store.TransitionOutputUnavailableAsync(
-                        row.OutputIdentitySha256, "Quarantined", "unsafe-committed-path", null,
-                        cancellationToken).ConfigureAwait(false);
-                    if (transition.Reactivated) laneWakeup?.Invoke();
-                    quarantined++;
-                    continue;
-                }
-                if (!File.Exists(payload) || !File.Exists(sidecar))
-                {
-                    var transition = await store.TransitionOutputUnavailableAsync(
-                        row.OutputIdentitySha256, "Missing", "required-file-missing", null, cancellationToken).ConfigureAwait(false);
-                    if (transition.Reactivated) laneWakeup?.Invoke();
-                    missing++;
-                    continue;
-                }
-                var reason = await ValidateCommittedAsync(row, payload, sidecar, cancellationToken).ConfigureAwait(false);
-                if (reason is null)
-                {
-                    if (row.AvailabilityState == "Missing")
-                        _ = await store.RestoreMissingOutputAvailableAsync(
-                            row.OutputIdentitySha256, cancellationToken).ConfigureAwait(false);
-                    else
-                        await store.SetOutputAvailabilityAsync(row.OutputIdentitySha256, "Available", null, cancellationToken).ConfigureAwait(false);
-                    available++;
-                    continue;
-                }
-                var operation = await PlanQuarantineAsync(row.OutputIdentitySha256, payload, sidecar, reason, cancellationToken).ConfigureAwait(false);
-                await ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
                 quarantined++;
-                quarantineBytes += operation.ObservedBytes;
+                continue;
             }
-            await store.SetReconciliationCursorAsync(page.NextOutputIdentitySha256, cancellationToken).ConfigureAwait(false);
-
-            var claimedPaths = new HashSet<string>(StringComparer.Ordinal);
-            var modernCursor = await store.ReadFileCursorAsync("modern", cancellationToken).ConfigureAwait(false);
-            var modernPage = EnumeratePage("*.json", modernCursor).ToArray();
-            foreach (var sidecar in modernPage)
+            string payload;
+            string sidecar;
+            try
             {
-                passToken.ThrowIfCancellationRequested();
-                var sidecarRelative = Relative(sidecar);
-                if (!sidecar.EndsWith(".manifest.json", StringComparison.Ordinal))
+                payload = ResolveCommitted(row, row.PayloadRelativePath);
+                sidecar = ResolveCommitted(row, row.SidecarRelativePath);
+            }
+            catch (InvalidDataException)
+            {
+                var transition = await _store.TransitionOutputUnavailableAsync(
+                    row.OutputIdentitySha256, "Quarantined", "unsafe-committed-path", null,
+                    cancellationToken).ConfigureAwait(false);
+                if (transition.Reactivated) laneWakeup?.Invoke();
+                quarantined++;
+                continue;
+            }
+            if (!File.Exists(payload) || !File.Exists(sidecar))
+            {
+                var transition = await _store.TransitionOutputUnavailableAsync(
+                    row.OutputIdentitySha256, "Missing", "required-file-missing", null, cancellationToken).ConfigureAwait(false);
+                if (transition.Reactivated) laneWakeup?.Invoke();
+                missing++;
+                continue;
+            }
+            var observation = await unit.ObserveAsync(
+                () => ValidateCommittedAsync(row, payload, sidecar, cancellationToken),
+                [payload, sidecar], cancellationToken).ConfigureAwait(false);
+            if (!observation.Current || !await IsCurrentRowAsync(row, cancellationToken).ConfigureAwait(false)) continue;
+            var reason = observation.Value;
+            if (reason is null)
+            {
+                if (row.AvailabilityState == "Missing")
+                    _ = await _store.RestoreMissingOutputAvailableAsync(
+                        row.OutputIdentitySha256, cancellationToken).ConfigureAwait(false);
+                else
+                    await _store.SetOutputAvailabilityAsync(row.OutputIdentitySha256, "Available", null, cancellationToken).ConfigureAwait(false);
+                available++;
+                continue;
+            }
+            var operation = await PlanQuarantineAsync(row.OutputIdentitySha256, payload, sidecar, reason, cancellationToken).ConfigureAwait(false);
+            await ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
+            quarantined++;
+            quarantineBytes += operation.ObservedBytes;
+        }
+        await _store.SetReconciliationCursorAsync(page.NextOutputIdentitySha256, cancellationToken).ConfigureAwait(false);
+
+        var claimedPaths = new HashSet<string>(StringComparer.Ordinal);
+        var modernCursor = await _store.ReadFileCursorAsync("modern", cancellationToken).ConfigureAwait(false);
+        var modernPage = EnumeratePage("*.json", modernCursor).ToArray();
+        foreach (var sidecar in modernPage)
+        {
+            passToken.ThrowIfCancellationRequested();
+            var observedPaths = await ObservationPathsAsync(sidecar, cancellationToken).ConfigureAwait(false);
+            using var unit = await EnterUnitAsync(passToken).ConfigureAwait(false);
+            if (!File.Exists(sidecar)) continue;
+            var sidecarRelative = Relative(sidecar);
+            if (!sidecar.EndsWith(".manifest.json", StringComparison.Ordinal))
+            {
+                var observation = await unit.ObserveAsync(
+                    () => InspectCurrentOrphanSidecarAsync(sidecar, cancellationToken),
+                    observedPaths, cancellationToken).ConfigureAwait(false);
+                if (!observation.Current || observation.Value.PayloadPath is { } currentPayload && !observedPaths.Contains(currentPayload)) continue;
+                var current = observation.Value;
+                if (!current.IsCurrentManifest) continue;
+                inspected++;
+                if (await _store.IsProcessingPathClaimedAsync(sidecarRelative, cancellationToken).ConfigureAwait(false))
                 {
-                    var current = await InspectCurrentOrphanSidecarAsync(sidecar, cancellationToken).ConfigureAwait(false);
-                    if (!current.IsCurrentManifest) continue;
-                    inspected++;
-                    if (await store.IsProcessingPathClaimedAsync(sidecarRelative, cancellationToken).ConfigureAwait(false))
-                    {
-                        _ = await store.DeleteClaimedOrphanOperationsAsync(
-                            sidecarRelative, cancellationToken).ConfigureAwait(false);
-                        continue;
-                    }
-                    if (current.Recoverable)
-                    {
-                        recoverable++;
-                        claimedPaths.Add(current.PayloadPath!);
-                        claimedPaths.Add(sidecar);
-                        continue;
-                    }
-                    var currentOperation = await PlanQuarantineAsync(
-                        null, current.PayloadPath, sidecar, current.Reason!, cancellationToken).ConfigureAwait(false);
-                    await ResumeOperationAsync(currentOperation, cancellationToken).ConfigureAwait(false);
-                    quarantined++;
-                    quarantineBytes += currentOperation.ObservedBytes;
-                    continue;
-                }
-                if (await store.IsProcessingPathClaimedAsync(sidecarRelative, cancellationToken).ConfigureAwait(false))
-                {
-                    _ = await store.DeleteClaimedOrphanOperationsAsync(
+                    _ = await _store.DeleteClaimedOrphanOperationsAsync(
                         sidecarRelative, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
-                inspected++;
-                var result = await InspectOrphanSidecarAsync(sidecar, cancellationToken).ConfigureAwait(false);
-                if (result.Recoverable)
+                var currentRecoverable = current.Recoverable && await InspectOrphanAgeAsync(
+                    current.OperationId!, Relative(current.PayloadPath!), sidecarRelative, cancellationToken).ConfigureAwait(false);
+                if (currentRecoverable)
                 {
                     recoverable++;
-                    claimedPaths.Add(result.PayloadPath!);
+                    claimedPaths.Add(current.PayloadPath!);
                     claimedPaths.Add(sidecar);
                     continue;
                 }
-                if (result.PayloadPath is not null && string.Equals(result.Reason, "invalid-or-unsafe-sidecar", StringComparison.Ordinal))
-                {
-                    var bytes = await File.ReadAllBytesAsync(sidecar, cancellationToken).ConfigureAwait(false);
-                    var identity = ProcessingIdentity.ComputePayloadSha256(bytes);
-                    if (await InspectOrphanAgeAsync(
-                            $"orphan:modern-malformed:{identity}", Relative(result.PayloadPath), sidecarRelative,
-                            cancellationToken).ConfigureAwait(false))
-                        continue;
-                }
-                var operation = await PlanQuarantineAsync(null, result.PayloadPath, sidecar, result.Reason!, cancellationToken).ConfigureAwait(false);
-                await ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
+                var currentOperation = await PlanQuarantineAsync(
+                    null, current.PayloadPath, sidecar, current.Reason ?? "orphan-recovery-window-expired", cancellationToken).ConfigureAwait(false);
+                await ResumeOperationAsync(currentOperation, cancellationToken).ConfigureAwait(false);
                 quarantined++;
-                quarantineBytes += operation.ObservedBytes;
+                quarantineBytes += currentOperation.ObservedBytes;
+                continue;
             }
-            await store.SetFileCursorAsync("modern",
-                modernPage.Length == _options.ReconciliationBatchSize ? Relative(modernPage[^1]) : null,
-                cancellationToken).ConfigureAwait(false);
-
-            var payloadCursor = await store.ReadFileCursorAsync("payload", cancellationToken).ConfigureAwait(false);
-            var payloadPage = EnumeratePage("*", payloadCursor).ToArray();
-            foreach (var payload in payloadPage)
+            if (await _store.IsProcessingPathClaimedAsync(sidecarRelative, cancellationToken).ConfigureAwait(false))
             {
-                passToken.ThrowIfCancellationRequested();
-                var relative = Relative(payload);
-                if (payload.EndsWith(".manifest.json", StringComparison.Ordinal) || payload.EndsWith(".tmp", StringComparison.Ordinal) ||
-                    claimedPaths.Contains(payload) || await store.IsProcessingPathClaimedAsync(relative, cancellationToken).ConfigureAwait(false)) continue;
-                if (payload.EndsWith(".json", StringComparison.Ordinal) &&
-                    await IsCurrentManifestAsync(payload, cancellationToken).ConfigureAwait(false)) continue;
-                if (HasPotentialCompanion(payload)) continue;
-                inspected++;
-                var operation = await PlanQuarantineAsync(null, payload, null, "payload-without-sidecar", cancellationToken).ConfigureAwait(false);
-                await ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
-                quarantined++;
-                quarantineBytes += operation.ObservedBytes;
+                _ = await _store.DeleteClaimedOrphanOperationsAsync(
+                    sidecarRelative, cancellationToken).ConfigureAwait(false);
+                continue;
             }
-            await store.SetFileCursorAsync("payload",
-                payloadPage.Length == _options.ReconciliationBatchSize ? Relative(payloadPage[^1]) : null,
-                cancellationToken).ConfigureAwait(false);
-            return new(inspected, available, recoverable, cleaned, missing, quarantined, quarantineBytes);
+            inspected++;
+            var modernObservation = await unit.ObserveAsync(
+                () => InspectOrphanSidecarAsync(sidecar, cancellationToken),
+                observedPaths, cancellationToken).ConfigureAwait(false);
+            if (!modernObservation.Current || modernObservation.Value.PayloadPath is { } modernPayload && !observedPaths.Contains(modernPayload)) continue;
+            if (await _store.IsProcessingPathClaimedAsync(sidecarRelative, cancellationToken).ConfigureAwait(false)) continue;
+            var result = modernObservation.Value;
+            var modernRecoverable = result.Recoverable && await InspectOrphanAgeAsync(
+                result.OperationId!, Relative(result.PayloadPath!), sidecarRelative, cancellationToken).ConfigureAwait(false);
+            if (modernRecoverable)
+            {
+                recoverable++;
+                claimedPaths.Add(result.PayloadPath!);
+                claimedPaths.Add(sidecar);
+                continue;
+            }
+            if (result.PayloadPath is not null && string.Equals(result.Reason, "invalid-or-unsafe-sidecar", StringComparison.Ordinal))
+            {
+                var malformed = await unit.ObserveAsync(async () => ProcessingIdentity.ComputePayloadSha256(
+                    await ReadObservedBytesAsync(sidecar, cancellationToken).ConfigureAwait(false)),
+                    observedPaths, cancellationToken).ConfigureAwait(false);
+                if (!malformed.Current ||
+                    await _store.IsProcessingPathClaimedAsync(sidecarRelative, cancellationToken).ConfigureAwait(false)) continue;
+                var identity = malformed.Value;
+                if (await InspectOrphanAgeAsync(
+                        $"orphan:modern-malformed:{identity}", Relative(result.PayloadPath), sidecarRelative,
+                        cancellationToken).ConfigureAwait(false))
+                    continue;
+            }
+            var operation = await PlanQuarantineAsync(null, result.PayloadPath, sidecar, result.Reason ?? "orphan-recovery-window-expired", cancellationToken).ConfigureAwait(false);
+            await ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
+            quarantined++;
+            quarantineBytes += operation.ObservedBytes;
         }
-        finally
+        await _store.SetFileCursorAsync("modern",
+            modernPage.Length == _options.ReconciliationBatchSize ? Relative(modernPage[^1]) : null,
+            cancellationToken).ConfigureAwait(false);
+
+        var payloadCursor = await _store.ReadFileCursorAsync("payload", cancellationToken).ConfigureAwait(false);
+        var payloadPage = EnumeratePage("*", payloadCursor).ToArray();
+        foreach (var payload in payloadPage)
         {
-            gate.Release();
+            passToken.ThrowIfCancellationRequested();
+            using var unit = await EnterUnitAsync(passToken).ConfigureAwait(false);
+            if (!File.Exists(payload)) continue;
+            RawIngressFileStore.EnsureNoSymbolicLinks(_root, payload);
+            var relative = Relative(payload);
+            if (payload.EndsWith(".manifest.json", StringComparison.Ordinal) || payload.EndsWith(".tmp", StringComparison.Ordinal) ||
+                claimedPaths.Contains(payload) || await _store.IsProcessingPathClaimedAsync(relative, cancellationToken).ConfigureAwait(false)) continue;
+            if (payload.EndsWith(".json", StringComparison.Ordinal))
+            {
+                var observation = await unit.ObserveAsync(
+                    () => IsCurrentManifestAsync(payload, cancellationToken), [payload], cancellationToken).ConfigureAwait(false);
+                if (!observation.Current || observation.Value ||
+                    await _store.IsProcessingPathClaimedAsync(relative, cancellationToken).ConfigureAwait(false)) continue;
+            }
+            if (HasPotentialCompanion(payload)) continue;
+            inspected++;
+            var operation = await PlanQuarantineAsync(null, payload, null, "payload-without-sidecar", cancellationToken).ConfigureAwait(false);
+            await ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
+            quarantined++;
+            quarantineBytes += operation.ObservedBytes;
         }
+        await _store.SetFileCursorAsync("payload",
+            payloadPage.Length == _options.ReconciliationBatchSize ? Relative(payloadPage[^1]) : null,
+            cancellationToken).ConfigureAwait(false);
+        return new(inspected, available, recoverable, cleaned, missing, quarantined, quarantineBytes);
     }
 
-    private async ValueTask<(bool Recoverable, string? PayloadPath, string? Reason)> InspectOrphanSidecarAsync(
+    private async ValueTask<(bool Recoverable, string? PayloadPath, string? Reason, string? OperationId)> InspectOrphanSidecarAsync(
         string sidecarPath, CancellationToken cancellationToken)
     {
         IDurableProcessingProductManifest manifest;
         try
         {
             manifest = DurableProcessingProductManifestJson.Parse(
-                await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false));
+                await ReadObservedBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false));
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException)
         {
-            return (false, FindSingleModernPayload(sidecarPath), "invalid-or-unsafe-sidecar");
+            return (false, FindSingleModernPayload(sidecarPath), "invalid-or-unsafe-sidecar", null);
         }
 
         // Never resolve a manifest-named path before proving it names this sidecar's canonical sibling.
@@ -244,58 +285,52 @@ internal sealed class DerivedProductReconciler(
         if (!SqliteCaptureProcessingStore.IsCanonicalRelativePath(manifest.RelativeArtifactPath) ||
             !manifest.RelativeArtifactPath.StartsWith("derived/", StringComparison.Ordinal) ||
             !string.Equals(sidecarRelative, Path.ChangeExtension(manifest.RelativeArtifactPath, ".manifest.json"), StringComparison.Ordinal))
-            return (false, null, "orphan-path-mismatch");
+            return (false, null, "orphan-path-mismatch", null);
         var payloadPath = ResolveDerived(manifest.RelativeArtifactPath);
         if (!PathsEqual(Path.ChangeExtension(sidecarPath, Path.GetExtension(payloadPath)), payloadPath))
-            return (false, null, "orphan-path-mismatch");
-        if (!File.Exists(payloadPath)) return (false, null, "sidecar-without-payload");
+            return (false, null, "orphan-path-mismatch", null);
+        if (!File.Exists(payloadPath)) return (false, null, "sidecar-without-payload", null);
         var reason = await ValidatePayloadAsync(manifest, payloadPath, cancellationToken).ConfigureAwait(false);
-        if (reason is not null) return (false, null, reason);
+        if (reason is not null) return (false, null, reason, null);
 
         var operationId = $"orphan:{manifest.OutputIdentitySha256}";
-        if (await InspectOrphanAgeAsync(
-                operationId, manifest.RelativeArtifactPath, sidecarRelative, cancellationToken).ConfigureAwait(false))
-            return (true, payloadPath, null);
-        return (false, payloadPath, "orphan-recovery-window-expired");
+        return (true, payloadPath, null, operationId);
     }
 
-    private async ValueTask<(bool IsCurrentManifest, bool Recoverable, string? PayloadPath, string? Reason)>
+    private async ValueTask<(bool IsCurrentManifest, bool Recoverable, string? PayloadPath, string? Reason, string? OperationId)>
         InspectCurrentOrphanSidecarAsync(string sidecarPath, CancellationToken cancellationToken)
     {
         byte[] bytes;
         try
         {
-            bytes = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
+            bytes = await ReadObservedBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
         }
         catch (IOException)
         {
-            return (false, false, null, null);
+            return (false, false, null, null, null);
         }
         var parsed = CaptureContractJson.ParseManifest(bytes);
         if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
-            return (false, false, null, null);
+            return (false, false, null, null, null);
 
         var sidecarRelative = Relative(sidecarPath);
         if (!SqliteCaptureProcessingStore.IsCanonicalRelativePath(manifest.RelativeArtifactPath) ||
             !manifest.RelativeArtifactPath.StartsWith("derived/", StringComparison.Ordinal) ||
             !string.Equals(sidecarRelative, Path.ChangeExtension(manifest.RelativeArtifactPath, ".json"), StringComparison.Ordinal))
-            return (true, false, null, "orphan-path-mismatch");
+            return (true, false, null, "orphan-path-mismatch", null);
         var payloadPath = ResolveDerived(manifest.RelativeArtifactPath);
-        if (!File.Exists(payloadPath)) return (true, false, null, "sidecar-without-payload");
+        if (!File.Exists(payloadPath)) return (true, false, null, "sidecar-without-payload", null);
         if (new FileInfo(payloadPath).Length != manifest.Descriptor.Layout.ByteLength)
-            return (true, false, payloadPath, "payload-length-mismatch");
-        var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+            return (true, false, payloadPath, "payload-length-mismatch", null);
+        var payload = await ReadObservedBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(
                 ProcessingIdentity.ComputePayloadSha256(payload),
                 manifest.Descriptor.Artifact.ChecksumSha256,
                 StringComparison.OrdinalIgnoreCase))
-            return (true, false, payloadPath, "payload-checksum-mismatch");
+            return (true, false, payloadPath, "payload-checksum-mismatch", null);
 
         var operationId = $"orphan:current:{CaptureContractJson.ComputeManifestSha256(bytes)}";
-        if (await InspectOrphanAgeAsync(
-                operationId, manifest.RelativeArtifactPath, sidecarRelative, cancellationToken).ConfigureAwait(false))
-            return (true, true, payloadPath, null);
-        return (true, false, payloadPath, "orphan-recovery-window-expired");
+        return (true, true, payloadPath, null, operationId);
     }
 
     private static async ValueTask<bool> IsCurrentManifestAsync(
@@ -304,7 +339,7 @@ internal sealed class DerivedProductReconciler(
         try
         {
             var parsed = CaptureContractJson.ParseManifest(
-                await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false));
+                await ReadObservedBytesAsync(path, cancellationToken).ConfigureAwait(false));
             return parsed.IsValid && parsed.Document?.Manifest is not null;
         }
         catch (IOException)
@@ -317,19 +352,10 @@ internal sealed class DerivedProductReconciler(
         string operationId, string payloadRelativePath, string sidecarRelativePath,
         CancellationToken cancellationToken)
     {
-        ProcessingLifecycleOperation? existing = null;
-        string? orphanCursor = null;
-        do
-        {
-            var orphanPage = await store.ReadOrphanLifecyclePageAsync(
-                orphanCursor, _options.ReconciliationBatchSize, cancellationToken).ConfigureAwait(false);
-            existing = orphanPage.Items.SingleOrDefault(item => item.OperationId == operationId);
-            orphanCursor = existing is null ? orphanPage.NextOperationId : null;
-        }
-        while (orphanCursor is not null);
+        var existing = await _store.ReadOrphanLifecycleOperationAsync(operationId, cancellationToken).ConfigureAwait(false);
         if (existing is null)
         {
-            await store.PlanLifecycleOperationAsync(new(
+            await _store.PlanLifecycleOperationAsync(new(
                 operationId, "orphan", null, payloadRelativePath, sidecarRelativePath,
                 string.Empty, "awaiting-deterministic-retry", 0), cancellationToken).ConfigureAwait(false);
             return true;
@@ -337,7 +363,7 @@ internal sealed class DerivedProductReconciler(
         if (_timeProvider.GetUtcNow().ToUnixTimeMilliseconds() - existing.PlannedUnixMilliseconds <
             TimeSpan.FromMinutes(_options.OrphanRecoveryWindowMinutes).TotalMilliseconds)
             return true;
-        await store.DeleteLifecycleOperationAsync(operationId, cancellationToken).ConfigureAwait(false);
+        await _store.DeleteLifecycleOperationAsync(operationId, cancellationToken).ConfigureAwait(false);
         return false;
     }
 
@@ -346,7 +372,7 @@ internal sealed class DerivedProductReconciler(
     {
         try
         {
-            var sidecar = await File.ReadAllBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
+            var sidecar = await ReadObservedBytesAsync(sidecarPath, cancellationToken).ConfigureAwait(false);
             if (!sidecar.AsSpan().SequenceEqual(row.EvidenceJson)) return "sidecar-commit-conflict";
             using var document = System.Text.Json.JsonDocument.Parse(sidecar);
             var schema = document.RootElement.GetProperty("schemaVersion").GetString();
@@ -371,7 +397,7 @@ internal sealed class DerivedProductReconciler(
             {
                 return "committed-identity-conflict";
             }
-            var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+            var payload = await ReadObservedBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
             return payload.LongLength == current.Descriptor.Layout.ByteLength &&
                 string.Equals(
                     ProcessingIdentity.ComputePayloadSha256(payload),
@@ -390,7 +416,7 @@ internal sealed class DerivedProductReconciler(
         IDurableProcessingProductManifest manifest, string payloadPath, CancellationToken cancellationToken)
     {
         if (new FileInfo(payloadPath).Length != manifest.ByteLength) return "payload-length-mismatch";
-        var payload = await File.ReadAllBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
+        var payload = await ReadObservedBytesAsync(payloadPath, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(ProcessingIdentity.ComputePayloadSha256(payload), manifest.Artifact.ChecksumSha256, StringComparison.OrdinalIgnoreCase))
             return "payload-checksum-mismatch";
         if (manifest is DurableTypedMetadataProductManifestV3 typed &&
@@ -401,7 +427,7 @@ internal sealed class DerivedProductReconciler(
             if (!string.Equals(scene.SceneIdentitySha256, typed.ContentIdentitySha256, StringComparison.Ordinal) ||
                 scene.Source.CaptureId != manifest.Capture.CaptureId ||
                 !manifest.Artifact.SourceArtifactIds.Contains(scene.Source.ArtifactId) ||
-                !await store.MatchesRawSourceAsync(scene.Source.CaptureId, scene.Source.ArtifactId,
+                !await _store.MatchesRawSourceAsync(scene.Source.CaptureId, scene.Source.ArtifactId,
                     scene.Source.ArtifactIdentitySha256, cancellationToken).ConfigureAwait(false))
                 return "projected-scene-source-conflict";
         }
@@ -419,15 +445,20 @@ internal sealed class DerivedProductReconciler(
             sources.Length > 1 ? Relative(sources[1]) : null,
             $"processing-quarantine/{_timeProvider.GetUtcNow():yyyyMMdd}/{Guid.NewGuid():N}", reason,
             sources.Sum(static path => new FileInfo(path).Length), _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
-        await store.PlanLifecycleOperationAsync(operation, cancellationToken).ConfigureAwait(false);
+        await _store.PlanLifecycleOperationAsync(operation, cancellationToken).ConfigureAwait(false);
         return operation;
     }
 
-    internal async ValueTask ResumeOperationAsync(ProcessingLifecycleOperation operation, CancellationToken cancellationToken)
+    internal ValueTask ResumeOperationAsync(ProcessingLifecycleOperation operation, CancellationToken cancellationToken)
+        => ResumeOperationCoreAsync(operation, cancellationToken);
+
+    private async ValueTask ResumeOperationCoreAsync(
+        ProcessingLifecycleOperation operation, CancellationToken cancellationToken,
+        Dictionary<string, bool>? comparedCopies = null)
     {
         if (operation.Kind == "delete" && operation.Phase == "files-deleted")
         {
-            await store.DeleteLifecycleOperationAsync(operation.OperationId, cancellationToken).ConfigureAwait(false);
+            await _store.DeleteLifecycleOperationAsync(operation.OperationId, cancellationToken).ConfigureAwait(false);
             return;
         }
         var destinationRoot = ResolveRoot(operation.DestinationRelativePath);
@@ -435,8 +466,8 @@ internal sealed class DerivedProductReconciler(
         {
             if (Directory.Exists(destinationRoot)) Directory.Delete(destinationRoot, recursive: true);
             RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(destinationRoot)!);
-            await store.SetLifecyclePhaseAsync(operation.OperationId, "files-deleted", cancellationToken).ConfigureAwait(false);
-            await store.DeleteLifecycleOperationAsync(operation.OperationId, cancellationToken).ConfigureAwait(false);
+            await _store.SetLifecyclePhaseAsync(operation.OperationId, "files-deleted", cancellationToken).ConfigureAwait(false);
+            await _store.DeleteLifecycleOperationAsync(operation.OperationId, cancellationToken).ConfigureAwait(false);
             return;
         }
         Directory.CreateDirectory(destinationRoot);
@@ -449,7 +480,9 @@ internal sealed class DerivedProductReconciler(
                 var destination = Path.Combine(destinationRoot, Path.GetFileName(source));
                 if (File.Exists(source) && File.Exists(destination))
                 {
-                    if (!await FilesEqualAsync(source, destination, cancellationToken).ConfigureAwait(false))
+                    var equal = comparedCopies is not null && comparedCopies.TryGetValue(source, out var observedEqual)
+                        ? observedEqual : await FilesEqualAsync(source, destination, cancellationToken).ConfigureAwait(false);
+                    if (!equal)
                         throw new InvalidDataException("Processing lifecycle source and destination conflict.");
                     File.Delete(source);
                 }
@@ -458,29 +491,29 @@ internal sealed class DerivedProductReconciler(
                 RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(source)!);
             }
             RawIngressFileStore.SyncDirectory(destinationRoot);
-            await store.SetLifecyclePhaseAsync(operation.OperationId, "moved", cancellationToken).ConfigureAwait(false);
+            await _store.SetLifecyclePhaseAsync(operation.OperationId, "moved", cancellationToken).ConfigureAwait(false);
             operation = operation with { Phase = "moved" };
         }
         if (operation.Phase == "moved")
         {
             if (operation.Kind == "quarantine" && operation.OutputIdentitySha256 is { } outputIdentity)
             {
-                var transition = await store.TransitionOutputUnavailableAsync(
+                var transition = await _store.TransitionOutputUnavailableAsync(
                     outputIdentity, "Quarantined", operation.Reason, operation.DestinationRelativePath,
                     cancellationToken).ConfigureAwait(false);
-                await store.DeleteLifecycleOperationAsync(operation.OperationId, cancellationToken).ConfigureAwait(false);
+                await _store.DeleteLifecycleOperationAsync(operation.OperationId, cancellationToken).ConfigureAwait(false);
                 if (transition.Reactivated) laneWakeup?.Invoke();
             }
             else
             {
-                await store.CompleteLifecycleOperationAsync(operation, cancellationToken).ConfigureAwait(false);
+                await _store.CompleteLifecycleOperationAsync(operation, cancellationToken).ConfigureAwait(false);
             }
             if (operation.Kind == "delete")
             {
                 if (Directory.Exists(destinationRoot)) Directory.Delete(destinationRoot, recursive: true);
                 RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(destinationRoot)!);
-                await store.SetLifecyclePhaseAsync(operation.OperationId, "files-deleted", cancellationToken).ConfigureAwait(false);
-                await store.DeleteLifecycleOperationAsync(operation.OperationId, cancellationToken).ConfigureAwait(false);
+                await _store.SetLifecyclePhaseAsync(operation.OperationId, "files-deleted", cancellationToken).ConfigureAwait(false);
+                await _store.DeleteLifecycleOperationAsync(operation.OperationId, cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -547,8 +580,8 @@ internal sealed class DerivedProductReconciler(
     private static async ValueTask<bool> FilesEqualAsync(string left, string right, CancellationToken cancellationToken)
     {
         if (new FileInfo(left).Length != new FileInfo(right).Length) return false;
-        using var leftStream = File.OpenRead(left);
-        using var rightStream = File.OpenRead(right);
+        using var leftStream = new FileStream(left, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        using var rightStream = new FileStream(right, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
         var leftHash = await SHA256.HashDataAsync(leftStream, cancellationToken).ConfigureAwait(false);
         var rightHash = await SHA256.HashDataAsync(rightStream, cancellationToken).ConfigureAwait(false);
         return leftHash.AsSpan().SequenceEqual(rightHash);

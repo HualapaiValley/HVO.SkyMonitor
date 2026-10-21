@@ -10,7 +10,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 internal sealed class UploadCaptureLaneHandler(
     IArtifactOutbox outbox,
     IOptions<CameraAgentHostOptions> options,
-    CaptureProcessingPersistence? persistence = null) : ICaptureLaneHandler
+    CaptureProcessingPersistence? persistence = null,
+    Microsoft.Extensions.Logging.ILogger<UploadCaptureLaneHandler>? logger = null) : ICaptureLaneHandler
 {
     private readonly IArtifactOutbox _outbox = outbox;
     private readonly string _root = Path.GetFullPath(options.Value.RawIngressRoot);
@@ -32,7 +33,7 @@ internal sealed class UploadCaptureLaneHandler(
                 if (persistence is null)
                     return CaptureLaneHandlerResult.Terminal("outbox-scene-persistence-unavailable");
                 var gate = StorageLifecycleLock.ForRoot(_root);
-                await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                await StorageLifecycleLock.WaitAsync(gate, "upload", logger, cancellationToken).ConfigureAwait(false);
                 try
                 {
                     var scene = await persistence.FindCommittedSceneUploadAsync(

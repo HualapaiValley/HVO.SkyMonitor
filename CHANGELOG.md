@@ -9,6 +9,8 @@ to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 
 with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
 
 ## [Unreleased]
+- Install and upgrade accept group-writable PATH folders only after verifying complete local-file account sources, the installing user's private group and no extended access ACL; configurations with unverified NSS providers remain refused; newly created program folders have explicit mode `0755`. (#1469)
+
 - Current Sky streams neutral loading progress during its first HTTP page load, gives that read up to 30 seconds, identifies later five-second page refresh misses beside the image, retries automatically and logs the slow refresh phase without implying a capture fault. (#1472)
 
 - Regression tests verify bounded CameraAgent snapshot reads reject invalid timeouts and release their gates after projection failures. (#1477)
@@ -19,6 +21,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 
 ### Fixed
+
+- Derived-product reconciliation releases the storage lock between products and hashes outside it, keeping capture storage and Current Sky reads moving during retained-product checks; caller wait metrics identify contention. Replay admission rejects outputs awaiting deletion so recovery cannot remove a newly accepted frozen input. (#1471)
 
 - CameraAgent restore warnings identify every omitted counter and its escaped key; carry trials budget for rollback journals while keeping space for the restore. Pure image swaps keep their archive/headroom admission without a snapshot reservation, and carry failure reasons redact and escape all diagnostic text, including keys echoed by SQLite. (#1347)
 - `hvo-sky ui` rechecks stale controls before sending reviewed changes, scrolls long reviews and setting descriptions, and marks incomplete save receipts unverified; CLI status uses the production queue vocabulary and the published-terminal check enforces its deadline. (#1376)

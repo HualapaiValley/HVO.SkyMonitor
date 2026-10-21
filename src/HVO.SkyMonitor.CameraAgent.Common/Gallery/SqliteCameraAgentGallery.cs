@@ -38,6 +38,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         "quarantined"
     };
 
+    private readonly Microsoft.Extensions.Logging.ILogger? _logger;
     private readonly string _root;
     private readonly string _databasePath;
     private readonly int _busyTimeoutSeconds;
@@ -52,8 +53,10 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
         SqliteCaptureProcessingStore processingStore,
         ICameraAgentStorageResolver? storageResolver = null,
         IObservingDayCalendarProvider? observingDays = null,
-        IDeploymentLocationStore? deploymentLocation = null)
+        IDeploymentLocationStore? deploymentLocation = null,
+        Microsoft.Extensions.Logging.ILogger<SqliteCameraAgentGallery>? logger = null)
     {
+        _logger = logger;
         ArgumentNullException.ThrowIfNull(options);
         _processingStore = processingStore ?? throw new ArgumentNullException(nameof(processingStore));
         _storageResolver = storageResolver;
@@ -289,7 +292,7 @@ internal sealed class SqliteCameraAgentGallery : ICameraAgentGallery, ICameraAge
             return UnavailableCloudAssessment("Malformed");
         }
         var lifecycleGate = StorageLifecycleLock.ForRoot(_root);
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await StorageLifecycleLock.WaitAsync(lifecycleGate, "gallery", _logger, cancellationToken).ConfigureAwait(false);
         try
         {
             var path = ResolveSafePath(output.PayloadRelativePath);

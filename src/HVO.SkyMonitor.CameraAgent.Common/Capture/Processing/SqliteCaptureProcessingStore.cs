@@ -282,11 +282,15 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     internal static string LegacySchema6SqlForTests => LegacySchema6Sql;
     internal static string LegacySchema7SqlForTests => LegacySchema7Sql;
 
+    private readonly Microsoft.Extensions.Logging.ILogger? _logger;
+
     public SqliteCaptureProcessingStore(
         IOptions<CameraAgentHostOptions> options,
         TimeProvider? timeProvider = null,
-        ICaptureProcessingFaultInjector? faultInjector = null)
+        ICaptureProcessingFaultInjector? faultInjector = null,
+        Microsoft.Extensions.Logging.ILogger<SqliteCaptureProcessingStore>? logger = null)
     {
+        _logger = logger;
         ArgumentNullException.ThrowIfNull(options);
         var values = options.Value;
         _root = Path.GetFullPath(values.RawIngressRoot);
@@ -967,6 +971,43 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             values.Add(Guid.ParseExact(reader.GetString(0), "N"));
         return values;
+    }
+
+    internal async ValueTask<bool> IsCurrentProcessingEvidenceAsync(
+        DurableProcessingEvidence row, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(*) FROM processing_outputs
+            WHERE output_identity_sha256 = $id AND artifact_id = $artifact
+              AND payload_relative_path = $payload AND sidecar_relative_path = $sidecar
+              AND CAST(descriptor_json AS BLOB) = $evidence AND availability_state = $availability
+              AND committed_unix_ms = $committed;
+            """;
+        command.Parameters.AddWithValue("$id", row.OutputIdentitySha256);
+        command.Parameters.AddWithValue("$artifact", row.ArtifactId.ToString("N"));
+        command.Parameters.AddWithValue("$payload", row.PayloadRelativePath);
+        command.Parameters.AddWithValue("$sidecar", row.SidecarRelativePath);
+        command.Parameters.AddWithValue("$evidence", row.EvidenceJson);
+        command.Parameters.AddWithValue("$availability", row.AvailabilityState);
+        command.Parameters.AddWithValue("$committed", row.CommittedUnixMilliseconds);
+        return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            System.Globalization.CultureInfo.InvariantCulture) == 1;
+    }
+
+    internal async ValueTask<ProcessingLifecycleOperation?> ReadOrphanLifecycleOperationAsync(
+        string operationId, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT planned_unix_ms FROM processing_lifecycle_operations WHERE operation_id = $id AND kind = 'orphan';";
+        command.Parameters.AddWithValue("$id", operationId);
+        var planned = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        return planned is null or DBNull ? null : new(operationId, "orphan", null, null, null, string.Empty,
+            "awaiting-deterministic-retry", 0, Convert.ToInt64(planned, System.Globalization.CultureInfo.InvariantCulture));
     }
 
     internal async ValueTask<ProcessingEvidencePage> ReadProcessingEvidencePageAsync(
