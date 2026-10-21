@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Reflection;
 using System.Text.Json;
 using HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Deployment.Contracts;
@@ -29,6 +31,35 @@ public sealed partial class LifecycleContractTests
     [DataRow(true, "x-api-key=\"a review-1491-secret b\"", "x-api-key=\"<redacted>\"")]
     [DataRow(false, "\u001b[31mtoken=\"a review-1491-secret b\"", "token=\"<redacted>\"")]
     [DataRow(true, "\u001b[31mtoken=\"a review-1491-secret b\"", "token=\"<redacted>\"")]
+    // F1 (PR-1496-R1): a malformed or dangling escape before a key keeps the key's first letter, and a string that names a
+    // credential, or a lone control before a key, stays where it is while the key is matched.
+    [DataRow(false, "\u001b[password=review-1491-secret", "[password=<redacted>")]
+    [DataRow(true, "\u001b[password=review-1491-secret", "[password=<redacted>")]
+    [DataRow(false, "\u001btoken=\"a review-1491-secret b\"", "token=\"<redacted>\"")]
+    [DataRow(true, "\u001btoken=\"a review-1491-secret b\"", "token=\"<redacted>\"")]
+    [DataRow(false, "\u009btoken=\"a review-1491-secret b\"", "token=\"<redacted>\"")]
+    [DataRow(true, "\u009btoken=\"a review-1491-secret b\"", "token=\"<redacted>\"")]
+    [DataRow(false, "\u001b[ token=\"a review-1491-secret b\"", "[ token=\"<redacted>\"")]
+    [DataRow(true, "\u001b[ token=\"a review-1491-secret b\"", "[ token=\"<redacted>\"")]
+    [DataRow(false, "x \u001b[0;secret: review-1491-secret", "x [0;secret: <redacted>")]
+    [DataRow(true, "x \u001b[0;secret: review-1491-secret", "x [0;secret: <redacted>")]
+    [DataRow(false, "\u001b(password=review-1491-secret", "(password=<redacted>")]
+    [DataRow(true, "\u001b(password=review-1491-secret", "(password=<redacted>")]
+    [DataRow(false, "x\u001bpassword=review-1491-secret", "xpassword=<redacted>")]
+    [DataRow(true, "x\u001bpassword=review-1491-secret", "xpassword=<redacted>")]
+    [DataRow(false, "db_\u001b[password=review-1491-secret", "db_[password=<redacted>")]
+    [DataRow(true, "db_\u001b[password=review-1491-secret", "db_[password=<redacted>")]
+    [DataRow(false, "\u001bPassword=\u001b\\review-1491-secret", "Password=<redacted>")]
+    [DataRow(true, "\u001bPassword=\u001b\\review-1491-secret", "Password=<redacted>")]
+    [DataRow(false, "\u001b]0;password=\u001b\\review-1491-secret", "]0;password=<redacted>")]
+    [DataRow(true, "\u001b]0;password=\u001b\\review-1491-secret", "]0;password=<redacted>")]
+    [DataRow(false, "x\u001btoken review-1491-secret", "xtoken <redacted>")]
+    [DataRow(true, "x\u001btoken review-1491-secret", "xtoken <redacted>")]
+    [DataRow(false, "x\u0085token review-1491-secret", "xtoken <redacted>")]
+    [DataRow(true, "x\u0085token review-1491-secret", "xtoken <redacted>")]
+    // A CSI that is not decoration, between a key and its quoted value, still leaves the whole value redacted.
+    [DataRow(false, "token: \u001b[2J\"a review-1491-secret b\"", "token: \"<redacted>\"")]
+    [DataRow(true, "token: \u001b[2J\"a review-1491-secret b\"", "token: \"<redacted>\"")]
     // Ordinary words keep their values: a word that only starts with a credential word, a key that does not end with
     // one, and a key ending in plain "key".
     [DataRow(false, "tokenid=\"kept value\"", "tokenid=\"kept value\"")]
@@ -70,6 +101,32 @@ public sealed partial class LifecycleContractTests
     [DoNotParallelize]
     [DataRow(false, "\u001b[1mtoken\u001b[0m", "review-1491-secret", "claim token=<redacted> of account owner removed again")]
     [DataRow(true, "\u001b[1mtoken\u001b[0m", "review-1491-secret", "claim token=<redacted> of account owner removed again")]
+    // F1 (PR-1496-R1): a malformed or dangling escape before the claim's key word keeps its first letter.
+    [DataRow(false, "\u001b[password", "correct review-1491-secret staple", "claim [password=<redacted> of account owner removed again")]
+    [DataRow(true, "\u001b[password", "correct review-1491-secret staple", "claim [password=<redacted> of account owner removed again")]
+    [DataRow(false, "\u001btoken", "correct review-1491-secret staple", "claim token=<redacted> of account owner removed again")]
+    [DataRow(true, "\u001btoken", "correct review-1491-secret staple", "claim token=<redacted> of account owner removed again")]
+    [DataRow(false, "\u009btoken", "correct review-1491-secret staple", "claim token=<redacted> of account owner removed again")]
+    [DataRow(true, "\u009btoken", "correct review-1491-secret staple", "claim token=<redacted> of account owner removed again")]
+    [DataRow(false, "\u001b[ token", "correct review-1491-secret staple", "claim [ token=<redacted> of account owner removed again")]
+    [DataRow(true, "\u001b[ token", "correct review-1491-secret staple", "claim [ token=<redacted> of account owner removed again")]
+    [DataRow(false, "x \u001b[0;secret", "correct review-1491-secret staple", "claim x [0;secret=<redacted> of account owner removed again")]
+    [DataRow(true, "x \u001b[0;secret", "correct review-1491-secret staple", "claim x [0;secret=<redacted> of account owner removed again")]
+    [DataRow(false, "\u001b(password", "correct review-1491-secret staple", "claim (password=<redacted> of account owner removed again")]
+    [DataRow(true, "\u001b(password", "correct review-1491-secret staple", "claim (password=<redacted> of account owner removed again")]
+    [DataRow(false, "x\u001bpassword", "correct review-1491-secret staple", "claim xpassword=<redacted> of account owner removed again")]
+    [DataRow(true, "x\u001bpassword", "correct review-1491-secret staple", "claim xpassword=<redacted> of account owner removed again")]
+    [DataRow(false, "db_\u001b[password", "correct review-1491-secret staple", "claim db_[password=<redacted> of account owner removed again")]
+    [DataRow(true, "db_\u001b[password", "correct review-1491-secret staple", "claim db_[password=<redacted> of account owner removed again")]
+    [DataRow(false, "\u001b[token", "correct review-1491-secret staple", "claim [token=<redacted> of account owner removed again")]
+    [DataRow(true, "\u001b[token", "correct review-1491-secret staple", "claim [token=<redacted> of account owner removed again")]
+    [DataRow(false, "\u009bpassword", "correct review-1491-secret staple", "claim password=<redacted> of account owner removed again")]
+    [DataRow(true, "\u009bpassword", "correct review-1491-secret staple", "claim password=<redacted> of account owner removed again")]
+    [DataRow(false, "\u001bsecret", "correct review-1491-secret staple", "claim secret=<redacted> of account owner removed again")]
+    [DataRow(true, "\u001bsecret", "correct review-1491-secret staple", "claim secret=<redacted> of account owner removed again")]
+    // F4: the decision rests on the name alone, so a CSI the name ends inside cannot take the value's first letter.
+    [DataRow(false, "token\u001b[", "correct review-1491-secret staple", "claim token[=<redacted> of account owner removed again")]
+    [DataRow(true, "token\u001b[", "correct review-1491-secret staple", "claim token[=<redacted> of account owner removed again")]
     // A decorated ordinary claim keeps its value.
     [DataRow(false, "scope\u001b[31m", "camera read", "claim scope=camera read of account owner removed again")]
     [DataRow(true, "scope\u001b[31m", "camera read", "claim scope=camera read of account owner removed again")]
@@ -236,6 +293,55 @@ public sealed partial class LifecycleContractTests
         {
             Directory.Delete(scratch, recursive: true);
         }
+    }
+
+    // F2 (PR-1496-R1): a formatted error is not scanned again, so Describe itself hides a counter key that reads as a
+    // credential. An ordinary key keeps every character.
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DoNotParallelize]
+    [DataRow(false, "password=review-1491-secret", "password=<redacted>")]
+    [DataRow(true, "password=review-1491-secret", "password=<redacted>")]
+    [DataRow(false, "agent", "agent")]
+    [DataRow(true, "agent", "agent")]
+    public async Task Diagnostic1491_LoweredCounterKeyIsRedacted(bool json, string key, string shown)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(shown);
+        using var fixture = await MigratingFixtureAsync();
+        var target = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, AutomationStore);
+        ExecuteSql(target, FixtureDump(AutomationStore));
+        SaveDefinition(target, key, 1);
+        var ensure = typeof(CameraAgentLifecycleManager).GetMethod("EnsureFloorsHold", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var thrown = Assert.ThrowsExactly<TargetInvocationException>(() => ensure.Invoke(
+            null, [fixture.Paths, new StateCounterFloor[] { new(AutomationStore, "automation-definition-version", key, 2) }]));
+        var failure = (InstallerException)thrown.InnerException!;
+        Assert.IsTrue(failure.IsFormattedDiagnostic);
+        var output = await RenderDiagnostic1476ErrorAsync(failure.Message, json, failure.IsFormattedDiagnostic);
+        Console.WriteLine(JsonSerializer.Serialize(output));
+        Assert.IsFalse(output.Contains("review-1491-secret", StringComparison.Ordinal), "A counter key exposed a credential: " + output);
+        StringAssert.Contains(output,
+            $"the automation-definition-version counter of '{AutomationStore}' with key \"{JsonEncodedText.Encode(shown)}\" is 1, below 2.",
+            StringComparison.Ordinal);
+    }
+
+    // F3 (PR-1496-R1): a key followed by a long run of spaces is matched in linear time. Before the fix each of these threw
+    // RegexMatchTimeoutException after about a second; plain token did so before #1491 as well.
+    [TestMethod]
+    [DataRow("xtoken", 65536)]
+    [DataRow("xtoken", 1048576)]
+    [DataRow("db_password", 65536)]
+    [DataRow("db_password", 1048576)]
+    [DataRow("accessToken", 1048576)]
+    [DataRow("x-api-key", 1048576)]
+    [DataRow("token", 1048576)]
+    public void Diagnostic1491_KeyBeforeLongWhitespaceIsLinear(string key, int spaces)
+    {
+        var diagnostic = key + new string(' ', spaces) + "x";
+        var watch = Stopwatch.StartNew();
+        var redacted = Redaction.SafeDiagnostic(diagnostic);
+        Console.WriteLine($"{key} + {spaces} spaces: {watch.ElapsedMilliseconds} ms");
+        Assert.AreEqual(diagnostic[..256], redacted);
     }
 
     private static string Diagnostic1491JsonError(string code, string message)

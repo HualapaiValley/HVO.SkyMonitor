@@ -100,11 +100,10 @@ public sealed partial class LifecycleContractTests
         // Their constituent message templates are included above; CarryFailures/Describe have real-path assertions.
         // A forwarded exception message is not one of them: an unmarked typed message is raw (PR-1487-R2 F6).
         if (expression is "string.Join(\"; \", parts)" or "string.Join(\"; \", lowered)" or "reason" or "unread" or "list" or "problem")
-            return CameraAgentStateCounters.Describe(new(AutomationStore, "automation-definition-version", "agent\u001b[31m\"\t\u0085", 2));
+            return Diagnostic1476Describe();
         if (expression.StartsWith("CameraAgentStateDiagnostics.CarryFailures(", StringComparison.Ordinal) &&
             Diagnostic1476WholeCall(expression))
-            return CameraAgentStateDiagnostics.CarryFailures(
-                [(CameraAgentStateCounters.Describe(new(AutomationStore, "automation-definition-version", "agent\u001b[31m\"\t\u0085", 2)), HostileDiagnostic1476Name)]);
+            return CameraAgentStateDiagnostics.CarryFailures([(Diagnostic1476Describe(), HostileDiagnostic1476Name)]);
 
         // Scalar types cannot carry terminal text. 'what' is one of three private fixed capacity labels.
         if (expression is "instanceId:D" or "record.InstanceId:D" or "SchemaVersion" or "manifest.SchemaVersion" or
@@ -116,6 +115,12 @@ public sealed partial class LifecycleContractTests
             return "safe-scalar";
         return HostileDiagnostic1476Name;
     }
+
+    // A key with terminal controls keeps every character escaped, and a key that reads as a credential is hidden by Describe
+    // itself, since a formatted message is not scanned again (PR-1496-R1 F2).
+    private static string Diagnostic1476Describe()
+        => CameraAgentStateCounters.Describe(new(AutomationStore, "automation-definition-version", "agent\u001b[31m\"\t\u0085", 2)) + "; " +
+           CameraAgentStateCounters.Describe(new(AutomationStore, "automation-definition-version", "password=\"diagnostic-1476-sentinel\"", 2));
 
     private static bool Diagnostic1476WholeCall(string expression)
     {

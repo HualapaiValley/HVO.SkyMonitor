@@ -15,11 +15,12 @@ internal static class CameraAgentStateDiagnostics
     /// <summary>
     /// A database-derived name and value are redacted as the one assignment they read as, then escaped. The value is the whole
     /// field, so a name the redactor treats as a credential hides all of it, not only the first word an unquoted value ends at.
-    /// Decoration in the name, which the redactor removes, does not make an ordinary name read as a credential.
+    /// Decoration in the name, which the redactor removes, does not make an ordinary name read as a credential, and the decision
+    /// rests on the name alone, so a sequence the name ends inside cannot reach into the value.
     /// </summary>
     public static string Assignment(string? name, string? value)
     {
-        var probe = Redaction.WithoutControlSequences($"{name}=value");
+        var probe = Redaction.WithoutControlSequences(name ?? string.Empty) + "=value";
         return Reason(!string.IsNullOrEmpty(value) && Redaction.SafeDiagnostic(probe) != probe ? $"{name}=<redacted>" : $"{name}={value}");
     }
 
@@ -30,7 +31,17 @@ internal static class CameraAgentStateDiagnostics
     /// <summary>An installer failure's own message, formatted as <see cref="Failure"/> does; other exceptions' text is left out.</summary>
     public static string InstallerFailure(Exception exception) => exception is InstallerException ? Failure(exception) : string.Empty;
 
-    /// <summary>Counter identities are already escaped by <see cref="CameraAgentStateCounters.Describe"/>.</summary>
+    /// <summary>
+    /// An identity, such as a counter key, escaped with every character kept. One the redactor reads as holding a credential
+    /// hides it as <see cref="Assignment"/> does, because a message the formatter composed is not scanned again (#1491).
+    /// </summary>
+    public static string Identity(string value)
+    {
+        var redacted = Redaction.Redact(value);
+        return JsonEncodedText.Encode(redacted == Redaction.WithoutControlSequences(value) ? value : redacted).ToString();
+    }
+
+    /// <summary>Counter identities are already redacted and escaped by <see cref="CameraAgentStateCounters.Describe"/>.</summary>
     public static string CarryFailures(IReadOnlyList<(string What, string Reason)> failures)
         => string.Join("; ", failures.Select(static entry => $"{entry.What} ({Reason(entry.Reason)})"));
 }
