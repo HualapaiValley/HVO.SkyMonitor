@@ -1617,23 +1617,31 @@ internal sealed partial class SqliteRawCaptureJournal(
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT evidence_key, source_relative_path, companion_relative_path,
-                   quarantine_relative_path, reason, observed_bytes
-            FROM raw_ingress_reconciliation
-            WHERE outcome = 'quarantined' AND operation_state = 'planned'
-            ORDER BY reconciliation_id;
+            SELECT plan.evidence_key, plan.source_relative_path, plan.companion_relative_path,
+                   plan.quarantine_relative_path, plan.reason, plan.observed_bytes, raw.capture_id
+            FROM raw_ingress_reconciliation plan
+            LEFT JOIN raw_captures raw
+                ON raw.payload_relative_path IN (plan.source_relative_path, plan.companion_relative_path)
+                OR raw.sidecar_relative_path IN (plan.source_relative_path, plan.companion_relative_path)
+            WHERE plan.outcome = 'quarantined' AND plan.operation_state = 'planned'
+            ORDER BY plan.reconciliation_id;
             """;
         var operations = new List<RawIngressPlannedQuarantine>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            // The plan's durable source paths reference the capture's unique, immutable evidence paths.
+            // Recover that association even when a crash already moved either or both source files.
+            if (operations.Count > 0 && operations[^1].EvidenceKey == reader.GetString(0))
+                throw new InvalidDataException("A planned raw ingress quarantine references multiple captures.");
             operations.Add(new RawIngressPlannedQuarantine(
                 reader.GetString(0),
                 reader.GetString(1),
                 await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(2),
                 reader.GetString(3),
                 reader.GetString(4),
-                reader.GetInt64(5)));
+                reader.GetInt64(5),
+                await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : Guid.ParseExact(reader.GetString(6), "N")));
         }
         return operations;
     }

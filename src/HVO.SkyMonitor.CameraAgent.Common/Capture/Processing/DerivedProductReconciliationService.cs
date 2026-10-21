@@ -21,6 +21,7 @@ internal sealed class DerivedProductReconciliationService(
     {
         using var activity = CaptureProcessingTelemetry.ActivitySource.StartActivity(
             "processing-artifact.reconcile");
+        CancellationToken maintenanceInterruption = default;
         try
         {
             if (rawIngress is not null)
@@ -31,6 +32,7 @@ internal sealed class DerivedProductReconciliationService(
             // inventory is still refreshed, so the operations summary stays current while capture is paused. An admitted
             // pass keeps its maintenance lease until reconciliation returns.
             using var maintenance = await CaptureMaintenanceHold.EnterAsync(admission, cancellationToken).ConfigureAwait(false);
+            maintenanceInterruption = maintenance.InterruptionToken;
             if (maintenance.HeldBy is { } heldBy)
             {
                 var heldInventory = await store.ReadAvailabilityInventoryAsync(cancellationToken).ConfigureAwait(false);
@@ -42,7 +44,7 @@ internal sealed class DerivedProductReconciliationService(
             var reconciler = new DerivedProductReconciler(
                 options.Value.RawIngressRoot, store, options.Value.DerivedProductLifecycle, TimeProvider.System,
                 distribution.NotifyCommittedCapture);
-            var summary = await reconciler.RunAsync(cancellationToken).ConfigureAwait(false);
+            var summary = await reconciler.RunAsync(cancellationToken, maintenance.InterruptionToken).ConfigureAwait(false);
             telemetry.RecordReconciliation(summary);
             var inventory = await store.ReadAvailabilityInventoryAsync(cancellationToken).ConfigureAwait(false);
             state.SetProcessingEvidence(inventory.MissingCount, inventory.QuarantinedCount);
@@ -51,6 +53,10 @@ internal sealed class DerivedProductReconciliationService(
             logger.DerivedProductReconciliationCompleted(
                 summary.Inspected, summary.Available, summary.Recoverable, summary.Cleaned,
                 summary.Missing, summary.Quarantined, summary.QuarantineBytes);
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
+        }
+        catch (OperationCanceledException) when (maintenanceInterruption.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
