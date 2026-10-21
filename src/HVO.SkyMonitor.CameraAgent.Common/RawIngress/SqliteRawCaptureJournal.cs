@@ -560,6 +560,29 @@ internal sealed partial class SqliteRawCaptureJournal(
         return captures;
     }
 
+    /// <summary>
+    /// The committed captures whose lane work ended because processing found their evidence unusable. Every
+    /// consumer verifies a payload's checksum before it uses it, so this is where a payload whose content no longer
+    /// matches is recorded; an operator release moves the lane work on, and a quarantine changes the capture's state.
+    /// </summary>
+    internal async Task<IReadOnlySet<Guid>> ReadReportedEvidenceFailuresAsync(CancellationToken cancellationToken)
+    {
+        var captures = new HashSet<Guid>();
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT DISTINCT raw.capture_id
+            FROM capture_lane_work work
+            JOIN raw_captures raw ON raw.raw_capture_row_id = work.raw_capture_row_id
+            WHERE work.state = 'quarantined' AND work.failure_reason IN ('evidence-unavailable', 'evidence-invalid')
+              AND raw.state = 'committed';
+            """;
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            captures.Add(Guid.ParseExact(reader.GetString(0), "N"));
+        return captures;
+    }
+
     internal async Task<(long Count, long Bytes, DateTimeOffset? Oldest)> ReadHeldTotalsAsync(CancellationToken cancellationToken)
     {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);

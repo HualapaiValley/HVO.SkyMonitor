@@ -11,10 +11,12 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.Services;
 
 internal sealed record SatelliteSetupProblem(string Code, string Message, string Link, string Action);
-internal sealed record SatelliteTimeFileView(string Title, string? Path, string? Sha256, string Status);
+internal sealed record SatelliteTimeFileView(string Title, string? Path, string? Sha256, string Status, string? Origin = null);
 internal sealed record SatelliteSetupView(IReadOnlyList<CameraAgentSettingsGroupState> Groups,
     IReadOnlyList<SatelliteSetupProblem> Problems, IReadOnlyList<SatelliteTimeFileView> Files,
-    OrbitalUtcInterval? EarthOrientationCoverage, DateTimeOffset? LeapSecondsExpireUtc);
+    OrbitalUtcInterval? EarthOrientationCoverage, DateTimeOffset? LeapSecondsExpireUtc,
+    string? ActiveSource = null, OrbitalUtcInterval? FinalCoverage = null, OrbitalUtcInterval? PredictedCoverage = null,
+    OrbitalEarthOrientationStatus? WindowEarthOrientation = null);
 
 internal interface ICameraAgentSatelliteSetupUiService
 {
@@ -56,37 +58,66 @@ internal sealed class CameraAgentSatelliteSetupUiService(
         var snapshot = await orbital.GetAsync(cancellationToken).ConfigureAwait(false);
         if (snapshot is not { IsSuccess: true, Value: { HasData: true, Manifest: not null, StoreUnavailable: false } })
             problems.Add(new("no-snapshot", "No validated local orbital snapshot is available.", "/operations/software#software-orbital-heading", "Set up orbital refresh"));
-        var time = await timeSource.ReadAsync(cancellationToken).ConfigureAwait(false);
-        var files = new[]
-        {
-            await InspectAsync("Earth orientation", configuration.EarthOrientationPath, configuration.EarthOrientationSha256,
-                CameraAgentPinnedOrbitalTimeSource.MaximumEarthOrientationBytes, time?.EarthOrientationSha256, cancellationToken).ConfigureAwait(false),
-            await InspectAsync("Leap seconds", configuration.LeapSecondsPath, configuration.LeapSecondsSha256,
-                CameraAgentPinnedOrbitalTimeSource.MaximumLeapSecondsBytes, time?.LeapSecondsSha256, cancellationToken).ConfigureAwait(false)
-        };
+        var resolution = await timeSource.ResolveAsync(cancellationToken).ConfigureAwait(false);
+        var time = resolution.Data;
+        var bundled = resolution.Source == CameraAgentOrbitalTimeDataSource.Bundled;
+        var files = bundled
+            ? new[]
+            {
+                Bundled("Earth orientation", resolution.BundledEarthOrientation, resolution.Problem),
+                Bundled("Leap seconds", resolution.BundledLeapSeconds, resolution.Problem)
+            }
+            : new[]
+            {
+                await InspectAsync("Earth orientation", configuration.EarthOrientationPath, configuration.EarthOrientationSha256,
+                    CameraAgentPinnedOrbitalTimeSource.MaximumEarthOrientationBytes, time?.EarthOrientationSha256, cancellationToken).ConfigureAwait(false),
+                await InspectAsync("Leap seconds", configuration.LeapSecondsPath, configuration.LeapSecondsSha256,
+                    CameraAgentPinnedOrbitalTimeSource.MaximumLeapSecondsBytes, time?.LeapSecondsSha256, cancellationToken).ConfigureAwait(false)
+            };
+        OrbitalEarthOrientationStatus? window = null;
         if (files.Any(file => file.Status == "Hash mismatch"))
             problems.Add(new("hash-mismatch", "A time-data file does not match its configured SHA-256.", TimeDataLink, "Correct the pinned time files"));
         else if (time is null || time.NominalZeroEarthOrientation)
-            problems.Add(new("no-time-data", configuration.Enabled
-                ? "Pinned actual Earth-orientation or leap-second data is missing, unreadable or invalid."
-                : "Time data has not been resolved while planning is disabled.", TimeDataLink, "Configure time data"));
+            problems.Add(new("no-time-data", !configuration.Enabled ? "Time data has not been resolved while planning is disabled." : resolution.Problem switch
+            {
+                CameraAgentOrbitalTimeDataProblem.BundledInvalid =>
+                    "The bundled time-data pair is missing or failed verification. Reinstall CameraAgent, or configure a complete override.",
+                CameraAgentOrbitalTimeDataProblem.OverrideIncomplete =>
+                    "The time-data override is incomplete. Set both absolute paths and both SHA-256 values, or remove all four to use the bundled pair.",
+                _ => "The configured time-data override is missing, unreadable or invalid. The bundled pair is not used while an override is configured."
+            }, TimeDataLink, "Configure time data"));
         else
         {
+            var start = startUtc.ToUniversalTime();
+            var end = endUtc.ToUniversalTime();
             try
             {
-                _ = time.Evaluate(startUtc.ToUniversalTime());
-                _ = time.Evaluate(endUtc.ToUniversalTime());
-                time.ValidatePropagationInterval(startUtc.ToUniversalTime(), new(startUtc.ToUniversalTime(), endUtc.ToUniversalTime()));
+                var first = time.Evaluate(start).Status;
+                var last = time.Evaluate(end).Status;
+                time.ValidatePropagationInterval(start, new(start, end));
+                window = first == last ? first : OrbitalEarthOrientationStatus.Mixed;
             }
             catch (ArgumentException)
             {
-                problems.Add(new("coverage-expired", "Time-data coverage is expired or does not cover the selected window; gaps and leap crossings are unsupported.",
+                problems.Add(new("coverage-expired", CameraAgentSatellitePlanner.CoverageEndsBefore(time, end) is { } until
+                    ? $"{(bundled ? "The bundled time data" : "The configured override")} covers planning only until {until:O} " +
+                      $"(Earth orientation to {time.EarthOrientationCoverage?.EndUtc:O}; leap-second list expires {time.LeapTableExpiresUtc:O}). " +
+                      "Update CameraAgent for a newer bundled pair, or configure a newer override."
+                    : "Time data does not cover the selected window. Gaps between final and predicted Earth orientation and leap-second crossings are unsupported.",
                     TimeDataLink, "Update time data or change the planning window"));
             }
         }
         return OperatorUiResult<SatelliteSetupView>.Success(new(groups, problems, files,
-            time?.EarthOrientationCoverage, time?.LeapTableExpiresUtc));
+            time?.EarthOrientationCoverage, time?.LeapTableExpiresUtc,
+            bundled ? "Bundled with this CameraAgent release" : "Configured override",
+            time?.EarthOrientationFinalCoverage, time?.EarthOrientationPredictedCoverage, window));
     }
+
+    private static SatelliteTimeFileView Bundled(string title, CameraAgentBundledTimeFile? file, CameraAgentOrbitalTimeDataProblem problem)
+        => file is null
+            ? new(title, null, null, problem == CameraAgentOrbitalTimeDataProblem.BundledInvalid ? "Bundled pair failed verification" : "Bundled; not resolved")
+            : new(title, Path.Combine(CameraAgentPinnedOrbitalTimeSource.BundledDirectory, file.File), file.Sha256, "Bundled and hash verified",
+                $"Retrieved {file.RetrievedUtc:O} from {file.SourceUrl}. {file.Terms}");
 
     public async Task<OperatorUiResult<CameraAgentSettingsWriteResult>> SetAsync(string group, string version, string value,
         CancellationToken cancellationToken)
