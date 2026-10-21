@@ -214,10 +214,16 @@ public sealed class CameraAgentSatellitePlanner(
 
     private async Task<OrbitalTimeData> ReadTimeAsync(CameraAgentSatellitePlanningOptions settings, CancellationToken cancellationToken)
     {
-        if (settings.Enabled && await timeSource.ReadAsync(cancellationToken).ConfigureAwait(false) is { NominalZeroEarthOrientation: false } time)
-            return time;
-        throw new PlanningUnavailable(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable,
-            "Planning requires enabled, explicitly pinned actual Earth-orientation and leap-second inputs. No approximation was substituted.");
+        var resolution = settings.Enabled ? await timeSource.ResolveAsync(cancellationToken).ConfigureAwait(false) : null;
+        if (resolution?.Data is { NominalZeroEarthOrientation: false } time) return time;
+        throw new PlanningUnavailable(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, resolution?.Problem switch
+        {
+            CameraAgentOrbitalTimeDataProblem.OverrideIncomplete or CameraAgentOrbitalTimeDataProblem.OverrideInvalid =>
+                "The configured time-data override is incomplete, unreadable, mismatched or invalid. The bundled pair is not used while an override is configured. No approximation was substituted.",
+            CameraAgentOrbitalTimeDataProblem.BundledInvalid =>
+                "The bundled time-data pair is missing or failed verification. No approximation was substituted.",
+            _ => "Planning requires enabled planning and verified actual Earth-orientation and leap-second inputs. No approximation was substituted."
+        });
     }
 
     private async Task<CameraAgentSatellitePlanningContext> ReadContextAsync(OrbitalUtcInterval interval, CancellationToken cancellationToken)
@@ -267,8 +273,16 @@ public sealed class CameraAgentSatellitePlanner(
         }
         catch (ArgumentException)
         {
-            throw TimeInputsUnavailable();
+            throw CoverageEndsBefore(time, interval.EndUtc) is { } end ? CoverageExpired(time, end) : TimeInputsUnavailable();
         }
+    }
+
+    /// <summary>The last supported instant when it falls before the requested end; gaps and leap crossings are not expiry.</summary>
+    public static DateTimeOffset? CoverageEndsBefore(OrbitalTimeData time, DateTimeOffset endUtc)
+    {
+        ArgumentNullException.ThrowIfNull(time);
+        var end = time.EarthOrientationCoverage is { } eop && eop.EndUtc < time.LeapTableCoverage.EndUtc ? eop.EndUtc : time.LeapTableCoverage.EndUtc;
+        return endUtc > end ? end : null;
     }
 
     private static void ValidateSelectedEpochs(OrbitalTimeData time, OrbitalUtcInterval interval,
@@ -311,6 +325,9 @@ public sealed class CameraAgentSatellitePlanner(
     private static PlanningUnavailable Invalid(string message) => new(CameraAgentSatellitePlanningOutcome.Invalid, message);
     private static PlanningUnavailable TimeInputsUnavailable() => new(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable,
         "Pinned time inputs do not continuously support the original interval and selected epochs, or cross an unsupported leap second.");
+    private static PlanningUnavailable CoverageExpired(OrbitalTimeData time, DateTimeOffset end) => new(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable,
+        $"Time-data coverage ends at {end:O}, before this window ends (Earth orientation to {time.EarthOrientationCoverage?.EndUtc:O}; leap-second list expires {time.LeapTableExpiresUtc:O}). " +
+        "Update CameraAgent for a newer bundled pair or configure a newer override. No approximation was substituted.");
     private static PlanningUnavailable ContextChanged() => new(CameraAgentSatellitePlanningOutcome.ContextChanged,
         "The authoritative site, active rig, snapshot, time inputs or planning options changed. Refresh the scene and run a new search.");
     private static PlanningUnavailable RetentionExceeded() => Invalid("The original search exceeds the local 128 MiB source-byte/product retention cap and was not retained. This cap is not an exact managed-memory bound.");

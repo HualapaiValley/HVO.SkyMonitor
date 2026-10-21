@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Bunit;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Settings;
@@ -28,6 +29,26 @@ public sealed class SatelliteSetupPanelTests
         Assert.Contains("synthetic.finals2000A", cut.Find("#satellite-time-data").TextContent, StringComparison.Ordinal);
         Assert.Contains("Hash mismatch", cut.Find("#satellite-time-data").TextContent, StringComparison.Ordinal);
         Assert.IsEmpty(cut.FindAll("#satellite-time-data input"));
+    }
+
+    [TestMethod]
+    public void Status_ShowsTheActiveSourceFinalAndPredictedCoverageAndProvenance()
+    {
+        using var context = new BunitContext();
+        var final = new OrbitalUtcInterval(new(1973, 1, 2, 0, 0, 0, TimeSpan.Zero), new(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
+        var predicted = new OrbitalUtcInterval(new(2026, 10, 21, 0, 0, 0, TimeSpan.Zero), new(2027, 10, 27, 0, 0, 0, TimeSpan.Zero));
+        var service = new Service("ready", view: new([], [],
+            [new("Earth orientation", "/app/time-data/finals2000A.daily.extended", new('A', 64), "Bundled and hash verified",
+                "Retrieved 2026-10-21T18:00:00Z from https://maia.usno.navy.mil/ser7/finals2000A.daily.extended.")],
+            new(final.StartUtc, predicted.EndUtc), new(2027, 6, 28, 0, 0, 0, TimeSpan.Zero),
+            "Bundled with this CameraAgent release", final, predicted, OrbitalEarthOrientationStatus.Predicted));
+        context.Services.AddSingleton<ICameraAgentSatelliteSetupUiService>(service);
+        var cut = context.Render<SatelliteSetupPanel>(parameters => parameters.Add(panel => panel.AtUtc, TestOrbitalUiService.Now));
+        var text = cut.WaitForElement("#satellite-time-data").TextContent;
+        foreach (var expected in new[] { "Bundled with this CameraAgent release", "Provenance: Retrieved 2026-10-21T18:00:00Z",
+            $"{final.StartUtc:O} to {final.EndUtc:O}", $"{predicted.StartUtc:O} to {predicted.EndUtc:O}", "Predicted Earth orientation",
+            "2027-06-28T00:00:00.0000000+00:00", "Automatic refresh between releases is not available yet" })
+            Assert.Contains(expected, text, StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -60,7 +81,7 @@ public sealed class SatelliteSetupPanelTests
         Assert.IsEmpty(service.Writes);
     }
 
-    private sealed class Service(string reason, string? overridden = null) : ICameraAgentSatelliteSetupUiService
+    private sealed class Service(string reason, string? overridden = null, SatelliteSetupView? view = null) : ICameraAgentSatelliteSetupUiService
     {
         private static readonly string[] FeatureGroups = ["orbitalElements", "satellitePlanning"];
         internal List<(string, string, string)> Writes { get; } = [];
@@ -71,6 +92,7 @@ public sealed class SatelliteSetupPanelTests
                 [new(group + ".enabled", JsonSerializer.SerializeToElement("false"), true,
                     overridden is null ? CameraAgentSettingSource.SettingsFile : Enum.Parse<CameraAgentSettingSource>(overridden),
                     null, overridden is null, overridden is null ? null : "This source overrides the settings file.", null, null, null)])).ToArray();
+            if (view is not null) return Task.FromResult(OperatorUiResult<SatelliteSetupView>.Success(view with { Groups = groups }));
             return Task.FromResult(OperatorUiResult<SatelliteSetupView>.Success(new(groups,
                 [new(reason, "Reason: " + reason, "/operations/site#satellite-time-data", "Fix time inputs")],
                 [new("Earth orientation", "/synthetic/synthetic.finals2000A", new('a', 64), "Hash mismatch")], null, null)));
