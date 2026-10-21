@@ -4,7 +4,8 @@ CameraAgent keeps NOAA SWPC facts and local notice history in its own SQLite sto
 reserved automation refreshes the configured core products. LogicHost never polls them.
 There is no outbox, notification delivery, email, SMS, webhook, capture action or
 `IEnvironmentalSource` integration. External delivery remains under #455; terrestrial
-weather acquisition remains under #1092. The operator UI is delivered separately.
+weather acquisition remains under #1092. Operators work through the
+[Operator UI](#operator-ui) below.
 
 ## Credentials And Attribution
 
@@ -17,10 +18,26 @@ and is not an official forecast.
 
 ## Enable And Configure
 
-1. Set `CameraAgent:SpaceWeather:Enabled` to `true` and restart CameraAgent.
+1. Set `CameraAgent:SpaceWeather:Enabled` to `true` and restart CameraAgent. The
+   catalogue key is `spaceWeather.enabled`; the CLI commands are:
+
+   ```bash
+   hvo-sky config get spaceWeather.enabled
+   hvo-sky config set spaceWeather.enabled=true
+   hvo-sky restart
+   ```
+
+   The switch applies only after a restart; the running value and a saved value
+   pending restart are shown separately. Environment variables and `config/secrets`
+   take precedence, and an overridden switch is read-only and names its source.
+   There is no web switch; the Space weather page shows the current state and these
+   commands.
 2. Create the `space-weather-refresh` local automation definition, task kind
    `SpaceWeatherRefresh`, target `swpc`, trigger `Periodic`, with an interval of
-   60–120 seconds (default 120), and enable that definition.
+   60–120 seconds (default 120), and enable that definition. **Automations** opens
+   this definition pre-filled at `/operations/automations?setup=space-weather`; the
+   identifier, target and trigger are fixed, and an existing definition is kept and
+   never replaced. Creation does not contact the provider.
 
 No definition is seeded. Saving a definition while the feature is disabled is allowed;
 execution skips with `space-weather.disabled`. `Products` defaults to `Alerts`,
@@ -129,6 +146,188 @@ Detail is a reason code plus ordinal-sorted `product=outcome` tokens, bounded to
 runs once before any product. A retention exception stops the run with
 `space-weather.retention-failed` and attempts no product.
 
+## Operator UI
+
+**Operations → Space weather** (`/operations/space-weather`, in the Processing
+group) is the operator page. Reading it requires the owner operations read policy.
+Refresh, resume and acknowledge require an owner session that may mutate; otherwise
+they are disabled with a visible reason. The page calls the same in-process
+operations as the API above and adds no poller, timer or provider request of its own.
+
+Reads go through one shared, cached projection. A result at most 10 seconds old is
+reused, concurrent readers share one read, and that read has its own 10-second
+timeout. A failed read is cached for the same 10 seconds. Every command drops the
+cache. The page reads when it opens, on **Reload** and after each command. If status
+and notices change between the two halves of one read, it retries once and then says
+the data changed while reading.
+
+The page shows the feature state, the alerts freshness chip and the schedule link
+(**Set up schedule** opens `?setup=space-weather` when the definition is missing). It
+lists one sources row per product, showing:
+
+- whether the product is configured;
+- the last outcome, freshness, last success and in-file stamp;
+- the next attempt and the retry not-before time;
+- the consecutive counters and any halt.
+
+It then shows format drift (three or more consecutive rejected bodies), record drift
+and halts. The notice lists follow: active and pending, recent, and paged history.
+"Cloud: not assessed" appears once, and the SWPC credit is shown verbatim.
+
+Each of these states has its own banner:
+
+- loading;
+- feature off, where retained notices may still be listed;
+- no successful fetch yet;
+- "No SWPC notices retained.", never "no space weather";
+- definition missing or disabled;
+- store unavailable;
+- data changed while reading;
+- read failed.
+
+When the store cannot be read, nothing is claimed about current notices.
+
+### Bounds
+
+| List | Bound |
+| --- | --- |
+| Active and pending | At most 50 combined, then "N more" with the exact count |
+| Recent (24 h after the end) | At most 50, then "N more" |
+| History | Pages of 25, eight pages (200 rows), then "N older retained notices are not shown" |
+| Overview summary | The first three active or pending rows, then "N more" |
+
+Counts are exact and taken before bounding. Membership can change between reads, and
+paging makes no stability promise. Active rows come before pending ones, each newest
+issue first. Recent and history rows are ordered by end time, newest first. Ties are
+ordered by group identity.
+
+### Notice Rows, Relevance And Darkness
+
+Each row shows:
+
+- the family label, level, state and end reason;
+- the acknowledgement;
+- Issued, Last update, From and Until, in UTC and in site-local time with offset and
+  zone, falling back to labelled UTC when the zone is missing or invalid.
+
+Pending and active rows also say "may be out of date: alerts are not fresh" while
+alerts are not fresh.
+
+Two lines are kept apart:
+
+- **SWPC:** the source's global activity, such as "G2 watch", or the family with
+  "level not stated".
+- **At this site:** an HVO SkyMonitor estimate, ending "HVO SkyMonitor estimate, not a
+  NOAA statement."
+
+For a geomagnetic notice, the site line gives one of these categories:
+
+- "within the stated impact latitude";
+- "possibly near the poleward horizon";
+- "unlikely at this latitude";
+- "not expected at this latitude";
+- "unknown", with its reason.
+
+It also gives:
+
+- the required latitude, either stated or typical for the level;
+- the site's geomagnetic latitude;
+- the model: centred-dipole approximation (pole 80.8° N, 72.6° W); model version
+  unspecified.
+
+Other notices say "no local optical observing impact". Without an active site
+location, relevance is unknown ("site location not configured").
+
+Darkness covers pending and active rows only. It only ever adds a restriction and
+never raises a category. It lists site daylight or twilight intervals within the
+notice window in local time. Otherwise it says one of:
+
+- "darkness not assessed for windows longer than 96 hours";
+- "site daylight/twilight could not be determined for this window";
+- "not assessed: no site location".
+
+The page never calls a notice dark, visible or observable. Cloud is not assessed.
+
+### Escalation Since Acknowledgement
+
+An acknowledgement never hides, ends or reorders a notice. For an acknowledged group,
+the page derives the following on read; it writes nothing and raises no attention
+event:
+
+1. Every group version must join to its retrieval time. If any does not, the result
+   is **Unknown**.
+2. The baseline is the highest rank among non-cancel versions retrieved before the
+   acknowledgement. A version's rank is its G level; K4 or no level counts as 0.
+3. The result is also **Unknown** when a non-cancel version was retrieved at exactly
+   the acknowledgement time, or when no non-cancel version precedes it.
+4. Otherwise the row reads "escalated since acknowledged" if the current level's rank
+   exceeds the baseline. If it does not, the group is not escalated.
+
+Unknown reads "acknowledged; escalation since then cannot be determined". Such a row
+still counts toward the reach-or-approach attention item when its category qualifies,
+but it is not offered for acknowledgement again.
+
+### Commands
+
+**Refresh now (all enabled products)** queues the reserved definition. It is disabled,
+with the reason shown, when:
+
+- the feature is off;
+- the definition is missing or disabled;
+- a provider halt is active;
+- the store is unavailable;
+- the user cannot mutate.
+
+Provider policy still decides what is fetched.
+
+**Resume** confirms one provider or product halt. It sends the halt start exactly as
+read, without the minute rounding used for display. If the halt has changed, the
+dialog closes and the page rereads.
+
+**Acknowledge** is offered on pending and active rows that are unacknowledged or
+escalated since acknowledgement.
+
+Each deliberate command uses a new idempotency key, and repeated clicks while a
+command runs are ignored. The key is kept for a retry in two cases:
+
+- an unavailable outcome, where the durable result is unknown, so the retry repeats
+  the same request and key;
+- a revision conflict.
+
+After `space-weather.idempotency-key-reused`, the next attempt uses a new key. Known
+`space-weather.*` reasons have fixed operator text, and the same text appears in
+Automations for the reserved definition's identifier and interval rejections.
+
+### Overview, Attention And Health
+
+The **Overview** shows a compact summary from the Operations layout's read:
+
+- the feature state and the alerts freshness;
+- the active and pending count with the first three rows;
+- the page link and the credit.
+
+When off, it says "Space weather is off" and lists nothing. When the data cannot be
+read, it says "Space-weather data is unavailable".
+
+The sidebar badge and the Overview's **Needs attention** list carry these items:
+
+| Item | When |
+| --- | --- |
+| "N notices reach or approach this site's geomagnetic latitude" | Warning. Pending or active rows within the impact latitude or possibly near the horizon, that are unacknowledged, escalated or of unknown escalation |
+| "N notices to review" | Other pending or active rows that are unacknowledged or escalated |
+| "Format drift on P" | One per affected product |
+| "Record drift" | An open record-drift episode |
+| "SWPC fetching halted (provider)" / "(P)" | A provider or product halt |
+| "Space-weather store unavailable" | The store cannot be read and the feature is on |
+
+There are no items while the feature is off, and a failed read keeps no stale items.
+The layout rereads on navigation, and on other Operations activity once its last read
+is at least 30 seconds old.
+
+**System** lists the `space-weather` health check as **Space weather** (Local), linked
+to the page. With the feature off and the store readable, the row shows Disabled.
+Otherwise the check is at most Degraded.
+
 ## Health And Metrics
 
 `/health` registers `space-weather`, tagged `dependency`. It is at most **Degraded**.
@@ -195,6 +394,11 @@ exception message, body text, URL query, header or validator is logged.
 | 7832 | Warning | Resume/acknowledge rejection, reason only |
 | 7833 | Information | Acknowledged group identity |
 | 7834 | Warning | Antiforgery rejected |
+| 7835 | Warning | Operator UI read failed, exception type only |
+| 7836 | Warning | Operator UI command failed, command token and exception type only |
+| 7837 | Information | Operator UI access denied, read or command token |
+| 7838 | Warning | Operator UI projection still inconsistent after one retry |
+| 7839 | reserved | Operator UI range, not emitted |
 
 The 7829 observation precedes the first runner call. It identifies attempts to
 settle, not proof that a failing recovery succeeded. The runner itself owns settlement.

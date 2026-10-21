@@ -30,6 +30,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- CameraAgent's new Space weather page lists active, pending, recent and paged SWPC notices with source freshness, drift and halts, and offers Refresh now, Resume and Acknowledge. Each notice keeps SWPC's own activity apart from the relevance at the site's geomagnetic latitude and its daylight limits; relevance is an HVO SkyMonitor estimate, not a NOAA statement, and cloud is not assessed. The Overview adds a compact summary and attention items, Automations offers guided setup of the refresh schedule, the `spaceWeather` settings switch turns the feature on after a restart, and System health lists Space weather. (#1398)
+
 - Observatory settings and `hvo-sky config` now offer orbital-refresh and satellite-planning switches. Software & Catalog guides refresh-automation setup, and the planner setup explains missing snapshots, pinned time-data/hash problems and expired coverage with links to their fixes; managed time-data downloads remain pending. (#1474)
 
 - Shared space-weather storage contracts define snapshot comparison, atomic completion and bounded local history for the upcoming SWPC refresh service. (#1398)
