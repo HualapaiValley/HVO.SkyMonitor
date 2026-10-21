@@ -777,7 +777,7 @@ class Model:
                 for node in group.nodes:
                     self.raised.pop(node, None)
                     self.acks.pop(node, None)
-                self.orphans.discard(group.gid)
+        self.orphans = {gid for gid, group in self.groups().items() if group.orphan}
 
     def notice_view(self, t):
         groups = self.groups()
@@ -807,6 +807,8 @@ class Model:
 
     def ingest_alerts(self, records, t, diagnostics, stale=False):
         """Merge a body's records. A stale body adds new identities but never a new version of a stored one."""
+        prior_orphan_nodes = {node for group in self.groups().values() if group.orphan
+                              for node in group.nodes}
         touched = set()
         added = []
         seen_in_body = {}
@@ -839,12 +841,11 @@ class Model:
         for msg in added:
             if msg.link and msg.link[1] != msg.serial and (msg.code, msg.link[1]) not in present:
                 diagnostics.append(f"orphan-link:{msg.identity}")
-        for gid, group in self.groups().items():
-            if group.orphan:
-                self.orphans.add(gid)
-            elif gid in self.orphans:
-                self.orphans.discard(gid)
+        groups = self.groups()
+        for gid, group in groups.items():
+            if not group.orphan and group.nodes & prior_orphan_nodes:
                 diagnostics.append(f"orphan-resolved:{gid}")
+        self.orphans = {gid for gid, group in groups.items() if group.orphan}
         return touched
 
     def attention_for(self, touched, t):
@@ -2850,6 +2851,55 @@ def scenarios(cap: Capture):
         "outcome": "unchanged", "diagnostics": [], "attention": [], "originalRecords": both_originals,
         "notices": {"ALTZZZ/1427": {"versions": 2}}})
     b.step("restart", {"originalRecords": both_originals})
+    out.append(b.build())
+
+    # s28 ------------------------------------------------------------------
+    b = Builder("s28-orphan-join-chain",
+                "Orphan components follow joins, survive restart and leave no retention markers",
+                ["orphan-link", "orphan-resolved", "canonical-identity", "three-way-join", "restart", "retention"],
+                synthetic_records=True,
+                notes=["All WARK04 records, serials 28001 through 28035, are synthetic; no SWPC message text is reused.",
+                       "Two orphan components join a stored root in one body. Another component changes identity "
+                       "while still orphaned, survives restart, then resolves. Two final independent orphans have "
+                       "different retention boundaries: the first is removed with the other notices while the second "
+                       "keeps its marker, then the second is removed at its own exact boundary."])
+
+    def orphan_record(serial, minute, target=None, valid_to="2026 Oct 21 1800 UTC"):
+        lines = ["WARNING: Synthetic geomagnetic K-index of 4 expected",
+                 "Valid From: 2026 Oct 21 1200 UTC", f"Valid To: {valid_to}",
+                 "Comment: Synthetic orphan conformance fixture; not an SWPC product."]
+        if target is not None:
+            lines[0] = "EXTENDED WARNING: Synthetic geomagnetic K-index of 4 expected"
+            lines.insert(1, f"Extension to Serial Number: {target}")
+        return synthetic("K04W", f"2026-10-21 12:{minute:02d}:00.000", "WARK04", serial, lines)
+
+    records = []
+    batches = [
+        (1, [orphan_record(28001, 0)]),
+        (3, [orphan_record(28003, 2, 28002)]),
+        (5, [orphan_record(28002, 4, 28001)]),
+        (7, [orphan_record(28011, 6)]),
+        (9, [orphan_record(28013, 8, 28012), orphan_record(28015, 8, 28014)]),
+        (11, [orphan_record(28012, 10, 28011), orphan_record(28014, 10, 28013)]),
+        (13, [orphan_record(28023, 12, 28022)]),
+        (15, [orphan_record(28022, 14, 28021)]),
+        (17, [orphan_record(28021, 16)]),
+        (19, [orphan_record(28033, 18, 28032),
+              orphan_record(28035, 18, 28034, valid_to="2026 Oct 22 1800 UTC")]),
+    ]
+    for minute, batch in batches:
+        if minute == 17:
+            b.step("restart")
+            b.step("evaluate", atUtc="2026-10-21T12:16:00Z")
+        records.extend(batch)
+        at = f"2026-10-21T12:{minute:02d}:00Z"
+        b.fetch(at, alerts_ok(records, f'"fixture-s28-{minute:02d}"', http_date(at)), None)
+    b.step("evaluate", atUtc="2026-11-25T18:00:00Z")
+    b.step("evaluate", atUtc="2026-11-26T18:00:00Z")
+    # Expectations come from the corrected model; existing scenarios stay hand-authored and unchanged.
+    model = Model(b.doc)
+    for step in b.doc["steps"]:
+        step["expect"] = model.run_step(step)
     out.append(b.build())
 
     return out

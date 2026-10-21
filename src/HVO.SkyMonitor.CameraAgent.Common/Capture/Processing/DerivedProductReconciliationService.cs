@@ -43,7 +43,7 @@ internal sealed class DerivedProductReconciliationService(
             }
             var reconciler = new DerivedProductReconciler(
                 options.Value.RawIngressRoot, store, options.Value.DerivedProductLifecycle, TimeProvider.System,
-                distribution.NotifyCommittedCapture);
+                distribution.NotifyCommittedCapture, logger);
             var summary = await reconciler.RunAsync(cancellationToken, maintenance.InterruptionToken).ConfigureAwait(false);
             telemetry.RecordReconciliation(summary);
             var inventory = await store.ReadAvailabilityInventoryAsync(cancellationToken).ConfigureAwait(false);

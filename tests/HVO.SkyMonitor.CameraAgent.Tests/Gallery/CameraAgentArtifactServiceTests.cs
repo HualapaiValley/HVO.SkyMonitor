@@ -678,6 +678,8 @@ public sealed partial class CameraAgentArtifactServiceTests
             Gallery = gallery;
         }
 
+        internal SqliteCaptureProcessingStore ProcessingStore => _processingStore;
+
         internal string Root { get; }
 
         internal CameraAgentArtifactService Service { get; }

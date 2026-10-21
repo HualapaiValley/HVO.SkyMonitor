@@ -133,7 +133,7 @@ internal sealed partial class CaptureProcessingPersistence(
         }
 
         var lifecycleGate = StorageLifecycleLock.ForRoot(_storageRoot);
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await StorageLifecycleLock.WaitAsync(lifecycleGate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
         try
         {
             var manifestOutput = await RequireOutputAsync(manifestArtifactId, captureId, cancellationToken).ConfigureAwait(false);
@@ -698,7 +698,7 @@ internal sealed partial class CaptureProcessingPersistence(
             ValidateProductForPublication(product);
         }
         var lifecycleGate = StorageLifecycleLock.ForRoot(_storageRoot);
-        await lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await StorageLifecycleLock.WaitAsync(lifecycleGate, "capture-storage", _logger, cancellationToken).ConfigureAwait(false);
         try
         {
             if (execution is not null)

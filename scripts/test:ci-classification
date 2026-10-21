@@ -230,6 +230,10 @@ expect_release_scripts false pull_request "$base_sha" "$head_sha"
 expect_release_scripts true push "$base_sha" "$head_sha"
 expect_release_scripts true workflow_dispatch "$base_sha" "$head_sha"
 release_scripts_paths=(
+  "scripts/release:cameraagent-publish"
+  "scripts/release:check-cameraagent-publish"
+  "scripts/cameraagent-release.targets"
+  "scripts/test:cameraagent-r2r"
   "scripts/release:assets"
   "scripts/release:combine-images"
   "scripts/test:release-images"
@@ -373,6 +377,10 @@ verify_deployment_installer_path() {
 }
 
 # Release-shell validation changes must select the tests that execute their gates even when no .NET path changes.
+verify_deployment_installer_path "scripts/release:cameraagent-publish"
+verify_deployment_installer_path "scripts/release:check-cameraagent-publish"
+verify_deployment_installer_path "scripts/cameraagent-release.targets"
+verify_deployment_installer_path "scripts/test:cameraagent-r2r"
 verify_deployment_installer_path "scripts/release:gate"
 verify_deployment_installer_path "scripts/release:publish"
 verify_deployment_installer_path "scripts/release:assets"

@@ -4,7 +4,6 @@ using System.Text.Json.Serialization;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Storage.FileSystem;
 using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Orbital;
 
@@ -141,8 +140,4 @@ public sealed partial class SqliteOrbitalElementsStore : IOrbitalSnapshotManifes
             InvalidOperationException or OperationCanceledException => OrbitalElementsAvailability.StoreUnavailableReasonCode,
             _ => null
         };
-
-    // Event IDs 7760-7769 belong to the operator-facing manifest reader. Messages carry identities and codes only.
-    [LoggerMessage(7760, LogLevel.Warning, "Orbital manifest {ManifestSha256} could not be read ({ReasonCode})")]
-    private static partial void ManifestReadFailed(ILogger logger, string manifestSha256, string reasonCode);
 }

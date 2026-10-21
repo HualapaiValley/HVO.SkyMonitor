@@ -133,7 +133,7 @@ public sealed class RetentionBackgroundService(
                 var lifecycleGateAcquired = false;
                 try
                 {
-                    await lifecycleGate.WaitAsync(sweepToken).ConfigureAwait(false);
+                    await StorageLifecycleLock.WaitAsync(lifecycleGate, "retention", _logger, sweepToken).ConfigureAwait(false);
                     lifecycleGateAcquired = true;
                     StorageCapacity capacity;
                     try

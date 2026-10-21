@@ -395,3 +395,42 @@ Dispatch `CameraAgent Real-Duration Soak` on a runner labeled
 `self-hosted`, `linux`, and `skymonitor-soak`, or run
 `./scripts/run:cameraagent-soak 24h`. The workflow retains compact logs and a
 JSON inventory; it does not upload the complete image tree.
+
+## Derived-product reconciliation lock budget
+
+Derived-product reconciliation releases the storage lifecycle lock between individual
+products, temporary-file deletions and durable lifecycle operations. Reclaimed orphan
+records use a fixed batch of 16. Directory enumeration, payload reads, checksums and
+manifest validation run outside the lock. Crash recovery also compares duplicate source
+and destination copies outside the lock, revalidates their identities, then resumes all
+moves and database transitions as one locked operation. The configured reconciliation page size
+controls progress per pass, not the number of products held under one lock.
+
+The diagnostic wait budget is **250 ms**. A caller queued behind reconciliation
+waits for its current metadata/publication unit, rather than all retained products.
+This is an operating budget, not a real-time filesystem guarantee or a cancellation
+timeout: a slow filesystem, directory sync, SQLite transaction, or another lock owner
+can exceed it. Durable mutations finish safely. The next pre-release Pi smoke test
+must verify capture storage and Current Sky during a 512-product pass.
+
+After unlocked validation, reconciliation rechecks the canonical paths, file lengths,
+last-write and creation timestamps, and committed database identity/state under the
+lock. A changed or removed product is deferred to a subsequent pass; stale validation
+never authorizes a quarantine, availability update or deletion. Publication, quarantine
+moves, retention checks and artifact handle pinning still use the same per-root lock.
+Frozen-output pin admission rejects outputs with a delete operation in `planned` or
+`moved` phase inside its existing SQLite transaction. Recovery can therefore release
+the lock for duplicate-copy comparison without accepting a replay input it will delete.
+`database-completed` and `files-deleted` only clean up tombstones and do not block
+a valid output recreated with the same identity.
+The existing outcome counters count inspected evidence and completed decisions;
+a deferred observation contributes no available, missing or quarantine decision.
+
+The existing `HVO.SkyMonitor.CameraAgent.ProcessingGraph` meter exposes
+`camera_agent.storage.lifecycle.wait.duration` in seconds, tagged only by the bounded
+`caller` values `capture-storage`, `artifact-read`, `reconciliation`, `gallery`,
+`retention`, `outbox`, `upload`, `trail-composition` and `replay`. Acquisitions add
+`storage.lifecycle.lock.acquired` events to the current diagnostic activity with
+`caller` and `wait.duration`. Debug event 8450 records each completed or canceled wait. Warning
+8451 is emitted only when the measured wait exceeds 250 ms. No path or artifact
+identity is a metric label or diagnostic field. Canceled waits contribute wait timing and a `storage.lifecycle.lock.cancelled` event without claiming acquisition.

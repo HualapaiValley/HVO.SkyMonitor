@@ -1458,6 +1458,8 @@ PY
 PATH="${PATH#"$fake_bin:"}" "$repo_root/scripts/test:release-images" || fail "the native release image tests failed."
 [[ ! -s "$FAKE_SKOPEO_LOG" ]] || fail "the native image suite called the fake skopeo."
 
+PATH="${PATH#"$fake_bin:"}" "$repo_root/scripts/test:cameraagent-r2r" || fail "the CameraAgent R2R tests failed."
+
 # install.sh's tests bring their own fake commands, so they run on the PATH this script was given.
 PATH="${PATH#"$fake_bin:"}" "$repo_root/scripts/test:install-sh" || fail "the install.sh tests failed."
 
