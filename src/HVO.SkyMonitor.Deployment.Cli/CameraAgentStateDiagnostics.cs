@@ -16,12 +16,15 @@ internal static class CameraAgentStateDiagnostics
     /// A database-derived name and value are redacted as the one assignment they read as, then escaped. The value is the whole
     /// field, so a name the redactor treats as a credential hides all of it, not only the first word an unquoted value ends at.
     /// Decoration in the name, which the redactor removes, does not make an ordinary name read as a credential, and the decision
-    /// rests on the name alone, so a sequence the name ends inside cannot reach into the value.
+    /// rests on the name alone, so a sequence the name ends inside cannot reach into the value. The name is a credential if it
+    /// reads as one without its controls, or as the redactor matches it, with every control but decoration in place (#1491).
     /// </summary>
     public static string Assignment(string? name, string? value)
     {
         var probe = Redaction.WithoutControlSequences(name ?? string.Empty) + "=value";
-        return Reason(!string.IsNullOrEmpty(value) && Redaction.SafeDiagnostic(probe) != probe ? $"{name}=<redacted>" : $"{name}={value}");
+        var matched = Redaction.WithoutDecoration(name ?? string.Empty) + "=value";
+        var credential = Redaction.SafeDiagnostic(probe) != probe || Redaction.Redact(matched) != Redaction.WithoutControlSequences(matched);
+        return Reason(!string.IsNullOrEmpty(value) && credential ? $"{name}=<redacted>" : $"{name}={value}");
     }
 
     /// <summary>Explicitly formatted diagnostics retain their encoding; every other exception message is a raw fragment.</summary>

@@ -57,6 +57,33 @@ public sealed partial class LifecycleContractTests
     [DataRow(true, "x\u001btoken review-1491-secret", "xtoken <redacted>")]
     [DataRow(false, "x\u0085token review-1491-secret", "xtoken <redacted>")]
     [DataRow(true, "x\u0085token review-1491-secret", "xtoken <redacted>")]
+    // F6 (PR-1496-R2): two credentials behind a quote. SQLite puts every message in quotes, so none may skip the first.
+    [DataRow(false, "Connection failed: Host=db;Password=review-1491-secret;Token=abc", "Host=db;Password=<redacted>;Token=<redacted>")]
+    [DataRow(true, "Connection failed: Host=db;Password=review-1491-secret;Token=abc", "Host=db;Password=<redacted>;Token=<redacted>")]
+    [DataRow(false, "'(password:review-1491-secret,Token=x", "'(password:<redacted>,Token=<redacted>")]
+    [DataRow(true, "'(password:review-1491-secret,Token=x", "'(password:<redacted>,Token=<redacted>")]
+    [DataRow(false, "CHECK constraint failed: 'x' password=review-1491-secret, token=review-1491-secret",
+        "'x' password=<redacted>, token=<redacted>")]
+    [DataRow(true, "CHECK constraint failed: 'x' password=review-1491-secret, token=review-1491-secret",
+        "'x' password=<redacted>, token=<redacted>")]
+    [DataRow(false, "\"user=x password=review-1491-secret token=review-1491-secret\"", "\"user=x password=<redacted> token=<redacted>\"")]
+    [DataRow(true, "\"user=x password=review-1491-secret token=review-1491-secret\"", "\"user=x password=<redacted> token=<redacted>\"")]
+    [DataRow(false, "'--password=review-1491-secret --token=review-1491-secret'", "'--password=<redacted> --token=<redacted>'")]
+    [DataRow(true, "'--password=review-1491-secret --token=review-1491-secret'", "'--password=<redacted> --token=<redacted>'")]
+    // F8 (PR-1496-R2): removed decoration keeps the word boundary before a key after it, as the string did before.
+    [DataRow(false, "see\u001b]8;;\u001b\\token review-1491-secret", "seetoken <redacted>")]
+    [DataRow(true, "see\u001b]8;;\u001b\\token review-1491-secret", "seetoken <redacted>")]
+    [DataRow(false, "link\u001b]8;;https://example.test\u001b\\docs\u001b]8;;\u001b\\token review-1491-secret", "linkdocstoken <redacted>")]
+    [DataRow(true, "link\u001b]8;;https://example.test\u001b\\docs\u001b]8;;\u001b\\token review-1491-secret", "linkdocstoken <redacted>")]
+    [DataRow(false, "0\u001b]\u0007Bearer review-1491-secret", "0Bearer <redacted>")]
+    [DataRow(true, "0\u001b]\u0007Bearer review-1491-secret", "0Bearer <redacted>")]
+    [DataRow(false, "x\u001b]0\u001b\\authorization: Basic review-1491-secret", "xauthorization: <redacted>")]
+    [DataRow(true, "x\u001b]0\u001b\\authorization: Basic review-1491-secret", "xauthorization: <redacted>")]
+    // F9 (PR-1496-R2): URL punctuation inside a removed string still marks the user information after it.
+    [DataRow(false, "https\u001b]://\u001b\\user:review-1491-secret@host", "https]://<redacted>@host")]
+    [DataRow(true, "https\u001b]://\u001b\\user:review-1491-secret@host", "https]://<redacted>@host")]
+    [DataRow(false, "://review-1491-secret\u001bP@\u001b\\", "://<redacted>@\\")]
+    [DataRow(true, "://review-1491-secret\u001bP@\u001b\\", "://<redacted>@\\")]
     // A CSI that is not decoration, between a key and its quoted value, still leaves the whole value redacted.
     [DataRow(false, "token: \u001b[2J\"a review-1491-secret b\"", "token: \"<redacted>\"")]
     [DataRow(true, "token: \u001b[2J\"a review-1491-secret b\"", "token: \"<redacted>\"")]
@@ -127,6 +154,13 @@ public sealed partial class LifecycleContractTests
     // F4: the decision rests on the name alone, so a CSI the name ends inside cannot take the value's first letter.
     [DataRow(false, "token\u001b[", "correct review-1491-secret staple", "claim token[=<redacted> of account owner removed again")]
     [DataRow(true, "token\u001b[", "correct review-1491-secret staple", "claim token[=<redacted> of account owner removed again")]
+    // F7 (PR-1496-R2): a name that reads as a credential with its other controls in place, as the redactor matches it.
+    [DataRow(false, "token\u0085x", "correct review-1491-secret staple", "claim token<redacted> of account owner removed again")]
+    [DataRow(true, "token\u0085x", "correct review-1491-secret staple", "claim token<redacted> of account owner removed again")]
+    [DataRow(false, "0\u001bToken q", "correct review-1491-secret staple", "claim 0Token <redacted> of account owner removed again")]
+    [DataRow(true, "0\u001bToken q", "correct review-1491-secret staple", "claim 0Token <redacted> of account owner removed again")]
+    [DataRow(false, "secret\u0085-", "correct review-1491-secret staple", "claim secret<redacted> of account owner removed again")]
+    [DataRow(true, "secret\u0085-", "correct review-1491-secret staple", "claim secret<redacted> of account owner removed again")]
     // A decorated ordinary claim keeps its value.
     [DataRow(false, "scope\u001b[31m", "camera read", "claim scope=camera read of account owner removed again")]
     [DataRow(true, "scope\u001b[31m", "camera read", "claim scope=camera read of account owner removed again")]
@@ -207,11 +241,16 @@ public sealed partial class LifecycleContractTests
     [DataRow(true, "refusal")]
     [DataRow(false, "unexpected")]
     [DataRow(true, "unexpected")]
+    // F6 (PR-1496-R2): two credentials behind a quote in a raw message.
+    [DataRow(false, "quoted")]
+    [DataRow(true, "quoted")]
     public async Task Diagnostic1491_RawMessageIsStillRedactedAtTheTopLevel(bool json, string kind)
     {
         Exception failure = kind switch
         {
             "failure" => new InstallerException("raw failure token=review-1491-secret tail"),
+            "quoted" => new InstallerException(
+                "Backup failed: Connection failed: \"Host=db;Username=app;Password=review-1491-secret;Token=review-1491-secret\""),
             "refusal" => InstallerException.Refused("raw refusal password:'review-1491-secret tail'"),
             _ => new IOException("raw io token=review-1491-secret")
         };
@@ -219,9 +258,12 @@ public sealed partial class LifecycleContractTests
             new LifecycleRequest(LifecycleOperationKind.Backup, Guid.NewGuid(), "/var/lib/hvo-sky", false, false, json),
             (_, _) => throw failure);
         Console.WriteLine(JsonSerializer.Serialize(error));
+        Assert.IsFalse(error.Contains("review-1491-secret", StringComparison.Ordinal), error);
         var (code, expected, exit) = kind switch
         {
             "failure" => ("installation-failed", "raw failure token=<redacted> tail", 1),
+            "quoted" => ("installation-failed",
+                "Backup failed: Connection failed: \"Host=db;Username=app;Password=<redacted>;Token=<redacted>\"", 1),
             "refusal" => ("refused", "raw refusal password:'<redacted>'", 3),
             _ => ("installation-failed", "Unexpected IOException: raw io token=<redacted>", 1)
         };
