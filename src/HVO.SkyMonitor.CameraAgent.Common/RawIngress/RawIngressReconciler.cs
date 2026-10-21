@@ -11,8 +11,7 @@ internal sealed class RawIngressReconciler(
     Action? fileFlushRecorder = null,
     Action? directorySyncRecorder = null,
     IReadOnlyList<CaptureLaneDefinition>? laneDefinitions = null,
-    Func<string, Stream>? openPayload = null,
-    bool verifyCommittedPayloads = false)
+    Func<string, Stream>? openPayload = null)
 {
     private readonly string _root = Path.GetFullPath(root);
     private readonly SqliteRawCaptureJournal _journal = journal;
@@ -20,7 +19,6 @@ internal sealed class RawIngressReconciler(
     private readonly Action? _fileFlushRecorder = fileFlushRecorder;
     private readonly Action? _directorySyncRecorder = directorySyncRecorder;
     private readonly Func<string, Stream> _openPayload = openPayload ?? OpenPayload;
-    private readonly bool _verifyCommittedPayloads = verifyCommittedPayloads;
 
     /// <summary>A quarantine move found by inspection and made only under the maintenance barrier.</summary>
     private sealed record PendingQuarantine(string? PayloadPath, string? SidecarPath, string Reason, Guid? CaptureId);
@@ -36,8 +34,9 @@ internal sealed class RawIngressReconciler(
     /// A committed entry's payload was flushed before its row committed, so this checks its structure only: the sidecar
     /// is the committed manifest and the payload has the committed length. Its bytes are not read, so the pass does not
     /// grow with retained payload bytes; the consumers that read a payload verify its checksum first. Evidence without a
-    /// committed row, which a crash can leave, is still hashed in full, as is every committed payload when
-    /// <c>verifyCommittedPayloads</c> is set.
+    /// committed row, which a crash can leave, is still hashed in full, as is every committed payload whose lane work
+    /// ended because processing found its evidence unusable. That outcome is durable, so every pass, a restart's
+    /// included, verifies the payload again until it is quarantined or an operator releases it.
     /// </remarks>
     internal async Task<RawIngressReconciliationSummary> RunAsync(
         Func<CancellationToken, ValueTask<Capture.CaptureMaintenanceEntry>> enterMaintenance,
@@ -113,6 +112,7 @@ internal sealed class RawIngressReconciler(
         // A durable plan still owns its paths, even if a newer companion could otherwise be recovered.
         var claimedPayloads = new HashSet<string>(plannedPaths, StringComparer.Ordinal);
         var claimedSidecars = new HashSet<string>(plannedPaths, StringComparer.Ordinal);
+        var reportedCaptures = await _journal.ReadReportedEvidenceFailuresAsync(inspectionToken).ConfigureAwait(false);
         await foreach (var entry in _journal.EnumerateAsync(inspectionToken).ConfigureAwait(false))
         {
             claimedPayloads.Add(entry.PayloadRelativePath);
@@ -144,7 +144,8 @@ internal sealed class RawIngressReconciler(
                 continue;
             }
             if (!await MatchesCommittedEntryAsync(
-                    entry, payloadPath, sidecarPath, _verifyCommittedPayloads ? _openPayload : null, inspectionToken).ConfigureAwait(false))
+                    entry, payloadPath, sidecarPath, reportedCaptures.Contains(entry.CaptureId) ? _openPayload : null,
+                    inspectionToken).ConfigureAwait(false))
             {
                 Defer(payloadPath, sidecarPath, "committed-evidence-mismatch", entry.CaptureId);
                 continue;

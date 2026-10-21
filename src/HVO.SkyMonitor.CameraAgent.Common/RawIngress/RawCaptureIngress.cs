@@ -46,8 +46,10 @@ internal sealed partial class RawCaptureIngress :
     private readonly Capture.CaptureMaintenanceGate? _maintenanceGate;
     private int _completedInitializations;
     private bool _maintenanceDeferred;
-    private bool _rawReconciliationRequired = true;
-    private bool _verifyCommittedPayloads;
+    // Every request for the raw reconciliation increments the first; a raw pass that left nothing for later records the
+    // count it read before it ran, so a request made while it ran still needs another pass.
+    private long _reconciliationRequests = 1;
+    private long _reconciledRequests;
     private bool _journalValidated;
     private bool _evidenceUnavailable;
     private bool _capacityRevalidationRequired;
@@ -171,8 +173,8 @@ internal sealed partial class RawCaptureIngress :
                 using var reconciliationActivity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.reconcile");
                 // Capture opening after a held start reruns only what that start deferred: the raw pass that already ran
                 // in this process runs again only if it left work for later or a failure invalidated it since.
-                var reconcileRaw = Volatile.Read(ref _rawReconciliationRequired);
-                var verifyCommittedPayloads = Volatile.Read(ref _verifyCommittedPayloads);
+                var requests = Interlocked.Read(ref _reconciliationRequests);
+                var reconcileRaw = requests != Volatile.Read(ref _reconciledRequests);
                 var reconciliation = reconcileRaw
                     ? await new RawIngressReconciler(
                         _options.RawIngressRoot,
@@ -180,8 +182,7 @@ internal sealed partial class RawCaptureIngress :
                         _telemetry.RecordFileFlush,
                         _telemetry.RecordDirectorySync,
                         _lanePolicy.Definitions,
-                        _faultInjector.OpenPayloadForVerification,
-                        verifyCommittedPayloads)
+                        _faultInjector.OpenPayloadForVerification)
                          .RunAsync(EnterInitializationMaintenanceAsync, cancellationToken, interruptionToken).ConfigureAwait(false)
                     : new RawIngressReconciliationSummary(0, 0, 0, 0, 0, 0);
                 var projectedSceneBacklog = 0;
@@ -283,20 +284,16 @@ internal sealed partial class RawCaptureIngress :
                 {
                     _logger.RawIngressRecovered();
                 }
-                if (reconcileRaw)
-                {
-                    // A held quarantine or an unrepaired index is found again by the next pass; a held quarantine of a
-                    // payload whose content differs is found only by another verifying pass.
-                    Volatile.Write(ref _rawReconciliationRequired,
-                        reconciliation.MaintenanceDeferred > 0 || reconciliation.IndexProjectionFailures > 0);
-                    if (verifyCommittedPayloads && reconciliation.MaintenanceDeferred == 0)
-                        Volatile.Write(ref _verifyCommittedPayloads, false);
-                }
+                // A held quarantine or an unrepaired index is found again by the next pass.
+                if (reconcileRaw && reconciliation.MaintenanceDeferred == 0 && reconciliation.IndexProjectionFailures == 0)
+                    Volatile.Write(ref _reconciledRequests, requests);
                 Interlocked.Increment(ref _completedInitializations);
                 Volatile.Write(ref _initialized, true);
-                // A resume can notify us after the maintenance lease releases but before this publication.
-                // Recheck after publishing: an earlier notification is covered here, and a later one invalidates us.
-                if (Volatile.Read(ref _maintenanceDeferred) && _maintenanceGate?.HeldBy == Capture.CaptureAdmissionState.Running)
+                // A resume can notify us after the maintenance lease releases but before this publication, and processing
+                // can report evidence while this ran. Recheck after publishing: an earlier one is covered here, and a later
+                // one invalidates us.
+                if (Interlocked.Read(ref _reconciliationRequests) != requests ||
+                    Volatile.Read(ref _maintenanceDeferred) && _maintenanceGate?.HeldBy == Capture.CaptureAdmissionState.Running)
                     Volatile.Write(ref _initialized, false);
                 return true;
             }
@@ -308,14 +305,14 @@ internal sealed partial class RawCaptureIngress :
             catch (InvalidDataException) when (_journalValidated && _evidenceUnavailable)
             {
                 // The validated journal has already published its evidence health and retained quarantine.
-                Volatile.Write(ref _rawReconciliationRequired, true);
+                Interlocked.Increment(ref _reconciliationRequests);
                 _telemetry.RecordFailure("initialization", "evidence-unavailable");
                 if (allowEvidenceUnavailable) return false;
                 throw;
             }
             catch (Exception exception)
             {
-                Volatile.Write(ref _rawReconciliationRequired, true);
+                Interlocked.Increment(ref _reconciliationRequests);
                 var reason = FailureReason(exception);
                 SetAvailabilityPreservingTotals(RawIngressAvailability.Unhealthy, "initialization-failed");
                 _telemetry.RecordFailure("initialization", reason);
@@ -896,16 +893,13 @@ internal sealed partial class RawCaptureIngress :
         SetAvailabilityPreservingTotals(RawIngressAvailability.Unhealthy, "committed-evidence-unavailable");
         _telemetry.RecordFailure("processing", "evidence-unavailable");
         _logger.RawIngressRefused("processing", "evidence-unavailable");
-        // A consumer could not use committed evidence, which may be a payload whose content no longer matches its
-        // checksum, so the next pass verifies every committed payload and quarantines it as a startup used to.
-        Volatile.Write(ref _verifyCommittedPayloads, true);
         RequireReconciliation();
     }
 
     /// <summary>Makes the next operation re-initialize, running the raw ingress reconciliation again.</summary>
     private void RequireReconciliation()
     {
-        Volatile.Write(ref _rawReconciliationRequired, true);
+        Interlocked.Increment(ref _reconciliationRequests);
         Volatile.Write(ref _initialized, false);
     }
 
@@ -978,6 +972,10 @@ internal sealed partial class RawCaptureIngress :
         var started = System.Diagnostics.Stopwatch.GetTimestamp();
         var actualOutcome = await _laneStore.FailAsync(lease, result, cancellationToken).ConfigureAwait(false);
         var reason = NormalizeLaneReason(result.Reason);
+        // This outcome is what makes the raw pass verify the capture's payload in full. It commits after the handler
+        // reported the evidence, so a pass that report started can have run before it.
+        if (actualOutcome == CaptureLaneHandlerOutcome.TerminalFailure && reason == "evidence-unavailable")
+            RequireReconciliation();
         if (actualOutcome is CaptureLaneHandlerOutcome.RetryableFailure or CaptureLaneHandlerOutcome.Deferred)
         {
             _logger.CaptureLaneRetryScheduled(

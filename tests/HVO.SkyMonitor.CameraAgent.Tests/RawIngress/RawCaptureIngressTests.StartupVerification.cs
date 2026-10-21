@@ -1,4 +1,7 @@
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
@@ -10,10 +13,14 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 
 /// <summary>
 /// Startup checks committed evidence by structure only, so it does not grow with retained payload bytes, while every
-/// payload's content is still verified before it is used (#1494).
+/// payload's content is still verified before it is used (#1494). A payload that processing refuses ends its lane work as
+/// <c>evidence-unavailable</c>, and every raw pass, a restart's included, verifies that payload in full until it is
+/// quarantined.
 /// </summary>
 public sealed partial class RawCaptureIngressTests
 {
+    private static readonly CaptureLaneDefinition StandardLane = new("standard", true, true, true, new string('A', 64));
+
     [TestMethod]
     public async Task InitializeAsync_ManyCommittedCaptures_ReadsNoPayloadBytes()
     {
@@ -30,6 +37,10 @@ public sealed partial class RawCaptureIngressTests
                     Assert.IsNotNull(await original.AcceptAsync(
                         configuration, CreateSubmission(Timestamp(1).AddMinutes(index), payload), CancellationToken.None).ConfigureAwait(false));
                 }
+                // Processing that fails for a reason other than its evidence does not ask for the payload to be verified.
+                var lease = await original.ClaimAsync(StandardLane, "processing-test", configuration, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(lease);
+                await original.FailAsync(lease, CaptureLaneHandlerResult.Terminal("processing.unhandled"), CancellationToken.None).ConfigureAwait(false);
             }
             SqliteConnection.ClearAllPools();
             var state = new RawIngressState(TimeProvider.System);
@@ -97,9 +108,10 @@ public sealed partial class RawCaptureIngressTests
     }
 
     /// <summary>
-    /// A payload whose content changed but not its length passes startup, and processing, which verifies a payload's
-    /// checksum before it uses the frame, reports it unavailable. The pass that follows verifies every committed payload
-    /// and quarantines it, as a startup used to, and while capture is paused it defers the move until capture runs.
+    /// A payload whose content changed but not its length passes startup. Processing, which verifies a payload's checksum
+    /// before it uses the frame, refuses it and ends the capture's lane work as <c>evidence-unavailable</c>. The pass that
+    /// follows verifies that payload and quarantines it, as a startup used to, and while capture is paused it defers the
+    /// move until capture runs.
     /// </summary>
     [TestMethod]
     [DataRow(false)]
@@ -109,11 +121,11 @@ public sealed partial class RawCaptureIngressTests
         using var hold = new HVO.SkyMonitor.CameraAgent.Tests.Capture.MaintenanceHoldRoot();
         var root = hold.Path;
         var configuration = CreateConfiguration();
-        var submission = CreateSubmission(Timestamp(5), [5, 5, 5, 5]);
         RawCaptureReceipt accepted;
         using (var original = CreateIngress(root, new RawIngressState(TimeProvider.System)))
         {
-            accepted = (await original.AcceptAsync(configuration, submission, CancellationToken.None).ConfigureAwait(false))!;
+            accepted = (await original.AcceptAsync(
+                configuration, CreateSubmission(Timestamp(5), [5, 5, 5, 5]), CancellationToken.None).ConfigureAwait(false))!;
         }
         SqliteConnection.ClearAllPools();
         var payload = accepted.StoredFrame.AbsolutePath;
@@ -127,12 +139,7 @@ public sealed partial class RawCaptureIngressTests
         Assert.AreEqual(0L, reads.BytesRead, "Startup read a committed payload.");
         Assert.AreEqual(RawIngressAvailability.Accepting, state.Snapshot.Availability);
 
-        var channel = new FrameProcessingChannel(2);
-        await channel.WriteAsync(new FrameProcessingItem(configuration, submission, accepted), CancellationToken.None).ConfigureAwait(false);
-        channel.Complete();
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
-            new FrameProcessingWorker(channel, [new RawReadingStep()], NullLogger.Instance, restarted)
-                .RunAsync(CancellationToken.None)).ConfigureAwait(false);
+        await ReportThroughStandardLaneAsync(restarted, configuration).ConfigureAwait(false);
         Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
         Assert.IsTrue(File.Exists(payload));
 
@@ -154,6 +161,168 @@ public sealed partial class RawCaptureIngressTests
         using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
         Assert.AreEqual("quarantined", await ScalarStringAsync(connection,
             $"SELECT state FROM raw_captures WHERE capture_id = '{accepted.Manifest.Descriptor.Capture.CaptureId:N}';").ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// The lane's terminal outcome is what asks for a reported payload to be verified, so the request survives a restart
+    /// that comes before the pass that would quarantine it: a stop while capture runs, or the installer restarting a
+    /// candidate it started with capture paused, whose pass held the quarantine.
+    /// </summary>
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task AReportedMismatch_IsQuarantinedAfterARestart(bool paused)
+    {
+        using var hold = new HVO.SkyMonitor.CameraAgent.Tests.Capture.MaintenanceHoldRoot();
+        var root = hold.Path;
+        var configuration = CreateConfiguration();
+        RawCaptureReceipt accepted;
+        using (var original = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+        {
+            accepted = (await original.AcceptAsync(
+                configuration, CreateSubmission(Timestamp(5), [5, 5, 5, 5]), CancellationToken.None).ConfigureAwait(false))!;
+        }
+        SqliteConnection.ClearAllPools();
+        var payload = accepted.StoredFrame.AbsolutePath;
+        await File.WriteAllBytesAsync(payload, [6, 6, 6, 6]).ConfigureAwait(false);
+        using (var admission = await hold.AdmissionAsync(paused).ConfigureAwait(false))
+        using (var reporting = CreateIngress(root, new RawIngressState(TimeProvider.System), maintenanceGate: hold.Gate))
+        {
+            await reporting.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            await ReportThroughStandardLaneAsync(reporting, configuration).ConfigureAwait(false);
+            if (paused)
+            {
+                await reporting.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(File.Exists(payload), "A paused verification moved committed evidence.");
+            }
+        }
+        SqliteConnection.ClearAllPools();
+        using var restartedAdmission = await hold.RestartAsync().ConfigureAwait(false);
+        var state = new RawIngressState(TimeProvider.System);
+        var reads = new PayloadReadCounter();
+        using var restarted = CreateIngress(root, state, reads, maintenanceGate: hold.Gate);
+
+        if (paused)
+        {
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(4L, reads.BytesRead, "The restarted candidate did not verify the reported payload.");
+            Assert.IsTrue(File.Exists(payload), "A paused start moved committed evidence.");
+            Assert.AreEqual(RawIngressAvailability.Degraded, state.Snapshot.Availability);
+            await restartedAdmission.ResumeAsync("restart-resume", null, "test", null, CancellationToken.None).ConfigureAwait(false);
+        }
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual(paused ? 8L : 4L, reads.BytesRead, "The restart did not verify the reported payload.");
+        Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
+        Assert.IsFalse(File.Exists(payload), "The reported evidence was never quarantined.");
+        Assert.HasCount(1, Directory.EnumerateFiles(
+            Path.Combine(root, "quarantine"), Path.GetFileName(payload), SearchOption.AllDirectories).ToArray());
+        using var connection = await OpenJournalAsync(root).ConfigureAwait(false);
+        Assert.AreEqual("quarantined", await ScalarStringAsync(connection,
+            $"SELECT state FROM raw_captures WHERE capture_id = '{accepted.Manifest.Descriptor.Capture.CaptureId:N}';").ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// The lane worker reports a payload without any ingress lock, so the report can arrive while an initialization runs.
+    /// That initialization must not clear it when it publishes: the next operation runs the raw pass again, and once the
+    /// lane's outcome is recorded that pass quarantines the payload.
+    /// </summary>
+    [TestMethod]
+    public async Task AReportMadeDuringARawPass_IsNotClearedByIt()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var configuration = CreateConfiguration();
+            RawCaptureReceipt accepted;
+            using (var original = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            {
+                accepted = (await original.AcceptAsync(
+                    configuration, CreateSubmission(Timestamp(4), [4, 4, 4, 4]), CancellationToken.None).ConfigureAwait(false))!;
+            }
+            SqliteConnection.ClearAllPools();
+            // Evidence a crash left without a committed row is verified in full, which gives the pass a payload to open.
+            using (var crashed = CreateIngress(
+                root, new RawIngressState(TimeProvider.System), new OneShotFaultInjector(RawIngressFaultPoint.BeforeJournalCommit)))
+            {
+                await Assert.ThrowsExactlyAsync<InjectedRawIngressFaultException>(() => crashed.AcceptAsync(
+                    configuration, CreateSubmission(Timestamp(5), [5, 5, 5, 5]), CancellationToken.None).AsTask()).ConfigureAwait(false);
+            }
+            SqliteConnection.ClearAllPools();
+            var payload = accepted.StoredFrame.AbsolutePath;
+            await File.WriteAllBytesAsync(payload, [6, 6, 6, 6]).ConfigureAwait(false);
+            var state = new RawIngressState(TimeProvider.System);
+            var reads = new PayloadReadCounter();
+            var logger = new RecordingLogger();
+            using var restarted = CreateIngress(root, state, reads, logger: logger);
+            reads.BeforeNextOpen(restarted.InvalidateEvidence);
+
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(1, logger.Snapshot.Count(entry => entry.EventId == 2041));
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(2, logger.Snapshot.Count(entry => entry.EventId == 2041), "The pass cleared a report made while it ran.");
+
+            await ReportThroughStandardLaneAsync(restarted, configuration).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+            Assert.AreEqual(8L, reads.BytesRead, "Only the crash-left payload and the reported one are verified.");
+            Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
+            Assert.IsFalse(File.Exists(payload), "The reported evidence was never quarantined.");
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
+    /// <summary>
+    /// Once a reported payload is quarantined, raw ingress stays unavailable until an operator releases the evidence, and
+    /// each initialization meanwhile runs the raw pass again. That pass verifies neither the quarantined payload nor any
+    /// other committed one.
+    /// </summary>
+    [TestMethod]
+    public async Task AQuarantinedReport_IsNotVerifiedAgainWhileRawIngressIsUnavailable()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var configuration = CreateConfiguration();
+            RawCaptureReceipt corrupted;
+            using (var original = CreateIngress(root, new RawIngressState(TimeProvider.System)))
+            {
+                corrupted = (await original.AcceptAsync(
+                    configuration, CreateSubmission(Timestamp(5), [5, 5, 5, 5]), CancellationToken.None).ConfigureAwait(false))!;
+                Assert.IsNotNull(await original.AcceptAsync(
+                    configuration, CreateSubmission(Timestamp(6), [6, 6, 6, 6]), CancellationToken.None).ConfigureAwait(false));
+            }
+            SqliteConnection.ClearAllPools();
+            var payload = corrupted.StoredFrame.AbsolutePath;
+            await File.WriteAllBytesAsync(payload, [7, 7, 7, 7]).ConfigureAwait(false);
+            var state = new RawIngressState(TimeProvider.System);
+            var reads = new PayloadReadCounter();
+            using var restarted = CreateIngress(root, state, reads);
+            await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            await ReportThroughStandardLaneAsync(restarted, configuration).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.IsFalse(File.Exists(payload), "The reported evidence was never quarantined.");
+            Assert.AreEqual(4L, reads.BytesRead);
+
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                    await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            }
+
+            Assert.AreEqual(4L, reads.BytesRead, "A later initialization verified committed payloads again.");
+            Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
     }
 
     /// <summary>
@@ -254,6 +423,30 @@ public sealed partial class RawCaptureIngressTests
         Assert.AreEqual(0, reads.Opens);
     }
 
+    /// <summary>
+    /// Runs the capture's standard lane work as the lane worker does: loading the raw frame verifies its checksum, the
+    /// handler reports the evidence unavailable, and the lane's terminal outcome is recorded.
+    /// </summary>
+    private static async Task ReportThroughStandardLaneAsync(RawCaptureIngress ingress, CameraModuleConfig configuration)
+    {
+        var lease = await ingress.ClaimAsync(StandardLane, "processing-test", configuration, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        using var standard = new StandardCaptureLaneHandler(
+            new RawReadingPipelineFactory(), NullLogger<StandardCaptureLaneHandler>.Instance, ingress);
+        var result = await standard.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual("evidence-unavailable", result.Reason);
+        Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure,
+            await ingress.FailAsync(lease, result, CancellationToken.None).ConfigureAwait(false));
+    }
+
+    private sealed class RawReadingPipelineFactory : ICaptureProcessingPipelineFactory
+    {
+        public CaptureProcessingGraph CreateGraph(CameraModuleConfig config)
+            => new([new CaptureProcessingGraphNode("raw-reader", new RawReadingStep(), [], true, null, null, null, new string('R', 64))]);
+
+        public CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config) => throw new NotSupportedException();
+    }
+
     private sealed class RawReadingStep : ICaptureProcessingStep
     {
         public string Name => "raw-reader";
@@ -269,10 +462,14 @@ public sealed partial class RawCaptureIngressTests
     {
         private int _opens;
         private long _bytesRead;
+        private Action? _beforeNextOpen;
 
         public int Opens => Volatile.Read(ref _opens);
 
         public long BytesRead => Interlocked.Read(ref _bytesRead);
+
+        /// <summary>Runs <paramref name="action"/> inside the reconciliation pass, as it opens its next payload.</summary>
+        public void BeforeNextOpen(Action action) => Volatile.Write(ref _beforeNextOpen, action);
 
         public void Inject(RawIngressFaultPoint point)
         {
@@ -280,6 +477,7 @@ public sealed partial class RawCaptureIngressTests
 
         public Stream OpenPayloadForVerification(string path)
         {
+            Interlocked.Exchange(ref _beforeNextOpen, null)?.Invoke();
             Interlocked.Increment(ref _opens);
             return new CountingStream(RawIngressReconciler.OpenPayload(path), this);
         }
