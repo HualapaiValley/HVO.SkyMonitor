@@ -239,6 +239,19 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+## IERS Earth Orientation And Leap-Second Data
+
+CameraAgent ships one unmodified copy of each file below for satellite planning. Its provenance, including the source
+URL, retrieval time, the provider's checksum and the SHA-256 of the exact bytes, is in
+`time-data/provenance.json` beside the files.
+
+- `finals2000A.daily.extended`: Earth orientation parameters from the IERS Rapid Service/Prediction Center, U.S.
+  Naval Observatory (https://maia.usno.navy.mil/products/daily.htm). The products page states: "Distribution
+  Statement A. Approved for public release: distribution unlimited."
+- `leap-seconds.list`: the leap-second table of the IERS Earth Orientation Center, Paris Observatory
+  (https://hpiers.obspm.fr/iers/bul/bulc/ntp/leap-seconds.list). The file states: "This file is in the public
+  domain."
+
 ## SGP4 numerical core
 
 HVO.SkyMonitor includes the C# `SGP4.cs` and `ElsetRec.cs` implementation from
