@@ -29,7 +29,7 @@
         }
         else
         {
-            <div id="space-weather-error" class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>@SpaceWeatherSummary.UnavailableText</strong> @_error Nothing is claimed about current notices.</span></div>
+            <div id="space-weather-error" class="ops-note-banner compact" role="alert"><span class="status-icon failure" aria-hidden="true"></span><span><strong>@SpaceWeatherSummary.UnavailableText</strong>@(ErrorDetail is { } detail ? $" {detail} " : " ")Nothing is claimed about current notices.</span></div>
             <div class="ops-action-list space-weather-actions">
                 <article class="ops-action-row">
                     <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M16 10a6 6 0 1 1-1.76-4.24"></path><path d="M16.2 3.8v3.4h-3.4"></path></svg></span>

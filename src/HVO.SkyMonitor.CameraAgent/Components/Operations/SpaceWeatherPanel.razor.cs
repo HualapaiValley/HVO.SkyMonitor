@@ -68,6 +68,9 @@ public sealed partial class SpaceWeatherPanel : ComponentBase, IAsyncDisposable
 
     private bool CanMutate => _view?.CanMutate == true;
 
+    /// <summary>The failed read's message, unless it only repeats the heading.</summary>
+    private string? ErrorDetail => string.Equals(_error, SpaceWeatherSummary.UnavailableText, StringComparison.Ordinal) ? null : _error;
+
     /// <summary>Why Refresh is unavailable, shown beside the disabled button; null when it may run.</summary>
     internal string? RefreshUnavailableReason => RefreshBlockedReason(_view);
 
