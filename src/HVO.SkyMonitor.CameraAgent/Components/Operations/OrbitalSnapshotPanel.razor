@@ -103,7 +103,7 @@
                 <div><dt>Activated</dt><dd id="orbital-activated">@TimeWithAge(status.LastActivationUtc, view.ActivationAge, "Never")</dd></div>
                 <div><dt>Validity</dt><dd id="orbital-validity">@OrbitalOperatorText.ValidityText</dd></div>
             }
-            <div><dt>Refresh</dt><dd id="orbital-enabled">@(status.Enabled ? "On" : "Off in this CameraAgent's settings")</dd></div>
+            <div><dt>Refresh</dt><dd><span id="orbital-enabled">@(status.Enabled ? "On" : "Off")</span> <a href="/operations/site#orbitalElements-switch">Change orbital refresh switch</a></dd></div>
             @if (known)
             {
                 <div><dt>Schedule</dt><dd id="orbital-schedule">@ScheduleText(view.Schedule)<small>@ScheduleDetail(view.Schedule) <a href="@AutomationsDefinitionLink">Open in Automations</a></small></dd></div>
@@ -125,6 +125,14 @@
             }
             <div class="full"><dt>Use boundary</dt><dd>Predicted geometry only; ordinary orbital data does not establish optical visibility.</dd></div>
         </dl>
+
+        @if (status.Enabled && view.Schedule is { Exists: false })
+        {
+            <div id="orbital-setup" class="ops-note-banner compact" role="status">
+                <span>Refresh is on. <a href="/operations/automations?setup=orbital">Create the refresh automation</a> with a six-hour default (21,600 seconds; minimum 7,200). After saving, optionally return here for the first Refresh now.</span>
+            </div>
+        }
+        <p class="orbital-policy">Provider policy: one attempt per two hours, single flight, no retries; every non-200 response halts refresh until an operator resumes. Resuming never moves the floor. CameraAgents behind shared NAT or a proxy share one egress budget: enable as few as needed, keep intervals well above two hours, and check all of them before resuming after a 403 or 429. Provider bytes and backups must not be redistributed. <a href="https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/runbooks/orbital-elements-refresh.md#provider-policy">Provider-policy and shared-egress runbook</a></p>
 
         <div class="ops-action-list orbital-actions">
             <article class="ops-action-row">

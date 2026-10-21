@@ -306,6 +306,7 @@ public class Program
         builder.Services.AddCameraAgentAuthorization();
         builder.Services.AddScoped<CameraAgentApiKeyStore>();
         builder.Services.AddScoped<CameraAgentSettingsService>();
+        builder.Services.AddScoped<ICameraAgentSatelliteSetupUiService, CameraAgentSatelliteSetupUiService>();
         builder.Services.AddCameraAgentOutboxOperations();
         builder.Services.AddScoped<ICameraAgentOperatorUiService, CameraAgentOperatorUiService>();
         builder.Services.AddScoped<ICameraAgentScheduleUiService, CameraAgentScheduleUiService>();

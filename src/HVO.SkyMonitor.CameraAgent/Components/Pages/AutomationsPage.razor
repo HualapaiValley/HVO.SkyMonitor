@@ -9,6 +9,13 @@
 
 <PageTitle>Automations</PageTitle>
 
+@if (GuidedOrbitalSetup)
+{
+    <div id="orbital-setup-guide" class="ops-note-banner" role="status">
+        <span>Orbital refresh setup: create the reserved automation with a six-hour interval (21,600 seconds; never below 7,200). If it already exists, use its existing card; setup never replaces it. After saving, optionally <a href="/operations/software#software-orbital-heading">open Software &amp; Catalog for the first Refresh now</a>. Creation does not immediately contact the provider. Shared NAT or proxy users share an egress budget; use as few refreshers as needed and intervals well above two hours. <a href="https://github.com/HualapaiValley/HVO.SkyMonitor/blob/development/v1/docs/runbooks/orbital-elements-refresh.md#provider-policy">Read the provider policy before enabling refresh</a>.</span>
+    </div>
+}
+
 <OperationsPageHeading Eyebrow="Automation / typed scheduled work" Title="Automations" HeadingId="automations-heading"
                        Description="Generate observing-day products and perform bounded maintenance through registered task types, explicit triggers, and durable run history.">
     <Actions>

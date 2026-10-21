@@ -9,6 +9,8 @@ to its version and adds `docs/upgrade-notes/X.Y.Z.md` (install contract section 
 with the work merged from 2026-10-16 onward; earlier development is recorded in its pull requests.
 
 ## [Unreleased]
+- Regression tests verify bounded CameraAgent snapshot reads reject invalid timeouts and release their gates after projection failures. (#1477)
+
 - Space-weather storage rejects disguised application schema objects and resolves orphan notices correctly when linked groups join. (#1398)
 
 - A dedicated STRICT SQLite store keeps space-weather snapshots, alert revisions and interrupted-attempt state durable, with bounded history and local diagnostics. (#1398)
@@ -26,7 +28,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
-- Regression tests verify bounded CameraAgent snapshot reads reject invalid timeouts and release their gates after projection failures. (#1477)
+- Observatory settings and `hvo-sky config` now offer orbital-refresh and satellite-planning switches. Software & Catalog guides refresh-automation setup, and the planner setup explains missing snapshots, pinned time-data/hash problems and expired coverage with links to their fixes; managed time-data downloads remain pending. (#1474)
 
 - Shared space-weather storage contracts define snapshot comparison, atomic completion and bounded local history for the upcoming SWPC refresh service. (#1398)
 
