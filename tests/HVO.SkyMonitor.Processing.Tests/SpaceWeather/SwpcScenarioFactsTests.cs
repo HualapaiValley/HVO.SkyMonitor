@@ -54,6 +54,7 @@ public sealed class SwpcScenarioFactsTests
     [DataRow("scenarios/s25-year-bounds.json")]
     [DataRow("scenarios/s26-original-record-verbatim.json")]
     [DataRow("scenarios/s27-original-record-outer-whitespace.json")]
+    [DataRow("scenarios/s28-orphan-join-chain.json")]
     public void PureFactsMatchRecordedScenarioExpectations(string scenarioPath)
     {
         var scenario = JsonNode.Parse(File.ReadAllText(Path.Combine(Pack, scenarioPath)))!;

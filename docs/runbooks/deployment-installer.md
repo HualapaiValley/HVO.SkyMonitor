@@ -24,8 +24,36 @@ rollback and reinstall hints name its path rather than `install.sh`'s temporary 
 the running release installer; a failed initial bootstrap can be repeated with `install.sh` and the same arguments.
 The installer finishes the current operation itself; it does not hand execution to the newly published binary.
 
-Before publishing, the installer requires each destination folder and ancestor to be owned by the runtime user or
-root, with no group or world write permission. This also checks destinations retained by an earlier install. Unsafe
+Before publishing, the installer requires each destination folder and ancestor to be owned by the installing user or
+root, with no world write permission. Group write is allowed only for the installing user's private group: the folder's
+gid must equal the user's primary gid, its group name must equal the account name, no other supplementary member may
+belong to it, and no other account may use that primary gid. This requires a verified complete source: `/etc/nsswitch.conf`
+must contain exactly one `passwd: files` and one `group: files` entry, with `initgroups` absent or exactly `initgroups: files`.
+Configuration tokens must be ASCII. ASCII whitespace and full-line comments are allowed; comment text after an
+ASCII whitespace prefix and `#` may contain Unicode. Physical LF separates entries (CRLF is accepted); a bare CR
+does not start another entry. Inline `#` suffixes on account-provider entries are refused, because
+[glibc 2.41 scans those suffixes as source tokens](https://github.com/bminor/glibc/blob/glibc-2.41/nss/nss_action_parse.c)
+without first stripping them as comments. The installer reads the complete `/etc/group` and `/etc/passwd` files directly;
+unreadable, malformed or ambiguous configuration or account data refuses group-writable destinations. Additional or
+unknown providers (including `sss`, `systemd` and `compat`), action clauses and duplicate entries are conservatively
+refused: successful `getent` output does not prove that another account was not omitted. In particular,
+[SSSD disables enumeration by default](https://github.com/SSSD/sssd/blob/master/src/man/sssd.conf.5.xml), and
+[systemd can supply additional accounts and memberships](https://www.freedesktop.org/software/systemd/man/257/nss-systemd.html).
+The glibc configuration templates in [Debian 13](https://deb.debian.org/debian/pool/main/g/glibc/glibc_2.41-12+deb13u4.debian.tar.xz)
+and [Raspbian trixie](https://archive.raspbian.org/raspbian/pool/main/g/glibc/glibc_2.41-12%2Brpi1%2Bdeb13u2.debian.tar.xz)
+use files-only account sources, but [installing `libnss-systemd` adds a provider](https://packages.debian.org/trixie/libnss-systemd).
+Neither cited packaging archive patches the relevant glibc token/comment parsing; this does not assume every
+downstream build behaves identically. Inline comments and non-ASCII active configuration therefore remain refused
+even where another parser might accept them.
+Every group-writable folder or ancestor under such a mixed-provider configuration remains refused; this does not
+claim all Debian/Pi images are supported. The owner can deliberately remove group write (`chmod g-w <folder>`) from
+each reported folder/ancestor, or use an already trusted destination without group write. Do not disable account
+providers to satisfy this check. Folders without group write do not require account enumeration.
+Each group-writable destination folder and ancestor must also have no extended
+access ACL: present ACL metadata or an inability to confirm its absence is a refusal. Shared groups remain refused.
+Newly created program folders, including `~/.local/bin`, receive explicit mode `0755` regardless of umask; existing safe
+private-group folders keep their modes.
+This also checks destinations retained by an earlier install. Unsafe
 folders are refused before changes; fix their ownership/permissions and retry. Both the current command and
 `.previous` must match publication records before replacement. An unowned or externally changed recovery file is
 preserved and reported; move it aside deliberately before retrying. Publication retains an open verified stage and
@@ -607,9 +635,8 @@ A capability `docker info` does not report counts as unsupported. Free space is
 measured on the filesystem that actually stores each root, at its nearest
 existing ancestor, not on `/`; when the product root and Docker's data root
 share one filesystem their requirements are added together. An upgrade likewise
-measures the staged archive and room for two copies of the small databases (the
-snapshot and a restore's temporary copy) against the product root's own
-filesystem. Bulk capture data is never copied, so it is never counted.
+measures the staged archive, snapshot, temporary database copy, concurrent trial
+rollback journal and a separate restore-copy allowance against the product root's own filesystem when a migration or retained-state restore requires those phases. Pure image swaps budget only for their archive and headroom. Bulk capture data is never copied, so it is never counted.
 
 A host that cannot enforce the limits would otherwise run CameraAgent unbounded,
 so it is refused. On a Raspberry Pi the firmware adds `cgroup_disable=memory` to
@@ -2056,7 +2083,7 @@ restore reads the whole archive and refuses it (exit `3`) when:
   restore;
 - the catalog it needs is not installed, Docker is another daemon, or the instance's container exists;
 - there is not enough room for what is left to do. A fresh restore needs room to stage the archive and to copy each
-  database it puts back. A resumed one needs room only for what it has not done: none for staging once the journal
+  database it puts back, with current-size allowances for a carry trial and its rollback journal. A resumed one needs room only for what it has not done: none for staging once the journal
   records the archive staged, and none for the database copies once it records the databases restored.
 
 A `--plan` makes the same checks and writes nothing.
@@ -2312,6 +2339,10 @@ installer plans what each store of the target snapshot receives:
    - the target cannot carry it at all, such as a row the snapshot lacks beyond the lazy-row allowance.
 2. What remains for a store is carried and verified, in one transaction, on a scratch copy of the target store under
    the operation directory. This proves the carry against that store's real CHECK constraints and column types.
+   Before the trial starts, its free-space check includes the scratch database, a current-size rollback journal
+   with page-record overhead, the target snapshot's database-copy allowance, and 256 MiB headroom. The restore
+   allowance is kept while the trial runs. This is a capacity estimate, not a filesystem reservation: triggers can
+   grow the database and other processes can consume space.
 3. A store whose trial fails in any way, or whose own values the installer cannot interpret, is put back without its
    counters. A store not encoded as UTF-8 is one such case. The snapshot's authentication proves its bytes, not that the
    installer can read its values.
@@ -2332,9 +2363,12 @@ and `--resume` restores again. Whatever was not carried is named, with why, on s
 
 ```text
 Warning: the restore of the CameraAgent databases from snapshot <uuid> could not carry the <counter> counter of
-'<store>' (<why>). Each is restored as the snapshot recorded it, so a sequence or version handed out since the
+'<store>' with key "<escaped-key>" (<why>). Each is restored as the snapshot recorded it, so a sequence or version handed out since the
 snapshot may be handed out again; the restore itself completes.
 ```
+
+Every omitted floor is listed separately, including when a whole store fails. Keys use JSON escaping so control
+characters cannot alter terminal output. The same identities and reasons appear in human and JSON warnings.
 
 The journal keeps the marks themselves, and the plan is made again on every retry, so a mark a retry cannot carry never
 fails the retry. The audit of every read, validation and apply step is in the #1314 correction-round-4 ledger, and the

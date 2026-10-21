@@ -12,6 +12,7 @@ _dotnet_runtime_directory_usable() {
 
 dotnet_runtime_home_check() {
     local path="${XDG_RUNTIME_DIR:-${HOME:-}}" variable=HOME current probe uid component valid=yes
+    local -a components=(.dotnet shm)
     [[ -z "${XDG_RUNTIME_DIR:-}" ]] || variable=XDG_RUNTIME_DIR
     uid="$(id -u)" || valid=no
     if [[ "$path" == /* ]] && _dotnet_runtime_directory_usable "$path" "$uid" yes; then
@@ -23,8 +24,11 @@ dotnet_runtime_home_check() {
             current="${current:-/}"
         done
         current="$path"
-        if [[ "$variable" == HOME && "$valid" == yes ]]; then
-            for component in .dotnet corefx Runtime SharedMemory; do
+        if [[ "$variable" == HOME ]]; then
+            components=(.dotnet corefx Runtime SharedMemory .dotnet shm)
+        fi
+        if [[ "$valid" == yes ]]; then
+            for component in "${components[@]}"; do
                 path="$path/$component"
                 if [[ -e "$path" || -L "$path" ]]; then
                     _dotnet_runtime_directory_usable "$path" "$uid" no || { valid=no; break; }
@@ -38,6 +42,6 @@ dotnet_runtime_home_check() {
             rm -f -- "$probe" 2>/dev/null && return 0
         fi
     fi
-    printf 'ARM64 CI preflight: repair the runner service account HOME or set XDG_RUNTIME_DIR to an existing absolute directory owned by the service UID, writable/searchable, without symlink ancestors or group/other write permissions. For HOME, repair every existing .dotnet/corefx/Runtime/SharedMemory component to be a non-symlink directory owned by that UID and writable/searchable. DOTNET_CLI_HOME alone is insufficient.\n' >&2
+    printf 'ARM64 CI preflight: repair the runner service account HOME or set XDG_RUNTIME_DIR to an existing absolute directory owned by the service UID, writable/searchable, without symlink ancestors or group/other write permissions. For HOME, repair every existing .dotnet/corefx/Runtime/SharedMemory/.dotnet/shm component (or .dotnet/shm under XDG_RUNTIME_DIR) to be a non-symlink directory owned by that UID and writable/searchable. DOTNET_CLI_HOME alone is insufficient.\n' >&2
     return 1
 }

@@ -65,6 +65,46 @@ EOP brackets. Geometry-free pass arcs require actual retained EOP; nominal-zero
 diagnostics are not a fallback. Final/predicted EOP quality, coverage and hashes
 remain in the producer's model facts. Returned messages omit local paths.
 
+### Enable local planning
+
+**Observatory & location → Orbital refresh & satellite setup** offers independent
+**Orbital refresh** and **Satellite planning** switches from the settings
+catalogue. The equivalent planning CLI commands are:
+
+```bash
+hvo-sky config get satellitePlanning.enabled
+hvo-sky config set satellitePlanning.enabled=true
+```
+
+Planning uses the existing live options monitor: saving this switch applies
+immediately. Orbital refresh needs a CameraAgent restart. The catalogue exposes
+both switches as the existing v1 enum choices `false`/`true` (Off/On), and writes
+JSON Booleans to `state/identity/appsettings.local.json`. Environment variables
+and `config/secrets` override the file; the web UI and CLI show the source and
+refuse ineffective writes. Use `satellitePlanning.enabled=false` to turn planning
+off without changing retained snapshots or capture.
+
+**Managed time-data acquisition is not available yet** (#1474 part B). Configure
+the four time-file paths/hashes in the options table by hand, using absolute
+paths readable inside CameraAgent. The setup panel displays these fields
+read-only, with resolution/hash status, parsed EOP coverage and exclusive
+leap-second expiry. It makes no download request and never substitutes nominal
+zero EOP. The panel checks the default six-hour window from the selected scene
+instant; an explicit search still validates its actual window and selected
+element epochs. Read-only paths are visible only through the authenticated setup
+surface; planner responses continue to omit local paths.
+
+The panel explains disabled planning, no validated orbital snapshot, missing or
+invalid time data, a configured SHA-256 mismatch, and expired/outside time
+coverage. Each reason links to the switch, Software & Catalog refresh setup, or
+the read-only time-data setup instructions. A hash match by itself does not mean
+the file parsed or its coverage is usable. After replacing hand-configured bytes,
+update their pinned hashes to adopt the pair explicitly, then reload setup status.
+
+Capture-time **Predicted satellite tracks** are not available yet: #529/#1393 own
+their producer and integration. Astrometry and its residual layers are also not
+available yet (#526 → #1187 → #523). Enabling planning does not enable either.
+
 ## Bounded planning and detail
 
 Searches run outside the UI circuit through a single active-work gate. A busy
